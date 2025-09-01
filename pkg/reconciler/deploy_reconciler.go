@@ -249,6 +249,10 @@ func SemanticallyEqualDeployment(oldDeploy, newDeploy *appsv1.Deployment) (bool,
 		return false, fmt.Errorf("spec not equal: %s", err.Error())
 	}
 
+	if equal, err := deploymentStatusEqual(oldDeploy.Status, newDeploy.Status); !equal {
+		return false, fmt.Errorf("status not equal: %s", err.Error())
+	}
+
 	return true, nil
 }
 
@@ -268,4 +272,16 @@ func deploymentSpecEqual(spec1, spec2 appsv1.DeploymentSpec) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func deploymentStatusEqual(oldStatus, newStatus appsv1.DeploymentStatus) (bool, error) {
+	if oldStatus.Replicas != newStatus.Replicas {
+		return false, fmt.Errorf("status.replicas not equal, old: %v, new: %v", oldStatus.Replicas, newStatus.Replicas)
+	}
+
+	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
+		return false, fmt.Errorf("status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas)
+	}
+	return true, nil
+
 }

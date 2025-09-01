@@ -298,6 +298,14 @@ func semanticallyEqualLeaderWorkerSet(oldLws, newLws *lwsv1.LeaderWorkerSet) (bo
 		return false, retErr
 	}
 
+	if equal, err := lwsStatusEqual(oldLws.Status, newLws.Status); !equal {
+		retErr := fmt.Errorf("lws status not equal")
+		if err != nil {
+			retErr = fmt.Errorf("lws status not equal: %s", err.Error())
+		}
+		return false, retErr
+	}
+
 	return true, nil
 }
 
@@ -319,6 +327,18 @@ func lwsSpecEqual(lws1, lws2 lwsv1.LeaderWorkerSetSpec) (bool, error) {
 		return false, fmt.Errorf("LeaderWorkerSetSpec replicas not equal")
 	}
 	return true, nil
+}
+
+func lwsStatusEqual(oldStatus, newStatus lwsv1.LeaderWorkerSetStatus) (bool, error) {
+	if oldStatus.Replicas != newStatus.Replicas {
+		return false, fmt.Errorf("status.replicas not equal, old: %v, new: %v", oldStatus.Replicas, newStatus.Replicas)
+	}
+
+	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
+		return false, fmt.Errorf("status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas)
+	}
+	return true, nil
+
 }
 
 func leaderWorkerTemplateEqual(oldLwt, newLwt lwsv1.LeaderWorkerTemplate) (bool, error) {

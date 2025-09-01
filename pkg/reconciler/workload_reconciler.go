@@ -38,42 +38,24 @@ func WorkloadEqual(obj1, obj2 interface{}) (bool, error) {
 	switch o1 := obj1.(type) {
 	case *appsv1.Deployment:
 		if o2, ok := obj2.(*appsv1.Deployment); ok {
-			// check spec
 			if equal, err := SemanticallyEqualDeployment(o1, o2); !equal {
 				return false, fmt.Errorf("deploy not equal, error: %s", err.Error())
 			}
-			// check status
-			if o1.Status.ReadyReplicas != o2.Status.ReadyReplicas {
-				return false, fmt.Errorf("ReadyReplicas not equal, old: %d, new: %d", o1.Status.ReadyReplicas, o2.Status.ReadyReplicas)
-			}
-
 			return true, nil
 		}
 	case *appsv1.StatefulSet:
 		if o2, ok := obj2.(*appsv1.StatefulSet); ok {
-			// check spec
 			if equal, err := SemanticallyEqualStatefulSet(o1, o2); !equal {
 				return false, fmt.Errorf("sts not equal, error: %s", err.Error())
 			}
-			// check status
-			if o1.Status.ReadyReplicas != o2.Status.ReadyReplicas {
-				return false, fmt.Errorf("ReadyReplicas not equal, old: %d, new: %d", o1.Status.ReadyReplicas, o2.Status.ReadyReplicas)
-			}
-
 			return true, nil
 		}
 
 	case *lwsv1.LeaderWorkerSet:
 		if o2, ok := obj2.(*lwsv1.LeaderWorkerSet); ok {
-			// check spec
 			if equal, err := semanticallyEqualLeaderWorkerSet(o1, o2); !equal {
 				return false, fmt.Errorf("lws not equal, error: %s", err.Error())
 			}
-			// check status
-			if o1.Status.ReadyReplicas != o2.Status.ReadyReplicas {
-				return false, fmt.Errorf("ReadyReplicas not equal, old: %d, new: %d", o1.Status.ReadyReplicas, o2.Status.ReadyReplicas)
-			}
-
 			return true, nil
 		}
 	}

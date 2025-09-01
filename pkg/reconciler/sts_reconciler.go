@@ -574,6 +574,10 @@ func SemanticallyEqualStatefulSet(oldSts, newSts *appsv1.StatefulSet) (bool, err
 	if equal, err := statefulSetSpecEqual(oldSts.Spec, newSts.Spec); !equal {
 		return false, fmt.Errorf("spec not equal: %s", err.Error())
 	}
+
+	if equal, err := statefulSetStatusEqual(oldSts.Status, newSts.Status); !equal {
+		return false, fmt.Errorf("status not equal: %s", err.Error())
+	}
 	return true, nil
 }
 
@@ -591,6 +595,18 @@ func statefulSetSpecEqual(spec1, spec2 appsv1.StatefulSetSpec) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func statefulSetStatusEqual(oldStatus, newStatus appsv1.StatefulSetStatus) (bool, error) {
+	if oldStatus.Replicas != newStatus.Replicas {
+		return false, fmt.Errorf("status.replicas not equal, old: %v, new: %v", oldStatus.Replicas, newStatus.Replicas)
+	}
+
+	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
+		return false, fmt.Errorf("status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas)
+	}
+	return true, nil
+
 }
 
 func SemanticallyEqualService(svc1, svc2 *corev1.Service) (bool, error) {

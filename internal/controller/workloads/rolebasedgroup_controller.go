@@ -464,15 +464,17 @@ func WorkloadPredicate() predicate.Funcs {
 				return false
 			}
 
+			// Check if the workload needs to be reconciled
 			equal, err := reconciler.WorkloadEqual(e.ObjectOld, e.ObjectNew)
-			if !equal {
-				if err != nil {
-					ctrl.Log.V(1).Info("enqueue: workload update event",
-						"rbg", klog.KObj(e.ObjectOld), "diff", err.Error())
-				}
+			// if workload is equal, skip reconciling
+			if equal {
 				return true
 			}
 
+			if err != nil {
+				ctrl.Log.Info("enqueue: workload update event",
+					"rbg", klog.KObj(e.ObjectOld), "diff", err.Error())
+			}
 			return false
 		},
 		DeleteFunc: func(e event.TypedDeleteEvent[client.Object]) bool {
