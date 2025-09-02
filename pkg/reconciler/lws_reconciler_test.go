@@ -1,6 +1,7 @@
 package reconciler
 
 import (
+	"k8s.io/utils/ptr"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -24,7 +25,7 @@ var (
 				{
 					Name:    "nginx",
 					Image:   "nginx:1.15.1",
-					Command: []string{"/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"},
+					Command: []string{"nginx"},
 					Env: []corev1.EnvVar{
 						{
 							Name:  "nginx-env",
@@ -41,7 +42,7 @@ var (
 				{
 					Name:    "test-sidecar",
 					Image:   "test-image:v1",
-					Command: []string{"/vllm-workspace/ray_init.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE);vllm serve /models/DeepSeek-R1/ --port 8000 --trust-remote-code --served-model-name ds --max-model-len 2048 --gpu-memory-utilization 0.95 --tensor-parallel-size 8 --pipeline-parallel-size 2 --enforce-eager"},
+					Command: []string{"nginx"},
 					Env: []corev1.EnvVar{
 						{
 							Name:  "IS_INJECTED",
@@ -67,7 +68,7 @@ var (
 			Roles: []workloadsv1alpha1.RoleSpec{
 				{
 					Name:     "prefill",
-					Replicas: utilpointer.Int32Ptr(4),
+					Replicas: ptr.To(int32(4)),
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-pod-1",
@@ -78,7 +79,7 @@ var (
 								{
 									Name:    "nginx",
 									Image:   "nginx:1.15.1",
-									Command: []string{"/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"},
+									Command: []string{"nginx"},
 									Env: []corev1.EnvVar{
 										{
 											Name:  "nginx-env",
@@ -110,16 +111,16 @@ var (
 
 	defaultLws = lwsv1.LeaderWorkerSet{
 		Spec: lwsv1.LeaderWorkerSetSpec{
-			Replicas: utilpointer.Int32Ptr(4),
+			Replicas: ptr.To(int32(4)),
 			LeaderWorkerTemplate: lwsv1.LeaderWorkerTemplate{
-				Size: utilpointer.Int32Ptr(2),
+				Size: ptr.To(int32(2)),
 				LeaderTemplate: &corev1.PodTemplateSpec{
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{
 							{
 								Name:    "nginx",
 								Image:   "nginx:1.15.1",
-								Command: []string{"/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"},
+								Command: []string{"nginx"},
 								Env: []corev1.EnvVar{
 									{
 										Name:  "nginx-env",
@@ -147,7 +148,7 @@ var (
 							{
 								Name:    "nginx",
 								Image:   "nginx:1.15.1",
-								Command: []string{"/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"},
+								Command: []string{"nginx"},
 								Env: []corev1.EnvVar{
 									{
 										Name:  "nginx-env",
@@ -218,7 +219,7 @@ func TestPatchPodTemplate(t *testing.T) {
 						Containers: []corev1.Container{
 							{
 								Name:    "nginx",
-								Command: []string{"/home/admin/app/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS) new"},
+								Command: []string{"nginx -c /home/user/my-nginx.conf"},
 								Env: []corev1.EnvVar{
 									{
 										Name:  "nginx-env",
@@ -232,7 +233,7 @@ func TestPatchPodTemplate(t *testing.T) {
 							},
 							{
 								Name:    "test-sidecar",
-								Command: []string{"/home/admin/app/vllm-workspace/ray_init.sh leader new"},
+								Command: []string{"nginx -c /home/user/my-nginx.conf"},
 								Resources: corev1.ResourceRequirements{
 									Requests: map[corev1.ResourceName]resource.Quantity{
 										corev1.ResourceCPU:    cpuV,
@@ -266,7 +267,7 @@ func TestPatchPodTemplate(t *testing.T) {
 							{
 								Name:    "nginx",
 								Image:   "nginx:1.15.1",
-								Command: []string{"/home/admin/app/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS) new"},
+								Command: []string{"nginx -c /home/user/my-nginx.conf"},
 								Env: []corev1.EnvVar{
 									{
 										Name:  "nginx-env",
@@ -287,7 +288,7 @@ func TestPatchPodTemplate(t *testing.T) {
 							{
 								Name:    "test-sidecar",
 								Image:   "test-image:v1",
-								Command: []string{"/home/admin/app/vllm-workspace/ray_init.sh leader new"},
+								Command: []string{"nginx -c /home/user/my-nginx.conf"},
 								Env: []corev1.EnvVar{
 									{
 										Name:  "IS_INJECTED",
@@ -367,7 +368,7 @@ func TestLwsReconciler(t *testing.T) {
 						Containers: []corev1.Container{
 							{
 								Name:    "nginx",
-								Command: []string{"/home/admin/app/vllm-workspace/ray_init.sh leader --ray_address=$(LWS_LEADER_ADDRESS) new"},
+								Command: []string{"nginx -c /home/user/my-nginx.conf"},
 							},
 						},
 					},
@@ -382,7 +383,7 @@ func TestLwsReconciler(t *testing.T) {
 						Containers: []corev1.Container{
 							{
 								Name:    "nginx",
-								Command: []string{"/home/admin/app/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS) new"},
+								Command: []string{"nginx -c /home/user/my-nginx.conf"},
 							},
 						},
 					},
@@ -398,9 +399,9 @@ func TestLwsReconciler(t *testing.T) {
 			expect: func() *lwsv1.LeaderWorkerSet {
 				obj := defaultLws.DeepCopy()
 				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{"app": "leader"}
-				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Command = []string{"/home/admin/app/vllm-workspace/ray_init.sh leader --ray_address=$(LWS_LEADER_ADDRESS) new"}
+				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Command = []string{"nginx -c /home/user/my-nginx.conf"}
 				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{"app": "worker"}
-				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Command = []string{"/home/admin/app/vllm-workspace/ray_init.sh worker --ray_address=$(LWS_LEADER_ADDRESS) new"}
+				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Command = []string{"nginx -c /home/user/my-nginx.conf"}
 				return obj
 			},
 		},

@@ -152,13 +152,11 @@ func parseStatus(resource *unstructured.Unstructured) ([]map[string]interface{},
 }
 
 func printReport(resource *unstructured.Unstructured, roleStatuses []map[string]interface{}, ageStr string) {
-	// 资源元数据
 	fmt.Printf("📊 Resource Overview\n")
 	fmt.Printf("  Namespace: %s\n", namespace)
 	fmt.Printf("  Name:      %s\n\n", resource.GetName())
 	fmt.Printf("  Age:       %s\n\n", ageStr)
 
-	// 角色状态
 	fmt.Println("📦 Role Statuses")
 
 	totalReady := 0
@@ -188,7 +186,6 @@ func printReport(resource *unstructured.Unstructured, roleStatuses []map[string]
 		totalReplicas += int(replicas)
 	}
 
-	// 汇总
 	fmt.Printf("\n∑ Summary: %d roles | %d/%d Ready\n",
 		len(roleStatuses),
 		totalReady,

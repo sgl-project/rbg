@@ -27,4 +27,4 @@ spec:
 Other gang scheduling policies will be supported soon.
 
 ## Examples
-- [Gang Scheduling](../../examples/base/gang-scheduling.yaml)
+- [Gang Scheduling](../../examples/basics/gang-scheduling.yaml)

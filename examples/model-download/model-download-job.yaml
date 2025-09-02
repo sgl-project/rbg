@@ -14,7 +14,8 @@ rules:
     resources: [ "secrets" ]
     resourceNames: [ "model-download-oss-secret" ]
     verbs: [ "get","patch" ]
-  # 在创建secret 验权时无法知道具体的secret名称，因此指定resourceName并不会生效
+  # The specific name of a Secret is not known during the authorization check for its creation.
+  # Therefore, specifying resourceName in an access control policy will have no effect for 'create' operations.
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
     verbs: [ "create" ]
@@ -50,11 +51,11 @@ spec:
           imagePullPolicy: Always
           args:
             - --bucket-name
-            -  <your-bucket-name> # test-bucket
+            - <your-bucket-name> # test-bucket
             - --bucket-endpoint
             - <your-oss-endpoint> # oss-ap-southeast-1-internal.aliyuncs.com
-#            - --oss-url
-#            - oss://<test-bucket>/Qwen2.5-7B-Instruct/
+            # - --oss-url
+            # - oss://<test-bucket>/Qwen2.5-7B-Instruct/
             - --git-url
             - https://www.modelscope.cn/Qwen/Qwen2.5-7B-Instruct.git
           env:

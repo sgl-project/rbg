@@ -21,29 +21,26 @@
     - Deploying Inference Service
         - Single Node
             - [sglang](../examples/single-node/sglang.yaml)
-            - Others Inference Engines
-              - [vLLM](../examples/single-node/vllm.yaml)
+            - [Others](../examples/single-node/vllm.yaml)
 
         - Multi Node
             - [sglang](../examples/multi-nodes/sglang.yaml)
-              - Others Inference Engines
-                - [vLLM](../examples/multi-nodes/vllm.yaml)
+            - [Others](../examples/multi-nodes/vllm.yaml)
 
         - PD-Disagg
             - [sglang](../examples/pd-disagg/sglang/sgl.md)
-            - Others Inference Engines
-              - [dynamo](../examples/pd-disagg/dynamo/README.md)
+            - [Others](../examples/pd-disagg/dynamo/README.md)
 
     - Advanced Features
         - Multi-roles
-            - [Multirole with StatefulSet and Deployment](../examples/base/rbg-base.yaml)
+            - [Multirole with StatefulSet and Deployment](../examples/basics/rbg-base.yaml)
             - [Multirole with LeaderWorkerSet](../examples/multi-nodes/sglang.yaml)
-            - [Multirole with startup dependency](../examples/base/rbg-base.yaml)
+            - [Multirole with startup dependency](../examples/basics/rbg-base.yaml)
         - Update Strategy
-            - [Rolling Update](../examples/base/rolling-update.yaml)
+            - [Rolling Update](../examples/basics/rolling-update.yaml)
         - Failure Handling
-            - [Restart Policy](../examples/base/restart-policy.yaml)
+            - [Restart Policy](../examples/basics/restart-policy.yaml)
         - Scheduling
-            - [Gang Scheduling](../examples/base/gang-scheduling.yaml)
+            - [Gang Scheduling](../examples/basics/gang-scheduling.yaml)
         - Monitoring
             - [Prometheus](features/monitoring.md)

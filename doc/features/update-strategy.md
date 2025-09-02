@@ -13,4 +13,4 @@ rolloutStrategy:
 ```
 
 ## Examples
-- [rolling-update](../../examples/base/rolling-update.yaml)
+- [rolling-update](../../examples/basics/rolling-update.yaml)

@@ -6,9 +6,10 @@
 
 1. A Kubernetes cluster with version >= 1.26 is Required, or it will behave unexpected.
 2. Kubernetes cluster has at least 6+ CPUs with at least 32G VRAM available for the LLM Inference to run on.
-3. The kubectl command-line tool has communication with your cluster. Learn how
+3. Nodes are required to have RDMA networking capabilities. This is a requirement from Mooncake.
+4. The kubectl command-line tool has communication with your cluster. Learn how
    to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
-4. Prepare the Qwen3-32B model files
+5. Prepare the Qwen3-32B model files
     1. Run the following command to download the Qwen3-32B model from ModelScope:
    ```shell
    git lfs install
@@ -42,11 +43,11 @@ kubectl apply -f ./sglang-pd.yaml
 ```bash
 kubectl port-forward svc/sglang-pd 8000:8000
 
-curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json"  -d '{"model": "/models/Qwen3-32B", "messages": [{"role": "user", "content": "测试一下"}], "max_tokens": 30, "temperature": 0.7, "top_p": 0.9, "seed": 10}'
+curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json"  -d '{"model": "/models/Qwen3-32B", "messages": [{"role": "user", "content": "Send a test!"}], "max_tokens": 30, "temperature": 0.7, "top_p": 0.9, "seed": 10}'
 ```
 
 Expected output:
 
 ```text
-{"id":"29f3fdac693540bfa7808fc1a8701758","object":"chat.completion","created":1753695366,"model":"/models/Qwen3-32B","choices":[{"index":0,"message":{"role":"assistant","content":"<think>\n好的，用户让我测试一下，我需要先确认他们的具体需求。可能他们想测试我的功能，比如回答问题、生成内容","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"length","matched_stop":null}],"usage":{"prompt_tokens":10,"total_tokens":40,"completion_tokens":30,"prompt_tokens_details":null}}
+{"id":"d8645f3a24b1464d96f1787efa5107f1","object":"chat.completion","created":1756813058,"model":"/models/Qwen3-32B","choices":[{"index":0,"message":{"role":"assistant","content":"<think>\nOkay, the user said \"Send a test!\" I need to figure out what they want. Maybe they want me to send a test email","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"length","matched_stop":null}],"usage":{"prompt_tokens":12,"total_tokens":42,"completion_tokens":30,"prompt_tokens_details":null}}```
 ```

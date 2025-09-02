@@ -2,12 +2,13 @@ package reconciler
 
 import (
 	"context"
+	"reflect"
+	"testing"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/utils/pointer"
-	"reflect"
 	"sigs.k8s.io/rbgs/test/wrappers"
-	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,7 +110,7 @@ func getFakeClient() client.Client {
 
 func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = appsv1.AddToScheme(scheme) // 添加 StatefulSet 类型支持
+	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 	type fields struct {
 		client client.Client
@@ -124,7 +125,7 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 	// 测试用 StatefulSet 模板
 	testSTS := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg-test-role", // 假设 GetWorkloadName 生成此名称
+			Name:      "test-rbg-test-role",
 			Namespace: "default",
 		},
 		Spec: appsv1.StatefulSetSpec{
@@ -144,7 +145,7 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 		wantErr          bool
 	}{
 		{
-			name: "status-changed-needs-update",
+			name: "case 1: status-changed-needs-update",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -163,8 +164,8 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 						RoleStatuses: []workloadsv1alpha1.RoleStatus{
 							{
 								Name:          "test-role",
-								Replicas:      2, // 旧值
-								ReadyReplicas: 1, // 旧值
+								Replicas:      2,
+								ReadyReplicas: 1,
 							},
 						},
 					},
@@ -179,9 +180,8 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 			wantUpdateStatus: true,
 			wantErr:          false,
 		},
-		// 用例2: 状态未变化无需更新
 		{
-			name: "status-unchanged-no-update",
+			name: "case 2: status-unchanged-no-update",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -200,8 +200,8 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 						RoleStatuses: []workloadsv1alpha1.RoleStatus{
 							{
 								Name:          "test-role",
-								Replicas:      3, // 当前值
-								ReadyReplicas: 2, // 当前值
+								Replicas:      3,
+								ReadyReplicas: 2,
 							},
 						},
 					},
@@ -216,9 +216,8 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 			wantUpdateStatus: false,
 			wantErr:          false,
 		},
-		// 用例3: 首次创建角色状态
 		{
-			name: "initial-status-creation",
+			name: "case 3: initial-status-creation",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -234,7 +233,7 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 						Namespace: "default",
 					},
 					Status: workloadsv1alpha1.RoleBasedGroupStatus{
-						RoleStatuses: []workloadsv1alpha1.RoleStatus{}, // 无现有状态
+						RoleStatuses: []workloadsv1alpha1.RoleStatus{},
 					},
 				},
 				role: &workloadsv1alpha1.RoleSpec{Name: "test-role"},
@@ -247,14 +246,13 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 			wantUpdateStatus: true,
 			wantErr:          false,
 		},
-		// 用例4: StatefulSet 不存在
 		{
-			name: "statefulset-not-found",
+			name: "case 4: statefulset-not-found",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
 					WithScheme(scheme).
-					Build(), // 无 StatefulSet
+					Build(),
 			},
 			args: args{
 				ctx: context.Background(),
@@ -273,7 +271,7 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 			},
 			wantStatus:       workloadsv1alpha1.RoleStatus{},
 			wantUpdateStatus: false,
-			wantErr:          true, // 预期返回 NotFound 错误
+			wantErr:          true,
 		},
 	}
 
@@ -285,18 +283,15 @@ func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
 			}
 			gotStatus, gotUpdateStatus, err := r.ConstructRoleStatus(tt.args.ctx, tt.args.rbg, tt.args.role)
 
-			// 错误检查
 			if (err != nil) != tt.wantErr {
 				t.Errorf("testCase %s: error = %v, wantErr %v", tt.name, err, tt.wantErr)
 				return
 			}
 
-			// 状态对比
 			if !reflect.DeepEqual(gotStatus, tt.wantStatus) {
 				t.Errorf("testCase %s: gotStatus = %v, want %v", tt.name, gotStatus, tt.wantStatus)
 			}
 
-			// 更新标志检查
 			if gotUpdateStatus != tt.wantUpdateStatus {
 				t.Errorf("testCase %s: gotUpdateStatus = %v, want %v", tt.name, gotUpdateStatus, tt.wantUpdateStatus)
 			}

@@ -32,8 +32,7 @@ spec:
             - sh
             - -c
             - vllm serve /models/Qwen3-32B --port 8000 --trust-remote-code --max-model-len 2048 --gpu-memory-utilization 0.85 --tensor-parallel-size 2
-          #        image: vllm/vllm-openai:v0.10.0
-          image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:v0.10.0
+          image: vllm/vllm-openai:v0.10.0
           name: vllm
           ports:
             - containerPort: 8000

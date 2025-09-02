@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
-	"sort"
 )
 
 type DefaultDependencyManager struct {
@@ -93,7 +94,7 @@ func (m *DefaultDependencyManager) CheckDependencyReady(ctx context.Context, rbg
 	return true, nil
 }
 
-// 基于DFS构建拓扑关系，判断是否存在环
+// Use Depth-First Search (DFS) to build a topological sort and check for cycles
 func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([]string, error) {
 	logger := log.FromContext(ctx)
 

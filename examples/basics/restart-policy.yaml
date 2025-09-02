@@ -1,14 +1,11 @@
 apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
 metadata:
-  name: rolling-update
+  name: restart-policy
 spec:
   roles:
     - name: sts
-      rolloutStrategy:
-        rollingUpdate:
-          maxUnavailable: 2
-          maxSurge: 2
+      restartPolicy: RecreateRBGOnPodRestart
       replicas: 4
       template:
         metadata:
@@ -25,10 +22,7 @@ spec:
       workload:
         apiVersion: apps/v1
         kind: Deployment
-      rolloutStrategy:
-        rollingUpdate:
-          maxUnavailable: 2
-          maxSurge: 2
+      restartPolicy: None
       replicas: 4
       template:
         metadata:
@@ -43,10 +37,7 @@ spec:
 
     - name: lws
       replicas: 4
-      rolloutStrategy:
-        rollingUpdate:
-          maxUnavailable: 2
-          maxSurge: 2
+      restartPolicy: None
       workload:
         apiVersion: leaderworkerset.x-k8s.io/v1
         kind: LeaderWorkerSet
@@ -66,7 +57,7 @@ spec:
             appVersion: v1
         spec:
           containers:
-            - name: vllm
+            - name: nginx
               image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
               ports:
                 - name: http

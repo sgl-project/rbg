@@ -17,6 +17,7 @@ spec:
       spec:
         containers:
           - name: sglang-leader
+            # lmsysorg/sglang:latest with mooncake
             image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/anolis-docker-images/docker-temp:0.3.4.post2-sglang0.4.10.post2-pytorch2.7.1.8-cuda12.8.1-py312-alinux3.2104
             command:
               - sh
@@ -26,12 +27,12 @@ spec:
             resources:
               limits:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
               requests:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
             ports:
               - containerPort: 8000
                 name: http
@@ -66,12 +67,12 @@ spec:
             resources:
               limits:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
               requests:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
             volumeMounts:
               - mountPath: /dev/shm
                 name: dshm

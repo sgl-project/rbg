@@ -25,7 +25,7 @@ spec:
               sizeLimit: 15Gi
         containers:
           - name: vllm-leader
-            image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:v0.10.0
+            image: vllm/vllm-openai:v0.10.0
             command:
               - sh
               - -c
@@ -34,12 +34,12 @@ spec:
             resources:
               limits:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
               requests:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
             ports:
               - containerPort: 8000
                 name: http
@@ -65,7 +65,7 @@ spec:
               sizeLimit: 15Gi
         containers:
           - name: vllm-worker
-            image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:v0.10.0
+            image: vllm/vllm-openai:v0.10.0
             command:
               - sh
               - -c
@@ -73,12 +73,12 @@ spec:
             resources:
               limits:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
               requests:
                 nvidia.com/gpu: "1"
-                memory: "24Gi"
-                cpu: "8"
+                memory: "48Gi"
+                cpu: "12"
             ports:
               - containerPort: 8000
             volumeMounts:

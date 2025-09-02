@@ -58,7 +58,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		}
 	}
 	if utils.ContainsString(r.injectObjects, "sidecar") {
-		// sidecar也需要rbg相关的env，先注入sidecar
+		// The sidecar containers also need rbg-related envs, so inject them first
 		if err := injector.InjectSidecar(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject sidecar: %w", err)
 		}
@@ -121,13 +121,11 @@ func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
 	return true, nil
 }
 
-// podSpecEqual 比较 PodSpec
 func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 	if len(spec1.Containers) != len(spec2.Containers) {
 		return false, fmt.Errorf("pod template spec containers len not equal")
 	}
 
-	// 对容器进行排序后比较
 	containers1 := sortContainers(spec1.Containers)
 	containers2 := sortContainers(spec2.Containers)
 
@@ -137,7 +135,6 @@ func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 		}
 	}
 
-	// 比较 volumes
 	if equal, err := volumesEqual(spec1.Volumes, spec2.Volumes); !equal {
 		return false, fmt.Errorf("podTemplate volumes not equal: %s", err.Error())
 	}
@@ -145,7 +142,6 @@ func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 	return true, nil
 }
 
-// containerEqual 比较容器
 func containerEqual(c1, c2 corev1.Container) (bool, error) {
 	if c1.Name != c2.Name {
 		return false, fmt.Errorf("container name not equal")
@@ -175,12 +171,10 @@ func containerEqual(c1, c2 corev1.Container) (bool, error) {
 		return false, fmt.Errorf("container image pull policy not equal, old: %s, new: %s", c1.ImagePullPolicy, c2.ImagePullPolicy)
 	}
 
-	// 比较环境变量
 	if equal, err := envVarsEqual(c1.Env, c2.Env); !equal {
 		return false, fmt.Errorf("env not equal: %s", err.Error())
 	}
 
-	// 比较挂载点
 	if equal, err := volumeMountsEqual(c1.VolumeMounts, c2.VolumeMounts); !equal {
 		return false, fmt.Errorf("podTemplate volumes mounts not equal: %s", err.Error())
 	}
@@ -189,7 +183,6 @@ func containerEqual(c1, c2 corev1.Container) (bool, error) {
 
 }
 
-// envVarsEqual 比较环境变量
 func envVarsEqual(env1, env2 []corev1.EnvVar) (bool, error) {
 	env1 = utils.FilterSystemEnvs(env1)
 	env2 = utils.FilterSystemEnvs(env2)
@@ -202,7 +195,7 @@ func envVarsEqual(env1, env2 []corev1.EnvVar) (bool, error) {
 	copy(sortedEnv1, env1)
 	copy(sortedEnv2, env2)
 
-	// 按名称排序
+	// sort by name
 	sort.Slice(sortedEnv1, func(i, j int) bool {
 		return sortedEnv1[i].Name < sortedEnv1[j].Name
 	})
@@ -222,7 +215,6 @@ func envVarsEqual(env1, env2 []corev1.EnvVar) (bool, error) {
 	return true, nil
 }
 
-// volumesEqual 比较卷
 func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
 	if len(vol1) != len(vol2) {
 		return false, fmt.Errorf("volumes not equal")
@@ -233,7 +225,6 @@ func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
 	copy(sortedVol1, vol1)
 	copy(sortedVol2, vol2)
 
-	// 按名称排序
 	sort.Slice(sortedVol1, func(i, j int) bool {
 		return sortedVol1[i].Name < sortedVol1[j].Name
 	})
@@ -241,7 +232,6 @@ func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
 		return sortedVol2[i].Name < sortedVol2[j].Name
 	})
 
-	// 比较volume名称是否一致
 	for i := range sortedVol1 {
 		if !reflect.DeepEqual(sortedVol1[i].Name, sortedVol2[i].Name) {
 			return false, fmt.Errorf("volume name not equal")
@@ -251,7 +241,6 @@ func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
 	return true, nil
 }
 
-// volumeMountsEqual 比较卷挂载
 func volumeMountsEqual(vm1, vm2 []corev1.VolumeMount) (bool, error) {
 	if len(vm1) != len(vm2) {
 		return false, fmt.Errorf("volume mounts len not equal")
@@ -262,7 +251,6 @@ func volumeMountsEqual(vm1, vm2 []corev1.VolumeMount) (bool, error) {
 	copy(sortedVM1, vm1)
 	copy(sortedVM2, vm2)
 
-	// 按名称排序
 	sort.Slice(sortedVM1, func(i, j int) bool {
 		return sortedVM1[i].Name < sortedVM1[j].Name
 	})
@@ -279,7 +267,6 @@ func volumeMountsEqual(vm1, vm2 []corev1.VolumeMount) (bool, error) {
 	return true, nil
 }
 
-// sortContainers 对容器按名称排序
 func sortContainers(containers []corev1.Container) []corev1.Container {
 	sorted := make([]corev1.Container, len(containers))
 	copy(sorted, containers)
@@ -293,8 +280,8 @@ func sortContainers(containers []corev1.Container) []corev1.Container {
 // It returns true if both maps are nil or empty.
 // Otherwise, it compares keys and values for equality.
 func mapsEqual(map1, map2 map[string]string) bool {
-	isMap1Empty := map1 == nil || len(map1) == 0
-	isMap2Empty := map2 == nil || len(map2) == 0
+	isMap1Empty := len(map1) == 0
+	isMap2Empty := len(map2) == 0
 
 	if isMap1Empty && isMap2Empty {
 		return true

@@ -6,6 +6,6 @@ RBG allows configuring any number of roles and any workload types, and defining 
 
 ## Examples
 
-- [Multirole with StatefulSet and Deployment](../../examples/base/rbg-base.yaml)
-- [Multirole with LeaderWorkerSet](../../examples/multi-nodes/vllm.yaml)
-- [Multirole with startup dependency](../../examples/base/rbg-base.yaml)
+- [Multirole with StatefulSet and Deployment](../../examples/basics/rbg-base.yaml)
+- [Multirole with LeaderWorkerSet](../../examples/multi-nodes/sglang.yaml)
+- [Multirole with startup dependency](../../examples/basics/rbg-base.yaml)

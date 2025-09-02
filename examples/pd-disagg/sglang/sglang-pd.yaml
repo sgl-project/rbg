@@ -15,6 +15,7 @@ spec:
                 claimName: llm-model
           containers:
             - name: scheduler
+              # lmsysorg/sglang:latest with mooncake
               image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/anolis-docker-images/docker-temp:0.3.4.post2-sglang0.4.10.post2-pytorch2.7.1.8-cuda12.8.1-py312-alinux3.2104
               command:
                 - sh
@@ -23,7 +24,6 @@ spec:
               volumeMounts:
                 - mountPath: /models/Qwen3-32B/
                   name: model
-
     - name: prefill
       replicas: 2
       template:
@@ -43,7 +43,6 @@ spec:
           containers:
             - name: sglang-prefill
               image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/anolis-docker-images/docker-temp:0.3.4.post2-sglang0.4.10.post2-pytorch2.7.1.8-cuda12.8.1-py312-alinux3.2104
-              imagePullPolicy: Always
               env:
                 - name: POD_IP
                   valueFrom:
@@ -66,14 +65,14 @@ spec:
               resources:
                 limits:
                   nvidia.com/gpu: "2"
-                  aliyun/erdma: 1
-                  memory: "16Gi"
-                  cpu: "4"
+                  rdma/hca: 1
+                  memory: "48Gi"
+                  cpu: "12"
                 requests:
                   nvidia.com/gpu: "2"
-                  aliyun/erdma: 1
-                  memory: "16Gi"
-                  cpu: "4"
+                  rdma/hca: 1
+                  memory: "48Gi"
+                  cpu: "12"
               volumeMounts:
                 - mountPath: /models/Qwen3-32B/
                   name: model
@@ -99,7 +98,6 @@ spec:
           containers:
             - name: sglang-decode
               image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/anolis-docker-images/docker-temp:0.3.4.post2-sglang0.4.10.post2-pytorch2.7.1.8-cuda12.8.1-py312-alinux3.2104
-              imagePullPolicy: Always
               env:
                 - name: POD_IP
                   valueFrom:
@@ -120,14 +118,14 @@ spec:
               resources:
                 limits:
                   nvidia.com/gpu: "2"
-                  aliyun/erdma: 1
-                  memory: "16Gi"
-                  cpu: "4"
+                  rdma/hca: 1
+                  memory: "48Gi"
+                  cpu: "12"
                 requests:
                   nvidia.com/gpu: "2"
-                  aliyun/erdma: 1
-                  memory: "16Gi"
-                  cpu: "4"
+                  rdma/hca: 1
+                  memory: "48Gi"
+                  cpu: "12"
               volumeMounts:
                 - mountPath: /models/Qwen3-32B/
                   name: model

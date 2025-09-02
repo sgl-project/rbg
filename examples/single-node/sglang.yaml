@@ -32,7 +32,7 @@ spec:
             - sh
             - -c
             - "python3 -m sglang.launch_server --model-path /models/Qwen3-32B --tp 2 --trust-remote-code  --context-length 2048 --host 0.0.0.0 --port 8000 --enable-metrics"
-          image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/anolis-docker-images/docker-temp:0.3.4.post2-sglang0.4.10.post2-pytorch2.7.1.8-cuda12.8.1-py312-alinux3.2104
+          image: lmsysorg/sglang:latest
           name: sglang
           ports:
             - containerPort: 8000

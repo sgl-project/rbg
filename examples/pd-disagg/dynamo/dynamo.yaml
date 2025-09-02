@@ -13,8 +13,10 @@ spec:
             - command:
                 - sh
                 - -c
-                - cd /workspace/examples/llm; dynamo serve graphs.pd_disagg:Frontend -f ./configs/qwen3.yaml
+                - python -m dynamo.frontend --http-port 8000
               env:
+                - name: DYNAMO_PORT
+                  value: "8000"
                 - name: DYNAMO_NAME
                   value: dynamo
                 - name: DYNAMO_NAMESPACE
@@ -25,7 +27,7 @@ spec:
                   value: nats://nats:4222
                 - name: DYNAMO_RP_TIMEOUT
                   value: "60"
-              image: #步骤2中所构建的Dynamo Runtime镜像地址
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.4.1
               name: processor
               ports:
                 - containerPort: 8000
@@ -45,39 +47,20 @@ spec:
                 periodSeconds: 30
                 tcpSocket:
                   port: 8000
-              resources:
-                limits:
-                  cpu: "8"
-                  memory: 12Gi
-                requests:
-                  cpu: "8"
-                  memory: 12Gi
-              volumeMounts:
-                - mountPath: /models/Qwen3-32B/
-                  name: model
-                - mountPath: /workspace/examples/llm/configs/qwen3.yaml
-                  name: dynamo-configs
-                  subPath: qwen3.yaml
-                - mountPath: /workspace/examples/llm/graphs/pd_disagg.py
-                  name: dynamo-configs
-                  subPath: pd_disagg.py
-          volumes:
-            - name: model
-              persistentVolumeClaim:
-                claimName: llm-model
-            - configMap:
-                name: dynamo-configs
-              name: dynamo-configs
     - name: prefill
-      replicas: 2
+      replicas: 1
       template:
         spec:
           containers:
             - command:
                 - sh
                 - -c
-                - cd /workspace/examples/llm; dynamo serve components.prefill_worker:PrefillWorker -f ./configs/qwen3.yaml
+                - >- 
+                  python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3 --tp-size 1 
+                  --skip-tokenizer-init --disaggregation-mode prefill --disaggregation-transfer-backend nixl
               env:
+                - name: DYNAMO_PORT
+                  value: "8000"
                 - name: DYNAMO_NAME
                   value: dynamo
                 - name: DYNAMO_NAMESPACE
@@ -88,30 +71,17 @@ spec:
                   value: nats://nats:4222
                 - name: DYNAMO_RP_TIMEOUT
                   value: "60"
-              image: #步骤2中所构建的Dynamo Runtime镜像地址
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.4.1
               name: prefill-worker
               resources:
                 limits:
                   cpu: "12"
-                  memory: 50Gi
-                  nvidia.com/gpu: "2"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
                 requests:
                   cpu: "12"
-                  memory: 50Gi
-                  nvidia.com/gpu: "2"
-              volumeMounts:
-                - mountPath: /models/Qwen3-32B/
-                  name: model
-                - mountPath: /workspace/examples/llm/configs/qwen3.yaml
-                  name: dynamo-configs
-                  subPath: qwen3.yaml
-          volumes:
-            - name: model
-              persistentVolumeClaim:
-                claimName: llm-model
-            - configMap:
-                name: dynamo-configs
-              name: dynamo-configs
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
     - name: decoder
       replicas: 1
       template:
@@ -120,8 +90,12 @@ spec:
             - command:
                 - sh
                 - -c
-                - cd /workspace/examples/llm; dynamo serve components.worker:VllmWorker -f ./configs/qwen3.yaml --service-name VllmWorker
+                - >-
+                  python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3
+                  --tp-size 1 --skip-tokenizer-init --disaggregation-mode decode --disaggregation-transfer-backend nixl
               env:
+                - name: DYNAMO_PORT
+                  value: "8000"
                 - name: DYNAMO_NAME
                   value: dynamo
                 - name: DYNAMO_NAMESPACE
@@ -132,30 +106,17 @@ spec:
                   value: nats://nats:4222
                 - name: DYNAMO_RP_TIMEOUT
                   value: "60"
-              image: #步骤2中所构建的Dynamo Runtime镜像地址
-              name: vllm-worker
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.4.1
+              name: decode-worker
               resources:
                 limits:
                   cpu: "12"
-                  memory: 50Gi
-                  nvidia.com/gpu: "2"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
                 requests:
                   cpu: "12"
-                  memory: 50Gi
-                  nvidia.com/gpu: "2"
-              volumeMounts:
-                - mountPath: /models/Qwen3-32B/
-                  name: model
-                - mountPath: /workspace/examples/llm/configs/qwen3.yaml
-                  name: dynamo-configs
-                  subPath: qwen3.yaml
-          volumes:
-            - name: model
-              persistentVolumeClaim:
-                claimName: llm-model
-            - configMap:
-                name: dynamo-configs
-              name: dynamo-configs
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
 ---
 apiVersion: v1
 kind: Service

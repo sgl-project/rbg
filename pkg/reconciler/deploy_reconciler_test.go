@@ -16,7 +16,7 @@ import (
 
 func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = appsv1.AddToScheme(scheme) // 注册 Deployment 类型
+	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 	type fields struct {
 		client client.Client
@@ -28,10 +28,9 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 		role *workloadsv1alpha1.RoleSpec
 	}
 
-	// 测试用 Deployment 模板
 	testDeploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg-test-role", // 假设 GetWorkloadName 生成此名称
+			Name:      "test-rbg-test-role",
 			Namespace: "default",
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -50,9 +49,8 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 		wantUpdateStatus bool
 		wantErr          bool
 	}{
-		// 用例1: Deployment存在且状态变化需要更新
 		{
-			name: "status-changed-needs-update",
+			name: "case 1: status-changed-needs-update",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -71,8 +69,8 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 						RoleStatuses: []workloadsv1alpha1.RoleStatus{
 							{
 								Name:          "test-role",
-								Replicas:      2, // 旧值
-								ReadyReplicas: 1, // 旧值
+								Replicas:      2,
+								ReadyReplicas: 1,
 							},
 						},
 					},
@@ -87,9 +85,8 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 			wantUpdateStatus: true,
 			wantErr:          false,
 		},
-		// 用例2: 状态未变化无需更新
 		{
-			name: "status-unchanged-no-update",
+			name: "case 2: status-unchanged-no-update",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -108,8 +105,8 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 						RoleStatuses: []workloadsv1alpha1.RoleStatus{
 							{
 								Name:          "test-role",
-								Replicas:      3, // 当前值
-								ReadyReplicas: 2, // 当前值
+								Replicas:      3,
+								ReadyReplicas: 2,
 							},
 						},
 					},
@@ -124,9 +121,8 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 			wantUpdateStatus: false,
 			wantErr:          false,
 		},
-		// 用例3: 首次创建角色状态
 		{
-			name: "initial-status-creation",
+			name: "case 3: initial-status-creation",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -142,7 +138,7 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 						Namespace: "default",
 					},
 					Status: workloadsv1alpha1.RoleBasedGroupStatus{
-						RoleStatuses: []workloadsv1alpha1.RoleStatus{}, // 无现有状态
+						RoleStatuses: []workloadsv1alpha1.RoleStatus{},
 					},
 				},
 				role: &workloadsv1alpha1.RoleSpec{Name: "test-role"},
@@ -155,14 +151,13 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 			wantUpdateStatus: true,
 			wantErr:          false,
 		},
-		// 用例4: Deployment不存在
 		{
-			name: "deployment-not-found",
+			name: "case 4: deployment-not-found",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
 					WithScheme(scheme).
-					Build(), // 无Deployment
+					Build(),
 			},
 			args: args{
 				ctx: context.Background(),
@@ -181,11 +176,10 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 			},
 			wantStatus:       workloadsv1alpha1.RoleStatus{},
 			wantUpdateStatus: false,
-			wantErr:          true, // 预期返回NotFound错误
+			wantErr:          true, // expect NotFound err
 		},
-		// 用例5: 副本数为零的特殊情况
 		{
-			name: "zero-replicas-edge-case",
+			name: "case 5: zero-replicas-edge-case",
 			fields: fields{
 				scheme: scheme,
 				client: fake.NewClientBuilder().
@@ -196,7 +190,7 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 							Namespace: "default",
 						},
 						Spec: appsv1.DeploymentSpec{
-							Replicas: ptr.To[int32](0), // 显式设置零值
+							Replicas: ptr.To[int32](0),
 						},
 						Status: appsv1.DeploymentStatus{
 							ReadyReplicas: 0,
@@ -215,7 +209,7 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 						RoleStatuses: []workloadsv1alpha1.RoleStatus{
 							{
 								Name:          "test-role",
-								Replicas:      1, // 旧值非零
+								Replicas:      1,
 								ReadyReplicas: 0,
 							},
 						},
@@ -228,7 +222,7 @@ func TestDeploymentReconciler_ConstructRoleStatus(t *testing.T) {
 				Replicas:      0,
 				ReadyReplicas: 0,
 			},
-			wantUpdateStatus: true, // 从1→0需要更新
+			wantUpdateStatus: true,
 			wantErr:          false,
 		},
 	}

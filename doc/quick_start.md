@@ -33,8 +33,8 @@ service on a single node.
 
 #### Examples
 
-- [vLLM](../examples/single-node/vllm.yaml)
 - [SGLang](../examples/single-node/sglang.yaml)
+- [Others](../examples/single-node/vllm.yaml)
 
 ### Multi Nodes
 
@@ -43,8 +43,8 @@ When the model is too large for a single Node to load all files, use multi-node 
 
 #### Examples
 
-- [vLLM](../examples/multi-nodes/vllm.yaml)
 - [SGLang](../examples/multi-nodes/sglang.yaml)
+- [Others](../examples/multi-nodes/vllm.yaml)
 
 ## PD Disaggregated
 
@@ -58,5 +58,6 @@ Disaggregating the prefill and decoding computation improves the performance of 
 Deploying PD-disagg inference service with RBG.
 ![](./img/rbg-pd.jpg)
 
-- [Dynamo PD-Disagg](../examples/pd-disagg/dynamo/README.md)
 - [SGLang PD-Disagg](../examples/pd-disagg/sglang/sgl.md)
+- [Others](../examples/pd-disagg/dynamo/README.md)
+

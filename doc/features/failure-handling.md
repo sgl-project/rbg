@@ -6,4 +6,4 @@ RBG support multi failure handling polices: [None | RecreateRBGOnPodRestart | Re
 
 ## Examples
 
-- [Failure Handling](../../examples/base/restart-policy.yaml)
+- [Failure Handling](../../examples/basics/restart-policy.yaml)
