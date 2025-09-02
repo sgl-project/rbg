@@ -189,9 +189,8 @@ spec:
         max_running: "2048"
 ```
 
-#### Rendering & Merge Flow 
+#### Controller Behavior
 
-Controller Behavior
 
 1. Read RoleBasedGroup: For each role, get the referenced PodTemplate.  
 2. Render Template: Use Go Template rendering with variables from config and default values from parameters.  
