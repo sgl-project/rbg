@@ -273,13 +273,14 @@ After the implementation PR is merged, add the names of the tests here.
 
 #### End to End Tests
 
+- Deploy a sample application using RoleBasedGroup and verify functionality.
+- Test upgrade of PodTemplate and verify rolling update.
+
 
 ## Implementation History
 
 - **2025-09-02**: Initial draft of KEP.
 
-- Deploy a sample application using RoleBasedGroup and verify functionality.
-- Test upgrade of PodTemplate and verify rolling update.
 
 ## Alternatives
 
@@ -288,3 +289,6 @@ What other approaches did you consider, and why did you rule them out? These do
 not need to be as detailed as the proposal, but should include enough
 information to express the idea and why it was not acceptable.
 -->
+
+- Helm: Helm charts can template configurations, but they are not dynamically updatable without a release process.
+- Kustomize: Kustomize supports patching but lacks centralized template management and variable injection.
