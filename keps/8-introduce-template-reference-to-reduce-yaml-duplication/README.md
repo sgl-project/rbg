@@ -213,10 +213,10 @@ Priority (high → low):
 
 ### Upgrade Strategies
 
-| Strategy | Template Change | Workload Action | Trigger |
+| Strategy | Template Change | Workload Action | 
 |---|---|---|---|
-| **Static** (default) | new version | none (manual rollout) | `kubectl rollout restart` |
-| **Rolling** | new version | rolling update | controller |
+| **Static** (default) | new version | none (manual rollout) |
+| **Rolling** | new version | rolling update | 
 
 ### Test Plan
 
