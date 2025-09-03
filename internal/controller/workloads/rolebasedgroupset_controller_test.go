@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"testing"
@@ -365,7 +365,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 			name: "All RBGs ready, replicas match spec",
 			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: pointer.Int32(2)},
+				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(2))},
 			},
 			rbgList: []v1alpha1.RoleBasedGroup{
 				{
@@ -411,7 +411,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 			name: "Partial RBGs ready",
 			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: pointer.Int32(2)},
+				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(2))},
 			},
 			rbgList: []v1alpha1.RoleBasedGroup{
 				{
@@ -457,7 +457,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 			name: "No RBGs ready",
 			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: pointer.Int32(1)},
+				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(1))},
 			},
 			rbgList: []v1alpha1.RoleBasedGroup{
 				{
@@ -487,7 +487,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 			name: "Empty RBG list with zero replicas spec",
 			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: pointer.Int32(0)},
+				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			rbgList:             []v1alpha1.RoleBasedGroup{},
 			expectReady:         true, // 0 ready >= 0 desired, so it's considered ready.

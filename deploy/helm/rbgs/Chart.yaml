@@ -1,4 +1,4 @@
-apiVersion: v1
+apiVersion: v2
 name: rbgs
 description: A Helm chart for RoleBasedGroupSet Controller
 

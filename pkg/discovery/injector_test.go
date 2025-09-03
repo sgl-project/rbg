@@ -233,7 +233,7 @@ func TestInjectSidecar(t *testing.T) {
 									Env: []corev1.EnvVar{
 										{
 											Name:  "INFERENCE_ENGINE",
-											Value: "",
+											Value: "SGLang",
 										},
 									},
 								},
