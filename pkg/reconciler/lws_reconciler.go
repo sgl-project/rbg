@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"time"
 
+	"k8s.io/utils/ptr"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	utilpointer "k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
@@ -36,7 +37,9 @@ func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) 
 	return &LeaderWorkerSetReconciler{scheme: scheme, client: client}
 }
 
-func (r *LeaderWorkerSetReconciler) Reconciler(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *LeaderWorkerSetReconciler) Reconciler(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling lws workload")
 
@@ -77,10 +80,14 @@ func (r *LeaderWorkerSetReconciler) Reconciler(ctx context.Context, rbg *workloa
 	return nil
 }
 
-func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) (workloadsv1alpha1.RoleStatus, bool, error) {
+func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) (workloadsv1alpha1.RoleStatus, bool, error) {
 	updateStatus := false
 	lws := &lwsv1.LeaderWorkerSet{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws,
+	); err != nil {
 		return workloadsv1alpha1.RoleStatus{}, false, err
 	}
 
@@ -99,27 +106,40 @@ func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(ctx context.Context, rbg
 	return status, updateStatus, nil
 }
 
-func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) (bool, error) {
+func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) (bool, error) {
 	lws := &lwsv1.LeaderWorkerSet{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws,
+	); err != nil {
 		return false, err
 	}
 	return lws.Status.ReadyReplicas == lws.Status.Replicas, nil
 }
 
-func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+) error {
 	logger := log.FromContext(ctx)
 	err := utils.CheckCrdExists(r.client, utils.LwsCrdName)
 	if err != nil {
-		logger.V(1).Info(fmt.Sprintf("LeaderWorkerSetReconciler CleanupOrphanedWorkloads check lws crd failed: %s", err.Error()))
+		logger.V(1).Info(
+			fmt.Sprintf(
+				"LeaderWorkerSetReconciler CleanupOrphanedWorkloads check lws crd failed: %s", err.Error(),
+			),
+		)
 		return nil
 	}
 	// list lws managed by rbg
 	lwsList := &lwsv1.LeaderWorkerSetList{}
-	if err := r.client.List(ctx, lwsList, client.InNamespace(rbg.Namespace),
-		client.MatchingLabels(map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		}),
+	if err := r.client.List(
+		ctx, lwsList, client.InNamespace(rbg.Namespace),
+		client.MatchingLabels(
+			map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
+		),
 	); err != nil {
 		return err
 	}
@@ -145,7 +165,8 @@ func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(ctx context.Context
 	return nil
 }
 
-func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(ctx context.Context,
+func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
+	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 ) (*lwsapplyv1.LeaderWorkerSetApplyConfiguration, error) {
@@ -157,7 +178,9 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(ctx context.C
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
 		return nil, err
 	}
-	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), leaderTemp)
+	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), leaderTemp,
+	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
 		return nil, err
@@ -172,22 +195,25 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(ctx context.C
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "env"})
-	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), workerTemp)
+	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), workerTemp,
+	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
 		return nil, err
 	}
 	// TODO support SubGroupPolicy
 	if role.Replicas == nil {
-		role.Replicas = utilpointer.Int32(1)
+		role.Replicas = ptr.To(int32(1))
 	}
 
-	//RestartPolicy
+	// RestartPolicy
 	var restartPolicy lwsv1.RestartPolicyType
 	if role.RestartPolicy == "None" {
 		restartPolicy = lwsv1.NoneRestartPolicy
 	} else {
-		// if role has RecreateRBGOnPodRestart or RecreateRoleInstanceOnPodRestart policy, set RecreateGroupOnPodRestart for lws
+		// if role has RecreateRBGOnPodRestart or RecreateRoleInstanceOnPodRestart policy,
+		// set RecreateGroupOnPodRestart for lws
 		// it's safe to do so since
 		// 1. RecreateGroupOnPodRestart is the default restart policy for lws
 		// 2. RecreateRBGOnPodRestart will delete lws if pod recreated or containers restarted
@@ -205,11 +231,13 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(ctx context.C
 
 	// RollingUpdate
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
-		lwsSpecConfig = lwsSpecConfig.WithRolloutStrategy(lwsapplyv1.RolloutStrategy().WithRollingUpdateConfiguration(
-			lwsapplyv1.RollingUpdateConfiguration().
-				WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
-				WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
-		))
+		lwsSpecConfig = lwsSpecConfig.WithRolloutStrategy(
+			lwsapplyv1.RolloutStrategy().WithRollingUpdateConfiguration(
+				lwsapplyv1.RollingUpdateConfiguration().
+					WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
+					WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
+			),
+		)
 	}
 
 	// construct lws apply configuration
@@ -217,19 +245,22 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(ctx context.C
 		WithSpec(lwsSpecConfig).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
 		WithLabels(rbg.GetCommonLabelsFromRole(role)).
-		WithOwnerReferences(metaapplyv1.OwnerReference().
-			WithAPIVersion(rbg.APIVersion).
-			WithKind(rbg.Kind).
-			WithName(rbg.Name).
-			WithUID(rbg.GetUID()).
-			WithBlockOwnerDeletion(true).
-			WithController(true),
+		WithOwnerReferences(
+			metaapplyv1.OwnerReference().
+				WithAPIVersion(rbg.APIVersion).
+				WithKind(rbg.Kind).
+				WithName(rbg.Name).
+				WithUID(rbg.GetUID()).
+				WithBlockOwnerDeletion(true).
+				WithController(true),
 		)
 	return lwsConfig, nil
 
 }
 
-func (r *LeaderWorkerSetReconciler) RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *LeaderWorkerSetReconciler) RecreateWorkload(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	if rbg == nil || role == nil {
 		return nil
@@ -253,17 +284,19 @@ func (r *LeaderWorkerSetReconciler) RecreateWorkload(ctx context.Context, rbg *w
 
 	// wait new lws create
 	var retErr error
-	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-		var newLws lwsv1.LeaderWorkerSet
-		retErr = r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, &newLws)
-		if retErr != nil {
-			if apierrors.IsNotFound(retErr) {
-				return false, nil
+	err = wait.PollUntilContextTimeout(
+		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+			var newLws lwsv1.LeaderWorkerSet
+			retErr = r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, &newLws)
+			if retErr != nil {
+				if apierrors.IsNotFound(retErr) {
+					return false, nil
+				}
+				return false, retErr
 			}
-			return false, retErr
-		}
-		return true, nil
-	})
+			return true, nil
+		},
+	)
 
 	if err != nil {
 		logger.Error(retErr, "wait new lws creating error")
@@ -318,10 +351,10 @@ func lwsSpecEqual(lws1, lws2 lwsv1.LeaderWorkerSetSpec) (bool, error) {
 		return false, retErr
 	}
 	if lws1.Replicas == nil {
-		lws1.Replicas = utilpointer.Int32(1)
+		lws1.Replicas = ptr.To(int32(1))
 	}
 	if lws2.Replicas == nil {
-		lws2.Replicas = utilpointer.Int32(1)
+		lws2.Replicas = ptr.To(int32(1))
 	}
 	if *lws1.Replicas != *lws2.Replicas {
 		return false, fmt.Errorf("LeaderWorkerSetSpec replicas not equal")
@@ -335,7 +368,9 @@ func lwsStatusEqual(oldStatus, newStatus lwsv1.LeaderWorkerSetStatus) (bool, err
 	}
 
 	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
-		return false, fmt.Errorf("status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas)
+		return false, fmt.Errorf(
+			"status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas,
+		)
 	}
 	return true, nil
 
@@ -363,8 +398,10 @@ func leaderWorkerTemplateEqual(oldLwt, newLwt lwsv1.LeaderWorkerTemplate) (bool,
 	}
 
 	if !reflect.DeepEqual(oldLwt.RestartPolicy, newLwt.RestartPolicy) {
-		return false, fmt.Errorf("restart policy not equal, oldLwt.RestartPolicy: %s, newLwt.RestartPolicy: %s",
-			oldLwt.RestartPolicy, newLwt.RestartPolicy)
+		return false, fmt.Errorf(
+			"restart policy not equal, oldLwt.RestartPolicy: %s, newLwt.RestartPolicy: %s",
+			oldLwt.RestartPolicy, newLwt.RestartPolicy,
+		)
 	}
 	return true, nil
 }

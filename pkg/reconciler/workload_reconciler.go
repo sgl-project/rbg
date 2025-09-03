@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,13 +15,19 @@ import (
 
 type WorkloadReconciler interface {
 	Reconciler(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
-	ConstructRoleStatus(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) (workloadsv1alpha1.RoleStatus, bool, error)
-	CheckWorkloadReady(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) (bool, error)
+	ConstructRoleStatus(
+		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	) (workloadsv1alpha1.RoleStatus, bool, error)
+	CheckWorkloadReady(
+		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	) (bool, error)
 	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error
 	RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
 }
 
-func NewWorkloadReconciler(workload workloadsv1alpha1.WorkloadSpec, scheme *runtime.Scheme, client client.Client) (WorkloadReconciler, error) {
+func NewWorkloadReconciler(
+	workload workloadsv1alpha1.WorkloadSpec, scheme *runtime.Scheme, client client.Client,
+) (WorkloadReconciler, error) {
 	switch {
 	case workload.String() == workloadsv1alpha1.DeploymentWorkloadType:
 		return NewDeploymentReconciler(scheme, client), nil

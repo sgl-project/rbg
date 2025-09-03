@@ -19,9 +19,18 @@ import (
 )
 
 type GroupInfoInjector interface {
-	InjectConfig(context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
-	InjectEnv(context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
-	InjectSidecar(context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
+	InjectConfig(
+		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
+		role *workloadsv1alpha1.RoleSpec,
+	) error
+	InjectEnv(
+		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
+		role *workloadsv1alpha1.RoleSpec,
+	) error
+	InjectSidecar(
+		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
+		role *workloadsv1alpha1.RoleSpec,
+	) error
 }
 
 type DefaultInjector struct {
@@ -38,7 +47,10 @@ func NewDefaultInjector(scheme *runtime.Scheme, client client.Client) *DefaultIn
 	}
 }
 
-func (i *DefaultInjector) InjectConfig(ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (i *DefaultInjector) InjectConfig(
+	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 
 	builder := &ConfigBuilder{
@@ -57,16 +69,19 @@ func (i *DefaultInjector) InjectConfig(ctx context.Context, podSpec *corev1.PodT
 		return err
 	}
 	cmApplyConfig := coreapplyv1.ConfigMap(rbg.GetWorkloadName(role), rbg.Namespace).
-		WithData(map[string]string{
-			configKey: string(configData),
-		}).
-		WithOwnerReferences(metaapplyv1.OwnerReference().
-			WithAPIVersion(rbg.APIVersion).
-			WithKind(rbg.Kind).
-			WithName(rbg.Name).
-			WithUID(rbg.GetUID()).
-			WithBlockOwnerDeletion(true).
-			WithController(true),
+		WithData(
+			map[string]string{
+				configKey: string(configData),
+			},
+		).
+		WithOwnerReferences(
+			metaapplyv1.OwnerReference().
+				WithAPIVersion(rbg.APIVersion).
+				WithKind(rbg.Kind).
+				WithName(rbg.Name).
+				WithUID(rbg.GetUID()).
+				WithBlockOwnerDeletion(true).
+				WithController(true),
 		)
 
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cmApplyConfig)
@@ -80,7 +95,9 @@ func (i *DefaultInjector) InjectConfig(ctx context.Context, podSpec *corev1.PodT
 	}
 
 	oldConfigmap := &corev1.ConfigMap{}
-	err = i.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldConfigmap)
+	err = i.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldConfigmap,
+	)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -103,19 +120,21 @@ func (i *DefaultInjector) InjectConfig(ctx context.Context, podSpec *corev1.PodT
 		}
 	}
 	if !volumeExists {
-		podSpec.Spec.Volumes = append(podSpec.Spec.Volumes, corev1.Volume{
-			Name: volumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: rbg.GetWorkloadName(role),
-					},
-					Items: []corev1.KeyToPath{
-						{Key: configKey, Path: configKey},
+		podSpec.Spec.Volumes = append(
+			podSpec.Spec.Volumes, corev1.Volume{
+				Name: volumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: rbg.GetWorkloadName(role),
+						},
+						Items: []corev1.KeyToPath{
+							{Key: configKey, Path: configKey},
+						},
 					},
 				},
 			},
-		})
+		)
 	}
 
 	for i := range podSpec.Spec.Containers {
@@ -128,17 +147,22 @@ func (i *DefaultInjector) InjectConfig(ctx context.Context, podSpec *corev1.PodT
 			}
 		}
 		if !mountExists {
-			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      volumeName,
-				MountPath: mountPath,
-				ReadOnly:  true,
-			})
+			container.VolumeMounts = append(
+				container.VolumeMounts, corev1.VolumeMount{
+					Name:      volumeName,
+					MountPath: mountPath,
+					ReadOnly:  true,
+				},
+			)
 		}
 	}
 	return nil
 }
 
-func (i *DefaultInjector) InjectEnv(ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (i *DefaultInjector) InjectEnv(
+	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+) error {
 	builder := &EnvBuilder{
 		rbg:  rbg,
 		role: role,
@@ -162,15 +186,20 @@ func (i *DefaultInjector) InjectEnv(ctx context.Context, podSpec *corev1.PodTemp
 			mergedEnv = append(mergedEnv, env)
 		}
 		// Avoid sts updates caused by env order changes
-		sort.Slice(mergedEnv, func(i, j int) bool {
-			return mergedEnv[i].Name < mergedEnv[j].Name
-		})
+		sort.Slice(
+			mergedEnv, func(i, j int) bool {
+				return mergedEnv[i].Name < mergedEnv[j].Name
+			},
+		)
 		container.Env = mergedEnv
 	}
 	return nil
 }
 
-func (i *DefaultInjector) InjectSidecar(ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (i *DefaultInjector) InjectSidecar(
+	ctx context.Context, podSpec *corev1.PodTemplateSpec,
+	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	builder := NewSidecarBuilder(i.client, rbg, role)
 	return builder.Build(ctx, podSpec)
 }

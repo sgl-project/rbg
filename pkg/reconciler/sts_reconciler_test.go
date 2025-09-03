@@ -7,7 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
-	"k8s.io/utils/pointer"
+
 	"sigs.k8s.io/rbgs/test/wrappers"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -357,7 +357,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						UID: uuid.NewUUID(),
 					},
 					Spec: appsv1.StatefulSetSpec{
-						Replicas: pointer.Int32(4),
+						Replicas: ptr.To(int32(4)),
 						Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
 					},
 				},
@@ -388,7 +388,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						UID: uuid.NewUUID(),
 					},
 					Spec: appsv1.StatefulSetSpec{
-						Replicas: pointer.Int32(6),
+						Replicas: ptr.To(int32(6)),
 						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 							Type: appsv1.RollingUpdateStatefulSetStrategyType,
 							RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
@@ -424,7 +424,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						},
 					},
 					Spec: appsv1.StatefulSetSpec{
-						Replicas: pointer.Int32(4),
+						Replicas: ptr.To(int32(4)),
 						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 							Type: appsv1.RollingUpdateStatefulSetStrategyType,
 							RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{

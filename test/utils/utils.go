@@ -18,8 +18,9 @@ package utils
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"time"
+
 	"github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,7 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"time"
 )
 
 const (
@@ -87,7 +87,7 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 	}
 
 	if len(podList.Items) == 0 {
-		err := errors.New(fmt.Sprintf("no pod belongs to rbg %s, can not delete pod", rbgName))
+		err := fmt.Errorf("no pod belongs to rbg %s, can not delete pod", rbgName)
 		logger.V(1).Error(err, "pod is empty")
 		return err
 	}
@@ -104,7 +104,8 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 	return err
 }
 
-func UpdateRbg(ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup, updateFunc func(rbg *workloadsv1alpha1.RoleBasedGroup)) {
+func UpdateRbg(ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup,
+	updateFunc func(rbg *workloadsv1alpha1.RoleBasedGroup)) {
 	logger := log.FromContext(ctx)
 
 	gomega.Eventually(func() bool {
@@ -126,7 +127,8 @@ func UpdateRbg(ctx context.Context, rclient client.Client, rbg *workloadsv1alpha
 	}, Timeout, Interval).Should(gomega.BeTrue())
 }
 
-func UpdateRbgSet(ctx context.Context, rclient client.Client, rbgset *workloadsv1alpha1.RoleBasedGroupSet, updateFunc func(rbgset *workloadsv1alpha1.RoleBasedGroupSet)) {
+func UpdateRbgSet(ctx context.Context, rclient client.Client, rbgset *workloadsv1alpha1.RoleBasedGroupSet,
+	updateFunc func(rbgset *workloadsv1alpha1.RoleBasedGroupSet)) {
 	logger := log.FromContext(ctx)
 
 	gomega.Eventually(func() bool {

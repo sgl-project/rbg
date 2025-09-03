@@ -17,6 +17,9 @@ func NewErrorInjectingClient(err error) *ErrorInjectingClient {
 	}
 }
 
-func (c *ErrorInjectingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+func (c *ErrorInjectingClient) Get(
+	ctx context.Context, key client.ObjectKey,
+	obj client.Object, opts ...client.GetOption,
+) error {
 	return c.injectedError
 }

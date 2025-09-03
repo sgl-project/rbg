@@ -25,7 +25,9 @@ func NewDefaultDependencyManager(scheme *runtime.Scheme, client client.Client) *
 	return &DefaultDependencyManager{scheme: scheme, client: client}
 }
 
-func (m *DefaultDependencyManager) SortRoles(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) ([]*workloadsv1alpha.RoleSpec, error) {
+func (m *DefaultDependencyManager) SortRoles(
+	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup,
+) ([]*workloadsv1alpha.RoleSpec, error) {
 	logger := log.FromContext(ctx)
 	if len(rbg.Spec.Roles) == 0 {
 		logger.Info("warning: rbg has no roles, skip")
@@ -42,7 +44,7 @@ func (m *DefaultDependencyManager) SortRoles(ctx context.Context, rbg *workloads
 		if len(role.Dependencies) > 0 {
 			for _, d := range role.Dependencies {
 				if !utils.ContainsString(roleNameList, d) {
-					return nil, errors.New(fmt.Sprintf("role [%s] with dependency role [%s] not found in rbg", role.Name, d))
+					return nil, fmt.Errorf("role [%s] with dependency role [%s] not found in rbg", role.Name, d)
 				}
 			}
 
@@ -71,7 +73,9 @@ func (m *DefaultDependencyManager) SortRoles(ctx context.Context, rbg *workloads
 
 }
 
-func (m *DefaultDependencyManager) CheckDependencyReady(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec) (bool, error) {
+func (m *DefaultDependencyManager) CheckDependencyReady(
+	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+) (bool, error) {
 
 	for _, dep := range role.Dependencies {
 		depRole, err := rbg.GetRole(dep)

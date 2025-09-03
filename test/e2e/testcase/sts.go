@@ -30,6 +30,7 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
+	//nolint:dupl
 	ginkgo.It("sts with rollingUpdate", func() {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha1.RoleSpec{

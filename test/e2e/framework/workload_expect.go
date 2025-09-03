@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,7 +20,10 @@ type WorkloadEqualChecker interface {
 	ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error
 }
 
-func NewWorkloadEqualChecker(ctx context.Context, client client.Client, workloadType string) (WorkloadEqualChecker, error) {
+func NewWorkloadEqualChecker(
+	ctx context.Context, client client.Client,
+	workloadType string,
+) (WorkloadEqualChecker, error) {
 	switch workloadType {
 	case v1alpha1.DeploymentWorkloadType:
 		return NewDeploymentEqualChecker(ctx, client), nil
@@ -49,17 +53,22 @@ func NewDeploymentEqualChecker(ctx context.Context, client client.Client) *Deplo
 func (d *DeploymentEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	// check deployment exist
 	deployment := &appsv1.Deployment{}
-	err := d.client.Get(d.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, deployment)
+	err := d.client.Get(
+		d.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, deployment,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing Deployment: %w", err)
 	}
 
 	// check deployment ready
 	if deployment.Status.ReadyReplicas != *deployment.Spec.Replicas {
-		return fmt.Errorf("deployment not all ready, status.ready: %d, status.replicas: %d", deployment.Status.ReadyReplicas, *deployment.Spec.Replicas)
+		return fmt.Errorf(
+			"deployment not all ready, status.ready: %d, status.replicas: %d",
+			deployment.Status.ReadyReplicas, *deployment.Spec.Replicas,
+		)
 	}
 
 	// check engine runtime container exist
@@ -74,13 +83,18 @@ func (d *DeploymentEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGrou
 	return nil
 }
 
-func (d *DeploymentEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) error {
+func (d *DeploymentEqualChecker) ExpectLabelContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+	labels ...map[string]string,
+) error {
 	// check deployment exist
 	deployment := &appsv1.Deployment{}
-	err := d.client.Get(d.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, deployment)
+	err := d.client.Get(
+		d.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, deployment,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing Deployment: %w", err)
 	}
@@ -96,10 +110,12 @@ func (d *DeploymentEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGrou
 
 func (d *DeploymentEqualChecker) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	deployment := &appsv1.Deployment{}
-	err := d.client.Get(d.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, deployment)
+	err := d.client.Get(
+		d.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, deployment,
+	)
 	if err == nil {
 		return errors.New("workload still exists")
 	}
@@ -126,28 +142,34 @@ func NewStatefulSetEqualChecker(ctx context.Context, client client.Client) *Stat
 func (s *StatefulSetEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	// check sts exists
 	sts := &appsv1.StatefulSet{}
-	err := s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, sts)
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, sts,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing StatefulSet: %w", err)
 	}
 
 	// check svc exists
 	svc := &v1.Service{}
-	err = s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, svc)
+	err = s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, svc,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing headless svc: %w", err)
 	}
 
 	// check sts ready
 	if sts.Status.ReadyReplicas != *sts.Spec.Replicas {
-		return fmt.Errorf("sts not all ready, status.ready: %d, status.replicas: %d",
-			sts.Status.ReadyReplicas, *sts.Spec.Replicas)
+		return fmt.Errorf(
+			"sts not all ready, status.ready: %d, status.replicas: %d",
+			sts.Status.ReadyReplicas, *sts.Spec.Replicas,
+		)
 	}
 
 	// check engine runtime container exist
@@ -162,13 +184,17 @@ func (s *StatefulSetEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGro
 	return nil
 }
 
-func (s *StatefulSetEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) error {
+func (s *StatefulSetEqualChecker) ExpectLabelContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string,
+) error {
 	// check sts exists
 	sts := &appsv1.StatefulSet{}
-	err := s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, sts)
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, sts,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing StatefulSet: %w", err)
 	}
@@ -184,10 +210,12 @@ func (s *StatefulSetEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGro
 
 func (s *StatefulSetEqualChecker) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	sts := &appsv1.StatefulSet{}
-	err := s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, sts)
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, sts,
+	)
 	if err == nil {
 		return errors.New("workload still exists")
 	}
@@ -214,17 +242,22 @@ func NewLeaderWorkerSetEqualChecker(ctx context.Context, client client.Client) *
 func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	// 1. check lws exists
 	lws := &lwsv1.LeaderWorkerSet{}
-	err := s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, lws)
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, lws,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing lws: %w", err)
 	}
 
 	// check lws ready
 	if lws.Status.ReadyReplicas != lws.Status.Replicas {
-		return fmt.Errorf("lws not all ready, status.ready: %d, status.replicas: %d", lws.Status.ReadyReplicas, lws.Status.Replicas)
+		return fmt.Errorf(
+			"lws not all ready, status.ready: %d, status.replicas: %d",
+			lws.Status.ReadyReplicas, lws.Status.Replicas,
+		)
 	}
 
 	// 2. check engine runtime container exist
@@ -240,13 +273,17 @@ func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBase
 	return nil
 }
 
-func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) error {
+func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string,
+) error {
 	// 1. check lws exists
 	lws := &lwsv1.LeaderWorkerSet{}
-	err := s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, lws)
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, lws,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to get existing lws: %w", err)
 	}
@@ -278,12 +315,16 @@ func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBase
 	return nil
 }
 
-func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
+func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadNotExist(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+) error {
 	lws := &lwsv1.LeaderWorkerSet{}
-	err := s.client.Get(s.ctx, client.ObjectKey{
-		Name:      rbg.GetWorkloadName(&role),
-		Namespace: rbg.Namespace,
-	}, lws)
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, lws,
+	)
 	if err == nil {
 		return errors.New("workload still exists")
 	}

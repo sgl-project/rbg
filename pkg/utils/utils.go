@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,7 +25,10 @@ const (
 
 type PatchType string
 
-func PatchObjectApplyConfiguration(ctx context.Context, k8sClient client.Client, objApplyConfig interface{}, patchType PatchType) error {
+func PatchObjectApplyConfiguration(
+	ctx context.Context, k8sClient client.Client,
+	objApplyConfig interface{}, patchType PatchType,
+) error {
 	logger := log.FromContext(ctx)
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(objApplyConfig)
 	if err != nil {
@@ -43,10 +47,12 @@ func PatchObjectApplyConfiguration(ctx context.Context, k8sClient client.Client,
 	// these fields to the ones desired by the rbg controller
 	// TODO b/316776287 add E2E test for SSA
 	if patchType == PatchSpec || patchType == PatchAll {
-		err = k8sClient.Patch(ctx, patch, client.Apply, &client.PatchOptions{
-			FieldManager: FieldManager,
-			Force:        ptr.To[bool](true),
-		})
+		err = k8sClient.Patch(
+			ctx, patch, client.Apply, &client.PatchOptions{
+				FieldManager: FieldManager,
+				Force:        ptr.To[bool](true),
+			},
+		)
 		if err != nil {
 			logger.Error(err, "Using server side apply to patch object")
 			return err
@@ -54,13 +60,15 @@ func PatchObjectApplyConfiguration(ctx context.Context, k8sClient client.Client,
 	}
 
 	if patchType == PatchStatus || patchType == PatchAll {
-		err = k8sClient.Status().Patch(ctx, patch, client.Apply,
+		err = k8sClient.Status().Patch(
+			ctx, patch, client.Apply,
 			&client.SubResourcePatchOptions{
 				PatchOptions: client.PatchOptions{
 					FieldManager: FieldManager,
 					Force:        ptr.To[bool](true),
 				},
-			})
+			},
+		)
 		if err != nil {
 			logger.Error(err, "Using server side apply to patch object status")
 			return err

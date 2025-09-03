@@ -1,19 +1,20 @@
 package workloads
 
 import (
+	"reflect"
+	"testing"
+
 	"golang.org/x/net/context"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/test/wrappers"
-	"testing"
 )
 
 func TestPodReconciler_setRestartCondition(t *testing.T) {
@@ -75,28 +76,34 @@ func TestPodReconciler_setRestartCondition(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			//wait controller-runtime support SSA https://github.com/kubernetes-sigs/controller-runtime/pull/2981
-			//r := &PodReconciler{
-			//	client: tt.fields.client,
-			//	scheme: tt.fields.scheme,
-			//}
-			//if err := r.setRestartCondition(tt.args.ctx, tt.args.rbg, tt.args.restartCompleted); (err != nil) != tt.wantErr {
-			//	t.Errorf("setRestartCondition() error = %v, wantErr %v", err, tt.wantErr)
-			//}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				// wait controller-runtime support SSA https://github.com/kubernetes-sigs/controller-runtime/pull/2981
+				/*
+					r := &PodReconciler{
+						client: tt.fields.client,
+						scheme: tt.fields.scheme,
+					}
+					if err := r.setRestartCondition(tt.args.ctx, tt.args.rbg, tt.args.restartCompleted); (err != nil) != tt.wantErr {
+						t.Errorf("setRestartCondition() error = %v, wantErr %v", err, tt.wantErr)
+					}
+				*/
+			},
+		)
 	}
 }
 
 func TestPodReconciler_podToRBG(t *testing.T) {
 	schema := runtime.NewScheme()
-	clientgoscheme.AddToScheme(schema)
-	workloadsv1alpha1.AddToScheme(schema)
+	_ = clientgoscheme.AddToScheme(schema)
+	_ = workloadsv1alpha1.AddToScheme(schema)
 
-	pod := wrappers.BuildDeletingPod().WithLabels(map[string]string{
-		workloadsv1alpha1.SetRoleLabelKey: "test-role",
-		workloadsv1alpha1.SetNameLabelKey: "restart-policy",
-	}).Obj()
+	pod := wrappers.BuildDeletingPod().WithLabels(
+		map[string]string{
+			workloadsv1alpha1.SetRoleLabelKey: "test-role",
+			workloadsv1alpha1.SetNameLabelKey: "restart-policy",
+		},
+	).Obj()
 
 	type args struct {
 		ctx  context.Context
@@ -152,10 +159,12 @@ func TestPodReconciler_podToRBG(t *testing.T) {
 			name: "pod-running",
 			args: args{
 				ctx: context.TODO(),
-				obj: wrappers.BuildBasicPod().WithLabels(map[string]string{
-					workloadsv1alpha1.SetRoleLabelKey: "test-role",
-					workloadsv1alpha1.SetNameLabelKey: "restart-policy",
-				}).Obj(),
+				obj: wrappers.BuildBasicPod().WithLabels(
+					map[string]string{
+						workloadsv1alpha1.SetRoleLabelKey: "test-role",
+						workloadsv1alpha1.SetNameLabelKey: "restart-policy",
+					},
+				).Obj(),
 				role: wrappers.BuildBasicRole("test-role").
 					WithRestartPolicy(workloadsv1alpha1.RecreateRBGOnPodRestart).
 					Obj(),
@@ -164,18 +173,20 @@ func TestPodReconciler_podToRBG(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rbg := wrappers.BuildBasicRoleBasedGroup("restart-policy", "default").
-				WithRoles([]workloadsv1alpha1.RoleSpec{tt.args.role}).Obj()
-			fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(&tt.args.obj, rbg).Build()
+		t.Run(
+			tt.name, func(t *testing.T) {
+				rbg := wrappers.BuildBasicRoleBasedGroup("restart-policy", "default").
+					WithRoles([]workloadsv1alpha1.RoleSpec{tt.args.role}).Obj()
+				fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(&tt.args.obj, rbg).Build()
 
-			r := &PodReconciler{
-				client: fclient,
-				scheme: schema,
-			}
-			if got := r.podToRBG(tt.args.ctx, &tt.args.obj); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("podToRBG() = %v, want %v", got, tt.want)
-			}
-		})
+				r := &PodReconciler{
+					client: fclient,
+					scheme: schema,
+				}
+				if got := r.podToRBG(tt.args.ctx, &tt.args.obj); !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("podToRBG() = %v, want %v", got, tt.want)
+				}
+			},
+		)
 	}
 }

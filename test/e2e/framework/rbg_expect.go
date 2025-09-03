@@ -32,7 +32,7 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 	// check workload exists
 	for _, role := range rbg.Spec.Roles {
 		wlCheck, err := NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
-		gomega.Expect(err).To(gomega.BeNil())
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 		gomega.Eventually(func() bool {
 			err := wlCheck.ExpectWorkloadEqual(rbg, role)
@@ -51,11 +51,9 @@ func (f *Framework) ExpectRbgDeleted(rbg *v1alpha1.RoleBasedGroup) {
 			Name:      rbg.Name,
 			Namespace: rbg.Namespace,
 		}, newRbg)
-		if apierrors.IsNotFound(err) {
-			return true
-		}
 
-		return false
+		return apierrors.IsNotFound(err)
+
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 }
 
@@ -84,9 +82,10 @@ func (f *Framework) ExpectRbgCondition(rbg *v1alpha1.RoleBasedGroup,
 	return false
 }
 
-func (f *Framework) ExpectWorkloadLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) {
+func (f *Framework) ExpectWorkloadLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+	labels ...map[string]string) {
 	wlCheck, err := NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
-	gomega.Expect(err).To(gomega.BeNil())
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	gomega.Eventually(func() bool {
 		return wlCheck.ExpectLabelContains(rbg, role, labels...) == nil
@@ -95,7 +94,7 @@ func (f *Framework) ExpectWorkloadLabelContains(rbg *v1alpha1.RoleBasedGroup, ro
 
 func (f *Framework) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) {
 	wlCheck, err := NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
-	gomega.Expect(err).To(gomega.BeNil())
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	gomega.Eventually(func() bool {
 		return wlCheck.ExpectWorkloadNotExist(rbg, role) == nil

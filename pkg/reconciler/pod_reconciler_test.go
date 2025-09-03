@@ -1,8 +1,9 @@
 package reconciler
 
 import (
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
+
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func Test_objectMetaEqual(t *testing.T) {

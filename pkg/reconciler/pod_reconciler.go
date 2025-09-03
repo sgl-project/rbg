@@ -116,7 +116,9 @@ func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
 	meta1Copy.Annotations = utils.FilterSystemAnnotations(meta1Copy.Annotations)
 	meta2Copy.Annotations = utils.FilterSystemAnnotations(meta2Copy.Annotations)
 	if !mapsEqual(meta1Copy.Annotations, meta2Copy.Annotations) {
-		return false, fmt.Errorf("annotation not equal, old [%s], new [%s]", meta1Copy.Annotations, meta2Copy.Annotations)
+		return false, fmt.Errorf(
+			"annotation not equal, old [%s], new [%s]", meta1Copy.Annotations, meta2Copy.Annotations,
+		)
 	}
 	return true, nil
 }
@@ -168,7 +170,9 @@ func containerEqual(c1, c2 corev1.Container) (bool, error) {
 	}
 
 	if c1.ImagePullPolicy != "" && c2.ImagePullPolicy != "" && c1.ImagePullPolicy != c2.ImagePullPolicy {
-		return false, fmt.Errorf("container image pull policy not equal, old: %s, new: %s", c1.ImagePullPolicy, c2.ImagePullPolicy)
+		return false, fmt.Errorf(
+			"container image pull policy not equal, old: %s, new: %s", c1.ImagePullPolicy, c2.ImagePullPolicy,
+		)
 	}
 
 	if equal, err := envVarsEqual(c1.Env, c2.Env); !equal {
@@ -196,16 +200,23 @@ func envVarsEqual(env1, env2 []corev1.EnvVar) (bool, error) {
 	copy(sortedEnv2, env2)
 
 	// sort by name
-	sort.Slice(sortedEnv1, func(i, j int) bool {
-		return sortedEnv1[i].Name < sortedEnv1[j].Name
-	})
-	sort.Slice(sortedEnv2, func(i, j int) bool {
-		return sortedEnv2[i].Name < sortedEnv2[j].Name
-	})
+	sort.Slice(
+		sortedEnv1, func(i, j int) bool {
+			return sortedEnv1[i].Name < sortedEnv1[j].Name
+		},
+	)
+	sort.Slice(
+		sortedEnv2, func(i, j int) bool {
+			return sortedEnv2[i].Name < sortedEnv2[j].Name
+		},
+	)
 
 	for i := range sortedEnv1 {
 		if !reflect.DeepEqual(sortedEnv1[i].Value, sortedEnv2[i].Value) {
-			return false, fmt.Errorf("env vars %s value not equal, old: %v, new: %v", sortedEnv1[i].Name, sortedEnv1[i].Value, sortedEnv2[i].Value)
+			return false, fmt.Errorf(
+				"env vars %s value not equal, old: %v, new: %v", sortedEnv1[i].Name, sortedEnv1[i].Value,
+				sortedEnv2[i].Value,
+			)
 		}
 		if !reflect.DeepEqual(sortedEnv1[i].Name, sortedEnv2[i].Name) {
 			return false, fmt.Errorf("env vars name not equal")
@@ -215,64 +226,42 @@ func envVarsEqual(env1, env2 []corev1.EnvVar) (bool, error) {
 	return true, nil
 }
 
-func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
-	if len(vol1) != len(vol2) {
-		return false, fmt.Errorf("volumes not equal")
+func slicesEqualByName[T any](a, b []T, name func(T) string, itemType string) (bool, error) {
+	if len(a) != len(b) {
+		return false, fmt.Errorf("%s length not equal: %d vs %d", itemType, len(a), len(b))
 	}
+	cpyA := append([]T(nil), a...)
+	cpyB := append([]T(nil), b...)
 
-	sortedVol1 := make([]corev1.Volume, len(vol1))
-	sortedVol2 := make([]corev1.Volume, len(vol2))
-	copy(sortedVol1, vol1)
-	copy(sortedVol2, vol2)
+	sort.Slice(cpyA, func(i, j int) bool { return name(cpyA[i]) < name(cpyA[j]) })
+	sort.Slice(cpyB, func(i, j int) bool { return name(cpyB[i]) < name(cpyB[j]) })
 
-	sort.Slice(sortedVol1, func(i, j int) bool {
-		return sortedVol1[i].Name < sortedVol1[j].Name
-	})
-	sort.Slice(sortedVol2, func(i, j int) bool {
-		return sortedVol2[i].Name < sortedVol2[j].Name
-	})
-
-	for i := range sortedVol1 {
-		if !reflect.DeepEqual(sortedVol1[i].Name, sortedVol2[i].Name) {
-			return false, fmt.Errorf("volume name not equal")
+	for i := range cpyA {
+		na := name(cpyA[i])
+		nb := name(cpyB[i])
+		if na != nb {
+			return false, fmt.Errorf("%s name not equal at index %d: %q != %q", itemType, i, na, nb)
 		}
 	}
-
 	return true, nil
 }
 
+func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
+	return slicesEqualByName(vol1, vol2, func(v corev1.Volume) string { return v.Name }, "volume")
+}
+
 func volumeMountsEqual(vm1, vm2 []corev1.VolumeMount) (bool, error) {
-	if len(vm1) != len(vm2) {
-		return false, fmt.Errorf("volume mounts len not equal")
-	}
-
-	sortedVM1 := make([]corev1.VolumeMount, len(vm1))
-	sortedVM2 := make([]corev1.VolumeMount, len(vm2))
-	copy(sortedVM1, vm1)
-	copy(sortedVM2, vm2)
-
-	sort.Slice(sortedVM1, func(i, j int) bool {
-		return sortedVM1[i].Name < sortedVM1[j].Name
-	})
-	sort.Slice(sortedVM2, func(i, j int) bool {
-		return sortedVM2[i].Name < sortedVM2[j].Name
-	})
-
-	for i := range sortedVM1 {
-		if !reflect.DeepEqual(sortedVM1[i].Name, sortedVM2[i].Name) {
-			return false, fmt.Errorf("volume mount name not equal")
-		}
-	}
-
-	return true, nil
+	return slicesEqualByName(vm1, vm2, func(m corev1.VolumeMount) string { return m.Name }, "volume mount")
 }
 
 func sortContainers(containers []corev1.Container) []corev1.Container {
 	sorted := make([]corev1.Container, len(containers))
 	copy(sorted, containers)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Name < sorted[j].Name
-	})
+	sort.Slice(
+		sorted, func(i, j int) bool {
+			return sorted[i].Name < sorted[j].Name
+		},
+	)
 	return sorted
 }
 

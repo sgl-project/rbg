@@ -17,8 +17,9 @@ limitations under the License.
 package e2e
 
 import (
-	"sigs.k8s.io/rbgs/test/e2e/testcase"
 	"testing"
+
+	"sigs.k8s.io/rbgs/test/e2e/testcase"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"

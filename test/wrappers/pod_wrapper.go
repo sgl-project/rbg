@@ -2,11 +2,12 @@ package wrappers
 
 import (
 	"fmt"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"sigs.k8s.io/rbgs/test/utils"
-	"time"
 )
 
 type PodWrapper struct {
@@ -99,12 +100,17 @@ func (podTemplateWrapper *PodTemplateSpecWrapper) Obj() corev1.PodTemplateSpec {
 	return podTemplateWrapper.PodTemplateSpec
 }
 
-func (podTemplateWrapper *PodTemplateSpecWrapper) WithContainers(containers []corev1.Container) *PodTemplateSpecWrapper {
+func (podTemplateWrapper *PodTemplateSpecWrapper) WithContainers(
+	containers []corev1.Container,
+) *PodTemplateSpecWrapper {
 	podTemplateWrapper.Spec.Containers = containers
 	return podTemplateWrapper
 }
 
-func (podTemplateWrapper *PodTemplateSpecWrapper) WithResources(resources corev1.ResourceRequirements, containerIndex int) *PodTemplateSpecWrapper {
+func (podTemplateWrapper *PodTemplateSpecWrapper) WithResources(
+	resources corev1.ResourceRequirements,
+	containerIndex int,
+) *PodTemplateSpecWrapper {
 	if containerIndex < 0 || containerIndex > len(podTemplateWrapper.Spec.Containers)-1 {
 		containerIndex = 0
 	}

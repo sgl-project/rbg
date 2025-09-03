@@ -2,10 +2,11 @@ package dependency
 
 import (
 	"context"
-	"k8s.io/klog/v2"
 	"reflect"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"testing"
+
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // TestDependencyOrder tests the DependencyOrder function with various dependency scenarios

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,7 +18,9 @@ type SidecarBuilder struct {
 	client client.Client
 }
 
-func NewSidecarBuilder(k8sClient client.Client, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec) *SidecarBuilder {
+func NewSidecarBuilder(
+	k8sClient client.Client, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+) *SidecarBuilder {
 	return &SidecarBuilder{
 		rbg:    rbg,
 		role:   role,
@@ -33,7 +36,7 @@ func (b *SidecarBuilder) Build(ctx context.Context, podSpec *v1.PodTemplateSpec)
 		return err
 	}
 
-	if curRole.EngineRuntimes == nil || len(curRole.EngineRuntimes) == 0 {
+	if len(curRole.EngineRuntimes) == 0 {
 		logger.V(1).Info("runtime is nil, skip inject sidecar")
 		return nil
 	}
@@ -47,13 +50,18 @@ func (b *SidecarBuilder) Build(ctx context.Context, podSpec *v1.PodTemplateSpec)
 	return nil
 }
 
-func (b *SidecarBuilder) injectRuntime(ctx context.Context, podSpec *v1.PodTemplateSpec, runtime workloadsv1alpha.EngineRuntime) error {
+func (b *SidecarBuilder) injectRuntime(
+	ctx context.Context, podSpec *v1.PodTemplateSpec,
+	runtime workloadsv1alpha.EngineRuntime,
+) error {
 	logger := log.FromContext(ctx)
 
 	engineRuntime := &workloadsv1alpha.ClusterEngineRuntimeProfile{}
-	if err := b.client.Get(ctx, types.NamespacedName{
-		Name: runtime.ProfileName,
-	}, engineRuntime); err != nil {
+	if err := b.client.Get(
+		ctx, types.NamespacedName{
+			Name: runtime.ProfileName,
+		}, engineRuntime,
+	); err != nil {
 		return fmt.Errorf("get engine runtime %s, error: %s", runtime.ProfileName, err.Error())
 	}
 
@@ -107,8 +115,12 @@ func (b *SidecarBuilder) injectRuntime(ctx context.Context, podSpec *v1.PodTempl
 	for _, container := range runtime.Containers {
 
 		if !utils.ContainsString(engineRuntimeContainerNames, container.Name) {
-			logger.V(1).Info(fmt.Sprintf("rbg runtime has container %s but not in clusterEngineRuntime, "+
-				"skip override", container.Name))
+			logger.V(1).Info(
+				fmt.Sprintf(
+					"rbg runtime has container %s but not in clusterEngineRuntime, "+
+						"skip override", container.Name,
+				),
+			)
 			continue
 		}
 

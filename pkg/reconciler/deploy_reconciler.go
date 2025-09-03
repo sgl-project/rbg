@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"maps"
 	"reflect"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,7 +34,9 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 	return &DeploymentReconciler{scheme: scheme, client: client}
 }
 
-func (r *DeploymentReconciler) Reconciler(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *DeploymentReconciler) Reconciler(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling deployment workload")
 
@@ -86,37 +89,47 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(ctx, rbg, role, maps.Clone(matchLabels))
+	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, maps.Clone(matchLabels),
+	)
 	if err != nil {
 		return nil, err
 	}
 
 	// construct deployment apply configuration
 	deployConfig := appsapplyv1.Deployment(rbg.GetWorkloadName(role), rbg.Namespace).
-		WithSpec(appsapplyv1.DeploymentSpec().
-			WithReplicas(*role.Replicas).
-			WithTemplate(podTemplateApplyConfiguration).
-			WithSelector(metaapplyv1.LabelSelector().
-				WithMatchLabels(matchLabels))).
+		WithSpec(
+			appsapplyv1.DeploymentSpec().
+				WithReplicas(*role.Replicas).
+				WithTemplate(podTemplateApplyConfiguration).
+				WithSelector(
+					metaapplyv1.LabelSelector().
+						WithMatchLabels(matchLabels),
+				),
+		).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
 		WithLabels(matchLabels).
-		WithOwnerReferences(metaapplyv1.OwnerReference().
-			WithAPIVersion(rbg.APIVersion).
-			WithKind(rbg.Kind).
-			WithName(rbg.Name).
-			WithUID(rbg.GetUID()).
-			WithBlockOwnerDeletion(true).
-			WithController(true),
+		WithOwnerReferences(
+			metaapplyv1.OwnerReference().
+				WithAPIVersion(rbg.APIVersion).
+				WithKind(rbg.Kind).
+				WithName(rbg.Name).
+				WithUID(rbg.GetUID()).
+				WithBlockOwnerDeletion(true).
+				WithController(true),
 		)
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
 		deployConfig = deployConfig.WithSpec(
-			deployConfig.Spec.WithStrategy(appsapplyv1.DeploymentStrategy().
-				WithType(appsv1.DeploymentStrategyType(role.RolloutStrategy.Type)).
-				WithRollingUpdate(appsapplyv1.RollingUpdateDeployment().
-					WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
-					WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
-				),
-			))
+			deployConfig.Spec.WithStrategy(
+				appsapplyv1.DeploymentStrategy().
+					WithType(appsv1.DeploymentStrategyType(role.RolloutStrategy.Type)).
+					WithRollingUpdate(
+						appsapplyv1.RollingUpdateDeployment().
+							WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
+							WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
+					),
+			),
+		)
 	}
 	return deployConfig, nil
 
@@ -129,7 +142,9 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 ) (workloadsv1alpha1.RoleStatus, bool, error) {
 	updateStatus := false
 	deploy := &appsv1.Deployment{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
+	); err != nil {
 		return workloadsv1alpha1.RoleStatus{}, false, err
 	}
 
@@ -148,22 +163,31 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 	return status, updateStatus, nil
 }
 
-func (r *DeploymentReconciler) CheckWorkloadReady(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) (bool, error) {
+func (r *DeploymentReconciler) CheckWorkloadReady(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) (bool, error) {
 	deploy := &appsv1.Deployment{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
+	); err != nil {
 		return false, err
 	}
 	return deploy.Status.ReadyReplicas == *deploy.Spec.Replicas, nil
 }
 
-func (r *DeploymentReconciler) CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+) error {
 	logger := log.FromContext(ctx)
 	// list deploy managed by rbg
 	deployList := &appsv1.DeploymentList{}
-	if err := r.client.List(context.Background(), deployList, client.InNamespace(rbg.Namespace),
-		client.MatchingLabels(map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		}),
+	if err := r.client.List(
+		context.Background(), deployList, client.InNamespace(rbg.Namespace),
+		client.MatchingLabels(
+			map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
+		),
 	); err != nil {
 		return err
 	}
@@ -189,7 +213,10 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(ctx context.Context, rbg
 	return nil
 }
 
-func (r *DeploymentReconciler) RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *DeploymentReconciler) RecreateWorkload(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	if rbg == nil || role == nil {
 		return nil
@@ -213,17 +240,19 @@ func (r *DeploymentReconciler) RecreateWorkload(ctx context.Context, rbg *worklo
 
 	// wait new deployment create
 	var retErr error
-	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-		var newDeploy appsv1.Deployment
-		retErr = r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &newDeploy)
-		if retErr != nil {
-			if apierrors.IsNotFound(retErr) {
-				return false, nil
+	err = wait.PollUntilContextTimeout(
+		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+			var newDeploy appsv1.Deployment
+			retErr = r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &newDeploy)
+			if retErr != nil {
+				if apierrors.IsNotFound(retErr) {
+					return false, nil
+				}
+				return false, retErr
 			}
-			return false, retErr
-		}
-		return true, nil
-	})
+			return true, nil
+		},
+	)
 
 	if err != nil {
 		logger.Error(retErr, "wait new deployment creating error")
@@ -259,7 +288,10 @@ func SemanticallyEqualDeployment(oldDeploy, newDeploy *appsv1.Deployment) (bool,
 func deploymentSpecEqual(spec1, spec2 appsv1.DeploymentSpec) (bool, error) {
 	if spec1.Replicas != nil && spec2.Replicas != nil {
 		if *spec1.Replicas != *spec2.Replicas {
-			return false, fmt.Errorf("replicas not equal, old: %d, new: %d", *spec1.Replicas, *spec2.Replicas)
+			return false, fmt.Errorf(
+				"replicas not equal, old: %d, new: %d", *spec1.Replicas,
+				*spec2.Replicas,
+			)
 		}
 	}
 
@@ -276,11 +308,17 @@ func deploymentSpecEqual(spec1, spec2 appsv1.DeploymentSpec) (bool, error) {
 
 func deploymentStatusEqual(oldStatus, newStatus appsv1.DeploymentStatus) (bool, error) {
 	if oldStatus.Replicas != newStatus.Replicas {
-		return false, fmt.Errorf("status.replicas not equal, old: %v, new: %v", oldStatus.Replicas, newStatus.Replicas)
+		return false, fmt.Errorf(
+			"status.replicas not equal, old: %v, new: %v",
+			oldStatus.Replicas, newStatus.Replicas,
+		)
 	}
 
 	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
-		return false, fmt.Errorf("status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas)
+		return false, fmt.Errorf(
+			"status.ReadyReplicas not equal, old: %v, new: %v",
+			oldStatus.ReadyReplicas, newStatus.ReadyReplicas,
+		)
 	}
 	return true, nil
 

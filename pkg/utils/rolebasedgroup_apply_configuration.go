@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
@@ -69,7 +69,9 @@ func (b *RbgStatusApplyConfiguration) WithConditions(conditions []v1.Condition) 
 	return b
 }
 
-func (b *RbgStatusApplyConfiguration) WithRoleStatuses(roleStatuses []v1alpha1.RoleStatus) *RbgStatusApplyConfiguration {
+func (b *RbgStatusApplyConfiguration) WithRoleStatuses(
+	roleStatuses []v1alpha1.RoleStatus,
+) *RbgStatusApplyConfiguration {
 	b.RoleStatuses = roleStatuses
 	return b
 }

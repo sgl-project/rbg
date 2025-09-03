@@ -3,6 +3,7 @@ package framework
 import (
 	"context"
 	"flag"
+
 	"github.com/onsi/gomega"
 	rawzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -36,7 +37,7 @@ func NewFramework(development bool) *Framework {
 
 	cfg := config.GetConfigOrDie()
 	runtimeClient, err := client.New(cfg, client.Options{Scheme: scheme})
-	gomega.Expect(err).To(gomega.BeNil())
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	ctx := initLogger(context.TODO(), development)
 
@@ -100,5 +101,6 @@ func (f *Framework) AfterAll() {
 }
 
 func (f *Framework) AfterEach() {
-	gomega.Expect(f.Client.DeleteAllOf(f.Ctx, &workloadsv1alpha1.RoleBasedGroup{}, client.InNamespace(f.Namespace))).Should(gomega.Succeed())
+	gomega.Expect(f.Client.DeleteAllOf(f.Ctx, &workloadsv1alpha1.RoleBasedGroup{},
+		client.InNamespace(f.Namespace))).Should(gomega.Succeed())
 }

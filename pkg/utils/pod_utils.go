@@ -27,7 +27,9 @@ func getPodCondition(status *corev1.PodStatus, conditionType corev1.PodCondition
 	return getPodConditionFromList(status.Conditions, conditionType)
 }
 
-func getPodConditionFromList(conditions []corev1.PodCondition, conditionType corev1.PodConditionType) (int, *corev1.PodCondition) {
+func getPodConditionFromList(conditions []corev1.PodCondition, conditionType corev1.PodConditionType) (
+	int, *corev1.PodCondition,
+) {
 	if conditions == nil {
 		return -1, nil
 	}

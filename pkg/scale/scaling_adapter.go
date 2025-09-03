@@ -10,7 +10,10 @@ func GenerateScalingAdapterName(rbgName, roleName string) string {
 	return fmt.Sprintf("%s-%s", rbgName, roleName)
 }
 
-func IsScalingAdapterManagedByRBG(scalingAdapter *workloadsv1alpha.RoleBasedGroupScalingAdapter, rbg *workloadsv1alpha.RoleBasedGroup) bool {
+func IsScalingAdapterManagedByRBG(
+	scalingAdapter *workloadsv1alpha.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha.RoleBasedGroup,
+) bool {
 	if scalingAdapter == nil || rbg == nil {
 		return false
 	}

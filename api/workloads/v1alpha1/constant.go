@@ -52,7 +52,7 @@ const (
 	// started in the same time.
 	RecreateRBGOnPodRestart RestartPolicyType = "RecreateRBGOnPodRestart"
 
-	//RecreateRoleInstanceOnPodRestart will recreate an instance of role. If role's workload is lws, it means when a pod
+	// RecreateRoleInstanceOnPodRestart will recreate an instance of role. If role's workload is lws, it means when a pod
 	// failed, we will recreate only one lws instance, not all lws instances.
 	// It equals to RecreateGroupOnPodRestart in lws.spec.LeaderWorkerTemplate.RestartPolicyType
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"

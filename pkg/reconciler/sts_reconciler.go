@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
+	"strconv"
+	"time"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,14 +20,10 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	"maps"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
-	"strconv"
-	"time"
 )
 
 type StatefulSetReconciler struct {
@@ -39,7 +40,9 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 	}
 }
 
-func (r *StatefulSetReconciler) Reconciler(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *StatefulSetReconciler) Reconciler(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	if err := r.reconcileStatefulSet(ctx, rbg, role); err != nil {
 		return err
 	}
@@ -47,7 +50,10 @@ func (r *StatefulSetReconciler) Reconciler(ctx context.Context, rbg *workloadsv1
 	return r.reconcileHeadlessService(ctx, rbg, role)
 }
 
-func (r *StatefulSetReconciler) reconcileStatefulSet(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *StatefulSetReconciler) reconcileStatefulSet(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling sts workload")
 
@@ -91,7 +97,8 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(ctx context.Context, rbg *w
 		return err
 	}
 
-	if equal && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition && *oldSts.Spec.Replicas == *role.Replicas {
+	if equal && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
+		*oldSts.Spec.Replicas == *role.Replicas {
 		logger.Info("sts equal, skip reconcile")
 		return nil
 	}
@@ -117,7 +124,10 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(ctx context.Context, rbg *w
 	return nil
 }
 
-func (r *StatefulSetReconciler) rollingUpdateParameters(ctx context.Context, role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool) (int32, int32, error) {
+func (r *StatefulSetReconciler) rollingUpdateParameters(
+	ctx context.Context,
+	role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool,
+) (int32, int32, error) {
 	logger := log.FromContext(ctx)
 	roleReplicas := *role.Replicas
 
@@ -129,7 +139,10 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(ctx context.Context, rol
 	}
 
 	stsReplicas := *sts.Spec.Replicas
-	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(&role.RolloutStrategy.RollingUpdate.MaxSurge, int(roleReplicas), true)
+	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(
+		&role.RolloutStrategy.RollingUpdate.MaxSurge,
+		int(roleReplicas), true,
+	)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -145,7 +158,7 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(ctx context.Context, rol
 			// When we have n unready replicas and n bursted replicas, we should
 			// start to release the burst replica gradually for the accommodation of
 			// the unready ones.
-			finalReplicas := roleReplicas + utils.NonZeroValue(int32(unreadyReplicas)-1)
+			finalReplicas := roleReplicas + utils.NonZeroValue(unreadyReplicas-1)
 			logger.Info(fmt.Sprintf("deleting surge replica %s-%d", role.Name, finalReplicas))
 			return finalReplicas
 		}
@@ -186,13 +199,19 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(ctx context.Context, rol
 	if replicasUpdated {
 		partition = min(partition, burstReplicas)
 		replicas := wantReplicas(roleUnreadyReplicas)
-		logger.V(1).Info(fmt.Sprintf("case 4: Replicas changed during rolling update. partition %d, replicas: %d", partition, replicas))
+		logger.V(1).Info(
+			fmt.Sprintf(
+				"case 4: Replicas changed during rolling update. partition %d, replicas: %d", partition, replicas,
+			),
+		)
 		return partition, replicas, nil
 	}
 
 	// Case 5:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
-	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(&role.RolloutStrategy.RollingUpdate.MaxUnavailable, int(roleReplicas), false)
+	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(
+		&role.RolloutStrategy.RollingUpdate.MaxUnavailable, int(roleReplicas), false,
+	)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -201,7 +220,11 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(ctx context.Context, rol
 	rollingStep += maxSurge - (int(burstReplicas) - int(stsReplicas))
 	partition = rollingUpdatePartition(ctx, states, stsReplicas, int32(rollingStep), partition)
 	replicas := wantReplicas(roleUnreadyReplicas)
-	logger.V(1).Info(fmt.Sprintf("case 5: Calculating the Partition during rolling update. partition %d, replicas: %d", partition, replicas))
+	logger.V(1).Info(
+		fmt.Sprintf(
+			"case 5: Calculating the Partition during rolling update. partition %d, replicas: %d", partition, replicas,
+		),
+	)
 	return partition, replicas, nil
 }
 
@@ -272,7 +295,9 @@ func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv
 	return states, nil
 }
 
-func rollingUpdatePartition(ctx context.Context, states []replicaState, stsReplicas int32, rollingStep int32, currentPartition int32) int32 {
+func rollingUpdatePartition(
+	ctx context.Context, states []replicaState, stsReplicas int32, rollingStep int32, currentPartition int32,
+) int32 {
 	logger := log.FromContext(ctx)
 
 	continuousReadyReplicas := calculateContinuousReadyReplicas(states)
@@ -281,7 +306,8 @@ func rollingUpdatePartition(ctx context.Context, states []replicaState, stsRepli
 	rollingStepPartition := utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
 
 	// rollingStepPartition calculation above disregards the state of replicas with idx<rollingStepPartition.
-	// To prevent violating the maxUnavailable, we have to account for these replicas and increase the partition if some are not ready.
+	// To prevent violating the maxUnavailable, we have to account for these replicas
+	// and increase the partition if some are not ready.
 	var unavailable int32
 	for idx := 0; idx < int(rollingStepPartition); idx++ {
 		if !states[idx].ready {
@@ -289,11 +315,14 @@ func rollingUpdatePartition(ctx context.Context, states []replicaState, stsRepli
 		}
 	}
 	var partition = rollingStepPartition + unavailable
-	logger.V(1).Info("Calculating partition parameters", "partition", partition,
-		"continuousReady", continuousReadyReplicas, "rollingStep", rollingStep, "unavailable", unavailable)
+	logger.V(1).Info(
+		"Calculating partition parameters", "partition", partition,
+		"continuousReady", continuousReadyReplicas, "rollingStep", rollingStep, "unavailable", unavailable,
+	)
 
-	// Reduce the partition if replicas are continously not ready. It is safe since updating these replicas does not impact
-	// the availability of the LWS. This is important to prevent update from getting stuck in case maxUnavailable is already violated
+	// Reduce the partition if replicas are continuously not ready. It is safe since updating these replicas does not
+	// impact the availability of the LWS. This is important to prevent update from getting stuck in case
+	// maxUnavailable is already violated
 	// (for example, all replicas are not ready when rolling update is started).
 	// Note that we never drop the partition below rollingStepPartition.
 	for idx := min(partition, stsReplicas-1); idx >= rollingStepPartition; idx-- {
@@ -320,7 +349,9 @@ func calculateContinuousReadyReplicas(states []replicaState) int32 {
 	return continuousReadyCount
 }
 
-func (r *StatefulSetReconciler) reconcileHeadlessService(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *StatefulSetReconciler) reconcileHeadlessService(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling headless service")
 
@@ -330,10 +361,7 @@ func (r *StatefulSetReconciler) reconcileHeadlessService(ctx context.Context, rb
 		return fmt.Errorf("get sts error, skip reconcile svc. error:  %s", err.Error())
 	}
 
-	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, rbg, role, sts)
-	if err != nil {
-		return err
-	}
+	svcApplyConfig := r.constructServiceApplyConfiguration(ctx, rbg, role, sts)
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(svcApplyConfig)
 	if err != nil {
 		logger.Error(err, "Converting obj apply configuration to json.")
@@ -380,58 +408,68 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(ctx, rbg, role, maps.Clone(matchLabels))
+	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, maps.Clone(matchLabels),
+	)
 	if err != nil {
 		return nil, err
 	}
 
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(rbg.GetWorkloadName(role), rbg.Namespace).
-		WithSpec(appsapplyv1.StatefulSetSpec().
-			WithServiceName(rbg.GetWorkloadName(role)).
-			WithReplicas(*role.Replicas).
-			WithTemplate(podTemplateApplyConfiguration).
-			WithPodManagementPolicy(appsv1.ParallelPodManagement).
-			WithSelector(metaapplyv1.LabelSelector().
-				WithMatchLabels(matchLabels))).
+		WithSpec(
+			appsapplyv1.StatefulSetSpec().
+				WithServiceName(rbg.GetWorkloadName(role)).
+				WithReplicas(*role.Replicas).
+				WithTemplate(podTemplateApplyConfiguration).
+				WithPodManagementPolicy(appsv1.ParallelPodManagement).
+				WithSelector(
+					metaapplyv1.LabelSelector().
+						WithMatchLabels(matchLabels),
+				),
+		).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
 		WithLabels(matchLabels).
-		WithOwnerReferences(metaapplyv1.OwnerReference().
-			WithAPIVersion(rbg.APIVersion).
-			WithKind(rbg.Kind).
-			WithName(rbg.Name).
-			WithUID(rbg.GetUID()).
-			WithBlockOwnerDeletion(true).
-			WithController(true),
+		WithOwnerReferences(
+			metaapplyv1.OwnerReference().
+				WithAPIVersion(rbg.APIVersion).
+				WithKind(rbg.Kind).
+				WithName(rbg.Name).
+				WithUID(rbg.GetUID()).
+				WithBlockOwnerDeletion(true).
+				WithController(true),
 		)
 	return statefulSetConfig, nil
 }
 
 func (r *StatefulSetReconciler) constructServiceApplyConfiguration(
-	ctx context.Context,
+	_ context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 	sts *appsv1.StatefulSet,
-) (*coreapplyv1.ServiceApplyConfiguration, error) {
+) *coreapplyv1.ServiceApplyConfiguration {
 	selectMap := map[string]string{
 		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
 		workloadsv1alpha1.SetRoleLabelKey: role.Name,
 	}
 	serviceConfig := coreapplyv1.Service(rbg.GetWorkloadName(role), rbg.Namespace).
-		WithSpec(coreapplyv1.ServiceSpec().
-			WithClusterIP("None").
-			WithSelector(selectMap).
-			WithPublishNotReadyAddresses(true)).
+		WithSpec(
+			coreapplyv1.ServiceSpec().
+				WithClusterIP("None").
+				WithSelector(selectMap).
+				WithPublishNotReadyAddresses(true),
+		).
 		WithLabels(rbg.GetCommonLabelsFromRole(role)).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithOwnerReferences(metaapplyv1.OwnerReference().
-			WithAPIVersion(sts.APIVersion).
-			WithKind(sts.Kind).
-			WithName(sts.Name).
-			WithUID(sts.GetUID()).
-			WithBlockOwnerDeletion(true),
+		WithOwnerReferences(
+			metaapplyv1.OwnerReference().
+				WithAPIVersion(sts.APIVersion).
+				WithKind(sts.Kind).
+				WithName(sts.Name).
+				WithUID(sts.GetUID()).
+				WithBlockOwnerDeletion(true),
 		)
-	return serviceConfig, nil
+	return serviceConfig
 }
 
 func (r *StatefulSetReconciler) ConstructRoleStatus(
@@ -441,7 +479,9 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 ) (workloadsv1alpha1.RoleStatus, bool, error) {
 	updateStatus := false
 	sts := &appsv1.StatefulSet{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
+	); err != nil {
 		return workloadsv1alpha1.RoleStatus{}, updateStatus, err
 	}
 
@@ -459,22 +499,31 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 	return status, updateStatus, nil
 }
 
-func (r *StatefulSetReconciler) CheckWorkloadReady(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) (bool, error) {
+func (r *StatefulSetReconciler) CheckWorkloadReady(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) (bool, error) {
 	sts := &appsv1.StatefulSet{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
+	); err != nil {
 		return false, err
 	}
 	return sts.Status.ReadyReplicas == *sts.Spec.Replicas, nil
 }
 
-func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+) error {
 	logger := log.FromContext(ctx)
 	// list sts managed by rbg
 	stsList := &appsv1.StatefulSetList{}
-	if err := r.client.List(context.Background(), stsList, client.InNamespace(rbg.Namespace),
-		client.MatchingLabels(map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		}),
+	if err := r.client.List(
+		context.Background(), stsList, client.InNamespace(rbg.Namespace),
+		client.MatchingLabels(
+			map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
+		),
 	); err != nil {
 		return err
 	}
@@ -501,10 +550,14 @@ func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(ctx context.Context, rb
 	return nil
 }
 
-func (r *StatefulSetReconciler) getHighestRevision(ctx context.Context, sts *appsv1.StatefulSet) (*appsv1.ControllerRevision, error) {
-	selector, err := v1.LabelSelectorAsSelector(&v1.LabelSelector{
-		MatchLabels: sts.Labels,
-	})
+func (r *StatefulSetReconciler) getHighestRevision(
+	ctx context.Context, sts *appsv1.StatefulSet,
+) (*appsv1.ControllerRevision, error) {
+	selector, err := v1.LabelSelectorAsSelector(
+		&v1.LabelSelector{
+			MatchLabels: sts.Labels,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -515,7 +568,9 @@ func (r *StatefulSetReconciler) getHighestRevision(ctx context.Context, sts *app
 	return utils.GetHighestRevision(revisions), nil
 }
 
-func (r *StatefulSetReconciler) RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+func (r *StatefulSetReconciler) RecreateWorkload(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	if rbg == nil || role == nil {
 		return nil
@@ -539,17 +594,19 @@ func (r *StatefulSetReconciler) RecreateWorkload(ctx context.Context, rbg *workl
 
 	// wait new sts create
 	var retErr error
-	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-		var newSts appsv1.StatefulSet
-		retErr = r.client.Get(ctx, types.NamespacedName{Name: stsName, Namespace: rbg.Namespace}, &newSts)
-		if retErr != nil {
-			if apierrors.IsNotFound(retErr) {
-				return false, nil
+	err = wait.PollUntilContextTimeout(
+		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+			var newSts appsv1.StatefulSet
+			retErr = r.client.Get(ctx, types.NamespacedName{Name: stsName, Namespace: rbg.Namespace}, &newSts)
+			if retErr != nil {
+				if apierrors.IsNotFound(retErr) {
+					return false, nil
+				}
+				return false, retErr
 			}
-			return false, retErr
-		}
-		return true, nil
-	})
+			return true, nil
+		},
+	)
 
 	if err != nil {
 		logger.Error(retErr, "wait new sts creating error")
@@ -603,7 +660,9 @@ func statefulSetStatusEqual(oldStatus, newStatus appsv1.StatefulSetStatus) (bool
 	}
 
 	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
-		return false, fmt.Errorf("status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas)
+		return false, fmt.Errorf(
+			"status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas,
+		)
 	}
 	return true, nil
 
@@ -629,7 +688,9 @@ func SemanticallyEqualService(svc1, svc2 *corev1.Service) (bool, error) {
 	return true, nil
 }
 
-func validateRolloutStrategy(rollingStrategy *workloadsv1alpha1.RolloutStrategy, replicas int) (*workloadsv1alpha1.RolloutStrategy, error) {
+func validateRolloutStrategy(
+	rollingStrategy *workloadsv1alpha1.RolloutStrategy, replicas int,
+) (*workloadsv1alpha1.RolloutStrategy, error) {
 	if rollingStrategy == nil || rollingStrategy.RollingUpdate == nil {
 		return &workloadsv1alpha1.RolloutStrategy{
 			Type: workloadsv1alpha1.RollingUpdateStrategyType,
@@ -644,12 +705,17 @@ func validateRolloutStrategy(rollingStrategy *workloadsv1alpha1.RolloutStrategy,
 	if err != nil {
 		return nil, err
 	}
-	maxAvailable, err := intstr.GetScaledValueFromIntOrPercent(&rollingStrategy.RollingUpdate.MaxUnavailable, replicas, false)
+	maxAvailable, err := intstr.GetScaledValueFromIntOrPercent(
+		&rollingStrategy.RollingUpdate.MaxUnavailable, replicas, false,
+	)
 	if err != nil {
 		return nil, err
 	}
 	if maxAvailable == 0 && maxSurge == 0 {
-		return nil, fmt.Errorf("RollingUpdate is invalid: rolloutStrategy.rollingUpdate.maxUnavailable may not be 0 when maxSurge is 0")
+		return nil, fmt.Errorf(
+			"RollingUpdate is invalid: " +
+				"rolloutStrategy.rollingUpdate.maxUnavailable may not be 0 when maxSurge is 0",
+		)
 	}
 
 	return rollingStrategy, nil

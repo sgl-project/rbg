@@ -2,6 +2,7 @@ package framework
 
 import (
 	"fmt"
+
 	"github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -13,7 +14,8 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
-func (f *Framework) ExpectRoleScalingAdapterEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, expectedReplicas *int32) {
+func (f *Framework) ExpectRoleScalingAdapterEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+	expectedReplicas *int32) {
 	logger := log.FromContext(f.Ctx).WithValues("rbg", rbg.Name)
 
 	gomega.Eventually(func() bool {
@@ -90,7 +92,9 @@ func (f *Framework) ExpectScalingAdapterNotExist(rbg *v1alpha1.RoleBasedGroup, r
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 }
 
-func expectRbgScalingAdapterEqual(rbgScalingAdapter *v1alpha1.RoleBasedGroupScalingAdapter, rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, scale *autoscalingv1.Scale, expectedReplicas *int32) error {
+func expectRbgScalingAdapterEqual(rbgScalingAdapter *v1alpha1.RoleBasedGroupScalingAdapter,
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, scale *autoscalingv1.Scale,
+	expectedReplicas *int32) error {
 	if rbgScalingAdapter == nil || rbgScalingAdapter.Spec.Replicas == nil {
 		return fmt.Errorf("rbgScalingAdapter is nil")
 	}
@@ -114,26 +118,31 @@ func expectRbgScalingAdapterEqual(rbgScalingAdapter *v1alpha1.RoleBasedGroupScal
 		}
 
 		if scale.Status.Replicas != *expectedReplicas {
-			return fmt.Errorf("Scale.Status.Replicas %v does not match role.Replicas %v", scale.Status.Replicas, *expectedReplicas)
+			return fmt.Errorf("Scale.Status.Replicas %v does not match role.Replicas %v",
+				scale.Status.Replicas, *expectedReplicas)
 		}
 	} else {
-		expectedReplicas = role.Replicas //initial replicas
+		expectedReplicas = role.Replicas // initial replicas
 	}
 
 	if *rbgScalingAdapter.Spec.Replicas != *expectedReplicas {
-		return fmt.Errorf("ScalingAdapter.Spec.Replicas %v does not match expectedReplicas %v", *rbgScalingAdapter.Spec.Replicas, *expectedReplicas)
+		return fmt.Errorf("ScalingAdapter.Spec.Replicas %v does not match expectedReplicas %v",
+			*rbgScalingAdapter.Spec.Replicas, *expectedReplicas)
 	}
 
 	if *rbgScalingAdapter.Status.Replicas != *expectedReplicas {
-		return fmt.Errorf("ScalingAdapter.Spec.Replicas %v does not match expectedReplicas %v", *rbgScalingAdapter.Status.Replicas, *expectedReplicas)
+		return fmt.Errorf("ScalingAdapter.Spec.Replicas %v does not match expectedReplicas %v",
+			*rbgScalingAdapter.Status.Replicas, *expectedReplicas)
 	}
 
 	if *role.Replicas != *expectedReplicas {
-		return fmt.Errorf("Role.Replicas %v does not match expectedReplicas %v", *role.Replicas, *expectedReplicas)
+		return fmt.Errorf("Role.Replicas %v does not match expectedReplicas %v", *role.Replicas,
+			*expectedReplicas)
 	}
 
 	if rbgScalingAdapter.Status.Phase != v1alpha1.AdapterPhaseBound {
-		return fmt.Errorf("ScalingAdapter.Status.Phase %s is not AdapterPhaseBound", rbgScalingAdapter.Status.Phase)
+		return fmt.Errorf("ScalingAdapter.Status.Phase %s is not AdapterPhaseBound",
+			rbgScalingAdapter.Status.Phase)
 	}
 
 	return nil

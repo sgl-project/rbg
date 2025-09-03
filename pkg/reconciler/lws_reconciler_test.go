@@ -1,14 +1,14 @@
 package reconciler
 
 import (
-	"k8s.io/utils/ptr"
 	"testing"
+
+	"k8s.io/utils/ptr"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilpointer "k8s.io/utils/pointer"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -102,7 +102,7 @@ var (
 						},
 					},
 					LeaderWorkerSet: workloadsv1alpha1.LeaderWorkerTemplate{
-						Size: utilpointer.Int32Ptr(2),
+						Size: ptr.To(int32(2)),
 					},
 				},
 			},
@@ -336,15 +336,17 @@ func TestPatchPodTemplate(t *testing.T) {
 	}
 
 	for _, cs := range cases {
-		t.Run(cs.name, func(t *testing.T) {
-			obj, err := patchPodTemplate(cs.getTemplate(), cs.getPatch())
-			if err != nil {
-				t.Fatalf("patchPodTemplate failed: %s", err.Error())
-			}
-			if utils.DumpJSON(cs.expect()) != utils.DumpJSON(obj) {
-				t.Fatalf("expect(%s), but get(%s)", utils.DumpJSON(cs.expect()), utils.DumpJSON(obj))
-			}
-		})
+		t.Run(
+			cs.name, func(t *testing.T) {
+				obj, err := patchPodTemplate(cs.getTemplate(), cs.getPatch())
+				if err != nil {
+					t.Fatalf("patchPodTemplate failed: %s", err.Error())
+				}
+				if utils.DumpJSON(cs.expect()) != utils.DumpJSON(obj) {
+					t.Fatalf("expect(%s), but get(%s)", utils.DumpJSON(cs.expect()), utils.DumpJSON(obj))
+				}
+			},
+		)
 	}
 }
 
@@ -399,32 +401,38 @@ func TestLwsReconciler(t *testing.T) {
 			expect: func() *lwsv1.LeaderWorkerSet {
 				obj := defaultLws.DeepCopy()
 				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{"app": "leader"}
-				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Command = []string{"nginx -c /home/user/my-nginx.conf"}
+				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Command =
+					[]string{"nginx -c /home/user/my-nginx.conf"}
 				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{"app": "worker"}
-				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Command = []string{"nginx -c /home/user/my-nginx.conf"}
+				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Command =
+					[]string{"nginx -c /home/user/my-nginx.conf"}
 				return obj
 			},
 		},
 	}
 
 	for _, cs := range cases {
-		t.Run(cs.name, func(t *testing.T) {
-			// TODO, apply patches are not supported in the fake client. Follow https://github.com/kubernetes/kubernetes/issues/115598 for the current status
-			/*rbg := cs.getRbg()
-			role := &rbg.Spec.Roles[0]
-			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      rbg.GetWorkloadName(role),
-					Namespace: rbg.Namespace,
-				},
-			}
-			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
-			reconcile := NewLeaderWorkerSetReconciler(scheme, fakeClient)
-			err := reconcile.Reconciler(context.TODO(), rbg, role)
-			if err != nil {
-				t.Fatalf("reconciler failed: %s", err.Error())
-			}*/
+		t.Run(
+			cs.name, func(t *testing.T) {
+				// TODO, apply patches are not supported in the fake client.
+				// Follow https://github.com/kubernetes/kubernetes/issues/115598 for the current status
+				/*
+					rbg := cs.getRbg()
+					role := &rbg.Spec.Roles[0]
+					cm := &corev1.ConfigMap{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      rbg.GetWorkloadName(role),
+							Namespace: rbg.Namespace,
+						},
+					}
+					fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
+					reconcile := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+					err := reconcile.Reconciler(context.TODO(), rbg, role)
+					if err != nil {
+						t.Fatalf("reconciler failed: %s", err.Error())
+					}*/
 
-		})
+			},
+		)
 	}
 }

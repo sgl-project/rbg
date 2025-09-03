@@ -3,9 +3,8 @@ package utils
 import (
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
@@ -17,7 +16,9 @@ type RbgScalingAdapterApplyConfiguration struct {
 	Status *RbgScalingAdapterStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-func RoleBasedGroupScalingAdapter(rbgScalingAdapter *v1alpha1.RoleBasedGroupScalingAdapter) *RbgScalingAdapterApplyConfiguration {
+func RoleBasedGroupScalingAdapter(
+	rbgScalingAdapter *v1alpha1.RoleBasedGroupScalingAdapter,
+) *RbgScalingAdapterApplyConfiguration {
 	b := &RbgScalingAdapterApplyConfiguration{}
 	b.WithName(rbgScalingAdapter.Name)
 	b.WithNamespace(rbgScalingAdapter.Namespace)
@@ -52,13 +53,17 @@ func (b *RbgScalingAdapterApplyConfiguration) WithName(value string) *RbgScaling
 	return b
 }
 
-func (b *RbgScalingAdapterApplyConfiguration) WithOwnerReferences(values ...*metav1.OwnerReferenceApplyConfiguration) *RbgScalingAdapterApplyConfiguration {
+func (b *RbgScalingAdapterApplyConfiguration) WithOwnerReferences(
+	values ...*metaapplyv1.OwnerReferenceApplyConfiguration,
+) *RbgScalingAdapterApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	for i := range values {
 		if values[i] == nil {
 			panic("nil value passed to WithOwnerReferences")
 		}
-		b.ObjectMetaApplyConfiguration.OwnerReferences = append(b.ObjectMetaApplyConfiguration.OwnerReferences, *values[i])
+		b.ObjectMetaApplyConfiguration.OwnerReferences = append(
+			b.ObjectMetaApplyConfiguration.OwnerReferences, *values[i],
+		)
 	}
 	return b
 }
@@ -68,19 +73,25 @@ type RbgScalingAdapterSpecApplyConfiguration struct {
 	ScaleTargetRef *v1alpha1.AdapterScaleTargetRef `json:"scaleTargetRef"`
 }
 
-func RbgScalingAdapterSpec(spec v1alpha1.RoleBasedGroupScalingAdapterSpec) *RbgScalingAdapterSpecApplyConfiguration {
+func RbgScalingAdapterSpec(
+	spec v1alpha1.RoleBasedGroupScalingAdapterSpec,
+) *RbgScalingAdapterSpecApplyConfiguration {
 	return &RbgScalingAdapterSpecApplyConfiguration{
 		Replicas:       spec.Replicas,
 		ScaleTargetRef: spec.ScaleTargetRef,
 	}
 }
 
-func (b *RbgScalingAdapterApplyConfiguration) WithSpec(value *RbgScalingAdapterSpecApplyConfiguration) *RbgScalingAdapterApplyConfiguration {
+func (b *RbgScalingAdapterApplyConfiguration) WithSpec(
+	value *RbgScalingAdapterSpecApplyConfiguration,
+) *RbgScalingAdapterApplyConfiguration {
 	b.Spec = value
 	return b
 }
 
-func (b *RbgScalingAdapterSpecApplyConfiguration) WithReplicas(replicas *int32) *RbgScalingAdapterSpecApplyConfiguration {
+func (b *RbgScalingAdapterSpecApplyConfiguration) WithReplicas(
+	replicas *int32,
+) *RbgScalingAdapterSpecApplyConfiguration {
 	if replicas == nil {
 		return b
 	}
@@ -88,7 +99,9 @@ func (b *RbgScalingAdapterSpecApplyConfiguration) WithReplicas(replicas *int32) 
 	return b
 }
 
-func (b *RbgScalingAdapterApplyConfiguration) WithStatus(value *RbgScalingAdapterStatusApplyConfiguration) *RbgScalingAdapterApplyConfiguration {
+func (b *RbgScalingAdapterApplyConfiguration) WithStatus(
+	value *RbgScalingAdapterStatusApplyConfiguration,
+) *RbgScalingAdapterApplyConfiguration {
 	b.Status = value
 	return b
 }
@@ -106,7 +119,9 @@ type RbgScalingAdapterStatusApplyConfiguration struct {
 	LastScaleTime *v1.Time              `json:"lastScaleTime,omitempty"`
 }
 
-func RbgScalingAdapterStatus(status v1alpha1.RoleBasedGroupScalingAdapterStatus) *RbgScalingAdapterStatusApplyConfiguration {
+func RbgScalingAdapterStatus(
+	status v1alpha1.RoleBasedGroupScalingAdapterStatus,
+) *RbgScalingAdapterStatusApplyConfiguration {
 	return &RbgScalingAdapterStatusApplyConfiguration{
 		Replicas:      status.Replicas,
 		Phase:         status.Phase,
@@ -115,17 +130,23 @@ func RbgScalingAdapterStatus(status v1alpha1.RoleBasedGroupScalingAdapterStatus)
 	}
 }
 
-func (b *RbgScalingAdapterStatusApplyConfiguration) WithPhase(phase v1alpha1.AdapterPhase) *RbgScalingAdapterStatusApplyConfiguration {
+func (b *RbgScalingAdapterStatusApplyConfiguration) WithPhase(
+	phase v1alpha1.AdapterPhase,
+) *RbgScalingAdapterStatusApplyConfiguration {
 	b.Phase = phase
 	return b
 }
 
-func (b *RbgScalingAdapterStatusApplyConfiguration) WithSelector(selector string) *RbgScalingAdapterStatusApplyConfiguration {
+func (b *RbgScalingAdapterStatusApplyConfiguration) WithSelector(
+	selector string,
+) *RbgScalingAdapterStatusApplyConfiguration {
 	b.Selector = selector
 	return b
 }
 
-func (b *RbgScalingAdapterStatusApplyConfiguration) WithReplicas(replicas *int32, scale bool) *RbgScalingAdapterStatusApplyConfiguration {
+func (b *RbgScalingAdapterStatusApplyConfiguration) WithReplicas(
+	replicas *int32, scale bool,
+) *RbgScalingAdapterStatusApplyConfiguration {
 	if replicas == nil {
 		return b
 	}

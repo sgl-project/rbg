@@ -30,10 +30,10 @@ func (f *Framework) ExpectRbgSetEqual(rbgSet *v1alpha1.RoleBasedGroupSet) {
 	// check rbg exists
 	rbgList := &v1alpha1.RoleBasedGroupList{}
 	err := f.Client.List(f.Ctx, rbgList, &client.ListOptions{})
-	gomega.Expect(err).To(gomega.BeNil())
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	// check if the rbg instance number is equal to the rbgset.replicas
-	gomega.Expect(*rbgSet.Spec.Replicas).To(gomega.Equal(len(rbgList.Items)))
+	gomega.Expect(*rbgSet.Spec.Replicas).To(gomega.BeEquivalentTo(len(rbgList.Items)))
 }
 
 func (f *Framework) ExpectRbgSetDeleted(rbgSet *v1alpha1.RoleBasedGroupSet) {
@@ -43,11 +43,7 @@ func (f *Framework) ExpectRbgSetDeleted(rbgSet *v1alpha1.RoleBasedGroupSet) {
 			Name:      rbgSet.Name,
 			Namespace: rbgSet.Namespace,
 		}, newRbg)
-		if apierrors.IsNotFound(err) {
-			return true
-		}
-
-		return false
+		return apierrors.IsNotFound(err)
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 }
 

@@ -126,7 +126,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Reconcile role, add & update
-	var roleStatuses []workloadsv1alpha1.RoleStatus
+	roleStatuses := []workloadsv1alpha1.RoleStatus{}
 	var updateStatus bool
 	for _, role := range sortedRoles {
 		logger := log.FromContext(ctx)

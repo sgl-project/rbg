@@ -2,11 +2,12 @@ package discovery
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/rbgs/pkg/utils"
-	"strings"
 
 	"sigs.k8s.io/yaml"
 
