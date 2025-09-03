@@ -48,6 +48,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 var (
@@ -104,11 +105,12 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// watch podGroup
-	_, podGroupExist := watchedWorkload.Load(utils.PodGroupCrdName)
-	if rbg.EnableGangScheduling() && !podGroupExist {
-		err = utils.CheckCrdExists(r.apiReader, utils.PodGroupCrdName)
+	podGroupCrdName := scheduler.GetPodGroupCrdName(rbg)
+	_, podGroupExist := watchedWorkload.Load(podGroupCrdName)
+	if podGroupCrdName != "" && !podGroupExist {
+		err = utils.CheckCrdExists(r.apiReader, podGroupCrdName)
 		if err == nil {
-			watchedWorkload.LoadOrStore(utils.PodGroupCrdName, struct{}{})
+			watchedWorkload.LoadOrStore(podGroupCrdName, struct{}{})
 			runtimeController.Owns(&schev1alpha1.PodGroup{})
 			logger.Info("rbgs controller watch PodGroup CRD")
 			podGroupExist = true
@@ -384,10 +386,15 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
 		runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
 	}
-	err = utils.CheckCrdExists(r.apiReader, utils.PodGroupCrdName)
+	err = utils.CheckCrdExists(r.apiReader, scheduler.KubePodGroupCrdName)
 	if err == nil {
-		watchedWorkload.LoadOrStore(utils.PodGroupCrdName, struct{}{})
+		watchedWorkload.LoadOrStore(scheduler.KubePodGroupCrdName, struct{}{})
 		runtimeController.Owns(&schev1alpha1.PodGroup{})
+	}
+	err = utils.CheckCrdExists(r.apiReader, scheduler.VolcanoPodGroupCrdName)
+	if err == nil {
+		watchedWorkload.LoadOrStore(scheduler.VolcanoPodGroupCrdName, struct{}{})
+		runtimeController.Owns(&volcanoschedulingv1beta1.PodGroup{})
 	}
 
 	return runtimeController.Complete(r)

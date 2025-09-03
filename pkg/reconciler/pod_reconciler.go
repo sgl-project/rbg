@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -80,13 +81,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	if rbg.EnableGangScheduling() {
-		if podLabels == nil {
-			podLabels = map[string]string{}
-		}
-		podLabels[workloadsv1alpha1.PodGroupLabelKey] = rbg.Name
-	}
-	podTemplateApplyConfiguration.WithLabels(podLabels)
+	scheduler.InjectPodGroupProtocol(rbg, podTemplateApplyConfiguration)
 
 	return podTemplateApplyConfiguration, nil
 }
