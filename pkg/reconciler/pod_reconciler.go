@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/discovery"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -97,15 +98,9 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	if rbg.EnableGangScheduling() {
-		if podLabels == nil {
-			podLabels = map[string]string{}
-		}
-		podLabels[workloadsv1alpha1.PodGroupLabelKey] = rbg.Name
-	}
+	scheduler.InjectPodGroupProtocol(rbg, podTemplateApplyConfiguration)
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
-
 	return podTemplateApplyConfiguration, nil
 }
 

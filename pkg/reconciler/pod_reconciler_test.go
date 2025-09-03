@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/test/wrappers"
 )
 
@@ -848,7 +849,7 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 
 					// If gang scheduling is enabled, check for pod group label
 					if rbg.EnableGangScheduling() {
-						assert.Equal(t, rbg.Name, result.Labels[workloadsv1alpha1.PodGroupLabelKey])
+						assert.Equal(t, rbg.Name, result.Labels[scheduler.KubePodGroupLabelKey])
 					}
 				}
 			},

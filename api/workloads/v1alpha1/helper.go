@@ -84,8 +84,21 @@ func sha1Hash(s string) string {
 }
 
 func (rbg *RoleBasedGroup) EnableGangScheduling() bool {
-	if rbg.Spec.PodGroupPolicy != nil &&
-		rbg.Spec.PodGroupPolicy.KubeScheduling != nil {
+	if rbg.IsKubeGangScheduling() || rbg.IsVolcanoGangScheduling() {
+		return true
+	}
+	return false
+}
+
+func (rbg *RoleBasedGroup) IsVolcanoGangScheduling() bool {
+	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.VolcanoScheduling != nil {
+		return true
+	}
+	return false
+}
+
+func (rbg *RoleBasedGroup) IsKubeGangScheduling() bool {
+	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.KubeScheduling != nil {
 		return true
 	}
 	return false

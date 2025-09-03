@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	rawzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -65,6 +66,7 @@ func init() {
 	utilruntime.Must(apiextv1.AddToScheme(scheme))
 	utilruntime.Must(lwsv1.AddToScheme(scheme))
 	utilruntime.Must(schev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(volcanoschedulingv1beta1.AddToScheme(scheme))
 
 	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme

@@ -160,3 +160,15 @@ rules:
       - get
       - patch
       - update
+  - apiGroups:
+      - scheduling.volcano.sh
+    resources:
+      - podgroups
+    verbs:
+      - get
+      - create
+      - watch
+      - patch
+      - update
+      - list
+      - delete
