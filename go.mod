@@ -21,6 +21,7 @@ require (
 	sigs.k8s.io/lws v0.6.1
 	sigs.k8s.io/scheduler-plugins v0.32.7
 	sigs.k8s.io/yaml v1.4.0
+	volcano.sh/apis v1.12.2
 )
 
 require (

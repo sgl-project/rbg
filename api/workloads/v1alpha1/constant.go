@@ -14,10 +14,6 @@ const (
 	// Value: RoleSpec.name from RoleBasedGroup.spec.roles[]
 	SetRoleLabelKey = RBGPrefix + "role"
 
-	// PodGroupLabelKey identifies pods belonging to a specific pod group
-	// Value: RoleBasedName
-	PodGroupLabelKey = "pod-group.scheduling.sigs.k8s.io/name"
-
 	RoleSizeAnnotationKey string = RBGPrefix + "role-size"
 
 	// RBGSetPrefix rbgs prefix for all rbgs

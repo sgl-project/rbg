@@ -28,15 +28,31 @@ func (rbgWrapper *RoleBasedGroupWrapper) AddRole(role workloadsv1alpha.RoleSpec)
 	return rbgWrapper
 }
 
-func (rbgWrapper *RoleBasedGroupWrapper) WithGangScheduling(gangScheduling bool) *RoleBasedGroupWrapper {
-	if gangScheduling {
+func (rbgWrapper *RoleBasedGroupWrapper) WithKubeGangScheduling(kubeGangScheduling bool) *RoleBasedGroupWrapper {
+	if kubeGangScheduling {
+		timeout := int32(60) // default timeout
 		rbgWrapper.Spec.PodGroupPolicy = &workloadsv1alpha.PodGroupPolicy{
 			PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
-				KubeScheduling: &workloadsv1alpha.KubeSchedulingPodGroupPolicySource{},
+				KubeScheduling: &workloadsv1alpha.KubeSchedulingPodGroupPolicySource{
+					ScheduleTimeoutSeconds: &timeout,
+				},
 			},
 		}
 	} else {
 		rbgWrapper.Spec.PodGroupPolicy = nil
+	}
+
+	return rbgWrapper
+}
+
+func (rbgWrapper *RoleBasedGroupWrapper) WithVolcanoGangScheduling(priorityClassName, queue string) *RoleBasedGroupWrapper {
+	rbgWrapper.Spec.PodGroupPolicy = &workloadsv1alpha.PodGroupPolicy{
+		PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
+			VolcanoScheduling: &workloadsv1alpha.VolcanoSchedulingPodGroupPolicySource{
+				PriorityClassName: priorityClassName,
+				Queue:             queue,
+			},
+		},
 	}
 
 	return rbgWrapper
