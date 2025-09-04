@@ -5,11 +5,12 @@ import (
 	"reflect"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestSemanticallyEqualConfigmap(t *testing.T) {
@@ -166,22 +167,28 @@ func TestSemanticallyEqualConfigmap(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			equal, diff := semanticallyEqualConfigmap(tt.oldCM, tt.newCM)
-			if equal != tt.expected {
-				t.Errorf("%s: Expected %v, got %v.\nDiff: %s",
-					tt.name, tt.expected, equal, diff)
-			}
-
-			// Test symmetry
-			if tt.oldCM != nil && tt.newCM != nil {
-				reverseEqual, _ := semanticallyEqualConfigmap(tt.newCM, tt.oldCM)
-				if reverseEqual != equal {
-					t.Errorf("%s: Asymmetric comparison! Forward=%v Reverse=%v",
-						tt.name, equal, reverseEqual)
+		t.Run(
+			tt.name, func(t *testing.T) {
+				equal, diff := semanticallyEqualConfigmap(tt.oldCM, tt.newCM)
+				if equal != tt.expected {
+					t.Errorf(
+						"%s: Expected %v, got %v.\nDiff: %s",
+						tt.name, tt.expected, equal, diff,
+					)
 				}
-			}
-		})
+
+				// Test symmetry
+				if tt.oldCM != nil && tt.newCM != nil {
+					reverseEqual, _ := semanticallyEqualConfigmap(tt.newCM, tt.oldCM)
+					if reverseEqual != equal {
+						t.Errorf(
+							"%s: Asymmetric comparison! Forward=%v Reverse=%v",
+							tt.name, equal, reverseEqual,
+						)
+					}
+				}
+			},
+		)
 	}
 }
 
@@ -192,31 +199,33 @@ func TestInjectSidecar(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
-		WithRuntimeObjects(&workloadsv1alpha.ClusterEngineRuntimeProfile{
-			ObjectMeta: metav1.ObjectMeta{Name: "patio-runtime"},
-			Spec: workloadsv1alpha.ClusterEngineRuntimeProfileSpec{
-				InitContainers: []corev1.Container{
-					{
-						Name:  "init-patio-runtime",
-						Image: "init-container-image",
+		WithRuntimeObjects(
+			&workloadsv1alpha.ClusterEngineRuntimeProfile{
+				ObjectMeta: metav1.ObjectMeta{Name: "patio-runtime"},
+				Spec: workloadsv1alpha.ClusterEngineRuntimeProfileSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-patio-runtime",
+							Image: "init-container-image",
+						},
 					},
-				},
-				Containers: []corev1.Container{
-					{
-						Name:  "patio-runtime",
-						Image: "sidecar-image",
+					Containers: []corev1.Container{
+						{
+							Name:  "patio-runtime",
+							Image: "sidecar-image",
+						},
 					},
-				},
-				Volumes: []corev1.Volume{
-					{
-						Name: "patio-runtime-volume",
-						VolumeSource: corev1.VolumeSource{
-							EmptyDir: &corev1.EmptyDirVolumeSource{},
+					Volumes: []corev1.Volume{
+						{
+							Name: "patio-runtime-volume",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
 						},
 					},
 				},
 			},
-		}).Build()
+		).Build()
 
 	rbg := &workloadsv1alpha.RoleBasedGroup{
 		Spec: workloadsv1alpha.RoleBasedGroupSpec{
@@ -367,17 +376,19 @@ func TestInjectSidecar(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			role, _ := rbg.GetRole("test")
-			b := NewSidecarBuilder(fakeClient, rbg, role)
-			err := b.Build(context.TODO(), tt.podSpec)
-			if err != nil {
-				t.Errorf("build error: %s", err.Error())
-			}
-			if !reflect.DeepEqual(tt.podSpec, tt.want) {
-				t.Errorf("Build expect err, want %v, got %v", tt.want, tt.podSpec)
-			}
+		t.Run(
+			tt.name, func(t *testing.T) {
+				role, _ := rbg.GetRole("test")
+				b := NewSidecarBuilder(fakeClient, rbg, role)
+				err := b.Build(context.TODO(), tt.podSpec)
+				if err != nil {
+					t.Errorf("build error: %s", err.Error())
+				}
+				if !reflect.DeepEqual(tt.podSpec, tt.want) {
+					t.Errorf("Build expect err, want %v, got %v", tt.want, tt.podSpec)
+				}
 
-		})
+			},
+		)
 	}
 }

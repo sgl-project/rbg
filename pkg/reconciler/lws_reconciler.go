@@ -64,7 +64,7 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 		return err
 	}
 
-	equal, err := semanticallyEqualLeaderWorkerSet(oldLWS, newLWS)
+	equal, err := semanticallyEqualLeaderWorkerSet(oldLWS, newLWS, false)
 	if equal {
 		logger.Info("lws equal, skip reconcile")
 		return nil
@@ -306,7 +306,7 @@ func (r *LeaderWorkerSetReconciler) RecreateWorkload(
 	return nil
 }
 
-func semanticallyEqualLeaderWorkerSet(oldLws, newLws *lwsv1.LeaderWorkerSet) (bool, error) {
+func semanticallyEqualLeaderWorkerSet(oldLws, newLws *lwsv1.LeaderWorkerSet, checkStatus bool) (bool, error) {
 	if oldLws == nil || oldLws.UID == "" {
 		return false, errors.New("old lws not exist")
 	}
@@ -331,12 +331,14 @@ func semanticallyEqualLeaderWorkerSet(oldLws, newLws *lwsv1.LeaderWorkerSet) (bo
 		return false, retErr
 	}
 
-	if equal, err := lwsStatusEqual(oldLws.Status, newLws.Status); !equal {
-		retErr := fmt.Errorf("lws status not equal")
-		if err != nil {
-			retErr = fmt.Errorf("lws status not equal: %s", err.Error())
+	if checkStatus {
+		if equal, err := lwsStatusEqual(oldLws.Status, newLws.Status); !equal {
+			retErr := fmt.Errorf("lws status not equal")
+			if err != nil {
+				retErr = fmt.Errorf("lws status not equal: %s", err.Error())
+			}
+			return false, retErr
 		}
-		return false, retErr
 	}
 
 	return true, nil

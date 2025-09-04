@@ -61,7 +61,7 @@ func (r *DeploymentReconciler) Reconciler(
 		return fmt.Errorf("convert deployApplyConfig to deployment error: %s", err.Error())
 	}
 
-	equal, err := SemanticallyEqualDeployment(oldDeploy, newDeploy)
+	equal, err := semanticallyEqualDeployment(oldDeploy, newDeploy, false)
 	if equal {
 		logger.Info("deployment equal, skip reconcile")
 		return nil
@@ -262,7 +262,7 @@ func (r *DeploymentReconciler) RecreateWorkload(
 	return nil
 }
 
-func SemanticallyEqualDeployment(oldDeploy, newDeploy *appsv1.Deployment) (bool, error) {
+func semanticallyEqualDeployment(oldDeploy, newDeploy *appsv1.Deployment, checkStatus bool) (bool, error) {
 	if oldDeploy == nil || oldDeploy.UID == "" {
 		return false, errors.New("old deployment not exist")
 	}
@@ -278,8 +278,10 @@ func SemanticallyEqualDeployment(oldDeploy, newDeploy *appsv1.Deployment) (bool,
 		return false, fmt.Errorf("spec not equal: %s", err.Error())
 	}
 
-	if equal, err := deploymentStatusEqual(oldDeploy.Status, newDeploy.Status); !equal {
-		return false, fmt.Errorf("status not equal: %s", err.Error())
+	if checkStatus {
+		if equal, err := deploymentStatusEqual(oldDeploy.Status, newDeploy.Status); !equal {
+			return false, fmt.Errorf("status not equal: %s", err.Error())
+		}
 	}
 
 	return true, nil

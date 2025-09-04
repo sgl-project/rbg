@@ -1,0 +1,52 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: rbg-with-lws-workload
+spec:
+  roles:
+    - name: sts
+      replicas: 1
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+
+    - name: lws
+      replicas: 2
+      workload:
+        apiVersion: leaderworkerset.x-k8s.io/v1
+        kind: LeaderWorkerSet
+      leaderWorkerSet:
+        size: 2
+        patchLeaderTemplate:
+          metadata:
+            labels:
+              role: leader
+          spec:
+            containers:
+              - name: nginx
+                readinessProbe:
+                  tcpSocket:
+                    port: 80
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+        patchWorkerTemplate:
+          metadata:
+            labels:
+              role: worker
+      template:
+        metadata:
+          labels:
+            appVersion: v1
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              command:
+                - sh
+                - -c
+                - "sleep 10s; nginx -g 'daemon off;'"
+              ports:
+                - name: http
+                  containerPort: 80

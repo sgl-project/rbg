@@ -86,7 +86,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return fmt.Errorf("convert stsApplyConfig to sts error: %s", err.Error())
 	}
 
-	equal, err := SemanticallyEqualStatefulSet(oldSts, newSts)
+	equal, err := semanticallyEqualStatefulSet(oldSts, newSts, false)
 	if err != nil {
 		logger.Info(fmt.Sprintf("sts not equal, diff: %s", err.Error()))
 	}
@@ -616,7 +616,7 @@ func (r *StatefulSetReconciler) RecreateWorkload(
 	return nil
 }
 
-func SemanticallyEqualStatefulSet(oldSts, newSts *appsv1.StatefulSet) (bool, error) {
+func semanticallyEqualStatefulSet(oldSts, newSts *appsv1.StatefulSet, checkStatus bool) (bool, error) {
 	if oldSts == nil || oldSts.UID == "" {
 		return false, errors.New("old sts not exist")
 	}
@@ -632,8 +632,10 @@ func SemanticallyEqualStatefulSet(oldSts, newSts *appsv1.StatefulSet) (bool, err
 		return false, fmt.Errorf("spec not equal: %s", err.Error())
 	}
 
-	if equal, err := statefulSetStatusEqual(oldSts.Status, newSts.Status); !equal {
-		return false, fmt.Errorf("status not equal: %s", err.Error())
+	if checkStatus {
+		if equal, err := statefulSetStatusEqual(oldSts.Status, newSts.Status); !equal {
+			return false, fmt.Errorf("status not equal: %s", err.Error())
+		}
 	}
 	return true, nil
 }

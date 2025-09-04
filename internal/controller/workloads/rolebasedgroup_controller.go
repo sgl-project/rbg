@@ -466,16 +466,11 @@ func WorkloadPredicate() predicate.Funcs {
 
 			// Check if the workload needs to be reconciled
 			equal, err := reconciler.WorkloadEqual(e.ObjectOld, e.ObjectNew)
-			// if workload is equal, skip reconciling
-			if equal {
-				return true
-			}
-
 			if err != nil {
 				ctrl.Log.Info("enqueue: workload update event",
 					"rbg", klog.KObj(e.ObjectOld), "diff", err.Error())
 			}
-			return false
+			return !equal
 		},
 		DeleteFunc: func(e event.TypedDeleteEvent[client.Object]) bool {
 			// Ignore objects without valid OwnerReferences
