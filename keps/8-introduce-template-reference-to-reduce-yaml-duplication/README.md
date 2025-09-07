@@ -16,6 +16,7 @@ tags, and then generate with `hack/update-toc.sh`.
 -->
 
 <!-- toc -->
+- [Summary](#summary)
 - [Motivation](#motivation)
 - [Proposal](#proposal)
     - [User Stories (Optional)](#user-stories-optional)
@@ -29,7 +30,29 @@ tags, and then generate with `hack/update-toc.sh`.
         - [End to End Tests](#end-to-end-tests)
 <!-- /toc -->
 
+## Summary
+
+This KEP proposes a new custom resource definition (CRD) called `RoleBasedGroup` to simplify the management of multi-role workloads in Kubernetes. It addresses configuration duplication, environment-specific variations, and upgrade complexities by introducing a template-based approach with variable substitution and patch mechanisms.
+
+The `RoleBasedGroup` CRD provides a higher-level abstraction for managing applications with multiple roles (e.g., leader-worker patterns) while maintaining compatibility with existing Kubernetes workload resources. It enables centralized configuration management through reusable templates, reduces human error through variable substitution, and simplifies upgrades through a unified configuration approach.
+
 ## Motivation
+
+Managing multi-role workloads in Kubernetes presents several challenges:
+
+1. **Configuration Explosion**: Each role requires maintaining lengthy command lines and numerous environment variables, resulting in YAML files exceeding 200+ lines.
+2. **Copy-Paste Errors**: Manual modifications for different environments (staging/production) often lead to missed or incorrect changes.
+3. **Upgrade Complexity**: Duplicate definitions require individual updates, making upgrades error-prone and time-consuming.
+
+These challenges become particularly acute in AI/ML workloads and distributed systems where applications consist of multiple specialized components with similar but not identical configurations.
+
+### Goals
+
+- **Unified Configuration**: Provide a single source of truth for common configuration across multiple roles within a workload group.
+- **Upgrade Friendly**: Enable configuration changes to be made in one place and propagated to all relevant roles.
+- **Simplified Authoring**: Reduce configuration complexity through templates, variables, and patch mechanisms.
+- **Environment Consistency**: Ensure consistent configuration across different environments (development, staging, production).
+- **Kubernetes Native**: Maintain compatibility with existing Kubernetes APIs and workload resources.
 
 <!--
 This section is for explicitly listing the motivation, goals, and non-goals of
@@ -39,18 +62,6 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 [experience reports]: https://github.com/golang/go/wiki/ExperienceReports
 -->
-
-Large language-model (LLM) services currently suffer from:
-
-1. **Configuration explosion** – every role carries long commands and dozens of env vars.  
-2. **Copy-paste errors** – staging vs. prod values are changed by hand.  
-3. **Cross-team friction** – platform teams cannot push base-image or probe fixes without forcing every service owner to re-copy YAML.  
-
-### Goals
-
-- **Reduce configuration complexity:** Allow users to define workloads with minimal YAML (target ≤ 40 lines) by leveraging templates and variable injection.
-- **Improve consistency and reliability:** Centralize common configurations in a shared PodTemplate CRD, reducing copy-paste errors and ensuring uniformity.
-- **Support advanced use cases:** Provide patch mechanisms (e.g., patchLeaderTemplate) for expert users to customize rendered templates.
 
 ### Non-Goals
 
@@ -66,7 +77,12 @@ implementation. What is the desired outcome and how do we measure success?.
 The "Design Details" section below is for the real
 nitty-gritty.
 -->
-We propose a new CRD RoleBasedGroup that references a centralized `PodTemplate` CRD. The PodTemplate contains a Go Template for the pod specification and default values for variables. The `RoleBasedGroup` injects role-specific variables and optionally applies patches to the rendered template.
+The `RoleBasedGroup` CRD introduces a template-based approach for defining multi-role workloads with the following key components:
+
+1. **RoleTemplates**: Reusable templates containing common Pod specifications with variable placeholders using Go template syntax.
+2. **Roles**: Concrete instances of RoleTemplates with specific variable values and replication requirements.
+3. **PatchTemplates**: Mechanism for applying role-specific modifications to base templates.
+4. **Variable System**: Support for parameterization of configurations using Go template variables.
 
 ### User Stories (Optional)
 
@@ -77,12 +93,32 @@ the system. The goal here is to make this feel real for users without getting
 bogged down.
 -->
 
-#### Story 1
+#### Story 1: Platform team ships a 200-line PodSpec once
+> “I write the base sglang container once, expose `{{.tp}}`, `{{.dp}}`,  
+> `{{.max_running_requests}}` variables, and never paste it again.”
 
-An application team needs to deploy a service with leader and worker roles. They use a shared PodTemplate and specify only the differences (e.g., replica counts, resource limits) in their RoleBasedGroup. This simplifies their configuration and ensures they benefit from platform-wide updates.
+#### Story 2: SRE promotes an image version in one line
+> “A new CVE-fixed image is available. I edit `roleTemplates[0].template.spec.containers[0].image`  
+> and open a 3-line PR; RBG controller rolls prefill, decode, router in order.”
 
+### Notes/Constraints/Caveats
+
+- The solution requires a controller that processes the RoleBasedGroup CRD, renders templates, and creates the underlying Kubernetes resources.
+- Template rendering uses Go template syntax, which has certain limitations and complexities.
+- The patch mechanism follows JSON Patch semantics but is applied to the rendered template.
+- Variable substitution occurs before patch application, allowing patches to reference variables.
+- The solution is designed for applications with multiple similar roles, not for completely heterogeneous workloads.  
 
 ### Risks and Mitigations
+
+- **Template Complexity**: Complex templates might become difficult to understand and maintain.
+  - Mitigation: Provide best practices documentation and examples for template design.
+- **Performance Overhead**: Template rendering and patch application might introduce overhead.
+  - Mitigation: Implement efficient rendering algorithms and caching strategies.
+- **Security Concerns**: Template injection attacks if variables are not properly sanitized.
+  - Mitigation: Implement strict input validation and sandboxed template rendering.
+- **Debugging Difficulty**: Multi-layer templates and patches might make debugging challenging.
+  - Mitigation: Provide comprehensive logging and status reporting in the controller.  
 
 <!--
 What are the risks of this proposal, and how do we mitigate? Think broadly.
@@ -95,9 +131,7 @@ How will UX be reviewed, and by whom?
 
 Consider including folks who also work outside the SIG or subproject.
 -->
-- **Security**: Go Template functions could be exploited. Mitigation: Restrict available functions to a safe subset and validate variables against a schema.  
-- **Performance**: Rendering templates for many workloads might add overhead. Mitigation: Implement caching and rate limiting.  
-- **Complexity**: The rendering and patching logic might be hard to debug. Mitigation: Provide detailed logging and status conditions.
+
 
 ## Design Details
 
@@ -109,85 +143,101 @@ change are understandable. This may include API specs (though not always
 required) or even code snippets. If there's any ambiguity about HOW your
 proposal will be implemented, this is the place to discuss them.
 -->
-### API
+### API Overview
 
-#### PodTemplate CRD
 ```yaml
-apiVersion: workloads.x-k8s.io/v1alpha1
-kind: PodTemplate
-metadata:
-  name: sglang-default
-spec:
-  defaults:               # fallback values
-    mode: prefill
-    tp: "1"
-    dp: "1"
-    max_running: "512"
-    ib_devices: mlx5_0,mlx5_1
-  template:
-    metadata:
-      labels:
-        app: sglang
-        pd_role: "{{ .mode }}"
-    spec:
-      hostNetwork: true
-      containers:
-      - name: sglang
-        image: sealos.hub:5000/sglang:{{ .image_tag | default "v0.5.1.post1-cu126" }}
-        command:
-        - python3
-        - -m
-        - sglang.launch_server
-        - --tp={{ .tp }}
-        - --dp={{ .dp }}
-        - --disaggregation-mode={{ .mode }}
-        - --max-running-requests={{ .max_running }}
-        resources:
-          requests:
-            nvidia.com/gpu: "{{ .tp }}"
-```
-
-#### RoleBasedGroup CRD
-```yaml
-apiVersion: workloads.x-k8s.io/v1alpha1
+ apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
 metadata:
-  name: deepseek-rbg
+  name: deepseek-rbg-deploy
 spec:
+  roleTemplates:
+  - name: sglang-default
+    template:
+      metadata:
+        labels:
+          app: sglang
+          pd_role: "{{ .mode }}"
+      spec:
+        hostNetwork: true
+        nodeSelector: { rbg: "yes" }
+        containers:
+        - name: sglang
+          image: sealos.hub:5000/sglang:v0.5.1.post1-cu126-fixip
+          command:
+          - python3
+          - -m
+          - sglang.launch_server
+          - --model-path
+          - /work/models
+          - --enable-dp-attention
+          - --enable-dp-lm-head
+          - --dp-size
+          - {{ .dp }}
+          - --enable-deepep-moe
+          - --tp
+          - {{ .tp }}
+          - --disaggregation-mode
+          - {{ .mode }}
+          - --mem-fraction-static
+          -  "0.849"
+          - --max-running-requests
+          - {{ .max_running }}
+          - --disaggregation-ib-device
+          -  {{ .ib_devices }}
+          {{ if .extra_args }}{{ .extra_args }}{{ end }}
+          env:
+          - { name: TP, value: "{{ .tp }}" }
+          resources:
+            requests:
+              nvidia.com/gpu: "{{ .tp }}"
   roles:
   - name: prefill
     replicas: 4
-    workloadRef:
+    workload:
       apiVersion: leaderworkerset.x-k8s.io/v1
       kind: LeaderWorkerSet
-      lws:
-        size: 4
-        patchLeaderTemplate:
-          spec:
-            containers:
-            - name: sglang
-              command:
-              - --port=30000
-        patchWorkerTemplate:
-          spec:
-            containers:
-            - name: sglang
-              resources:
-                requests:
-                  memory: "32Gi"
-              command:
-                - --crash-dump-folder /log
+    leaderWorkerSet:
+      size: 4
+    # 1) 可选：对 leader 打补丁
+      patchLeaderTemplate:
+        spec:
+          containers:
+          - name: sglang
+            readinessProbe:
+              failureThreshold: 20
+              httpGet:
+                path: /health
+                port: 30000
+              periodSeconds: 30
+              successThreshold: 1
+              timeoutSeconds: 3
+        vars:
+         extra_args: |
+          - --port
+          - "30000"
+      # 3) 可选：对 worker 打补丁
+      patchWorkerTemplate:
+        spec:
+          containers:
+          - name: sglang
+            resources:
+              requests:
+                memory: "32Gi"
+        vars:
+          extra_args: |
+          - --crash-dump-folder
+          - "/log"
+    # 3) 引用同一个yaml内的模板
     templateRef:
-      apiVersion: workloads.x-k8s.io/v1alpha1
-      kind: PodTemplate
       name: sglang-default
-      propagation: Static   # or Rolling
-      config:
+      vars:                      # 渲染变量
         mode: prefill
         tp: "4"
         dp: "4"
         max_running: "2048"
 ```
+
 
 #### Controller Behavior
 
@@ -209,14 +259,8 @@ flowchart TD
 ```
 
 Priority (high → low):  
-`patchLeader/Worker` > `templateRef.config` > `ClusterPodTemplate.defaults`.
+`patchLeader/Worker.vars`  > `templateRef.vars`.
 
-### Upgrade Strategies
-
-| Strategy | Template Change | Workload Action | 
-|---|---|---|---|
-| **Static** (default) | new version | none (manual rollout) |
-| **Rolling** | new version | rolling update | 
 
 ### Test Plan
 
@@ -238,9 +282,10 @@ to implement this enhancement.
 
 #### Unit Tests
 
-- Test template rendering with various variables.
-- Test patch application logic.
-- Test validation of parameters.
+- **CRD validation**: Test valid and invalid RoleBasedGroup specifications
+- **Template rendering**: Test variable substitution and conditional logic
+- **Patch application**: Test merging of patches into base templates
+- **Controller logic**: Test reconciliation loops and error handling
 
 <!--
 In principle every added code should have complete unit test coverage, so providing
@@ -261,19 +306,16 @@ extending the production code to implement this enhancement.
 
 #### Integration tests
 
-- Test the entire flow from RoleBasedGroup to rendered workload.
-- Test rolling update propagation.
+- Create RoleBasedGroup resources and verify corresponding Kubernetes resources are created
+- Test template variable substitution with different value types
+- Verify patch application works correctly for various patch operations
+- Test error handling for invalid templates or patches
 
-<!--
-Describe what tests will be added to ensure proper quality of the enhancement.
+#### e2e tests
 
-After the implementation PR is merged, add the names of the tests here.
--->
-
-#### End to End Tests
-
-- Deploy a sample application using RoleBasedGroup and verify functionality.
-- Test upgrade of PodTemplate and verify rolling update.
+- Deploy a multi-role application using RoleBasedGroup
+- Verify all components work together correctly
+- Test upgrade scenarios: change a template and verify all roles are updated
 
 
 ## Implementation History
