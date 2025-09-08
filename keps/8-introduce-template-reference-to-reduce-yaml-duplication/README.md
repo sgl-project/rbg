@@ -21,6 +21,7 @@ tags, and then generate with `hack/update-toc.sh`.
 - [Proposal](#proposal)
     - [User Stories (Optional)](#user-stories-optional)
         - [Story 1](#story-1)
+        - [Story 2](#story-2)
     - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
     - [Implementation](#implementation)
@@ -180,11 +181,11 @@ spec:
           - --disaggregation-mode
           - {{ .mode }}
           - --mem-fraction-static
-          -  "0.849"
+          - "0.849"
           - --max-running-requests
           - {{ .max_running }}
           - --disaggregation-ib-device
-          -  {{ .ib_devices }}
+          - {{ .ib_devices }}
           {{ if .extra_args }}{{ .extra_args }}{{ end }}
           env:
           - { name: TP, value: "{{ .tp }}" }
@@ -199,7 +200,7 @@ spec:
       kind: LeaderWorkerSet
     leaderWorkerSet:
       size: 4
-    # 1) 可选：对 leader 打补丁
+    # 1) Optional: Patch the leader template
       patchLeaderTemplate:
         spec:
           containers:
@@ -216,7 +217,7 @@ spec:
          extra_args: |
           - --port
           - "30000"
-      # 3) 可选：对 worker 打补丁
+      # 2) Optional: Patch the worker template
       patchWorkerTemplate:
         spec:
           containers:
@@ -228,19 +229,35 @@ spec:
           extra_args: |
           - --crash-dump-folder
           - "/log"
-    # 3) 引用同一个yaml内的模板
+    # 3) Reference the template within the same YAML
     templateRef:
       name: sglang-default
-      vars:                      # 渲染变量
+      vars:                      # Template variables
         mode: prefill
         tp: "4"
         dp: "4"
         max_running: "2048"
 ```
+This YAML defines a `RoleBasedGroup` that manages role-based workloads in Kubernetes. Here's what each section does:
 
+1. **roleTemplates**: Defines reusable templates for roles
+   - `sglang-default`: Base template with Go template variables (`{{ .variable }}`)
+   - Configures container command, environment variables, and resources
+   - Uses `extra_args` for conditional command arguments
+
+2. **roles**: Concrete role instances using templates
+   - `prefill` role with 4 replicas using `LeaderWorkerSet`
+   - `patchLeaderTemplate`: Adds readiness probe and port configuration for leaders
+   - `patchWorkerTemplate`: Adds memory resource and crash dump folder for workers
+   - `templateRef`: References the base template with specific variable values
+
+3. **Key Features**:
+   - Template variables (`mode`, `tp`, `dp`, etc.) enable configuration reuse
+   - Patch mechanism allows role-specific customizations
+   - Reduces duplication through template inheritance
+   - Supports different configurations for leader vs worker pods
 
 #### Controller Behavior
-
 
 1. Read RoleBasedGroup: For each role, get the referenced PodTemplate.  
 2. Render Template: Use Go Template rendering with variables from config and default values from parameters.  
