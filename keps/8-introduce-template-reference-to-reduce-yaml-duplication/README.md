@@ -52,8 +52,6 @@ These challenges become particularly acute in AI/ML workloads and distributed sy
 - **Unified Configuration**: Provide a single source of truth for common configuration across multiple roles within a workload group.
 - **Upgrade Friendly**: Enable configuration changes to be made in one place and propagated to all relevant roles.
 - **Simplified Authoring**: Reduce configuration complexity through templates, variables, and patch mechanisms.
-- **Environment Consistency**: Ensure consistent configuration across different environments (development, staging, production).
-- **Kubernetes Native**: Maintain compatibility with existing Kubernetes APIs and workload resources.
 
 <!--
 This section is for explicitly listing the motivation, goals, and non-goals of
