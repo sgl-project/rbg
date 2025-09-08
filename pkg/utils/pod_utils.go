@@ -43,6 +43,10 @@ func getPodConditionFromList(conditions []corev1.PodCondition, conditionType cor
 
 // ContainerRestarted return true when there is any container in the pod that gets restarted
 func ContainerRestarted(pod *corev1.Pod) bool {
+	// if pod is nil, no containers restarted.
+	if pod == nil {
+		return false
+	}
 	if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
 		for j := range pod.Status.InitContainerStatuses {
 			stat := pod.Status.InitContainerStatuses[j]
@@ -66,5 +70,5 @@ func ContainerRestarted(pod *corev1.Pod) bool {
 
 // PodDeleted checks if the worker pod has been deleted
 func PodDeleted(pod *corev1.Pod) bool {
-	return pod.DeletionTimestamp != nil
+	return pod == nil || pod.DeletionTimestamp != nil
 }

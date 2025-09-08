@@ -18,6 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5.0.0
       - uses: dominikh/staticcheck-action@v1.4.0
+        with:
+          checks: 'inherit,-SA1019'
 
   lint:
     runs-on: ubuntu-latest

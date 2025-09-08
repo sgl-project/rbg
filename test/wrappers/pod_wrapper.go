@@ -14,8 +14,8 @@ type PodWrapper struct {
 	corev1.Pod
 }
 
-func (podWrapper *PodWrapper) Obj() corev1.Pod {
-	return podWrapper.Pod
+func (podWrapper *PodWrapper) Obj() *corev1.Pod {
+	return &podWrapper.Pod
 }
 
 func (podWrapper *PodWrapper) WithName(name string) *PodWrapper {

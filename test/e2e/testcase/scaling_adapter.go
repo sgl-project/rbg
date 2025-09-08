@@ -13,7 +13,7 @@ import (
 
 func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"rbg controller", func() {
+		"rbg scaling adapter controller", func() {
 
 			ginkgo.It(
 				"test role with scalingAdapter", func() {
@@ -21,13 +21,10 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
 								wrappers.BuildBasicRole("role-1").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 									WithScalingAdapter(true).Obj(),
 								wrappers.BuildBasicRole("role-2").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 									WithScalingAdapter(false).Obj(),
-								wrappers.BuildBasicRole("role-3").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+								wrappers.BuildBasicRole("role-3").Obj(),
 							},
 						).Obj()
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -47,13 +44,10 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
 								wrappers.BuildBasicRole("role-1").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 									WithScalingAdapter(true).Obj(),
 								wrappers.BuildBasicRole("role-2").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 									WithScalingAdapter(true).Obj(),
-								wrappers.BuildBasicRole("role-3").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+								wrappers.BuildBasicRole("role-3").Obj(),
 							},
 						).Obj()
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -88,7 +82,7 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
-								wrappers.BuildBasicRole("role-1").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+								wrappers.BuildBasicRole("role-1").Obj(),
 							},
 						).Obj()
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -109,7 +103,6 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 
 					newRbg.Spec.Roles = append(
 						newRbg.Spec.Roles, wrappers.BuildBasicRole("role-2").
-							WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 							WithScalingAdapter(true).Obj(),
 					)
 					gomega.Expect(f.Client.Update(f.Ctx, newRbg)).Should(gomega.Succeed())
@@ -129,13 +122,10 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
 								wrappers.BuildBasicRole("role-1").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 									WithScalingAdapter(true).Obj(),
 								wrappers.BuildBasicRole("role-2").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 									WithScalingAdapter(true).Obj(),
-								wrappers.BuildBasicRole("role-3").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+								wrappers.BuildBasicRole("role-3").Obj(),
 							},
 						).Obj()
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())

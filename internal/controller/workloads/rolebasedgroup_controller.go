@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -83,8 +84,10 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Fetch the RoleBasedGroup instance
 	rbg := &workloadsv1alpha1.RoleBasedGroup{}
 	if err := r.client.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbg); err != nil {
-		r.recorder.Eventf(rbg, corev1.EventTypeWarning, FailedGetRBG,
-			"Failed to get rbg, err: %s", err.Error())
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedGetRBG,
+			"Failed to get rbg, err: %s", err.Error(),
+		)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if rbg.DeletionTimestamp != nil {
@@ -148,29 +151,37 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
 		if err != nil {
 			logger.Error(err, "Failed to create workload reconciler")
-			r.recorder.Eventf(rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s: %v", role.Name, err)
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to reconcile role %s: %v", role.Name, err,
+			)
 			return ctrl.Result{}, err
 		}
 
 		if err := reconciler.Reconciler(roleCtx, rbg, role); err != nil {
-			r.recorder.Eventf(rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s: %v", role.Name, err)
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to reconcile role %s: %v", role.Name, err,
+			)
 			return ctrl.Result{}, err
 		}
 
 		if err := r.ReconcileScalingAdapter(roleCtx, rbg, role); err != nil {
 			logger.Error(err, "Failed to reconcile scaling adapter")
-			r.recorder.Eventf(rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
-				"Failed to reconcile scaling adapter for role %s: %v", role.Name, err)
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
+				"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
+			)
 			return ctrl.Result{}, err
 		}
 
 		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, role)
 		if err != nil {
 			if !apierrors.IsNotFound(err) {
-				r.recorder.Eventf(rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to construct role %s status: %v", role.Name, err)
+				r.recorder.Eventf(
+					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+					"Failed to construct role %s status: %v", role.Name, err,
+				)
 			}
 			return ctrl.Result{}, err
 		}
@@ -180,16 +191,20 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if updateStatus {
 		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err)
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+				"Failed to update status for %s: %v", rbg.Name, err,
+			)
 			return ctrl.Result{}, err
 		}
 	}
 
 	// delete role
 	if err := r.deleteRoles(ctx, rbg); err != nil {
-		r.recorder.Eventf(rbg, corev1.EventTypeWarning, "delete role error",
-			"Failed to delete roles for %s: %v", rbg.Name, err)
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, "delete role error",
+			"Failed to delete roles for %s: %v", rbg.Name, err,
+		)
 		return ctrl.Result{}, err
 	}
 
@@ -221,7 +236,9 @@ func (r *RoleBasedGroupReconciler) deleteRoles(ctx context.Context, rbg *workloa
 	return errors.NewAggregate(errs)
 }
 
-func (r *RoleBasedGroupReconciler) updateRBGStatus(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatus []workloadsv1alpha1.RoleStatus) error {
+func (r *RoleBasedGroupReconciler) updateRBGStatus(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatus []workloadsv1alpha1.RoleStatus,
+) error {
 	// update ready condition
 	rbgReady := true
 	for _, role := range roleStatus {
@@ -271,19 +288,23 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(ctx context.Context, rbg *wor
 	}
 
 	// update rbg status
-	rbgApplyConfig := utils.RoleBasedGroup(rbg.Name, rbg.Namespace, rbg.Kind, rbg.APIVersion).
+	rbgApplyConfig := utils.RoleBasedGroup(rbg.Name, rbg.Namespace).
 		WithStatus(utils.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 
 }
 
-func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleSpec *workloadsv1alpha1.RoleSpec) error {
+func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleSpec *workloadsv1alpha1.RoleSpec,
+) error {
 	logger := log.FromContext(ctx)
 	roleName := roleSpec.Name
 	roleScalingAdapterName := scale.GenerateScalingAdapterName(rbg.Name, roleName)
 	rbgScalingAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
-	err := r.client.Get(ctx, types.NamespacedName{Name: roleScalingAdapterName, Namespace: rbg.Namespace}, rbgScalingAdapter)
+	err := r.client.Get(
+		ctx, types.NamespacedName{Name: roleScalingAdapterName, Namespace: rbg.Namespace}, rbgScalingAdapter,
+	)
 	if err == nil {
 		// scalingAdapter exists
 		// clean scalingAdapter when user update rbg.spec.role.scalingAdapter.enable to false
@@ -301,7 +322,6 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(ctx context.Context, 
 	}
 
 	// scalingAdapter not found
-	blockOwnerDeletion := true
 	rbgScalingAdapter = &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      roleScalingAdapterName,
@@ -312,7 +332,7 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(ctx context.Context, 
 					Kind:               rbg.Kind,
 					Name:               rbg.Name,
 					UID:                rbg.UID,
-					BlockOwnerDeletion: &blockOwnerDeletion,
+					BlockOwnerDeletion: ptr.To(true),
 				},
 			},
 			Labels: map[string]string{
@@ -331,14 +351,19 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(ctx context.Context, 
 	return r.client.Create(ctx, rbgScalingAdapter)
 }
 
-func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+) error {
 	logger := log.FromContext(ctx)
 	// list scalingAdapter managed by rbg
 	scalingAdapterList := &workloadsv1alpha1.RoleBasedGroupScalingAdapterList{}
-	if err := r.client.List(context.Background(), scalingAdapterList, client.InNamespace(rbg.Namespace),
-		client.MatchingLabels(map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		}),
+	if err := r.client.List(
+		context.Background(), scalingAdapterList, client.InNamespace(rbg.Namespace),
+		client.MatchingLabels(
+			map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
+		),
 	); err != nil {
 		return err
 	}
@@ -450,15 +475,19 @@ func WorkloadPredicate() predicate.Funcs {
 			return false
 		},
 		UpdateFunc: func(e event.TypedUpdateEvent[client.Object]) bool {
-			ctrl.Log.V(1).Info(fmt.Sprintf("enter workload.onUpdateFunc, %s/%s, type: %T",
-				e.ObjectNew.GetNamespace(), e.ObjectNew.GetName(), e.ObjectNew))
+			ctrl.Log.V(1).Info(
+				fmt.Sprintf(
+					"enter workload.onUpdateFunc, %s/%s, type: %T",
+					e.ObjectNew.GetNamespace(), e.ObjectNew.GetName(), e.ObjectNew,
+				),
+			)
 			// Defensive check for nil objects
 			if e.ObjectOld == nil || e.ObjectNew == nil {
 				return false
 			}
 
 			// Check validity of OwnerReferences for both old and new objects
-			targetGVK := getRbgGVK()
+			targetGVK := utils.GetRbgGVK()
 			if !hasValidOwnerRef(e.ObjectOld, targetGVK) ||
 				!hasValidOwnerRef(e.ObjectNew, targetGVK) {
 				return false
@@ -467,14 +496,16 @@ func WorkloadPredicate() predicate.Funcs {
 			// Check if the workload needs to be reconciled
 			equal, err := reconciler.WorkloadEqual(e.ObjectOld, e.ObjectNew)
 			if err != nil {
-				ctrl.Log.Info("enqueue: workload update event",
-					"rbg", klog.KObj(e.ObjectOld), "diff", err.Error())
+				ctrl.Log.Info(
+					"enqueue: workload update event",
+					"rbg", klog.KObj(e.ObjectOld), "diff", err.Error(),
+				)
 			}
 			return !equal
 		},
 		DeleteFunc: func(e event.TypedDeleteEvent[client.Object]) bool {
 			// Ignore objects without valid OwnerReferences
-			if e.Object == nil || !hasValidOwnerRef(e.Object, getRbgGVK()) {
+			if e.Object == nil || !hasValidOwnerRef(e.Object, utils.GetRbgGVK()) {
 				return false
 			}
 
@@ -499,18 +530,10 @@ func hasValidOwnerRef(obj client.Object, targetGVK schema.GroupVersionKind) bool
 	return utils.CheckOwnerReference(refs, targetGVK)
 }
 
-func getRbgGVK() schema.GroupVersionKind {
-	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "RoleBasedGroup")
-}
-
-func getLwsGVK() schema.GroupVersionKind {
-	return schema.FromAPIVersionAndKind(lwsv1.GroupVersion.String(), "LeaderWorkerSet")
-}
-
 func dynamicWatchCustomCRD(ctx context.Context, kind string) {
 	logger := log.FromContext(ctx)
 	switch kind {
-	case getLwsGVK().Kind:
+	case utils.GetLwsGVK().Kind:
 		_, lwsExist := watchedWorkload.Load(utils.LwsCrdName)
 		if !lwsExist {
 			watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})

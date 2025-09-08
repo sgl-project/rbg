@@ -82,6 +82,10 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		return ctrl.Result{}, nil
 	}
 
+	if rbgScalingAdapter.Spec.ScaleTargetRef == nil {
+		return ctrl.Result{}, errors.New("RoleBasedGroupScalingAdapter.Spec.ScaleTargetRef is nil")
+	}
+
 	logger.Info("Start reconciling")
 	rbgScalingAdapterName := rbgScalingAdapter.Name
 	rbgName := rbgScalingAdapter.Spec.ScaleTargetRef.Name
@@ -201,7 +205,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Scale successfully", "old replicas", *desiredReplicas, "new replicas", *currentReplicas)
+	logger.Info("Scale successfully", "old replicas", *currentReplicas, "new replicas", *desiredReplicas)
 	r.recorder.Eventf(
 		rbgScalingAdapter, corev1.EventTypeNormal, SuccessfulScale,
 		"Succeed to scale target role [%s] of rbg [%s] from %v to %v replicas",
@@ -216,10 +220,11 @@ func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 	rbgScalingAdapter *workloadsv1alpha1.RoleBasedGroupScalingAdapter,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 ) error {
+	rbgGKV := utils.GetRbgGVK()
 	rbgScalingAdapterApplyConfig := utils.RoleBasedGroupScalingAdapter(rbgScalingAdapter).WithOwnerReferences(
 		metaapplyv1.OwnerReference().
-			WithAPIVersion(rbg.APIVersion).
-			WithKind(rbg.Kind).
+			WithAPIVersion(rbgGKV.GroupVersion().String()).
+			WithKind(rbgGKV.Kind).
 			WithName(rbg.Name).
 			WithUID(rbg.GetUID()).
 			WithBlockOwnerDeletion(true),

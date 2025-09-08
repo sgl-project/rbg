@@ -18,13 +18,7 @@ func IsScalingAdapterManagedByRBG(
 		return false
 	}
 
-	for _, owner := range scalingAdapter.OwnerReferences {
-		if owner.UID == rbg.UID {
-			return true
-		}
-	}
-
-	return false
+	return scalingAdapter.ContainsRBGOwner(rbg)
 }
 
 func IsScalingAdapterEnable(roleSpec *workloadsv1alpha.RoleSpec) bool {

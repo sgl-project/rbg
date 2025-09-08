@@ -19,17 +19,20 @@ type RbgScalingAdapterApplyConfiguration struct {
 func RoleBasedGroupScalingAdapter(
 	rbgScalingAdapter *v1alpha1.RoleBasedGroupScalingAdapter,
 ) *RbgScalingAdapterApplyConfiguration {
+	gkv := GetRbgScalingAdapterGVK()
 	b := &RbgScalingAdapterApplyConfiguration{}
 	b.WithName(rbgScalingAdapter.Name)
 	b.WithNamespace(rbgScalingAdapter.Namespace)
-	b.WithKind(rbgScalingAdapter.Kind)
-	b.WithAPIVersion(rbgScalingAdapter.APIVersion)
+	b.WithKind(gkv.Kind)
+	b.WithAPIVersion(gkv.GroupVersion().String())
 	b.Spec = &RbgScalingAdapterSpecApplyConfiguration{
 		Replicas:       rbgScalingAdapter.Spec.Replicas,
 		ScaleTargetRef: rbgScalingAdapter.Spec.ScaleTargetRef,
 	}
 	return b
 }
+
+func (b *RbgScalingAdapterApplyConfiguration) IsApplyConfiguration() {}
 
 func (b *RbgScalingAdapterApplyConfiguration) WithAPIVersion(value string) *RbgScalingAdapterApplyConfiguration {
 	b.TypeMetaApplyConfiguration.APIVersion = &value

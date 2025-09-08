@@ -1,438 +1,442 @@
 package reconciler
 
 import (
+	"context"
 	"testing"
+	"time"
 
-	"k8s.io/utils/ptr"
-
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/pkg/utils"
+	"sigs.k8s.io/rbgs/test/wrappers"
 )
 
-var (
-	defaultPodTemplate = corev1.PodTemplateSpec{
+// TestLeaderWorkerSetReconciler_Reconciler tests the Reconciler method
+func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
+	// Create a scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = lwsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	// Create test objects
+	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha1.RoleSpec{wrappers.BuildLwsRole("test-role").Obj()}).Obj()
+
+	// Create a fake client with initial objects
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	// Create reconciler
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+
+	// Test successful reconciliation
+	ctx := context.Background()
+	err := reconciler.Reconciler(ctx, rbg, &lwsRole)
+	assert.NoError(t, err)
+
+	// Verify LWS was created
+	lws := &lwsv1.LeaderWorkerSet{}
+	err = fakeClient.Get(
+		ctx, types.NamespacedName{
+			Name:      rbg.GetWorkloadName(&lwsRole),
+			Namespace: rbg.Namespace,
+		}, lws,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(1), *lws.Spec.Replicas)
+	assert.Equal(t, int32(2), *lws.Spec.LeaderWorkerTemplate.Size)
+}
+
+// TestLeaderWorkerSetReconciler_ConstructRoleStatus tests the ConstructRoleStatus method
+func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
+	// Create a scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = lwsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	// Create test objects
+	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha1.RoleSpec{lwsRole}).Obj()
+
+	// Create LWS with status
+	lws := &lwsv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod-1",
-			Namespace: "default",
+			Name:      rbg.GetWorkloadName(&lwsRole),
+			Namespace: rbg.Namespace,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "nginx",
-					Image:   "nginx:1.15.1",
-					Command: []string{"nginx"},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "nginx-env",
-							Value: "value-1",
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "nginx-volume",
-							MountPath: "/data/nginx",
-						},
-					},
-				},
-				{
-					Name:    "test-sidecar",
-					Image:   "test-image:v1",
-					Command: []string{"nginx"},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "IS_INJECTED",
-							Value: "true",
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "nginx-volume",
-				},
-			},
+		Status: lwsv1.LeaderWorkerSetStatus{
+			Replicas:      5,
+			ReadyReplicas: 3,
 		},
 	}
 
-	defaultRbg = workloadsv1alpha1.RoleBasedGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg",
-			Namespace: "default",
-		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
-				{
-					Name:     "prefill",
-					Replicas: ptr.To(int32(4)),
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "test-pod-1",
-							Namespace: "default",
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:    "nginx",
-									Image:   "nginx:1.15.1",
-									Command: []string{"nginx"},
-									Env: []corev1.EnvVar{
-										{
-											Name:  "nginx-env",
-											Value: "value-1",
-										},
-									},
-									VolumeMounts: []corev1.VolumeMount{
-										{
-											Name:      "nginx-volume",
-											MountPath: "/data/nginx",
-										},
-									},
-								},
-							},
-							Volumes: []corev1.Volume{
-								{
-									Name: "nginx-volume",
-								},
-							},
-						},
-					},
-					LeaderWorkerSet: workloadsv1alpha1.LeaderWorkerTemplate{
-						Size: ptr.To(int32(2)),
-					},
-				},
-			},
-		},
+	// Create a fake client with initial objects
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
+
+	// Create reconciler
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+
+	// Test status construction
+	ctx := context.Background()
+	status, updateStatus, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
+	assert.NoError(t, err)
+	assert.True(t, updateStatus) // Should be true since there was no previous status
+	assert.Equal(t, "test-role", status.Name)
+	assert.Equal(t, int32(5), status.Replicas)
+	assert.Equal(t, int32(3), status.ReadyReplicas)
+
+	// Add status to RBG and test again
+	rbg.Status = workloadsv1alpha1.RoleBasedGroupStatus{
+		RoleStatuses: []workloadsv1alpha1.RoleStatus{status},
 	}
 
-	defaultLws = lwsv1.LeaderWorkerSet{
-		Spec: lwsv1.LeaderWorkerSetSpec{
-			Replicas: ptr.To(int32(4)),
-			LeaderWorkerTemplate: lwsv1.LeaderWorkerTemplate{
-				Size: ptr.To(int32(2)),
-				LeaderTemplate: &corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:    "nginx",
-								Image:   "nginx:1.15.1",
-								Command: []string{"nginx"},
-								Env: []corev1.EnvVar{
-									{
-										Name:  "nginx-env",
-										Value: "value-1",
-									},
-								},
-								VolumeMounts: []corev1.VolumeMount{
-									{
-										Name:      "nginx-volume",
-										MountPath: "/data/nginx",
-									},
-								},
-							},
-						},
-						Volumes: []corev1.Volume{
-							{
-								Name: "nginx-volume",
-							},
-						},
-					},
-				},
-				WorkerTemplate: corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:    "nginx",
-								Image:   "nginx:1.15.1",
-								Command: []string{"nginx"},
-								Env: []corev1.EnvVar{
-									{
-										Name:  "nginx-env",
-										Value: "value-1",
-									},
-								},
-								VolumeMounts: []corev1.VolumeMount{
-									{
-										Name:      "nginx-volume",
-										MountPath: "/data/nginx",
-									},
-								},
-							},
-						},
-						Volumes: []corev1.Volume{
-							{
-								Name: "nginx-volume",
-							},
-						},
-					},
-				},
-				RestartPolicy: lwsv1.NoneRestartPolicy,
-			},
-		},
-	}
-)
+	// Test when status is the same (should not need update)
+	status2, updateStatus2, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
+	assert.NoError(t, err)
+	assert.False(t, updateStatus2) // Should be false since status is the same
+	assert.Equal(t, status, status2)
+}
 
-func TestPatchPodTemplate(t *testing.T) {
-	cases := []struct {
+// TestLeaderWorkerSetReconciler_CheckWorkloadReady tests the CheckWorkloadReady method
+func TestLeaderWorkerSetReconciler_CheckWorkloadReady(t *testing.T) {
+	// Create a scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = lwsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	// Create test objects
+	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha1.RoleSpec{lwsRole}).Obj()
+
+	tests := []struct {
 		name        string
-		getTemplate func() corev1.PodTemplateSpec
-		getPatch    func() runtime.RawExtension
-		expect      func() corev1.PodTemplateSpec
+		lwsStatus   lwsv1.LeaderWorkerSetStatus
+		expected    bool
+		expectError bool
 	}{
 		{
-			name: "test1, no patch",
-			getTemplate: func() corev1.PodTemplateSpec {
-				obj := defaultPodTemplate.DeepCopy()
-				return *obj
+			name: "All replicas ready",
+			lwsStatus: lwsv1.LeaderWorkerSetStatus{
+				Replicas:      5,
+				ReadyReplicas: 5,
 			},
-			getPatch: func() runtime.RawExtension {
-				return runtime.RawExtension{}
-			},
-			expect: func() corev1.PodTemplateSpec {
-				obj := defaultPodTemplate.DeepCopy()
-				return *obj
-			},
+			expected:    true,
+			expectError: false,
 		},
 		{
-			name: "test1, patch nginx command, env, labels, annotations",
-			getTemplate: func() corev1.PodTemplateSpec {
-				obj := defaultPodTemplate.DeepCopy()
-				return *obj
+			name: "Not all replicas ready",
+			lwsStatus: lwsv1.LeaderWorkerSetStatus{
+				Replicas:      5,
+				ReadyReplicas: 3,
 			},
-			getPatch: func() runtime.RawExtension {
-				cpuV, _ := resource.ParseQuantity("1000m")
-				memV, _ := resource.ParseQuantity("2Gi")
-				obj := corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{
-							"app": "nginx",
-						},
-						Annotations: map[string]string{
-							"test": "annotation",
-						},
-					},
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:    "nginx",
-								Command: []string{"nginx -c /home/user/my-nginx.conf"},
-								Env: []corev1.EnvVar{
-									{
-										Name:  "nginx-env",
-										Value: "value-2",
-									},
-									{
-										Name:  "new-env",
-										Value: "value-1",
-									},
-								},
-							},
-							{
-								Name:    "test-sidecar",
-								Command: []string{"nginx -c /home/user/my-nginx.conf"},
-								Resources: corev1.ResourceRequirements{
-									Requests: map[corev1.ResourceName]resource.Quantity{
-										corev1.ResourceCPU:    cpuV,
-										corev1.ResourceMemory: memV,
-									},
-								},
-							},
-						},
-					},
-				}
-				return runtime.RawExtension{
-					Raw: []byte(utils.DumpJSON(obj)),
-				}
-			},
-			expect: func() corev1.PodTemplateSpec {
-				cpuV, _ := resource.ParseQuantity("1000m")
-				memV, _ := resource.ParseQuantity("2Gi")
-				obj := corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-pod-1",
-						Namespace: "default",
-						Labels: map[string]string{
-							"app": "nginx",
-						},
-						Annotations: map[string]string{
-							"test": "annotation",
-						},
-					},
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:    "nginx",
-								Image:   "nginx:1.15.1",
-								Command: []string{"nginx -c /home/user/my-nginx.conf"},
-								Env: []corev1.EnvVar{
-									{
-										Name:  "nginx-env",
-										Value: "value-2",
-									},
-									{
-										Name:  "new-env",
-										Value: "value-1",
-									},
-								},
-								VolumeMounts: []corev1.VolumeMount{
-									{
-										Name:      "nginx-volume",
-										MountPath: "/data/nginx",
-									},
-								},
-							},
-							{
-								Name:    "test-sidecar",
-								Image:   "test-image:v1",
-								Command: []string{"nginx -c /home/user/my-nginx.conf"},
-								Env: []corev1.EnvVar{
-									{
-										Name:  "IS_INJECTED",
-										Value: "true",
-									},
-								},
-								Resources: corev1.ResourceRequirements{
-									Requests: map[corev1.ResourceName]resource.Quantity{
-										corev1.ResourceCPU:    cpuV,
-										corev1.ResourceMemory: memV,
-									},
-								},
-							},
-						},
-						Volumes: []corev1.Volume{
-							{
-								Name: "nginx-volume",
-							},
-						},
-					},
-				}
-				return obj
-			},
+			expected:    false,
+			expectError: false,
 		},
 		{
-			name: "test3, only patch labels & annotations",
-			getTemplate: func() corev1.PodTemplateSpec {
-				obj := defaultPodTemplate.DeepCopy()
-				return *obj
-			},
-			getPatch: func() runtime.RawExtension {
-				patchContent := `{"metadata":{"labels":{"app":"nginx"},"annotations":{"test":"annotation"}}}`
-
-				return runtime.RawExtension{
-					Raw: []byte(patchContent),
-				}
-			},
-			expect: func() corev1.PodTemplateSpec {
-				obj := defaultPodTemplate.DeepCopy()
-				obj.Labels = map[string]string{"app": "nginx"}
-				obj.Annotations = map[string]string{"test": "annotation"}
-				return *obj
-			},
+			name:        "LWS not found",
+			lwsStatus:   lwsv1.LeaderWorkerSetStatus{},
+			expected:    false,
+			expectError: true,
 		},
 	}
 
-	for _, cs := range cases {
+	for _, tt := range tests {
 		t.Run(
-			cs.name, func(t *testing.T) {
-				obj, err := patchPodTemplate(cs.getTemplate(), cs.getPatch())
-				if err != nil {
-					t.Fatalf("patchPodTemplate failed: %s", err.Error())
+			tt.name, func(t *testing.T) {
+				// Create a fake client
+				builder := fake.NewClientBuilder().WithScheme(scheme)
+
+				// Add LWS only if it should exist
+				if !tt.expectError || tt.lwsStatus.Replicas > 0 || tt.lwsStatus.ReadyReplicas > 0 {
+					lws := &lwsv1.LeaderWorkerSet{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      rbg.GetWorkloadName(&lwsRole),
+							Namespace: rbg.Namespace,
+						},
+						Status: tt.lwsStatus,
+					}
+					builder = builder.WithObjects(lws)
 				}
-				if utils.DumpJSON(cs.expect()) != utils.DumpJSON(obj) {
-					t.Fatalf("expect(%s), but get(%s)", utils.DumpJSON(cs.expect()), utils.DumpJSON(obj))
+
+				fakeClient := builder.Build()
+
+				// Create reconciler
+				reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+
+				// Test ready check
+				ctx := context.Background()
+				ready, err := reconciler.CheckWorkloadReady(ctx, rbg, &lwsRole)
+
+				if tt.expectError {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+					assert.Equal(t, tt.expected, ready)
 				}
 			},
 		)
 	}
 }
 
-func TestLwsReconciler(t *testing.T) {
-	cases := []struct {
-		name   string
-		getRbg func() *workloadsv1alpha1.RoleBasedGroup
-		expect func() *lwsv1.LeaderWorkerSet
-	}{
-		{
-			name: "first create",
-			getRbg: func() *workloadsv1alpha1.RoleBasedGroup {
-				obj := defaultRbg.DeepCopy()
-				leader := corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{
-							"app": "leader",
-						},
+// TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads tests the CleanupOrphanedWorkloads method
+func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
+	// Create a scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = lwsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = apiextensionsv1.AddToScheme(scheme)
+
+	// Create test RBG
+	rbg := &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+			UID:       "rbg-uid-1",
+		},
+		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha1.RoleSpec{
+				{
+					Name:     "role1",
+					Replicas: ptr.To(int32(2)),
+					Workload: workloadsv1alpha1.WorkloadSpec{
+						APIVersion: "leaderworkerset.x-k8s.io/v1",
+						Kind:       "LeaderWorkerSet",
 					},
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:    "nginx",
-								Command: []string{"nginx -c /home/user/my-nginx.conf"},
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "nginx:latest",
+								},
 							},
 						},
 					},
-				}
-				worker := corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{
-							"app": "worker",
-						},
+					LeaderWorkerSet: workloadsv1alpha1.LeaderWorkerTemplate{
+						Size: ptr.To(int32(3)),
 					},
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:    "nginx",
-								Command: []string{"nginx -c /home/user/my-nginx.conf"},
-							},
-						},
-					},
-				}
-				obj.Spec.Roles[0].LeaderWorkerSet.PatchLeaderTemplate = runtime.RawExtension{
-					Raw: []byte(utils.DumpJSON(leader)),
-				}
-				obj.Spec.Roles[0].LeaderWorkerSet.PatchWorkerTemplate = runtime.RawExtension{
-					Raw: []byte(utils.DumpJSON(worker)),
-				}
-				return obj
-			},
-			expect: func() *lwsv1.LeaderWorkerSet {
-				obj := defaultLws.DeepCopy()
-				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels = map[string]string{"app": "leader"}
-				obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Command =
-					[]string{"nginx -c /home/user/my-nginx.conf"}
-				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels = map[string]string{"app": "worker"}
-				obj.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Command =
-					[]string{"nginx -c /home/user/my-nginx.conf"}
-				return obj
+				},
 			},
 		},
 	}
 
-	for _, cs := range cases {
-		t.Run(
-			cs.name, func(t *testing.T) {
-				// TODO, apply patches are not supported in the fake client.
-				// Follow https://github.com/kubernetes/kubernetes/issues/115598 for the current status
-				/*
-					rbg := cs.getRbg()
-					role := &rbg.Spec.Roles[0]
-					cm := &corev1.ConfigMap{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      rbg.GetWorkloadName(role),
-							Namespace: rbg.Namespace,
-						},
-					}
-					fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
-					reconcile := NewLeaderWorkerSetReconciler(scheme, fakeClient)
-					err := reconcile.Reconciler(context.TODO(), rbg, role)
-					if err != nil {
-						t.Fatalf("reconciler failed: %s", err.Error())
-					}*/
+	// Create LWS objects
+	ownedLWS := &lwsv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-role1",
+			Namespace: rbg.Namespace,
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: rbg.APIVersion,
+					Kind:       rbg.Kind,
+					Name:       rbg.Name,
+					UID:        rbg.UID,
+					Controller: ptr.To[bool](true),
+				},
+			},
+		},
+	}
 
+	orphanedLWS := &lwsv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "orphaned-lws",
+			Namespace: rbg.Namespace,
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: rbg.APIVersion,
+					Kind:       rbg.Kind,
+					Name:       rbg.Name,
+					UID:        rbg.UID,
+					Controller: ptr.To[bool](true),
+				},
+			},
+		},
+	}
+
+	unrelatedLWS := &lwsv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unrelated-lws",
+			Namespace: rbg.Namespace,
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: "other-rbg",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: rbg.APIVersion,
+					Kind:       rbg.Kind,
+					Name:       "other-rbg",
+					UID:        "other-rbg-uid",
+					Controller: ptr.To[bool](true),
+				},
+			},
+		},
+	}
+
+	// lws crd
+	lwsCRD := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "leaderworkersets.leaderworkerset.x-k8s.io",
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+				{
+					Type:   apiextensionsv1.Established,
+					Status: apiextensionsv1.ConditionTrue,
+				},
+			},
+		},
+	}
+
+	// Create a fake client with initial objects
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(ownedLWS, orphanedLWS, unrelatedLWS, lwsCRD).Build()
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+
+	// Test cleanup
+	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
+	err := reconciler.CleanupOrphanedWorkloads(ctx, rbg)
+	assert.NoError(t, err)
+
+	// Verify owned LWS still exists
+	existingLWS := &lwsv1.LeaderWorkerSet{}
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: ownedLWS.Name, Namespace: ownedLWS.Namespace}, existingLWS)
+	assert.NoError(t, err)
+
+	// Verify orphaned LWS was deleted
+	deletedLWS := &lwsv1.LeaderWorkerSet{}
+	err = fakeClient.Get(
+		ctx, types.NamespacedName{Name: orphanedLWS.Name, Namespace: orphanedLWS.Namespace}, deletedLWS,
+	)
+	assert.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err))
+
+	// Verify unrelated LWS still exists
+	otherLWS := &lwsv1.LeaderWorkerSet{}
+	err = fakeClient.Get(
+		ctx, types.NamespacedName{Name: unrelatedLWS.Name, Namespace: unrelatedLWS.Namespace}, otherLWS,
+	)
+	assert.NoError(t, err)
+}
+
+// TestLeaderWorkerSetReconciler_RecreateWorkload tests the RecreateWorkload method
+func TestLeaderWorkerSetReconciler_RecreateWorkload(t *testing.T) {
+	// Create a scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = lwsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha1.RoleSpec{lwsRole}).Obj()
+
+	lws := &lwsv1.LeaderWorkerSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.GetWorkloadName(&lwsRole),
+			Namespace: rbg.Namespace,
+			UID:       "lws-uid-1",
+		},
+	}
+
+	tests := []struct {
+		name          string
+		rbg           *workloadsv1alpha1.RoleBasedGroup
+		role          *workloadsv1alpha1.RoleSpec
+		lws           *lwsv1.LeaderWorkerSet
+		mockReconcile bool
+		wantErr       bool
+	}{
+		{
+			name:          "lws recreation",
+			rbg:           rbg,
+			role:          &lwsRole,
+			lws:           lws,
+			mockReconcile: true,
+			wantErr:       false,
+		},
+		{
+			name: "non-existing LWS",
+			rbg:  rbg,
+			role: &lwsRole,
+			lws: &lwsv1.LeaderWorkerSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg-lws-2",
+					Namespace: rbg.Namespace,
+					UID:       "lws-uid-2",
+				},
+			},
+			mockReconcile: true,
+			wantErr:       false,
+		},
+		{
+			name:          "rbg nil",
+			rbg:           nil,
+			role:          &lwsRole,
+			lws:           lws,
+			mockReconcile: false,
+			wantErr:       false,
+		},
+		{
+			name:          "role nil",
+			rbg:           rbg,
+			role:          nil,
+			lws:           lws,
+			mockReconcile: false,
+			wantErr:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tt.lws).Build()
+				r := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+				if tt.mockReconcile {
+					// mock rbg controller reconcile
+					go func() {
+						for i := 0; i < 60; i++ {
+							newlws := &lwsv1.LeaderWorkerSet{
+								ObjectMeta: metav1.ObjectMeta{
+									Name:      rbg.GetWorkloadName(&lwsRole),
+									Namespace: "default",
+								},
+							}
+							err := r.client.Create(context.TODO(), newlws)
+							if err != nil && !apierrors.IsAlreadyExists(err) {
+								t.Logf("create failed: %v", err)
+							}
+							time.Sleep(5 * time.Second)
+						}
+					}()
+				}
+				err := r.RecreateWorkload(context.TODO(), tt.rbg, tt.role)
+				if (err != nil) != tt.wantErr {
+					t.Errorf("RecreateWorkload() error = %v, wantErr %v", err, tt.wantErr)
+				}
 			},
 		)
+
 	}
 }

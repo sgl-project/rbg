@@ -1,14 +1,21 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 func TestCheckOwnerReference(t *testing.T) {
-	// Define target GVK for RoleBasedGroup
 	targetGVK := schema.GroupVersionKind{
 		Group:   "workloads.x-k8s.io",
 		Version: "v1alpha1",
@@ -169,27 +176,206 @@ func TestCheckOwnerReference(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Use custom targetGVK if specified
-			for _, tt := range tests {
-				t.Run(tt.name, func(t *testing.T) {
-					currentTargetGVK := targetGVK
-					if !tt.targetGVK.Empty() {
-						currentTargetGVK = tt.targetGVK
-					}
+		t.Run(
+			tt.name, func(t *testing.T) {
+				// Use custom targetGVK if specified
+				currentTargetGVK := targetGVK
+				if !tt.targetGVK.Empty() {
+					currentTargetGVK = tt.targetGVK
+				}
 
-					actual := CheckOwnerReference(tt.refs, currentTargetGVK)
-					if actual != tt.expected {
-						t.Errorf(
-							"Test Case: %s\nDetails: %s\nExpected: %v, Actual: %v",
-							tt.name,
-							tt.description,
-							tt.expected,
-							actual,
-						)
+				actual := CheckOwnerReference(tt.refs, currentTargetGVK)
+				if actual != tt.expected {
+					t.Errorf(
+						"Test Case: %s\nDetails: %s\nExpected: %v, Actual: %v",
+						tt.name,
+						tt.description,
+						tt.expected,
+						actual,
+					)
+				}
+			},
+		)
+	}
+}
+
+func TestCheckCrdExists(t *testing.T) {
+	// Create a scheme and register CRD type
+	scheme := runtime.NewScheme()
+	_ = apiextensionsv1.AddToScheme(scheme)
+
+	tests := []struct {
+		name        string
+		crdName     string
+		crd         *apiextensionsv1.CustomResourceDefinition
+		expectError bool
+		errorCheck  func(error) bool
+		description string
+	}{
+		{
+			name:        "CRD not found",
+			crdName:     "test-crd",
+			crd:         nil,
+			expectError: true,
+			errorCheck: func(err error) bool {
+				return apierrors.IsNotFound(err)
+			},
+			description: "Should return not found error when CRD doesn't exist",
+		},
+		{
+			name:    "CRD exists and established",
+			crdName: "test-crd",
+			crd: &apiextensionsv1.CustomResourceDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-crd",
+				},
+				Status: apiextensionsv1.CustomResourceDefinitionStatus{
+					Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+						{
+							Type:   apiextensionsv1.Established,
+							Status: apiextensionsv1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expectError: false,
+			description: "Should return nil when CRD exists and is established",
+		},
+		{
+			name:    "CRD exists but not established",
+			crdName: "test-crd",
+			crd: &apiextensionsv1.CustomResourceDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-crd",
+				},
+				Status: apiextensionsv1.CustomResourceDefinitionStatus{
+					Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+						{
+							Type:   apiextensionsv1.Established,
+							Status: apiextensionsv1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorCheck: func(err error) bool {
+				return err != nil && strings.Contains(err.Error(), "CRD test-crd exists but not established")
+			},
+			description: "Should return error when CRD exists but is not established",
+		},
+		{
+			name:    "CRD exists with no conditions",
+			crdName: "test-crd",
+			crd: &apiextensionsv1.CustomResourceDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-crd",
+				},
+				Status: apiextensionsv1.CustomResourceDefinitionStatus{
+					Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{},
+				},
+			},
+			expectError: true,
+			errorCheck: func(err error) bool {
+				return err != nil && err.Error() == "CRD test-crd exists but not established"
+			},
+			description: "Should return error when CRD exists but has no conditions",
+		},
+		{
+			name:    "CRD exists with other condition types",
+			crdName: "test-crd",
+			crd: &apiextensionsv1.CustomResourceDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-crd",
+				},
+				Status: apiextensionsv1.CustomResourceDefinitionStatus{
+					Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+						{
+							Type:   apiextensionsv1.NamesAccepted,
+							Status: apiextensionsv1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorCheck: func(err error) bool {
+				return err != nil && err.Error() == "CRD test-crd exists but not established"
+			},
+			description: "Should return error when CRD exists but only has non-established conditions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				// Create fake client
+				builder := fake.NewClientBuilder().WithScheme(scheme)
+
+				// Add CRD if provided
+				if tt.crd != nil {
+					builder = builder.WithObjects(tt.crd)
+				}
+
+				client := builder.Build()
+
+				// Test CheckCrdExists
+				err := CheckCrdExists(client, tt.crdName)
+
+				if tt.expectError {
+					assert.Error(t, err, tt.description)
+					if tt.errorCheck != nil {
+						assert.True(t, tt.errorCheck(err), "Error check failed: %v", err)
 					}
-				})
-			}
-		})
+				} else {
+					assert.NoError(t, err, tt.description)
+				}
+			},
+		)
+	}
+}
+
+// TestGVKConstants tests that the GVK constants match the expected values
+func TestGVKConstants(t *testing.T) {
+	tests := []struct {
+		name     string
+		actual   schema.GroupVersionKind
+		expected schema.GroupVersionKind
+	}{
+		{
+			name:   "RoleBasedGroup GVK",
+			actual: GetRbgGVK(),
+			expected: schema.GroupVersionKind{
+				Group:   workloadsv1alpha1.GroupVersion.Group,
+				Version: workloadsv1alpha1.GroupVersion.Version,
+				Kind:    "RoleBasedGroup",
+			},
+		},
+		{
+			name:   "RoleBasedGroupScalingAdapter GVK",
+			actual: GetRbgScalingAdapterGVK(),
+			expected: schema.GroupVersionKind{
+				Group:   workloadsv1alpha1.GroupVersion.Group,
+				Version: workloadsv1alpha1.GroupVersion.Version,
+				Kind:    "RoleBasedGroupScalingAdapter",
+			},
+		},
+		{
+			name:   "LeaderWorkerSet GVK",
+			actual: GetLwsGVK(),
+			expected: schema.GroupVersionKind{
+				Group:   lwsv1.GroupVersion.Group,
+				Version: lwsv1.GroupVersion.Version,
+				Kind:    "LeaderWorkerSet",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				if tt.actual != tt.expected {
+					t.Errorf("%s = %v, want %v", tt.name, tt.actual, tt.expected)
+				}
+			},
+		)
 	}
 }

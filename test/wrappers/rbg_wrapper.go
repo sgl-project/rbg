@@ -1,6 +1,8 @@
 package wrappers
 
 import (
+	"time"
+
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
@@ -42,12 +44,28 @@ func (rbgWrapper *RoleBasedGroupWrapper) WithGangScheduling(gangScheduling bool)
 	return rbgWrapper
 }
 
+func (rbgWrapper *RoleBasedGroupWrapper) WithDeletionTimestamp() *RoleBasedGroupWrapper {
+	rbgWrapper.DeletionTimestamp = &v1.Time{Time: time.Now()}
+	return rbgWrapper
+}
+
+func (rbgWrapper *RoleBasedGroupWrapper) WithStatus(
+	status workloadsv1alpha.RoleBasedGroupStatus,
+) *RoleBasedGroupWrapper {
+	rbgWrapper.Status = status
+	return rbgWrapper
+}
+
 func BuildBasicRoleBasedGroup(name, ns string) *RoleBasedGroupWrapper {
 	return &RoleBasedGroupWrapper{
 		workloadsv1alpha.RoleBasedGroup{
 			ObjectMeta: v1.ObjectMeta{
 				Name:      name,
 				Namespace: ns,
+				Labels: map[string]string{
+					workloadsv1alpha.SetNameLabelKey: name,
+				},
+				UID: "rbg-test-uid",
 			},
 			Spec: workloadsv1alpha.RoleBasedGroupSpec{
 				Roles: []workloadsv1alpha.RoleSpec{

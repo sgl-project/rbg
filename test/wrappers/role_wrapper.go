@@ -145,6 +145,7 @@ func BuildLwsRole(name string) *RoleWrapper {
 			},
 			Template: BuildBasicPodTemplateSpec().Obj(),
 			LeaderWorkerSet: workloadsv1alpha.LeaderWorkerTemplate{
+				Size:                ptr.To(int32(2)),
 				PatchLeaderTemplate: leaderPatch,
 				PatchWorkerTemplate: workerPatch,
 			},

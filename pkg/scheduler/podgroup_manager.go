@@ -7,9 +7,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/utils"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
 
@@ -32,12 +34,19 @@ func (r *PodGroupScheduler) Reconcile(ctx context.Context, rbg *workloadsv1alpha
 
 func (r *PodGroupScheduler) createOrUpdatePodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
+	gvk := utils.GetRbgGVK()
 	podGroup := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbg.Name,
 			Namespace: rbg.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(rbg, rbg.GroupVersionKind()),
+				{
+					APIVersion: gvk.GroupVersion().String(),
+					Kind:       gvk.Kind,
+					Name:       rbg.Name,
+					UID:        rbg.UID,
+					Controller: ptr.To[bool](true),
+				},
 			},
 		},
 		Spec: schedv1alpha1.PodGroupSpec{
@@ -61,14 +70,29 @@ func (r *PodGroupScheduler) createOrUpdatePodGroup(ctx context.Context, rbg *wor
 	}
 
 	if podGroup.Spec.MinMember != int32(rbg.GetGroupSize()) {
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup); err != nil {
-				return err
-			}
-			podGroup.Spec.MinMember = int32(rbg.GetGroupSize())
-			updateErr := r.client.Update(ctx, podGroup)
-			return updateErr
-		})
+		err = retry.RetryOnConflict(
+			retry.DefaultRetry, func() error {
+				if err := r.client.Get(
+					ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup,
+				); err != nil {
+					return err
+				}
+				if !utils.CheckOwnerReference(podGroup.OwnerReferences, utils.GetRbgGVK()) {
+					podGroup.OwnerReferences = append(
+						podGroup.OwnerReferences, metav1.OwnerReference{
+							APIVersion: gvk.GroupVersion().String(),
+							Kind:       gvk.Kind,
+							Name:       rbg.Name,
+							UID:        rbg.UID,
+							Controller: ptr.To[bool](true),
+						},
+					)
+				}
+				podGroup.Spec.MinMember = int32(rbg.GetGroupSize())
+				updateErr := r.client.Update(ctx, podGroup)
+				return updateErr
+			},
+		)
 		if err != nil {
 			logger.Error(err, "update pod group error")
 		}

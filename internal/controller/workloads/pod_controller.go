@@ -39,10 +39,12 @@ func NewPodReconciler(mgr ctrl.Manager) *PodReconciler {
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var rbg workloadsv1alpha1.RoleBasedGroup
-	if err := r.client.Get(ctx, types.NamespacedName{
-		Name:      req.Name,
-		Namespace: req.Namespace,
-	}, &rbg); err != nil {
+	if err := r.client.Get(
+		ctx, types.NamespacedName{
+			Name:      req.Name,
+			Namespace: req.Namespace,
+		}, &rbg,
+	); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	logger := log.FromContext(ctx).WithValues("rbg", klog.KObj(&rbg))
@@ -89,7 +91,9 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 	return nil
 }
 
-func (r *PodReconciler) setRestartCondition(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, restartCompleted bool) error {
+func (r *PodReconciler) setRestartCondition(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, restartCompleted bool,
+) error {
 	var restartCondition metav1.Condition
 	if restartCompleted {
 		restartCondition = metav1.Condition{
@@ -111,7 +115,7 @@ func (r *PodReconciler) setRestartCondition(ctx context.Context, rbg *workloadsv
 
 	setCondition(rbg, restartCondition)
 
-	rbgApplyConfig := utils.RoleBasedGroup(rbg.Name, rbg.Namespace, rbg.Kind, rbg.APIVersion).
+	rbgApplyConfig := utils.RoleBasedGroup(rbg.Name, rbg.Namespace).
 		WithStatus(utils.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
@@ -189,12 +193,14 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 	}
 
 	// restart rbg
-	return []reconcile.Request{{
-		NamespacedName: types.NamespacedName{
-			Name:      rbgName,
-			Namespace: rbg.Namespace,
+	return []reconcile.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Name:      rbgName,
+				Namespace: rbg.Namespace,
+			},
 		},
-	}}
+	}
 }
 
 func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {

@@ -65,7 +65,12 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet ## Run tests.
-	go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	go test $$(go list ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
+	go tool cover -func=cover.out | awk '/^total:/ {print $$3}'
+
+.PHONY: test-coverage-html
+test-coverage-html: test
+	go tool cover -html=cover.out -o cover.html
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
