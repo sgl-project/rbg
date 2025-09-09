@@ -145,7 +145,7 @@ proposal will be implemented, this is the place to discuss them.
 ### API Overview
 
 ```yaml
- apiVersion: workloads.x-k8s.io/v1alpha1
+apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
 metadata:
   name: deepseek-rbg-deploy
@@ -184,7 +184,7 @@ spec:
           - {{ .max_running }}
           - --disaggregation-ib-device
           - {{ .ib_devices }}
-          {{ if .extra_args }}{{ .extra_args }}{{ end }}
+          {{ if .rbg_extra_args }}{{ .rbg_extra_args }}{{ end }}
           env:
           - { name: TP, value: "{{ .tp }}" }
           resources:
@@ -212,7 +212,7 @@ spec:
               successThreshold: 1
               timeoutSeconds: 3
         vars:
-         extra_args: |
+         rbg_extra_args: |
           - --port
           - "30000"
       # 2) Optional: Patch the worker template
@@ -224,7 +224,7 @@ spec:
               requests:
                 memory: "32Gi"
         vars:
-          extra_args: |
+          rbg_extra_args: |
           - --crash-dump-folder
           - "/log"
     # 3) Reference the template within the same YAML
@@ -241,7 +241,7 @@ This YAML defines a `RoleBasedGroup` that manages role-based workloads in Kubern
 1. **roleTemplates**: Defines reusable templates for roles
    - `sglang-default`: Base template with Go template variables (`{{ .variable }}`)
    - Configures container command, environment variables, and resources
-   - Uses `extra_args` for conditional command arguments
+   - Uses `rbg_extra_args` for reserved command arguments
 
 2. **roles**: Concrete role instances using templates
    - `prefill` role with 4 replicas using `LeaderWorkerSet`
