@@ -18,10 +18,9 @@ func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]st
 }
 
 func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[string]string {
-	annotations := map[string]string{
+	return map[string]string{
 		RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
 	}
-	return annotations
 }
 
 func (rbg *RoleBasedGroup) GetGroupSize() int {
