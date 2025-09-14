@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -9,15 +11,17 @@ func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]st
 	// Be careful to change these labels.
 	// They are used as sts.spec.selector which can not be updated. If changed, may cause all exist rbgs failed.
 	return map[string]string{
-		SetNameLabelKey: rbg.Name,
-		SetRoleLabelKey: role.Name,
+		SetNameLabelKey:            rbg.Name,
+		SetRoleLabelKey:            role.Name,
+		SetGroupUniqueHashLabelKey: rbg.GenGroupUniqueKey(),
 	}
 }
 
 func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[string]string {
-	return map[string]string{
+	annotations := map[string]string{
 		RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
 	}
+	return annotations
 }
 
 func (rbg *RoleBasedGroup) GetGroupSize() int {
@@ -62,6 +66,28 @@ func (rbg *RoleBasedGroup) GetRoleStatus(roleName string) (status RoleStatus, fo
 		}
 	}
 	return
+}
+
+func (rbg *RoleBasedGroup) GetExclusiveKey() (topologyKey string, found bool) {
+	topologyKey, found = rbg.Annotations[ExclusiveKeyAnnotationKey]
+	return
+}
+
+func (rbg *RoleBasedGroup) GenGroupUniqueKey() (key string) {
+	key = rbg.Labels[SetGroupUniqueHashLabelKey]
+	if key != "" {
+		return key
+	} else {
+		key = sha1Hash(fmt.Sprintf("%s/%s", rbg.GetNamespace(), rbg.GetName()))
+	}
+	return
+}
+
+// sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
+func sha1Hash(s string) string {
+	h := sha1.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (rbg *RoleBasedGroup) EnableGangScheduling() bool {

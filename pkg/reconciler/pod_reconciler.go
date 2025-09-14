@@ -46,7 +46,10 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	} else {
 		podTemplateSpec = *role.Template.DeepCopy()
 	}
-
+	podAnnotations := podTemplateSpec.Annotations
+	if podAnnotations == nil {
+		podAnnotations = make(map[string]string)
+	}
 	// inject objects
 	injector := discovery.NewDefaultInjector(r.scheme, r.client)
 	if r.injectObjects == nil {
@@ -69,6 +72,15 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		}
 	}
 
+	// Set Exclusive topology
+	if topologyKey, found := rbg.GetExclusiveKey(); found {
+		if podAnnotations[workloadsv1alpha1.DisableExclusiveKeyAnnotationKey] != "true" {
+			podAnnotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = topologyKey
+			uniqueKey := rbg.GenGroupUniqueKey()
+			setExclusiveAffinities(&podTemplateSpec, uniqueKey, topologyKey, workloadsv1alpha1.SetGroupUniqueHashLabelKey)
+		}
+	}
+
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {
@@ -86,7 +98,10 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		}
 		podLabels[workloadsv1alpha1.PodGroupLabelKey] = rbg.Name
 	}
-	podTemplateApplyConfiguration.WithLabels(podLabels)
+
+	podTemplateApplyConfiguration.
+		WithLabels(podLabels).
+		WithAnnotations(podAnnotations)
 
 	return podTemplateApplyConfiguration, nil
 }
@@ -101,6 +116,70 @@ func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, er
 	}
 
 	return true, nil
+}
+
+// SetExclusiveAffinities set the pod affinity/anti-affinity
+func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topologyKey string, podAffinityKey string) {
+	if exclusiveAffinityApplied(*pod, topologyKey) {
+		return
+	}
+	if pod.Spec.Affinity == nil {
+		pod.Spec.Affinity = &corev1.Affinity{}
+	}
+	if pod.Spec.Affinity.PodAffinity == nil {
+		pod.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
+	}
+	if pod.Spec.Affinity.PodAntiAffinity == nil {
+		pod.Spec.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
+	}
+
+	// Pod affinity ensures the pods of this set land on the same topology domain.
+	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      podAffinityKey,
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{uniqueKey},
+				},
+			}},
+			TopologyKey: topologyKey,
+		})
+	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
+	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+		corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      podAffinityKey,
+					Operator: metav1.LabelSelectorOpExists,
+				},
+				{
+					Key:      podAffinityKey,
+					Operator: metav1.LabelSelectorOpNotIn,
+					Values:   []string{uniqueKey},
+				},
+			}},
+			TopologyKey: topologyKey,
+		})
+}
+
+func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKey string) bool {
+	if podTemplateSpec.Spec.Affinity == nil || podTemplateSpec.Spec.Affinity.PodAffinity == nil || podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
+		return false
+	}
+	hasAffinity := false
+	hasAntiAffinity := false
+	for _, podAffinityTerm := range podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if podAffinityTerm.TopologyKey == topologyKey {
+			hasAffinity = true
+		}
+	}
+	for _, term := range podTemplateSpec.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if term.TopologyKey == topologyKey {
+			hasAntiAffinity = true
+		}
+	}
+	return hasAffinity && hasAntiAffinity
 }
 
 func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {

@@ -2,6 +2,8 @@ package utils
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -150,4 +152,11 @@ func NonZeroValue(value int32) int32 {
 		return 0
 	}
 	return value
+}
+
+// sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.
+func Sha1Hash(s string) string {
+	h := sha1.New()
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))
 }
