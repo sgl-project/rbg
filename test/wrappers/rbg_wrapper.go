@@ -14,7 +14,7 @@ func (rbgWrapper *RoleBasedGroupWrapper) Obj() *workloadsv1alpha.RoleBasedGroup 
 }
 
 func (rbgWrapper *RoleBasedGroupWrapper) WithName(name string) *RoleBasedGroupWrapper {
-	rbgWrapper.ObjectMeta.Name = name
+	rbgWrapper.Name = name
 	return rbgWrapper
 }
 

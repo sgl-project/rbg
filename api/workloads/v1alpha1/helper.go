@@ -84,7 +84,7 @@ func sha1Hash(s string) string {
 }
 
 func (rbg *RoleBasedGroup) EnableGangScheduling() bool {
-	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.KubeScheduling != nil {
+	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.KubeScheduling != nil {
 		return true
 	}
 	return false

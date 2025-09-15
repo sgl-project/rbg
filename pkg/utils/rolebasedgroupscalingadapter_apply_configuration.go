@@ -32,24 +32,24 @@ func RoleBasedGroupScalingAdapter(
 }
 
 func (b *RbgScalingAdapterApplyConfiguration) WithAPIVersion(value string) *RbgScalingAdapterApplyConfiguration {
-	b.TypeMetaApplyConfiguration.APIVersion = &value
+	b.APIVersion = &value
 	return b
 }
 
 func (b *RbgScalingAdapterApplyConfiguration) WithKind(value string) *RbgScalingAdapterApplyConfiguration {
-	b.TypeMetaApplyConfiguration.Kind = &value
+	b.Kind = &value
 	return b
 }
 
 func (b *RbgScalingAdapterApplyConfiguration) WithNamespace(value string) *RbgScalingAdapterApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
-	b.ObjectMetaApplyConfiguration.Namespace = &value
+	b.Namespace = &value
 	return b
 }
 
 func (b *RbgScalingAdapterApplyConfiguration) WithName(value string) *RbgScalingAdapterApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
-	b.ObjectMetaApplyConfiguration.Name = &value
+	b.Name = &value
 	return b
 }
 
@@ -61,8 +61,8 @@ func (b *RbgScalingAdapterApplyConfiguration) WithOwnerReferences(
 		if values[i] == nil {
 			panic("nil value passed to WithOwnerReferences")
 		}
-		b.ObjectMetaApplyConfiguration.OwnerReferences = append(
-			b.ObjectMetaApplyConfiguration.OwnerReferences, *values[i],
+		b.OwnerReferences = append(
+			b.OwnerReferences, *values[i],
 		)
 	}
 	return b

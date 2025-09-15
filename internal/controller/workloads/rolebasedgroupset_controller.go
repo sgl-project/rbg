@@ -75,7 +75,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if !rbgset.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !rbgset.DeletionTimestamp.IsZero() {
 		logger.Info("rbgset is deleting, skip reconcile")
 		return ctrl.Result{}, nil
 	}

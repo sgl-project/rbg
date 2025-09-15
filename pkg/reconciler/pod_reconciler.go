@@ -166,12 +166,15 @@ func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topol
 }
 
 func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKey string) bool {
-	if podTemplateSpec.Spec.Affinity == nil || podTemplateSpec.Spec.Affinity.PodAffinity == nil || podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
+	if podTemplateSpec.Spec.Affinity == nil ||
+		podTemplateSpec.Spec.Affinity.PodAffinity == nil ||
+		podTemplateSpec.Spec.Affinity.PodAntiAffinity == nil {
 		return false
 	}
 	hasAffinity := false
 	hasAntiAffinity := false
-	for _, podAffinityTerm := range podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+	for _, podAffinityTerm := range podTemplateSpec.
+		Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
 		if podAffinityTerm.TopologyKey == topologyKey {
 			hasAffinity = true
 		}
