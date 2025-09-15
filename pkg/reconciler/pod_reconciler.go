@@ -134,33 +134,35 @@ func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topol
 	}
 
 	// Pod affinity ensures the pods of this set land on the same topology domain.
-	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
-		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpIn,
-					Values:   []string{uniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
-		})
+	pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+		append(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+			corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      podAffinityKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{uniqueKey},
+					},
+				}},
+				TopologyKey: topologyKey,
+			})
 	// Pod anti-affinity ensures exclusively this set lands on the topology, preventing multiple sets per topology domain.
-	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution = append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
-		corev1.PodAffinityTerm{
-			LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpExists,
-				},
-				{
-					Key:      podAffinityKey,
-					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{uniqueKey},
-				},
-			}},
-			TopologyKey: topologyKey,
-		})
+	pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+		append(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution,
+			corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      podAffinityKey,
+						Operator: metav1.LabelSelectorOpExists,
+					},
+					{
+						Key:      podAffinityKey,
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{uniqueKey},
+					},
+				}},
+				TopologyKey: topologyKey,
+			})
 }
 
 func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKey string) bool {
