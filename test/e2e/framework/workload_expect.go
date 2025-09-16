@@ -17,6 +17,7 @@ import (
 type WorkloadEqualChecker interface {
 	ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error
 	ExpectLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) error
+	ExpectAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) error
 	ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error
 }
 
@@ -102,6 +103,26 @@ func (d *DeploymentEqualChecker) ExpectLabelContains(
 	for key, value := range labels[0] {
 		if !utils.MapContains(deployment.Spec.Template.Labels, key, value) {
 			return fmt.Errorf("pod labels do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
+func (d *DeploymentEqualChecker) ExpectAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) error {
+	// check deployment exist
+	deployment := &appsv1.Deployment{}
+	err := d.client.Get(d.ctx, client.ObjectKey{
+		Name:      rbg.GetWorkloadName(&role),
+		Namespace: rbg.Namespace,
+	}, deployment)
+	if err != nil {
+		return fmt.Errorf("failed to get existing Deployment: %w", err)
+	}
+
+	for key, value := range annotations[0] {
+		if !utils.MapContains(deployment.Spec.Template.Annotations, key, value) {
+			return fmt.Errorf("pod annotations do not have key %s, value: %s", key, value)
 		}
 	}
 
@@ -202,6 +223,26 @@ func (s *StatefulSetEqualChecker) ExpectLabelContains(
 	for key, value := range labels[0] {
 		if !utils.MapContains(sts.Spec.Template.Labels, key, value) {
 			return fmt.Errorf("pod labels do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
+func (s *StatefulSetEqualChecker) ExpectAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) error {
+	// check sts exists
+	sts := &appsv1.StatefulSet{}
+	err := s.client.Get(s.ctx, client.ObjectKey{
+		Name:      rbg.GetWorkloadName(&role),
+		Namespace: rbg.Namespace,
+	}, sts)
+	if err != nil {
+		return fmt.Errorf("failed to get existing StatefulSet: %w", err)
+	}
+
+	for key, value := range annotations[0] {
+		if !utils.MapContains(sts.Spec.Template.Annotations, key, value) {
+			return fmt.Errorf("pod annotations do not have key %s, value: %s", key, value)
 		}
 	}
 
@@ -315,9 +356,45 @@ func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(
 	return nil
 }
 
-func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadNotExist(
-	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
-) error {
+func (s *LeaderWorkerSetEqualChecker) ExpectAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) error {
+	// 1. check lws exists
+	lws := &lwsv1.LeaderWorkerSet{}
+	err := s.client.Get(s.ctx, client.ObjectKey{
+		Name:      rbg.GetWorkloadName(&role),
+		Namespace: rbg.Namespace,
+	}, lws)
+	if err != nil {
+		return fmt.Errorf("failed to get existing lws: %w", err)
+	}
+
+	var leaderAnnotation, workerAnnotation map[string]string
+
+	if len(annotations) == 0 {
+		return fmt.Errorf("annotations is empty")
+	} else if len(annotations) == 1 {
+		workerAnnotation = annotations[0]
+	} else {
+		leaderAnnotation, workerAnnotation = annotations[0], annotations[1]
+	}
+
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		for key, value := range leaderAnnotation {
+			if !utils.MapContains(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations, key, value) {
+				return fmt.Errorf("leader sts annotations do not have key %s, value: %s", key, value)
+			}
+		}
+	}
+
+	for key, value := range workerAnnotation {
+		if !utils.MapContains(lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations, key, value) {
+			return fmt.Errorf("worker sts annotations do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
+func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	lws := &lwsv1.LeaderWorkerSet{}
 	err := s.client.Get(
 		s.ctx, client.ObjectKey{

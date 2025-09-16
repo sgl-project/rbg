@@ -48,7 +48,7 @@ type PodGroupPolicySource struct {
 	// KubeScheduling plugin from the Kubernetes scheduler-plugins for gang-scheduling.
 	KubeScheduling *KubeSchedulingPodGroupPolicySource `json:"kubeScheduling,omitempty"`
 
-	// TODO (gujingit): Add support for Volcano gang-scheduler.
+	VolcanoScheduling *VolcanoSchedulingPodGroupPolicySource `json:"volcanoScheduling,omitempty"`
 }
 
 // KubeSchedulingPodGroupPolicySource represents configuration for  Kubernetes scheduling plugin.
@@ -59,6 +59,23 @@ type KubeSchedulingPodGroupPolicySource struct {
 	// Defaults to 60 seconds.
 	// +kubebuilder:default=60
 	ScheduleTimeoutSeconds *int32 `json:"scheduleTimeoutSeconds,omitempty"`
+}
+
+// VolcanoSchedulingPodGroupPolicySource represents configuration for volcano podgroup scheduling plugin
+type VolcanoSchedulingPodGroupPolicySource struct {
+	// If specified, indicates the PodGroup's priority. "system-node-critical" and
+	// "system-cluster-critical" are two special keywords which indicate the
+	// highest priorities with the former being the highest priority. Any other
+	// name must be defined by creating a PriorityClass object with that name.
+	// If not specified, the PodGroup priority will be default or zero if there is no
+	// default.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// Queue defines the queue to allocate resource for PodGroup; if queue does not exist,
+	// the PodGroup will not be scheduled. Defaults to `default` Queue with the lowest weight.
+	// +optional
+	Queue string `json:"queue,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the rbg controller

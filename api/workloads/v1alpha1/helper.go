@@ -65,6 +65,20 @@ func (rbg *RoleBasedGroup) GetRoleStatus(roleName string) (status RoleStatus, fo
 }
 
 func (rbg *RoleBasedGroup) EnableGangScheduling() bool {
+	if rbg.IsKubeGangScheduling() || rbg.IsVolcanoGangScheduling() {
+		return true
+	}
+	return false
+}
+
+func (rbg *RoleBasedGroup) IsVolcanoGangScheduling() bool {
+	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.VolcanoScheduling != nil {
+		return true
+	}
+	return false
+}
+
+func (rbg *RoleBasedGroup) IsKubeGangScheduling() bool {
 	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.KubeScheduling != nil {
 		return true
 	}
