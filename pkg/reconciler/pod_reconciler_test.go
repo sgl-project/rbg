@@ -6,14 +6,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 func Test_objectMetaEqual(t *testing.T) {
 	type args struct {
-		meta1 v1.ObjectMeta
-		meta2 v1.ObjectMeta
+		meta1 metav1.ObjectMeta
+		meta2 metav1.ObjectMeta
 	}
 	tests := []struct {
 		name    string
@@ -24,7 +23,7 @@ func Test_objectMetaEqual(t *testing.T) {
 		{
 			name: "test system labels",
 			args: args{
-				meta1: v1.ObjectMeta{
+				meta1: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"app.kubernetes.io/component":            "lws",
 						"app.kubernetes.io/instance":             "restart-policy",
@@ -34,7 +33,7 @@ func Test_objectMetaEqual(t *testing.T) {
 						"rolebasedgroup.workloads.x-k8s.io/role": "lws",
 					},
 				},
-				meta2: v1.ObjectMeta{
+				meta2: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"rolebasedgroup.workloads.x-k8s.io/name": "restart-policy",
 						"rolebasedgroup.workloads.x-k8s.io/role": "lws",
@@ -47,13 +46,13 @@ func Test_objectMetaEqual(t *testing.T) {
 		{
 			name: "test system annotations",
 			args: args{
-				meta1: v1.ObjectMeta{
+				meta1: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"deployment.kubernetes.io/revision":           "1",
 						"rolebasedgroup.workloads.x-k8s.io/role-size": "4",
 					},
 				},
-				meta2: v1.ObjectMeta{
+				meta2: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"rolebasedgroup.workloads.x-k8s.io/role-size": "4",
 					},
@@ -65,12 +64,12 @@ func Test_objectMetaEqual(t *testing.T) {
 		{
 			name: "test system annotations",
 			args: args{
-				meta1: v1.ObjectMeta{
+				meta1: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"rolebasedgroup.workloads.x-k8s.io/role-size": "4",
 					},
 				},
-				meta2: v1.ObjectMeta{
+				meta2: metav1.ObjectMeta{
 					Annotations: nil,
 				},
 			},
