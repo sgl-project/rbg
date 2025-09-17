@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 func Test_objectMetaEqual(t *testing.T) {
@@ -103,7 +104,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "abcd1234",
 			topologyKey:    "kubernetes.io/hostname",
-			podAffinityKey: "rbg.io/group-unique-key",
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -114,7 +115,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -130,11 +131,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -167,7 +168,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "xyz5678",
 			topologyKey:    "node",
-			podAffinityKey: "rbg.io/group-unique-key",
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -179,7 +180,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -196,11 +197,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -225,7 +226,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -244,8 +245,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "newkey",
 			topologyKey:    "rack",
-			podAffinityKey: "rbg.io/group-unique-key",
-			// want 与输入 pod 完全一致，因为函数应直接返回
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -256,7 +256,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      "rbg.io/group-unique-key",
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -292,13 +292,102 @@ func Test_exclusiveAffinityApplied(t *testing.T) {
 		topologyKey     string
 		want            bool
 	}{
-		// TODO: Add test cases.
+		{
+			name:            "empty affinity: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{},
+			topologyKey:     "kubernetes.io/hostname",
+			want:            false,
+		},
+		{
+			name: "both affinity and anti-affinity contain the required topology key: should return true",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        true,
+		},
+		{
+			name: "only affinity contains the topology key: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        false,
+		},
+		{
+			name: "only anti-affinity contains the topology key: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        false,
+		},
+		{
+			name: "topology key does not match: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        false,
+		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := exclusiveAffinityApplied(tt.podTemplateSpec, tt.topologyKey)
-			// TODO: update the condition below to compare got with tt.want.
-			if true {
+			if got != tt.want {
 				t.Errorf("exclusiveAffinityApplied() = %v, want %v", got, tt.want)
 			}
 		})
