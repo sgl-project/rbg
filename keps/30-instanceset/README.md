@@ -108,7 +108,7 @@ Consider including folks who also work outside the SIG or subproject.
 
 The overall desgin of `InstanceSet`. 
 
-![instanceset architecture](./instanceset-arch.jpeg)
+![instanceset architecture](../../doc/img/instanceset.jpg)
 
 <!--
 This section should contain enough information that the specifics of your
@@ -304,61 +304,60 @@ Introduce new fields in the RBG API to directly describe the relevant InstanceSe
 
 ```golang
 type RolloutStrategy struct {
-	// Type defines the rollout strategy, it can only be “RollingUpdate” for now.
-	//
-	// +kubebuilder:validation:Enum={RollingUpdate}
-	// +kubebuilder:default=RollingUpdate
-	Type RolloutStrategyType `json:"type"`
-
-	// PodUpdatePolicy indicates the policy to update pods under the role.
-	// Only InstanceSet kind workload supports InPlaceIfPossible policy.
+    // Type defines the rollout strategy, it can only be “RollingUpdate” for now.
+    //
+    // +kubebuilder:validation:Enum={RollingUpdate}
+    // +kubebuilder:default=RollingUpdate
+    Type RolloutStrategyType `json:"type"`
+    
+    // PodUpdatePolicy indicates the policy to update pods under the role.
+    // Only InstanceSet kind workload supports InPlaceIfPossible policy.
     // +kubebuilder:validation:Enum={Recreate, InPlaceIfPossible}
-	// +kubebuilder:default=Recreate
-	// +optional
-	PodUpdatePolicy *RolloutPodUpdatePolicyType `json:"podUpdatePolicy,omitempty"`
-
-	// RollingUpdate defines the parameters to be used when type is RollingUpdateStrategyType.
-	// +optional
-	RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
+    // +kubebuilder:default=Recreate
+    // +optional
+    PodUpdatePolicy *RolloutPodUpdatePolicyType `json:"podUpdatePolicy,omitempty"`
+    
+    // RollingUpdate defines the parameters to be used when type is RollingUpdateStrategyType.
+    // +optional
+    RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
 }
 
 // RoleSpec defines the specification for a role in the group
 type RoleSpec struct {
-  ... ...
-	// RolloutStrategy defines the strategy that will be applied to update replicas
-	// when a revision is made to the leaderWorkerTemplate.
-	// +optional
-	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+    // RolloutStrategy defines the strategy that will be applied to update replicas
+    // when a revision is made to the leaderWorkerTemplate.
+    // +optional
+    RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+    
+    // RestartPolicy defines the restart policy when pod failures happen.
+    // The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
+    // +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
+    // +optional
+    RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
-	// RestartPolicy defines the restart policy when pod failures happen.
-	// The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
-	// +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
-	// +optional
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
-
-  // ReadyPolicy defines the subGroup/instance ready behavior when pod becoming not ready in an subGroup/instance.
-  // defaults None.
-  // +kubebuilder:validation:Enum={None, RoleInstanceReadyOnAllPodReady} 
-  // +optional
-  ReadyPolicy ReadyPolicyType `json: "readyPolicy,omitempty"` 
-
-  // Instance components template
-  InstanceComponents []InstanceComponentTemplate `json:"instanceComponents,omitempty"`
-
-  ... ...
+    // ReadyPolicy defines the subGroup/instance ready behavior when pod becoming not ready in an subGroup/instance.
+    // defaults None.
+    // +kubebuilder:validation:Enum={None, RoleInstanceReadyOnAllPodReady} 
+    // +optional
+    ReadyPolicy ReadyPolicyType `json: "readyPolicy,omitempty"` 
+    
+    // Instance components template
+    InstanceComponents []InstanceComponentTemplate `json:"instanceComponents,omitempty"`
+    
+    ... ...
 }
 
 type InstanceComponentTemplate struct {
-  // Name of this compenent
-	Name string `json:"name"`
-
-  // Size is the replicas of this component
-  // defualts to 1 if not set.
-  // +optional
-	Size *int32 `json:"size,omitempty"`
-
-  // PatchTemplate and role.Template will merged as final Template
-	PatchTemplate runtime.RawExtension `json:"patchTemplate,omitempty"`
+    // Name of this compenent 
+    Name string `json:"name"`
+    
+    // Size is the replicas of this component
+    // defualts to 1 if not set.
+    // +optional 
+    Size *int32 `json:"size,omitempty"`
+    
+    // PatchTemplate and role.Template will merged as final Template
+    PatchTemplate runtime.RawExtension `json:"patchTemplate,omitempty"`
 }
 ```
 
@@ -370,50 +369,49 @@ This approach minimizes changes for users familiar with LWS, potentially lowerin
 
 ```golang
 type RolloutStrategy struct {
-	// Type defines the rollout strategy, it can only be “RollingUpdate” for now.
-	//
-	// +kubebuilder:validation:Enum={RollingUpdate}
-	// +kubebuilder:default=RollingUpdate
-	Type RolloutStrategyType `json:"type"`
-
-	// PodUpdatePolicy indicates the policy to update pods under the role.
-	// Only InstanceSet kind workload supports InPlaceIfPossible policy.
+    // Type defines the rollout strategy, it can only be “RollingUpdate” for now.
+    //
+    // +kubebuilder:validation:Enum={RollingUpdate}
+    // +kubebuilder:default=RollingUpdate
+    Type RolloutStrategyType `json:"type"`
+    
+    // PodUpdatePolicy indicates the policy to update pods under the role.
+    // Only InstanceSet kind workload supports InPlaceIfPossible policy.
     // +kubebuilder:validation:Enum={Recreate, InPlaceIfPossible}
-	// +kubebuilder:default=Recreate
-	// +optional
-	PodUpdatePolicy *RolloutPodUpdatePolicyType `json:"podUpdatePolicy,omitempty"`
-
-	// RollingUpdate defines the parameters to be used when type is RollingUpdateStrategyType.
-	// +optional
-	RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
+    // +kubebuilder:default=Recreate
+    // +optional
+    PodUpdatePolicy *RolloutPodUpdatePolicyType `json:"podUpdatePolicy,omitempty"`
+    
+    // RollingUpdate defines the parameters to be used when type is RollingUpdateStrategyType.
+    // +optional
+    RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
 }
 
 // RoleSpec defines the specification for a role in the group
 type RoleSpec struct {
-  ... ...
-	// RolloutStrategy defines the strategy that will be applied to update replicas
-	// when a revision is made to the leaderWorkerTemplate.
-	// +optional
-	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+    // RolloutStrategy defines the strategy that will be applied to update replicas
+    // when a revision is made to the leaderWorkerTemplate.
+    // +optional
+    RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+    
+    // RestartPolicy defines the restart policy when pod failures happen.
+    // The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
+    // +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
+    // +optional
+    RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
-	// RestartPolicy defines the restart policy when pod failures happen.
-	// The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
-	// +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
-	// +optional
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
-
-  // ReadyPolicy defines the subGroup/instance ready behavior when pod becoming not ready in an subGroup/instance.
-  // defaults None.
-  // +kubebuilder:validation:Enum={None, RoleInstanceReadyOnAllPodReady} 
-  // +optional
-  ReadyPolicy ReadyPolicyType `json: "readyPolicy,omitempty"` 
-
-  // LeaderWorkerSet template
-  // Using InstanceSet when workload kind is InstanceSet.
-  // +optional
-  LeaderWorkerSet LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
-
-  ... ...
+    // ReadyPolicy defines the subGroup/instance ready behavior when pod becoming not ready in an subGroup/instance.
+    // defaults None.
+    // +kubebuilder:validation:Enum={None, RoleInstanceReadyOnAllPodReady} 
+    // +optional
+    ReadyPolicy ReadyPolicyType `json: "readyPolicy,omitempty"` 
+    
+    // LeaderWorkerSet template
+    // Using InstanceSet when workload kind is InstanceSet.
+    // +optional
+    LeaderWorkerSet LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
+    
+    ... ...
 }
 ```
 
@@ -434,6 +432,7 @@ to implement this enhancement.
 
 #### Implementation
 
+### Test Plan
 
 #### Unit Tests
 
@@ -468,13 +467,13 @@ After the implementation PR is merged, add the names of the tests here.
 
 ### Feature Comparison: InstanceSet vs LeaderWorkerSet (LWS)
 
-| Feature                                              | InstanceSet | LWS |
-|------------------------------------------------------|-------------|-----------------|
-| Pod traffic lifecycle binding within an Instance     | ✅ Yes       | ❌ No            |
-| Gang scheduling semantics at Instance granularity    | ✅ Yes       | ❌ No            |
-| Support for in-place upgrade / restart               | ✅ Yes       | ❌ No            |
-| Allow modifying `Size` and more configuration fields | ✅ Yes       | ❌ No            |
-| Support `MaxSurge` upgrade strategy at Instance level       | ✅ Yes       | ❌ No            |
+| Feature                                               | InstanceSet | LWS |
+|-------------------------------------------------------|-------------|-----------------|
+| Pod traffic lifecycle binding within an Instance      | ✅ Yes       | ❌ No            |
+| Instance level gang scheduling                        | ✅ Yes       | ❌ No            |
+| In-place upgrade/restart                              | ✅ Yes       | ❌ No            |
+| Allow modifying `Size` and more configuration fields  | ✅ Yes       | ❌ No            |
+| Support `MaxSurge` upgrade strategy at Instance level | ✅ Yes       | ❌ No            |
 
 
 ## Alternatives
