@@ -59,22 +59,29 @@ func main() {
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	return runWithClient(cmd, args, nil)
+}
+
+func runWithClient(_ *cobra.Command, args []string, dynamicClient dynamic.Interface) error {
 	// Retrieve the first argument as the resource name
 	name = args[0]
 
-	// Fetch Kubernetes configuration
-	config, err := getConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get kubeconfig: %w", err)
+	// Create a dynamic client if not provided
+	if dynamicClient == nil {
+		// Fetch Kubernetes configuration
+		config, err := getConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get kubeconfig: %w", err)
+		}
+
+		// Create a dynamic client
+		dynamicClient, err = dynamic.NewForConfig(config)
+		if err != nil {
+			return fmt.Errorf("failed to create dynamic client: %w", err)
+		}
 	}
 
-	// Create a dynamic client
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("failed to create dynamic client: %w", err)
-	}
-
-	// Define GVR (modify this based on your CRD configuration)
+	// Define GVR
 	gvr := schema.GroupVersionResource{
 		Group:    "workloads.x-k8s.io",
 		Version:  "v1alpha1",
@@ -173,7 +180,8 @@ func printReport(resource *unstructured.Unstructured, roleStatuses []map[string]
 		}
 
 		bar := progressBar(percent, progressBarWidth)
-		fmt.Printf("%-12s %d/%d\t\t(total: %d)\t[%s] %d%%\n",
+		fmt.Printf(
+			"%-12s %d/%d\t\t(total: %d)\t[%s] %d%%\n",
 			name,
 			ready,
 			replicas,
@@ -186,7 +194,8 @@ func printReport(resource *unstructured.Unstructured, roleStatuses []map[string]
 		totalReplicas += int(replicas)
 	}
 
-	fmt.Printf("\n∑ Summary: %d roles | %d/%d Ready\n",
+	fmt.Printf(
+		"\n∑ Summary: %d roles | %d/%d Ready\n",
 		len(roleStatuses),
 		totalReady,
 		totalReplicas,

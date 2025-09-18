@@ -71,8 +71,12 @@ func init() {
 }
 
 func printVersion() {
-	setupLog.Info(fmt.Sprintf("RoleBasedGroup Controller Version: %s, git commit: %s, build date: %s",
-		version.Version, version.GitCommit, version.BuildDate))
+	setupLog.Info(
+		fmt.Sprintf(
+			"RoleBasedGroup Controller Version: %s, git commit: %s, build date: %s",
+			version.Version, version.GitCommit, version.BuildDate,
+		),
+	)
 	setupLog.Info(fmt.Sprintf("Go Version: %s", goruntime.Version()))
 	setupLog.Info(fmt.Sprintf("Go OS/Arch: %s/%s", goruntime.GOOS, goruntime.GOARCH))
 }
@@ -93,26 +97,38 @@ func main() {
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
 	)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	flag.StringVar(
+		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
+			"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.",
+	)
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8082", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.BoolVar(
+		&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
+			"Enabling this will ensure there is only one active controller manager.",
+	)
+	flag.BoolVar(
+		&secureMetrics, "metrics-secure", true,
+		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.",
+	)
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
 	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
-		"The directory that contains the metrics server certificate.")
+	flag.StringVar(
+		&metricsCertPath, "metrics-cert-path", "",
+		"The directory that contains the metrics server certificate.",
+	)
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(
+		&enableHTTP2, "enable-http2", false,
+		"If set, HTTP/2 will be enabled for the metrics and webhook servers",
+	)
 	flag.BoolVar(&development, "development", false, "Enable development mode for controller manager.")
-	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 10,
-		"The number of worker threads used by the the RBGS controller.")
+	flag.IntVar(
+		&maxConcurrentReconciles, "max-concurrent-reconciles", 10,
+		"The number of worker threads used by the the RBGS controller.",
+	)
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 120*time.Second, "Informer cache sync timeout.")
 
 	flag.Parse()
@@ -161,8 +177,11 @@ func main() {
 	webhookTLSOpts := tlsOpts
 
 	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+		setupLog.Info(
+			"Initializing webhook certificate watcher using provided certificates",
+			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key",
+			webhookCertKey,
+		)
 
 		var err error
 		webhookCertWatcher, err = certwatcher.New(
@@ -174,14 +193,18 @@ func main() {
 			os.Exit(1)
 		}
 
-		webhookTLSOpts = append(webhookTLSOpts, func(config *tls.Config) {
-			config.GetCertificate = webhookCertWatcher.GetCertificate
-		})
+		webhookTLSOpts = append(
+			webhookTLSOpts, func(config *tls.Config) {
+				config.GetCertificate = webhookCertWatcher.GetCertificate
+			},
+		)
 	}
 
-	webhookServer := webhook.NewServer(webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	})
+	webhookServer := webhook.NewServer(
+		webhook.Options{
+			TLSOpts: webhookTLSOpts,
+		},
+	)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -210,8 +233,11 @@ func main() {
 	// managed by cert-manager for the metrics server.
 	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
 	if len(metricsCertPath) > 0 {
-		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
+		setupLog.Info(
+			"Initializing metrics certificate watcher using provided certificates",
+			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key",
+			metricsCertKey,
+		)
 
 		var err error
 		metricsCertWatcher, err = certwatcher.New(
@@ -223,20 +249,24 @@ func main() {
 			os.Exit(1)
 		}
 
-		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
-			config.GetCertificate = metricsCertWatcher.GetCertificate
-		})
+		metricsServerOptions.TLSOpts = append(
+			metricsServerOptions.TLSOpts, func(config *tls.Config) {
+				config.GetCertificate = metricsCertWatcher.GetCertificate
+			},
+		)
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       workloadsv1alpha1.ControllerName,
-		Cache:                  cacheOptions(),
-	})
+	mgr, err := ctrl.NewManager(
+		ctrl.GetConfigOrDie(), ctrl.Options{
+			Scheme:                 scheme,
+			Metrics:                metricsServerOptions,
+			WebhookServer:          webhookServer,
+			HealthProbeBindAddress: probeAddr,
+			LeaderElection:         enableLeaderElection,
+			LeaderElectionID:       workloadsv1alpha1.ControllerName,
+			Cache:                  cacheOptions(),
+		},
+	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -284,8 +314,8 @@ func main() {
 		setupLog.Error(err, "unable to create rbgs controller", "controller", "RoleBasedGroupSet")
 		os.Exit(1)
 	}
-	// +kubebuilder:scaffold:builder
 
+	// +kubebuilder:scaffold:builder
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
 		if err := mgr.Add(metricsCertWatcher); err != nil {

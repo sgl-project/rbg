@@ -6,6 +6,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,4 +48,16 @@ func CheckOwnerReference(ownerReferences []metav1.OwnerReference, targetGVK sche
 		}
 	}
 	return false
+}
+
+func GetRbgGVK() schema.GroupVersionKind {
+	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "RoleBasedGroup")
+}
+
+func GetRbgScalingAdapterGVK() schema.GroupVersionKind {
+	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "RoleBasedGroupScalingAdapter")
+}
+
+func GetLwsGVK() schema.GroupVersionKind {
+	return schema.FromAPIVersionAndKind(lwsv1.GroupVersion.String(), "LeaderWorkerSet")
 }

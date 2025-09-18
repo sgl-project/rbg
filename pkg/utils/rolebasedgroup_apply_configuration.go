@@ -13,14 +13,17 @@ type RbgApplyConfiguration struct {
 	Status *RbgStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-func RoleBasedGroup(name, namespace, kind, apiVersion string) *RbgApplyConfiguration {
+func RoleBasedGroup(name, namespace string) *RbgApplyConfiguration {
+	gvk := GetRbgGVK()
 	b := &RbgApplyConfiguration{}
 	b.WithName(name)
 	b.WithNamespace(namespace)
-	b.WithKind(kind)
-	b.WithAPIVersion(apiVersion)
+	b.WithKind(gvk.Kind)
+	b.WithAPIVersion(gvk.GroupVersion().String())
 	return b
 }
+
+func (b *RbgApplyConfiguration) IsApplyConfiguration() {}
 
 func (b *RbgApplyConfiguration) WithAPIVersion(value string) *RbgApplyConfiguration {
 	b.TypeMetaApplyConfiguration.APIVersion = &value

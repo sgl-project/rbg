@@ -16,7 +16,7 @@ func TestGenerateScalingAdapterName(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "TC001",
+			name:     "generate scalingAdapter name",
 			rbgName:  "rbg1",
 			roleName: "worker",
 			expected: "rbg1-worker",
@@ -24,13 +24,17 @@ func TestGenerateScalingAdapterName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GenerateScalingAdapterName(tt.rbgName, tt.roleName)
-			if result != tt.expected {
-				t.Errorf("GenerateScalingAdapterName(%q, %q) = %q, expected %q",
-					tt.rbgName, tt.roleName, result, tt.expected)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := GenerateScalingAdapterName(tt.rbgName, tt.roleName)
+				if result != tt.expected {
+					t.Errorf(
+						"GenerateScalingAdapterName(%q, %q) = %q, expected %q",
+						tt.rbgName, tt.roleName, result, tt.expected,
+					)
+				}
+			},
+		)
 	}
 }
 
@@ -149,12 +153,14 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsScalingAdapterManagedByRBG(tt.scalingAdapter, tt.rbg)
-			if result != tt.expected {
-				t.Errorf("IsScalingAdapterManagedByRBG() = %v, want %v", result, tt.expected)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := IsScalingAdapterManagedByRBG(tt.scalingAdapter, tt.rbg)
+				if result != tt.expected {
+					t.Errorf("IsScalingAdapterManagedByRBG() = %v, want %v", result, tt.expected)
+				}
+			},
+		)
 	}
 }
 
@@ -197,11 +203,13 @@ func TestIsScalingAdapterEnable(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsScalingAdapterEnable(tt.roleSpec)
-			if result != tt.expected {
-				t.Errorf("IsScalingAdapterEnable() = %v, expected %v", result, tt.expected)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := IsScalingAdapterEnable(tt.roleSpec)
+				if result != tt.expected {
+					t.Errorf("IsScalingAdapterEnable() = %v, expected %v", result, tt.expected)
+				}
+			},
+		)
 	}
 }

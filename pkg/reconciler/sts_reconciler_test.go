@@ -2,462 +2,1051 @@ package reconciler
 
 import (
 	"context"
-	"reflect"
 	"testing"
+	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/uuid"
-
-	"sigs.k8s.io/rbgs/test/wrappers"
-
+	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/test/wrappers"
 )
 
-func getFakeClient() client.Client {
+func TestStatefulSetReconciler_Reconciler(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	crList := &appsv1.ControllerRevisionList{
-		Items: []appsv1.ControllerRevision{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "rolling-update-test-7468d9f96c",
-					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					},
-				},
-				Revision: 1,
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "rolling-update-test-98b55cfff",
-					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					},
-				},
-				Revision: 2,
-			},
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappers.BuildBasicRole("test-role").Obj()
+
+	tests := []struct {
+		name         string
+		rbg          *workloadsv1alpha1.RoleBasedGroup
+		role         *workloadsv1alpha1.RoleSpec
+		existingObjs []runtime.Object
+		expectErr    bool
+	}{
+		{
+			name:         "normal",
+			rbg:          rbg,
+			role:         &role,
+			existingObjs: []runtime.Object{},
+			expectErr:    false,
 		},
 	}
 
-	podList := &corev1.PodList{
-		Items: []corev1.Pod{
-			wrappers.BuildBasicPod().
-				WithName("rolling-update-test-0").
-				WithLabels(map[string]string{
-					"controller-revision-hash":        "rolling-update-test-7468d9f96c",
-					workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					"apps.kubernetes.io/pod-index":    "0",
-				}).
-				WithReadyCondition(true).
-				Obj(),
-			wrappers.BuildBasicPod().
-				WithName("rolling-update-test-1").
-				WithLabels(map[string]string{
-					"controller-revision-hash":        "rolling-update-test-7468d9f96c",
-					workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					"apps.kubernetes.io/pod-index":    "1",
-				}).
-				WithReadyCondition(true).
-				Obj(),
-			wrappers.BuildBasicPod().
-				WithName("rolling-update-test-2").
-				WithLabels(map[string]string{
-					"controller-revision-hash":        "rolling-update-test-7468d9f96c",
-					workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					"apps.kubernetes.io/pod-index":    "2",
-				}).
-				WithReadyCondition(true).
-				Obj(),
-			wrappers.BuildBasicPod().
-				WithName("rolling-update-test-3").
-				WithLabels(map[string]string{
-					"controller-revision-hash":        "rolling-update-test-7468d9f96c",
-					workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					"apps.kubernetes.io/pod-index":    "3",
-				}).
-				WithReadyCondition(true).
-				Obj(),
-			wrappers.BuildBasicPod().
-				WithName("rolling-update-test-4").
-				WithLabels(map[string]string{
-					"controller-revision-hash":        "rolling-update-test-98b55cfff",
-					workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					"apps.kubernetes.io/pod-index":    "4",
-				}).
-				WithReadyCondition(true).
-				Obj(),
-			wrappers.BuildBasicPod().
-				WithName("rolling-update-test-5").
-				WithLabels(map[string]string{
-					"controller-revision-hash":        "rolling-update-test-98b55cfff",
-					workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-					"apps.kubernetes.io/pod-index":    "5",
-				}).
-				WithReadyCondition(false).
-				Obj(),
-		},
-	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				client := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithRuntimeObjects(tt.existingObjs...).
+					Build()
 
-	objs := []runtime.Object{crList, podList}
-	return fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
+				r := &StatefulSetReconciler{
+					scheme: scheme,
+					client: client,
+				}
+
+				err := r.Reconciler(context.Background(), tt.rbg, tt.role)
+				if tt.expectErr {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+
+					// Check if StatefulSet was created
+					sts := &appsv1.StatefulSet{}
+					err = client.Get(
+						context.Background(), types.NamespacedName{
+							Name:      tt.rbg.GetWorkloadName(tt.role),
+							Namespace: tt.rbg.Namespace,
+						}, sts,
+					)
+					assert.NoError(t, err)
+					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), sts.Name)
+
+					// Check if Service was created
+					svc := &corev1.Service{}
+					err = client.Get(
+						context.Background(), types.NamespacedName{
+							Name:      tt.rbg.GetWorkloadName(tt.role),
+							Namespace: tt.rbg.Namespace,
+						}, svc,
+					)
+					assert.NoError(t, err)
+					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), svc.Name)
+				}
+			},
+		)
+	}
 }
 
-func TestStatefulSetReconciler_ConstructRoleStatus(t *testing.T) {
+func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
-	type fields struct {
-		client client.Client
-		scheme *runtime.Scheme
-	}
-	type args struct {
-		ctx  context.Context
-		rbg  *workloadsv1alpha1.RoleBasedGroup
-		role *workloadsv1alpha1.RoleSpec
-	}
 
-	// 测试用 StatefulSet 模板
-	testSTS := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg-test-role",
-			Namespace: "default",
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas: ptr.To[int32](3),
-		},
-		Status: appsv1.StatefulSetStatus{
-			ReadyReplicas: 2,
-		},
-	}
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappers.BuildBasicRole("test-role").Obj()
 
 	tests := []struct {
-		name             string
-		fields           fields
-		args             args
-		wantStatus       workloadsv1alpha1.RoleStatus
-		wantUpdateStatus bool
-		wantErr          bool
+		name        string
+		rbg         *workloadsv1alpha1.RoleBasedGroup
+		role        *workloadsv1alpha1.RoleSpec
+		sts         *appsv1.StatefulSet
+		expectReady bool
+		expectErr   bool
 	}{
 		{
-			name: "case 1: status-changed-needs-update",
-			fields: fields{
-				scheme: scheme,
-				client: fake.NewClientBuilder().
-					WithScheme(scheme).
-					WithObjects(testSTS.DeepCopy()).
-					Build(),
-			},
-			args: args{
-				ctx: context.Background(),
-				rbg: &workloadsv1alpha1.RoleBasedGroup{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg",
-						Namespace: "default",
-					},
-					Status: workloadsv1alpha1.RoleBasedGroupStatus{
-						RoleStatuses: []workloadsv1alpha1.RoleStatus{
-							{
-								Name:          "test-role",
-								Replicas:      2,
-								ReadyReplicas: 1,
-							},
-						},
-					},
+			name: "workload ready",
+			rbg:  rbg,
+			role: &role,
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg-test-role",
+					Namespace: "default",
 				},
-				role: &workloadsv1alpha1.RoleSpec{Name: "test-role"},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To[int32](3),
+				},
+				Status: appsv1.StatefulSetStatus{
+					ReadyReplicas: 3,
+					Replicas:      3,
+				},
 			},
-			wantStatus: workloadsv1alpha1.RoleStatus{
-				Name:          "test-role",
-				Replicas:      3,
-				ReadyReplicas: 2,
-			},
-			wantUpdateStatus: true,
-			wantErr:          false,
+			expectReady: true,
+			expectErr:   false,
 		},
 		{
-			name: "case 2: status-unchanged-no-update",
-			fields: fields{
-				scheme: scheme,
-				client: fake.NewClientBuilder().
-					WithScheme(scheme).
-					WithObjects(testSTS.DeepCopy()).
-					Build(),
-			},
-			args: args{
-				ctx: context.Background(),
-				rbg: &workloadsv1alpha1.RoleBasedGroup{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg",
-						Namespace: "default",
-					},
-					Status: workloadsv1alpha1.RoleBasedGroupStatus{
-						RoleStatuses: []workloadsv1alpha1.RoleStatus{
-							{
-								Name:          "test-role",
-								Replicas:      3,
-								ReadyReplicas: 2,
-							},
-						},
-					},
+			name: "workload not ready",
+			rbg:  rbg,
+			role: &role,
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg-test-role",
+					Namespace: "default",
 				},
-				role: &workloadsv1alpha1.RoleSpec{Name: "test-role"},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To[int32](3),
+				},
+				Status: appsv1.StatefulSetStatus{
+					ReadyReplicas: 2,
+					Replicas:      2,
+				},
 			},
-			wantStatus: workloadsv1alpha1.RoleStatus{
-				Name:          "test-role",
-				Replicas:      3,
-				ReadyReplicas: 2,
-			},
-			wantUpdateStatus: false,
-			wantErr:          false,
+			expectReady: false,
+			expectErr:   false,
 		},
 		{
-			name: "case 3: initial-status-creation",
-			fields: fields{
-				scheme: scheme,
-				client: fake.NewClientBuilder().
-					WithScheme(scheme).
-					WithObjects(testSTS.DeepCopy()).
-					Build(),
-			},
-			args: args{
-				ctx: context.Background(),
-				rbg: &workloadsv1alpha1.RoleBasedGroup{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg",
-						Namespace: "default",
-					},
-					Status: workloadsv1alpha1.RoleBasedGroupStatus{
-						RoleStatuses: []workloadsv1alpha1.RoleStatus{},
-					},
-				},
-				role: &workloadsv1alpha1.RoleSpec{Name: "test-role"},
-			},
-			wantStatus: workloadsv1alpha1.RoleStatus{
-				Name:          "test-role",
-				Replicas:      3,
-				ReadyReplicas: 2,
-			},
-			wantUpdateStatus: true,
-			wantErr:          false,
-		},
-		{
-			name: "case 4: statefulset-not-found",
-			fields: fields{
-				scheme: scheme,
-				client: fake.NewClientBuilder().
-					WithScheme(scheme).
-					Build(),
-			},
-			args: args{
-				ctx: context.Background(),
-				rbg: &workloadsv1alpha1.RoleBasedGroup{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg",
-						Namespace: "default",
-					},
-					Status: workloadsv1alpha1.RoleBasedGroupStatus{
-						RoleStatuses: []workloadsv1alpha1.RoleStatus{
-							{Name: "test-role", Replicas: 2, ReadyReplicas: 1},
-						},
-					},
-				},
-				role: &workloadsv1alpha1.RoleSpec{Name: "test-role"},
-			},
-			wantStatus:       workloadsv1alpha1.RoleStatus{},
-			wantUpdateStatus: false,
-			wantErr:          true,
+			name:        "workload not found",
+			rbg:         rbg,
+			role:        &role,
+			sts:         nil,
+			expectReady: false,
+			expectErr:   true,
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &StatefulSetReconciler{
-				scheme: tt.fields.scheme,
-				client: tt.fields.client,
-			}
-			gotStatus, gotUpdateStatus, err := r.ConstructRoleStatus(tt.args.ctx, tt.args.rbg, tt.args.role)
+		t.Run(
+			tt.name, func(t *testing.T) {
+				clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
+				if tt.sts != nil {
+					clientBuilder = clientBuilder.WithObjects(tt.sts)
+				}
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("testCase %s: error = %v, wantErr %v", tt.name, err, tt.wantErr)
-				return
-			}
+				r := &StatefulSetReconciler{
+					scheme: scheme,
+					client: clientBuilder.Build(),
+				}
 
-			if !reflect.DeepEqual(gotStatus, tt.wantStatus) {
-				t.Errorf("testCase %s: gotStatus = %v, want %v", tt.name, gotStatus, tt.wantStatus)
-			}
-
-			if gotUpdateStatus != tt.wantUpdateStatus {
-				t.Errorf("testCase %s: gotUpdateStatus = %v, want %v", tt.name, gotUpdateStatus, tt.wantUpdateStatus)
-			}
-		})
+				ready, err := r.CheckWorkloadReady(context.Background(), tt.rbg, tt.role)
+				if tt.expectErr {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+					assert.Equal(t, tt.expectReady, ready)
+				}
+			},
+		)
 	}
 }
 
-func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
-	roleWrapper := wrappers.BuildBasicRole("role").WithReplicas(4)
+func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	type fields struct {
-		client client.Client
-		scheme *runtime.Scheme
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+
+	stsOwned := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-worker",
+			Namespace: "default",
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					Kind:       "RoleBasedGroup",
+					Name:       "test-rbg",
+					UID:        rbg.UID,
+					Controller: ptr.To[bool](true),
+				},
+			},
+		},
 	}
-	type args struct {
-		ctx        context.Context
-		role       workloadsv1alpha1.RoleSpec
-		sts        *appsv1.StatefulSet
-		stsUpdated bool
+
+	stsOrphaned := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-orphaned",
+			Namespace: "default",
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					Kind:       "RoleBasedGroup",
+					Name:       "test-rbg",
+					UID:        rbg.UID,
+					Controller: ptr.To[bool](true),
+				},
+			},
+		},
 	}
+
+	stsDifferentOwner := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-rbg-worker",
+			Namespace: "default",
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: "other-rbg",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					Kind:       "RoleBasedGroup",
+					Name:       "other-rbg",
+					UID:        "other-uid",
+					Controller: ptr.To[bool](true),
+				},
+			},
+		},
+	}
+
 	tests := []struct {
-		name      string
-		fields    fields
-		args      args
-		partition int32
-		replicas  int32
-		wantErr   bool
+		name          string
+		rbg           *workloadsv1alpha1.RoleBasedGroup
+		existingObjs  []runtime.Object
+		expectDeleted []string
+		expectErr     bool
 	}{
 		{
-			name: "case 1: sts is not created",
-			fields: fields{
-				client: fake.NewFakeClient(),
-				scheme: runtime.NewScheme(),
+			name: "cleanup orphaned workloads",
+			rbg:  rbg,
+			existingObjs: []runtime.Object{
+				stsOwned,
+				stsOrphaned,
+				stsDifferentOwner,
 			},
-			args: args{
-				ctx:        context.TODO(),
-				role:       roleWrapper.WithMaxUnavailable(2).WithMaxSurge(2).Obj(),
-				sts:        &appsv1.StatefulSet{},
-				stsUpdated: false,
-			},
-			partition: 0,
-			replicas:  4,
-			wantErr:   false,
-		},
-		{
-			name: "case 2: sts has been updated, and rolling update has started",
-			fields: fields{
-				client: fake.NewFakeClient(),
-				scheme: runtime.NewScheme(),
-			},
-			args: args{
-				ctx:  context.TODO(),
-				role: roleWrapper.WithMaxUnavailable(2).WithMaxSurge(2).Obj(),
-				sts: &appsv1.StatefulSet{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "rolling-update-test",
-						Annotations: map[string]string{
-							workloadsv1alpha1.RoleSizeAnnotationKey: "4",
-						},
-						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-						},
-						UID: uuid.NewUUID(),
-					},
-					Spec: appsv1.StatefulSetSpec{
-						Replicas: ptr.To(int32(4)),
-						Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
-					},
-				},
-				stsUpdated: true,
-			},
-			partition: 4,
-			replicas:  6,
-			wantErr:   false,
-		},
-		{
-			name: "case 3: rolling update is in progress",
-			fields: fields{
-				client: getFakeClient(),
-				scheme: runtime.NewScheme(),
-			},
-			args: args{
-				ctx:  context.TODO(),
-				role: roleWrapper.WithMaxUnavailable(2).WithMaxSurge(2).Obj(),
-				sts: &appsv1.StatefulSet{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "rolling-update-test",
-						Annotations: map[string]string{
-							workloadsv1alpha1.RoleSizeAnnotationKey: "4",
-						},
-						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-						},
-						UID: uuid.NewUUID(),
-					},
-					Spec: appsv1.StatefulSetSpec{
-						Replicas: ptr.To(int32(6)),
-						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
-							Type: appsv1.RollingUpdateStatefulSetStrategyType,
-							RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
-								Partition: ptr.To(int32(4)),
-							},
-						},
-						Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
-					},
-				},
-				stsUpdated: false,
-			},
-			partition: 2,
-			replicas:  6,
-			wantErr:   false,
-		},
-		{
-			name: "case 4: rolling update has been completed",
-			fields: fields{
-				client: getFakeClient(),
-				scheme: runtime.NewScheme(),
-			},
-			args: args{
-				ctx:  context.TODO(),
-				role: roleWrapper.WithMaxUnavailable(2).WithMaxSurge(2).Obj(),
-				sts: &appsv1.StatefulSet{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "rolling-update-test",
-						Annotations: map[string]string{
-							workloadsv1alpha1.RoleSizeAnnotationKey: "4",
-						},
-						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "rolling-update-test",
-						},
-					},
-					Spec: appsv1.StatefulSetSpec{
-						Replicas: ptr.To(int32(4)),
-						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
-							Type: appsv1.RollingUpdateStatefulSetStrategyType,
-							RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
-								Partition: ptr.To(int32(0)),
-							},
-						},
-						Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
-					},
-				},
-				stsUpdated: false,
-			},
-			partition: 0,
-			replicas:  4,
-			wantErr:   false,
+			expectDeleted: []string{"test-rbg-orphaned"},
+			expectErr:     false,
 		},
 	}
+
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &StatefulSetReconciler{
-				scheme: tt.fields.scheme,
-				client: tt.fields.client,
-			}
-			partition, replicas, err := r.rollingUpdateParameters(tt.args.ctx, &tt.args.role, tt.args.sts, tt.args.stsUpdated)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("rollingUpdateParameters() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if partition != tt.partition {
-				t.Errorf("rollingUpdateParameters() partition = %v, want %v", partition, tt.partition)
-			}
-			if replicas != tt.replicas {
-				t.Errorf("rollingUpdateParameters() replicas = %v, want %v", replicas, tt.replicas)
-			}
-		})
+		t.Run(
+			tt.name, func(t *testing.T) {
+				client := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithRuntimeObjects(tt.existingObjs...).
+					Build()
+
+				r := &StatefulSetReconciler{
+					scheme: scheme,
+					client: client,
+				}
+
+				err := r.CleanupOrphanedWorkloads(context.Background(), tt.rbg)
+				if tt.expectErr {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+
+					// Check that orphaned workloads were deleted
+					for _, name := range tt.expectDeleted {
+						sts := &appsv1.StatefulSet{}
+						err = client.Get(
+							context.Background(), types.NamespacedName{
+								Name:      name,
+								Namespace: tt.rbg.Namespace,
+							}, sts,
+						)
+						assert.True(t, apierrors.IsNotFound(err), "Expected %s to be deleted", name)
+					}
+				}
+			},
+		)
+	}
+}
+
+func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappers.BuildBasicRole("test-role").Obj()
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-test-role",
+			Namespace: "default",
+			UID:       "sts-uid",
+		},
+	}
+
+	tests := []struct {
+		name          string
+		client        client.Client
+		rbg           *workloadsv1alpha1.RoleBasedGroup
+		role          *workloadsv1alpha1.RoleSpec
+		mockReconcile bool
+		expectErr     bool
+	}{
+		{
+			name:          "recreate existing workload",
+			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
+			rbg:           rbg,
+			role:          &role,
+			mockReconcile: true,
+			expectErr:     false,
+		},
+		{
+			name:          "recreate non-existing workload",
+			client:        fake.NewClientBuilder().WithScheme(scheme).Build(),
+			rbg:           rbg,
+			role:          &role,
+			mockReconcile: true,
+			expectErr:     false,
+		},
+		{
+			name:          "nil rbg",
+			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
+			rbg:           nil,
+			role:          &role,
+			mockReconcile: false,
+			expectErr:     false,
+		},
+		{
+			name:          "nil role",
+			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
+			rbg:           rbg,
+			role:          nil,
+			mockReconcile: false,
+			expectErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				r := &StatefulSetReconciler{
+					scheme: scheme,
+					client: tt.client,
+				}
+
+				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
+
+				if tt.mockReconcile {
+					// mock rbg controller reconcile
+					go func() {
+						for i := 0; i < 60; i++ {
+							newSts := &appsv1.StatefulSet{
+								ObjectMeta: metav1.ObjectMeta{
+									Name:      rbg.GetWorkloadName(&role),
+									Namespace: "default",
+								},
+							}
+							err := r.client.Create(ctx, newSts)
+							if err != nil && !apierrors.IsAlreadyExists(err) {
+								t.Logf("create failed: %v", err)
+							}
+							time.Sleep(5 * time.Second)
+						}
+					}()
+				}
+
+				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
+				if (err != nil) != tt.expectErr {
+					t.Errorf("StsReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
+				}
+			},
+		)
+	}
+}
+
+// nolint:dupl
+func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
+	// test 4 replicas sts rolling update process, maxSurge=2, maxUnavailable=2
+	schema := runtime.NewScheme()
+	_ = workloadsv1alpha1.AddToScheme(schema)
+	_ = appsv1.AddToScheme(schema)
+	_ = corev1.AddToScheme(schema)
+
+	tests := []struct {
+		name            string
+		rollingStrategy *workloadsv1alpha1.RolloutStrategy
+		sts             *appsv1.StatefulSet
+		stsUpdated      bool
+		podList         *corev1.PodList
+		expectReplicas  int32
+		expectPartition int32
+		wantErr         bool
+	}{
+		{
+			name: "Stage 1: add 2 new instances",
+			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
+				Type: workloadsv1alpha1.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+					MaxUnavailable: intstr.FromInt32(2),
+					MaxSurge:       intstr.FromInt32(2),
+				},
+			},
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg-test-role",
+					Namespace: "default",
+					UID:       "sts-uid",
+					Labels: map[string]string{
+						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						workloadsv1alpha1.SetRoleLabelKey: "test-role",
+					},
+					Annotations: map[string]string{
+						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To(int32(4)),
+				},
+				Status: appsv1.StatefulSetStatus{
+					Replicas:        4,
+					ReadyReplicas:   4,
+					CurrentReplicas: 4,
+					UpdatedReplicas: 4,
+				},
+			},
+			podList: &corev1.PodList{
+				Items: []corev1.Pod{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-0",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "0",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-1",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "1",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-2",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "2",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-3",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "3",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+				},
+			},
+
+			stsUpdated:      true,
+			expectReplicas:  6,
+			expectPartition: 4,
+			wantErr:         false,
+		},
+		{
+			name: "Stage 2: rolling update 2 old instances",
+			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
+				Type: workloadsv1alpha1.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+					MaxUnavailable: intstr.FromInt32(2),
+					MaxSurge:       intstr.FromInt32(2),
+				},
+			},
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg-test-role",
+					Namespace: "default",
+					UID:       "sts-uid",
+					Labels: map[string]string{
+						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						workloadsv1alpha1.SetRoleLabelKey: "test-role",
+					},
+					Annotations: map[string]string{
+						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To(int32(6)),
+					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+						Type: appsv1.RollingUpdateStatefulSetStrategyType,
+						RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+							Partition: ptr.To(int32(4)),
+						},
+					},
+				},
+				Status: appsv1.StatefulSetStatus{
+					Replicas:        6,
+					ReadyReplicas:   4,
+					UpdatedReplicas: 2,
+				},
+			},
+			podList: &corev1.PodList{
+				Items: []corev1.Pod{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-0",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "0",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-1",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "1",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-2",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "2",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-3",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "3",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-4",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "newRevision",
+								"apps.kubernetes.io/pod-index":    "4",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionFalse,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-5",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "newRevision",
+								"apps.kubernetes.io/pod-index":    "5",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionFalse,
+								},
+							},
+						},
+					},
+				},
+			},
+			stsUpdated:      false,
+			expectReplicas:  6,
+			expectPartition: 2,
+			wantErr:         false,
+		},
+		{
+			name: "Stage 3: rolling update remaining old instances",
+			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
+				Type: workloadsv1alpha1.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+					MaxUnavailable: intstr.FromInt32(2),
+					MaxSurge:       intstr.FromInt32(2),
+				},
+			},
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg-test-role",
+					Namespace: "default",
+					UID:       "sts-uid",
+					Labels: map[string]string{
+						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						workloadsv1alpha1.SetRoleLabelKey: "test-role",
+					},
+					Annotations: map[string]string{
+						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: ptr.To(int32(6)),
+					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+						Type: appsv1.RollingUpdateStatefulSetStrategyType,
+						RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
+							Partition: ptr.To(int32(2)),
+						},
+					},
+				},
+				Status: appsv1.StatefulSetStatus{
+					Replicas:        6,
+					ReadyReplicas:   4,
+					UpdatedReplicas: 4,
+				},
+			},
+			podList: &corev1.PodList{
+				Items: []corev1.Pod{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-0",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "0",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-1",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "oldRevision",
+								"apps.kubernetes.io/pod-index":    "1",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-2",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "newRevision",
+								"apps.kubernetes.io/pod-index":    "2",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-3",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "newRevision",
+								"apps.kubernetes.io/pod-index":    "3",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-4",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "newRevision",
+								"apps.kubernetes.io/pod-index":    "4",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-rbg-test-role-5",
+							Namespace: "default",
+							Labels: map[string]string{
+								"controller-revision-hash":        "newRevision",
+								"apps.kubernetes.io/pod-index":    "5",
+								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+								workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							},
+						},
+						Status: corev1.PodStatus{
+							Phase: corev1.PodRunning,
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					},
+				},
+			},
+			stsUpdated:      false,
+			expectReplicas:  5,
+			expectPartition: 0,
+			wantErr:         false,
+		},
+	}
+
+	oldRevision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oldRevision",
+			Namespace: "default",
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				workloadsv1alpha1.SetRoleLabelKey: "test-role",
+			},
+		},
+		Revision: 1,
+	}
+	newRevision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "newRevision",
+			Namespace: "default",
+			Labels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				workloadsv1alpha1.SetRoleLabelKey: "test-role",
+			},
+		},
+		Revision: 2,
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg.Spec.Roles[0].Replicas = ptr.To(int32(4))
+				if tt.rollingStrategy != nil {
+					rbg.Spec.Roles[0].RolloutStrategy = tt.rollingStrategy
+				}
+
+				fakeClient := fake.NewClientBuilder().WithScheme(schema).WithRuntimeObjects(
+					rbg, tt.sts, oldRevision, newRevision, tt.podList,
+				).Build()
+				r := NewStatefulSetReconciler(schema, fakeClient)
+
+				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
+				retPartition, retReplicas, retErr := r.rollingUpdateParameters(
+					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated,
+				)
+
+				if tt.wantErr != (retErr != nil) {
+					t.Errorf("rollingUpdateParameters() error = %v, wantErr %v", retErr, tt.wantErr)
+				}
+
+				if !tt.wantErr {
+					assert.Equal(t, tt.expectPartition, retPartition)
+					assert.Equal(t, tt.expectReplicas, retReplicas)
+				}
+
+			},
+		)
+	}
+}
+
+func Test_calculateRoleUnreadyReplicas(t *testing.T) {
+	tests := []struct {
+		name         string
+		states       []replicaState
+		roleReplicas int32
+		expected     int32
+	}{
+		{
+			name: "all ready and updated",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+			},
+			roleReplicas: 3,
+			expected:     0,
+		},
+		{
+			name: "some unready replicas",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: false, updated: true},
+				{ready: true, updated: false},
+			},
+			roleReplicas: 3,
+			expected:     2,
+		},
+		{
+			name: "more states than role replicas",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+				{ready: false, updated: false}, // Should be ignored
+			},
+			roleReplicas: 3,
+			expected:     0,
+		},
+		{
+			name:         "empty states",
+			states:       []replicaState{},
+			roleReplicas: 3,
+			expected:     3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := calculateRoleUnreadyReplicas(tt.states, tt.roleReplicas)
+				assert.Equal(t, tt.expected, result)
+			},
+		)
+	}
+}
+
+func Test_calculateContinuousReadyReplicas(t *testing.T) {
+	tests := []struct {
+		name     string
+		states   []replicaState
+		expected int32
+	}{
+		{
+			name: "all ready from the end",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+			},
+			expected: 3,
+		},
+		{
+			name: "some ready from the end",
+			states: []replicaState{
+				{ready: true, updated: true},
+				{ready: false, updated: true},
+				{ready: true, updated: true},
+				{ready: true, updated: true},
+			},
+			expected: 2,
+		},
+		{
+			name: "none ready",
+			states: []replicaState{
+				{ready: false, updated: false},
+				{ready: false, updated: false},
+			},
+			expected: 0,
+		},
+		{
+			name:     "empty states",
+			states:   []replicaState{},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := calculateContinuousReadyReplicas(tt.states)
+				assert.Equal(t, tt.expected, result)
+			},
+		)
 	}
 }

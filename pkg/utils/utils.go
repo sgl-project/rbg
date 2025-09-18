@@ -25,6 +25,8 @@ const (
 
 type PatchType string
 
+// nolint:staticcheck
+// TODO:  SA1019: Use client.Client.Apply() instead
 func PatchObjectApplyConfiguration(
 	ctx context.Context, k8sClient client.Client,
 	objApplyConfig interface{}, patchType PatchType,
@@ -132,7 +134,7 @@ func FilterSystemLabels(labels map[string]string) map[string]string {
 func FilterSystemEnvs(envs []corev1.EnvVar) []corev1.EnvVar {
 	var filtered []corev1.EnvVar
 	for _, env := range envs {
-		if !strings.HasPrefix(env.Name, "ROLES_") && env.Name != "RBG_GROUP_SIZE" {
+		if !strings.HasPrefix(env.Name, "ROLE_") && env.Name != "GROUP_NAME" {
 			filtered = append(filtered, env)
 		}
 	}
