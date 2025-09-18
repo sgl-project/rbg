@@ -4,7 +4,7 @@
 
 - Git
 - Golang (version >= 1.24)
-- Kubernetes (version >= 1.26)
+- Kubernetes (version >= 1.28)
 - Docker or other container runtime
 - GNU Make
 

@@ -30,30 +30,39 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 
 	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	role := wrappers.BuildBasicRole("test-role").Obj()
+	rollingRole := wrappers.BuildBasicRole("test-role").WithReplicas(4).
+		WithRollingUpdate(
+			workloadsv1alpha1.RollingUpdate{
+				MaxUnavailable: intstr.FromInt32(2),
+				MaxSurge:       intstr.FromInt32(2),
+				Partition:      ptr.To(int32(1)),
+			},
+		).Obj()
 
 	tests := []struct {
-		name         string
-		rbg          *workloadsv1alpha1.RoleBasedGroup
-		role         *workloadsv1alpha1.RoleSpec
-		existingObjs []runtime.Object
-		expectErr    bool
+		name      string
+		rbg       *workloadsv1alpha1.RoleBasedGroup
+		role      *workloadsv1alpha1.RoleSpec
+		expectErr bool
 	}{
 		{
-			name:         "normal",
-			rbg:          rbg,
-			role:         &role,
-			existingObjs: []runtime.Object{},
-			expectErr:    false,
+			name:      "normal",
+			rbg:       rbg,
+			role:      &role,
+			expectErr: false,
+		},
+		{
+			name:      "role with rollingUpdate",
+			rbg:       rbg,
+			role:      &rollingRole,
+			expectErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				client := fake.NewClientBuilder().
-					WithScheme(scheme).
-					WithRuntimeObjects(tt.existingObjs...).
-					Build()
+				client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 				r := &StatefulSetReconciler{
 					scheme: scheme,
@@ -424,6 +433,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
 					MaxUnavailable: intstr.FromInt32(2),
 					MaxSurge:       intstr.FromInt32(2),
+					Partition:      ptr.To(int32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -550,6 +560,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
 					MaxUnavailable: intstr.FromInt32(2),
 					MaxSurge:       intstr.FromInt32(2),
+					Partition:      ptr.To(int32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -722,6 +733,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
 					MaxUnavailable: intstr.FromInt32(2),
 					MaxSurge:       intstr.FromInt32(2),
+					Partition:      ptr.To(int32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{

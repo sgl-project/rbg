@@ -10,7 +10,7 @@ it transfers the Prefill KVCache back to the Decode Worker.
 
 ## Prerequisites
 
-1. A Kubernetes cluster with version >= 1.26 is Required, or it will behave unexpected.
+1. A Kubernetes cluster with version >= 1.28 is Required, or it will behave unexpected.
 2. Kubernetes cluster has at least 3+ CPUs with at least 16G VRAM available for the LLM Inference to run on.
 3. The kubectl command-line tool has communication with your cluster. Learn how
    to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).

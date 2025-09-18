@@ -1,9 +1,10 @@
-package utils
+package applyconfiguration
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type RbgApplyConfiguration struct {
@@ -14,7 +15,7 @@ type RbgApplyConfiguration struct {
 }
 
 func RoleBasedGroup(name, namespace string) *RbgApplyConfiguration {
-	gvk := GetRbgGVK()
+	gvk := utils.GetRbgGVK()
 	b := &RbgApplyConfiguration{}
 	b.WithName(name)
 	b.WithNamespace(namespace)

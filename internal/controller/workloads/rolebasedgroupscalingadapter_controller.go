@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/client-go/applyconfiguration"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -121,8 +122,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			"Failed to get scale target role: %v", getTargetRoleErr,
 		)
 		if rbgScalingAdapter.Status.Phase != workloadsv1alpha1.AdapterPhaseNotBound {
-			rbgScalingAdapterApplyConfig := utils.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
-				WithStatus(utils.RbgScalingAdapterStatus(rbgScalingAdapter.Status).WithPhase(workloadsv1alpha1.AdapterPhaseNotBound))
+			rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
+				WithStatus(applyconfiguration.RbgScalingAdapterStatus(rbgScalingAdapter.Status).WithPhase(workloadsv1alpha1.AdapterPhaseNotBound))
 			if err := utils.PatchObjectApplyConfiguration(
 				ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 			); err != nil {
@@ -143,8 +144,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 
 	// check scale target exist succeed, init adapter status with phase bound, selector and initial replicas
 	if rbgScalingAdapter.Status.Phase != workloadsv1alpha1.AdapterPhaseBound {
-		rbgScalingAdapterSpecApplyConfig := utils.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
-			WithSpec(utils.RbgScalingAdapterSpec(rbgScalingAdapter.Spec).WithReplicas(targetRole.Replicas))
+		rbgScalingAdapterSpecApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
+			WithSpec(applyconfiguration.RbgScalingAdapterSpec(rbgScalingAdapter.Spec).WithReplicas(targetRole.Replicas))
 
 		if err := utils.PatchObjectApplyConfiguration(
 			ctx, r.client, rbgScalingAdapterSpecApplyConfig, utils.PatchSpec,
@@ -158,9 +159,9 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			return ctrl.Result{}, err
 		}
 
-		rbgScalingAdapterStatusApplyConfig := utils.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
+		rbgScalingAdapterStatusApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
 			WithStatus(
-				utils.RbgScalingAdapterStatus(rbgScalingAdapter.Status).
+				applyconfiguration.RbgScalingAdapterStatus(rbgScalingAdapter.Status).
 					WithReplicas(targetRole.Replicas, false).
 					WithPhase(workloadsv1alpha1.AdapterPhaseBound).WithSelector(selector),
 			)
@@ -196,8 +197,12 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		)
 		return ctrl.Result{}, err
 	}
-	rbgScalingAdapterApplyConfig := utils.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
-		WithStatus(utils.RbgScalingAdapterStatus(rbgScalingAdapter.Status).WithReplicas(desiredReplicas, true))
+	rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
+		WithStatus(
+			applyconfiguration.RbgScalingAdapterStatus(rbgScalingAdapter.Status).WithReplicas(
+				desiredReplicas, true,
+			),
+		)
 	if err := utils.PatchObjectApplyConfiguration(
 		ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 	); err != nil {
@@ -221,7 +226,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	rbgGKV := utils.GetRbgGVK()
-	rbgScalingAdapterApplyConfig := utils.RoleBasedGroupScalingAdapter(rbgScalingAdapter).WithOwnerReferences(
+	rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).WithOwnerReferences(
 		metaapplyv1.OwnerReference().
 			WithAPIVersion(rbgGKV.GroupVersion().String()).
 			WithKind(rbgGKV.Kind).

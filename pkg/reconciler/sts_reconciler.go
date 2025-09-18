@@ -20,6 +20,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
@@ -124,12 +125,41 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	return nil
 }
 
+// Rolling update will always wait for the former replica to be ready then process the next one,
+// Possible scenarios for Partition:
+//   - When sts is under creation, partition is always 0 because pods are created in parallel, rolling update is not
+//     relevant here.
+//   - When sts is in rolling update, the partition will start from the last index to the index 0 processing in
+//     maxUnavailable step.
+//   - When sts is in rolling update, and Replicas increases, we'll delay the rolling update until the scaling up is
+//     done, Partition will not change, new replicas are created using the new template from the get-go.
+//   - When sts is rolling update, and Replicas decreases, the partition will not change until new Replicas < Partition,
+//     in which case Partition will be reset to the new Replicas value.
+//   - When sts is ready for a rolling update and Replicas increases at the same time, we'll delay the rolling update
+//     until the scaling up is done.
+//   - When sts is ready for a rolling update and Replicas decreases at the same time, we'll start the rolling update
+//     together with scaling down.
+//
+// At rest, Partition should always be zero.
+//
+// For Replicas:
+//   - When rolling update, Replicas is equal to (spec.Replicas+maxSurge)
+//   - Otherwise, Replicas is equal to spec.Replicas
+//   - One exception here is when unready replicas of leaderWorkerSet is equal to MaxSurge,
+//     we should reclaim the extra replicas gradually to accommodate for the new replicas.
+
 func (r *StatefulSetReconciler) rollingUpdateParameters(
 	ctx context.Context,
 	role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool,
-) (int32, int32, error) {
+) (stsPartition int32, replicas int32, err error) {
 	logger := log.FromContext(ctx)
 	roleReplicas := *role.Replicas
+
+	defer func() {
+		// Limit the replicas with less than partition will not be updated.
+		stsPartition = max(stsPartition, *role.RolloutStrategy.RollingUpdate.Partition)
+
+	}()
 
 	// Case 1:
 	// If sts not created yet, all partitions should be updated,
@@ -219,7 +249,7 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	// we'll violate it when reclaiming bursted replicas.
 	rollingStep += maxSurge - (int(burstReplicas) - int(stsReplicas))
 	partition = rollingUpdatePartition(ctx, states, stsReplicas, int32(rollingStep), partition)
-	replicas := wantReplicas(roleUnreadyReplicas)
+	replicas = wantReplicas(roleUnreadyReplicas)
 	logger.V(1).Info(
 		fmt.Sprintf(
 			"case 5: Calculating the Partition during rolling update. partition %d, replicas: %d", partition, replicas,
@@ -699,8 +729,13 @@ func validateRolloutStrategy(
 			RollingUpdate: &workloadsv1alpha1.RollingUpdate{
 				MaxUnavailable: intstr.FromInt32(1),
 				MaxSurge:       intstr.FromInt32(0),
+				Partition:      ptr.To(int32(0)),
 			},
 		}, nil
+	}
+
+	if rollingStrategy.RollingUpdate.Partition == nil {
+		rollingStrategy.RollingUpdate.Partition = ptr.To(int32(0))
 	}
 
 	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(&rollingStrategy.RollingUpdate.MaxSurge, replicas, true)

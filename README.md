@@ -47,6 +47,13 @@ tackles the following challenges:
 
 You can see our documentation at [docs](doc/TOC.md) for more in-depth installation and instructions for production.
 
+### Version Compatibility
+
+| RBG Version | Kubernetes Version | LeaderWorkerSet Version |
+|:-----------:|:------------------:|:-----------------------:|
+|    main     |     >=v1.28.x      |        >=v0.7.0         |
+|   v0.3.0    |     >=v1.28.x      |        >=v0.6.0         |
+
 ## Contributing
 
 We welcome contributions through issues and PRs! See [CONTRIBUTING.md](doc/CONTRIBUTING.md)

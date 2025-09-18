@@ -1518,6 +1518,13 @@ spec:
                                 The maximum number of replicas that can be unavailable during the update.
                                 Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
                               x-kubernetes-int-or-string: true
+                            partition:
+                              default: 0
+                              description: |-
+                                Partition indicates the ordinal at which the role should be partitioned for updates.
+                                During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
+                              format: int32
+                              type: integer
                           type: object
                         type:
                           default: RollingUpdate
@@ -8908,6 +8915,9 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
                 x-kubernetes-preserve-unknown-fields: true
             required:
             - roles

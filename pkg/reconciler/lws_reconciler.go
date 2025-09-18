@@ -45,6 +45,7 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 
 	lwsApplyConfig, err := r.constructLWSApplyConfiguration(ctx, rbg, role)
 	if err != nil {
+		logger.Error(err, "Failed to construct lws apply configuration")
 		return err
 	}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(lwsApplyConfig)
@@ -231,12 +232,17 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// RollingUpdate
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
+		rollingUpdateConfiguration := lwsapplyv1.RollingUpdateConfiguration().
+			WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
+			WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable)
+
+		if role.RolloutStrategy.RollingUpdate.Partition != nil {
+			rollingUpdateConfiguration =
+				rollingUpdateConfiguration.WithPartition(*role.RolloutStrategy.RollingUpdate.Partition)
+		}
+
 		lwsSpecConfig = lwsSpecConfig.WithRolloutStrategy(
-			lwsapplyv1.RolloutStrategy().WithRollingUpdateConfiguration(
-				lwsapplyv1.RollingUpdateConfiguration().
-					WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
-					WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
-			),
+			lwsapplyv1.RolloutStrategy().WithRollingUpdateConfiguration(rollingUpdateConfiguration),
 		)
 	}
 

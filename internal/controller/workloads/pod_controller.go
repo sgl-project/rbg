@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/client-go/applyconfiguration"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -115,8 +116,8 @@ func (r *PodReconciler) setRestartCondition(
 
 	setCondition(rbg, restartCondition)
 
-	rbgApplyConfig := utils.RoleBasedGroup(rbg.Name, rbg.Namespace).
-		WithStatus(utils.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithStatus(applyconfiguration.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 }
