@@ -22,177 +22,33 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
-
-func TestRoleBasedGroupSetReconciler_CheckCrdExists(t *testing.T) {
-	// Setup test scheme with required types
-	testScheme := runtime.NewScheme()
-	_ = clientgoscheme.AddToScheme(testScheme)
-	_ = apiextensionsv1.AddToScheme(testScheme)
-
-	// Target CRD name following Kubernetes naming convention
-	targetCRDName := "rolebasedgroupsets.workloads.x-k8s.io"
-
-	type fields struct {
-		apiReader client.Reader
-	}
-
-	tests := []struct {
-		name    string
-		fields  fields
-		wantErr bool
-	}{
-		{
-			name: "CRD exists and established",
-			fields: fields{
-				apiReader: fake.NewClientBuilder().
-					WithScheme(testScheme).
-					WithObjects(
-						&apiextensionsv1.CustomResourceDefinition{
-							ObjectMeta: metav1.ObjectMeta{Name: targetCRDName},
-							Status: apiextensionsv1.CustomResourceDefinitionStatus{
-								Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
-									{
-										Type:   apiextensionsv1.Established,
-										Status: apiextensionsv1.ConditionTrue,
-									},
-								},
-							},
-						},
-					).
-					Build(),
-			},
-			wantErr: false,
-		},
-		{
-			name: "CRD not found in cluster",
-			fields: fields{
-				apiReader: fake.NewClientBuilder().
-					WithScheme(testScheme).
-					Build(), // Empty client
-			},
-			wantErr: true,
-		},
-		{
-			name: "CRD exists but not established",
-			fields: fields{
-				apiReader: fake.NewClientBuilder().
-					WithScheme(testScheme).
-					WithObjects(
-						&apiextensionsv1.CustomResourceDefinition{
-							ObjectMeta: metav1.ObjectMeta{Name: targetCRDName},
-							Status:     apiextensionsv1.CustomResourceDefinitionStatus{
-								// No established condition
-							},
-						},
-					).
-					Build(),
-			},
-			wantErr: true,
-		},
-		{
-			name: "API server connection error",
-			fields: fields{
-				apiReader: fake.NewClientBuilder().WithScheme(testScheme).WithInterceptorFuncs(
-					interceptor.Funcs{
-						Get: func(
-							ctx context.Context, client client.WithWatch, key client.ObjectKey, obj client.Object,
-							opts ...client.GetOption,
-						) error {
-							return fmt.Errorf("API server connection error")
-						},
-					},
-				).Build(),
-			},
-			wantErr: true,
-		},
-		{
-			name: "RBAC permission denied",
-			fields: fields{
-				apiReader: fake.NewClientBuilder().WithScheme(testScheme).WithInterceptorFuncs(
-					interceptor.Funcs{
-						Get: func(
-							ctx context.Context, client client.WithWatch, key client.ObjectKey, obj client.Object,
-							opts ...client.GetOption,
-						) error {
-							return apierrors.NewForbidden(
-								schema.GroupResource{
-									Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions",
-								},
-								targetCRDName,
-								fmt.Errorf("requires 'get' permission"),
-							)
-						},
-					},
-				).Build(),
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				r := &RoleBasedGroupSetReconciler{
-					apiReader: tt.fields.apiReader, // Focus on API reader component
-				}
-
-				// Execute the check operation
-				err := r.CheckCrdExists()
-
-				// Validate error expectations
-				if (err != nil) != tt.wantErr {
-					t.Errorf("CheckCrdExists() error = %v, wantErr %v", err, tt.wantErr)
-				}
-
-				// Additional error type assertions
-				if tt.wantErr {
-					switch tt.name {
-					case "RBAC permission denied":
-						if !apierrors.IsForbidden(err) {
-							t.Error("Expected Forbidden error not received")
-						}
-					case "CRD not found in cluster":
-						if !apierrors.IsNotFound(err) {
-							t.Error("Expected NotFound error not received")
-						}
-					}
-				}
-			},
-		)
-	}
-}
 
 // TestRoleBasedGroupSetReconciler_scaleUp tests the scaleUp function.
 func TestRoleBasedGroupSetReconciler_scaleUp(t *testing.T) {
 	// Setup test scheme
 	scheme := runtime.NewScheme()
-	_ = v1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
 
 	// Create a RoleBasedGroupSet for testing
-	rbgset := &v1alpha1.RoleBasedGroupSet{
+	rbgset := &workloadsv1alpha1.RoleBasedGroupSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbgset",
 			Namespace: "default",
 			UID:       "test-uid",
 		},
-		Spec: v1alpha1.RoleBasedGroupSetSpec{
-			Template: v1alpha1.RoleBasedGroupSpec{
-				Roles: []v1alpha1.RoleSpec{
+		Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+			Template: workloadsv1alpha1.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha1.RoleSpec{
 					{Name: "role-1"},
 					{Name: "role-2"},
 				},
@@ -228,7 +84,7 @@ func TestRoleBasedGroupSetReconciler_scaleUp(t *testing.T) {
 
 				// The new scaleUp function expects a list of objects to create.
 				// We generate this list based on the test case count.
-				var rbgsToCreate []*v1alpha1.RoleBasedGroup
+				var rbgsToCreate []*workloadsv1alpha1.RoleBasedGroup
 				for i := 0; i < tt.count; i++ {
 					rbgsToCreate = append(rbgsToCreate, newRBGForSet(rbgset, i))
 				}
@@ -241,10 +97,10 @@ func TestRoleBasedGroupSetReconciler_scaleUp(t *testing.T) {
 				}
 
 				// Verify the result by listing the created objects.
-				var rbglist v1alpha1.RoleBasedGroupList
+				var rbglist workloadsv1alpha1.RoleBasedGroupList
 				opts := []client.ListOption{
 					client.InNamespace(rbgset.Namespace),
-					client.MatchingLabels{v1alpha1.SetRBGSetNameLabelKey: rbgset.Name},
+					client.MatchingLabels{workloadsv1alpha1.SetRBGSetNameLabelKey: rbgset.Name},
 				}
 				err = r.client.List(context.Background(), &rbglist, opts...)
 				assert.NoError(t, err)
@@ -258,16 +114,16 @@ func TestRoleBasedGroupSetReconciler_scaleUp(t *testing.T) {
 func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 	// Setup test scheme
 	scheme := runtime.NewScheme()
-	_ = v1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	rbgBase := []v1alpha1.RoleBasedGroup{
+	rbgBase := []workloadsv1alpha1.RoleBasedGroup{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "rbg-0",
 				Namespace: "default",
 				Labels: map[string]string{
-					v1alpha1.SetRBGSetNameLabelKey: "rbgs-test",
-					v1alpha1.SetRBGIndexLabelKey:   "0",
+					workloadsv1alpha1.SetRBGSetNameLabelKey: "rbgs-test",
+					workloadsv1alpha1.SetRBGIndexLabelKey:   "0",
 				},
 			},
 		},
@@ -276,8 +132,8 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 				Name:      "rbg-1",
 				Namespace: "default",
 				Labels: map[string]string{
-					v1alpha1.SetRBGSetNameLabelKey: "rbgs-test",
-					v1alpha1.SetRBGIndexLabelKey:   "1",
+					workloadsv1alpha1.SetRBGSetNameLabelKey: "rbgs-test",
+					workloadsv1alpha1.SetRBGIndexLabelKey:   "1",
 				},
 			},
 		},
@@ -286,8 +142,8 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 				Name:      "rbg-2",
 				Namespace: "default",
 				Labels: map[string]string{
-					v1alpha1.SetRBGSetNameLabelKey: "rbgs-test",
-					v1alpha1.SetRBGIndexLabelKey:   "2",
+					workloadsv1alpha1.SetRBGSetNameLabelKey: "rbgs-test",
+					workloadsv1alpha1.SetRBGIndexLabelKey:   "2",
 				},
 			},
 		},
@@ -295,7 +151,7 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 
 	tests := []struct {
 		name                string
-		initialRBGs         []v1alpha1.RoleBasedGroup
+		initialRBGs         []workloadsv1alpha1.RoleBasedGroup
 		rbgsToDeleteIndices []int // Indices from initialRBGs to delete
 		expectedNamesLeft   []string
 	}{
@@ -319,7 +175,7 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 		},
 		{
 			name:                "Delete from an empty list",
-			initialRBGs:         []v1alpha1.RoleBasedGroup{},
+			initialRBGs:         []workloadsv1alpha1.RoleBasedGroup{},
 			rbgsToDeleteIndices: []int{},
 			expectedNamesLeft:   []string{},
 		},
@@ -338,7 +194,7 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 				}
 
 				// The new scaleDown function expects an explicit list of objects to delete.
-				var rbgsToDelete []*v1alpha1.RoleBasedGroup
+				var rbgsToDelete []*workloadsv1alpha1.RoleBasedGroup
 				for _, index := range tt.rbgsToDeleteIndices {
 					// We need to pass pointers to copies to avoid issues with loop variables.
 					rbgCopy := tt.initialRBGs[index].DeepCopy()
@@ -349,10 +205,10 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 				assert.NoError(t, err)
 
 				// Verify the result by listing the remaining objects.
-				var leftRbgList v1alpha1.RoleBasedGroupList
+				var leftRbgList workloadsv1alpha1.RoleBasedGroupList
 				opts := []client.ListOption{
 					client.InNamespace("default"),
-					client.MatchingLabels{v1alpha1.SetRBGSetNameLabelKey: "rbgs-test"},
+					client.MatchingLabels{workloadsv1alpha1.SetRBGSetNameLabelKey: "rbgs-test"},
 				}
 				err = r.client.List(context.Background(), &leftRbgList, opts...)
 				assert.NoError(t, err)
@@ -374,16 +230,269 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 	}
 }
 
+// TestRoleBasedGroupSetReconciler_needsUpdate tests the needsUpdate method.
+func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	tests := []struct {
+		name           string
+		rbgset         *workloadsv1alpha1.RoleBasedGroupSet
+		rbg            *workloadsv1alpha1.RoleBasedGroup
+		expectedUpdate bool
+	}{
+		{
+			name: "RBG needs update - different roles",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbgset",
+					Namespace: "default",
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{
+							{Name: "new-role"},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbgset",
+					Namespace: "default",
+					UID:       "test-uid",
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{
+						{Name: "old-role"},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG needs update - missing annotation",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "test-exclusive",
+					},
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG no update needed",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				r := &RoleBasedGroupSetReconciler{}
+				result := r.needsUpdate(tt.rbgset, tt.rbg)
+				assert.Equal(t, tt.expectedUpdate, result)
+			},
+		)
+	}
+}
+
+// TestRoleBasedGroupSetReconciler_needsAnnotationUpdate tests the needsAnnotationUpdate method.
+func TestRoleBasedGroupSetReconciler_needsAnnotationUpdate(t *testing.T) {
+	tests := []struct {
+		name           string
+		rbgset         *workloadsv1alpha1.RoleBasedGroupSet
+		rbg            *workloadsv1alpha1.RoleBasedGroup
+		expectedUpdate bool
+	}{
+		{
+			name:   "RBG has annotation, RBGSet doesn't",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "topology.kubernetes.io/zone",
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBGSet has annotation, RBG doesn't",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "test-key",
+					},
+				},
+			},
+			rbg:            &workloadsv1alpha1.RoleBasedGroup{},
+			expectedUpdate: true,
+		},
+		{
+			name: "Different annotation values",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "new-value",
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "old-value",
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "Same annotation values",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "same-value",
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						workloadsv1alpha1.ExclusiveKeyAnnotationKey: "same-value",
+					},
+				},
+			},
+			expectedUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				r := &RoleBasedGroupSetReconciler{}
+				result := r.needsAnnotationUpdate(tt.rbgset, tt.rbg)
+				assert.Equal(t, tt.expectedUpdate, result)
+			},
+		)
+	}
+}
+
+// TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder tests the optimized operation order.
+// This test verifies that when both role changes and replica reduction occur,
+// the controller deletes excess RBGs first, then updates remaining ones.
+func TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	// Setup: 4 RBGs with old role, scale down to 2 with new role
+	initialRBGSet := &workloadsv1alpha1.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbgset",
+			Namespace: "default",
+			Annotations: map[string]string{
+				workloadsv1alpha1.ExclusiveKeyAnnotationKey: "new-exclusive",
+			},
+		},
+		Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(2)), // Reduced from 4 to 2
+			Template: workloadsv1alpha1.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha1.RoleSpec{{Name: "new-role"}},
+			},
+		},
+	}
+
+	// Create 4 existing RBGs with old role
+	existingRBGs := []runtime.Object{initialRBGSet}
+	for i := 0; i < 4; i++ {
+		rbg := &workloadsv1alpha1.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("test-rbgset-%d", i),
+				Namespace: "default",
+				Labels: map[string]string{
+					workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
+					workloadsv1alpha1.SetRBGIndexLabelKey:   fmt.Sprintf("%d", i),
+				},
+				Annotations: map[string]string{
+					workloadsv1alpha1.ExclusiveKeyAnnotationKey: "old-exclusive",
+				},
+			},
+			Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha1.RoleSpec{{Name: "old-role"}},
+			},
+		}
+		existingRBGs = append(existingRBGs, rbg)
+	}
+
+	r := &RoleBasedGroupSetReconciler{
+		client: fake.NewClientBuilder().WithScheme(scheme).
+			WithRuntimeObjects(existingRBGs...).
+			WithStatusSubresource(&workloadsv1alpha1.RoleBasedGroupSet{}).Build(),
+		scheme: scheme,
+	}
+
+	// Run reconcile
+	_, err := r.Reconcile(
+		context.TODO(), ctrl.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: "default",
+				Name:      "test-rbgset",
+			},
+		},
+	)
+	assert.NoError(t, err)
+
+	// Verify results: should have exactly 2 RBGs
+	var rbgList workloadsv1alpha1.RoleBasedGroupList
+	err = r.client.List(
+		context.Background(), &rbgList,
+		client.InNamespace("default"),
+		client.MatchingLabels{workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset"},
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(rbgList.Items))
+
+	// Verify remaining RBGs have updated roles and annotations
+	for _, rbg := range rbgList.Items {
+		assert.Equal(t, "new-role", rbg.Spec.Roles[0].Name)
+		assert.Equal(t, "new-exclusive", rbg.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey])
+		index := rbg.Labels[workloadsv1alpha1.SetRBGIndexLabelKey]
+		assert.True(t, index == "0" || index == "1")
+	}
+}
+
 // TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate tests the status update logic within the Reconcile loop.
 func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 	// Setup test scheme
 	scheme := runtime.NewScheme()
-	_ = v1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
 
 	tests := []struct {
 		name                string
-		initialRBGSet       *v1alpha1.RoleBasedGroupSet
-		rbgList             []v1alpha1.RoleBasedGroup
+		initialRBGSet       *workloadsv1alpha1.RoleBasedGroupSet
+		rbgList             []workloadsv1alpha1.RoleBasedGroup
 		expectReady         bool
 		expectReplicas      int32
 		expectReadyReplicas int32
@@ -392,24 +501,24 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 	}{
 		{
 			name: "All RBGs ready, replicas match spec",
-			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
+			initialRBGSet: &workloadsv1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(2))},
+				Spec:       workloadsv1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(2))},
 			},
-			rbgList: []v1alpha1.RoleBasedGroup{
+			rbgList: []workloadsv1alpha1.RoleBasedGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "rbg-0",
 						Namespace: "default",
 						Labels: map[string]string{
-							v1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
-							v1alpha1.SetRBGIndexLabelKey:   "0",
+							workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
+							workloadsv1alpha1.SetRBGIndexLabelKey:   "0",
 						},
 					},
-					Status: v1alpha1.RoleBasedGroupStatus{
+					Status: workloadsv1alpha1.RoleBasedGroupStatus{
 						Conditions: []metav1.Condition{
 							{
-								Type:   string(v1alpha1.RoleBasedGroupReady),
+								Type:   string(workloadsv1alpha1.RoleBasedGroupReady),
 								Status: metav1.ConditionTrue,
 							},
 						},
@@ -420,14 +529,14 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 						Name:      "rbg-1",
 						Namespace: "default",
 						Labels: map[string]string{
-							v1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
-							v1alpha1.SetRBGIndexLabelKey:   "1",
+							workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
+							workloadsv1alpha1.SetRBGIndexLabelKey:   "1",
 						},
 					},
-					Status: v1alpha1.RoleBasedGroupStatus{
+					Status: workloadsv1alpha1.RoleBasedGroupStatus{
 						Conditions: []metav1.Condition{
 							{
-								Type:   string(v1alpha1.RoleBasedGroupReady),
+								Type:   string(workloadsv1alpha1.RoleBasedGroupReady),
 								Status: metav1.ConditionTrue,
 							},
 						},
@@ -442,24 +551,24 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 		},
 		{
 			name: "Partial RBGs ready",
-			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
+			initialRBGSet: &workloadsv1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(2))},
+				Spec:       workloadsv1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(2))},
 			},
-			rbgList: []v1alpha1.RoleBasedGroup{
+			rbgList: []workloadsv1alpha1.RoleBasedGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "rbg-0",
 						Namespace: "default",
 						Labels: map[string]string{
-							v1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
-							v1alpha1.SetRBGIndexLabelKey:   "0",
+							workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
+							workloadsv1alpha1.SetRBGIndexLabelKey:   "0",
 						},
 					},
-					Status: v1alpha1.RoleBasedGroupStatus{
+					Status: workloadsv1alpha1.RoleBasedGroupStatus{
 						Conditions: []metav1.Condition{
 							{
-								Type:   string(v1alpha1.RoleBasedGroupReady),
+								Type:   string(workloadsv1alpha1.RoleBasedGroupReady),
 								Status: metav1.ConditionTrue,
 							},
 						},
@@ -470,14 +579,14 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 						Name:      "rbg-1",
 						Namespace: "default",
 						Labels: map[string]string{
-							v1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
-							v1alpha1.SetRBGIndexLabelKey:   "1",
+							workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
+							workloadsv1alpha1.SetRBGIndexLabelKey:   "1",
 						},
 					},
-					Status: v1alpha1.RoleBasedGroupStatus{
+					Status: workloadsv1alpha1.RoleBasedGroupStatus{
 						Conditions: []metav1.Condition{
 							{
-								Type:   string(v1alpha1.RoleBasedGroupReady),
+								Type:   string(workloadsv1alpha1.RoleBasedGroupReady),
 								Status: metav1.ConditionFalse,
 							},
 						},
@@ -492,24 +601,24 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 		},
 		{
 			name: "No RBGs ready",
-			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
+			initialRBGSet: &workloadsv1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(1))},
+				Spec:       workloadsv1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(1))},
 			},
-			rbgList: []v1alpha1.RoleBasedGroup{
+			rbgList: []workloadsv1alpha1.RoleBasedGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "rbg-0",
 						Namespace: "default",
 						Labels: map[string]string{
-							v1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
-							v1alpha1.SetRBGIndexLabelKey:   "0",
+							workloadsv1alpha1.SetRBGSetNameLabelKey: "test-rbgset",
+							workloadsv1alpha1.SetRBGIndexLabelKey:   "0",
 						},
 					},
-					Status: v1alpha1.RoleBasedGroupStatus{
+					Status: workloadsv1alpha1.RoleBasedGroupStatus{
 						Conditions: []metav1.Condition{
 							{
-								Type:   string(v1alpha1.RoleBasedGroupReady),
+								Type:   string(workloadsv1alpha1.RoleBasedGroupReady),
 								Status: metav1.ConditionFalse,
 							},
 						},
@@ -524,11 +633,11 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 		},
 		{
 			name: "Empty RBG list with zero replicas spec",
-			initialRBGSet: &v1alpha1.RoleBasedGroupSet{
+			initialRBGSet: &workloadsv1alpha1.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
-				Spec:       v1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(0))},
+				Spec:       workloadsv1alpha1.RoleBasedGroupSetSpec{Replicas: ptr.To(int32(0))},
 			},
-			rbgList:             []v1alpha1.RoleBasedGroup{},
+			rbgList:             []workloadsv1alpha1.RoleBasedGroup{},
 			expectReady:         true, // 0 ready >= 0 desired, so it's considered ready.
 			expectReplicas:      0,
 			expectReadyReplicas: 0,
@@ -550,7 +659,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 				r := &RoleBasedGroupSetReconciler{
 					client: fake.NewClientBuilder().WithScheme(scheme).
 						WithRuntimeObjects(objs...).
-						WithStatusSubresource(&v1alpha1.RoleBasedGroupSet{}).Build(),
+						WithStatusSubresource(&workloadsv1alpha1.RoleBasedGroupSet{}).Build(),
 					scheme: scheme,
 				}
 
@@ -568,7 +677,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 				assert.True(t, err == nil || err.Error() == "", "Reconcile returned an unexpected error: %v", err)
 
 				// Fetch the updated RBGSet to check its status.
-				updatedRBGSet := &v1alpha1.RoleBasedGroupSet{}
+				updatedRBGSet := &workloadsv1alpha1.RoleBasedGroupSet{}
 				err = r.client.Get(
 					context.Background(), types.NamespacedName{
 						Name:      tt.initialRBGSet.Name,
@@ -584,7 +693,7 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 				// Verify condition
 				assert.NotEmpty(t, updatedRBGSet.Status.Conditions, "Status conditions should not be empty")
 				condition := updatedRBGSet.Status.Conditions[0]
-				assert.Equal(t, string(v1alpha1.RoleBasedGroupSetReady), condition.Type)
+				assert.Equal(t, string(workloadsv1alpha1.RoleBasedGroupSetReady), condition.Type)
 				assert.Equal(t, tt.expectedReason, condition.Reason)
 				assert.Contains(t, condition.Message, tt.expectedMessagePart)
 

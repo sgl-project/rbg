@@ -30,26 +30,34 @@ func TestE2E(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
 
 	f := framework.NewFramework(true)
-	ginkgo.BeforeSuite(func() {
-		f.BeforeAll()
-	})
+	ginkgo.BeforeSuite(
+		func() {
+			f.BeforeAll()
+		},
+	)
 
-	ginkgo.AfterSuite(func() {
-		f.AfterAll()
-	})
+	ginkgo.AfterSuite(
+		func() {
+			f.AfterAll()
+		},
+	)
 
-	ginkgo.AfterEach(func() {
-		f.AfterEach()
-	})
+	ginkgo.AfterEach(
+		func() {
+			f.AfterEach()
+		},
+	)
 
-	ginkgo.Describe("Run role based controller e2e tests", func() {
-		testcase.RunRbgControllerTestCases(f)
-		testcase.RunRbgScalingAdapterControllerTestCases(f)
-		testcase.RunDeploymentWorkloadTestCases(f)
-		testcase.RunStatefulSetWorkloadTestCases(f)
-		testcase.RunLeaderWorkerSetWorkloadTestCases(f)
-		testcase.RunRbgSetControllerTestCases(f)
-	})
+	ginkgo.Describe(
+		"Run role based controller e2e tests", func() {
+			testcase.RunRbgControllerTestCases(f)
+			testcase.RunRbgScalingAdapterControllerTestCases(f)
+			testcase.RunDeploymentWorkloadTestCases(f)
+			testcase.RunStatefulSetWorkloadTestCases(f)
+			testcase.RunLeaderWorkerSetWorkloadTestCases(f)
+			testcase.RunRbgSetControllerTestCases(f)
+		},
+	)
 
 	ginkgo.RunSpecs(t, "run rbg e2e test")
 }

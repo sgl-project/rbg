@@ -93,7 +93,6 @@ func TestNewWorkloadReconciler(t *testing.T) {
 
 // TestWorkloadEqual tests the WorkloadEqual function
 // It verifies that the function correctly compares different workload types
-// nolint: dupl
 func TestWorkloadEqual(t *testing.T) {
 	tests := []struct {
 		name        string

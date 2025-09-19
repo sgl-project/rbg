@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/test/e2e/framework/workloads"
 	"sigs.k8s.io/rbgs/test/utils"
 )
 
@@ -38,7 +39,7 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 
 	// check workload exists
 	for _, role := range rbg.Spec.Roles {
-		wlCheck, err := NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
+		wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 		gomega.Eventually(
@@ -130,7 +131,7 @@ func (f *Framework) ExpectWorkloadLabelContains(
 	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
 	labels ...map[string]string,
 ) {
-	wlCheck, err := NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
+	wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	gomega.Eventually(
@@ -141,7 +142,7 @@ func (f *Framework) ExpectWorkloadLabelContains(
 }
 
 func (f *Framework) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) {
-	wlCheck, err := NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
+	wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	gomega.Eventually(
@@ -149,4 +150,14 @@ func (f *Framework) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1
 			return wlCheck.ExpectWorkloadNotExist(rbg, role) == nil
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
+}
+
+func (f *Framework) ExpectWorkloadExclusiveTopology(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, topologyKey string,
+) {
+	wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	err = wlCheck.ExpectTopologyAffinity(rbg, role, topologyKey)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 }

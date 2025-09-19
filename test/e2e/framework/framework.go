@@ -8,6 +8,7 @@ import (
 	rawzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -81,14 +82,19 @@ func (f *Framework) BeforeAll() {
 			},
 		},
 	}
+	err := f.Client.Create(f.Ctx, ns)
+	if err != nil && !errors.IsAlreadyExists(err) {
+		gomega.Expect(err).Should(gomega.Succeed(), "Failed to create namespace: %v", err)
+	}
 
-	gomega.Expect(f.Client.Create(f.Ctx, ns)).Should(gomega.Succeed())
 	f.Namespace = ns.Name
 
-	gomega.Eventually(func() bool {
-		err := f.Client.Get(f.Ctx, types.NamespacedName{Name: ns.Name}, ns)
-		return err == nil
-	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+	gomega.Eventually(
+		func() bool {
+			err := f.Client.Get(f.Ctx, types.NamespacedName{Name: ns.Name}, ns)
+			return err == nil
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue())
 }
 
 func (f *Framework) AfterAll() {
@@ -101,6 +107,17 @@ func (f *Framework) AfterAll() {
 }
 
 func (f *Framework) AfterEach() {
-	gomega.Expect(f.Client.DeleteAllOf(f.Ctx, &workloadsv1alpha1.RoleBasedGroup{},
-		client.InNamespace(f.Namespace))).Should(gomega.Succeed())
+	gomega.Expect(
+		f.Client.DeleteAllOf(
+			f.Ctx, &workloadsv1alpha1.RoleBasedGroup{},
+			client.InNamespace(f.Namespace),
+		),
+	).Should(gomega.Succeed())
+
+	gomega.Expect(
+		f.Client.DeleteAllOf(
+			f.Ctx, &workloadsv1alpha1.RoleBasedGroupSet{},
+			client.InNamespace(f.Namespace),
+		),
+	).Should(gomega.Succeed())
 }
