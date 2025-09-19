@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- A Kubernetes cluster with version >= 1.26 is Required, or it will behave unexpected.
+- A Kubernetes cluster with version >= 1.28 is Required, or it will behave unexpected.
 - Add the label `alibabacloud.com/inference-workload=xxx` for RBG instances
 
 ## Usage

@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/client-go/applyconfiguration"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scale"
@@ -159,6 +160,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 
 		if err := reconciler.Reconciler(roleCtx, rbg, role); err != nil {
+			logger.Error(err, "Failed to reconcile workload")
 			r.recorder.Eventf(
 				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
 				"Failed to reconcile role %s: %v", role.Name, err,
@@ -288,8 +290,8 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	// update rbg status
-	rbgApplyConfig := utils.RoleBasedGroup(rbg.Name, rbg.Namespace).
-		WithStatus(utils.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithStatus(applyconfiguration.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 

@@ -42,6 +42,7 @@
 ----------------|----------------------------------------------------------------------------------------------------------------
  maxUnavailable | intstr.IntOrString — maximum number or percentage of replicas that can be unavailable during update; default=1 
  maxSurge       | intstr.IntOrString — maximum number or percentage of replicas added above original during update; default=0    
+ partition      | intstr.IntOrString — an ordinal partition number that controls which StatefulSet Pods are updated; default=0   
 
 ### RoleSpec
 
