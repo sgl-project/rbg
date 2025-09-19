@@ -179,6 +179,16 @@ func containerEqual(c1, c2 corev1.Container) (bool, error) {
 		return false, fmt.Errorf("env not equal: %s", err.Error())
 	}
 
+	if !reflect.DeepEqual(c1.StartupProbe, c2.StartupProbe) {
+		return false, fmt.Errorf("container startup probe not equal")
+	}
+	if !reflect.DeepEqual(c1.LivenessProbe, c2.LivenessProbe) {
+		return false, fmt.Errorf("container liveness probe not equal")
+	}
+	if !reflect.DeepEqual(c1.ReadinessProbe, c2.ReadinessProbe) {
+		return false, fmt.Errorf("container readiness probe not equal")
+	}
+
 	if equal, err := volumeMountsEqual(c1.VolumeMounts, c2.VolumeMounts); !equal {
 		return false, fmt.Errorf("podTemplate volumes mounts not equal: %s", err.Error())
 	}
