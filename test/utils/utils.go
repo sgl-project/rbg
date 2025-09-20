@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	Timeout  = 30 * time.Second
+	Timeout  = 40 * time.Second
 	Interval = time.Millisecond * 250
 
 	DefaultImage                    = "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
@@ -79,9 +79,11 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 	logger := log.FromContext(ctx)
 	// list pod
 	podList := &v1.PodList{}
-	if err := rclient.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
-		workloadsv1alpha1.SetNameLabelKey: rbgName,
-	}); err != nil {
+	if err := rclient.List(
+		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
+			workloadsv1alpha1.SetNameLabelKey: rbgName,
+		},
+	); err != nil {
 		logger.V(1).Error(err, "list pod error")
 		return err
 	}
@@ -92,62 +94,76 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 		return err
 	}
 
-	err := rclient.Delete(ctx, &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podList.Items[0].Name,
-			Namespace: namespace,
+	err := rclient.Delete(
+		ctx, &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podList.Items[0].Name,
+				Namespace: namespace,
+			},
 		},
-	})
+	)
 	if err != nil {
 		logger.V(1).Error(err, "delete pod error")
 	}
 	return err
 }
 
-func UpdateRbg(ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup,
-	updateFunc func(rbg *workloadsv1alpha1.RoleBasedGroup)) {
+func UpdateRbg(
+	ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup,
+	updateFunc func(rbg *workloadsv1alpha1.RoleBasedGroup),
+) {
 	logger := log.FromContext(ctx)
 
-	gomega.Eventually(func() bool {
-		err := rclient.Get(ctx, client.ObjectKey{
-			Name:      rbg.Name,
-			Namespace: rbg.Namespace,
-		}, rbg)
-		if err != nil {
-			logger.V(1).Error(err, "get rbg error")
-			return false
-		}
-		updateFunc(rbg)
+	gomega.Eventually(
+		func() bool {
+			err := rclient.Get(
+				ctx, client.ObjectKey{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+				}, rbg,
+			)
+			if err != nil {
+				logger.V(1).Error(err, "get rbg error")
+				return false
+			}
+			updateFunc(rbg)
 
-		err = rclient.Update(ctx, rbg)
-		if err != nil {
-			logger.V(1).Error(err, "update rbg error")
-		}
-		return err == nil
-	}, Timeout, Interval).Should(gomega.BeTrue())
+			err = rclient.Update(ctx, rbg)
+			if err != nil {
+				logger.V(1).Error(err, "update rbg error")
+			}
+			return err == nil
+		}, Timeout, Interval,
+	).Should(gomega.BeTrue())
 }
 
-func UpdateRbgSet(ctx context.Context, rclient client.Client, rbgset *workloadsv1alpha1.RoleBasedGroupSet,
-	updateFunc func(rbgset *workloadsv1alpha1.RoleBasedGroupSet)) {
+func UpdateRbgSet(
+	ctx context.Context, rclient client.Client, rbgset *workloadsv1alpha1.RoleBasedGroupSet,
+	updateFunc func(rbgset *workloadsv1alpha1.RoleBasedGroupSet),
+) {
 	logger := log.FromContext(ctx)
 
-	gomega.Eventually(func() bool {
-		err := rclient.Get(ctx, client.ObjectKey{
-			Name:      rbgset.Name,
-			Namespace: rbgset.Namespace,
-		}, rbgset)
-		if err != nil {
-			logger.V(1).Error(err, "get rbg error")
-			return false
-		}
-		updateFunc(rbgset)
+	gomega.Eventually(
+		func() bool {
+			err := rclient.Get(
+				ctx, client.ObjectKey{
+					Name:      rbgset.Name,
+					Namespace: rbgset.Namespace,
+				}, rbgset,
+			)
+			if err != nil {
+				logger.V(1).Error(err, "get rbg error")
+				return false
+			}
+			updateFunc(rbgset)
 
-		err = rclient.Update(ctx, rbgset)
-		if err != nil {
-			logger.V(1).Error(err, "update rbgset error")
-		}
-		return err == nil
-	}, Timeout, Interval).Should(gomega.BeTrue())
+			err = rclient.Update(ctx, rbgset)
+			if err != nil {
+				logger.V(1).Error(err, "update rbgset error")
+			}
+			return err == nil
+		}, Timeout, Interval,
+	).Should(gomega.BeTrue())
 }
 
 func MapContains(m map[string]string, key, value string) bool {

@@ -14,6 +14,21 @@ const (
 	// Value: RoleSpec.name from RoleBasedGroup.spec.roles[]
 	SetRoleLabelKey = RBGPrefix + "role"
 
+	// SetGroupUniqueHashLabelKey is set on every Pod and carries a short hash
+	// that identifies all Pods belonging to the same RoleBasedGroup instance.
+	// Used as the match label for topology affinity.
+	SetGroupUniqueHashLabelKey = RBGPrefix + "group-unique-key"
+
+	// ExclusiveKeyAnnotationKey declares the topology domain (e.g. kubernetes.io/hostname)
+	// for 1:1 exclusive scheduling.  When present on RoleBasedGroup or Role template,
+	// all affected Pods are required to land on the same topology domain and block
+	// any other group from using that domain.
+	ExclusiveKeyAnnotationKey = RBGPrefix + "exclusive-topology"
+
+	// DisableExclusiveKeyAnnotationKey can be set to "true" on a Role template
+	// to skip exclusive-topology affinity injection for that role.
+	DisableExclusiveKeyAnnotationKey = RBGPrefix + "disable-exclusive-topology"
+
 	// PodGroupLabelKey identifies pods belonging to a specific pod group
 	// Value: RoleBasedName
 	PodGroupLabelKey = "pod-group.scheduling.sigs.k8s.io/name"

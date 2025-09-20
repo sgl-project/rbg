@@ -1,0 +1,33 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroupSet
+metadata:
+  name: rbgs-test
+  annotations:
+    rolebasedgroup.workloads.x-k8s.io/exclusive-topology: "kubernetes.io/hostname"
+spec:
+  replicas: 2
+  template:
+    roles:
+      - name: role-1
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: nginx-leader
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 80
+      - name: role-2
+        replicas: 2
+        workload:
+          apiVersion: apps/v1
+          kind: Deployment
+        template:
+          spec:
+            containers:
+              - name: nginx-worker
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+
+

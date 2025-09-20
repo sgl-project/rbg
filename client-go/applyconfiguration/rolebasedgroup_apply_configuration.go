@@ -27,24 +27,24 @@ func RoleBasedGroup(name, namespace string) *RbgApplyConfiguration {
 func (b *RbgApplyConfiguration) IsApplyConfiguration() {}
 
 func (b *RbgApplyConfiguration) WithAPIVersion(value string) *RbgApplyConfiguration {
-	b.TypeMetaApplyConfiguration.APIVersion = &value
+	b.APIVersion = &value
 	return b
 }
 
 func (b *RbgApplyConfiguration) WithKind(value string) *RbgApplyConfiguration {
-	b.TypeMetaApplyConfiguration.Kind = &value
+	b.Kind = &value
 	return b
 }
 
 func (b *RbgApplyConfiguration) WithNamespace(value string) *RbgApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
-	b.ObjectMetaApplyConfiguration.Namespace = &value
+	b.Namespace = &value
 	return b
 }
 
 func (b *RbgApplyConfiguration) WithName(value string) *RbgApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
-	b.ObjectMetaApplyConfiguration.Name = &value
+	b.Name = &value
 	return b
 }
 

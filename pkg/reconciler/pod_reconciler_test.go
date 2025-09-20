@@ -1019,3 +1019,305 @@ func contains(s, sub string) bool {
 		return fmt.Sprint(s)[0:len(sub)] == sub || contains(s[1:], sub)
 	})())
 }
+
+func Test_setExclusiveAffinities(t *testing.T) {
+	tests := []struct {
+		name                                   string
+		pod                                    *corev1.PodTemplateSpec
+		uniqueKey, topologyKey, podAffinityKey string
+		want                                   *corev1.PodTemplateSpec
+	}{
+		{
+			name:           "empty pod: create affinity/anti-affinity from scratch",
+			pod:            &corev1.PodTemplateSpec{},
+			uniqueKey:      "abcd1234",
+			topologyKey:    "kubernetes.io/hostname",
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			want: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{
+									TopologyKey: "kubernetes.io/hostname",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpIn,
+												Values:   []string{"abcd1234"},
+											},
+										},
+									},
+								},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{
+									TopologyKey: "kubernetes.io/hostname",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpExists,
+											},
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpNotIn,
+												Values:   []string{"abcd1234"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "pod with pre-existing terms: append new ones",
+			pod: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+					},
+				},
+			},
+			uniqueKey:      "xyz5678",
+			topologyKey:    "node",
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			want: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+								{
+									TopologyKey: "node",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpIn,
+												Values:   []string{"xyz5678"},
+											},
+										},
+									},
+								},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+								{
+									TopologyKey: "node",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpExists,
+											},
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpNotIn,
+												Values:   []string{"xyz5678"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "topology already exists: expect no change",
+			pod: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{
+									TopologyKey: "rack",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpIn,
+												Values:   []string{"old"},
+											},
+										},
+									},
+								},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "rack"},
+							},
+						},
+					},
+				},
+			},
+			uniqueKey:      "newkey",
+			topologyKey:    "rack",
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			want: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{
+									TopologyKey: "rack",
+									LabelSelector: &metav1.LabelSelector{
+										MatchExpressions: []metav1.LabelSelectorRequirement{
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpIn,
+												Values:   []string{"old"},
+											},
+										},
+									},
+								},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "rack"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setExclusiveAffinities(tt.pod, tt.uniqueKey, tt.topologyKey, tt.podAffinityKey)
+			assert.Equal(t, tt.want, tt.pod, "unexpected PodTemplateSpec after injection")
+		})
+	}
+}
+
+func Test_exclusiveAffinityApplied(t *testing.T) {
+	tests := []struct {
+		name string // description of this test case
+		// Named input parameters for target function.
+		podTemplateSpec corev1.PodTemplateSpec
+		topologyKey     string
+		want            bool
+	}{
+		{
+			name:            "empty affinity: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{},
+			topologyKey:     "kubernetes.io/hostname",
+			want:            false,
+		},
+		{
+			name: "both affinity and anti-affinity contain the required topology key: should return true",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        true,
+		},
+		{
+			name: "only affinity contains the topology key: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        false,
+		},
+		{
+			name: "only anti-affinity contains the topology key: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "kubernetes.io/hostname"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        false,
+		},
+		{
+			name: "topology key does not match: should return false",
+			podTemplateSpec: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAffinity: &corev1.PodAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{TopologyKey: "zone"},
+							},
+						},
+					},
+				},
+			},
+			topologyKey: "kubernetes.io/hostname",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := exclusiveAffinityApplied(tt.podTemplateSpec, tt.topologyKey)
+			if got != tt.want {
+				t.Errorf("exclusiveAffinityApplied() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

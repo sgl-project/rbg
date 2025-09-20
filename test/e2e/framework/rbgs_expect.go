@@ -30,27 +30,27 @@ func (f *Framework) ExpectRbgSetEqual(rbgSet *v1alpha1.RoleBasedGroupSet) {
 				}
 				return false
 			}
-			return true
+
+			// List all child RoleBasedGroup instances associated with this RoleBasedGroupSet.
+			var rbglist v1alpha1.RoleBasedGroupList
+			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, newRbgSet.Name))
+			err = f.Client.List(
+				f.Ctx, &rbglist, client.InNamespace(newRbgSet.Namespace),
+				client.MatchingLabelsSelector{Selector: selector},
+			)
+			if err != nil {
+				logger.Error(err, "Failed to list child RoleBasedGroups")
+			}
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			// check if the rbg instance number is equal to the rbgset.replicas
+			expected, actual := int(*rbgSet.Spec.Replicas), len(rbglist.Items)
+			if expected != actual {
+				logger.Info(fmt.Sprintf("rbg instance not equal, expected: %d, got: %d", expected, actual))
+			}
+			return expected == actual
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
-
-	// List all child RoleBasedGroup instances associated with this RoleBasedGroupSet.
-	var rbglist v1alpha1.RoleBasedGroupList
-	selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, newRbgSet.Name))
-	err := f.Client.List(
-		f.Ctx, &rbglist, client.InNamespace(newRbgSet.Namespace), client.MatchingLabelsSelector{Selector: selector},
-	)
-	if err != nil {
-		logger.Error(err, "Failed to list child RoleBasedGroups")
-	}
-
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	// check if the rbg instance number is equal to the rbgset.replicas
-	expected, actual := int(*rbgSet.Spec.Replicas), len(rbglist.Items)
-	gomega.Expect(expected).To(
-		gomega.Equal(actual),
-		"expected %d running but got %d", expected, actual,
-	)
 }
 
 func (f *Framework) ExpectRbgSetDeleted(rbgSet *v1alpha1.RoleBasedGroupSet) {
@@ -74,27 +74,57 @@ func (f *Framework) ExpectRbgSetCondition(
 ) bool {
 	logger := log.FromContext(f.Ctx)
 
-	newRbg := &v1alpha1.RoleBasedGroup{}
+	newRbgSet := &v1alpha1.RoleBasedGroupSet{}
 	gomega.Eventually(
-		func() bool {
+		func() error {
 			err := f.Client.Get(
 				f.Ctx, client.ObjectKey{
 					Name:      rbgSet.Name,
 					Namespace: rbgSet.Namespace,
-				}, newRbg,
+				}, newRbgSet,
 			)
 			if err != nil {
 				logger.V(1).Error(err, "get rbgset error")
 			}
-			return err == nil
+			return err
 		}, utils.Timeout, utils.Interval,
-	).Should(gomega.BeTrue())
+	).ToNot(gomega.HaveOccurred())
 
-	for _, condition := range newRbg.Status.Conditions {
+	for _, condition := range newRbgSet.Status.Conditions {
 		if condition.Type == string(conditionType) && condition.Status == conditionStatus {
 			return true
 		}
-
 	}
 	return false
+}
+
+func (f *Framework) ExpectRbgAnnotation(
+	rbgSet *v1alpha1.RoleBasedGroupSet,
+	anno map[string]string,
+) bool {
+	logger := log.FromContext(f.Ctx)
+	var rbglist v1alpha1.RoleBasedGroupList
+
+	gomega.Eventually(
+		func() bool {
+			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, rbgSet.Name))
+			err := f.Client.List(
+				f.Ctx, &rbglist, client.InNamespace(rbgSet.Namespace),
+				client.MatchingLabelsSelector{Selector: selector},
+			)
+			if err != nil {
+				logger.Error(err, "Failed to list child RoleBasedGroups")
+			}
+			return len(rbglist.Items) > 0
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue())
+
+	rbgAnno := rbglist.Items[0].Annotations
+	for k, v := range anno {
+		rv, found := rbgAnno[k]
+		if !found || rv != v {
+			return false
+		}
+	}
+	return true
 }

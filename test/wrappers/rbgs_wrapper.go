@@ -15,12 +15,17 @@ func (rsWrapper *RoleBasedGroupSetWrapper) Obj() *workloadsv1alpha.RoleBasedGrou
 }
 
 func (rsWrapper *RoleBasedGroupSetWrapper) WithName(name string) *RoleBasedGroupSetWrapper {
-	rsWrapper.ObjectMeta.Name = name
+	rsWrapper.Name = name
 	return rsWrapper
 }
 
 func (rsWrapper *RoleBasedGroupSetWrapper) WithNamespace(namespace string) *RoleBasedGroupSetWrapper {
-	rsWrapper.ObjectMeta.Namespace = namespace
+	rsWrapper.Namespace = namespace
+	return rsWrapper
+}
+
+func (rsWrapper *RoleBasedGroupSetWrapper) WithAnnotations(annotations map[string]string) *RoleBasedGroupSetWrapper {
+	rsWrapper.Annotations = annotations
 	return rsWrapper
 }
 
