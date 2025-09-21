@@ -77,9 +77,12 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		if podAnnotations[workloadsv1alpha1.DisableExclusiveKeyAnnotationKey] == "" {
 			podAnnotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = topologyKey
 			uniqueKey := rbg.GenGroupUniqueKey()
-			setExclusiveAffinities(
+			err := setExclusiveAffinities(
 				&podTemplateSpec, uniqueKey, topologyKey, workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 			)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -119,7 +122,10 @@ func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, er
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
-func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topologyKey string, podAffinityKey string) {
+func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topologyKey string, podAffinityKey string) (err error) {
+	if len(topologyKey) == 0 {
+		return fmt.Errorf("topology key can't be nil")
+	}
 	if exclusiveAffinityApplied(*pod, topologyKey) {
 		return
 	}
@@ -157,10 +163,10 @@ func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topol
 			corev1.PodAffinityTerm{
 				LabelSelector: &metav1.LabelSelector{
 					MatchExpressions: []metav1.LabelSelectorRequirement{
-						{
-							Key:      podAffinityKey,
-							Operator: metav1.LabelSelectorOpExists,
-						},
+						// {
+						// 	Key:      podAffinityKey,
+						// 	Operator: metav1.LabelSelectorOpExists,
+						// },
 						{
 							Key:      podAffinityKey,
 							Operator: metav1.LabelSelectorOpNotIn,
@@ -171,6 +177,7 @@ func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topol
 				TopologyKey: topologyKey,
 			},
 		)
+	return
 }
 
 func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKey string) bool {
