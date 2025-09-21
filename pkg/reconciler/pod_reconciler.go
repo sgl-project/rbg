@@ -122,12 +122,15 @@ func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, er
 }
 
 // SetExclusiveAffinities set the pod affinity/anti-affinity
-func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topologyKey string, podAffinityKey string) (err error) {
+func setExclusiveAffinities(pod *corev1.PodTemplateSpec,
+	uniqueKey string,
+	topologyKey string,
+	podAffinityKey string) error {
 	if len(topologyKey) == 0 {
 		return fmt.Errorf("topology key can't be nil")
 	}
 	if exclusiveAffinityApplied(*pod, topologyKey) {
-		return
+		return nil
 	}
 	if pod.Spec.Affinity == nil {
 		pod.Spec.Affinity = &corev1.Affinity{}
@@ -177,7 +180,7 @@ func setExclusiveAffinities(pod *corev1.PodTemplateSpec, uniqueKey string, topol
 				TopologyKey: topologyKey,
 			},
 		)
-	return
+	return nil
 }
 
 func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKey string) bool {
