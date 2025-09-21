@@ -271,11 +271,6 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 
 	setCondition(rbg, readyCondition)
 
-	// update groupUnique key if it's not set
-	if len(rbg.Status.GroupUniqueKey) == 0 {
-		rbg.Status.GroupUniqueKey = rbg.GenGroupUniqueKey()
-	}
-
 	// update role status
 	for i := range roleStatus {
 		found := false

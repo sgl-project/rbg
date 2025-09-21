@@ -72,13 +72,8 @@ func (rbg *RoleBasedGroup) GetExclusiveKey() (topologyKey string, found bool) {
 	return
 }
 
-func (rbg *RoleBasedGroup) GenGroupUniqueKey() (key string) {
-	if len(rbg.Status.GroupUniqueKey) == 0 {
-		key = sha1Hash(fmt.Sprintf("%s/%s", rbg.GetNamespace(), rbg.GetName()))
-	} else {
-		key = rbg.Status.GroupUniqueKey
-	}
-	return
+func (rbg *RoleBasedGroup) GenGroupUniqueKey() string {
+	return sha1Hash(fmt.Sprintf("%s/%s", rbg.GetNamespace(), rbg.GetName()))
 }
 
 // sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.

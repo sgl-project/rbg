@@ -237,10 +237,6 @@ type ScalingAdapter struct {
 type RoleBasedGroupStatus struct {
 	// The generation observed by the controller
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// The groupUniqueKey of the RBG
-	GroupUniqueKey string `json:"groupUniqueKey,omitempty"`
-
 	// Conditions track the condition of the RBG
 	// +patchMergeKey=type
 	// +patchStrategy=merge

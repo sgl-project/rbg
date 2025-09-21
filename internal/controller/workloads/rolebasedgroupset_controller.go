@@ -208,7 +208,7 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 	logger := log.FromContext(ctx)
 	// TODO: we need to enhance it by following the way:
 	// https://github.com/openkruise/kruise/blob/master/pkg/controller/statefulset/stateful_set_control.go#L478
-	allErrs := make([]error, len(rbgsToCreate))
+	allErrs := make([]error, 0, len(rbgsToCreate))
 	for _, rbg := range rbgsToCreate {
 		// Set the owner reference.
 		if err := controllerutil.SetControllerReference(rbgset, rbg, r.scheme); err != nil {
@@ -217,8 +217,9 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 		}
 
 		// Already created not need to continue
+		got := &workloadsv1alpha1.RoleBasedGroup{}
 		if err := r.client.Get(
-			ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, &workloadsv1alpha1.RoleBasedGroup{},
+			ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, got,
 		); err == nil {
 			continue
 		}
@@ -242,7 +243,7 @@ func (r *RoleBasedGroupSetReconciler) scaleDown(
 	ctx context.Context, rbgsToDelete []*workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
-	allErrs := make([]error, len(rbgsToDelete))
+	allErrs := make([]error, 0, len(rbgsToDelete))
 	for _, rbg := range rbgsToDelete {
 		if err := r.client.Delete(ctx, rbg); err != nil {
 			// If the resource is not found, it's considered a success, ensuring idempotency.
@@ -402,7 +403,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	ctx context.Context, rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbgsToUpdate []*workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
-	allErrs := make([]error, len(rbgsToUpdate))
+	allErrs := make([]error, 0, len(rbgsToUpdate))
 
 	for _, rbg := range rbgsToUpdate {
 
