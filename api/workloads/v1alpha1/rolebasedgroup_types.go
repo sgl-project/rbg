@@ -241,7 +241,6 @@ type RoleBasedGroupStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
-
 	// Status of individual roles
 	RoleStatuses []RoleStatus `json:"roleStatuses"`
 }
