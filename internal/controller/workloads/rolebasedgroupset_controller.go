@@ -224,10 +224,14 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 			continue
 		}
 
-		if err := r.client.Create(ctx, rbg); err != nil || !apierrors.IsAlreadyExists(err) {
+		if err := r.client.Create(ctx, rbg); err != nil {
 			// If it already exists, ignore the error. This ensures idempotency,
 			// e.g., if the previous reconcile was interrupted after a successful creation.
-			allErrs = append(allErrs, fmt.Errorf("failed to create RoleBasedGroup %s: %w", rbg.Name, err))
+			if !apierrors.IsAlreadyExists(err) {
+				allErrs = append(allErrs, fmt.Errorf("failed to create RoleBasedGroup %s: %w", rbg.Name, err))
+			} else {
+				logger.V(1).Info("RoleBasedGroup has been created", "name", rbg.Name)
+			}
 		} else {
 			logger.Info("Successfully created RoleBasedGroup", "name", rbg.Name)
 		}
