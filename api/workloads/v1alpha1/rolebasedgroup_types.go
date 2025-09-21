@@ -237,10 +237,12 @@ type ScalingAdapter struct {
 type RoleBasedGroupStatus struct {
 	// The generation observed by the controller
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Conditions track the condition of the RBG
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
 	// Status of individual roles
 	RoleStatuses []RoleStatus `json:"roleStatuses"`
 }
