@@ -1,6 +1,6 @@
 # Image URL to use all building/pushing image targets
 # registry-cn-hangzhou.ack.aliyuncs.com/acs
-IMG_REPO ?= registry-cn-hangzhou.ack.aliyuncs.com/
+IMG_REPO ?= registry-cn-hangzhou.ack.aliyuncs.com/acs
 RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
 
@@ -107,6 +107,15 @@ DOCKER_BUILD += docker-build-crd-upgrader
 DOCKER_PUSH := docker-push-controller
 DOCKER_PUSH += docker-push-crd-upgrader
 
+GOPROXY    ?=
+GOPRIVATE  ?=
+GOSUMDB    ?=
+
+DOCKER_BUILD_ARGS := \
+	--build-arg GOPROXY=$(GOPROXY) \
+	--build-arg GOPRIVATE=$(GOPRIVATE) \
+	--build-arg GOSUMDB=$(GOSUMDB)
+
 # ldflags
 VERSION_PKG=sigs.k8s.io/rbgs/version
 GIT_COMMIT=$(shell git rev-parse HEAD)
@@ -140,11 +149,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build-controller
 docker-build-controller: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -f ${RBG_CONTROLLER_DOCKERFILE} -t ${RBG_CONTROLLER_IMG}:${TAG} .
+	$(CONTAINER_TOOL) build -f ${RBG_CONTROLLER_DOCKERFILE} -t ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
 .PHONY: docker-build-crd-upgrader
 docker-build-crd-upgrader:
-	docker build -f ${CRD_UPGRADER_DOCKERFILE} -t ${CRD_UPGRADER_IMG}:${TAG} .
+	docker build -f ${CRD_UPGRADER_DOCKERFILE} -t ${CRD_UPGRADER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
@@ -154,7 +163,7 @@ docker-push-controller:
 	docker push ${RBG_CONTROLLER_IMG}:${TAG}
 
 .PHONY: docker-push-crd-upgrader
-docker-push-controller:
+docker-push-crd-upgrader:
 	docker push ${CRD_UPGRADER_IMG}:${TAG}
 
 .PHONY: docker-push
@@ -173,14 +182,14 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name rbgs-builder
 	$(CONTAINER_TOOL) buildx use rbgs-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_DOCKERFILE}:${TAG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_IMG}:${TAG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm rbgs-builder
 	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p deploy/kubectl
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${RBG_CONTROLLER_DOCKERFILE}:${TAG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${RBG_CONTROLLER_IMG}:${TAG}
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
 ##@ Deployment
