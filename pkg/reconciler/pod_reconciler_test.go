@@ -1026,6 +1026,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 		pod                                    *corev1.PodTemplateSpec
 		uniqueKey, topologyKey, podAffinityKey string
 		want                                   *corev1.PodTemplateSpec
+		wantErr                                bool
 	}{
 		{
 			name:           "empty pod: create affinity/anti-affinity from scratch",
@@ -1033,6 +1034,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			uniqueKey:      "abcd1234",
 			topologyKey:    "kubernetes.io/hostname",
 			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -1097,6 +1099,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			uniqueKey:      "xyz5678",
 			topologyKey:    "node",
 			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -1174,6 +1177,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			uniqueKey:      "newkey",
 			topologyKey:    "rack",
 			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
@@ -1201,12 +1205,25 @@ func Test_setExclusiveAffinities(t *testing.T) {
 					},
 				},
 			},
+		}, {
+			name:           "empty topology key should return error",
+			pod:            &corev1.PodTemplateSpec{},
+			uniqueKey:      "key",
+			topologyKey:    "", // illegal
+			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			want:           &corev1.PodTemplateSpec{}, // No change
+			wantErr:        true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setExclusiveAffinities(tt.pod, tt.uniqueKey, tt.topologyKey, tt.podAffinityKey)
+			err := setExclusiveAffinities(tt.pod, tt.uniqueKey, tt.topologyKey, tt.podAffinityKey)
+			if tt.wantErr {
+				assert.Error(t, err, "expected error but got nil")
+				return
+			}
+			assert.NoError(t, err)
 			assert.Equal(t, tt.want, tt.pod, "unexpected PodTemplateSpec after injection")
 		})
 	}

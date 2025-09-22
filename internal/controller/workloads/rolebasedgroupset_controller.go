@@ -22,7 +22,6 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
-	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -207,40 +206,39 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 	ctx context.Context, rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbgsToCreate []*workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(rbgsToCreate))
-
+	// TODO: we need to enhance it by following the way:
+	// https://github.com/openkruise/kruise/blob/master/pkg/controller/statefulset/stateful_set_control.go#L478
+	allErrs := make([]error, 0, len(rbgsToCreate))
 	for _, rbg := range rbgsToCreate {
-		wg.Add(1)
-		go func(rbgToCreate *workloadsv1alpha1.RoleBasedGroup) {
-			defer wg.Done()
+		// Set the owner reference.
+		if err := controllerutil.SetControllerReference(rbgset, rbg, r.scheme); err != nil {
+			allErrs = append(allErrs, fmt.Errorf("failed to set controller reference for rbg %s: %w", rbg.Name, err))
+			continue
+		}
 
-			// Set the owner reference.
-			if err := controllerutil.SetControllerReference(rbgset, rbgToCreate, r.scheme); err != nil {
-				errChan <- fmt.Errorf("failed to set controller reference for rbg %s: %w", rbgToCreate.Name, err)
-				return
-			}
+		// Already created not need to continue
+		got := &workloadsv1alpha1.RoleBasedGroup{}
+		if err := r.client.Get(
+			ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, got,
+		); err == nil {
+			continue
+		}
 
-			if err := r.client.Create(ctx, rbgToCreate); err != nil {
-				// If it already exists, ignore the error. This ensures idempotency,
-				// e.g., if the previous reconcile was interrupted after a successful creation.
-				if !apierrors.IsAlreadyExists(err) {
-					errChan <- fmt.Errorf("failed to create RoleBasedGroup %s: %w", rbgToCreate.Name, err)
-				}
+		if err := r.client.Create(ctx, rbg); err != nil {
+			// If it already exists, ignore the error. This ensures idempotency,
+			// e.g., if the previous reconcile was interrupted after a successful creation.
+			if !apierrors.IsAlreadyExists(err) {
+				allErrs = append(allErrs, fmt.Errorf("failed to create RoleBasedGroup %s: %w", rbg.Name, err))
 			} else {
-				logger.Info("Successfully created RoleBasedGroup", "name", rbgToCreate.Name)
+				logger.V(1).Info("RoleBasedGroup has been created", "name", rbg.Name)
 			}
-		}(rbg)
+		} else {
+			logger.Info("Successfully created RoleBasedGroup", "name", rbg.Name)
+		}
+
 	}
 
-	wg.Wait()
-	close(errChan)
-
-	// Aggregate all concurrent errors.
-	allErrs := []error{}
-	for err := range errChan {
-		allErrs = append(allErrs, err)
-	}
+	// Aggregate all errors.
 	return utilerrors.NewAggregate(allErrs)
 }
 
@@ -249,32 +247,18 @@ func (r *RoleBasedGroupSetReconciler) scaleDown(
 	ctx context.Context, rbgsToDelete []*workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(rbgsToDelete))
-
+	allErrs := make([]error, 0, len(rbgsToDelete))
 	for _, rbg := range rbgsToDelete {
-		wg.Add(1)
-		go func(rbgToDelete *workloadsv1alpha1.RoleBasedGroup) {
-			defer wg.Done()
-
-			if err := r.client.Delete(ctx, rbgToDelete); err != nil {
-				// If the resource is not found, it's considered a success, ensuring idempotency.
-				if !apierrors.IsNotFound(err) {
-					errChan <- fmt.Errorf("failed to delete RoleBasedGroup %s: %w", rbgToDelete.Name, err)
-				}
-			} else {
-				logger.Info("Successfully deleted RoleBasedGroup", "name", rbgToDelete.Name)
+		if err := r.client.Delete(ctx, rbg); err != nil {
+			// If the resource is not found, it's considered a success, ensuring idempotency.
+			if !apierrors.IsNotFound(err) {
+				allErrs = append(allErrs, fmt.Errorf("failed to delete RoleBasedGroup %s: %w", rbg.Name, err))
 			}
-		}(rbg)
+		} else {
+			logger.Info("Successfully deleted RoleBasedGroup", "name", rbg.Name)
+		}
 	}
 
-	wg.Wait()
-	close(errChan)
-
-	allErrs := []error{}
-	for err := range errChan {
-		allErrs = append(allErrs, err)
-	}
 	return utilerrors.NewAggregate(allErrs)
 }
 
@@ -423,55 +407,45 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	ctx context.Context, rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbgsToUpdate []*workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(rbgsToUpdate))
+	allErrs := make([]error, 0, len(rbgsToUpdate))
 
 	for _, rbg := range rbgsToUpdate {
-		wg.Add(1)
-		go func(rbgToUpdate *workloadsv1alpha1.RoleBasedGroup) {
-			defer wg.Done()
 
-			// Use retry mechanism to handle potential conflicts
-			err := retry.RetryOnConflict(
-				retry.DefaultRetry, func() error {
-					// Get the latest version of the RBG
-					latestRBG := &workloadsv1alpha1.RoleBasedGroup{}
-					if err := r.client.Get(
-						ctx, types.NamespacedName{
-							Name:      rbgToUpdate.Name,
-							Namespace: rbgToUpdate.Namespace,
-						}, latestRBG,
-					); err != nil {
-						return err
-					}
+		// Use retry mechanism to handle potential conflicts
+		err := retry.RetryOnConflict(
+			retry.DefaultRetry, func() error {
+				// Get the latest version of the RBG
+				latestRBG := &workloadsv1alpha1.RoleBasedGroup{}
+				if err := r.client.Get(
+					ctx, types.NamespacedName{
+						Name:      rbg.Name,
+						Namespace: rbg.Namespace,
+					}, latestRBG,
+				); err != nil {
+					return err
+				}
 
-					// Update the spec from template
-					latestRBG.Spec.Roles = rbgset.Spec.Template.Roles
+				// Update the spec from template
+				latestRBG.Spec.Roles = rbgset.Spec.Template.Roles
 
-					// Update annotations
-					r.updateRBGAnnotations(rbgset, latestRBG)
+				// Update annotations
+				r.updateRBGAnnotations(rbgset, latestRBG)
 
-					// Perform the update
-					return r.client.Update(ctx, latestRBG)
-				},
-			)
+				// Perform the update
+				return r.client.Update(ctx, latestRBG)
+			},
+		)
 
-			if err != nil {
-				errChan <- fmt.Errorf("failed to update RoleBasedGroup %s: %w", rbgToUpdate.Name, err)
-			} else {
-				logger.Info("Successfully updated RoleBasedGroup", "name", rbgToUpdate.Name)
-			}
-		}(rbg)
+		if err != nil {
+			allErrs = append(allErrs,
+				fmt.Errorf("failed to update RoleBasedGroup %s: %w", rbg.Name, err))
+		} else {
+			logger.Info("Successfully updated RoleBasedGroup", "name", rbg.Name)
+		}
+
 	}
-
-	wg.Wait()
-	close(errChan)
 
 	// Aggregate all concurrent errors
-	allErrs := []error{}
-	for err := range errChan {
-		allErrs = append(allErrs, err)
-	}
 	return utilerrors.NewAggregate(allErrs)
 }
 
