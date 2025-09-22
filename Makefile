@@ -1,6 +1,6 @@
 # Image URL to use all building/pushing image targets
 # registry-cn-hangzhou.ack.aliyuncs.com/acs
-IMG_REPO ?= registry-cn-hangzhou.ack.aliyuncs.com/acs
+IMG_REPO ?= rolebasedgroup
 RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
 
