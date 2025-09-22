@@ -1060,10 +1060,10 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									TopologyKey: "kubernetes.io/hostname",
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
-											// {
-											// 	Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
-											// 	Operator: metav1.LabelSelectorOpExists,
-											// },
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpExists,
+											},
 											{
 												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
@@ -1127,10 +1127,10 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									TopologyKey: "node",
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
-											// {
-											// 	Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
-											// 	Operator: metav1.LabelSelectorOpExists,
-											// },
+											{
+												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Operator: metav1.LabelSelectorOpExists,
+											},
 											{
 												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,

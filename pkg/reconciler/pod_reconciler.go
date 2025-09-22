@@ -166,10 +166,10 @@ func setExclusiveAffinities(pod *corev1.PodTemplateSpec,
 			corev1.PodAffinityTerm{
 				LabelSelector: &metav1.LabelSelector{
 					MatchExpressions: []metav1.LabelSelectorRequirement{
-						// {
-						// 	Key:      podAffinityKey,
-						// 	Operator: metav1.LabelSelectorOpExists,
-						// },
+						{
+							Key:      podAffinityKey,
+							Operator: metav1.LabelSelectorOpExists,
+						},
 						{
 							Key:      podAffinityKey,
 							Operator: metav1.LabelSelectorOpNotIn,
