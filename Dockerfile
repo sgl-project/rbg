@@ -3,10 +3,6 @@ FROM --platform=$BUILDPLATFORM registry-cn-hangzhou.ack.aliyuncs.com/dev/golang:
 ARG TARGETOS
 ARG TARGETARCH
 
-ENV GOPROXY=https://proxy.golang.com.cn,https://goproxy.cn,direct
-ENV GOPRIVATE=*gitlab.alibaba-inc.com
-ENV GOSUMDB=off
-
 WORKDIR /workspace
 ADD . /workspace
 
