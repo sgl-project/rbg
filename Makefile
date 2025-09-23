@@ -149,7 +149,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build-controller
 docker-build-controller: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -f ${RBG_CONTROLLER_DOCKERFILE} -t ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+	$(CONTAINER_TOOL) build -f ${} -t ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
 .PHONY: docker-build-crd-upgrader
 docker-build-crd-upgrader:
@@ -209,7 +209,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${RBG_CONTROLLER_DOCKERFILE}:${TAG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${RBG_CONTROLLER_IMG}:${TAG}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
