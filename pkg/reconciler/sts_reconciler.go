@@ -43,8 +43,8 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 
 func (r *StatefulSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-) error {
-	if err := r.reconcileStatefulSet(ctx, rbg, role); err != nil {
+	revisionKey string) error {
+	if err := r.reconcileStatefulSet(ctx, rbg, role, revisionKey); err != nil {
 		return err
 	}
 
@@ -54,6 +54,7 @@ func (r *StatefulSetReconciler) Reconciler(
 func (r *StatefulSetReconciler) reconcileStatefulSet(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	revisionKey string,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling sts workload")
@@ -71,7 +72,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return err
 	}
 
-	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts)
+	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct statefulset apply configuration")
 		return err
@@ -87,18 +88,27 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return fmt.Errorf("convert stsApplyConfig to sts error: %s", err.Error())
 	}
 
-	equal, err := semanticallyEqualStatefulSet(oldSts, newSts, false)
+	// the err value was used to pass the differences between the old and new objects,
+	// not to indicate an actual processing error.
+	semanticallyEqual, err := semanticallyEqualStatefulSet(oldSts, newSts, false)
 	if err != nil {
 		logger.Info(fmt.Sprintf("sts not equal, diff: %s", err.Error()))
 	}
 
-	stsUpdated := !equal
+	roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+	revisionHashEqual := newSts.Labels[roleHashKey] == oldSts.Labels[roleHashKey]
+	if !revisionHashEqual {
+		logger.Info(fmt.Sprintf("sts hash not equal, old: %s, new: %s",
+			oldSts.Labels[roleHashKey], newSts.Labels[roleHashKey]))
+	}
+
+	stsUpdated := !semanticallyEqual || !revisionHashEqual
 	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated)
 	if err != nil {
 		return err
 	}
 
-	if equal && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
+	if semanticallyEqual && revisionHashEqual && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
 		*oldSts.Spec.Replicas == *role.Replicas {
 		logger.Info("sts equal, skip reconcile")
 		return nil
@@ -430,6 +440,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 	oldSts *appsv1.StatefulSet,
+	revisionKey string,
 ) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
 	if oldSts.UID != "" {
@@ -444,6 +455,8 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	if err != nil {
 		return nil, err
 	}
+	stsLabel := maps.Clone(matchLabels)
+	stsLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(rbg.GetWorkloadName(role), rbg.Namespace).
@@ -459,7 +472,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 				),
 		).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(matchLabels).
+		WithLabels(stsLabel).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).

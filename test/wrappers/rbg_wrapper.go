@@ -30,6 +30,12 @@ func (rbgWrapper *RoleBasedGroupWrapper) WithRoles(roles []workloadsv1alpha.Role
 	return rbgWrapper
 }
 
+func (rbgWrapper *RoleBasedGroupWrapper) WithPodGroupPolicy(
+	podGroupPolicy *workloadsv1alpha.PodGroupPolicy) *RoleBasedGroupWrapper {
+	rbgWrapper.Spec.PodGroupPolicy = podGroupPolicy
+	return rbgWrapper
+}
+
 func (rbgWrapper *RoleBasedGroupWrapper) AddRole(role workloadsv1alpha.RoleSpec) *RoleBasedGroupWrapper {
 	rbgWrapper.Spec.Roles = append(rbgWrapper.Spec.Roles, role)
 	return rbgWrapper

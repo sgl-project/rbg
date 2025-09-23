@@ -82,6 +82,9 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions/finalizers,verbs=update
 func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the RoleBasedGroup instance
 	rbg := &workloadsv1alpha1.RoleBasedGroup{}
@@ -99,6 +102,31 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	logger := log.FromContext(ctx).WithValues("rbg", klog.KObj(rbg))
 	ctx = ctrl.LoggerInto(ctx, logger)
 	logger.Info("Start reconciling")
+
+	currentRevision, err := r.getOrCreateRevisionIfNotExist(ctx, rbg)
+	if err != nil {
+		logger.Error(err, "failed get or create revision")
+		return ctrl.Result{}, err
+	}
+	expectedRevision, err := utils.NewRevision(ctx, r.client, rbg)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !utils.EqualRevision(currentRevision, expectedRevision) {
+		logger.Info("Current revision need to be updated")
+		if err := r.client.Create(ctx, expectedRevision); err != nil {
+			logger.Error(err, fmt.Sprintf("failed to create revision %v", expectedRevision))
+			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
+			return ctrl.Result{}, err
+		} else {
+			logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
+			r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
+		}
+	}
+	expectedRoleRevisionHash, err := utils.GetRolesRevisionHash(expectedRevision)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Process roles in dependency order
 	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
@@ -148,7 +176,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 
-		if err := reconciler.Reconciler(roleCtx, rbg, role); err != nil {
+		if err := reconciler.Reconciler(roleCtx, rbg, role, expectedRoleRevisionHash[role.Name]); err != nil {
 			logger.Error(err, "Failed to reconcile workload")
 			r.recorder.Eventf(
 				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
@@ -340,6 +368,41 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 	}
 
 	return r.client.Create(ctx, rbgScalingAdapter)
+}
+func (r *RoleBasedGroupReconciler) getOrCreateRevisionIfNotExist(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (*appsv1.ControllerRevision, error) {
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	revisions, err := utils.ListRevisions(ctx, r.client, rbg, selector)
+	if err != nil {
+		return nil, err
+	}
+	revisions, err = utils.CleanExpiredRevision(ctx, r.client, rbg, revisions)
+	if err != nil {
+		return nil, err
+	}
+	revision := utils.GetHighestRevision(revisions)
+	if revision != nil {
+		return revision, nil
+	}
+	revision, err = utils.NewRevision(ctx, r.client, rbg)
+	if err != nil {
+		return revision, err
+	}
+	err = r.client.Create(ctx, revision)
+	if err == nil {
+		r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision,
+			"Successful create revision for RoleBasedGroup")
+	} else {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision,
+			"Failed create revision for RoleBasedGroup")
+	}
+	return revision, err
 }
 
 func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(

@@ -2,15 +2,19 @@ package utils
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 func TestListRevisions(t *testing.T) {
@@ -397,4 +401,143 @@ func TestListRevisionsAndFindHighestIntegration(t *testing.T) {
 	assert.NotNil(t, highest)
 	assert.Equal(t, int64(3), highest.Revision)
 	assert.Equal(t, "revision-3", highest.Name)
+}
+
+func TestGetPatchAndRestore(t *testing.T) {
+	v1 := &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "role-lws",
+		},
+		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha1.RoleSpec{
+				{
+					Name:     "role-sts",
+					Replicas: ptr.To(int32(1)),
+					Workload: workloadsv1alpha1.WorkloadSpec{
+						APIVersion: "apps/v1",
+						Kind:       "StatefulSet",
+					},
+					Template: v1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "nginx",
+							},
+						},
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "nginx",
+									Image: "1.0.0",
+								},
+							},
+						},
+					},
+				},
+				{
+					Name:     "role-lws",
+					Replicas: ptr.To(int32(1)),
+					Workload: workloadsv1alpha1.WorkloadSpec{
+						APIVersion: "leaderworkerset.x-k8s.io/v1",
+						Kind:       "LeaderWorkerSet",
+					},
+				},
+			},
+			PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
+				PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
+					KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
+						ScheduleTimeoutSeconds: ptr.To(int32(300)),
+					},
+				},
+			},
+		},
+	}
+	patchV1, _ := getRBGPatch(v1)
+
+	v2 := v1.DeepCopy()
+	v2.Spec.Roles[0].Replicas = ptr.To(int32(2))
+
+	patchV1ControllerRevision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-rbg-v1",
+		},
+		Data: runtime.RawExtension{
+			Raw: patchV1,
+		},
+	}
+	restoreV1, _ := ApplyRevision(v2, patchV1ControllerRevision)
+	fmt.Println(string(patchV1))
+	assert.Equal(t, v1.Spec.Roles[0].Replicas, restoreV1.Spec.Roles[0].Replicas)
+	assert.True(t, reflect.DeepEqual(v1.Spec.PodGroupPolicy, restoreV1.Spec.PodGroupPolicy))
+	assert.True(t, reflect.DeepEqual(v1.Spec.Roles, restoreV1.Spec.Roles))
+}
+
+// TestCleanExpiredRevision tests the CleanExpiredRevision function
+func TestCleanExpiredRevision(t *testing.T) {
+	// Create a mock controller-runtime client
+	fakeClient := fake.NewClientBuilder().Build()
+	ctx := context.Background()
+
+	// Create a test RoleBasedGroup object
+	rbg := &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+	}
+
+	// Test case 1: Number of revisions does not exceed the limit (<=10)
+	t.Run("NoExceedRevisions", func(t *testing.T) {
+		var revisions []*appsv1.ControllerRevision
+		for i := 0; i < 5; i++ {
+			revisions = append(revisions, &appsv1.ControllerRevision{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              fmt.Sprintf("rev-%d", i),
+					Namespace:         "default",
+					CreationTimestamp: metav1.Now(),
+				},
+				Revision: int64(i),
+			})
+		}
+
+		result, err := CleanExpiredRevision(ctx, fakeClient, rbg, revisions)
+		assert.NoError(t, err)
+		assert.Len(t, result, 5, "Should retain all revisions")
+	})
+
+	// Test case 2: Number of revisions exceeds the limit, need to delete the oldest ones
+	t.Run("ExceedRevisions", func(t *testing.T) {
+		var revisions []*appsv1.ControllerRevision
+		// Create 10 revisions, 5 of which should be deleted
+		for i := 0; i < 10; i++ {
+			revisions = append(revisions, &appsv1.ControllerRevision{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              fmt.Sprintf("rev-%d", i),
+					Namespace:         "default",
+					CreationTimestamp: metav1.Unix(int64(i), 0), // Created in chronological order
+				},
+				Revision: int64(i),
+			})
+		}
+
+		// Use a fake client that supports delete operations
+		fakeClientWithObjects := fake.NewClientBuilder().
+			WithRuntimeObjects(func(revs []*appsv1.ControllerRevision) []runtime.Object {
+				objs := make([]runtime.Object, len(revs))
+				for i, rev := range revs {
+					objs[i] = rev
+				}
+				return objs
+			}(revisions)...).
+			Build()
+
+		result, err := CleanExpiredRevision(ctx, fakeClientWithObjects, rbg, revisions)
+		assert.NoError(t, err)
+		assert.Len(t, result, 5, "Should only retain the latest 5 revisions")
+
+		// Verify that the retained revisions are #5-#10
+		for i, rev := range result {
+			expectedIndex := i + 5
+			assert.Equal(t, fmt.Sprintf("rev-%d", expectedIndex), rev.Name)
+		}
+	})
 }
