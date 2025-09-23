@@ -149,11 +149,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build-controller
 docker-build-controller: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -f ${} -t ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+	$(CONTAINER_TOOL) build -f ${RBG_CONTROLLER_DOCKERFILE} -t ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
 .PHONY: docker-build-crd-upgrader
 docker-build-crd-upgrader:
-	docker build -f ${CRD_UPGRADER_DOCKERFILE} -t ${CRD_UPGRADER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+	$(CONTAINER_TOOL) build -f ${CRD_UPGRADER_DOCKERFILE} -t ${CRD_UPGRADER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
