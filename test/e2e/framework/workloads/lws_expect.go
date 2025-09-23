@@ -102,6 +102,49 @@ func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(
 	return nil
 }
 
+func (s *LeaderWorkerSetEqualChecker) ExpectAnnotationContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+	annotations ...map[string]string,
+) error {
+	// 1. check lws exists
+	lws := &lwsv1.LeaderWorkerSet{}
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, lws,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get existing lws: %w", err)
+	}
+
+	var leaderAnnotation, workerAnnotation map[string]string
+
+	if len(annotations) == 0 {
+		return fmt.Errorf("labels is empty")
+	} else if len(annotations) == 1 {
+		workerAnnotation = annotations[0]
+	} else {
+		leaderAnnotation, workerAnnotation = annotations[0], annotations[1]
+	}
+
+	if lws.Spec.LeaderWorkerTemplate.LeaderTemplate != nil {
+		for key, value := range leaderAnnotation {
+			if !utils.MapContains(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Annotations, key, value) {
+				return fmt.Errorf("leader sts annotations do not have key %s, value: %s", key, value)
+			}
+		}
+	}
+
+	for key, value := range workerAnnotation {
+		if !utils.MapContains(lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Annotations, key, value) {
+			return fmt.Errorf("worker sts annotations do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
 func (s *LeaderWorkerSetEqualChecker) ExpectWorkloadNotExist(
 	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
 ) error {

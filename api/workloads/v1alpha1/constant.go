@@ -29,10 +29,6 @@ const (
 	// to skip exclusive-topology affinity injection for that role.
 	DisableExclusiveKeyAnnotationKey = RBGPrefix + "disable-exclusive-topology"
 
-	// PodGroupLabelKey identifies pods belonging to a specific pod group
-	// Value: RoleBasedName
-	PodGroupLabelKey = "pod-group.scheduling.sigs.k8s.io/name"
-
 	RoleSizeAnnotationKey string = RBGPrefix + "role-size"
 
 	// RBGSetPrefix rbgs prefix for all rbgs

@@ -14,6 +14,7 @@ type WorkloadEqualChecker interface {
 	ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error
 	ExpectLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) error
 	ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error
+	ExpectAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) error
 	ExpectTopologyAffinity(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, topologyKey string) error
 }
 

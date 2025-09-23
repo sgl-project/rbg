@@ -96,6 +96,31 @@ func (s *StatefulSetEqualChecker) ExpectLabelContains(
 	return nil
 }
 
+func (s *StatefulSetEqualChecker) ExpectAnnotationContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+	annotations ...map[string]string,
+) error {
+	// check sts exists
+	sts := &appsv1.StatefulSet{}
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, sts,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get existing StatefulSet: %w", err)
+	}
+
+	for key, value := range annotations[0] {
+		if !utils.MapContains(sts.Spec.Template.Annotations, key, value) {
+			return fmt.Errorf("pod annotations do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
 func (s *StatefulSetEqualChecker) ExpectWorkloadNotExist(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec) error {
 	sts := &appsv1.StatefulSet{}
 	err := s.client.Get(

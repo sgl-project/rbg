@@ -1,8 +1,6 @@
 package utils
 
 const (
-	// PodGroupCrdName is PodGroup CRD Name
-	PodGroupCrdName = "podgroups.scheduling.x-k8s.io"
 
 	// LwsCrdName is LWS CRD name
 	LwsCrdName = "leaderworkersets.leaderworkerset.x-k8s.io"

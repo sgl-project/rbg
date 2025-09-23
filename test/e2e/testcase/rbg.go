@@ -5,6 +5,7 @@ import (
 	"github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
@@ -101,9 +102,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 			)
 
 			ginkgo.It(
-				"rbg with gang scheduling", func() {
+				"rbg with kube gang scheduling", func() {
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
-						WithGangScheduling(true).
+						WithKubeGangScheduling(true).
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
 								{
@@ -138,10 +139,52 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 					podGroupLabel := map[string]string{
-						workloadsv1alpha1.PodGroupLabelKey: rbg.Name,
+						scheduler.KubePodGroupLabelKey: rbg.Name,
 					}
-
 					f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], podGroupLabel)
+				},
+			)
+			ginkgo.It(
+				"rbg with volcano gang scheduling", func() {
+					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
+						WithVolcanoGangScheduling("high-priority", "gpu-queue").
+						WithRoles(
+							[]workloadsv1alpha1.RoleSpec{
+								{
+
+									Name:     "prefill",
+									Replicas: ptr.To(int32(1)),
+									RolloutStrategy: &workloadsv1alpha1.RolloutStrategy{
+										Type: workloadsv1alpha1.RollingUpdateStrategyType,
+									},
+									Workload: workloadsv1alpha1.WorkloadSpec{
+										APIVersion: "apps/v1",
+										Kind:       "StatefulSet",
+									},
+									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+								},
+								{
+
+									Name:     "decode",
+									Replicas: ptr.To(int32(1)),
+									RolloutStrategy: &workloadsv1alpha1.RolloutStrategy{
+										Type: workloadsv1alpha1.RollingUpdateStrategyType,
+									},
+									Workload: workloadsv1alpha1.WorkloadSpec{
+										APIVersion: "apps/v1",
+										Kind:       "StatefulSet",
+									},
+									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+								},
+							},
+						).Obj()
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+
+					podGroupAnnotation := map[string]string{
+						scheduler.VolcanoPodGroupAnnotationKey: rbg.Name,
+					}
+					f.ExpectWorkloadAnnotationContains(rbg, rbg.Spec.Roles[0], podGroupAnnotation)
 				},
 			)
 

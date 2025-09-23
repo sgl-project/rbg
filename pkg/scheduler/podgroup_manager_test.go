@@ -16,6 +16,7 @@ import (
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/test/wrappers"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 func TestPodGroupScheduler_Reconcile(t *testing.T) {
@@ -23,6 +24,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha.AddToScheme(scheme)
 	_ = schedv1alpha1.AddToScheme(scheme)
+	_ = volcanoschedulingv1beta1.AddToScheme(scheme)
 
 	podGroup := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -46,7 +48,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			name:   "create pod group when gang scheduling enabled and pod group not exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
 			rbg: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-				WithGangScheduling(true).Obj(),
+				WithKubeGangScheduling(true).Obj(),
 			expectPG:    true,
 			expectError: false,
 		},
@@ -127,7 +129,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			name:   "delete pod group when gang scheduling disabled and pod group exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
 			rbg: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-				WithGangScheduling(false).Obj(),
+				WithKubeGangScheduling(false).Obj(),
 			expectPG:    false,
 			expectError: false,
 		},
@@ -135,7 +137,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			name:   "do nothing when gang scheduling disabled and pod group not exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
 			rbg: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-				WithGangScheduling(false).Obj(),
+				WithKubeGangScheduling(false).Obj(),
 			expectPG:    false,
 			expectError: false,
 		},
