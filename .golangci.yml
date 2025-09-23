@@ -9,16 +9,13 @@ issues:
   # restore some of the defaults
   # (fill in the rest as needed)
   exclude-rules:
-    - path: "api/*"
-      linters:
-        - lll
     - path: "internal/*"
       linters:
         - dupl
-        - lll
     - path: "test/*"
       linters:
         - dupl
+
 linters:
   disable-all: true
   enable:
@@ -33,7 +30,6 @@ linters:
     - gosimple
     - govet
     - ineffassign
-    - lll
     - misspell
     - nakedret
     - prealloc
