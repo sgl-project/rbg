@@ -21891,7 +21891,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: registry-cn-hangzhou.ack.aliyuncs.com/acs/rbgs-controller:v0.3.2
+        image: rolebasedgroup/rbgs-controller:v0.3.2-4c0f843
         imagePullPolicy: IfNotPresent
         name: rbgs
         resources:
