@@ -29,4 +29,3 @@ go.work
 **/*.tgz
 **/.DS_Store
 
-vendor/
