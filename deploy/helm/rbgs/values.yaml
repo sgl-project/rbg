@@ -3,9 +3,9 @@
 replicaCount: 2
 
 image:
-  repository: registry-cn-hangzhou.ack.aliyuncs.com/acs/rbgs-controller
+  repository: rolebasedgroup/rbgs-controller
   pullPolicy: IfNotPresent
-  tag: v0.3.0
+  tag: v0.3.2-4c0f843
 
 imagePullSecrets: []
 
