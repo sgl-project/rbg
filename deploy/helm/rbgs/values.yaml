@@ -38,7 +38,7 @@ crdUpgrade:
   enabled: true
   # This sets the time-to-live (TTL) for crd-upgrade jobs. Default is 259200 seconds (3 days).
   ttlSecondsAfterFinished: 259200
-  repository: registry-cn-hangzhou.ack.aliyuncs.com/dev/rbgs-upgrade-crd
-  imageTag: v0.3.1-upgrade-crd
+  repository: rolebasedgroup/rbgs-upgrade-crd
+  tag: v0.3.2-4c0f843
 
 

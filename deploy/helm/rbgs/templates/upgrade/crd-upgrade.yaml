@@ -22,7 +22,7 @@ spec:
       serviceAccountName: rbgs-crds-upgrade
       containers:
         - name: rbgs-crds-upgrade
-          image: "{{ .Values.crdUpgrade.repository }}:{{ .Values.crdUpgrade.imageTag | default .Chart.AppVersion }}"
+          image: "{{ .Values.crdUpgrade.repository }}:{{ .Values.crdUpgrade.tag | default .Chart.AppVersion }}"
       restartPolicy: OnFailure
 ---
 apiVersion: rbac.authorization.k8s.io/v1
