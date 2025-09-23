@@ -4,5 +4,5 @@ resources:
 - manager.yaml
 images:
 - name: controller
-  newName: rolebasedgroup/rbgs-controller
-  newTag: v0.3.2-4c0f843
+  newName: registry-cn-hangzhou.ack.aliyuncs.com/acs/rbgs-controller
+  newTag: v0.3.2
