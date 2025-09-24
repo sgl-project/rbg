@@ -36,7 +36,7 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 
 func (r *DeploymentReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-) error {
+	revisionKey string) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling deployment workload")
 
@@ -46,7 +46,7 @@ func (r *DeploymentReconciler) Reconciler(
 		return err
 	}
 
-	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy)
+	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct deployment apply configuration")
 		return err
@@ -61,13 +61,24 @@ func (r *DeploymentReconciler) Reconciler(
 		return fmt.Errorf("convert deployApplyConfig to deployment error: %s", err.Error())
 	}
 
-	equal, err := semanticallyEqualDeployment(oldDeploy, newDeploy, false)
-	if equal {
+	// the err value was used to pass the differences between the old and new objects,
+	// not to indicate an actual processing error.
+	semanticallyEqual, err := semanticallyEqualDeployment(oldDeploy, newDeploy, false)
+	if err != nil {
+		logger.Info(fmt.Sprintf("deployment not equal, diff: %s", err.Error()))
+	}
+
+	roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+	revisionHashEqual := newDeploy.Labels[roleHashKey] == oldDeploy.Labels[roleHashKey]
+	if !revisionHashEqual {
+		logger.Info(fmt.Sprintf("deployment hash not equal, old: %s, new: %s",
+			oldDeploy.Labels[roleHashKey],
+			newDeploy.Labels[roleHashKey]))
+	}
+	if semanticallyEqual && revisionHashEqual {
 		logger.Info("deployment equal, skip reconcile")
 		return nil
 	}
-
-	logger.Info(fmt.Sprintf("deployment not equal, diff: %s", err.Error()))
 
 	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, deployApplyConfig, utils.PatchSpec); err != nil {
 		logger.Error(err, "Failed to patch deployment apply configuration")
@@ -81,6 +92,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 	oldDeploy *appsv1.Deployment,
+	revisionKey string,
 ) (*appsapplyv1.DeploymentApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
 	if oldDeploy.UID != "" {
@@ -95,6 +107,8 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	if err != nil {
 		return nil, err
 	}
+	deployLabel := maps.Clone(matchLabels)
+	deployLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct deployment apply configuration
 	deployConfig := appsapplyv1.Deployment(rbg.GetWorkloadName(role), rbg.Namespace).
@@ -108,7 +122,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 				),
 		).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(matchLabels).
+		WithLabels(deployLabel).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).

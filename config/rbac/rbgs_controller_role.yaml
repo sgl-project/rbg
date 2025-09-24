@@ -152,6 +152,7 @@ rules:
     resources:
       - statefulsets/finalizers
       - deployments/finalizers
+      - controllerrevisions/finalizers
     verbs:
       - update
   - apiGroups:
@@ -159,6 +160,7 @@ rules:
     resources:
       - statefulsets/status
       - deployments/status
+      - controllerrevisions/status
     verbs:
       - get
       - patch

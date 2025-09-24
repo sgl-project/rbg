@@ -29,6 +29,14 @@ const (
 	// to skip exclusive-topology affinity injection for that role.
 	DisableExclusiveKeyAnnotationKey = RBGPrefix + "disable-exclusive-topology"
 
+	// RevisionLabelKey is the labels key used to store the revision hash of the
+	// RoleBasedGroup Roles's template. Place it in the rbg controllerrevision label.
+	RevisionLabelKey = RBGPrefix + "controller-revision-hash"
+
+	// RoleRevisionLabelKeyFmt is the labels key used to store the revision hash of
+	// a specific Role template. Placed on the rbg controllerrevision and role workload labels
+	RoleRevisionLabelKeyFmt = RBGPrefix + "role-revision-hash-%s"
+
 	RoleSizeAnnotationKey string = RBGPrefix + "role-size"
 
 	// RBGSetPrefix rbgs prefix for all rbgs

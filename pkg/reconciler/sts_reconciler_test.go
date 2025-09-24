@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -69,7 +70,8 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					client: client,
 				}
 
-				err := r.Reconciler(context.Background(), tt.rbg, tt.role)
+				expectedRevisionHash := "revision-hash-value"
+				err := r.Reconciler(context.Background(), tt.rbg, tt.role, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -85,6 +87,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					)
 					assert.NoError(t, err)
 					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), sts.Name)
+					assert.Equal(t, expectedRevisionHash, sts.Labels[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, tt.role.Name)])
 
 					// Check if Service was created
 					svc := &corev1.Service{}
