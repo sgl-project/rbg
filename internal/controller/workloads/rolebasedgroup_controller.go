@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -121,63 +122,75 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Reconcile role, add & update
 	roleStatuses := []workloadsv1alpha1.RoleStatus{}
 	var updateStatus bool
-	for _, role := range sortedRoles {
-		logger := log.FromContext(ctx)
-		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
+	for _, roleList := range sortedRoles {
+		var joinedError error
 
-		// first check whether watch lws cr
-		dynamicWatchCustomCRD(roleCtx, role.Workload.Kind)
-		// Check dependencies first
-		ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
-		if err != nil {
-			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
-			return ctrl.Result{}, err
-		}
-		if !ready {
-			logger.Info("Dependencies not met, requeuing", "role", role.Name)
-			return ctrl.Result{RequeueAfter: 5}, nil
-		}
+		for _, role := range roleList {
+			logger := log.FromContext(ctx)
+			roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
 
-		reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
-		if err != nil {
-			logger.Error(err, "Failed to create workload reconciler")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
+			// first check whether watch lws cr
+			dynamicWatchCustomCRD(roleCtx, role.Workload.Kind)
+			// Check dependencies first
+			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
+			if err != nil {
+				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
+				return ctrl.Result{}, err
+			}
+			if !ready {
+				logger.Info("Dependencies not met, requeuing", "role", role.Name)
+				return ctrl.Result{RequeueAfter: 5}, nil
+			}
 
-		if err := reconciler.Reconciler(roleCtx, rbg, role); err != nil {
-			logger.Error(err, "Failed to reconcile workload")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-
-		if err := r.ReconcileScalingAdapter(roleCtx, rbg, role); err != nil {
-			logger.Error(err, "Failed to reconcile scaling adapter")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
-				"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-
-		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, role)
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
+			reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
+			if err != nil {
+				logger.Error(err, "Failed to create workload reconciler")
 				r.recorder.Eventf(
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to construct role %s status: %v", role.Name, err,
+					"Failed to reconcile role %s: %v", role.Name, err,
 				)
+				joinedError = stderrors.Join(joinedError, err)
+				continue
 			}
-			return ctrl.Result{}, err
+
+			if err := reconciler.Reconciler(roleCtx, rbg, role); err != nil {
+				logger.Error(err, "Failed to reconcile workload")
+				r.recorder.Eventf(
+					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+					"Failed to reconcile role %s: %v", role.Name, err,
+				)
+				joinedError = stderrors.Join(joinedError, err)
+				continue
+			}
+
+			if err := r.ReconcileScalingAdapter(roleCtx, rbg, role); err != nil {
+				logger.Error(err, "Failed to reconcile scaling adapter")
+				r.recorder.Eventf(
+					rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
+					"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
+				)
+				joinedError = stderrors.Join(joinedError, err)
+				continue
+			}
+
+			roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, role)
+			if err != nil {
+				if !apierrors.IsNotFound(err) {
+					r.recorder.Eventf(
+						rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+						"Failed to construct role %s status: %v", role.Name, err,
+					)
+				}
+				joinedError = stderrors.Join(joinedError, err)
+				continue
+			}
+			updateStatus = updateStatus || updateRoleStatus
+			roleStatuses = append(roleStatuses, roleStatus)
 		}
-		updateStatus = updateStatus || updateRoleStatus
-		roleStatuses = append(roleStatuses, roleStatus)
+
+		if joinedError != nil {
+			return ctrl.Result{}, joinedError
+		}
 	}
 
 	if updateStatus {

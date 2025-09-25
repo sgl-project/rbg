@@ -22,7 +22,7 @@ func TestDependencyOrder(t *testing.T) {
 	tests := []struct {
 		name         string
 		dependencies map[string][]string
-		want         []string
+		want         [][]string
 		wantErr      bool
 	}{
 		{
@@ -32,7 +32,11 @@ func TestDependencyOrder(t *testing.T) {
 				"b": {"c"},
 				"c": {},
 			},
-			want:    []string{"c", "b", "a"},
+			want: [][]string{
+				{"c"},
+				{"b"},
+				{"a"},
+			},
 			wantErr: false,
 		},
 		{
@@ -42,7 +46,9 @@ func TestDependencyOrder(t *testing.T) {
 				"b": {},
 				"c": {},
 			},
-			want:    []string{"a", "b", "c"},
+			want: [][]string{
+				{"a", "b", "c"},
+			},
 			wantErr: false,
 		},
 		{
@@ -73,7 +79,10 @@ func TestDependencyOrder(t *testing.T) {
 				"b": {"c"},
 				"c": {},
 			},
-			want:    []string{"c", "a", "b"},
+			want: [][]string{
+				{"c"},
+				{"a", "b"},
+			},
 			wantErr: false,
 		},
 	}
@@ -105,7 +114,7 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 		name     string
 		rbg      *workloadsv1alpha.RoleBasedGroup
 		wantErr  bool
-		expected []*workloadsv1alpha.RoleSpec
+		expected [][]*workloadsv1alpha.RoleSpec
 	}{
 		{
 			name:    "empty roles",
@@ -144,13 +153,12 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			expected: []*workloadsv1alpha.RoleSpec{
+			expected: [][]*workloadsv1alpha.RoleSpec{
 				{
-					Name: "role2",
+					{Name: "role2"},
 				},
 				{
-					Name:         "role1",
-					Dependencies: []string{"role2"},
+					{Name: "role1", Dependencies: []string{"role2"}},
 				},
 			},
 		},
@@ -171,6 +179,36 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 				},
 			},
 			wantErr: true,
+		},
+		{
+			name: "same dependency",
+			rbg: &workloadsv1alpha.RoleBasedGroup{
+				Spec: workloadsv1alpha.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha.RoleSpec{
+						{
+							Name:         "role1",
+							Dependencies: []string{"role3"},
+						},
+						{
+							Name:         "role2",
+							Dependencies: []string{"role3"},
+						},
+						{
+							Name: "role3",
+						},
+					},
+				},
+			},
+			wantErr: false,
+			expected: [][]*workloadsv1alpha.RoleSpec{
+				{
+					{Name: "role3"},
+				},
+				{
+					{Name: "role1", Dependencies: []string{"role3"}},
+					{Name: "role2", Dependencies: []string{"role3"}},
+				},
+			},
 		},
 	}
 
