@@ -101,8 +101,7 @@ func (m *DefaultDependencyManager) CheckDependencyReady(
 }
 
 type roleWithOrder struct {
-	name  string
-	paths []string
+	name string
 	// order is the order of the role in the topological sort
 	// >=0 computed;
 	// -1 progressing;
@@ -131,14 +130,20 @@ func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([][
 		roleWithOrderMap[roleWithOrder.name] = roleWithOrder
 	}
 
-	var visit func(role *roleWithOrder) (int, error)
-	visit = func(role *roleWithOrder) (int, error) {
+	var visit func(role *roleWithOrder, paths []string) (int, error)
+	visit = func(role *roleWithOrder, paths []string) (int, error) {
+		// track the current path to detect cycles
+		paths = append(paths, role.name)
+		defer func() {
+			paths = paths[:len(paths)-1]
+		}()
+
 		if role.order >= 0 {
 			return role.order, nil
 		}
 		if role.order == -1 {
 			err := fmt.Errorf("cycle detected for role '%s'", role.name)
-			logger.Error(err, "cycle detected", "cycle", role.paths)
+			logger.Error(err, "cycle detected", "cycle", paths)
 			return -1, err
 		}
 		role.order = -1
@@ -150,8 +155,7 @@ func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([][
 				logger.Error(err, "dependency not found", "dependency", dep)
 				return -1, err
 			}
-			x.paths = append(x.paths, role.name)
-			order, err := visit(x)
+			order, err := visit(x, paths)
 			if err != nil {
 				return -1, err
 			}
@@ -164,7 +168,7 @@ func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([][
 	// Visit all roles
 	for _, roleWithOrder := range roleWithOrderList {
 		if roleWithOrder.order == -2 {
-			_, err := visit(roleWithOrder)
+			_, err := visit(roleWithOrder, make([]string, 0))
 			if err != nil {
 				return nil, err
 			}
