@@ -7,7 +7,7 @@ import (
 )
 
 type DependencyManager interface {
-	SortRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) ([]*workloadsv1alpha1.RoleSpec, error)
+	SortRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) ([][]*workloadsv1alpha1.RoleSpec, error)
 	CheckDependencyReady(
 		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 	) (bool, error)
