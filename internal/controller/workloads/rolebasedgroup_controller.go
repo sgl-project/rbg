@@ -135,11 +135,14 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
 			if err != nil {
 				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
-				return ctrl.Result{}, err
+				errs = stderrors.Join(errs, err)
+				continue
 			}
 			if !ready {
-				logger.Info("Dependencies not met, requeuing", "role", role.Name)
-				return ctrl.Result{RequeueAfter: 5}, nil
+				err := fmt.Errorf("dependencies not met for role '%s'", role.Name)
+				r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
+				errs = stderrors.Join(errs, err)
+				continue
 			}
 
 			reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
