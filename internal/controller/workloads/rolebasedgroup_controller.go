@@ -123,7 +123,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	roleStatuses := []workloadsv1alpha1.RoleStatus{}
 	var updateStatus bool
 	for _, roleList := range sortedRoles {
-		var joinedError error
+		var errs error
 
 		for _, role := range roleList {
 			logger := log.FromContext(ctx)
@@ -149,7 +149,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
 					"Failed to reconcile role %s: %v", role.Name, err,
 				)
-				joinedError = stderrors.Join(joinedError, err)
+				errs = stderrors.Join(errs, err)
 				continue
 			}
 
@@ -159,7 +159,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
 					"Failed to reconcile role %s: %v", role.Name, err,
 				)
-				joinedError = stderrors.Join(joinedError, err)
+				errs = stderrors.Join(errs, err)
 				continue
 			}
 
@@ -169,7 +169,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 					rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
 					"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
 				)
-				joinedError = stderrors.Join(joinedError, err)
+				errs = stderrors.Join(errs, err)
 				continue
 			}
 
@@ -181,15 +181,15 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 						"Failed to construct role %s status: %v", role.Name, err,
 					)
 				}
-				joinedError = stderrors.Join(joinedError, err)
+				errs = stderrors.Join(errs, err)
 				continue
 			}
 			updateStatus = updateStatus || updateRoleStatus
 			roleStatuses = append(roleStatuses, roleStatus)
 		}
 
-		if joinedError != nil {
-			return ctrl.Result{}, joinedError
+		if errs != nil {
+			return ctrl.Result{}, errs
 		}
 	}
 
