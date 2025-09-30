@@ -54,7 +54,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	cp config/crd/bases/* deploy/helm/rbgs/crds/
+	cp config/crd/bases/* deploy/helm/rbg/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
