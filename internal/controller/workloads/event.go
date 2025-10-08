@@ -5,6 +5,7 @@ const (
 	FailedGetRBG               = "FailedGetRBG"
 	InvalidRoleDependency      = "InvalidRoleDependency"
 	FailedCheckRoleDependency  = "FailedCheckRoleDependency"
+	DependencyNotMet           = "DependencyNotMet"
 	FailedReconcileWorkload    = "FailedReconcileWorkload"
 	FailedCreateScalingAdapter = "FailedCreateScalingAdapter"
 	Succeed                    = "Succeed"

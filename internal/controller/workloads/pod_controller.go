@@ -1,6 +1,7 @@
 package workloads
 
 import (
+	"errors"
 	"fmt"
 
 	"golang.org/x/net/context"
@@ -73,14 +74,24 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 	if err != nil {
 		return err
 	}
-	for _, role := range sortedRoles {
-		recon, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
-		if err != nil {
-			return err
+	for _, roleList := range sortedRoles {
+		var errs error
+
+		for _, role := range roleList {
+			recon, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
+			if err != nil {
+				errs = errors.Join(errs, err)
+				continue
+			}
+			// 3. recreate role
+			if err := recon.RecreateWorkload(ctx, rbg, role); err != nil {
+				errs = errors.Join(errs, err)
+				continue
+			}
 		}
-		// 3. recreate role
-		if err := recon.RecreateWorkload(ctx, rbg, role); err != nil {
-			return err
+
+		if errs != nil {
+			return errs
 		}
 	}
 
