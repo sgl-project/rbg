@@ -2,7 +2,6 @@ package dependency
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -27,7 +26,7 @@ func NewDefaultDependencyManager(scheme *runtime.Scheme, client client.Client) *
 
 func (m *DefaultDependencyManager) SortRoles(
 	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup,
-) ([]*workloadsv1alpha.RoleSpec, error) {
+) ([][]*workloadsv1alpha.RoleSpec, error) {
 	logger := log.FromContext(ctx)
 	if len(rbg.Spec.Roles) == 0 {
 		logger.Info("warning: rbg has no roles, skip")
@@ -60,12 +59,15 @@ func (m *DefaultDependencyManager) SortRoles(
 	}
 	logger.V(1).Info("roleOrder", "roleOrder", roleOrder)
 
-	var ret []*workloadsv1alpha.RoleSpec
-	for _, roleName := range roleOrder {
-		for i := range rbg.Spec.Roles {
-			if rbg.Spec.Roles[i].Name == roleName {
-				ret = append(ret, &rbg.Spec.Roles[i])
-				break
+	ret := make([][]*workloadsv1alpha.RoleSpec, len(roleOrder))
+	for order, roles := range roleOrder {
+		ret[order] = make([]*workloadsv1alpha.RoleSpec, 0, len(roles))
+		for _, roleName := range roles {
+			for i := range rbg.Spec.Roles {
+				if rbg.Spec.Roles[i].Name == roleName {
+					ret[order] = append(ret[order], &rbg.Spec.Roles[i])
+					break
+				}
 			}
 		}
 	}
@@ -98,8 +100,17 @@ func (m *DefaultDependencyManager) CheckDependencyReady(
 	return true, nil
 }
 
+type roleWithOrder struct {
+	name string
+	// order is the order of the role in the topological sort
+	// >=0 computed;
+	// -1 progressing;
+	// -2 not started;
+	order int
+}
+
 // Use Depth-First Search (DFS) to build a topological sort and check for cycles
-func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([]string, error) {
+func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([][]string, error) {
 	logger := log.FromContext(ctx)
 
 	// sort map by keys to avoid random order
@@ -109,51 +120,69 @@ func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([]s
 	}
 	sort.Strings(keys)
 
-	// Track visited nodes and detect cycles
-	completed := make(map[string]bool)
-	temp := make(map[string]bool)
-	order := make([]string, 0)
-	path := make([]string, 0) // Stack to keep track of current path
+	roleWithOrderList := make([]*roleWithOrder, 0)
+	for _, k := range keys {
+		roleWithOrderList = append(roleWithOrderList, &roleWithOrder{name: k, order: -2})
+	}
 
-	var visit func(string) error
-	visit = func(role string) error {
-		// Check if already in temp (indicates cycle)
-		if temp[role] {
-			// Cycle detected, print roles in path
-			err := errors.New("cycle detected")
-			logger.Error(err, "cycle detected", "cycle", append(path, role))
-			return err
-		}
-		// Skip if already visited
-		if completed[role] {
-			return nil
-		}
-		// Mark as temp visited
-		temp[role] = true
-		path = append(path, role) // Add role to path
+	roleWithOrderMap := make(map[string]*roleWithOrder)
+	for _, roleWithOrder := range roleWithOrderList {
+		roleWithOrderMap[roleWithOrder.name] = roleWithOrder
+	}
 
-		// Visit all dependencies first
-		for _, dep := range dependencies[role] {
-			if err := visit(dep); err != nil {
-				return err // Cycle detected
+	var visit func(role *roleWithOrder, paths []string) (int, error)
+	visit = func(role *roleWithOrder, paths []string) (int, error) {
+		// track the current path to detect cycles
+		paths = append(paths, role.name)
+		defer func() {
+			paths = paths[:len(paths)-1]
+		}()
+
+		if role.order >= 0 {
+			return role.order, nil
+		}
+		if role.order == -1 {
+			err := fmt.Errorf("cycle detected for role '%s'", role.name)
+			logger.Error(err, "cycle detected", "cycle", paths)
+			return -1, err
+		}
+		role.order = -1
+		maxOrder := 0
+		for _, dep := range dependencies[role.name] {
+			x, found := roleWithOrderMap[dep]
+			if !found {
+				err := fmt.Errorf("dependency '%s' not found for role '%s'", dep, role.name)
+				logger.Error(err, "dependency not found", "dependency", dep)
+				return -1, err
 			}
+			order, err := visit(x, paths)
+			if err != nil {
+				return -1, err
+			}
+			maxOrder = max(maxOrder, order+1)
 		}
-
-		// Mark as permanently visited and add to order
-		temp[role] = false
-		completed[role] = true
-		order = append(order, role)
-		path = path[:len(path)-1] // Remove role from path
-		return nil
+		role.order = maxOrder
+		return role.order, nil
 	}
 
 	// Visit all roles
-	for _, role := range keys {
-		if !completed[role] {
-			if err := visit(role); err != nil {
-				return nil, err // Return nil if cycle detected
+	for _, roleWithOrder := range roleWithOrderList {
+		if roleWithOrder.order == -2 {
+			_, err := visit(roleWithOrder, make([]string, 0))
+			if err != nil {
+				return nil, err
 			}
 		}
+	}
+
+	maxOrder := 0
+	for _, roleWithOrder := range roleWithOrderList {
+		maxOrder = max(maxOrder, roleWithOrder.order)
+	}
+
+	order := make([][]string, maxOrder+1)
+	for _, roleWithOrder := range roleWithOrderList {
+		order[roleWithOrder.order] = append(order[roleWithOrder.order], roleWithOrder.name)
 	}
 
 	return order, nil
