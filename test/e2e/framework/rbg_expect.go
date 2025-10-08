@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework/workloads"
 	"sigs.k8s.io/rbgs/test/utils"
 )
@@ -37,14 +38,27 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
 
+	// check controllerrevision
+	f.ExpectRBGRevisionEqual(rbg)
+	expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	expectedRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(expect)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
 	// check workload exists
 	for _, role := range rbg.Spec.Roles {
 		wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		roleHashKey := fmt.Sprintf(v1alpha1.RoleRevisionLabelKeyFmt, role.Name)
 
 		gomega.Eventually(
 			func() bool {
-				err := wlCheck.ExpectWorkloadEqual(rbg, role)
+				err := wlCheck.ExpectLabelContains(rbg, role, map[string]string{roleHashKey: expectedRoleRevisionHash[role.Name]})
+				if err != nil {
+					logger.V(1).Info("workload not equal, wait next time", "reason", err.Error())
+					return false
+				}
+				err = wlCheck.ExpectWorkloadEqual(rbg, role)
 				if err != nil {
 					logger.V(1).Info("workload not equal, wait next time", "reason", err.Error())
 				}
@@ -141,12 +155,26 @@ func (f *Framework) ExpectWorkloadLabelContains(
 	).Should(gomega.BeTrue())
 }
 
-func (f *Framework) ExpectWorkloadAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) {
+func (f *Framework) ExpectWorkloadPodTemplateLabelContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+	labels ...map[string]string,
+) {
+	wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	gomega.Eventually(
+		func() bool {
+			return wlCheck.ExpectPodTemplateLabelContains(rbg, role, labels...) == nil
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue())
+}
+
+func (f *Framework) ExpectWorkloadPodTemplateAnnotationContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, annotations ...map[string]string) {
 	wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	gomega.Eventually(func() bool {
-		return wlCheck.ExpectAnnotationContains(rbg, role, annotations...) == nil
+		return wlCheck.ExpectPodTemplateAnnotationContains(rbg, role, annotations...) == nil
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 }
 

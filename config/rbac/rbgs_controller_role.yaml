@@ -159,6 +159,7 @@ rules:
     resources:
       - statefulsets/status
       - deployments/status
+      - controllerrevisions/status
     verbs:
       - get
       - patch

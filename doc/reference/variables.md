@@ -2,12 +2,14 @@
 
 ## Labels
 
- Key                                                | Description                                                             
-----------------------------------------------------|-------------------------------------------------------------------------
- rolebasedgroup.workloads.x-k8s.io/name             | The name of the RoleBasedGroup to which these resources belong.         
- rolebasedgroup.workloads.x-k8s.io/role             | The name of the role to which these resources belong.                   
- pod-group.scheduling.sigs.k8s.io/name              | The name of the podGroup for gang scheduling.                           
- rolebasedgroup.workloads.x-k8s.io/group-unique-key | The unique key of the group. Used as match label for topology affinity. 
+ Key                                                                | Description                                                             
+--------------------------------------------------------------------|-------------------------------------------------------------------------
+ rolebasedgroup.workloads.x-k8s.io/name                             | The name of the RoleBasedGroup to which these resources belong.         
+ rolebasedgroup.workloads.x-k8s.io/role                             | The name of the role to which these resources belong.                   
+ pod-group.scheduling.sigs.k8s.io/name                              | The name of the podGroup for gang scheduling.                           
+ rolebasedgroup.workloads.x-k8s.io/group-unique-key                 | The unique key of the group. Used as match label for topology affinity. 
+ rolebasedgroup.workloads.x-k8s.io/controller-revision-hash         | The version hash corresponding to the RBG object, used to determine whether the RBG object has changed.
+ rolebasedgroup.workloads.x-k8s.io/role-revision-hash-\<role-name\> | The version hash corresponding to the specific RBG role, used to determine whether the current role has changed.
 
 ## Annotations
 

@@ -43,8 +43,8 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 
 func (r *StatefulSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-) error {
-	if err := r.reconcileStatefulSet(ctx, rbg, role); err != nil {
+	revisionKey string) error {
+	if err := r.reconcileStatefulSet(ctx, rbg, role, revisionKey); err != nil {
 		return err
 	}
 
@@ -54,6 +54,7 @@ func (r *StatefulSetReconciler) Reconciler(
 func (r *StatefulSetReconciler) reconcileStatefulSet(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	revisionKey string,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling sts workload")
@@ -71,7 +72,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return err
 	}
 
-	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts)
+	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct statefulset apply configuration")
 		return err
@@ -87,18 +88,28 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return fmt.Errorf("convert stsApplyConfig to sts error: %s", err.Error())
 	}
 
-	equal, err := semanticallyEqualStatefulSet(oldSts, newSts, false)
+	// the err value was used to pass the differences between the old and new objects,
+	// not to indicate an actual processing error.
+	semanticallyEqual, err := semanticallyEqualStatefulSet(oldSts, newSts, false)
 	if err != nil {
 		logger.Info(fmt.Sprintf("sts not equal, diff: %s", err.Error()))
 	}
 
-	stsUpdated := !equal
-	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated)
+	roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+	revisionHashEqual := newSts.Labels[roleHashKey] == oldSts.Labels[roleHashKey]
+	if !revisionHashEqual {
+		logger.Info(fmt.Sprintf("sts hash not equal, old: %s, new: %s",
+			oldSts.Labels[roleHashKey], newSts.Labels[roleHashKey]))
+	}
+
+	stsUpdated := !semanticallyEqual || !revisionHashEqual
+	roleCommonLabels := rbg.GetCommonLabelsFromRole(role)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated, roleCommonLabels)
 	if err != nil {
 		return err
 	}
 
-	if equal && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
+	if semanticallyEqual && revisionHashEqual && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
 		*oldSts.Spec.Replicas == *role.Replicas {
 		logger.Info("sts equal, skip reconcile")
 		return nil
@@ -151,6 +162,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 func (r *StatefulSetReconciler) rollingUpdateParameters(
 	ctx context.Context,
 	role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool,
+	roleCommonLabels map[string]string,
 ) (stsPartition int32, replicas int32, err error) {
 	logger := log.FromContext(ctx)
 	roleReplicas := *role.Replicas
@@ -213,7 +225,7 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 		return 0, roleReplicas, nil
 	}
 
-	states, err := r.getReplicaStates(ctx, sts)
+	states, err := r.getReplicaStates(ctx, sts, roleCommonLabels)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -273,15 +285,18 @@ type replicaState struct {
 	ready   bool
 }
 
-func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv1.StatefulSet) ([]replicaState, error) {
+func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv1.StatefulSet, roleCommonLabels map[string]string) ([]replicaState, error) {
 	logger := log.FromContext(ctx)
+	if sts == nil || sts.UID == "" {
+		return nil, fmt.Errorf("statefulset has not been created")
+	}
 
 	states := make([]replicaState, *sts.Spec.Replicas)
 	sortedPods := make([]corev1.Pod, *sts.Spec.Replicas)
 
-	podSelector := client.MatchingLabels(sts.Labels)
+	podSelector := sts.Spec.Selector.MatchLabels
 	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList, podSelector, client.InNamespace(sts.Namespace)); err != nil {
+	if err := r.client.List(ctx, &podList, client.MatchingLabels(podSelector), client.InNamespace(sts.Namespace)); err != nil {
 		return nil, err
 	}
 	for i, pod := range podList.Items {
@@ -295,7 +310,7 @@ func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv
 		sortedPods[idx] = podList.Items[i]
 	}
 
-	highestRevision, err := r.getHighestRevision(ctx, sts)
+	highestRevision, err := r.getHighestRevision(ctx, sts, roleCommonLabels)
 	if err != nil {
 		logger.Error(fmt.Errorf("get sts highest controller revision error"), "sts", sts.Name)
 		return nil, err
@@ -430,6 +445,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 	oldSts *appsv1.StatefulSet,
+	revisionKey string,
 ) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
 	if oldSts.UID != "" {
@@ -444,6 +460,8 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	if err != nil {
 		return nil, err
 	}
+	stsLabel := maps.Clone(matchLabels)
+	stsLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(rbg.GetWorkloadName(role), rbg.Namespace).
@@ -459,7 +477,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 				),
 		).
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(matchLabels).
+		WithLabels(stsLabel).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).
@@ -581,11 +599,11 @@ func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(
 }
 
 func (r *StatefulSetReconciler) getHighestRevision(
-	ctx context.Context, sts *appsv1.StatefulSet,
+	ctx context.Context, sts *appsv1.StatefulSet, roleCommonLabels map[string]string,
 ) (*appsv1.ControllerRevision, error) {
 	selector, err := v1.LabelSelectorAsSelector(
 		&v1.LabelSelector{
-			MatchLabels: sts.Labels,
+			MatchLabels: roleCommonLabels,
 		},
 	)
 	if err != nil {

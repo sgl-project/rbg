@@ -10,6 +10,8 @@ const (
 	Succeed                    = "Succeed"
 	FailedUpdateStatus         = "FailedUpdateStatus"
 	FailedCreatePodGroup       = "FailedCreatePodGroup"
+	FailedCreateRevision       = "FailedCreateRevision"
+	SucceedCreateRevision      = "SucceedCreateRevision"
 )
 
 // rbg-scaling-adapter events

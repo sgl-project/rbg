@@ -15,6 +15,7 @@
     - [Gang Scheduling](features/gang-scheduling.md)
     - [Monitoring](features/monitoring.md)
     - [Exclusive Topology](features/exclusive-topology.md)
+    - [Revision](features/revision.md)
 - Reference
     - [Labels, Annotations and Environment Variables](reference/variables.md)
     - [RoleBasedGroup API](reference/api.md)

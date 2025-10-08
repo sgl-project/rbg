@@ -21,6 +21,8 @@ import (
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
+var expectedRevisionHash = "revision-hash-value"
+
 // TestDeploymentReconciler_Reconciler tests the Reconciler method of DeploymentReconciler
 func TestDeploymentReconciler_Reconciler(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -119,7 +121,7 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 				}
 
 				ctx := context.Background()
-				err := r.Reconciler(ctx, tt.rbg, tt.role)
+				err := r.Reconciler(ctx, tt.rbg, tt.role, expectedRevisionHash)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf("DeploymentReconciler.Reconciler() error = %v, expectError %v", err, tt.expectError)
@@ -148,6 +150,12 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 						if err != nil {
 							t.Errorf("Expected deployment to exist for update, but got error: %v", err)
 						}
+					}
+
+					roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, tt.role.Name)
+					if expectedRevisionHash != deploy.Labels[roleHashKey] {
+						t.Errorf("Expected revision hash %s, got %s",
+							expectedRevisionHash, deploy.Labels[roleHashKey])
 					}
 				}
 			},
@@ -644,7 +652,7 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 				}
 
 				ctx := context.Background()
-				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy)
+				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, "revision-key")
 
 				if (err != nil) != tt.expectError {
 					t.Errorf(
