@@ -146,22 +146,6 @@ func NewRevision(ctx context.Context, client client.Client,
 	revision := int64(1)
 	if currentRevision != nil {
 		revision = currentRevision.Revision + 1
-	} else {
-		selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		}})
-		if err != nil {
-			return nil, err
-		}
-		revisions, err := ListRevisions(ctx, client, rbg, selector)
-		if err != nil {
-			return nil, err
-		}
-		highestRevision := GetHighestRevision(revisions)
-
-		if highestRevision != nil {
-			revision = highestRevision.Revision + 1
-		}
 	}
 
 	rawPatch, err := getRBGPatch(rbg)

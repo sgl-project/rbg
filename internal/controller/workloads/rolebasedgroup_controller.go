@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -102,8 +103,12 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	logger := log.FromContext(ctx).WithValues("rbg", klog.KObj(rbg))
 	ctx = ctrl.LoggerInto(ctx, logger)
 	logger.Info("Start reconciling")
+	start := time.Now()
+	defer func() {
+		logger.Info("Finished reconciling", "duration", time.Since(start))
+	}()
 
-	currentRevision, err := r.getOrCreateRevisionIfNotExist(ctx, rbg)
+	currentRevision, err := r.getCurrentRevision(ctx, rbg)
 	if err != nil {
 		logger.Error(err, "Failed get or create revision")
 		return ctrl.Result{}, err
@@ -394,7 +399,7 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 
 	return r.client.Create(ctx, rbgScalingAdapter)
 }
-func (r *RoleBasedGroupReconciler) getOrCreateRevisionIfNotExist(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (*appsv1.ControllerRevision, error) {
+func (r *RoleBasedGroupReconciler) getCurrentRevision(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (*appsv1.ControllerRevision, error) {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{
 			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
@@ -408,22 +413,7 @@ func (r *RoleBasedGroupReconciler) getOrCreateRevisionIfNotExist(ctx context.Con
 		return nil, err
 	}
 	revision := utils.GetHighestRevision(revisions)
-	if revision != nil {
-		return revision, nil
-	}
-	revision, err = utils.NewRevision(ctx, r.client, rbg, nil)
-	if err != nil {
-		return revision, err
-	}
-	err = r.client.Create(ctx, revision)
-	if err == nil {
-		r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision,
-			"Successful create revision for RoleBasedGroup")
-	} else {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision,
-			"Failed create revision for RoleBasedGroup")
-	}
-	return revision, err
+	return revision, nil
 }
 
 func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
@@ -589,7 +579,7 @@ func WorkloadPredicate() predicate.Funcs {
 				return false
 			}
 
-			ctrl.Log.V(1).Info("enqueue: workload delete event", "rbg", klog.KObj(e.Object))
+			ctrl.Log.Info("enqueue: workload delete event", "rbg", klog.KObj(e.Object))
 			return true
 		},
 		GenericFunc: func(e event.TypedGenericEvent[client.Object]) bool {
