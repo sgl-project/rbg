@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oss-secret
+stringData:
+  akId: <your-oss-ak>
+  akSecret: <your-oss-sk>
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llm-model
+  labels:
+    alicloud-pvname: llm-model
+spec:
+  capacity:
+    storage: 30Gi 
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  csi:
+    driver: ossplugin.csi.alibabacloud.com    # take Alibaba Cloud ACK CSI as an example
+    volumeHandle: llm-model
+    nodePublishSecretRef:
+      name: oss-secret
+      namespace: default
+    volumeAttributes:
+      bucket: <your-bucket-name>
+      url: <your-bucket-endpoint>
+      otherOpts: "-o umask=022 -o max_stat_cache_size=0 -o allow_other"
+      path: <your-model-path> # eg. /Qwen3-32B/
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-model
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 30Gi
+  selector:
+    matchLabels:
+      alicloud-pvname: llm-model
