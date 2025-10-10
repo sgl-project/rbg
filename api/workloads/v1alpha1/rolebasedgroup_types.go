@@ -276,6 +276,7 @@ type RoleStatus struct {
 	Replicas int32 `json:"replicas"`
 }
 
+// +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"

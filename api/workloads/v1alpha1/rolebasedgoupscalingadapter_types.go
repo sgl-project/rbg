@@ -47,6 +47,7 @@ type AdapterScaleTargetRef struct {
 	Role string `json:"role"`
 }
 
+// +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
