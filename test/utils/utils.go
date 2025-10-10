@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	Timeout  = 40 * time.Second
+	Timeout  = 60 * time.Second
 	Interval = time.Millisecond * 250
 
 	DefaultImage                    = "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"

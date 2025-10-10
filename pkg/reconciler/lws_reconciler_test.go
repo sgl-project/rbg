@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,7 +43,8 @@ func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
 
 	// Test successful reconciliation
 	ctx := context.Background()
-	err := reconciler.Reconciler(ctx, rbg, &lwsRole)
+	expectedRevisionHash := "revision-hash-value"
+	err := reconciler.Reconciler(ctx, rbg, &lwsRole, expectedRevisionHash)
 	assert.NoError(t, err)
 
 	// Verify LWS was created
@@ -56,6 +58,7 @@ func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int32(1), *lws.Spec.Replicas)
 	assert.Equal(t, int32(2), *lws.Spec.LeaderWorkerTemplate.Size)
+	assert.Equal(t, expectedRevisionHash, lws.Labels[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, lwsRole.Name)])
 }
 
 // TestLeaderWorkerSetReconciler_ConstructRoleStatus tests the ConstructRoleStatus method

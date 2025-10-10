@@ -75,6 +75,30 @@ func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(
 		return fmt.Errorf("failed to get existing lws: %w", err)
 	}
 
+	for key, value := range labels[0] {
+		if !utils.MapContains(lws.Labels, key, value) {
+			return fmt.Errorf("lws labels do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
+func (s *LeaderWorkerSetEqualChecker) ExpectPodTemplateLabelContains(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string,
+) error {
+	// 1. check lws exists
+	lws := &lwsv1.LeaderWorkerSet{}
+	err := s.client.Get(
+		s.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, lws,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get existing lws: %w", err)
+	}
+
 	var leaderLabel, workerLabel map[string]string
 
 	if len(labels) == 0 {
@@ -102,7 +126,7 @@ func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(
 	return nil
 }
 
-func (s *LeaderWorkerSetEqualChecker) ExpectAnnotationContains(
+func (s *LeaderWorkerSetEqualChecker) ExpectPodTemplateAnnotationContains(
 	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
 	annotations ...map[string]string,
 ) error {

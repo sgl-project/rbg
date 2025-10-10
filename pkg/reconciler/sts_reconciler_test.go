@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -69,7 +70,8 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					client: client,
 				}
 
-				err := r.Reconciler(context.Background(), tt.rbg, tt.role)
+				expectedRevisionHash := "revision-hash-value"
+				err := r.Reconciler(context.Background(), tt.rbg, tt.role, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -85,6 +87,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					)
 					assert.NoError(t, err)
 					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), sts.Name)
+					assert.Equal(t, expectedRevisionHash, sts.Labels[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, tt.role.Name)])
 
 					// Check if Service was created
 					svc := &corev1.Service{}
@@ -414,6 +417,12 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	_ = workloadsv1alpha1.AddToScheme(schema)
 	_ = appsv1.AddToScheme(schema)
 	_ = corev1.AddToScheme(schema)
+	// the same as *RoleBasedGroup.GetCommonLabelsFromRole()
+	commonLabels := map[string]string{
+		workloadsv1alpha1.SetNameLabelKey:            "test-rbg",
+		workloadsv1alpha1.SetRoleLabelKey:            "test-role",
+		workloadsv1alpha1.SetGroupUniqueHashLabelKey: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj().GenGroupUniqueKey(),
+	}
 
 	tests := []struct {
 		name            string
@@ -440,15 +449,13 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					Name:      "test-rbg-test-role",
 					Namespace: "default",
 					UID:       "sts-uid",
-					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-						workloadsv1alpha1.SetRoleLabelKey: "test-role",
-					},
+					Labels:    commonLabels,
 					Annotations: map[string]string{
 						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: commonLabels},
 					Replicas: ptr.To(int32(4)),
 				},
 				Status: appsv1.StatefulSetStatus{
@@ -464,12 +471,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-0",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "0",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "0",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -485,12 +490,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-1",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "1",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "1",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -506,12 +509,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-2",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "2",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "2",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -527,12 +528,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-3",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "3",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "3",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -567,15 +566,13 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					Name:      "test-rbg-test-role",
 					Namespace: "default",
 					UID:       "sts-uid",
-					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-						workloadsv1alpha1.SetRoleLabelKey: "test-role",
-					},
+					Labels:    commonLabels,
 					Annotations: map[string]string{
 						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: commonLabels},
 					Replicas: ptr.To(int32(6)),
 					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 						Type: appsv1.RollingUpdateStatefulSetStrategyType,
@@ -596,12 +593,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-0",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "0",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "0",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -617,12 +612,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-1",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "1",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "1",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -638,12 +631,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-2",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "2",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "2",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -659,12 +650,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-3",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "3",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "3",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -680,12 +669,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-4",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "newRevision",
-								"apps.kubernetes.io/pod-index":    "4",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "newRevision",
+								"apps.kubernetes.io/pod-index": "4",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -701,12 +688,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-5",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "newRevision",
-								"apps.kubernetes.io/pod-index":    "5",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "newRevision",
+								"apps.kubernetes.io/pod-index": "5",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -740,15 +725,15 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					Name:      "test-rbg-test-role",
 					Namespace: "default",
 					UID:       "sts-uid",
-					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-						workloadsv1alpha1.SetRoleLabelKey: "test-role",
-					},
+					Labels:    commonLabels,
 					Annotations: map[string]string{
 						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: commonLabels,
+					},
 					Replicas: ptr.To(int32(6)),
 					UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 						Type: appsv1.RollingUpdateStatefulSetStrategyType,
@@ -769,12 +754,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-0",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "0",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "0",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -790,12 +773,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-1",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "oldRevision",
-								"apps.kubernetes.io/pod-index":    "1",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "oldRevision",
+								"apps.kubernetes.io/pod-index": "1",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -811,12 +792,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-2",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "newRevision",
-								"apps.kubernetes.io/pod-index":    "2",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "newRevision",
+								"apps.kubernetes.io/pod-index": "2",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -832,12 +811,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-3",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "newRevision",
-								"apps.kubernetes.io/pod-index":    "3",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "newRevision",
+								"apps.kubernetes.io/pod-index": "3",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -853,12 +830,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-4",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "newRevision",
-								"apps.kubernetes.io/pod-index":    "4",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "newRevision",
+								"apps.kubernetes.io/pod-index": "4",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -874,12 +849,10 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-rbg-test-role-5",
 							Namespace: "default",
-							Labels: map[string]string{
-								"controller-revision-hash":        "newRevision",
-								"apps.kubernetes.io/pod-index":    "5",
-								workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-								workloadsv1alpha1.SetRoleLabelKey: "test-role",
-							},
+							Labels: mergeLabels(commonLabels, map[string]string{
+								"controller-revision-hash":     "newRevision",
+								"apps.kubernetes.io/pod-index": "5",
+							}),
 						},
 						Status: corev1.PodStatus{
 							Phase: corev1.PodRunning,
@@ -904,10 +877,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "oldRevision",
 			Namespace: "default",
-			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-				workloadsv1alpha1.SetRoleLabelKey: "test-role",
-			},
+			Labels:    commonLabels,
 		},
 		Revision: 1,
 	}
@@ -915,10 +885,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "newRevision",
 			Namespace: "default",
-			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-				workloadsv1alpha1.SetRoleLabelKey: "test-role",
-			},
+			Labels:    commonLabels,
 		},
 		Revision: 2,
 	}
@@ -939,8 +906,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				retPartition, retReplicas, retErr := r.rollingUpdateParameters(
-					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated,
-				)
+					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated, rbg.GetCommonLabelsFromRole(&rbg.Spec.Roles[0]))
 
 				if tt.wantErr != (retErr != nil) {
 					t.Errorf("rollingUpdateParameters() error = %v, wantErr %v", retErr, tt.wantErr)
@@ -1060,4 +1026,14 @@ func Test_calculateContinuousReadyReplicas(t *testing.T) {
 			},
 		)
 	}
+}
+
+func mergeLabels(labels ...map[string]string) map[string]string {
+	result := make(map[string]string)
+	for _, label := range labels {
+		for k, v := range label {
+			result[k] = v
+		}
+	}
+	return result
 }

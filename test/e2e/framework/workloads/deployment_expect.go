@@ -59,7 +59,29 @@ func (d *DeploymentEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGrou
 	return nil
 }
 
-func (d *DeploymentEqualChecker) ExpectLabelContains(
+func (d *DeploymentEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, labels ...map[string]string) error {
+	// check deployment exist
+	deployment := &appsv1.Deployment{}
+	err := d.client.Get(
+		d.ctx, client.ObjectKey{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		}, deployment,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get existing deployment: %w", err)
+	}
+
+	for key, value := range labels[0] {
+		if !utils.MapContains(deployment.Labels, key, value) {
+			return fmt.Errorf("deployment labels do not have key %s, value: %s", key, value)
+		}
+	}
+
+	return nil
+}
+
+func (d *DeploymentEqualChecker) ExpectPodTemplateLabelContains(
 	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
 	labels ...map[string]string,
 ) error {
@@ -84,7 +106,7 @@ func (d *DeploymentEqualChecker) ExpectLabelContains(
 	return nil
 }
 
-func (d *DeploymentEqualChecker) ExpectAnnotationContains(
+func (d *DeploymentEqualChecker) ExpectPodTemplateAnnotationContains(
 	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
 	annotations ...map[string]string,
 ) error {

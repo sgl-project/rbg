@@ -141,7 +141,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					podGroupLabel := map[string]string{
 						scheduler.KubePodGroupLabelKey: rbg.Name,
 					}
-					f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], podGroupLabel)
+					f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], podGroupLabel)
 				},
 			)
 			ginkgo.It(
@@ -184,7 +184,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					podGroupAnnotation := map[string]string{
 						scheduler.VolcanoPodGroupAnnotationKey: rbg.Name,
 					}
-					f.ExpectWorkloadAnnotationContains(rbg, rbg.Spec.Roles[0], podGroupAnnotation)
+					f.ExpectWorkloadPodTemplateAnnotationContains(rbg, rbg.Spec.Roles[0], podGroupAnnotation)
 				},
 			)
 

@@ -27,7 +27,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 		})
 		f.ExpectRbgEqual(rbg)
 
-		f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
+		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
 	//nolint:dupl
@@ -52,8 +52,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 		})
 		f.ExpectRbgEqual(rbg)
 
-		f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
-
+		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
 	ginkgo.It("deploy with restartPolicy", func() {

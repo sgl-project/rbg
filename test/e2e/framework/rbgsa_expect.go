@@ -2,6 +2,7 @@ package framework
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -130,9 +131,13 @@ func expectRbgScalingAdapterEqual(rbgScalingAdapter *v1alpha1.RoleBasedGroupScal
 			*rbgScalingAdapter.Spec.Replicas, *expectedReplicas)
 	}
 
-	if *rbgScalingAdapter.Status.Replicas != *expectedReplicas {
+	if rbgScalingAdapter.Status.Replicas == nil || *(rbgScalingAdapter.Status.Replicas) != *expectedReplicas {
+		currentReplicas := "nil"
+		if rbgScalingAdapter.Status.Replicas != nil {
+			currentReplicas = strconv.Itoa(int(*rbgScalingAdapter.Status.Replicas))
+		}
 		return fmt.Errorf("ScalingAdapter.Spec.Replicas %v does not match expectedReplicas %v",
-			*rbgScalingAdapter.Status.Replicas, *expectedReplicas)
+			currentReplicas, *expectedReplicas)
 	}
 
 	if *role.Replicas != *expectedReplicas {

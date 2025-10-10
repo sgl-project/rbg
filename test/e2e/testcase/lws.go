@@ -42,7 +42,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		})
 		f.ExpectRbgEqual(rbg)
 
-		f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
+		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
 	ginkgo.It("update lws leaderTemplate & workerTemplate", func() {
@@ -60,8 +60,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		})
 		f.ExpectRbgEqual(rbg)
 
-		f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], updateLabel, updateLabel)
-
+		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel, updateLabel)
 	})
 
 	ginkgo.It("lws with rollingUpdate", func() {
