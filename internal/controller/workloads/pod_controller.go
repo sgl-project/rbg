@@ -186,7 +186,6 @@ func ToConditionApplyConfigurations(conds []metav1.Condition) []*metav1ac.Condit
 		out = append(out, metav1ac.Condition().
 			WithType(c.Type).
 			WithStatus(c.Status).
-			WithLastTransitionTime(c.LastTransitionTime).
 			WithReason(c.Reason).
 			WithMessage(c.Message).
 			WithLastTransitionTime(c.LastTransitionTime))
