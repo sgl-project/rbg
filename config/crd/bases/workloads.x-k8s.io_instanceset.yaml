@@ -1,0 +1,324 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: instanceset.workloads.x-k8s.io
+spec:
+  group: workloads.x-k8s.io
+  names:
+    kind: InstanceSet
+    listKind: InstanceSetList
+    plural: instanceset
+    shortNames:
+    - is
+    singular: instanceset
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: The desired number of Instances.
+      jsonPath: .spec.replicas
+      name: DESIRED
+      type: integer
+    - description: The number of Instances updated.
+      jsonPath: .status.updatedReplicas
+      name: UPDATED
+      type: integer
+    - description: The number of Instances updated and ready.
+      jsonPath: .status.updatedReadyReplicas
+      name: UPDATED_READY
+      type: integer
+    - description: The number of Instances ready.
+      jsonPath: .status.readyReplicas
+      name: READY
+      type: integer
+    - description: The number of currently all Instances.
+      jsonPath: .status.replicas
+      name: TOTAL
+      type: integer
+    - description: CreationTimestamp is a timestamp representing the server time when
+        this object was created. It is not guaranteed to be set in happens-before
+        order across separate operations. Clients may not set this value. It is represented
+        in RFC3339 form and is in UTC.
+      jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    - description: The selector of currently InstanceSet.
+      jsonPath: .status.labelSelector
+      name: SELECTOR
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: InstanceSet is the Schema for the InstanceSet API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: InstanceSetSpec defines the desired state of InstanceSet
+            properties:
+              instanceTemplate:
+                description: Components describes the Instance components that will
+                  be created.
+                x-kubernetes-preserve-unknown-fields: true
+              minReadySeconds:
+                description: |-
+                  Minimum number of seconds for which a newly created Instances should be ready
+                  without any of its container crashing, for it to be considered available.
+                format: int32
+                type: integer
+              replicas:
+                description: |-
+                  Replicas is the desired number of replicas of the given Template.
+                  These are replicas in the sense that they are instantiations of the
+                  same Template.
+                  If unspecified, defaults to 1.
+                format: int32
+                type: integer
+              revisionHistoryLimit:
+                description: |-
+                  RevisionHistoryLimit is the maximum number of revisions that will
+                  be maintained in the InstanceSet's revision history.
+                format: int32
+                type: integer
+              scaleStrategy:
+                description: |-
+                  ScaleStrategy indicates the ScaleStrategy that will be employed to
+                  create and delete Instances in the InstanceSet.
+                properties:
+                  instanceToDelete:
+                    description: |-
+                      InstanceToDelete is the names of Instance should be deleted.
+                      Note that this list will be truncated for non-existing instance names.
+                    items:
+                      type: string
+                    type: array
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      The maximum number of Instances that can be unavailable for scaled Instances.
+                      This field can control the changes rate of replicas for InstanceSet so as to minimize the impact for users' service.
+                    x-kubernetes-int-or-string: true
+                type: object
+              selector:
+                description: |-
+                  Selector is a label query over Instances that should match the replica count.
+                  It must match the Instances template's labels.
+                  More info: https://kubernetes.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: matchLabels is a map of {key,value} pairs.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              updateStrategy:
+                description: |-
+                  UpdateStrategy indicates the UpdateStrategy that will be employed to
+                  update Instances in the InstanceSet when a revision is made to Template.
+                properties:
+                  inPlaceUpdateStrategy:
+                    description: InPlaceUpdateStrategy contains strategies for in-place
+                      update.
+                    properties:
+                      gracePeriodSeconds:
+                        description: |-
+                          GracePeriodSeconds is the timespan between set Pod status to not-ready and update images in Pod spec
+                          when in-place update a Pod.
+                        format: int32
+                        type: integer
+                    type: object
+                  maxSurge:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: The maximum number of Instances that can be scheduled
+                      above the desired replicas during update or specified delete.
+                    x-kubernetes-int-or-string: true
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      The maximum number of Instances that can be unavailable during update or scale.
+                      Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
+                    x-kubernetes-int-or-string: true
+                  partition:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      Partition is the desired number of Instances in old revisions.
+                      Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
+                    x-kubernetes-int-or-string: true
+                  paused:
+                    description: |-
+                      Paused indicates that the InstanceSet is paused.
+                      Default value is false
+                    type: boolean
+                  type:
+                    description: |-
+                      Type indicates the type of the InstanceSetUpdateStrategy.
+                      Default is ReCreate.
+                    type: string
+                type: object
+            required:
+            - instanceTemplate
+            - selector
+            type: object
+          status:
+            description: InstanceSetStatus defines the observed state of InstanceSet
+            properties:
+              availableReplicas:
+                description: AvailableReplicas is the number of Instances created
+                  by the InstanceSet controller that have a Ready Condition for at
+                  least minReadySeconds.
+                format: int32
+                type: integer
+              collisionCount:
+                description: CollisionCount is the count of hash collisions for the
+                  InstanceSet.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions represents the latest available observations
+                  of a InstanceSet's current state.
+                items:
+                  description: InstanceSetCondition describes the state of a InstanceSet
+                    at a certain point.
+                  properties:
+                    lastTransitionTime:
+                      description: Last time the condition transitioned from one status
+                        to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: A human-readable message indicating details about
+                        the transition.
+                      type: string
+                    reason:
+                      description: The reason for the condition's last transition.
+                      type: string
+                    status:
+                      description: Status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: Type of InstanceSet condition.
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              currentRevision:
+                description: currentRevision, if not empty, indicates the current
+                  revision version of the InstanceSet.
+                type: string
+              expectedUpdatedReplicas:
+                description: |-
+                  ExpectedUpdatedReplicas is the number of Instances that should be updated by InstanceSet controller.
+                  This field is calculated via Replicas - Partition.
+                format: int32
+                type: integer
+              labelSelector:
+                description: LabelSelector is label selectors for query over Instances
+                  that should match the replica count used by HPA.
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this InstanceSet. It corresponds to the
+                  InstanceSet's generation, which is updated on mutation by the API Server.
+                format: int64
+                type: integer
+              readyReplicas:
+                description: ReadyReplicas is the number of Instances created by the
+                  InstanceSet controller that have a Ready Condition.
+                format: int32
+                type: integer
+              replicas:
+                description: Replicas is the number of Instances created by the InstanceSet
+                  controller.
+                format: int32
+                type: integer
+              updateRevision:
+                description: UpdateRevision, if not empty, indicates the latest revision
+                  of the InstanceSet.
+                type: string
+              updatedReadyReplicas:
+                description: |-
+                  UpdatedReadyReplicas is the number of Instances created by the InstanceSet controller from the InstanceSet version
+                  indicated by updateRevision and have a Ready Condition.
+                format: int32
+                type: integer
+              updatedReplicas:
+                description: |-
+                  UpdatedReplicas is the number of Instances created by the InstanceSet controller from the InstanceSet version
+                  indicated by updateRevision.
+                format: int32
+                type: integer
+            required:
+            - availableReplicas
+            - readyReplicas
+            - replicas
+            - updatedReadyReplicas
+            - updatedReplicas
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      scale:
+        labelSelectorPath: .status.labelSelector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
+      status: {}

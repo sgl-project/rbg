@@ -49,6 +49,27 @@ const (
 	SetRBGIndexLabelKey = RBGSetPrefix + "rbg-index"
 )
 
+// InstanceSet labels and annotations
+const (
+	InstanceSetPrefix = "instanceset.workloads.x-k8s.io/"
+
+	// InstanceIDLabelKey is a unique id for Instance and its Pods.
+	// Each Instance and the Pods it owns have the same instance-id.
+	InstanceIDLabelKey = InstanceSetPrefix + "instance-id"
+
+	// InstanceNameLabelKey is the name of the Instance.
+	// Each Instance and the Pods it owns have the same instance-name.
+	InstanceNameLabelKey = InstanceSetPrefix + "instance-name"
+
+	// InstanceComponentID is a unique id for Instance component and its Pods.
+	// Each Instance component and the Pods it owns have the same instance-component-id.
+	InstanceComponentID = InstanceSetPrefix + "instance-component-id"
+
+	// InstanceComponentName is the name of the Instance component.
+	// Each Instance component and the Pods it owns have the same instance-component-name.
+	InstanceComponentName = InstanceSetPrefix + "instance-component-name"
+)
+
 type RolloutStrategyType string
 
 const (
