@@ -128,7 +128,7 @@ func (r *PodReconciler) setRestartCondition(
 
 	setCondition(rbg, restartCondition)
 
-	rbgApplyConfig := ToRoleBasedGroupApplyConfiguration(rbg)
+	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 }
@@ -157,7 +157,7 @@ func setCondition(rbg *workloadsv1alpha1.RoleBasedGroup, newCondition metav1.Con
 	}
 }
 
-func ToRoleBasedGroupApplyConfiguration(rbg *workloadsv1alpha1.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha1.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
 	if rbg == nil {
 		return nil
 	}

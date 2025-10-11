@@ -294,7 +294,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	// update rbg status
-	rbgApplyConfig := ToRoleBasedGroupApplyConfiguration(rbg)
+	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 
