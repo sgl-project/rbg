@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -20,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/client-go/applyconfiguration"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -127,8 +128,7 @@ func (r *PodReconciler) setRestartCondition(
 
 	setCondition(rbg, restartCondition)
 
-	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
-		WithStatus(applyconfiguration.RbgStatus().WithRoleStatuses(rbg.Status.RoleStatuses).WithConditions(rbg.Status.Conditions))
+	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 }
@@ -155,6 +155,42 @@ func setCondition(rbg *workloadsv1alpha1.RoleBasedGroup, newCondition metav1.Con
 	if !found {
 		rbg.Status.Conditions = append(rbg.Status.Conditions, newCondition)
 	}
+}
+
+func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha1.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+	if rbg == nil {
+		return nil
+	}
+	gkv := utils.GetRbgGVK()
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gkv.Kind).
+		WithAPIVersion(gkv.GroupVersion().String()).
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).WithConditions(ToConditionApplyConfigurations(rbg.Status.Conditions)...))
+	return rbgApplyConfig
+}
+
+func ToRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha1.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
+	out := make([]*applyconfiguration.RoleStatusApplyConfiguration, 0, len(roleStatus))
+	for _, rs := range roleStatus {
+		out = append(out, applyconfiguration.RoleStatus().
+			WithName(rs.Name).
+			WithReplicas(rs.Replicas).
+			WithReadyReplicas(rs.ReadyReplicas))
+	}
+	return out
+}
+
+func ToConditionApplyConfigurations(conds []metav1.Condition) []*metav1ac.ConditionApplyConfiguration {
+	out := make([]*metav1ac.ConditionApplyConfiguration, 0, len(conds))
+	for _, c := range conds {
+		out = append(out, metav1ac.Condition().
+			WithType(c.Type).
+			WithStatus(c.Status).
+			WithReason(c.Reason).
+			WithMessage(c.Message).
+			WithLastTransitionTime(c.LastTransitionTime))
+	}
+	return out
 }
 
 func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []reconcile.Request {

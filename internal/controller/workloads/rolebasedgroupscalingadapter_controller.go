@@ -42,7 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/client-go/applyconfiguration"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -122,8 +122,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			"Failed to get scale target role: %v", getTargetRoleErr,
 		)
 		if rbgScalingAdapter.Status.Phase != workloadsv1alpha1.AdapterPhaseNotBound {
-			rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
-				WithStatus(applyconfiguration.RbgScalingAdapterStatus(rbgScalingAdapter.Status).WithPhase(workloadsv1alpha1.AdapterPhaseNotBound))
+			rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
+				WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false).WithPhase(workloadsv1alpha1.AdapterPhaseNotBound))
 			if err := utils.PatchObjectApplyConfiguration(
 				ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 			); err != nil {
@@ -144,8 +144,12 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 
 	// check scale target exist succeed, init adapter status with phase bound, selector and initial replicas
 	if rbgScalingAdapter.Status.Phase != workloadsv1alpha1.AdapterPhaseBound {
-		rbgScalingAdapterSpecApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
-			WithSpec(applyconfiguration.RbgScalingAdapterSpec(rbgScalingAdapter.Spec).WithReplicas(targetRole.Replicas))
+		spec := ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(rbgScalingAdapter.Spec)
+		if targetRole.Replicas != nil {
+			spec = spec.WithReplicas(*targetRole.Replicas)
+		}
+		rbgScalingAdapterSpecApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
+			WithSpec(spec)
 
 		if err := utils.PatchObjectApplyConfiguration(
 			ctx, r.client, rbgScalingAdapterSpecApplyConfig, utils.PatchSpec,
@@ -159,11 +163,13 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			return ctrl.Result{}, err
 		}
 
-		rbgScalingAdapterStatusApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
+		status := ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false)
+		if targetRole.Replicas != nil {
+			status = status.WithReplicas(*targetRole.Replicas)
+		}
+		rbgScalingAdapterStatusApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 			WithStatus(
-				applyconfiguration.RbgScalingAdapterStatus(rbgScalingAdapter.Status).
-					WithReplicas(targetRole.Replicas, false).
-					WithPhase(workloadsv1alpha1.AdapterPhaseBound).WithSelector(selector),
+				status.WithPhase(workloadsv1alpha1.AdapterPhaseBound).WithSelector(selector),
 			)
 
 		if err := utils.PatchObjectApplyConfiguration(
@@ -197,11 +203,9 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		)
 		return ctrl.Result{}, err
 	}
-	rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).
+	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 		WithStatus(
-			applyconfiguration.RbgScalingAdapterStatus(rbgScalingAdapter.Status).WithReplicas(
-				desiredReplicas, true,
-			),
+			ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, true).WithReplicas(*desiredReplicas),
 		)
 	if err := utils.PatchObjectApplyConfiguration(
 		ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
@@ -226,7 +230,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 ) error {
 	rbgGKV := utils.GetRbgGVK()
-	rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter).WithOwnerReferences(
+	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).WithOwnerReferences(
 		metaapplyv1.OwnerReference().
 			WithAPIVersion(rbgGKV.GroupVersion().String()).
 			WithKind(rbgGKV.Kind).
@@ -235,6 +239,47 @@ func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 			WithBlockOwnerDeletion(true),
 	)
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchSpec)
+}
+
+func ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter *workloadsv1alpha1.RoleBasedGroupScalingAdapter) *applyconfiguration.RoleBasedGroupScalingAdapterApplyConfiguration {
+	if rbgScalingAdapter == nil {
+		return nil
+	}
+	gkv := utils.GetRbgScalingAdapterGVK()
+	rbgScalingAdapterApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapter(rbgScalingAdapter.Name, rbgScalingAdapter.Namespace).
+		WithKind(gkv.Kind).
+		WithAPIVersion(gkv.GroupVersion().String()).
+		WithSpec(ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(rbgScalingAdapter.Spec))
+	return rbgScalingAdapterApplyConfig
+}
+
+func ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(spec workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec) *applyconfiguration.RoleBasedGroupScalingAdapterSpecApplyConfiguration {
+	specApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapterSpec().
+		WithScaleTargetRef(
+			applyconfiguration.AdapterScaleTargetRef().
+				WithName(spec.ScaleTargetRef.Name).
+				WithRole(spec.ScaleTargetRef.Role),
+		)
+	if spec.Replicas != nil {
+		specApplyConfig = specApplyConfig.WithReplicas(*spec.Replicas)
+	}
+	return specApplyConfig
+}
+
+func ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(status workloadsv1alpha1.RoleBasedGroupScalingAdapterStatus, scale bool) *applyconfiguration.RoleBasedGroupScalingAdapterStatusApplyConfiguration {
+	statusApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapterStatus().
+		WithPhase(status.Phase).
+		WithSelector(status.Selector)
+	if status.Replicas != nil {
+		statusApplyConfig = statusApplyConfig.WithReplicas(*status.Replicas)
+	}
+	if status.LastScaleTime != nil {
+		statusApplyConfig = statusApplyConfig.WithLastScaleTime(*status.LastScaleTime)
+	}
+	if scale {
+		statusApplyConfig = statusApplyConfig.WithLastScaleTime(metav1.Now())
+	}
+	return statusApplyConfig
 }
 
 // SetupWithManager sets up the controller with the Manager.

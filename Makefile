@@ -18,6 +18,9 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+GO_CMD ?= go
+PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
+
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
@@ -28,6 +31,9 @@ CONTAINER_TOOL ?= docker
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
+
+export GO111MODULE=on
+export GOFLAGS=-mod=mod
 
 .PHONY: all
 all: build
@@ -57,8 +63,9 @@ manifests: controller-gen ## Generate WebhookConfiguration, CustomResourceDefini
 	cp config/crd/bases/* deploy/helm/rbgs/crds/
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	./hack/update-codegen.sh $(GO_CMD) $(PROJECT_DIR)/bin
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -264,3 +271,14 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+
+# Use same code-generator version as k8s.io/api
+CODEGEN_VERSION := $(shell $(GO_CMD) list -m -f '{{.Version}}' k8s.io/api)
+CODEGEN = $(shell pwd)/bin/code-generator
+CODEGEN_ROOT = $(shell $(GO_CMD) env GOMODCACHE)/k8s.io/code-generator@$(CODEGEN_VERSION)
+.PHONY: code-generator
+code-generator:
+	@GOBIN=$(PROJECT_DIR)/bin GO111MODULE=on $(GO_CMD) install k8s.io/code-generator/cmd/client-gen@$(CODEGEN_VERSION)
+	cp -f $(CODEGEN_ROOT)/generate-groups.sh $(PROJECT_DIR)/bin/
+	cp -f $(CODEGEN_ROOT)/generate-internal-groups.sh $(PROJECT_DIR)/bin/
+	cp -f $(CODEGEN_ROOT)/kube_codegen.sh $(PROJECT_DIR)/bin/
