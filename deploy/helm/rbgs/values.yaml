@@ -5,7 +5,7 @@ replicaCount: 2
 image:
   repository: rolebasedgroup/rbgs-controller
   pullPolicy: IfNotPresent
-  tag: v0.3.2-4c0f843
+  tag: v0.4.0-aca872d
 
 imagePullSecrets: []
 
@@ -39,6 +39,6 @@ crdUpgrade:
   # This sets the time-to-live (TTL) for crd-upgrade jobs. Default is 259200 seconds (3 days).
   ttlSecondsAfterFinished: 259200
   repository: rolebasedgroup/rbgs-upgrade-crd
-  tag: v0.3.2-4c0f843
+  tag: v0.4.0-aca872d
 
 
