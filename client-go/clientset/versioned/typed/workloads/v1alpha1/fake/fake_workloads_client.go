@@ -31,6 +31,10 @@ func (c *FakeWorkloadsV1alpha1) ClusterEngineRuntimeProfiles(namespace string) v
 	return newFakeClusterEngineRuntimeProfiles(c, namespace)
 }
 
+func (c *FakeWorkloadsV1alpha1) Instances(namespace string) v1alpha1.InstanceInterface {
+	return newFakeInstances(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha1) RoleBasedGroups(namespace string) v1alpha1.RoleBasedGroupInterface {
 	return newFakeRoleBasedGroups(c, namespace)
 }

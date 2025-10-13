@@ -7,6 +7,9 @@ github.com/Masterminds/semver/v3
 # github.com/antlr4-go/antlr/v4 v4.13.0
 ## explicit; go 1.20
 github.com/antlr4-go/antlr/v4
+# github.com/appscode/jsonpatch v1.0.1
+## explicit
+github.com/appscode/jsonpatch
 # github.com/beorn7/perks v1.0.1
 ## explicit; go 1.11
 github.com/beorn7/perks/quantile
