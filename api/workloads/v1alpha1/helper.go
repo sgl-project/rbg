@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"unicode"
 )
 
 func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]string {
@@ -37,6 +38,14 @@ func (rbg *RoleBasedGroup) GetGroupSize() int {
 
 func (rbg *RoleBasedGroup) GetWorkloadName(role *RoleSpec) string {
 	return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
+}
+
+func (rbg *RoleBasedGroup) GetServiceName(role *RoleSpec) string {
+	if unicode.IsDigit(rune(rbg.Name[0])) {
+		return fmt.Sprintf("s-%s-%s", rbg.Name, role.Name)
+	} else {
+		return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
+	}
 }
 
 func (rbg *RoleBasedGroup) GetRole(roleName string) (*RoleSpec, error) {

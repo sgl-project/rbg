@@ -419,7 +419,7 @@ func (r *StatefulSetReconciler) reconcileHeadlessService(
 	}
 
 	oldSvc := &corev1.Service{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldSvc)
+	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetServiceName(role), Namespace: rbg.Namespace}, oldSvc)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -500,7 +500,7 @@ func (r *StatefulSetReconciler) constructServiceApplyConfiguration(
 		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
 		workloadsv1alpha1.SetRoleLabelKey: role.Name,
 	}
-	serviceConfig := coreapplyv1.Service(rbg.GetWorkloadName(role), rbg.Namespace).
+	serviceConfig := coreapplyv1.Service(rbg.GetServiceName(role), rbg.Namespace).
 		WithSpec(
 			coreapplyv1.ServiceSpec().
 				WithClusterIP("None").

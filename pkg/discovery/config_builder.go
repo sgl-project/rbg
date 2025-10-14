@@ -76,7 +76,7 @@ func (b *ConfigBuilder) buildRolesInfo() RolesInfo {
 
 func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) []Instance {
 	instances := make([]Instance, 0, *role.Replicas)
-	serviceName := b.rbg.GetWorkloadName(role)
+	serviceName := b.rbg.GetServiceName(role)
 
 	for i := 0; i < int(*role.Replicas); i++ {
 		instance := Instance{
