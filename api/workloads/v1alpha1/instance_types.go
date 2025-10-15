@@ -26,19 +26,16 @@ type InstanceSpec struct {
 	// Components is a list of components, each of which specifies a component and the number of replicas and template for Instance that match the component.
 	Components []InstanceComponent `json:"components" patchStrategy:"merge" patchMergeKey:"name"`
 
-	// Selector is a label query over Pods that should match the Instance.
-	Selector *metav1.LabelSelector `json:"selector"`
-
 	// MinReadySeconds is the minimum number of seconds for which a newly created Pod should be ready without any of its containers crashing, for it to be considered available.
 	// Configuration for the Instance to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
 
 	// InstanceReadyPolicy specifies the policy for determining if the Instance is ready.
 	// Defaults to `InstanceReadyOnAllPodReady`
-	PodReadyPolicy RestartPolicyType `json:"readyPolicy,omitempty"`
+	ReadyPolicy InstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
 	// RestartPolicy defines the restart policy for all pods within the Instance.
-	PodRestartPolicy InstanceReadyPolicyType `json:"restartPolicy,omitempty"`
+	RestartPolicy InstanceRestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole Instance.
 	ReadinessGates []InstanceReadinessGate `json:"readinessGates,omitempty"`
@@ -58,6 +55,17 @@ const (
 
 	// InstanceReadyPolicyTypeNone means do nothing for Pods
 	InstanceReadyPolicyTypeNone InstanceReadyPolicyType = "None"
+)
+
+type InstanceRestartPolicyType string
+
+const (
+	// NoneInstanceRestartPolicy will follow the same behavior as the Pod.
+	NoneInstanceRestartPolicy InstanceRestartPolicyType = "None"
+
+	// RecreateInstanceOnPodRestart will recreate an instance if its Pod restarted.
+	// It equals to RecreateRoleInstanceOnPodRestart of RBG.
+	RecreateInstanceOnPodRestart InstanceRestartPolicyType = "RecreateInstanceOnPodRestart"
 )
 
 type InstanceComponent struct {
@@ -90,7 +98,7 @@ type InstanceStatus struct {
 	Conditions []InstanceCondition `json:"conditions,omitempty"`
 
 	// ComponentStatuses is a list of ComponentStatus, each of which specifies the status of a component.
-	ComponentStatuses ComponentStatus `json:"componentStatuses,omitempty"`
+	ComponentStatuses []ComponentStatus `json:"componentStatuses,omitempty"`
 
 	// LabelSelector of an Instance is a label query over Pods that should match the Instance.
 	LabelSelector string `json:"labelSelector,omitempty"`
@@ -101,7 +109,7 @@ type InstanceStatus struct {
 	// UpdateRevision is a hash value that changes when the spec is changed.
 	UpdateRevision string `json:"updateRevision,omitempty"`
 
-	// CollisionCount is the count of hash collisions for the CloneSet. The CloneSet controller
+	// CollisionCount is the count of hash collisions for the InstanceSet. The InstanceSet controller
 	// uses this field as a collision avoidance mechanism when it needs to create the name for the
 	// newest ControllerRevision.
 	CollisionCount *int32 `json:"collisionCount,omitempty"`
@@ -142,7 +150,10 @@ const (
 	// InstanceInPlaceUpdateReady indicates Instance inplace update
 	InstanceInPlaceUpdateReady InstanceConditionType = "InstanceInPlaceUpdateReady"
 
-	// InstanceAllPodsReady indicates pods ready condition
+	// InstanceCustomReady indicates the expectation of customized ready state.
+	InstanceCustomReady InstanceConditionType = "InstanceCustomReady"
+
+	// InstanceAllPodsReady indicates all pods in the Instance are ready.
 	InstanceAllPodsReady InstanceConditionType = "InstanceAllPodsReady"
 
 	// InstanceFailedScale indicates Instance controller failed to create or delete pods.
@@ -199,6 +210,9 @@ type InstanceList struct {
 }
 
 type InstanceTemplate struct {
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              InstanceSpec `json:"spec,omitempty"`
+	InstanceSpec `json:",inline"`
+}
+
+func init() {
+	SchemeBuilder.Register(&Instance{}, &InstanceList{})
 }

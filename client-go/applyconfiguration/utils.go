@@ -37,8 +37,22 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ComponentStatus"):
+		return &workloadsv1alpha1.ComponentStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha1.EngineRuntimeApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("Instance"):
+		return &workloadsv1alpha1.InstanceApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceComponent"):
+		return &workloadsv1alpha1.InstanceComponentApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceCondition"):
+		return &workloadsv1alpha1.InstanceConditionApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceReadinessGate"):
+		return &workloadsv1alpha1.InstanceReadinessGateApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSpec"):
+		return &workloadsv1alpha1.InstanceSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceStatus"):
+		return &workloadsv1alpha1.InstanceStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("KubeSchedulingPodGroupPolicySource"):
 		return &workloadsv1alpha1.KubeSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("LeaderWorkerTemplate"):

@@ -30,11 +30,6 @@ type InstanceSetSpec struct {
 	// If unspecified, defaults to 1.
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Selector is a label query over Instances that should match the replica count.
-	// It must match the Instances template's labels.
-	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
-	Selector *metav1.LabelSelector `json:"selector"`
-
 	// Components describes the Instance components that will be created.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
@@ -243,4 +238,8 @@ type InstanceSetList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []InstanceSet `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&InstanceSet{}, &InstanceSetList{})
 }

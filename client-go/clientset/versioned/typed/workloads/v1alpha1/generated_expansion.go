@@ -19,6 +19,8 @@ package v1alpha1
 
 type ClusterEngineRuntimeProfileExpansion interface{}
 
+type InstanceExpansion interface{}
+
 type RoleBasedGroupExpansion interface{}
 
 type RoleBasedGroupScalingAdapterExpansion interface{}

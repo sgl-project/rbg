@@ -3,6 +3,7 @@ module sigs.k8s.io/rbgs
 go 1.24.1
 
 require (
+	github.com/appscode/jsonpatch v1.0.1
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.25.3

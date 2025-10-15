@@ -28,6 +28,7 @@ import (
 type WorkloadsV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	ClusterEngineRuntimeProfilesGetter
+	InstancesGetter
 	RoleBasedGroupsGetter
 	RoleBasedGroupScalingAdaptersGetter
 	RoleBasedGroupSetsGetter
@@ -40,6 +41,10 @@ type WorkloadsV1alpha1Client struct {
 
 func (c *WorkloadsV1alpha1Client) ClusterEngineRuntimeProfiles(namespace string) ClusterEngineRuntimeProfileInterface {
 	return newClusterEngineRuntimeProfiles(c, namespace)
+}
+
+func (c *WorkloadsV1alpha1Client) Instances(namespace string) InstanceInterface {
+	return newInstances(c, namespace)
 }
 
 func (c *WorkloadsV1alpha1Client) RoleBasedGroups(namespace string) RoleBasedGroupInterface {

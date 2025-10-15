@@ -1,5 +1,7 @@
 package v1alpha1
 
+import v1 "k8s.io/api/core/v1"
+
 const (
 	ControllerName = "rolebasedgroup-controller"
 
@@ -68,6 +70,15 @@ const (
 	// InstanceComponentName is the name of the Instance component.
 	// Each Instance component and the Pods it owns have the same instance-component-name.
 	InstanceComponentName = InstanceSetPrefix + "instance-component-name"
+
+	// SpecifiedDeleteKey is a label used to mark that the Instance should be deleted.
+	SpecifiedDeleteKey = InstanceSetPrefix + "specified-delete"
+)
+
+const (
+	// InstancePodReadyConditionType corresponding condition status was set to "False" by multiple writers,
+	// the condition status will be considered as "True" only when all these writers set it to "True".
+	InstancePodReadyConditionType v1.PodConditionType = "InstancePodReady"
 )
 
 type RolloutStrategyType string

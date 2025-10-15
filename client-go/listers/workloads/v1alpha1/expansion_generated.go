@@ -25,6 +25,14 @@ type ClusterEngineRuntimeProfileListerExpansion interface{}
 // ClusterEngineRuntimeProfileNamespaceLister.
 type ClusterEngineRuntimeProfileNamespaceListerExpansion interface{}
 
+// InstanceListerExpansion allows custom methods to be added to
+// InstanceLister.
+type InstanceListerExpansion interface{}
+
+// InstanceNamespaceListerExpansion allows custom methods to be added to
+// InstanceNamespaceLister.
+type InstanceNamespaceListerExpansion interface{}
+
 // RoleBasedGroupListerExpansion allows custom methods to be added to
 // RoleBasedGroupLister.
 type RoleBasedGroupListerExpansion interface{}

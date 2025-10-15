@@ -54,6 +54,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=workloads, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("clusterengineruntimeprofiles"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().ClusterEngineRuntimeProfiles().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("instances"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().Instances().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroups"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroups().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroupscalingadapters"):
