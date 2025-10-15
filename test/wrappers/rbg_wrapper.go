@@ -30,12 +30,6 @@ func (rbgWrapper *RoleBasedGroupWrapper) WithRoles(roles []workloadsv1alpha.Role
 	return rbgWrapper
 }
 
-func (rbgWrapper *RoleBasedGroupWrapper) WithPodGroupPolicy(
-	podGroupPolicy *workloadsv1alpha.PodGroupPolicy) *RoleBasedGroupWrapper {
-	rbgWrapper.Spec.PodGroupPolicy = podGroupPolicy
-	return rbgWrapper
-}
-
 func (rbgWrapper *RoleBasedGroupWrapper) AddRole(role workloadsv1alpha.RoleSpec) *RoleBasedGroupWrapper {
 	rbgWrapper.Spec.Roles = append(rbgWrapper.Spec.Roles, role)
 	return rbgWrapper
@@ -86,6 +80,10 @@ func (rbgWrapper *RoleBasedGroupWrapper) WithStatus(
 func BuildBasicRoleBasedGroup(name, ns string) *RoleBasedGroupWrapper {
 	return &RoleBasedGroupWrapper{
 		workloadsv1alpha.RoleBasedGroup{
+			TypeMeta: v1.TypeMeta{
+				APIVersion: "workloads.x-k8s.io/v1alpha1",
+				Kind:       "RoleBasedGroup",
+			},
 			ObjectMeta: v1.ObjectMeta{
 				Name:      name,
 				Namespace: ns,

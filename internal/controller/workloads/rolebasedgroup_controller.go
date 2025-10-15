@@ -141,14 +141,11 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	podGroupExist := scheduler.GetPodGroupAndLoadCrdName(rbg, runtimeController, &watchedWorkload, r.apiReader)
 	// Process PodGroup
-	if podGroupExist {
-		podGroupManager := scheduler.NewPodGroupScheduler(r.client)
-		if err := podGroupManager.Reconcile(ctx, rbg); err != nil {
-			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreatePodGroup, err.Error())
-			return ctrl.Result{}, err
-		}
+	podGroupManager := scheduler.NewPodGroupScheduler(r.client)
+	if err := podGroupManager.Reconcile(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreatePodGroup, err.Error())
+		return ctrl.Result{}, err
 	}
 
 	// Reconcile role, add & update
