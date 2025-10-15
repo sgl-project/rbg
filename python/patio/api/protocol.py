@@ -26,7 +26,7 @@ class ErrorResponse(NoExtraBaseModel):
 
 # ============== Topo
 class TopoTypeValidationMixin:
-    topo_type: str = Field(..., description="Type of inference engine, e.g., 'LingJun','Mooncake'.")
+    topo_type: str = Field(..., description="Type of inference engine, e.g., 'SGLang'.")
 
     @root_validator(pre=True)
     def validate_topo_type(cls, values):
@@ -94,4 +94,3 @@ class LoadLoraAdapterRequest(NoExtraBaseModel):
 
 class UnLoadLoraAdapterRequest(NoExtraBaseModel):
     lora_name: str
-    lora_int_id: Optional[int] = Field(default=None)

@@ -21,7 +21,6 @@ class SGLangGroupTopoServer(GroupTopoServer):
             self.workers = {}
             self.sync_thread_running = False
             self.lock = threading.Lock()
-            self.mooncake_file_exists = False
             self.__initialized = True
 
     def register(self, worker_info: dict):

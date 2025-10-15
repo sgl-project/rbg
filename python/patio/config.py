@@ -15,6 +15,6 @@ DEFAULT_PATIO_HOST = "0.0.0.0"
 DEFAULT_PATIO_PORT = 9091
 
 # Group Topo
-Mooncake = "Mooncake"
+SGLang = "SGLang"
 
-SUPPORTED_TOPO_TYPES = [Mooncake]
+SUPPORTED_TOPO_TYPES = [SGLang]

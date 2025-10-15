@@ -1,6 +1,7 @@
 # Patio Python Module
 
-Patio is a Python runtime component for the RBGS (Role-Based Group Scheduling) system. It provides a FastAPI-based server that acts as an interface between the RBGS controller and inference engines like vLLM and SGLang.
+Patio is a Python runtime component for the RBG Controller. It provides a FastAPI-based
+server that acts as an interface between the RBG controller and inference engines like SGLang.
 
 ## Features
 
@@ -56,23 +57,24 @@ The Patio server accepts several command line arguments:
 - `--scrape-engine-metrics`: Enable scraping of engine metrics (default: True)
 
 Example:
+
 ```bash
-python -m patio.app --host 127.0.0.1 --port 8080 --log-level DEBUG
+python -m patio.app --host 127.0.0.1 --port 9091 --log-level DEBUG
 ```
 
 ### Environment Variables
 
 Patio uses several environment variables for configuration:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `INFERENCE_ENGINE` | The inference engine to use (vllm or sglang) | sglang |
-| `INFERENCE_ENGINE_VERSION` | Version of the inference engine | v0.5.3 |
-| `INFERENCE_ENGINE_ENDPOINT` | Endpoint URL for the inference engine | None |
-| `TOPO_TYPE` | Type of topology to use | None |
-| `GROUP_NAME` | Name of the group in RBGS | None |
-| `ROLE_NAME` | Name of the role in RBGS | None |
-| `ROLE_INDEX` | Index of the role in RBGS | None |
+| Variable                    | Description                                  | Default |
+|-----------------------------|----------------------------------------------|---------|
+| `INFERENCE_ENGINE`          | The inference engine to use (vllm or sglang) | sglang  |
+| `INFERENCE_ENGINE_VERSION`  | Version of the inference engine              | v0.5.3  |
+| `INFERENCE_ENGINE_ENDPOINT` | Endpoint URL for the inference engine        | None    |
+| `TOPO_TYPE`                 | Type of topology to use                      | None    |
+| `GROUP_NAME`                | Name of the group in RBGS                    | None    |
+| `ROLE_NAME`                 | Name of the role in RBGS                     | None    |
+| `ROLE_INDEX`                | Index of the role in RBGS                    | None    |
 
 ## API Endpoints
 
@@ -92,6 +94,7 @@ Patio uses several environment variables for configuration:
 ### API
 
 The API module contains FastAPI routers for handling HTTP requests:
+
 - `server_router.py` - Server management endpoints
 - `lora_router.py` - LoRA adapter management endpoints
 - `protocol.py` - Request/response data models
@@ -99,6 +102,7 @@ The API module contains FastAPI routers for handling HTTP requests:
 ### Engine
 
 The engine module provides interfaces and implementations for different inference engines:
+
 - `base.py` - Base inference engine interface
 - `vllm_engine.py` - vLLM engine implementation
 - `sglang_engine.py` - SGLang engine implementation
@@ -106,6 +110,7 @@ The engine module provides interfaces and implementations for different inferenc
 ### Metrics
 
 The metrics module handles Prometheus metrics collection:
+
 - `metrics.py` - Built-in metrics definitions
 - `engine_collector.py` - Collector for engine metrics
 - `engine_metric_rules.py` - Rules for standardizing engine metrics
@@ -114,6 +119,7 @@ The metrics module handles Prometheus metrics collection:
 ### Topology
 
 The topology module manages distributed worker topology:
+
 - `factory.py` - Factory for creating topology clients and servers
 - `utils.py` - Utility functions for topology management
 - `client/` - Client-side topology management
@@ -135,10 +141,9 @@ python -m pytest tests/ -v
 Or use the provided test runner:
 
 ```bash
-cd python/patio
-python run_tests.py
+cd python/patio/tests
+python run_mock_tests.py
 ```
-
 
 ## Development
 
