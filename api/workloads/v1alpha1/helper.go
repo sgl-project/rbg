@@ -46,7 +46,6 @@ func (rbg *RoleBasedGroup) GetServiceName(role *RoleSpec) string {
 	}
 	return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
 }
-}
 
 func (rbg *RoleBasedGroup) GetRole(roleName string) (*RoleSpec, error) {
 	if roleName == "" {
