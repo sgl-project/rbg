@@ -11,7 +11,7 @@ class SGLangGroupTopoServer(GroupTopoServer):
     # Singleton
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(GroupTopoServer, cls).__new__(cls, *args, **kwargs)
+            cls._instance = super(SGLangGroupTopoServer, cls).__new__(cls, *args, **kwargs)
             cls._instance.__initialized = False
         return cls._instance
 

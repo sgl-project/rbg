@@ -73,7 +73,7 @@ def write_config_file(file_type: str, file_info, file_path: Optional[str] = None
 
     if file_path is None:
         file_path = TOPO_CONFIG_FILE
-    print(f"use default topo config file path: {file_path}")
+    logger.info(f"use default topo config file path: {file_path}")
 
     directory = os.path.dirname(file_path)
     if not os.path.exists(directory):

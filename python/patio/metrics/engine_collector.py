@@ -49,7 +49,7 @@ class EngineCollector(Collector):
             return response.text
         except Exception as e:
             logger.warning(
-                f"Failed to collect metrics from {self.scrape_endpoint}with error: {e}"
+                f"Failed to collect metrics from {self.scrape_endpoint} with error: {e}"
             )
             return ""
 

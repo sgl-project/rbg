@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.v1 import root_validator
 
 from patio import envs
+from patio.config import SUPPORTED_TOPO_TYPES
 
 
 class NoExtraBaseModel(BaseModel):
@@ -36,7 +37,6 @@ class TopoTypeValidationMixin:
             if not topo_type:
                 raise ValueError(
                     "topo_type is not set. Please provide it in the request or set the TOPO_TYPE environment variable.")
-            # 将从环境变量获取的值更新到 values 中，以便后续模型处理
             values['topo_type'] = topo_type
         if topo_type not in SUPPORTED_TOPO_TYPES:
             raise ValueError(
