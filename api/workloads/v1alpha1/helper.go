@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"unicode"
+	"strings"
 )
 
 func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]string {
@@ -37,14 +37,32 @@ func (rbg *RoleBasedGroup) GetGroupSize() int {
 }
 
 func (rbg *RoleBasedGroup) GetWorkloadName(role *RoleSpec) string {
-	return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
+	if rbg == nil {
+		return ""
+	}
+
+	workloadName := fmt.Sprintf("%s-%s", rbg.Name, role.Name)
+
+	// Kubernetes name length is limited to 63 characters
+	if len(workloadName) > 63 {
+		workloadName = workloadName[:63]
+		workloadName = strings.TrimRight(workloadName, "-")
+	}
+	return workloadName
 }
 
+// GetServiceName Because ServiceName needs to follow DNS naming conventions,
+// which do not allow names to start with a number. Therefore, the s- prefix
+// is added to the service name to meet this requirement.
 func (rbg *RoleBasedGroup) GetServiceName(role *RoleSpec) string {
-	if len(rbg.Name) > 0 && unicode.IsDigit(rune(rbg.Name[0])) {
-		return fmt.Sprintf("s-%s-%s", rbg.Name, role.Name)
+	svcName := fmt.Sprintf("s-%s-%s", rbg.Name, role.Name)
+	if len(svcName) > 63 {
+		svcName = svcName[:63]
+		// After truncation, trim trailing hyphens (and ensure the name ends with an alphanumeric)
+		// to maintain DNS-1123/DNS-1035 validity.
+		svcName = strings.TrimRight(svcName, "-")
 	}
-	return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
+	return svcName
 }
 
 func (rbg *RoleBasedGroup) GetRole(roleName string) (*RoleSpec, error) {
