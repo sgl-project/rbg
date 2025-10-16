@@ -29,3 +29,8 @@ go.work
 **/*.tgz
 **/.DS_Store
 
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
