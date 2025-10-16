@@ -43,7 +43,8 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 
 func (r *StatefulSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	revisionKey string) error {
+	revisionKey string,
+) error {
 	if err := r.reconcileStatefulSet(ctx, rbg, role, revisionKey); err != nil {
 		return err
 	}
@@ -98,8 +99,12 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
 	revisionHashEqual := newSts.Labels[roleHashKey] == oldSts.Labels[roleHashKey]
 	if !revisionHashEqual {
-		logger.Info(fmt.Sprintf("sts hash not equal, old: %s, new: %s",
-			oldSts.Labels[roleHashKey], newSts.Labels[roleHashKey]))
+		logger.Info(
+			fmt.Sprintf(
+				"sts hash not equal, old: %s, new: %s",
+				oldSts.Labels[roleHashKey], newSts.Labels[roleHashKey],
+			),
+		)
 	}
 
 	stsUpdated := !semanticallyEqual || !revisionHashEqual
@@ -285,7 +290,9 @@ type replicaState struct {
 	ready   bool
 }
 
-func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv1.StatefulSet, roleCommonLabels map[string]string) ([]replicaState, error) {
+func (r *StatefulSetReconciler) getReplicaStates(
+	ctx context.Context, sts *appsv1.StatefulSet, roleCommonLabels map[string]string,
+) ([]replicaState, error) {
 	logger := log.FromContext(ctx)
 	if sts == nil || sts.UID == "" {
 		return nil, fmt.Errorf("statefulset has not been created")
@@ -296,7 +303,9 @@ func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv
 
 	podSelector := sts.Spec.Selector.MatchLabels
 	var podList corev1.PodList
-	if err := r.client.List(ctx, &podList, client.MatchingLabels(podSelector), client.InNamespace(sts.Namespace)); err != nil {
+	if err := r.client.List(
+		ctx, &podList, client.MatchingLabels(podSelector), client.InNamespace(sts.Namespace),
+	); err != nil {
 		return nil, err
 	}
 	for i, pod := range podList.Items {
@@ -406,7 +415,10 @@ func (r *StatefulSetReconciler) reconcileHeadlessService(
 		return fmt.Errorf("get sts error, skip reconcile svc. error:  %s", err.Error())
 	}
 
-	svcApplyConfig := r.constructServiceApplyConfiguration(ctx, rbg, role, sts)
+	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, rbg, role, sts)
+	if err != nil {
+		return fmt.Errorf("constructServiceApplyConfiguration error: %s", err.Error())
+	}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(svcApplyConfig)
 	if err != nil {
 		logger.Error(err, "Converting obj apply configuration to json.")
@@ -419,7 +431,11 @@ func (r *StatefulSetReconciler) reconcileHeadlessService(
 	}
 
 	oldSvc := &corev1.Service{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetServiceName(role), Namespace: rbg.Namespace}, oldSvc)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	if err != nil {
+		return fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
+	}
+	err = r.client.Get(ctx, types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, oldSvc)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -491,16 +507,20 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 }
 
 func (r *StatefulSetReconciler) constructServiceApplyConfiguration(
-	_ context.Context,
+	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 	sts *appsv1.StatefulSet,
-) *coreapplyv1.ServiceApplyConfiguration {
+) (*coreapplyv1.ServiceApplyConfiguration, error) {
 	selectMap := map[string]string{
 		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
 		workloadsv1alpha1.SetRoleLabelKey: role.Name,
 	}
-	serviceConfig := coreapplyv1.Service(rbg.GetServiceName(role), rbg.Namespace).
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	if err != nil {
+		return nil, err
+	}
+	serviceConfig := coreapplyv1.Service(svcName, rbg.Namespace).
 		WithSpec(
 			coreapplyv1.ServiceSpec().
 				WithClusterIP("None").
@@ -517,7 +537,7 @@ func (r *StatefulSetReconciler) constructServiceApplyConfiguration(
 				WithUID(sts.GetUID()).
 				WithBlockOwnerDeletion(true),
 		)
-	return serviceConfig
+	return serviceConfig, nil
 }
 
 func (r *StatefulSetReconciler) ConstructRoleStatus(

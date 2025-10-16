@@ -1,12 +1,14 @@
 package discovery
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
 	"sigs.k8s.io/yaml"
@@ -16,8 +18,9 @@ import (
 )
 
 type ConfigBuilder struct {
-	rbg  *workloadsv1alpha1.RoleBasedGroup
-	role *workloadsv1alpha1.RoleSpec
+	client client.Client
+	rbg    *workloadsv1alpha1.RoleBasedGroup
+	role   *workloadsv1alpha1.RoleSpec
 }
 
 type ClusterConfig struct {
@@ -44,13 +47,18 @@ type Instance struct {
 }
 
 func (b *ConfigBuilder) Build() ([]byte, error) {
+	roles, err := b.buildRolesInfo()
+	if err != nil {
+		return nil, err
+	}
+
 	config := ClusterConfig{
 		Group: GroupInfo{
 			Name:  b.rbg.Name,
 			Size:  len(b.rbg.Spec.Roles),
 			Roles: b.getRoleNames(),
 		},
-		Roles: b.buildRolesInfo(),
+		Roles: roles,
 	}
 	return yaml.Marshal(config)
 }
@@ -63,20 +71,27 @@ func (b *ConfigBuilder) getRoleNames() []string {
 	return names
 }
 
-func (b *ConfigBuilder) buildRolesInfo() RolesInfo {
+func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 	roles := make(RolesInfo)
 	for _, role := range b.rbg.Spec.Roles {
+		instances, err := b.buildInstances(&role)
+		if err != nil {
+			return nil, err
+		}
 		roles[role.Name] = RoleInstances{
 			Size:      int(*role.Replicas),
-			Instances: b.buildInstances(&role),
+			Instances: instances,
 		}
 	}
-	return roles
+	return roles, nil
 }
 
-func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) []Instance {
+func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Instance, error) {
 	instances := make([]Instance, 0, *role.Replicas)
-	serviceName := b.rbg.GetServiceName(role)
+	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
+	if err != nil {
+		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
+	}
 
 	for i := 0; i < int(*role.Replicas); i++ {
 		instance := Instance{
@@ -91,7 +106,7 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) []Insta
 
 		instances = append(instances, instance)
 	}
-	return instances
+	return instances, nil
 }
 
 func generatePortKey(port corev1.ServicePort) string {
@@ -127,9 +142,11 @@ func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
 
 	opts := cmp.Options{
 		objectMetaIgnoreOpts,
-		cmpopts.SortSlices(func(a, b metav1.OwnerReference) bool {
-			return a.UID < b.UID // Make OwnerReferences comparison order-insensitive
-		}),
+		cmpopts.SortSlices(
+			func(a, b metav1.OwnerReference) bool {
+				return a.UID < b.UID // Make OwnerReferences comparison order-insensitive
+			},
+		),
 		cmpopts.EquateEmpty(),
 	}
 

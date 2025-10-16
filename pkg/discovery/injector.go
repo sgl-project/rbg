@@ -54,8 +54,9 @@ func (i *DefaultInjector) InjectConfig(
 	logger := log.FromContext(ctx)
 
 	builder := &ConfigBuilder{
-		rbg:  rbg,
-		role: role,
+		client: i.client,
+		rbg:    rbg,
+		role:   role,
 	}
 
 	const (

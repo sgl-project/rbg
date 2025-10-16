@@ -6,6 +6,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
@@ -13,19 +16,100 @@ import (
 func TestConfigBuilder_Build(t *testing.T) {
 	replicas3 := int32(3)
 	replicas1 := int32(1)
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
 
 	tests := []struct {
 		name     string
+		client   client.Client
 		rbg      *workloadsv1alpha1.RoleBasedGroup
 		role     *workloadsv1alpha1.RoleSpec
 		expected string
 		wantErr  bool
 	}{
 		{
-			name: "simple cluster config",
+			name:   "simple cluster config",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
 			rbg: &workloadsv1alpha1.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: &replicas3,
+							ServicePorts: []corev1.ServicePort{
+								{
+									Name: "http",
+									Port: 8080,
+								},
+							},
+						},
+						{
+							Name:     "leader",
+							Replicas: &replicas1,
+							ServicePorts: []corev1.ServicePort{
+								{
+									Name: "api",
+									Port: 6443,
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha1.RoleSpec{
+				Name:     "worker",
+				Replicas: &replicas3,
+			},
+			expected: `group:
+  name: test-cluster
+  roles:
+  - worker
+  - leader
+  size: 2
+roles:
+  leader:
+    instances:
+    - address: leader-0.s-test-cluster-leader
+      ports:
+        api: 6443
+    size: 1
+  worker:
+    instances:
+    - address: worker-0.s-test-cluster-worker
+      ports:
+        http: 8080
+    - address: worker-1.s-test-cluster-worker
+      ports:
+        http: 8080
+    - address: worker-2.s-test-cluster-worker
+      ports:
+        http: 8080
+    size: 3
+`,
+			wantErr: false,
+		},
+		{
+			name: "config with oldSvc",
+			client: fake.NewClientBuilder().WithScheme(schema).WithRuntimeObjects(
+				&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cluster-leader",
+						Namespace: "default",
+					},
+				}, &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cluster-worker",
+						Namespace: "default",
+					},
+				},
+			).Build(),
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "default",
 				},
 				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
 					Roles: []workloadsv1alpha1.RoleSpec{
@@ -85,10 +169,12 @@ roles:
 			wantErr: false,
 		},
 		{
-			name: "role with unnamed ports",
+			name:   "role with unnamed ports",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
 			rbg: &workloadsv1alpha1.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-cluster",
+					Name:      "test-cluster",
+					Namespace: "default",
 				},
 				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
 					Roles: []workloadsv1alpha1.RoleSpec{
@@ -119,7 +205,7 @@ roles:
 roles:
   web:
     instances:
-    - address: web-0.test-cluster-web
+    - address: web-0.s-test-cluster-web
       ports:
         port80: 80
         port443: 443
@@ -128,7 +214,8 @@ roles:
 			wantErr: false,
 		},
 		{
-			name: "rbg name start with numeric",
+			name:   "rbg name start with numeric",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
 			rbg: &workloadsv1alpha1.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "1-test-cluster",
@@ -196,8 +283,9 @@ roles:
 		t.Run(
 			tt.name, func(t *testing.T) {
 				b := &ConfigBuilder{
-					rbg:  tt.rbg,
-					role: tt.role,
+					client: tt.client,
+					rbg:    tt.rbg,
+					role:   tt.role,
 				}
 				got, err := b.Build()
 				if (err != nil) != tt.wantErr {
@@ -284,12 +372,19 @@ func TestConfigBuilder_buildRolesInfo(t *testing.T) {
 			},
 		},
 	}
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
 
 	b := &ConfigBuilder{
-		rbg: rbg,
+		client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		rbg:    rbg,
 	}
 
-	rolesInfo := b.buildRolesInfo()
+	rolesInfo, err := b.buildRolesInfo()
+	if err != nil {
+		t.Errorf("buildRolesInfo() error = %v", err)
+	}
 
 	// Verify number of roles
 	if len(rolesInfo) != 2 {
@@ -474,12 +569,20 @@ func TestConfigBuilder_buildInstances(t *testing.T) {
 		},
 	}
 
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
 	b := &ConfigBuilder{
-		rbg:  rbg,
-		role: role,
+		client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		rbg:    rbg,
+		role:   role,
 	}
 
-	instances := b.buildInstances(role)
+	instances, err := b.buildInstances(role)
+	if err != nil {
+		t.Errorf("buildInstances() error = %v", err)
+	}
 
 	// Verify number of instances
 	if len(instances) != int(replicas) {
@@ -487,8 +590,8 @@ func TestConfigBuilder_buildInstances(t *testing.T) {
 	}
 
 	// Verify first instance
-	if instances[0].Address != "server-0.test-cluster-server" {
-		t.Errorf("Expected address 'server-0.test-cluster-server', got '%s'", instances[0].Address)
+	if instances[0].Address != "server-0.s-test-cluster-server" {
+		t.Errorf("Expected address 's-server-0.test-cluster-server', got '%s'", instances[0].Address)
 	}
 
 	if len(instances[0].Ports) != 2 {
