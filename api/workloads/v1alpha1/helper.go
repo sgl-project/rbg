@@ -43,9 +43,9 @@ func (rbg *RoleBasedGroup) GetWorkloadName(role *RoleSpec) string {
 func (rbg *RoleBasedGroup) GetServiceName(role *RoleSpec) string {
 	if len(rbg.Name) > 0 && unicode.IsDigit(rune(rbg.Name[0])) {
 		return fmt.Sprintf("s-%s-%s", rbg.Name, role.Name)
-	} else {
-		return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
 	}
+	return fmt.Sprintf("%s-%s", rbg.Name, role.Name)
+}
 }
 
 func (rbg *RoleBasedGroup) GetRole(roleName string) (*RoleSpec, error) {
