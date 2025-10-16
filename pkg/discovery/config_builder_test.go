@@ -127,6 +127,69 @@ roles:
 `,
 			wantErr: false,
 		},
+		{
+			name: "rbg name start with numeric",
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "1-test-cluster",
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: &replicas3,
+							ServicePorts: []corev1.ServicePort{
+								{
+									Name: "http",
+									Port: 8080,
+								},
+							},
+						},
+						{
+							Name:     "leader",
+							Replicas: &replicas1,
+							ServicePorts: []corev1.ServicePort{
+								{
+									Name: "api",
+									Port: 6443,
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha1.RoleSpec{
+				Name:     "worker",
+				Replicas: &replicas3,
+			},
+			expected: `group:
+  name: 1-test-cluster
+  roles:
+  - worker
+  - leader
+  size: 2
+roles:
+  leader:
+    instances:
+    - address: leader-0.s-1-test-cluster-leader
+      ports:
+        api: 6443
+    size: 1
+  worker:
+    instances:
+    - address: worker-0.s-1-test-cluster-worker
+      ports:
+        http: 8080
+    - address: worker-1.s-1-test-cluster-worker
+      ports:
+        http: 8080
+    - address: worker-2.s-1-test-cluster-worker
+      ports:
+        http: 8080
+    size: 3
+`,
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

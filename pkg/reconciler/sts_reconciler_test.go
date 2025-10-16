@@ -58,6 +58,12 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 			role:      &rollingRole,
 			expectErr: false,
 		},
+		{
+			name:      "rbg name start with numeric",
+			rbg:       wrappers.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
+			role:      &role,
+			expectErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -93,12 +99,12 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					svc := &corev1.Service{}
 					err = client.Get(
 						context.Background(), types.NamespacedName{
-							Name:      tt.rbg.GetWorkloadName(tt.role),
+							Name:      tt.rbg.GetServiceName(tt.role),
 							Namespace: tt.rbg.Namespace,
 						}, svc,
 					)
 					assert.NoError(t, err)
-					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), svc.Name)
+					assert.Equal(t, tt.rbg.GetServiceName(tt.role), svc.Name)
 				}
 			},
 		)
