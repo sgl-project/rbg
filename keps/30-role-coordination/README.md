@@ -14,6 +14,7 @@
         - [Story 1: Coordinated Rolling Update](#story-1-coordinated-rolling-update)
     - [Implementation Details](#implementation-details)
         - [API Changes](#api-changes)
+        - [Example](#yaml-example)
     - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
     - [Test Plan](#test-plan)
@@ -118,58 +119,88 @@ preventing performance degradation due to imbalanced P:D ratios.
 Add a new `Coordination` field to the RoleBasedGroup spec:
 
 ```go
+
 type RoleBasedGroupSpec struct {
-    // Existing fields...
-    
-    // Coordination defines how roles should be coordinated 
-    // +optional
-    Coordination *Coordination `json:"coordination,omitempty"`
+// Existing fields...
+
+// Coordination defines how roles should be coordinated 
+// +optional
+Coordination []Coordination `json:"coordination,omitempty"`
 }
 
 type Coordination struct {
-    // Steps defines the sequence of coordination steps
-    Steps []CoordinationStep `json:"steps"`
-}
-
-type CoordinationStep struct {
-    // Roles involved in this step
-    Roles []string `json:"roles"`
-    
-    // Strategy for each role in this step
-    RoleStrategies map[string]RoleStrategy `json:"roleStrategies,omitempty"`
+Strategy []RoleStrategy `json:"strategy,omitempty"`
 }
 
 type RoleStrategy struct {
-    UpdateStrategy RoleUpdateStrategy `json:"updateStrategy,omitempty"`
-    // ScalingStrategy 
-    // DeletingStrategy 
-	// ...
+// Role is the name of the role (e.g. "prefill", "decode", "router").
+Role string `json:"role"`
+
+// UpdateStrategy describes how this role should be updated.
+UpdateStrategy *RoleUpdateStrategy `json:"updateStrategy,omitempty"`
+
+// TODO: add more strategy here as needed. e.g. ScalingStrategy
 }
 
+// RoleUpdateStrategy describes how to update a role's workload.
 type RoleUpdateStrategy struct {
-    Partition *int32 `json:"partition,omitempty"`
-    MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
-    MaxSurge `json:"maxSurge,omitempty"`
+// Type is the update strategy type (e.g. "Recreate", "InplaceIfPossible").
+Type string `json:"type,omitempty"`
+Partition *int32 `json:"partition,omitempty"`
+MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
+MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
 }
 
-```
-
-Add a new `CoordinationState` field to the RoleBasedGroup status:
-
-```go
-// Add coordination status in RoleBasedGroupStatus
+// status
 type RoleBasedGroupStatus struct {
-    CoordinationState CoordinationState `json:"coordinationState,omitempty"`
+// Existing fields...
+
+// CoordinationState Status of coordination
+CoordinationState []CoordinationState `json:"coordinationState,omitempty"`
 }
 
 type CoordinationState struct {
-    // Current phase being coordinated
-    CurrentPhase string `json:"currentPhase,omitempty"`
-    // Coordination progress information
-    Progress map[string]string `json:"progress,omitempty"`
-    LastUpdateTime metav1.Time `json:"lastUpdateTime,omitempty"`
+RoleState      map[string]RoleCoordinationState `json:"progress,omitempty"`
+LastUpdateTime metav1.Time                      `json:"lastUpdateTime,omitempty"`
 }
 
+type RoleCoordinationState struct {
+Strategy string `json:"strategy"`
+State    string `json:"state"`
+}
+
+
+```
+
+#### Yaml Example
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: role-coordination
+spec:
+  coordination:
+    - strategy: # strategy 1: reconcile prefill & decode at 2:1 ratio
+        - role: prefill
+          updateStrategy:
+            type: Recreate # [Recreate, InplaceIfPossible]
+            maxSurge: 0
+            partition: 0
+            maxUnavailable: 2
+        - role: decode
+          updateStrategy:
+            type: Recreate # [Recreate, InplaceIfPossible]
+            maxSurge: 0
+            partition: 0
+            maxUnavailable: 1
+    - strategy: # strategy 2: reconcile router & planner at 1:1 ratio
+        - role: router
+          updateStrategy:
+            maxUnavailable: 1
+        - role: planner
+          updateStrategy:
+            maxUnavailable: 1
 ```
 
 ### Risks and Mitigations
@@ -186,17 +217,47 @@ type CoordinationState struct {
 ## Design Details
 
 The implementation will modify the main reconciliation loop
-in [RoleBasedGroupReconciler] to check for a coordination strategy. If present, it will execute the coordinated 
+in [RoleBasedGroupReconciler] to check for a coordination strategy. If present, it will execute the coordinated
 update logic; otherwise, it will fall back to the existing independent role update behavior.
 
-Each coordination step will:
+### Controller Logic
 
-1. Apply the specified strategies to the relevant roles
-2. Monitor the status of those roles
-3. Proceed to the next step only when the current step is complete
+```go
+package controller
 
-The controller will use the existing workload reconcilers (StatefulSetReconciler, DeploymentReconciler, etc.) but with
-modified parameters based on the coordination strategy.
+func (r *RoleBasedGroupReconciler) Reconcile() {
+	if r.spec.Coordination != nil {
+		r.executeCoordinationStrategy()
+	}
+	// existing independent role update behavior
+}
+
+func (r *RoleBasedGroupReconciler) executeCoordinationStrategy() {
+	for _, coordination := range rbg.Spec.Coordination {
+		for _, strategy := range coordination.Strategy {
+			if strategy.UpdateStrategy.Partition != nil {
+				role.RolloutStrategy.RollingUpdate.Partition = strategy.UpdateStrategy.Partition
+			} else {
+				rollingStep = role.replicas - maxUnvailable
+				if isCoordinationRoleCompleted() {
+					// calculate partition 
+					role.RolloutStrategy.RollingUpdate.Partition -= rollingStep
+				}
+			}
+		}
+	}
+}
+
+func isCoordinationRoleCompleted() {
+	// get pod and check rollingUpdate status
+}
+
+```
+
+### Router
+
+We will add new labels for updated pods (e.g. revision-hash) to identify which roles are being updated.
+So sglang router can route new requests to updated prefill and decode pods.
 
 ### Test Plan
 
