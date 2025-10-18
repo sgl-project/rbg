@@ -7,7 +7,7 @@ CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
 RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
 
-VERSION ?= v0.4.0
+VERSION ?= v0.5.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
 TAG ?= ${VERSION}-${GIT_SHA}
 
