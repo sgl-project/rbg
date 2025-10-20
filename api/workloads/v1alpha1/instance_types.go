@@ -31,7 +31,8 @@ type InstanceSpec struct {
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
 
 	// InstanceReadyPolicy specifies the policy for determining if the Instance is ready.
-	// Defaults to `InstanceReadyOnAllPodReady`
+	// Defaults to `AllPodReady`
+	// +kubebuilder:default=AllPodReady
 	ReadyPolicy InstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
 	// RestartPolicy defines the restart policy for all pods within the Instance.
@@ -50,8 +51,8 @@ type InstanceReadinessGate struct {
 type InstanceReadyPolicyType string
 
 const (
-	// InstanceReadyPolicyTypeAll means all Pods in the Instance must be ready when Instance Ready
-	InstanceReadyPolicyTypeAll InstanceReadyPolicyType = "InstanceReadyOnAllPodReady"
+	// InstanceReadyOnAllPodReady means all Pods in the Instance must be ready when Instance Ready
+	InstanceReadyOnAllPodReady InstanceReadyPolicyType = "AllPodReady"
 
 	// InstanceReadyPolicyTypeNone means do nothing for Pods
 	InstanceReadyPolicyTypeNone InstanceReadyPolicyType = "None"
@@ -186,11 +187,11 @@ type InstanceCondition struct {
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=ins,path=Instances,scope=Namespaced
+// +kubebuilder:resource:shortName=ins,path=instances,scope=Namespaced
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='InstanceReady')].status",description="Overall readiness status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
 
-// Instance is the Schema for the duplicatesets API
+// Instance is the Schema for the instances API
 type Instance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

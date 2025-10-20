@@ -52,6 +52,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
+	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"sigs.k8s.io/rbgs/version"
 	// +kubebuilder:scaffold:imports
 )
@@ -314,6 +315,23 @@ func main() {
 
 	if err = rbgsReconciler.SetupWithManager(mgr, options); err != nil {
 		setupLog.Error(err, "unable to create rbgs controller", "controller", "RoleBasedGroupSet")
+		os.Exit(1)
+	}
+
+	instanceReconciler := workloadscontroller.NewInstanceReconciler(mgr)
+	if err = instanceReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+		os.Exit(1)
+	}
+
+	if err = instanceReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+		os.Exit(1)
+	}
+
+	setupLog.Info("register field index")
+	if err = fieldindex.RegisterFieldIndexes(mgr.GetCache()); err != nil {
+		setupLog.Error(err, "failed to register field index")
 		os.Exit(1)
 	}
 
