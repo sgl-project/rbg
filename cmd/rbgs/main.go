@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -314,6 +315,23 @@ func main() {
 
 	if err = rbgsReconciler.SetupWithManager(mgr, options); err != nil {
 		setupLog.Error(err, "unable to create rbgs controller", "controller", "RoleBasedGroupSet")
+		os.Exit(1)
+	}
+
+	instanceReconciler := workloadscontroller.NewInstanceReconciler(mgr)
+	if err = instanceReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+		os.Exit(1)
+	}
+
+	if err = instanceReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+		os.Exit(1)
+	}
+
+	setupLog.Info("register field index")
+	if err = fieldindex.RegisterFieldIndexes(mgr.GetCache()); err != nil {
+		setupLog.Error(err, "failed to register field index")
 		os.Exit(1)
 	}
 
