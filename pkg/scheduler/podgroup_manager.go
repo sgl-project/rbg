@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,14 +39,34 @@ func NewPodGroupScheduler(client client.Client) *PodGroupScheduler {
 	return &PodGroupScheduler{client: client}
 }
 
-func (r *PodGroupScheduler) Reconcile(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) error {
+func (r *PodGroupScheduler) Reconcile(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, runtimeController *builder.TypedBuilder[reconcile.Request], watchedWorkload *sync.Map, apiReader client.Reader) error {
 	// not support change podGroup scheduler
 	if rbg.IsKubeGangScheduling() {
+		// check and load kube podGroup CRD
+		_, podGroupExist := watchedWorkload.Load(KubePodGroupCrdName)
+		if !podGroupExist {
+			if err := utils.CheckCrdExists(apiReader, KubePodGroupCrdName); err != nil {
+				return fmt.Errorf("scheduling plugin %s not ready", KubePodGroupCrdName)
+			}
+			watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
+			runtimeController.Owns(&schedv1alpha1.PodGroup{})
+		}
+
 		return r.createOrUpdateKubePodGroup(ctx, rbg)
 	} else if rbg.IsVolcanoGangScheduling() {
+		// check and load volcano podGroup CRD
+		_, podGroupExist := watchedWorkload.Load(VolcanoPodGroupCrdName)
+		if !podGroupExist {
+			if err := utils.CheckCrdExists(apiReader, VolcanoPodGroupCrdName); err != nil {
+				return fmt.Errorf("scheduling plugin %s not ready", VolcanoPodGroupCrdName)
+			}
+			watchedWorkload.LoadOrStore(VolcanoPodGroupCrdName, struct{}{})
+			runtimeController.Owns(&volcanoschedulingv1beta1.PodGroup{})
+		}
+
 		return r.createOrUpdateVolcanoPodGroup(ctx, rbg)
 	} else {
-		return r.deletePodGroup(ctx, rbg)
+		return r.deletePodGroup(ctx, rbg, watchedWorkload)
 	}
 }
 
@@ -55,35 +76,6 @@ func InjectPodGroupProtocol(rbg *workloadsv1alpha.RoleBasedGroup, pts *coreapply
 	} else if rbg.IsVolcanoGangScheduling() {
 		pts.WithAnnotations(map[string]string{VolcanoPodGroupAnnotationKey: rbg.Name})
 	}
-}
-
-func GetPodGroupAndLoadCrdName(rbg *workloadsv1alpha.RoleBasedGroup, runtimeController *builder.TypedBuilder[reconcile.Request], watchedWorkload *sync.Map, apiReader client.Reader) bool {
-	if rbg.IsKubeGangScheduling() {
-		_, podGroupExist := watchedWorkload.Load(KubePodGroupCrdName)
-		if podGroupExist {
-			return true
-		}
-		err := utils.CheckCrdExists(apiReader, KubePodGroupCrdName)
-		if err == nil {
-			watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
-			runtimeController.Owns(&schedv1alpha1.PodGroup{})
-			return true
-		}
-		return false
-	} else if rbg.IsVolcanoGangScheduling() {
-		_, podGroupExist := watchedWorkload.Load(VolcanoPodGroupCrdName)
-		if podGroupExist {
-			return true
-		}
-		err := utils.CheckCrdExists(apiReader, VolcanoPodGroupCrdName)
-		if err == nil {
-			watchedWorkload.LoadOrStore(VolcanoPodGroupCrdName, struct{}{})
-			runtimeController.Owns(&volcanoschedulingv1beta1.PodGroup{})
-			return true
-		}
-		return false
-	}
-	return false
 }
 
 func (r *PodGroupScheduler) createOrUpdateVolcanoPodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) error {
@@ -146,13 +138,7 @@ func (r *PodGroupScheduler) createOrUpdateKubePodGroup(ctx context.Context, rbg 
 			Name:      rbg.Name,
 			Namespace: rbg.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: gvk.GroupVersion().String(),
-					Kind:       gvk.Kind,
-					Name:       rbg.Name,
-					UID:        rbg.UID,
-					Controller: ptr.To[bool](true),
-				},
+				*metav1.NewControllerRef(rbg, rbg.GroupVersionKind()),
 			},
 		},
 		Spec: schedv1alpha1.PodGroupSpec{
@@ -208,23 +194,31 @@ func (r *PodGroupScheduler) createOrUpdateKubePodGroup(ctx context.Context, rbg 
 	return nil
 }
 
-func (r *PodGroupScheduler) deletePodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) error {
-	kubePodGroup := &schedv1alpha1.PodGroup{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, kubePodGroup); err == nil {
-		if deleteErr := r.client.Delete(ctx, kubePodGroup); deleteErr != nil {
-			return deleteErr
+func (r *PodGroupScheduler) deletePodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, watchedWorkload *sync.Map) error {
+	if _, podGroupExist := watchedWorkload.Load(KubePodGroupCrdName); podGroupExist {
+		kubePodGroup := &schedv1alpha1.PodGroup{}
+		if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, kubePodGroup); err == nil {
+			if metav1.IsControlledBy(kubePodGroup, rbg) {
+				if deleteErr := r.client.Delete(ctx, kubePodGroup); deleteErr != nil {
+					return deleteErr
+				}
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return err
 		}
-	} else if !apierrors.IsNotFound(err) {
-		return err
 	}
 
-	volcanoPodGroup := &volcanoschedulingv1beta1.PodGroup{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, volcanoPodGroup); err == nil {
-		if deleteErr := r.client.Delete(ctx, volcanoPodGroup); deleteErr != nil {
-			return deleteErr
+	if _, podGroupExist := watchedWorkload.Load(VolcanoPodGroupCrdName); podGroupExist {
+		volcanoPodGroup := &volcanoschedulingv1beta1.PodGroup{}
+		if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, volcanoPodGroup); err == nil {
+			if metav1.IsControlledBy(volcanoPodGroup, rbg) {
+				if deleteErr := r.client.Delete(ctx, volcanoPodGroup); deleteErr != nil {
+					return deleteErr
+				}
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return err
 		}
-	} else if !apierrors.IsNotFound(err) {
-		return err
 	}
 
 	return nil
