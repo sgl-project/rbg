@@ -146,8 +146,10 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 			)
 			ginkgo.It(
 				"rbg with volcano gang scheduling", func() {
+					template := wrappers.BuildBasicPodTemplateSpec().Obj()
+					template.Spec.SchedulerName = "volcano"
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
-						WithVolcanoGangScheduling("high-priority", "gpu-queue").
+						WithVolcanoGangScheduling("", "default").
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
 								{
@@ -161,7 +163,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: template,
 								},
 								{
 
@@ -174,7 +176,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: template,
 								},
 							},
 						).Obj()

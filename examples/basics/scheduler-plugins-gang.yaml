@@ -1,11 +1,12 @@
 apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
 metadata:
-  name: gang-scheduling
+  name: scheduler-plugins-gang
 spec:
   podGroupPolicy:
-    # using Kubernetes scheduler-plugins for gang-scheduling
-    kubeScheduling: {}
+    # using Kubernetes scheduler-plugins for scheduler-plugins-gang
+    kubeScheduling:
+      scheduleTimeoutSeconds: 120
   roles:
     - name: role-sts
       replicas: 1
