@@ -269,6 +269,14 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 
 					switch pg := obj.(type) {
 					case *volcanoschedulingv1beta1.PodGroup:
+						assert.Equal(t, tt.rbg.Name, pg.Name)
+						assert.Equal(t, tt.rbg.Namespace, pg.Namespace)
+						assert.Equal(t, int32(tt.rbg.GetGroupSize()), pg.Spec.MinMember)
+
+						// Check owner reference
+						assert.Len(t, pg.OwnerReferences, 1)
+						assert.Equal(t, tt.rbg.Name, pg.OwnerReferences[0].Name)
+						assert.Equal(t, "RoleBasedGroup", pg.OwnerReferences[0].Kind)
 					case *schedv1alpha1.PodGroup:
 						assert.Equal(t, tt.rbg.Name, pg.Name)
 						assert.Equal(t, tt.rbg.Namespace, pg.Namespace)
