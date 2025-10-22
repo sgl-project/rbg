@@ -1,4 +1,20 @@
-package main
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package status
 
 import (
 	"context"
@@ -10,8 +26,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/dynamic/fake"
 )
+
+var name string
+
+func init() {
+	name = "test-rbg"
+}
 
 func TestParseStatus(t *testing.T) {
 	resource := &unstructured.Unstructured{
@@ -130,12 +153,15 @@ func TestRunFunctionWithFakeClient(t *testing.T) {
 	roleStatuses, err := parseStatus(resource)
 	assert.NoError(t, err)
 	assert.Len(t, roleStatuses, 1)
-
+	old := statusOpts
+	defer func() {
+		statusOpts = old
+	}()
+	statusOpts = StatusOptions{cf: &genericclioptions.ConfigFlags{}}
 	printReport(resource, roleStatuses, "")
 }
 
 func TestRun(t *testing.T) {
-	// 创建测试数据
 	roleBasedGroup := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "workloads.x-k8s.io/v1alpha1",
@@ -162,22 +188,20 @@ func TestRun(t *testing.T) {
 		},
 	}
 
-	// 创建 fake dynamic client
+	// fake dynamic client
 	scheme := runtime.NewScheme()
 	client := fake.NewSimpleDynamicClient(scheme, roleBasedGroup)
 
-	// 保存原始的全局变量以便恢复
-	oldNamespace := namespace
-	oldName := name
+	old := statusOpts
 	defer func() {
-		namespace = oldNamespace
-		name = oldName
+		statusOpts = old
 	}()
+	statusOpts = StatusOptions{cf: &genericclioptions.ConfigFlags{}}
 
-	// 设置测试参数
-	namespace = "default"
+	ns := "default"
+	statusOpts.cf.Namespace = &ns
 	args := []string{"test-rbg"}
 
-	err := runWithClient(nil, args, client)
+	err := runWithClient(nil, args[0], client)
 	assert.NoError(t, err)
 }
