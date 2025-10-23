@@ -456,6 +456,7 @@ func TestGetPatchAndRestore(t *testing.T) {
 
 	v2 := v1.DeepCopy()
 	v2.Spec.Roles[0].Replicas = ptr.To(int32(2))
+	v2.Spec.Roles[0].Template.Spec.Containers[0].Image = "nginx:1.19.0"
 
 	patchV1ControllerRevision := &appsv1.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{
@@ -466,9 +467,9 @@ func TestGetPatchAndRestore(t *testing.T) {
 		},
 	}
 	restoreV1, _ := ApplyRevision(v2, patchV1ControllerRevision)
-	fmt.Println(string(patchV1))
-	assert.Equal(t, v1.Spec.Roles[0].Replicas, restoreV1.Spec.Roles[0].Replicas)
-	assert.True(t, reflect.DeepEqual(v1.Spec.PodGroupPolicy, restoreV1.Spec.PodGroupPolicy))
+	assert.Equal(t, v2.Spec.Roles[0].Replicas, restoreV1.Spec.Roles[0].Replicas)
+	assert.True(t, reflect.DeepEqual(v2.Spec.PodGroupPolicy, restoreV1.Spec.PodGroupPolicy))
+	v1.Spec.Roles[0].Replicas = ptr.To(int32(2))
 	assert.True(t, reflect.DeepEqual(v1.Spec.Roles, restoreV1.Spec.Roles))
 }
 

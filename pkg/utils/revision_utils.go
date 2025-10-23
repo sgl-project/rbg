@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
@@ -77,9 +78,16 @@ func EqualRevision(lhs, rhs *appsv1.ControllerRevision) bool {
 	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
 }
 
+// ApplyRevision deserializes the historical RBG Roles data stored in a ControllerRevision and applies it to the current RBG.
+// Note: The ControllerRevision does not store the actual Role replica counts. After deserialization, the replica counts from the current RBG Roles are used.
+// If a Role from the historical ControllerRevision does not exist in the current RBG, its replica count will default to 1.
 func ApplyRevision(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	revision *appsv1.ControllerRevision) (*workloadsv1alpha1.RoleBasedGroup, error) {
+	currentRolesReplicas := make(map[string]int32)
+	for _, role := range rbg.Spec.Roles {
+		currentRolesReplicas[role.Name] = *role.Replicas
+	}
 	str := &bytes.Buffer{}
 	err := unstructured.UnstructuredJSONScheme.Encode(rbg, str)
 	if err != nil {
@@ -93,6 +101,15 @@ func ApplyRevision(
 	if err = json.Unmarshal(patched, restoredRbg); err != nil {
 		return nil, err
 	}
+	for i := range restoredRbg.Spec.Roles {
+		currentNum, exist := currentRolesReplicas[restoredRbg.Spec.Roles[i].Name]
+		if exist {
+			restoredRbg.Spec.Roles[i].Replicas = &currentNum
+		} else {
+			restoredRbg.Spec.Roles[i].Replicas = ptr.To(int32(1))
+		}
+	}
+
 	return restoredRbg, nil
 }
 
@@ -242,9 +259,16 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 
 // getRBGPatch returns a strategic merge patch that can be applied to restore a RoleBasedGroup to a
 // previous version.
+// Note: This approach creates a copy of the original RBG object before performing the serialization.
+// In the serialized output, the replica count for each role will be set to the default value of 1.
 func getRBGPatch(rbg *workloadsv1alpha1.RoleBasedGroup) ([]byte, error) {
+	clone := rbg.DeepCopy()
+	for i := range clone.Spec.Roles {
+		clone.Spec.Roles[i].Replicas = nil
+	}
+
 	str := &bytes.Buffer{}
-	err := unstructured.UnstructuredJSONScheme.Encode(rbg, str)
+	err := unstructured.UnstructuredJSONScheme.Encode(clone, str)
 	if err != nil {
 		return nil, err
 	}
