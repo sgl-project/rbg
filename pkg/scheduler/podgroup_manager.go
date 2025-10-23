@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -170,15 +169,7 @@ func (r *PodGroupScheduler) createOrUpdateKubePodGroup(ctx context.Context, rbg 
 					return err
 				}
 				if !utils.CheckOwnerReference(podGroup.OwnerReferences, utils.GetRbgGVK()) {
-					podGroup.OwnerReferences = append(
-						podGroup.OwnerReferences, metav1.OwnerReference{
-							APIVersion: gvk.GroupVersion().String(),
-							Kind:       gvk.Kind,
-							Name:       rbg.Name,
-							UID:        rbg.UID,
-							Controller: ptr.To[bool](true),
-						},
-					)
+					podGroup.OwnerReferences = append(podGroup.OwnerReferences, *metav1.NewControllerRef(rbg, gvk))
 				}
 				podGroup.Spec.MinMember = int32(rbg.GetGroupSize())
 				updateErr := r.client.Update(ctx, podGroup)
