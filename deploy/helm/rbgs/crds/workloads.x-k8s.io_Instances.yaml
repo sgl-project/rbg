@@ -4,13 +4,13 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: Instances.workloads.x-k8s.io
+  name: instances.workloads.x-k8s.io
 spec:
   group: workloads.x-k8s.io
   names:
     kind: Instance
     listKind: InstanceList
-    plural: Instances
+    plural: instances
     shortNames:
     - ins
     singular: instance
@@ -31,7 +31,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Instance is the Schema for the duplicatesets API
+        description: Instance is the Schema for the instances API
         properties:
           apiVersion:
             description: |-
@@ -127,6 +127,7 @@ spec:
                   type: object
                 type: array
               readyPolicy:
+                default: InstanceReadyOnAllPodReady
                 description: |-
                   InstanceReadyPolicy specifies the policy for determining if the Instance is ready.
                   Defaults to `InstanceReadyOnAllPodReady`
