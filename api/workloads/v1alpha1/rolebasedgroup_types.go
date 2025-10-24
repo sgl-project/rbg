@@ -38,6 +38,10 @@ type RoleBasedGroupSpec struct {
 
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
+
+	// Coordination defines how roles should be coordinated
+	// +optional
+	Coordination []Coordination `json:"coordination,omitempty"`
 }
 
 // PodGroupPolicy represents a PodGroup configuration for gang-scheduling.
@@ -80,6 +84,33 @@ type VolcanoSchedulingPodGroupPolicySource struct {
 	// the PodGroup will not be scheduled. Defaults to `default` Queue with the lowest weight.
 	// +optional
 	Queue string `json:"queue,omitempty"`
+}
+
+type Coordination struct {
+	// Strategy defines the strategy for how roles should be coordinated.
+	// +optional
+	Strategy []RoleStrategy `json:"strategy,omitempty"`
+}
+
+type RoleStrategy struct {
+	// Role is the name of the role (e.g. "prefill", "decode", "router").
+	Role string `json:"role"`
+
+	// UpdateStrategy describes how this role should be updated.
+	UpdateStrategy *RoleUpdateStrategy `json:"updateStrategy,omitempty"`
+
+	// TODO: add more strategy here as needed. e.g. ScalingStrategy
+}
+
+// RoleUpdateStrategy describes how to update a role's workload.
+type RoleUpdateStrategy struct {
+	// Type is the update strategy type (e.g. "Recreate", "InplaceIfPossible").
+	// +kubebuilder:validation:Enum={Recreate, InplaceIfPossible}
+	Type string `json:"type,omitempty"`
+	// Partition indicates the ordinal at which the role should be partitioned for updates.
+	Partition *int32 `json:"partition,omitempty"`
+	// BatchSize defines the maximum number of replicas that can be updated at once.
+	BatchSize intstr.IntOrString `json:"batchSize,omitempty"`
 }
 
 // RolloutStrategy defines the strategy that the rbg controller
@@ -262,6 +293,19 @@ type RoleBasedGroupStatus struct {
 
 	// Status of individual roles
 	RoleStatuses []RoleStatus `json:"roleStatuses"`
+
+	// CoordinationState Status of coordination
+	CoordinationState []CoordinationState `json:"coordinationState,omitempty"`
+}
+
+type CoordinationState struct {
+	RoleState      map[string]RoleCoordinationState `json:"progress,omitempty"`
+	LastUpdateTime metav1.Time                      `json:"lastUpdateTime,omitempty"`
+}
+
+type RoleCoordinationState struct {
+	Strategy string `json:"strategy"`
+	State    string `json:"state"`
 }
 
 // RoleStatus shows the current state of a specific role

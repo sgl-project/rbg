@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -120,24 +121,20 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Info("Current revision need to be updated")
 		if err := r.client.Create(ctx, expectedRevision); err != nil {
 			logger.Error(err, fmt.Sprintf("Failed to create revision %v", expectedRevision))
-			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
+			r.recorder.Event(
+				rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup",
+			)
 			return ctrl.Result{}, err
 		} else {
 			logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
-			r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
+			r.recorder.Event(
+				rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup",
+			)
 		}
 	}
 	expectedRolesRevisionHash, err := utils.GetRolesRevisionHash(expectedRevision)
 	if err != nil {
 		logger.Error(err, "Failed to get roles revision hash")
-		return ctrl.Result{}, err
-	}
-
-	// Process roles in dependency order
-	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
-	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
-	if err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
 		return ctrl.Result{}, err
 	}
 
@@ -148,8 +145,57 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	if rbg.Spec.Coordination != nil {
+		r.reconcileCoordination(rbg, expectedRolesRevisionHash)
+	}
+
 	// Reconcile role, add & update
-	roleStatuses := []workloadsv1alpha1.RoleStatus{}
+	roleStatuses, updateStatus, err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash)
+
+	if updateStatus {
+		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+				"Failed to update status for %s: %v", rbg.Name, err,
+			)
+			return ctrl.Result{}, err
+		}
+	}
+
+	// delete role
+	if err := r.deleteRoles(ctx, rbg); err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, "delete role error",
+			"Failed to delete roles for %s: %v", rbg.Name, err,
+		)
+		return ctrl.Result{}, err
+	}
+
+	// delete expired controllerRevision
+	if _, err := utils.CleanExpiredRevision(ctx, r.client, rbg); err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, "delete expired revision error",
+			"Failed to delete expired revision for %s: %v", rbg.Name, err,
+		)
+		return ctrl.Result{}, err
+	}
+
+	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
+	return ctrl.Result{}, nil
+}
+
+func (r *RoleBasedGroupReconciler) reconcileRoles(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, expectedRolesRevisionHash map[string]string,
+) ([]workloadsv1alpha1.RoleStatus, bool, error) {
+
+	// Process roles in dependency order
+	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
+	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var roleStatuses []workloadsv1alpha1.RoleStatus
 	var updateStatus bool
 	for _, roleList := range sortedRoles {
 		var errs error
@@ -221,40 +267,80 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 
 		if errs != nil {
-			return ctrl.Result{}, errs
+			return nil, false, errs
 		}
 	}
 
-	if updateStatus {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err,
-			)
-			return ctrl.Result{}, err
+	return roleStatuses, updateStatus, nil
+}
+
+func (r *RoleBasedGroupReconciler) reconcileCoordination(
+	rbg *workloadsv1alpha1.RoleBasedGroup, expectedRolesRevisionHash map[string]string,
+) error {
+
+	roleCoordinationState := workloadsv1alpha1.RoleCoordinationState{}
+	// if coordination is enabled, process coordination
+	for _, coordination := range rbg.Spec.Coordination {
+
+		isCompleted, err := r.isCoordinationRoleCompleted(rbg, coordination, expectedRolesRevisionHash)
+		if err != nil {
+			return err
 		}
+
+		for _, strategy := range coordination.Strategy {
+			if strategy.UpdateStrategy != nil {
+
+				role, err := rbg.GetRole(strategy.Role)
+				if err != nil {
+					return err
+				}
+
+				role.RolloutStrategy = &workloadsv1alpha1.RolloutStrategy{
+					Type: workloadsv1alpha1.RollingUpdateStrategyType,
+					RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+						MaxUnavailable: strategy.UpdateStrategy.BatchSize,
+					},
+				}
+
+				if strategy.UpdateStrategy.Partition != nil {
+					role.RolloutStrategy.RollingUpdate.Partition = strategy.UpdateStrategy.Partition
+				} else {
+					rollingStep, err := intstr.GetScaledValueFromIntOrPercent(
+						&role.RolloutStrategy.RollingUpdate.MaxUnavailable, int(*role.Replicas), false,
+					)
+					if err != nil {
+						return err
+					}
+					if isCompleted {
+						// calculate partition
+						role.RolloutStrategy.RollingUpdate.Partition = ptr.To(
+							int32(max(int(*role.RolloutStrategy.RollingUpdate.Partition)-rollingStep, 0)),
+						)
+					}
+
+				}
+
+				roleCoordinationState.Strategy = "UpdateStrategy"
+				roleCoordinationState.State = fmt.Sprintf("Partition:%d", *role.RolloutStrategy.RollingUpdate.Partition)
+			}
+		}
+
 	}
 
-	// delete role
-	if err := r.deleteRoles(ctx, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, "delete role error",
-			"Failed to delete roles for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
-	}
+	return nil
+}
 
-	// delete expired controllerRevision
-	if _, err := utils.CleanExpiredRevision(ctx, r.client, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, "delete expired revision error",
-			"Failed to delete expired revision for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
+func (r *RoleBasedGroupReconciler) isCoordinationRoleCompleted(
+	rbg *workloadsv1alpha1.RoleBasedGroup, coordination workloadsv1alpha1.Coordination,
+	expectedRolesRevisionHash map[string]string,
+) (bool, error) {
+	if len(rbg.Status.CoordinationState) == 0 {
+		return false, nil
 	}
+	// check coordination state
+	panic("implement me")
 
-	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
-	return ctrl.Result{}, nil
+	return false, nil
 }
 
 func (r *RoleBasedGroupReconciler) deleteRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
@@ -394,12 +480,16 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 
 	return r.client.Create(ctx, rbgScalingAdapter)
 }
-func (r *RoleBasedGroupReconciler) getCurrentRevision(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (*appsv1.ControllerRevision, error) {
-	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
-		MatchLabels: map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+func (r *RoleBasedGroupReconciler) getCurrentRevision(
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+) (*appsv1.ControllerRevision, error) {
+	selector, err := metav1.LabelSelectorAsSelector(
+		&metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			},
 		},
-	})
+	)
 	if err != nil {
 		return nil, err
 	}
