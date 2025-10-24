@@ -119,61 +119,60 @@ preventing performance degradation due to imbalanced P:D ratios.
 Add a new `Coordination` field to the RoleBasedGroup spec:
 
 ```go
+package test
 
 type RoleBasedGroupSpec struct {
-// Existing fields...
+	// Existing fields...
 
-// Coordination defines how roles should be coordinated 
-// +optional
-Coordination []Coordination `json:"coordination,omitempty"`
+	// Coordination defines how roles should be coordinated 
+	// +optional
+	Coordination []Coordination `json:"coordination,omitempty"`
 }
 
 type Coordination struct {
-Strategy []RoleStrategy `json:"strategy,omitempty"`
+	Strategy []RoleStrategy `json:"strategy,omitempty"`
 }
 
 type RoleStrategy struct {
-// Role is the name of the role (e.g. "prefill", "decode", "router").
-Role string `json:"role"`
+	// Role is the name of the role (e.g. "prefill", "decode", "router").
+	Role string `json:"role"`
 
-// UpdateStrategy describes how this role should be updated.
-UpdateStrategy *RoleUpdateStrategy `json:"updateStrategy,omitempty"`
+	// UpdateStrategy describes how this role should be updated.
+	UpdateStrategy *RoleUpdateStrategy `json:"updateStrategy,omitempty"`
 
-// TODO: add more strategy here as needed. e.g. ScalingStrategy
+	// TODO: add more strategy here as needed. e.g. ScalingStrategy
 }
 
 // RoleUpdateStrategy describes how to update a role's workload.
 type RoleUpdateStrategy struct {
-// Type is the update strategy type (e.g. "Recreate", "InplaceIfPossible").
-Type string `json:"type,omitempty"`
-Partition *int32 `json:"partition,omitempty"`
-MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
-MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
+	// Type is the update strategy type (e.g. "Recreate", "InplaceIfPossible").
+	Type      string             `json:"type,omitempty"`
+	Partition *int32             `json:"partition,omitempty"`
+	BatchSize intstr.IntOrString `json:"batchSize,omitempty"`
 }
 
 // status
 type RoleBasedGroupStatus struct {
-// Existing fields...
+	// Existing fields...
 
-// CoordinationState Status of coordination
-CoordinationState []CoordinationState `json:"coordinationState,omitempty"`
+	// CoordinationState Status of coordination
+	CoordinationState []CoordinationState `json:"coordinationState,omitempty"`
 }
 
 type CoordinationState struct {
-RoleState      map[string]RoleCoordinationState `json:"progress,omitempty"`
-LastUpdateTime metav1.Time                      `json:"lastUpdateTime,omitempty"`
+	RoleState      map[string]RoleCoordinationState `json:"progress,omitempty"`
+	LastUpdateTime metav1.Time                      `json:"lastUpdateTime,omitempty"`
 }
 
 type RoleCoordinationState struct {
-Strategy string `json:"strategy"`
-State    string `json:"state"`
+	Strategy string `json:"strategy"`
+	State    string `json:"state"`
 }
-
 
 ```
 
-#### Yaml Example
-
+#### Coordinated-roles Upgrading Yaml Example
+- Automatic updating without pause
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
@@ -184,23 +183,40 @@ spec:
     - strategy: # strategy 1: reconcile prefill & decode at 2:1 ratio
         - role: prefill
           updateStrategy:
-            type: Recreate # [Recreate, InplaceIfPossible]
-            maxSurge: 0
-            partition: 0
-            maxUnavailable: 2
+            type: Recreate # [Recreate, InplaceIfPossible], default is Recreate
+            batchSize: 2
         - role: decode
           updateStrategy:
             type: Recreate # [Recreate, InplaceIfPossible]
-            maxSurge: 0
-            partition: 0
-            maxUnavailable: 1
+            batchSize: 1
     - strategy: # strategy 2: reconcile router & planner at 1:1 ratio
         - role: router
           updateStrategy:
-            maxUnavailable: 1
+            batchSize: 1
         - role: planner
           updateStrategy:
-            maxUnavailable: 1
+            batchSize: 1
+```
+
+- Updating with pause
+40 prefill pods and 10 decode pods were upgraded in a rolling update with a 4:1 ratio of prefill to decode.
+After rolling updates of 20 prefill pods and 5 decode pods, the process was paused.
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: role-coordination
+spec:
+  coordination:
+    - strategy: # strategy 1: reconcile prefill & decode at 2:1 ratio
+        - role: prefill
+          updateStrategy:
+            partition: 20
+            batchSize: 4
+        - role: decode
+          updateStrategy:
+            partition: 5
+            batchSize: 4
 ```
 
 ### Risks and Mitigations
