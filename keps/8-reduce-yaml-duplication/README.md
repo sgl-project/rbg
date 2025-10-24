@@ -343,5 +343,5 @@ roles:
 
 ## Implementation History
 
-- **2025-01-21**: Initial KEP-8 proposal submitted
-- **2025-01-23**: Revised to focus on RoleTemplates (Phase 1), defer ExtraArgs
+- **2025-10-21**: Initial KEP-8 proposal submitted
+- **2025-10-24**: Revised to focus on RoleTemplates (Phase 1), defer ExtraArgs
