@@ -145,7 +145,7 @@ build-cli:  ## Build cli binary.
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
 	GOPROXY=${GOPROXY} \
-	go build -mod vendor -v -o bin/kubectl-rbg-status -ldflags $(ldflags) cmd/cli/main.go
+	go build -mod vendor -v -o bin/kubectl-rbg -ldflags $(ldflags) cmd/cli/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
