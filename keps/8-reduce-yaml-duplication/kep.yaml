@@ -1,0 +1,28 @@
+title: Reduce YAML Duplication via RoleTemplates
+kep-number: 8
+authors:
+  - "@LikiosSedo"
+status: provisional
+creation-date: 2025-10-24
+reviewers:
+  - "@gujingit"
+  - "@whybeyoung"
+  - "@Syspretor"
+approvers:
+  - "@gujingit"
+  - "@whybeyoung"
+  - "@Syspretor"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v0.6.0"
+
+# The milestone at which this feature was, or is targeted to be, at each stage.
+milestone:
+  alpha: "v0.6.0"
+  beta: "v0.6.0"
+  stable: "v0.6.0"
