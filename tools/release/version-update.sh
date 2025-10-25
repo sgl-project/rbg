@@ -46,30 +46,38 @@ if [[ -z "$VERSION" || -z "$GIT_SHA" ]]; then
     exit 1
 fi
 
+# Create appVersion by removing leading 'v' from TAG
+APP_VERSION=$(echo "$TAG" | sed 's/^v//')
 echo "Detected Makefile version: $VERSION"
 echo "Detected Git SHA: $GIT_SHA"
 echo "Generated image TAG: $TAG"
+echo "Generated appVersion: $APP_VERSION"
 
-# Update Chart.yaml version
+# Update Chart.yaml
 CHART_FILE="${CHARTS_DIR}/rbgs/Chart.yaml"
 if [[ -f "$CHART_FILE" ]]; then
-    # Update version field while preserving YAML structure
+    # Update version field
     sed -i.bak -E "s/^(version:[[:space:]]+).*/\1${CLEAN_VERSION}/" "$CHART_FILE"
+    
+    # Update appVersion field (remove any existing quotes)
+    sed -i.bak -E "s/^(appVersion:[[:space:]]+).*/\1\"${APP_VERSION}\"/" "$CHART_FILE"
+    
     rm -f "${CHART_FILE}.bak"
-    echo "Updated $CHART_FILE version to $CLEAN_VERSION"
+    echo "Updated $CHART_FILE:"
+    echo "  version: $CLEAN_VERSION"
+    echo "  appVersion: \"$APP_VERSION\""
 else
     echo "Error: $CHART_FILE not found at ${CHART_FILE}!"
     exit 1
 fi
 
-# Update values.yaml image tag
+# Update values.yaml
 VALUES_FILE="${CHARTS_DIR}/rbgs/values.yaml"
 if [[ -f "$VALUES_FILE" ]]; then
-    # Update tag field, handling both quoted and unquoted values
-    # Adjust indentation as needed (2 spaces shown here)
+    # Update tag field
     sed -i.bak -E "s/^(  tag:[[:space:]]+).*/\1\"$TAG\"/" "$VALUES_FILE"
     rm -f "${VALUES_FILE}.bak"
-    echo "Updated $VALUES_FILE tag to $TAG"
+    echo "Updated $VALUES_FILE tag to \"$TAG\""
 else
     echo "Error: $VALUES_FILE not found at ${VALUES_FILE}!"
     exit 1
