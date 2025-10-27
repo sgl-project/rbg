@@ -265,6 +265,67 @@ flowchart TD
 
 This means patchLeaderTemplate/patchWorkerTemplate apply **after** roleTemplate merging.
 
+#### Update Workflow
+
+When a roleTemplate is updated, the controller automatically propagates changes to all referencing roles:
+
+```mermaid
+flowchart TD
+    A[User Updates roleTemplate] --> B[Reconcile & Calculate Expected Revision]
+    B --> C{Revision Changed?}
+
+    C -->|No| D[No Action Needed]
+    C -->|Yes| E[Create New ControllerRevision]
+
+    E --> F[For Each Role: Compare Hash Labels]
+    F --> G{Hash Different?}
+
+    G -->|No| H[Skip Role]
+    G -->|Yes| I[Update Workload via SSA]
+    I --> J[Trigger Rolling Update]
+```
+
+**Change Detection Mechanism**:
+- Controller computes ControllerRevision hash from entire RBG Spec (including roleTemplates)
+- When roleTemplate changes → RBG Spec changes → New Revision created with incremented number
+- All role hashes are recalculated from the new Revision
+
+**Update Trigger**:
+- Each workload carries a `role-revision-hash-{roleName}` label
+- Reconciler compares current label value with expected hash from new Revision
+- If different → Resolves template (merging updated roleTemplate + role.template) → Updates workload via Server-Side Apply
+- Workload controller (StatefulSet/Deployment/LWS) detects PodTemplate change → Triggers rolling update per rolloutStrategy
+
+#### ControllerRevision Evolution During roleTemplate Update
+
+**Example Scenario**: User updates `spec.roleTemplates[0].template.spec.containers[0].image: v1.0 → v2.0`
+
+| Phase | ControllerRevision State | Role Hashes | Workload State | Action |
+|-------|-------------------------|-------------|----------------|---------|
+| **Before Update** | `my-rbg-abc123-1`<br/>• Revision: 1<br/>• Data contains image: v1.0 | prefill: hash1<br/>decode: hash2 | StatefulSets running with:<br/>• Labels: hash1, hash2<br/>• Pods: image v1.0 | - |
+| **After roleTemplate Update** | **New**: `my-rbg-xyz789-2`<br/>• Revision: 2<br/>• Data contains image: v2.0<br/>**Old**: abc123-1 (kept for history) | Recalculated:<br/>prefill: hash3<br/>decode: hash4 | Labels updated: hash1→hash3, hash2→hash4<br/>PodTemplate updated: v1.0→v2.0 | Server-Side Apply updates workloads |
+| **Rolling Update** | Active: xyz789-2<br/>History: abc123-1 | prefill: hash3<br/>decode: hash4 | Pods replacing: v1.0 → v2.0<br/>Per rolloutStrategy settings | StatefulSet Controller manages rollout |
+
+**Key Points**:
+1. **Revision Number Increments**: Each RBG Spec change creates a new Revision (1 → 2)
+2. **Hash Recalculation**: Role hashes are derived from the Revision, so roleTemplate changes automatically propagate
+3. **Label-based Detection**: Workload updates triggered by comparing current vs expected role hash labels
+4. **History Retention**: Old Revisions kept (up to 5) for rollback capability
+5. **Automatic Propagation**: All roles referencing the updated roleTemplate receive updates simultaneously
+
+**Rollback Behavior**:
+```yaml
+# User applies previous RBG configuration
+kubectl apply -f rbg-with-image-v1.0.yaml
+
+# Controller creates NEW Revision with old content:
+# - my-rbg-abc123-5 (same hash abc123, new number 5)
+# - Role hashes return to hash1, hash2
+# - Workloads roll back: v2.0 → v1.0
+```
+
+Rollback creates a new Revision (incrementing number) with previous content, maintaining linear history while allowing bidirectional updates.
+
 ### Test Plan
 
 **Unit Tests**:
@@ -345,3 +406,4 @@ roles:
 
 - **2025-10-21**: Initial KEP-8 proposal submitted
 - **2025-10-24**: Revised to focus on RoleTemplates (Phase 1), defer ExtraArgs
+- **2025-10-27**: Supplemented Controller Behavior section with update workflow and ControllerRevision evolution details
