@@ -117,8 +117,8 @@ func Reconcile() {
     currentRevision, err := r.getCurrentRevision(ctx, rbg)
     expectedRevision, err := utils.NewRevision(ctx, r.client, rbg)
     if !utils.EqualRevision(currentRevision, expectedRevision) {
-		  r.client.Create(ctx, expectedRevision)
-	}
+      err := r.client.Create(ctx, expectedRevision)
+    }
 
     reconciler.Reconciler(roleCtx, rbg, role, roleRevisionKey);
     ...
@@ -129,7 +129,7 @@ We now use each role's own revision, instead of the RBG's revision, as the label
 
 ---
 
-### Update Strategies(Workerload, eg. LWS)
+### Update Strategies(Workload, eg. LWS)
 ```go
 func (r *LeaderWorkerSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
