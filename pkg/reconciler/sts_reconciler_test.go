@@ -912,7 +912,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				retPartition, retReplicas, retErr := r.rollingUpdateParameters(
-					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated, rbg.GetCommonLabelsFromRole(&rbg.Spec.Roles[0]))
+					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated)
 
 				if tt.wantErr != (retErr != nil) {
 					t.Errorf("rollingUpdateParameters() error = %v, wantErr %v", retErr, tt.wantErr)

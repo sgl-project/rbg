@@ -44,7 +44,7 @@ func (s *StatefulSetEqualChecker) ExpectWorkloadEqual(rbg *v1alpha1.RoleBasedGro
 	svc := &v1.Service{}
 	err = s.client.Get(
 		s.ctx, client.ObjectKey{
-			Name:      rbg.GetWorkloadName(&role),
+			Name:      rbg.GetServiceName(&role),
 			Namespace: rbg.Namespace,
 		}, svc,
 	)
