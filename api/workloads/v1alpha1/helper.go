@@ -138,3 +138,15 @@ func (rbgsa *RoleBasedGroupScalingAdapter) ContainsRBGOwner(rbg *RoleBasedGroup)
 	}
 	return false
 }
+
+func (p *PodGroupPolicy) EnableGangScheduling() bool {
+	return p.IsKubeGangScheduling() || p.IsVolcanoGangScheduling()
+}
+
+func (p *PodGroupPolicy) IsVolcanoGangScheduling() bool {
+	return p != nil && p.PodGroupPolicySource.VolcanoScheduling != nil
+}
+
+func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
+	return p != nil && p.PodGroupPolicySource.KubeScheduling != nil
+}
