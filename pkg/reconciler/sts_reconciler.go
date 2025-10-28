@@ -108,8 +108,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	}
 
 	stsUpdated := !semanticallyEqual || !revisionHashEqual
-	roleCommonLabels := rbg.GetCommonLabelsFromRole(role)
-	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated, roleCommonLabels)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated)
 	if err != nil {
 		return err
 	}
@@ -165,9 +164,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
 
 func (r *StatefulSetReconciler) rollingUpdateParameters(
-	ctx context.Context,
-	role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool,
-	roleCommonLabels map[string]string,
+	ctx context.Context, role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool,
 ) (stsPartition int32, replicas int32, err error) {
 	logger := log.FromContext(ctx)
 	roleReplicas := *role.Replicas
@@ -230,7 +227,7 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 		return 0, roleReplicas, nil
 	}
 
-	states, err := r.getReplicaStates(ctx, sts, roleCommonLabels)
+	states, err := r.getReplicaStates(ctx, sts)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -290,9 +287,7 @@ type replicaState struct {
 	ready   bool
 }
 
-func (r *StatefulSetReconciler) getReplicaStates(
-	ctx context.Context, sts *appsv1.StatefulSet, roleCommonLabels map[string]string,
-) ([]replicaState, error) {
+func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv1.StatefulSet) ([]replicaState, error) {
 	logger := log.FromContext(ctx)
 	if sts == nil || sts.UID == "" {
 		return nil, fmt.Errorf("statefulset has not been created")
@@ -319,7 +314,7 @@ func (r *StatefulSetReconciler) getReplicaStates(
 		sortedPods[idx] = podList.Items[i]
 	}
 
-	highestRevision, err := r.getHighestRevision(ctx, sts, roleCommonLabels)
+	highestRevision, err := r.getHighestRevision(ctx, sts, podSelector)
 	if err != nil {
 		logger.Error(fmt.Errorf("get sts highest controller revision error"), "sts", sts.Name)
 		return nil, err
