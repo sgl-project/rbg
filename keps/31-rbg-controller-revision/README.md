@@ -155,4 +155,4 @@ To ensure that changes to the fields of interest are detected in real time and a
 
 ## Lifecycle Management
 - Each ControllerRevision created by RBG will have an `OwnerReference` to its RBG, ensuring their lifecycles align.
-- Historical versions exceeding 10 will be **automatically garbage-collected**.
+- Historical versions exceeding 5 will be **automatically garbage-collected**.
