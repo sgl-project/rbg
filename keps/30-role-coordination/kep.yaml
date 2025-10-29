@@ -1,7 +1,8 @@
 title: KEP Template
-kep-number: 21
+kep-number: 30
 authors:
   - "zibai.gj@alibaba-inc.com"
+  - "tongyuguo@outlook.com"
 status: implementable
 creation-date: 2025-10-17
 reviewers:
