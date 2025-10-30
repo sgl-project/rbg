@@ -474,11 +474,16 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	stsLabel := maps.Clone(matchLabels)
 	stsLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	if err != nil {
+		return nil, err
+	}
 	// construct statefulset apply configuration
 	statefulSetConfig := appsapplyv1.StatefulSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(
 			appsapplyv1.StatefulSetSpec().
-				WithServiceName(rbg.GetWorkloadName(role)).
+				// WithServiceName(rbg.GetWorkloadName(role)).
+				WithServiceName(svcName).
 				WithReplicas(*role.Replicas).
 				WithTemplate(podTemplateApplyConfiguration).
 				WithPodManagementPolicy(appsv1.ParallelPodManagement).
