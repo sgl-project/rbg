@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # @Author: zibai.gj
 import argparse
+import json
+import signal
 import sys
 import time
 import traceback
@@ -17,8 +19,12 @@ from patio.metrics.engine_collector import EngineCollector
 from patio.metrics.engine_metric_rules import get_metric_standard_rules
 from patio.metrics.metrics import REQUEST_COUNT, REQUEST_LATENCY, patio_registry
 
+from patio.topo.client.base_topo_client import GroupTopoClient
+
 from fastapi import FastAPI, Request
 import uvicorn
+
+from patio.topo.factory import create_topo_client
 
 app = FastAPI(title="Patio Server", debug=False)
 
@@ -26,6 +32,7 @@ app = FastAPI(title="Patio Server", debug=False)
 app.include_router(server_router)
 app.include_router(lora_router)
 
+topo_client: GroupTopoClient = None
 
 # Middleware to collect metrics
 @app.middleware("http")
@@ -57,6 +64,44 @@ def _init_metrics(scrape_metrics: bool):
         patio_registry.register(engine_collector)
 
 
+def stop_topo_client_signal_handler(signal, frame):
+    global topo_client
+    topo_client.unregister()
+    sys.exit(0)
+
+def run_topo_client(worker_instance_info: str) -> GroupTopoClient:
+    logger = init_logger(__name__)
+    logger.info("Starting Patio TopoClient...")
+    logger.info(f"worker instance info: {worker_instance_info}")
+
+    worker_dict = None
+    try:
+        worker_dict = json.loads(worker_instance_info)
+    except json.decoder.JSONDecodeError as e:
+        logger.error(f"Failed to decode worker instance info: {worker_instance_info}: {e}")
+        sys.exit(1)
+
+    if not worker_dict.get("topo_type"):
+        topo_type = envs.TOPO_TYPE
+        if not topo_type:
+            logger.error(f"No topo_type defined for worker instance, either --instance-info or env variable {envs.TOPO_TYPE} should be set")
+            sys.exit(1)
+        logger.info(f"Found topo type from env variable {envs.TOPO_TYPE}: {topo_type}")
+        worker_dict["topo_type"] = topo_type
+
+    try:
+        global topo_client
+        topo_client = create_topo_client(worker_dict["topo_type"])
+        topo_client.register("", worker_dict)
+        signal.signal(signal.SIGTERM, stop_topo_client_signal_handler)
+        signal.signal(signal.SIGINT, stop_topo_client_signal_handler)
+
+        return topo_client
+    except Exception as e:
+        logger.error(f"Failed to start Patio TopoClient: {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run patio runtime server")
     parser.add_argument(
@@ -82,6 +127,11 @@ def main():
     logger.info("Use %s to start up runtime server", args)
 
     _init_metrics(args.scrape_engine_metrics)
+
+    if args.instance_info:
+        topo_client = run_topo_client(args.instance_info)
+    else:
+        topo_client = None
 
     # Run the server
     try:
