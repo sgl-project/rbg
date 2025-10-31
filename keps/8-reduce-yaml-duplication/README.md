@@ -2,7 +2,7 @@
 
 ## Summary
 
-This KEP introduces `roleTemplates` field in RBG spec, enabling platform teams to define reusable Pod configurations that multiple roles can reference via `templateRef`. Roles use a `patchTemplate` field to overlay role-specific configurations. Uses Kubernetes Strategic Merge Patch for merging, reducing YAML duplication by approximately 20%.
+This KEP introduces `roleTemplates` field in RBG spec, enabling platform teams to define reusable Pod configurations that multiple roles can reference via `templateRef`. Roles use a `templatePatch` field to overlay role-specific configurations. Uses Kubernetes Strategic Merge Patch for merging, reducing YAML duplication by approximately 20%.
 
 ## Motivation
 
@@ -14,7 +14,7 @@ Managing multi-role RBG deployments requires duplicating base configurations acr
 ### Goals
 - Introduce `spec.roleTemplates` array for reusable Pod configurations
 - Enable `role.templateRef` to reference templates within same RBG
-- Introduce `role.patchTemplate` field for overlay configurations when using RoleTemplate
+- Introduce `role.templatePatch` field for overlay configurations when using RoleTemplate
 - Use Kubernetes Strategic Merge Patch for configuration merging
 - No template variables (no `{{.var}}` syntax)
 
@@ -36,8 +36,7 @@ Managing multi-role RBG deployments requires duplicating base configurations acr
 ### Risks and Mitigations
 
  - **Field naming ambiguity**: Using single field name for both complete config and overlay could cause confusion
-    - **Mitigation**: Design separate fields (`template` for traditional mode, `patchTemplate` for RoleTemplate mode) with mutual exclusivity, ensuring clear semantics and naming consistency with
-  `patchLeaderTemplate`/`patchWorkerTemplate`
+    - **Mitigation**: Design separate fields (`template` for traditional mode, `templatePatch` for overlay mode) with mutual exclusivity, following Kubernetes ecosystem naming conventions (e.g., Argo Workflows `podSpecPatch`)
 
 - **Strategic Merge complexity**: Users may not understand how volumes, env, and other fields merge, leading to configuration errors
   - **Mitigation 1**: Provide clear merge behavior table in documentation, explaining which fields merge by name vs complete replacement
@@ -46,12 +45,32 @@ Managing multi-role RBG deployments requires duplicating base configurations acr
 - **Template reference errors**: Roles referencing non-existent templates cause deployment failures
   - **Mitigation**: Controller validates templateRef exists during reconciliation and returns explicit error messages
 
-- **Unexpected field overrides**: Users unclear which roleTemplate fields are overridden by role.patchTemplate
+- **Unexpected field overrides**: Users unclear which roleTemplate fields are overridden by role.templatePatch
   - **Mitigation**: Document Strategic Merge behavior explicitly - resources/command use complete replacement, volumes/env merge by name
 
 ## Design Details
 
-### Field Semantics: Template vs PatchTemplate
+### Naming Convention
+
+KEP-8 introduces the `templatePatch` field, following the `{target}Patch` naming pattern to align with Kubernetes ecosystem conventions:
+
+- **Kubernetes ecosystem precedent**: Argo Workflows uses `podSpecPatch` (not `patchPodSpec`)
+- **Semantic clarity**: `templatePatch` clearly indicates "a patch for the template" (noun + modifier)
+- **API design principle**: Field names should describe content/type (noun), not operations (verb)
+
+**Current naming landscape**:
+```yaml
+# KEP-8 (new, aligned with ecosystem)
+role.templatePatch          # {target}Patch pattern
+
+# Existing LWS fields (retained for backward compatibility)
+leaderWorkerSet.patchLeaderTemplate  # patch{Target} pattern
+leaderWorkerSet.patchWorkerTemplate  # patch{Target} pattern
+```
+
+**Future consideration**: A separate proposal may standardize existing LWS fields to `leaderTemplatePatch` / `workerTemplatePatch` for consistency, but this is deferred to avoid breaking changes in v1alpha1.
+
+### Field Semantics: Template vs TemplatePatch
 
 **Traditional Mode**:
 ```yaml
@@ -71,17 +90,18 @@ roleTemplates:
 roles:
 - name: prefill
   templateRef: {name: base}
-  patchTemplate:         # Overlay configuration
+  templatePatch:         # Overlay configuration
     spec: {...}
 ```
 
 **Key Points**:
-- `template` and `patchTemplate` are mutually exclusive in `role`
-- Consistent naming: `role.patchTemplate`, `patchLeaderTemplate`, `patchWorkerTemplate` all follow `patch{Xxx}Template` pattern
+- `template` and `templatePatch` are mutually exclusive in `role`
+- Naming follows `{target}Patch` convention (aligned with Argo Workflows `podSpecPatch`)
+- Note: Existing LWS fields `patchLeaderTemplate`/`patchWorkerTemplate` retain current naming for backward compatibility
 
 **Validation**:
 
-| templateRef | template | patchTemplate |
+| templateRef | template | templatePatch |
 |-------------|----------|---------------|
 | Not set | Required | Rejected |
 | Set | Rejected | Required |
@@ -135,7 +155,7 @@ spec:
     replicas: 2
     templateRef:
       name: sglang-base
-    patchTemplate:
+    templatePatch:
       spec:
         containers:
         - name: sglang
@@ -161,7 +181,7 @@ spec:
     replicas: 1
     templateRef:
       name: sglang-base
-    patchTemplate:
+    templatePatch:
       spec:
         containers:
         - name: sglang
@@ -224,7 +244,7 @@ spec:
     replicas: 1
     templateRef:
       name: sglang-base
-    patchTemplate:
+    templatePatch:
       spec:
         containers:
         - name: sglang
@@ -259,16 +279,16 @@ spec:
             - "python3 -m sglang.launch_server --model-path /models/Qwen3-32B --tp 2 --dist-init-addr $(LWS_LEADER_ADDRESS):20000 --nnodes $(LWS_GROUP_SIZE) --node-rank $(LWS_WORKER_INDEX)"
 ```
 
-In LWS scenarios, roleTemplate provides shared configuration (image, volumes, resources), `role.patchTemplate` adds role-specific config, and patchLeaderTemplate/patchWorkerTemplate customize distributed commands. Note the consistent `patch{Xxx}Template` naming.
+In LWS scenarios, roleTemplate provides shared configuration (image, volumes, resources), `role.templatePatch` adds role-specific config, and patchLeaderTemplate/patchWorkerTemplate customize distributed commands.
 
 **Merge Behavior**:
 
 | Field | Merge Strategy | Example |
 |-------|---------------|---------|
-| Volumes | Merge by `name` | Template has volume "model", patchTemplate adds "cache" → Both present |
-| Env | Merge by `name` | Template has env "POD_IP", patchTemplate adds "ROLE" → Both present |
-| Resources | Replace entirely | Template has 2 GPU, patchTemplate specifies 4 GPU → 4 GPU used |
-| Command | Replace entirely | Template has base cmd, patchTemplate specifies full cmd → patchTemplate cmd used |
+| Volumes | Merge by `name` | Template has volume "model", templatePatch adds "cache" → Both present |
+| Env | Merge by `name` | Template has env "POD_IP", templatePatch adds "ROLE" → Both present |
+| Resources | Replace entirely | Template has 2 GPU, templatePatch specifies 4 GPU → 4 GPU used |
+| Command | Replace entirely | Template has base cmd, templatePatch specifies full cmd → templatePatch cmd used |
 
 > Uses Kubernetes [Strategic Merge Patch](https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/#use-a-strategic-merge-patch-to-update-a-deployment) for native merge semantics.
 
@@ -279,9 +299,9 @@ In LWS scenarios, roleTemplate provides shared configuration (image, volumes, re
 ```mermaid
 flowchart TD
     A[Reconcile Role] --> B{Has templateRef?}
-    B -->|Yes| C[Validate: patchTemplate is set]
+    B -->|Yes| C[Validate: templatePatch is set]
     C --> D[Fetch roleTemplate by name]
-    D --> E[Strategic Merge: roleTemplate.template + role.patchTemplate]
+    D --> E[Strategic Merge: roleTemplate.template + role.templatePatch]
     E --> F[Create StatefulSet]
     B -->|No| G[Validate: template is set]
     G --> H[Use role.template directly]
@@ -292,9 +312,9 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[Reconcile Role] --> B{Has templateRef?}
-    B -->|Yes| C[Validate: patchTemplate is set]
+    B -->|Yes| C[Validate: templatePatch is set]
     C --> D[Fetch roleTemplate by name]
-    D --> E[Strategic Merge: roleTemplate.template + role.patchTemplate]
+    D --> E[Strategic Merge: roleTemplate.template + role.templatePatch]
     E --> F[Merged Base Template]
     B -->|No| G[Validate: template is set]
     G --> H[Use role.template]
@@ -306,9 +326,9 @@ flowchart TD
 ```
 
 **Processing Order**:
-1. Validate: `template` XOR `patchTemplate` based on `templateRef`
+1. Validate: `template` XOR `templatePatch` based on `templateRef`
 2. Fetch roleTemplate by name (if using RoleTemplate)
-3. Strategic Merge: `roleTemplate.template` + `role.patchTemplate` → merged base template
+3. Strategic Merge: `roleTemplate.template` + `role.templatePatch` → merged base template
 4. For LWS workloads:
    - Apply `patchLeaderTemplate` to merged base → Leader Pod spec
    - Apply `patchWorkerTemplate` to merged base → Worker Pod spec
@@ -316,7 +336,7 @@ flowchart TD
    - Use merged base template directly
 6. Create workload (StatefulSet or LeaderWorkerSet)
 
-**Important**: The `role.patchTemplate` provides overlay for roleTemplate, then the merged result serves as base for LWS patches. This means patchLeaderTemplate/patchWorkerTemplate apply **after** roleTemplate merging.
+**Important**: The `role.templatePatch` provides overlay for roleTemplate, then the merged result serves as base for LWS patches. This means patchLeaderTemplate/patchWorkerTemplate apply **after** roleTemplate merging.
 
 #### Update Workflow
 
@@ -346,7 +366,7 @@ flowchart TD
 **Update Trigger**:
 - Each workload carries a `role-revision-hash-{roleName}` label
 - Reconciler compares current label value with expected hash from new Revision
-- If different → Resolves template (merging updated `roleTemplate.template` + `role.patchTemplate`) → Updates workload via Server-Side Apply
+- If different → Resolves template (merging updated `roleTemplate.template` + `role.templatePatch`) → Updates workload via Server-Side Apply
 - Workload controller (StatefulSet/Deployment/LWS) detects PodTemplate change → Triggers rolling update per rolloutStrategy
 
 #### ControllerRevision Evolution During roleTemplate Update
@@ -389,7 +409,7 @@ To help users understand Strategic Merge behavior, KEP-8 provides preview/diff c
 kubectl rbg preview my-rbg.yaml
 ```
 
-Resolves and displays the final PodTemplateSpec for each role after merging `roleTemplate.template` + `role.patchTemplate`.
+Resolves and displays the final PodTemplateSpec for each role after merging `roleTemplate.template` + `role.templatePatch`.
 
 **Output Example**:
 ```yaml
@@ -399,7 +419,7 @@ spec:
   containers:
   - name: sglang
     image: sglang:v0.5.1      # from roleTemplate
-    command: [...]             # from patchTemplate
+    command: [...]             # from templatePatch
     resources:
       limits:
         nvidia.com/gpu: "2"    # from roleTemplate
@@ -410,7 +430,7 @@ spec:
   containers:
   - name: sglang
     image: sglang:v0.5.1      # from roleTemplate
-    command: [...]             # from patchTemplate (different from prefill)
+    command: [...]             # from templatePatch (different from prefill)
 ```
 
 #### Diff: Compare Configurations
@@ -444,8 +464,8 @@ Role: decode
 **Unit Tests**:
 - Template resolution by name
 - Strategic Merge logic for different field types (volumes, env, resources, command)
-- Validation: `patchTemplate` requires `templateRef`
-- Validation: `template` and `patchTemplate` are mutually exclusive
+- Validation: `templatePatch` requires `templateRef`
+- Validation: `template` and `templatePatch` are mutually exclusive
 - Validation: templateRef references non-existent template
 - Validation: templateRef references template in different RBG (should fail)
 
@@ -478,7 +498,7 @@ Role: decode
 - RBAC complexity (who can modify templates?)
 - Template versioning and compatibility issues
 
-**Single `template` field with dual semantics**: Simpler API but confusing semantics (same field, different meaning based on `templateRef`). Community feedback favored explicit `patchTemplate` field.
+**Single `template` field with dual semantics**: Simpler API but confusing semantics (same field, different meaning based on `templateRef`). Community feedback favored explicit `templatePatch` field.
 
 **RoleTemplate approach chosen because**:
 - Templates scoped to single RBG (simpler RBAC)
@@ -513,7 +533,7 @@ roles:
 - name: prefill
   templateRef:
     name: sglang-base
-  patchTemplate:
+  templatePatch:
     spec:
       containers:
       - name: sglang
@@ -532,4 +552,4 @@ roles:
 - **2025-10-21**: Initial KEP-8 proposal submitted
 - **2025-10-24**: Revised to focus on RoleTemplates (Phase 1), defer ExtraArgs
 - **2025-10-27**: Supplemented Controller Behavior section with update workflow and ControllerRevision evolution details
-- **2025-10-30**: Updated API design with `role.patchTemplate` field and preview/diff tooling
+- **2025-10-30**: Updated API design with `role.templatePatch` field and preview/diff tooling, aligned naming with Kubernetes ecosystem conventions
