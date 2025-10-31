@@ -130,25 +130,17 @@ type RoleBasedGroupSpec struct {
 }
 
 type Coordination struct {
-	Strategy []RoleStrategy `json:"strategy,omitempty"`
+    Name     string           `json:"name"`
+    Type     CoordinationType `json:"type"`
+	Strategy []RoleStrategy   `json:"strategy"`
 }
 
 type RoleStrategy struct {
 	// Role is the name of the role (e.g. "prefill", "decode", "router").
 	Role string `json:"role"`
 
-	// UpdateStrategy describes how this role should be updated.
-	UpdateStrategy *RoleUpdateStrategy `json:"updateStrategy,omitempty"`
-
-	// TODO: add more strategy here as needed. e.g. ScalingStrategy
-}
-
-// RoleUpdateStrategy describes how to update a role's workload.
-type RoleUpdateStrategy struct {
-	// Type is the update strategy type (e.g. "Recreate", "InplaceIfPossible").
-	Type      string             `json:"type,omitempty"`
-	Partition *int32             `json:"partition,omitempty"`
-	BatchSize intstr.IntOrString `json:"batchSize,omitempty"`
+    // Config contains the configurations of this role coordination strategy.
+    Config map[string]string `json:"config"`
 }
 
 // status
@@ -165,14 +157,14 @@ type CoordinationState struct {
 }
 
 type RoleCoordinationState struct {
-	Strategy string `json:"strategy"`
-	State    string `json:"state"`
+	Name  string `json:"name"`
+	State string `json:"state"`
 }
 
 ```
 
 #### Coordinated-roles Upgrading Yaml Example
-- Automatic updating without pause
+- Automatic updating without pause, it will be upgraded in a rolling update with a 4:1 ratio of prefill to decode.
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
@@ -180,22 +172,15 @@ metadata:
   name: role-coordination
 spec:
   coordination:
-    - strategy: # strategy 1: reconcile prefill & decode at 2:1 ratio
-        - role: prefill
-          updateStrategy:
-            type: Recreate # [Recreate, InplaceIfPossible], default is Recreate
-            batchSize: 2
-        - role: decode
-          updateStrategy:
-            type: Recreate # [Recreate, InplaceIfPossible]
-            batchSize: 1
-    - strategy: # strategy 2: reconcile router & planner at 1:1 ratio
-        - role: router
-          updateStrategy:
-            batchSize: 1
-        - role: planner
-          updateStrategy:
-            batchSize: 1
+    - name: "prefill-decode-update"  # strategy 1: reconcile prefill & decode at 4:1 ratio
+      type: rollingUpdate
+      strategy:
+      - role: prefill  
+        config:  
+          maxUnavailable: 4
+      - role: decode
+        config:
+          maxUnavailable: 1
 ```
 
 - Updating with pause
@@ -208,15 +193,18 @@ metadata:
   name: role-coordination
 spec:
   coordination:
-    - strategy: # strategy 1: reconcile prefill & decode at 2:1 ratio
-        - role: prefill
-          updateStrategy:
-            partition: 20
-            batchSize: 4
-        - role: decode
-          updateStrategy:
-            partition: 5
-            batchSize: 4
+  coordination:
+    - name: "prefill-decode-update"
+      type: rollingUpdate
+      strategy:
+      - role: prefill  
+        config:  
+          maxUnavailable: 4
+  		  partition: 20 
+      - role: decode
+        config:
+          maxUnavailable: 1
+          partition: 5
 ```
 
 ### Risks and Mitigations
