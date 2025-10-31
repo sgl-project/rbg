@@ -107,7 +107,7 @@ class SGLangGroupTopoClient(GroupTopoClient):
                 raise Exception(f"register failed, url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}")
 
         try:
-            utils.retry(f)
+            utils.retry(f, retry_times=60, interval=3)
             return True
         except Exception as e:
             logger.error(f"failed to register worker: {e}")
@@ -136,7 +136,7 @@ class SGLangGroupTopoClient(GroupTopoClient):
                     f"unregister failed, url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}")
 
         try:
-            utils.retry(f)
+            utils.retry(f, retry_times=60, interval=3)
             return True
         except Exception as e:
             logger.error(f"failed to unregister worker: {e}")
