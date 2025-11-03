@@ -139,7 +139,8 @@ class SGLangGroupTopoClient(GroupTopoClient):
 
     def unregister(self):
         def f():
-            worker_registration_url = f"http://{self.sgl_router_endpoint}/workers/{translate_http_response_parameters(self.worker_endpoint)}"
+            url = f"http://{self.worker_endpoint}"
+            worker_registration_url = f"http://{self.sgl_router_endpoint}/workers/{translate_http_response_parameters(url)}"
             resp = requests.delete(worker_registration_url)
             if resp.status_code == 202:
                 # Status Code 202 Accepted
