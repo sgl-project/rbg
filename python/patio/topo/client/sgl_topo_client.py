@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 # @Author: zibai.gj
-import json
 import os
 import traceback
 
 import requests
-from argparse import ArgumentError
-from http.client import InvalidURL
 from typing import Optional
 
 from patio.logger import init_logger
@@ -32,7 +29,7 @@ def get_sgl_router_endpoint(worker_info: dict) -> Optional[str]:
     return f"{rbg_group_name}-{router_role_name}-0.s-{rbg_group_name}-{router_role_name}:{sgl_router_port}"
 
 def get_worker_endpoint(worker_info: dict) -> Optional[str]:
-    port = worker_info["port"] if "port" in worker_info else "8000"
+    port = worker_info.get("port", "8000")
 
     worker_endpoint = os.getenv("POD_IP")
     if worker_endpoint is not None:
@@ -54,7 +51,7 @@ def get_worker_endpoint(worker_info: dict) -> Optional[str]:
     return f"{rbg_group_name}-{role_name}-{role_index}.s-{rbg_group_name}-{role_name}:{port}"
 
 def get_health_check_endpoint(worker_info: dict) -> Optional[str]:
-    port = worker_info["port"] if "port" in worker_info else "8000"
+    port = worker_info.get("port", "8000")
 
     local_url = os.getenv("POD_IP")
     if local_url is None:
@@ -107,6 +104,8 @@ class SGLangGroupTopoClient(GroupTopoClient):
             port: 8000
 
         """
+
+        worker_info = worker_info.copy()
 
         url = f"http://{self.worker_endpoint}"
         worker_info["url"] = url

@@ -66,7 +66,8 @@ def _init_metrics(scrape_metrics: bool):
 
 def stop_topo_client_signal_handler(signal, frame):
     global topo_client
-    topo_client.unregister()
+    if topo_client is not None:
+        topo_client.unregister()
     sys.exit(0)
 
 def run_topo_client(worker_instance_info: str) -> GroupTopoClient:
@@ -94,6 +95,7 @@ def run_topo_client(worker_instance_info: str) -> GroupTopoClient:
         worker_info = worker_dict["data"]
         if worker_info is None:
             logger.error(f"No worker info found for worker instance info, please set \"data\" field in instance info")
+            sys.exit(1)
         topo_client = create_topo_client(worker_dict["topo_type"], worker_info)
         topo_client.wait_engine_ready(worker_info)
         topo_client.register("", worker_info)
@@ -133,9 +135,7 @@ def main():
     _init_metrics(args.scrape_engine_metrics)
 
     if args.instance_info:
-        topo_client = run_topo_client(args.instance_info)
-    else:
-        topo_client = None
+        run_topo_client(args.instance_info)
 
     # Run the server
     try:
