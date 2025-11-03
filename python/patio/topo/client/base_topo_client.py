@@ -18,7 +18,11 @@ logger = init_logger(__name__)
 class GroupTopoClient(ABC):
 
     @abstractmethod
-    def register(self, url: str, worker_dict: dict, file_path: Optional[str] = None) -> bool:
+    def wait_engine_ready(self, worker_info: dict) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def register(self, url: str, worker_info: dict, file_path: Optional[str] = None) -> bool:
         raise NotImplementedError
 
     @abstractmethod

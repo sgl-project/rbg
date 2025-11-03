@@ -91,8 +91,12 @@ def run_topo_client(worker_instance_info: str) -> GroupTopoClient:
 
     try:
         global topo_client
-        topo_client = create_topo_client(worker_dict["topo_type"])
-        topo_client.register("", worker_dict)
+        worker_info = worker_dict["data"]
+        if worker_info is None:
+            logger.error(f"No worker info found for worker instance info, please set \"data\" field in instance info")
+        topo_client = create_topo_client(worker_dict["topo_type"], worker_info)
+        topo_client.wait_engine_ready(worker_info)
+        topo_client.register("", worker_info)
         signal.signal(signal.SIGTERM, stop_topo_client_signal_handler)
         signal.signal(signal.SIGINT, stop_topo_client_signal_handler)
 

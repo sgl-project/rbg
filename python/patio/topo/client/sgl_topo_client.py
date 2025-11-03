@@ -16,7 +16,7 @@ from patio.topo import utils
 logger = init_logger(__name__)
 
 
-def get_sgl_router_url() -> Optional[str]:
+def get_sgl_router_endpoint(worker_info: dict) -> Optional[str]:
     rbg_group_name = os.getenv("GROUP_NAME")
     if rbg_group_name is None:
         raise Exception("GROUP_NAME is not set")
@@ -25,9 +25,20 @@ def get_sgl_router_url() -> Optional[str]:
     if router_role_name is None:
         raise Exception("SGL_ROUTER_ROLE_NAME is not set")
 
-    return f"{rbg_group_name}-{router_role_name}-0.s-{rbg_group_name}-{router_role_name}"
+    sgl_router_port = os.getenv("SGL_ROUTER_PORT")
+    if sgl_router_port is None:
+        raise Exception("SGL_ROUTER_PORT is not set")
 
-def get_worker_url() -> Optional[str]:
+    return f"{rbg_group_name}-{router_role_name}-0.s-{rbg_group_name}-{router_role_name}:{sgl_router_port}"
+
+def get_worker_endpoint(worker_info: dict) -> Optional[str]:
+    port = worker_info["port"] if "port" in worker_info else "8000"
+
+    worker_endpoint = os.getenv("POD_IP")
+    if worker_endpoint is not None:
+        return f"{worker_endpoint}:{port}"
+
+    # Use headless service pod domain if POD_IP is not set
     rbg_group_name = os.getenv("GROUP_NAME")
     if rbg_group_name is None:
         raise Exception("GROUP_NAME is not set")
@@ -40,8 +51,16 @@ def get_worker_url() -> Optional[str]:
     if role_index is None:
         raise Exception("ROLE_INDEX is not set")
 
-    return f"{rbg_group_name}-{role_name}-{role_index}.s-{rbg_group_name}-{role_name}"
+    return f"{rbg_group_name}-{role_name}-{role_index}.s-{rbg_group_name}-{role_name}:{port}"
 
+def get_health_check_endpoint(worker_info: dict) -> Optional[str]:
+    port = worker_info["port"] if "port" in worker_info else "8000"
+
+    local_url = os.getenv("POD_IP")
+    if local_url is None:
+        local_url = "localhost"
+
+    return f"{local_url}:{port}"
 
 def translate_http_response_parameters(raw: str) -> str:
     return raw.replace("/", "%2F")
@@ -56,38 +75,43 @@ class SGLangGroupTopoClient(GroupTopoClient):
             cls._instance.__initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, worker_info: dict):
         if not self.__initialized:
-            self.worker_endpoint = None
+            self.health_check_endpoint = get_health_check_endpoint(worker_info)
+            self.worker_endpoint = get_worker_endpoint(worker_info)
+            self.sgl_router_endpoint = get_sgl_router_endpoint(worker_info)
             self.__initialized = True
 
-    def register(self, url: str, worker_dict: dict, file_path: Optional[str] = None) -> bool:
+    def wait_engine_ready(self, worker_info: dict) -> bool:
+        def f():
+            health_check_url = f"http://{self.health_check_endpoint}/health"
+            resp = requests.get(health_check_url)
+            if resp.status_code == 200:
+                logger.info("Health check OK, inference engine is now ready.")
+            else:
+                raise Exception(
+                    f"health check failed, url: {health_check_url}, status_code: {resp.status_code}, content: {resp.text}")
+
+        try:
+            utils.retry(f, retry_times=60, interval=3)
+            return True
+        except Exception as e:
+            logger.error(f"failed to check if worker engine is ready: {e}")
+            traceback.print_exc()
+            return False
+
+    def register(self, url: str, worker_info: dict, file_path: Optional[str] = None) -> bool:
         """
         worker_dict example:
             topo_type: sglang
             port: 8000
 
         """
-        sgl_router_url = get_sgl_router_url()
-        if sgl_router_url is None:
-            raise Exception("failed to find SGLang router's URL, please set env SGL_ROUTER_URL.")
 
-        sgl_router_port = os.getenv("SGL_ROUTER_PORT")
-        if sgl_router_port is None:
-            raise Exception("SGL_ROUTER_PORT is not set")
-
-        worker_info_payload = worker_dict["data"] if "data" in worker_dict else None
-        if worker_info_payload is None:
-            raise Exception(f"failed to find worker's info, please add worker's info to worker_dict.")
-
-        port = worker_info_payload["port"] if "port" in worker_info_payload else None
-        if port is None:
-            raise Exception("failed to find inference engine's port, please set it in worker_dict.")
-
-        url = f"http://{get_worker_url()}:{port}"
-        worker_info_payload["url"] = url
-        del worker_info_payload["port"]
-
+        url = f"http://{self.worker_endpoint}"
+        worker_info["url"] = url
+        # port is already included in self.worker_endpoint
+        del worker_info["port"]
 
         # self.worker_endpoint = worker_info_payload["url"] if "url" in worker_info_payload else None
         # if self.worker_endpoint is None:
@@ -96,12 +120,10 @@ class SGLangGroupTopoClient(GroupTopoClient):
         # TODO: Validate required fields in worker_info_payload and fail fast
 
         def f():
-            worker_registration_url = f"http://{sgl_router_url}:{sgl_router_port}/workers"
-            worker_info_json = json.dumps(worker_info_payload)
-            resp = requests.post(worker_registration_url, json=worker_info_payload, headers={"Content-Type": "application/json"})
+            worker_registration_url = f"http://{self.sgl_router_endpoint}/workers"
+            resp = requests.post(worker_registration_url, json=worker_info, headers={"Content-Type": "application/json"})
             if resp.status_code == 202:
                 # Status Code 202 Accepted
-                self.worker_endpoint = worker_info_payload["url"]
                 logger.info(f"registered worker successfully.")
             else:
                 raise Exception(f"register failed, url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}")
@@ -116,17 +138,8 @@ class SGLangGroupTopoClient(GroupTopoClient):
 
 
     def unregister(self):
-        sgl_router_url = get_sgl_router_url()
-        if sgl_router_url is None:
-            raise Exception("failed to find SGLang router's URL, please set env SGL_ROUTER_URL.")
-
-        sgl_router_port = os.getenv("SGL_ROUTER_PORT")
-        if sgl_router_port is None:
-            raise Exception("SGL_ROUTER_PORT is not set")
-
-
         def f():
-            worker_registration_url = f"http://{sgl_router_url}:{sgl_router_port}/workers/{translate_http_response_parameters(self.worker_endpoint)}"
+            worker_registration_url = f"http://{self.sgl_router_endpoint}/workers/{translate_http_response_parameters(self.worker_endpoint)}"
             resp = requests.delete(worker_registration_url)
             if resp.status_code == 202:
                 # Status Code 202 Accepted
