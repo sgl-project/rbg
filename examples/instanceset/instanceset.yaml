@@ -1,0 +1,29 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: InstanceSet
+metadata:
+  name: nginx-set
+  namespace: default
+spec:
+  replicas: 2
+  instanceTemplate:
+    components:
+      - name: leader
+        size: 1
+        template:
+          spec:
+            containers:
+              - name: nginx
+                image: nginx:latest
+                command: ["/bin/sh", "-c", "sleep 100d"]
+                ports:
+                  - containerPort: 8080
+      - name: worker
+        size: 2
+        template:
+          spec:
+            containers:
+              - name: nginx
+                image: nginx:latest
+                command: [ "/bin/sh", "-c", "sleep 100d" ]
+                ports:
+                  - containerPort: 8080

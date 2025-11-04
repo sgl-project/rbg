@@ -21,7 +21,6 @@ import (
 	clientdapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/instance/utils"
-	"sigs.k8s.io/rbgs/pkg/utils/revisionadapter"
 )
 
 // Interface for managing pods in-place update.
@@ -33,7 +32,7 @@ type Interface interface {
 
 func New(c client.Client) Interface {
 	return &realControl{
-		inplaceControl: podinplaceupdate.New(c, revisionadapter.NewDefaultImpl()),
+		inplaceControl: podinplaceupdate.New(c, instanceutil.RevisionAdapterImpl),
 		adp:            clientdapter.NewAdapter(c),
 	}
 }
