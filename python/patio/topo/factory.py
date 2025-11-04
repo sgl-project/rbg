@@ -6,9 +6,9 @@ from patio.topo.server.base_topo_server import GroupTopoServer
 from patio.topo.server.sgl_topo_server import SGLangGroupTopoServer
 
 
-def create_topo_client(topo_type: str) -> GroupTopoClient:
+def create_topo_client(topo_type: str, worker_info: dict) -> GroupTopoClient:
     if topo_type.lower() == "sglang":
-        return SGLangGroupTopoClient()
+        return SGLangGroupTopoClient(worker_info)
     else:
         raise ValueError(f"Invalid topo type: {topo_type}")
 
