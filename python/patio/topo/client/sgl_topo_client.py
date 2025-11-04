@@ -99,10 +99,10 @@ class SGLangGroupTopoClient(GroupTopoClient):
 
     def register(self, url: str, worker_info: dict, file_path: Optional[str] = None) -> bool:
         """
-        worker_dict example:
-            topo_type: sglang
+        worker_info example:
             port: 8000
-
+            worker_type: "prefill"
+            bootstrap_port: 34000
         """
 
         worker_info = worker_info.copy()
@@ -111,12 +111,6 @@ class SGLangGroupTopoClient(GroupTopoClient):
         worker_info["url"] = url
         # port is already included in self.worker_endpoint
         del worker_info["port"]
-
-        # self.worker_endpoint = worker_info_payload["url"] if "url" in worker_info_payload else None
-        # if self.worker_endpoint is None:
-        #     raise Exception(f"failed to find worker's info, please ensure 'url' is set in worker_dict.")
-
-        # TODO: Validate required fields in worker_info_payload and fail fast
 
         def f():
             worker_registration_url = f"http://{self.sgl_router_endpoint}/workers"

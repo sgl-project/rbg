@@ -85,9 +85,9 @@ def run_topo_client(worker_instance_info: str) -> GroupTopoClient:
     if not worker_dict.get("topo_type"):
         topo_type = envs.TOPO_TYPE
         if not topo_type:
-            logger.error(f"No topo_type defined for worker instance, either --instance-info or env variable {envs.TOPO_TYPE} should be set")
+            logger.error(f"No topo_type defined for worker instance, either --instance-info or env variable TOPO_TYPE should be set")
             sys.exit(1)
-        logger.info(f"Found topo type from env variable {envs.TOPO_TYPE}: {topo_type}")
+        logger.info(f"Found topo type from env variable TOPO_TYPE: {topo_type}")
         worker_dict["topo_type"] = topo_type
 
     try:
