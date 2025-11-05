@@ -11,7 +11,8 @@
     - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
     - [User Stories](#user-stories)
-        - [Story 1: Coordinated Rolling Update](#story-1-coordinated-rolling-update)
+        - [Story 1](#story-1)
+        - [Story 2](#story-2)
     - [Implementation Details](#implementation-details)
         - [API Changes](#api-changes)
         - [Example](#yaml-example)
@@ -57,23 +58,24 @@ and finally completing the frontend update.
 
 ## Motivation
 
-In complex distributed applications, individual components often need to be updated in a specific sequence to
-maintain application availability and consistency. The current RoleBasedGroup implementation updates each role
-independently, which can lead to service disruptions during updates. For example,
-it's often necessary to update the prefill and decode at a fixed ratio (4P2D) in PD-disagg LLM inferences.
+In a PD-disaggregated inference service, updates to multiple interdependent roles—such as Prefill and Decode, are often triggered concurrently.
+A cross-role coordination mechanism is therefore needed to ensure proportional canary rollout, so that Prefill and Decode progress at the same relative rate.
+This prevents skew where the fraction of new-version replicas in one role becomes significantly higher or lower than in the other,
+leading to an imbalanced distribution of old and new Prefill/Decode workers.
+For example, if an inference service has 40 Prefill workers and 20 Decode workers, the upgrade should maintain approximately a 40:20 (2:1) ratio across the two roles.
 
-| Stage | Upgrade Process                                             | Comments                                                                                             |
-|-------|-------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| 1     | Old Prefill: 4; Old Decode: 2                               | Begin to update rbg.                                                                                 |
-| 2     | Old Prefill: 2, New Prefill: 2; Old Decode: 2               | Update 2 prefill pods first .                                                                        |
-| 3     | Old Prefill: 2, New Prefill: 2; Old Decode: 1; New Decode 1 | Stop updating the prefill and update only one decode. The ratio of P to D must be maintained at 2:1. |
-| 4     | New Prefill: 4; Old Decode: 1; New Decode 1                 | Continue to update the prefill pods.                                                                 |
-| 5     | New Prefill: 4; New Decode 2                                | Update completely.                                                                                   |
+| Stage | Upgrade Process                                                 | Comments                                                                                                                                                                        |
+|-------|-----------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1     | Old Prefill: 40; Old Decode: 20                                 | Begin to update rbg with p/d coordination.                                                                                                                                      |
+| 2     | Old Prefill: 30, New Prefill: 10; Old Decode: 17, New Decode: 3 | Update 10 prefill pods and 3 decode pods.                                                                                                                                       |
+| 3     | Old Prefill: 30, New Prefill: 10; Old Decode: 15; New Decode: 5 | The ratio of new Prefill is 10/40=25% and new Decode is 3/20=15%. The proportionate split between the two is highly skewed. Stop updating the prefill and update only 2 decode. |
+| 4     | Old Prefill: 25, New Prefill: 15; Old Decode: 12; New Decode: 8 | Continue to update the prefill pods.                                                                                                                                            |
+| 5     | New Prefill: 40; New Decode 20                                  | Update completely.                                                                                                                                                              |
 
 ### Goals
 
-1. Enable coordinated updates across multiple roles in a RoleBasedGroup
-2. Support phased rollouts where some roles are updated partially while others wait
+1. Enable coordinated updates across multiple roles in a RoleBasedGroup with a maximum skew configuration of multi roles' new version ratio 
+2. Support configuring identical rollout-partition percentages across multiple roles to control the new-version canary fraction and enable phased rollouts
 3. Provide a flexible coordination strategy definition mechanism
 4. Maintain backward compatibility with existing RoleBasedGroup resources
 5. Allow rollback capabilities for coordinated updates
@@ -91,22 +93,30 @@ roles to update and how.
 
 ### User Stories
 
-#### Story 1: Coordinated Rolling Update
+#### Story 1:
 
-In the PD-disaggregated scenario for LLM inference, the input/output pattern is relatively fixed,
-with an optimal P:D ratio of 2:1.
-Each time 2 Prefill Pods are updated, 1 Decode Pod needs to be updated accordingly to maintain this ratio.
+As a cluster operator, Prefill and Decode are typically rolled out and rolled back together.
+If the current Decode upgrade fails for any reason, the MaxUnavailable constraint will block further Decode rollout.
+In that case, we also want to halt Prefill’s rollout progress so that both roles can be rolled back in tandem.
+
+#### Story 2:
+
+As a developer, if Prefill’s rollout rate is significantly faster than Decode’s, 
+the resulting imbalance in their new-version ratios makes traffic-based canary validation difficult.
 
 ##### Coordinate Rolling Update Process
 
-The coordinated rolling update process ensures that the P:D ratio is maintained throughout the update cycle.
-Here's how it works:
+The coordinated rolling update can control the rollout proportions between Prefill and Decode to prevent excessive skew in their new-version ratios.
+For example, if Prefill is upgrading faster while Decode lags, pause Prefill’s rollout and wait for Decode to catch up, keeping the share of new-version replicas for both roles within a bounded range.
 
+Here's how it works:
 1. **Initial State**: The system starts with all old Prefill and Decode pods running
 2. **Step-by-Step Update**:
-    - Update Prefill pods in batches of 2
-    - For each batch of 2 Prefill pods updated, update 1 Decode pod
+    - Update Prefill pods and Decode pods with a MaxUnavailable limitation
     - Monitor readiness of updated pods before proceeding
+    - Compute the current ratio of new-version replicas for Prefill and Decode.
+    - If the gap between their new-version ratios exceeds the configured threshold, suspend updates for the role with the higher ratio.
+    - If all Roles meet the current partition, pause the rollout.
 3. **Completion**: Continue until all Prefill and Decode pods are updated while maintaining the 2:1 ratio
 
 This approach ensures service continuity and optimal resource utilization during the update process,
@@ -130,17 +140,17 @@ type RoleBasedGroupSpec struct {
 }
 
 type Coordination struct {
-    Name     string           `json:"name"`
-    Type     CoordinationType `json:"type"`
-	Strategy []RoleStrategy   `json:"strategy"`
-}
+	// Name is the name of the coordination strategy
+	Name string `json:"name"`
 
-type RoleStrategy struct {
-	// Role is the name of the role (e.g. "prefill", "decode", "router").
-	Role string `json:"role"`
+	// Type is the type of the coordination strategy (e.g. "RollingUpdate").
+	Type string `json:"type"`
 
-    // Config contains the configurations of this role coordination strategy.
-    Config map[string]string `json:"config"`
+	// Roles define which roles need to work together in coordination
+	Roles []string `json:"roles"`
+	
+	// Strategy defines the coordination parameters corresponding to coordination type for the roles.
+	Strategy map[string]string `json:"strategy"`
 }
 
 // status
@@ -157,55 +167,50 @@ type CoordinationState struct {
 }
 
 type RoleCoordinationState struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Strategy string `json:"strategy"`
+	State    string `json:"state"`
 }
 
 ```
 
 #### Coordinated-roles Upgrading Yaml Example
-- Automatic updating without pause, it will be upgraded in a rolling update with a 4:1 ratio of prefill to decode.
+- Prefill and decode roles rollingUpdate with coordination
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
 metadata:
-  name: role-coordination
+  name: rolling-update-with-partition
 spec:
   coordination:
-    - name: "prefill-decode-update"  # strategy 1: reconcile prefill & decode at 4:1 ratio
-      type: rollingUpdate
+    - name: prefill-decode-update
+      type: RollingUpdate
+      roles:
+        - prefill
+        - decode
       strategy:
-      - role: prefill  
-        config:  
-          maxUnavailable: 4
-      - role: decode
-        config:
-          maxUnavailable: 1
+        # The maximum ratio of pods that can be unavailable during the update.
+        # For example, one rbg with (200p, 100d) allows max `200 * %5 = 10` prefill pods and `100 * 5% = 5` decode pods are unavailable during updating.
+        maxUnavailableRatio: 5%
+        # the max skew of updated replicas between prefill and decode.
+        # For example, one rbg with (200p, 100d) allows `abs(updated_prefill/200 - updated_decode/100) < 1%`.
+        maxSkew: 1%
+        # Partition indicates the ratio of new version at which the workload should be partitioned for updates.
+        # During a rolling update, all pods from ordinal replicas-1 to (Partition * ordinal replicas) are updated. All pods from (ordinal Partition * ordinal replicas) to 0 remain untouched.
+        # For example, one rbg with (200p, 100d), 
+        # the prefill pods from ordinal 199 to `abs(200 * 80% = 160)` are updated, all pods from `abs(200 * 80%) - 1 = 159` to 0 remain untouched.
+        # the decode pods from ordinal 99 to `abs(100 * 80% = 80)` are updated, all pods from `abs(100 * 80%) - 1 = 79` to 0 remain untouched.
+        partition: 80%
 ```
 
-- Updating with pause
-40 prefill pods and 10 decode pods were upgraded in a rolling update with a 4:1 ratio of prefill to decode.
-After rolling updates of 20 prefill pods and 5 decode pods, the process was paused.
-```yaml
-apiVersion: workloads.x-k8s.io/v1alpha1
-kind: RoleBasedGroup
-metadata:
-  name: role-coordination
-spec:
-  coordination:
-  coordination:
-    - name: "prefill-decode-update"
-      type: rollingUpdate
-      strategy:
-      - role: prefill  
-        config:  
-          maxUnavailable: 4
-  		  partition: 20 
-      - role: decode
-        config:
-          maxUnavailable: 1
-          partition: 5
-```
+## Design Details
+
+The implementation will modify the main reconciliation loop
+in [RoleBasedGroupReconciler] to check for a coordination strategy. If present, it will execute the coordinated
+update logic; otherwise, it will fall back to the existing independent role update behavior.
+
+### Controller Logic
+
+#TODO
 
 ### Risks and Mitigations
 
@@ -218,45 +223,8 @@ spec:
 3. **Backward Compatibility**: Existing RoleBasedGroups should continue to work unchanged
     - Mitigation: Only apply coordination logic when `coordination` is specified
 
-## Design Details
-
-The implementation will modify the main reconciliation loop
-in [RoleBasedGroupReconciler] to check for a coordination strategy. If present, it will execute the coordinated
-update logic; otherwise, it will fall back to the existing independent role update behavior.
-
-### Controller Logic
-
-```go
-package controller
-
-func (r *RoleBasedGroupReconciler) Reconcile() {
-	if r.spec.Coordination != nil {
-		r.executeCoordinationStrategy()
-	}
-	// existing independent role update behavior
-}
-
-func (r *RoleBasedGroupReconciler) executeCoordinationStrategy() {
-	for _, coordination := range rbg.Spec.Coordination {
-		for _, strategy := range coordination.Strategy {
-			if strategy.UpdateStrategy.Partition != nil {
-				role.RolloutStrategy.RollingUpdate.Partition = strategy.UpdateStrategy.Partition
-			} else {
-				rollingStep = role.replicas - maxUnvailable
-				if isCoordinationRoleCompleted() {
-					// calculate partition 
-					role.RolloutStrategy.RollingUpdate.Partition -= rollingStep
-				}
-			}
-		}
-	}
-}
-
-func isCoordinationRoleCompleted() {
-	// get pod and check rollingUpdate status
-}
-
-```
+4. **Configuration conflict**: Coordination settings may conflict with each role’s own updateStrategy and Dependency configuration.
+    - Mitigation: The coordination-driven upgrade process is not subject to Dependency constraints. Moreover, if a role is defined in coordination, validation will prohibit that role from specifying its own updateStrategy.
 
 ### Router
 
