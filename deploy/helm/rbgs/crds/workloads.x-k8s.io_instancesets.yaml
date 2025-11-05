@@ -4,13 +4,13 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: instanceset.workloads.x-k8s.io
+  name: instancesets.workloads.x-k8s.io
 spec:
   group: workloads.x-k8s.io
   names:
     kind: InstanceSet
     listKind: InstanceSetList
-    plural: instanceset
+    plural: instancesets
     shortNames:
     - is
     singular: instanceset
@@ -76,6 +76,46 @@ spec:
                 description: Components describes the Instance components that will
                   be created.
                 x-kubernetes-preserve-unknown-fields: true
+              lifecycle:
+                description: Lifecycle defines the lifecycle hooks for Instances pre-delete,
+                  in-place update.
+                properties:
+                  inPlaceUpdate:
+                    description: InPlaceUpdate is the hook before Instance to update
+                      and after Instance has been updated.
+                    properties:
+                      finalizersHandler:
+                        items:
+                          type: string
+                        type: array
+                      labelsHandler:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      markPodNotReady:
+                        description: |-
+                          MarkNotReady = true means:
+                          - Instance will be set to 'NotReady' at preparingDelete/preparingUpdate state.
+                        type: boolean
+                    type: object
+                  preDelete:
+                    description: PreDelete is the hook before Instance to be deleted.
+                    properties:
+                      finalizersHandler:
+                        items:
+                          type: string
+                        type: array
+                      labelsHandler:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      markPodNotReady:
+                        description: |-
+                          MarkNotReady = true means:
+                          - Instance will be set to 'NotReady' at preparingDelete/preparingUpdate state.
+                        type: boolean
+                    type: object
+                type: object
               minReadySeconds:
                 description: |-
                   Minimum number of seconds for which a newly created Instances should be ready

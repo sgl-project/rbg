@@ -70,6 +70,7 @@ func init() {
 	utilruntime.Must(volcanoschedulingv1beta1.AddToScheme(scheme))
 
 	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(workloadsv1alpha1.AddToScheme(clientgoscheme.Scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -326,6 +327,17 @@ func main() {
 
 	if err = instanceReconciler.SetupWithManager(mgr, options); err != nil {
 		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+		os.Exit(1)
+	}
+
+	instancesetReconciler := workloadscontroller.NewInstanceSetReconciler(mgr)
+	if err = instancesetReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
+		os.Exit(1)
+	}
+
+	if err = instancesetReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
 		os.Exit(1)
 	}
 

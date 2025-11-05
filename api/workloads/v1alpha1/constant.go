@@ -55,6 +55,10 @@ const (
 const (
 	InstanceSetPrefix = "instanceset.workloads.x-k8s.io/"
 
+	// SetInstanceOwnerLabelKey identifies resources belonging to a specific InstanceSet.
+	// This label is used for default selector for InstanceSet.
+	SetInstanceOwnerLabelKey = InstanceSetPrefix + "owner-uid"
+
 	// SetInstanceIDLabelKey is a unique id for Instance and its Pods.
 	// Each Instance and the Pods it owns have the same instance-id.
 	SetInstanceIDLabelKey = InstanceSetPrefix + "instance-id"

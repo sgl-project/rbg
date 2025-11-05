@@ -57,13 +57,13 @@ func SetOptionsDefaults(opts *UpdateOptions) *UpdateOptions {
 func defaultPatchUpdateSpecToInstance(instance *appsv1alpha1.Instance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha1.Instance, error) {
 	klog.V(5).Infof("Begin to in-place update instance %s/%s with update spec %v, state %v", instance.Namespace, instance.Name, util.DumpJSON(spec), util.DumpJSON(state))
 
-	newInstance := &appsv1alpha1.Instance{}
+	newInstanceSpec := &appsv1alpha1.InstanceSpec{}
 	newBytes, _ := json.Marshal(spec.NewTemplate)
-	if err := json.Unmarshal(newBytes, newInstance); err != nil {
+	if err := json.Unmarshal(newBytes, newInstanceSpec); err != nil {
 		return nil, err
 	}
 
-	instance.Spec = newInstance.Spec
+	instance.Spec = *newInstanceSpec
 	InjectVersionedInstanceSpec(instance)
 
 	klog.V(5).Infof("Decide to in-place update instance %s/%s with state %v", instance.Namespace, instance.Name, util.DumpJSON(state))

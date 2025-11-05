@@ -22,6 +22,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+const (
+	DefaultInstanceSetMaxUnavailable = "10%"
+)
+
 // InstanceSetSpec defines the desired state of InstanceSet
 type InstanceSetSpec struct {
 	// Replicas is the desired number of replicas of the given Template.
@@ -56,6 +60,40 @@ type InstanceSetSpec struct {
 	// Defaults to 0 (Instances will be considered available as soon as it is ready)
 	// +optional
 	MinReadySeconds int32 `json:"minReadySeconds,omitempty"`
+
+	// Lifecycle defines the lifecycle hooks for Instances pre-delete, in-place update.
+	Lifecycle *Lifecycle `json:"lifecycle,omitempty"`
+}
+
+const (
+	LifecycleStateKey     = "lifecycle.apps.red.io/state"
+	LifecycleTimestampKey = "lifecycle.apps.red.io/timestamp"
+
+	LifecycleStateNormal          LifecycleStateType = "Normal"
+	LifecycleStatePreparingUpdate LifecycleStateType = "PreparingUpdate"
+	LifecycleStateUpdating        LifecycleStateType = "Updating"
+	LifecycleStateUpdated         LifecycleStateType = "Updated"
+	LifecycleStatePreparingDelete LifecycleStateType = "PreparingDelete"
+)
+
+type LifecycleStateType string
+
+// Lifecycle contains the hooks for Instance lifecycle.
+type Lifecycle struct {
+	// PreDelete is the hook before Instance to be deleted.
+	PreDelete *LifecycleHook `json:"preDelete,omitempty"`
+	// InPlaceUpdate is the hook before Instance to update and after Instance has been updated.
+	InPlaceUpdate *LifecycleHook `json:"inPlaceUpdate,omitempty"`
+}
+
+type LifecycleHook struct {
+	LabelsHandler     map[string]string `json:"labelsHandler,omitempty"`
+	FinalizersHandler []string          `json:"finalizersHandler,omitempty"`
+	// MarkNotReady = true means:
+	// - Instance will be set to 'NotReady' at preparingDelete/preparingUpdate state.
+	// - Instance will be restored to 'Ready' at Updated state if it was set to 'NotReady' at preparingUpdate state.
+	// Default to false.
+	MarkNotReady bool `json:"markPodNotReady,omitempty"`
 }
 
 // InstanceSetScaleStrategy defines strategies for Instances scale.
@@ -211,7 +249,7 @@ type InstanceSetCondition struct {
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=is,path=instanceset,scope=Namespaced
+// +kubebuilder:resource:shortName=is,path=instancesets,scope=Namespaced
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.labelSelector
 // +kubebuilder:printcolumn:name="DESIRED",type="integer",JSONPath=".spec.replicas",description="The desired number of Instances."
 // +kubebuilder:printcolumn:name="UPDATED",type="integer",JSONPath=".status.updatedReplicas",description="The number of Instances updated."
