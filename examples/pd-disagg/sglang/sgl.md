@@ -29,13 +29,19 @@
    kubectl apply -f model.yaml
    ```
 
-## Deploy SGLang Inference Service
+## Deploy SGLang Inference Service with SGLang Router(Recommended)
+1. Deploy RBG Cluster Engine Runtime Profile (i.e. Patio)
+```bash
+kubectl apply -f ./patio-engine-profile.yaml
+```
+
+## Deploy SGLang Inference Service with SGLang MiniLB
 
 1. Deploy PD Disaggregation Service
-   ![](img/sgl.png)
+   ![](img/sgl-pd-minilb.png)
 
 ```bash
-kubectl apply -f ./sglang-pd.yaml
+kubectl apply -f ./sglang-pd-minilb.yaml
 ```
 
 2. Verify the inference service

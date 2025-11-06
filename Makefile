@@ -3,9 +3,11 @@
 IMG_REPO ?= rolebasedgroup
 RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
+PATIO_IMG ?= ${IMG_REPO}/rbgs-patio-runtime
 
 RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
+PATIO_DOCKERFILE ?= python/patio/Dockerfile
 
 VERSION ?= v0.5.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
@@ -162,6 +164,10 @@ docker-build-controller: ## Build docker image with the manager.
 docker-build-crd-upgrader:
 	$(CONTAINER_TOOL) build -f ${CRD_UPGRADER_DOCKERFILE} -t ${CRD_UPGRADER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
+.PHONY: docker-build-patio
+docker-build-patio:
+	$(CONTAINER_TOOL) build -f ${PATIO_DOCKERFILE} -t ${PATIO_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
 
@@ -172,6 +178,10 @@ docker-push-controller:
 .PHONY: docker-push-crd-upgrader
 docker-push-crd-upgrader:
 	docker push ${CRD_UPGRADER_IMG}:${TAG}
+
+.PHONY: docker-push-patio
+docker-push-patio:
+	docker push ${PATIO_IMG}:${TAG}
 
 .PHONY: docker-push
 docker-push: ${DOCKER_PUSH}
