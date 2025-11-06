@@ -1,0 +1,180 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: sglang-pd
+spec:
+  roles:
+  - name: router
+    replicas: 1
+    # Note: Patio Engine runtime would take care of worker registration, so no need to specify dependencies
+    # dependencies: [ "decode", "prefill" ]
+    template:
+      spec:
+        volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: llm-model
+        containers:
+        - name: scheduler
+          image: lmsysorg/sglang-router:v0.2.2
+          command:
+          - sh
+          - -c
+          - |
+            python3 -m sglang_router.launch_router --log-level debug --pd-disaggregation \
+            --host 0.0.0.0 --port 8000 \
+            --prefill http://sglang-pd-prefill-0.s-sglang-pd-prefill:8000 34000 \
+            --decode http://sglang-pd-decode-0.s-sglang-pd-decode:8000 \
+            --policy random --prometheus-host 0.0.0.0 --prometheus-port 9090
+          volumeMounts:
+          - mountPath: /models/Qwen3-32B/
+            name: model
+  - name: prefill
+    replicas: 1
+    scalingAdapter:
+      enable: true
+    engineRuntimes:
+      - containers:
+        - name: patio-runtime
+          args:
+          - --instance-info={"data":{"port":8000,"worker_type":"prefill", "bootstrap_port":34000}}
+          env:
+          - name: SGL_ROUTER_PORT
+            value: "8000"
+        profileName: sglang-pd-runtime
+    template:
+      spec:
+        volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: llm-model
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+        containers:
+        - name: sglang-prefill
+          image: &image lmsysorg/sglang:v0.5.3.post3
+          imagePullPolicy: Always
+          env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: SGLANG_PORT
+            value: "8000"
+          - name: MOONCAKE_DEVICE
+            value: ""
+          - name: MC_MS_AUTO_DISC
+            value: "0"
+          - name: MOONCAKE_PROTOCOL
+            value: "tcp"
+          command:
+          - sh
+          - -c
+          - python3 -m sglang.launch_server --model-path /models/Qwen3-32B/ --enable-metrics --disaggregation-mode prefill --port 8000 --disaggregation-bootstrap-port 34000 --host 0.0.0.0 --enable-torch-compile --tp-size 2 
+          ports:
+          - containerPort: 8000
+          - containerPort: 34000
+          readinessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            tcpSocket:
+              port: 8000
+          resources:
+            limits:
+              rdma/hca: 1
+              nvidia.com/gpu: "2"
+              memory: "128Gi"
+              cpu: "16"
+            requests:
+              rdma/hca: 1
+              nvidia.com/gpu: "2"
+              memory: "128Gi"
+              cpu: "16"
+          volumeMounts:
+          - mountPath: /models/Qwen3-32B/
+            name: model
+          - mountPath: /dev/shm
+            name: shm
+  - name: decode
+    replicas: 1
+    scalingAdapter:
+      enable: true
+    engineRuntimes:
+      - containers:
+        - name: patio-runtime
+          args:
+          - --instance-info={"data":{"port":8000,"worker_type":"decode"}}
+          env:
+          - name: SGL_ROUTER_PORT
+            value: "8000"
+        profileName: sglang-pd-runtime
+    template:
+      spec:
+        volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: llm-model
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
+        containers:
+        - name: sglang-decode
+          image: *image
+          imagePullPolicy: Always
+          env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: SGLANG_PORT
+            value: "8000"
+          - name: MOONCAKE_DEVICE
+            value: ""
+          - name: MC_MS_AUTO_DISC
+            value: "0"
+          - name: MOONCAKE_PROTOCOL
+            value: "tcp"
+          command:
+          - sh
+          - -c
+          - python3 -m sglang.launch_server --model-path /models/Qwen3-32B/ --enable-metrics --disaggregation-mode decode --port 8000 --host 0.0.0.0 --mem-fraction-static 0.9 --tp-size 2 
+          ports:
+          - containerPort: 8000
+          readinessProbe:
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            tcpSocket:
+              port: 8000
+          resources:
+            limits:
+              nvidia.com/gpu: "2"
+              rdma/hca: 1
+            requests:
+              nvidia.com/gpu: "2"
+              rdma/hca: 1
+          volumeMounts:
+          - mountPath: /models/Qwen3-32B/
+            name: model
+          - mountPath: /dev/shm
+            name: shm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: sglang-pd
+  name: sglang-pd
+  namespace: default
+spec:
+  ports:
+  - name: http
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    rolebasedgroup.workloads.x-k8s.io/name: sglang-pd
+    rolebasedgroup.workloads.x-k8s.io/role: router
+  type: ClusterIP

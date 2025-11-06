@@ -1,0 +1,15 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: ClusterEngineRuntimeProfile
+metadata:
+  name: sglang-pd-runtime
+spec:
+  containers:
+    - image: rolebasedgroup/rbgs-patio-runtime:v0.5.0-86d8c4f
+      imagePullPolicy: Always
+      name: patio-runtime
+      env:
+        - name: TOPO_TYPE
+          value: "sglang"
+        - name: SGL_ROUTER_ROLE_NAME
+          value: "router"
+  updateStrategy: NoUpdate
