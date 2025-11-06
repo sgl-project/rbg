@@ -312,6 +312,9 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
+	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, rbg); err != nil {
+		return err
+	}
 	setCondition(rbg, readyCondition)
 
 	// update role status
