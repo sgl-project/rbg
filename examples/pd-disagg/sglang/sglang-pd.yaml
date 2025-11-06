@@ -63,12 +63,6 @@ spec:
                 fieldPath: status.podIP
           - name: SGLANG_PORT
             value: "8000"
-          - name: MOONCAKE_DEVICE
-            value: ""
-          - name: MC_MS_AUTO_DISC
-            value: "0"
-          - name: MOONCAKE_PROTOCOL
-            value: "tcp"
           command:
           - sh
           - -c
@@ -131,12 +125,6 @@ spec:
                 fieldPath: status.podIP
           - name: SGLANG_PORT
             value: "8000"
-          - name: MOONCAKE_DEVICE
-            value: ""
-          - name: MC_MS_AUTO_DISC
-            value: "0"
-          - name: MOONCAKE_PROTOCOL
-            value: "tcp"
           command:
           - sh
           - -c
