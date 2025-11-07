@@ -89,7 +89,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	}
 
 	// Set coordination-based affinity scheduling
-	if err := setCoordinationAffinities(ctx, &podTemplateSpec, rbg, role); err != nil {
+	if err := setCoordinationAffinities(&podTemplateSpec, rbg, role); err != nil {
 		return nil, fmt.Errorf("failed to set coordination affinities: %w", err)
 	}
 
@@ -209,7 +209,7 @@ func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKe
 // setCoordinationAffinities sets pod affinity based on coordination configuration.
 // For AffinityScheduling coordination, it ensures pods from coordinated roles
 // are scheduled on the same topology domain according to defined ratios.
-func setCoordinationAffinities(ctx context.Context, podTemplateSpec *corev1.PodTemplateSpec,
+func setCoordinationAffinities(podTemplateSpec *corev1.PodTemplateSpec,
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
 
 	// Find coordination strategies that include this role
