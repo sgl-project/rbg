@@ -55,7 +55,10 @@ func WorkloadEqual(obj1, obj2 interface{}) (bool, error) {
 	case *appsv1.StatefulSet:
 		if o2, ok := obj2.(*appsv1.StatefulSet); ok {
 			if equal, err := semanticallyEqualStatefulSet(o1, o2, true); !equal {
-				return false, fmt.Errorf("sts not equal, error: %s", err.Error())
+				return false, fmt.Errorf("sts: %s/%s not equal, error: %s", o1.Namespace, o1.Name, err.Error())
+			}
+			if o1.Generation != o2.Generation {
+				return false, fmt.Errorf("sts: %s/%s generation not equal", o1.Namespace, o1.Name)
 			}
 			return true, nil
 		}
