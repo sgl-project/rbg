@@ -6,7 +6,7 @@
 
 1. A Kubernetes cluster with version >= 1.28 is Required, or it will behave unexpected.
 2. Kubernetes cluster has at least 6+ CPUs with at least 32G VRAM available for the LLM Inference to run on.
-3. Nodes are required to have RDMA networking capabilities. This is a requirement from Mooncake.
+3. Nodes are required to have RDMA networking capabilities. This is currently a requirement from Mooncake.
 4. The kubectl command-line tool has communication with your cluster. Learn how
    to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
 5. Prepare the Qwen3-32B model files
@@ -29,16 +29,20 @@
    kubectl apply -f model.yaml
    ```
 
-## Deploy SGLang Inference Service
+## Deploy SGLang Inference Service with SGLang Router
+1. Install RBG Cluster Engine Runtime Profile (i.e. Patio)
+```bash
+kubectl apply -f ./patio-profile.yaml
+```
 
-1. Deploy PD Disaggregation Service
+2. Deploy PD Disaggregation Service
    ![](img/sgl.png)
 
 ```bash
 kubectl apply -f ./sglang-pd.yaml
 ```
 
-2. Verify the inference service
+3. Verify the inference service
 
 ```bash
 kubectl port-forward svc/sglang-pd 8000:8000
