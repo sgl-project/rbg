@@ -1,0 +1,51 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: deepseek-pd
+spec:
+  coordination:
+    - name: prefill-decode-affinity
+      type: AffinityScheduling
+      roles:
+        - prefill
+        - decode
+      strategy:
+        affinityScheduling:
+          # Topology key for node affinity (default: kubernetes.io/hostname)
+          topologyKey: kubernetes.io/hostname
+          # Deploy 2 prefill pods and 1 decode pod together on the same node
+          ratios:
+            prefill: 2
+            decode: 1
+          # Deploy batches sequentially - wait for all pods in a batch to be ready
+          # before deploying the next batch
+          batchMode: Sequential
+  roles:
+    - name: prefill
+      replicas: 6             # Will deploy in 3 batches (6/2 = 3)
+      template:
+        metadata:
+          labels:
+            role: prefill
+        spec:
+          containers:
+            - name: prefill
+              image: vllm/vllm-openai:latest
+              env:
+                - name: HUGGING_FACE_HUB_TOKEN
+                  value: <your-hf-token>
+              command: ["start-prefill.sh"]
+    - name: decode
+      replicas: 3             # Will deploy in 3 batches (3/1 = 3)
+      template:
+        metadata:
+          labels:
+            role: decode
+        spec:
+          containers:
+            - name: decode
+              image: vllm/vllm-openai:latest
+              env:
+                - name: HUGGING_FACE_HUB_TOKEN
+                  value: <your-hf-token>
+              command: ["start-decode.sh --ray_address=$(ROLES_PREFILL_0_ADDRESS)"]

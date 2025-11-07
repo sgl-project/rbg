@@ -24,9 +24,10 @@ import (
 // RoleBasedGroupStatusApplyConfiguration represents a declarative configuration of the RoleBasedGroupStatus type for use
 // with apply.
 type RoleBasedGroupStatusApplyConfiguration struct {
-	ObservedGeneration *int64                           `json:"observedGeneration,omitempty"`
-	Conditions         []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	RoleStatuses       []RoleStatusApplyConfiguration   `json:"roleStatuses,omitempty"`
+	ObservedGeneration *int64                                 `json:"observedGeneration,omitempty"`
+	Conditions         []v1.ConditionApplyConfiguration       `json:"conditions,omitempty"`
+	RoleStatuses       []RoleStatusApplyConfiguration         `json:"roleStatuses,omitempty"`
+	CoordinationStatus []CoordinationStatusApplyConfiguration `json:"coordinationStatus,omitempty"`
 }
 
 // RoleBasedGroupStatusApplyConfiguration constructs a declarative configuration of the RoleBasedGroupStatus type for use with
@@ -65,6 +66,19 @@ func (b *RoleBasedGroupStatusApplyConfiguration) WithRoleStatuses(values ...*Rol
 			panic("nil value passed to WithRoleStatuses")
 		}
 		b.RoleStatuses = append(b.RoleStatuses, *values[i])
+	}
+	return b
+}
+
+// WithCoordinationStatus adds the given value to the CoordinationStatus field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the CoordinationStatus field.
+func (b *RoleBasedGroupStatusApplyConfiguration) WithCoordinationStatus(values ...*CoordinationStatusApplyConfiguration) *RoleBasedGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithCoordinationStatus")
+		}
+		b.CoordinationStatus = append(b.CoordinationStatus, *values[i])
 	}
 	return b
 }

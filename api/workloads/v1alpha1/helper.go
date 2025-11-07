@@ -150,3 +150,100 @@ func (p *PodGroupPolicy) IsVolcanoGangScheduling() bool {
 func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
 	return p != nil && p.PodGroupPolicySource.KubeScheduling != nil
 }
+
+// GetCoordination returns the coordination with the given name.
+func (rbg *RoleBasedGroup) GetCoordination(name string) (*Coordination, error) {
+	if name == "" {
+		return nil, errors.New("coordination name cannot be empty")
+	}
+
+	for i := range rbg.Spec.Coordination {
+		if rbg.Spec.Coordination[i].Name == name {
+			return &rbg.Spec.Coordination[i], nil
+		}
+	}
+	return nil, fmt.Errorf("coordination %q not found", name)
+}
+
+// ValidateCoordination validates the coordination configuration.
+func (c *Coordination) ValidateCoordination(rbg *RoleBasedGroup) error {
+	// Validate that all roles in coordination exist
+	for _, roleName := range c.Roles {
+		if _, err := rbg.GetRole(roleName); err != nil {
+			return fmt.Errorf("coordination %q references non-existent role %q: %w", c.Name, roleName, err)
+		}
+	}
+
+	// Validate strategy based on type
+	switch c.Type {
+	case RollingUpdateCoordination:
+		if c.Strategy.RollingUpdate == nil {
+			return fmt.Errorf("coordination %q of type RollingUpdate must have rollingUpdate strategy defined", c.Name)
+		}
+		// Additional validation for rolling update strategy can be added here
+	case AffinitySchedulingCoordination:
+		if c.Strategy.AffinityScheduling == nil {
+			return fmt.Errorf("coordination %q of type AffinityScheduling must have affinityScheduling strategy defined", c.Name)
+		}
+		if err := c.Strategy.AffinityScheduling.Validate(rbg, c.Roles); err != nil {
+			return fmt.Errorf("invalid affinityScheduling strategy for coordination %q: %w", c.Name, err)
+		}
+	default:
+		return fmt.Errorf("coordination %q has unsupported type %q", c.Name, c.Type)
+	}
+
+	return nil
+}
+
+// Validate validates the AffinitySchedulingStrategy.
+func (a *AffinitySchedulingStrategy) Validate(rbg *RoleBasedGroup, coordinatedRoles []string) error {
+	if a.TopologyKey == "" {
+		return errors.New("topologyKey cannot be empty")
+	}
+
+	if len(a.Ratios) == 0 {
+		return errors.New("ratios cannot be empty")
+	}
+
+	// Ensure all coordinated roles have ratios defined
+	roleSet := make(map[string]bool)
+	for _, roleName := range coordinatedRoles {
+		roleSet[roleName] = true
+	}
+
+	for roleName := range a.Ratios {
+		if !roleSet[roleName] {
+			return fmt.Errorf("ratio defined for role %q which is not in coordinated roles", roleName)
+		}
+		delete(roleSet, roleName)
+	}
+
+	if len(roleSet) > 0 {
+		var missing []string
+		for roleName := range roleSet {
+			missing = append(missing, roleName)
+		}
+		return fmt.Errorf("missing ratios for coordinated roles: %v", missing)
+	}
+
+	// Validate that ratios are positive
+	for roleName, ratio := range a.Ratios {
+		if ratio <= 0 {
+			return fmt.Errorf("ratio for role %q must be positive, got %d", roleName, ratio)
+		}
+	}
+
+	// Validate that the total replicas for each role is divisible by its ratio
+	for roleName, ratio := range a.Ratios {
+		role, err := rbg.GetRole(roleName)
+		if err != nil {
+			return err
+		}
+		if *role.Replicas%ratio != 0 {
+			return fmt.Errorf("role %q has %d replicas which is not divisible by ratio %d", roleName, *role.Replicas, ratio)
+		}
+	}
+
+	return nil
+}
+

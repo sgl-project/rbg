@@ -33,12 +33,20 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	// Group=workloads, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("AdapterScaleTargetRef"):
 		return &workloadsv1alpha1.AdapterScaleTargetRefApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("AffinitySchedulingStrategy"):
+		return &workloadsv1alpha1.AffinitySchedulingStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfile"):
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComponentStatus"):
 		return &workloadsv1alpha1.ComponentStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("Coordination"):
+		return &workloadsv1alpha1.CoordinationApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationStatus"):
+		return &workloadsv1alpha1.CoordinationStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationStrategy"):
+		return &workloadsv1alpha1.CoordinationStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha1.EngineRuntimeApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Instance"):
@@ -79,12 +87,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.RoleBasedGroupSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupStatus"):
 		return &workloadsv1alpha1.RoleBasedGroupStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("RoleCoordinationState"):
+		return &workloadsv1alpha1.RoleCoordinationStateApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleSpec"):
 		return &workloadsv1alpha1.RoleSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleStatus"):
 		return &workloadsv1alpha1.RoleStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RollingUpdate"):
 		return &workloadsv1alpha1.RollingUpdateApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("RollingUpdateCoordinationStrategy"):
+		return &workloadsv1alpha1.RollingUpdateCoordinationStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RolloutStrategy"):
 		return &workloadsv1alpha1.RolloutStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingAdapter"):

@@ -1,0 +1,68 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: deepseek-pd-full
+spec:
+  coordination:
+    # First coordination: deploy with affinity constraints
+    - name: prefill-decode-affinity
+      type: AffinityScheduling
+      roles:
+        - prefill
+        - decode
+      strategy:
+        affinityScheduling:
+          topologyKey: kubernetes.io/hostname
+          # Ensure 2:1 ratio deployment on same node
+          ratios:
+            prefill: 2
+            decode: 1
+          batchMode: Sequential
+    # Second coordination: rolling update with proportional constraints
+    - name: prefill-decode-update
+      type: RollingUpdate
+      roles:
+        - prefill
+        - decode
+      strategy:
+        rollingUpdate:
+          # Maximum 5% of pods can be unavailable during update
+          # For (200p, 100d): max 10 prefill and 5 decode pods unavailable
+          maxUnavailableRatio: "5%"
+          # Maximum skew of 1% in updated replica ratios
+          # For (200p, 100d): |updated_prefill/200 - updated_decode/100| < 1%
+          maxSkew: "1%"
+          # Partition at 80% - update from highest ordinal down to 80%
+          # For (200p, 100d): prefill 199→160, decode 99→80
+          partition: "80%"
+  roles:
+    - name: prefill
+      replicas: 6
+      template:
+        metadata:
+          labels:
+            role: prefill
+            appVersion: v1
+        spec:
+          containers:
+            - name: prefill
+              image: vllm/vllm-openai:latest
+              env:
+                - name: HUGGING_FACE_HUB_TOKEN
+                  value: <your-hf-token>
+              command: ["start-prefill.sh"]
+    - name: decode
+      replicas: 3
+      template:
+        metadata:
+          labels:
+            role: decode
+            appVersion: v1
+        spec:
+          containers:
+            - name: decode
+              image: vllm/vllm-openai:latest
+              env:
+                - name: HUGGING_FACE_HUB_TOKEN
+                  value: <your-hf-token>
+              command: ["start-decode.sh --ray_address=$(ROLES_PREFILL_0_ADDRESS)"]

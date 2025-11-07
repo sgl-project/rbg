@@ -60,6 +60,99 @@ spec:
               template:
                 description: Template describes the RoleBasedGroup that will be created.
                 properties:
+                  coordination:
+                    description: Coordination defines how roles should be coordinated
+                      during deployment and updates.
+                    items:
+                      description: Coordination defines how roles should be coordinated
+                        during deployment and updates.
+                      properties:
+                        name:
+                          description: Name is the unique identifier for this coordination
+                            strategy.
+                          minLength: 1
+                          type: string
+                        roles:
+                          description: Roles defines which roles participate in this
+                            coordination.
+                          items:
+                            type: string
+                          minItems: 2
+                          type: array
+                        strategy:
+                          description: |-
+                            Strategy defines the coordination parameters.
+                            The structure varies based on the coordination type.
+                          properties:
+                            affinityScheduling:
+                              description: AffinityScheduling defines parameters for
+                                AffinityScheduling coordination type.
+                              properties:
+                                batchMode:
+                                  default: Sequential
+                                  description: |-
+                                    BatchMode determines how batches are deployed.
+                                    "Sequential" deploys one batch at a time, waiting for all pods to be ready
+                                    before moving to the next batch.
+                                  enum:
+                                  - Sequential
+                                  - Parallel
+                                  type: string
+                                ratios:
+                                  additionalProperties:
+                                    format: int32
+                                    type: integer
+                                  description: |-
+                                    Ratios defines the deployment ratio between roles.
+                                    Map key is the role name, value is the replica count in each batch.
+                                  minProperties: 2
+                                  type: object
+                                topologyKey:
+                                  default: kubernetes.io/hostname
+                                  description: |-
+                                    TopologyKey is the node label key used for affinity scheduling.
+                                    Pods from coordinated roles will be scheduled on the same topology domain.
+                                  type: string
+                              required:
+                              - ratios
+                              - topologyKey
+                              type: object
+                            rollingUpdate:
+                              description: RollingUpdate defines parameters for RollingUpdate
+                                coordination type.
+                              properties:
+                                maxSkew:
+                                  description: |-
+                                    MaxSkew is the maximum skew of updated replicas between coordinated roles.
+                                    Value should be a percentage string (e.g., "1%").
+                                  type: string
+                                maxUnavailableRatio:
+                                  description: |-
+                                    MaxUnavailableRatio is the maximum ratio of pods that can be unavailable during update.
+                                    Value should be a percentage string (e.g., "5%").
+                                  type: string
+                                partition:
+                                  description: |-
+                                    Partition indicates the ratio of new version at which the workload should be partitioned.
+                                    Value should be a percentage string (e.g., "80%").
+                                  type: string
+                              type: object
+                          type: object
+                        type:
+                          description: Type is the type of coordination strategy.
+                          enum:
+                          - RollingUpdate
+                          - AffinityScheduling
+                          type: string
+                      required:
+                      - name
+                      - roles
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   podGroupPolicy:
                     description: Configuration for the PodGroup to enable gang-scheduling
                       via supported plugins.

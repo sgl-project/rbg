@@ -38,6 +38,14 @@ type RoleBasedGroupSpec struct {
 
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
+
+	// Coordination defines how roles should be coordinated during deployment and updates.
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	Coordination []Coordination `json:"coordination,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 }
 
 // PodGroupPolicy represents a PodGroup configuration for gang-scheduling.
@@ -81,6 +89,105 @@ type VolcanoSchedulingPodGroupPolicySource struct {
 	// +optional
 	Queue string `json:"queue,omitempty"`
 }
+
+// Coordination defines how roles should be coordinated during deployment and updates.
+type Coordination struct {
+	// Name is the unique identifier for this coordination strategy.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Type is the type of coordination strategy.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum={RollingUpdate,AffinityScheduling}
+	Type CoordinationType `json:"type"`
+
+	// Roles defines which roles participate in this coordination.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=2
+	Roles []string `json:"roles"`
+
+	// Strategy defines the coordination parameters.
+	// The structure varies based on the coordination type.
+	// +optional
+	Strategy CoordinationStrategy `json:"strategy,omitempty"`
+}
+
+// CoordinationType defines the type of coordination.
+type CoordinationType string
+
+const (
+	// RollingUpdateCoordination coordinates rolling updates across multiple roles.
+	RollingUpdateCoordination CoordinationType = "RollingUpdate"
+
+	// AffinitySchedulingCoordination coordinates deployment with affinity constraints.
+	AffinitySchedulingCoordination CoordinationType = "AffinityScheduling"
+)
+
+// CoordinationStrategy defines the strategy parameters for coordination.
+type CoordinationStrategy struct {
+	// RollingUpdate defines parameters for RollingUpdate coordination type.
+	// +optional
+	RollingUpdate *RollingUpdateCoordinationStrategy `json:"rollingUpdate,omitempty"`
+
+	// AffinityScheduling defines parameters for AffinityScheduling coordination type.
+	// +optional
+	AffinityScheduling *AffinitySchedulingStrategy `json:"affinityScheduling,omitempty"`
+}
+
+// RollingUpdateCoordinationStrategy defines the parameters for coordinated rolling updates.
+type RollingUpdateCoordinationStrategy struct {
+	// MaxUnavailableRatio is the maximum ratio of pods that can be unavailable during update.
+	// Value should be a percentage string (e.g., "5%").
+	// +optional
+	MaxUnavailableRatio string `json:"maxUnavailableRatio,omitempty"`
+
+	// MaxSkew is the maximum skew of updated replicas between coordinated roles.
+	// Value should be a percentage string (e.g., "1%").
+	// +optional
+	MaxSkew string `json:"maxSkew,omitempty"`
+
+	// Partition indicates the ratio of new version at which the workload should be partitioned.
+	// Value should be a percentage string (e.g., "80%").
+	// +optional
+	Partition string `json:"partition,omitempty"`
+}
+
+// AffinitySchedulingStrategy defines parameters for affinity-based coordinated scheduling.
+type AffinitySchedulingStrategy struct {
+	// TopologyKey is the node label key used for affinity scheduling.
+	// Pods from coordinated roles will be scheduled on the same topology domain.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:default="kubernetes.io/hostname"
+	TopologyKey string `json:"topologyKey,omitempty"`
+
+	// Ratios defines the deployment ratio between roles.
+	// Map key is the role name, value is the replica count in each batch.
+	// For example: {"prefill": 2, "decode": 1} means deploy 2 prefill pods
+	// and 1 decode pod together on the same node.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinProperties=2
+	Ratios map[string]int32 `json:"ratios"`
+
+	// BatchMode determines how batches are deployed.
+	// "Sequential" deploys one batch at a time, waiting for all pods to be ready
+	// before moving to the next batch.
+	// "Parallel" deploys multiple batches concurrently.
+	// +kubebuilder:validation:Enum={Sequential,Parallel}
+	// +kubebuilder:default=Sequential
+	BatchMode BatchMode `json:"batchMode,omitempty"`
+}
+
+// BatchMode defines how batches are deployed.
+type BatchMode string
+
+const (
+	// SequentialBatch deploys batches one at a time.
+	SequentialBatch BatchMode = "Sequential"
+
+	// ParallelBatch deploys batches concurrently.
+	ParallelBatch BatchMode = "Parallel"
+)
 
 // RolloutStrategy defines the strategy that the rbg controller
 // will use to perform replica updates of role.
@@ -262,6 +369,12 @@ type RoleBasedGroupStatus struct {
 
 	// Status of individual roles
 	RoleStatuses []RoleStatus `json:"roleStatuses"`
+
+	// CoordinationStatus tracks the state of coordination strategies.
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	CoordinationStatus []CoordinationStatus `json:"coordinationStatus,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 }
 
 // RoleStatus shows the current state of a specific role
@@ -274,6 +387,68 @@ type RoleStatus struct {
 
 	// Total number of desired replicas
 	Replicas int32 `json:"replicas"`
+}
+
+// CoordinationStatus shows the current state of a coordination strategy.
+type CoordinationStatus struct {
+	// Name of the coordination strategy.
+	Name string `json:"name"`
+
+	// Type of the coordination strategy.
+	Type CoordinationType `json:"type"`
+
+	// Phase indicates the current phase of coordination.
+	// +optional
+	Phase CoordinationPhase `json:"phase,omitempty"`
+
+	// RoleStates tracks the state of each role in the coordination.
+	// +optional
+	RoleStates map[string]RoleCoordinationState `json:"roleStates,omitempty"`
+
+	// CurrentBatch indicates the current batch being processed (for AffinityScheduling).
+	// +optional
+	CurrentBatch int32 `json:"currentBatch,omitempty"`
+
+	// TotalBatches indicates the total number of batches (for AffinityScheduling).
+	// +optional
+	TotalBatches int32 `json:"totalBatches,omitempty"`
+
+	// LastUpdateTime is the last time this coordination was updated.
+	// +optional
+	LastUpdateTime metav1.Time `json:"lastUpdateTime,omitempty"`
+
+	// Message provides additional details about the coordination status.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// CoordinationPhase represents the phase of a coordination strategy.
+type CoordinationPhase string
+
+const (
+	// CoordinationPending means coordination is waiting to start.
+	CoordinationPending CoordinationPhase = "Pending"
+
+	// CoordinationInProgress means coordination is actively running.
+	CoordinationInProgress CoordinationPhase = "InProgress"
+
+	// CoordinationCompleted means coordination has successfully completed.
+	CoordinationCompleted CoordinationPhase = "Completed"
+
+	// CoordinationFailed means coordination has failed.
+	CoordinationFailed CoordinationPhase = "Failed"
+)
+
+// RoleCoordinationState tracks the state of a single role within a coordination.
+type RoleCoordinationState struct {
+	// ReadyReplicas is the number of ready replicas for this role.
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// TargetReplicas is the target number of replicas for this role in the current phase.
+	TargetReplicas int32 `json:"targetReplicas,omitempty"`
+
+	// UpdatedReplicas is the number of updated replicas (for rolling updates).
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 }
 
 // +genclient
