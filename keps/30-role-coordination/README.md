@@ -202,6 +202,54 @@ spec:
         partition: 80%
 ```
 
+- Prefill and decode roles with affinity-based coordinated scheduling
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: deepseek-pd
+spec:
+  coordination:
+    - name: prefill-decode-affinity
+      type: AffinityScheduling
+      roles:
+        - prefill
+        - decode
+      strategy:
+        affinityScheduling:
+          # Topology key for node affinity
+          topologyKey: kubernetes.io/hostname
+          # Deploy 2 prefill pods and 1 decode pod together on the same node
+          ratios:
+            prefill: 2
+            decode: 1
+          # Deploy batches sequentially - wait for all pods in a batch to be ready
+          batchMode: Sequential
+  roles:
+    - name: prefill
+      replicas: 6             # Will deploy in 3 batches (6/2 = 3)
+      template:
+        metadata:
+          labels:
+            role: prefill
+        spec:
+          containers:
+            - name: prefill
+              image: vllm/vllm-openai:latest
+              command: ["start-prefill.sh"]
+    - name: decode
+      replicas: 3             # Will deploy in 3 batches (3/1 = 3)
+      template:
+        metadata:
+          labels:
+            role: decode
+        spec:
+          containers:
+            - name: decode
+              image: vllm/vllm-openai:latest
+              command: ["start-decode.sh"]
+```
+
 ## Design Details
 
 The implementation will modify the main reconciliation loop
@@ -209,6 +257,41 @@ in [RoleBasedGroupReconciler] to check for a coordination strategy. If present, 
 update logic; otherwise, it will fall back to the existing independent role update behavior.
 
 ### Controller Logic
+
+#### AffinityScheduling Coordination
+
+The AffinityScheduling coordination type ensures that pods from different roles are deployed together
+on the same topology domain (typically the same node) according to specified ratios.
+
+**Implementation Details:**
+
+1. **Affinity Injection**: When a role is part of an AffinityScheduling coordination, the controller
+   injects PodAffinity rules into the pod template to ensure pods from coordinated roles are scheduled
+   together on the same topology domain.
+
+2. **Coordination Labels**: Each coordination strategy adds a unique label to pods in coordinated roles:
+   - Label key: `coordination.workloads.x-k8s.io/<coordination-name>`
+   - Label value: `member`
+   
+   This label is used in the PodAffinity selector to identify coordinated pods.
+
+3. **Batch Deployment**: Pods are deployed in batches according to the specified ratios:
+   - The number of batches is calculated as: `min(role.replicas / ratio for each role)`
+   - Each batch contains exactly the number of pods specified by the ratio for each role
+   - In Sequential mode, the controller waits for all pods in a batch to be ready before deploying the next batch
+   - In Parallel mode, multiple batches can be deployed concurrently
+
+4. **Scheduling Constraints**: The injected PodAffinity ensures:
+   - Pods from different roles in the same coordination are scheduled on the same topology domain
+   - The Kubernetes scheduler respects the topology constraints and ratios
+   - If a node cannot accommodate all pods in a batch, the pods remain pending until suitable resources are available
+
+**Example**: For a coordination with `ratios: {prefill: 2, decode: 1}` and `topologyKey: kubernetes.io/hostname`:
+- Batch 1: Deploy prefill-0, prefill-1, decode-0 on node-1
+- Batch 2: Deploy prefill-2, prefill-3, decode-1 on node-2
+- Batch 3: Deploy prefill-4, prefill-5, decode-2 on node-3
+
+#### RollingUpdate Coordination
 
 #TODO
 

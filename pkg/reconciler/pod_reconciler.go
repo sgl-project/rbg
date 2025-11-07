@@ -88,6 +88,11 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		}
 	}
 
+	// Set coordination-based affinity scheduling
+	if err := setCoordinationAffinities(ctx, &podTemplateSpec, rbg, role); err != nil {
+		return nil, fmt.Errorf("failed to set coordination affinities: %w", err)
+	}
+
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {
@@ -199,6 +204,98 @@ func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKe
 		}
 	}
 	return hasAffinity && hasAntiAffinity
+}
+
+// setCoordinationAffinities sets pod affinity based on coordination configuration.
+// For AffinityScheduling coordination, it ensures pods from coordinated roles
+// are scheduled on the same topology domain according to defined ratios.
+func setCoordinationAffinities(ctx context.Context, podTemplateSpec *corev1.PodTemplateSpec,
+	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+
+	// Find coordination strategies that include this role
+	for _, coord := range rbg.Spec.Coordination {
+		if coord.Type != workloadsv1alpha1.AffinitySchedulingCoordination {
+			continue
+		}
+
+		// Check if this role is part of the coordination
+		roleInCoordination := false
+		for _, coordRole := range coord.Roles {
+			if coordRole == role.Name {
+				roleInCoordination = true
+				break
+			}
+		}
+		if !roleInCoordination {
+			continue
+		}
+
+		// Validate coordination (should have been validated by webhook, but check again)
+		if coord.Strategy.AffinityScheduling == nil {
+			return fmt.Errorf("coordination %q of type AffinityScheduling has no affinityScheduling strategy", coord.Name)
+		}
+
+		strategy := coord.Strategy.AffinityScheduling
+
+		// Initialize affinity if not already set
+		if podTemplateSpec.Spec.Affinity == nil {
+			podTemplateSpec.Spec.Affinity = &corev1.Affinity{}
+		}
+		if podTemplateSpec.Spec.Affinity.PodAffinity == nil {
+			podTemplateSpec.Spec.Affinity.PodAffinity = &corev1.PodAffinity{}
+		}
+
+		// Create affinity to co-locate with other roles in the coordination
+		// We use the coordination name as a label to identify coordinated pods
+		coordLabelKey := fmt.Sprintf("coordination.workloads.x-k8s.io/%s", coord.Name)
+		coordLabelValue := "member"
+
+		// Add the coordination label to the pod template
+		if podTemplateSpec.Labels == nil {
+			podTemplateSpec.Labels = make(map[string]string)
+		}
+		podTemplateSpec.Labels[coordLabelKey] = coordLabelValue
+
+		// Add pod affinity to schedule with other pods from the same coordination
+		// This ensures pods land on the same topology domain (e.g., same node)
+		affinityTerm := corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      coordLabelKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{coordLabelValue},
+					},
+				},
+			},
+			TopologyKey: strategy.TopologyKey,
+		}
+
+		// Check if this affinity term already exists to avoid duplicates
+		alreadyExists := false
+		for _, term := range podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+			if term.TopologyKey == strategy.TopologyKey &&
+				term.LabelSelector != nil &&
+				len(term.LabelSelector.MatchExpressions) > 0 {
+				for _, expr := range term.LabelSelector.MatchExpressions {
+					if expr.Key == coordLabelKey {
+						alreadyExists = true
+						break
+					}
+				}
+			}
+			if alreadyExists {
+				break
+			}
+		}
+
+		if !alreadyExists {
+			podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+				append(podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
+		}
+	}
+
+	return nil
 }
 
 func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {

@@ -246,4 +246,3 @@ func (a *AffinitySchedulingStrategy) Validate(rbg *RoleBasedGroup, coordinatedRo
 
 	return nil
 }
-

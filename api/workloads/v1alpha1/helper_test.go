@@ -45,8 +45,8 @@ func TestRoleBasedGroup_GetCoordination(t *testing.T) {
 		Spec: RoleBasedGroupSpec{
 			Coordination: []Coordination{
 				{
-					Name: "test-coord",
-					Type: AffinitySchedulingCoordination,
+					Name:  "test-coord",
+					Type:  AffinitySchedulingCoordination,
 					Roles: []string{"role1", "role2"},
 				},
 			},
@@ -95,9 +95,9 @@ func TestCoordination_ValidateCoordination(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
+		name         string
 		coordination Coordination
-		wantErr     bool
+		wantErr      bool
 	}{
 		{
 			name: "valid affinity scheduling",
@@ -190,10 +190,10 @@ func TestAffinitySchedulingStrategy_Validate(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		strategy  AffinitySchedulingStrategy
-		roles     []string
-		wantErr   bool
+		name     string
+		strategy AffinitySchedulingStrategy
+		roles    []string
+		wantErr  bool
 	}{
 		{
 			name: "valid strategy",
@@ -255,4 +255,3 @@ func TestAffinitySchedulingStrategy_Validate(t *testing.T) {
 		})
 	}
 }
-
