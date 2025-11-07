@@ -239,6 +239,9 @@ func (a *AffinitySchedulingStrategy) Validate(rbg *RoleBasedGroup, coordinatedRo
 		if err != nil {
 			return err
 		}
+		if role.Replicas == nil {
+			return fmt.Errorf("role %q has nil replicas", roleName)
+		}
 		if *role.Replicas%ratio != 0 {
 			return fmt.Errorf("role %q has %d replicas which is not divisible by ratio %d", roleName, *role.Replicas, ratio)
 		}

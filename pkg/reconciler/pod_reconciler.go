@@ -88,7 +88,10 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		}
 	}
 
-	// Set coordination-based affinity scheduling
+	// Set coordination-based affinity scheduling.
+	// If the role participates in any AffinityScheduling coordination, this will inject
+	// PodAffinity rules to ensure pods from coordinated roles are scheduled together
+	// on the same topology domain (e.g., same node).
 	if err := setCoordinationAffinities(&podTemplateSpec, rbg, role); err != nil {
 		return nil, fmt.Errorf("failed to set coordination affinities: %w", err)
 	}
@@ -272,24 +275,7 @@ func setCoordinationAffinities(podTemplateSpec *corev1.PodTemplateSpec,
 		}
 
 		// Check if this affinity term already exists to avoid duplicates
-		alreadyExists := false
-		for _, term := range podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-			if term.TopologyKey == strategy.TopologyKey &&
-				term.LabelSelector != nil &&
-				len(term.LabelSelector.MatchExpressions) > 0 {
-				for _, expr := range term.LabelSelector.MatchExpressions {
-					if expr.Key == coordLabelKey {
-						alreadyExists = true
-						break
-					}
-				}
-			}
-			if alreadyExists {
-				break
-			}
-		}
-
-		if !alreadyExists {
+		if !hasCoordinationAffinityTerm(podTemplateSpec, coordLabelKey, strategy.TopologyKey) {
 			podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
 				append(podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
 		}
@@ -316,6 +302,27 @@ func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
 		)
 	}
 	return true, nil
+}
+
+// hasCoordinationAffinityTerm checks if a coordination affinity term already exists
+// in the pod template to avoid duplicates.
+func hasCoordinationAffinityTerm(podTemplateSpec *corev1.PodTemplateSpec, coordLabelKey, topologyKey string) bool {
+	if podTemplateSpec.Spec.Affinity == nil ||
+		podTemplateSpec.Spec.Affinity.PodAffinity == nil {
+		return false
+	}
+
+	for _, term := range podTemplateSpec.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if term.TopologyKey != topologyKey || term.LabelSelector == nil {
+			continue
+		}
+		for _, expr := range term.LabelSelector.MatchExpressions {
+			if expr.Key == coordLabelKey {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
