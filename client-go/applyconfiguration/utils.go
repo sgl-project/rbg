@@ -41,6 +41,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.ComponentStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha1.EngineRuntimeApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
+		return &workloadsv1alpha1.InPlaceUpdateStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Instance"):
 		return &workloadsv1alpha1.InstanceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InstanceComponent"):
@@ -49,14 +51,32 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.InstanceConditionApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InstanceReadinessGate"):
 		return &workloadsv1alpha1.InstanceReadinessGateApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSet"):
+		return &workloadsv1alpha1.InstanceSetApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSetCondition"):
+		return &workloadsv1alpha1.InstanceSetConditionApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSetScaleStrategy"):
+		return &workloadsv1alpha1.InstanceSetScaleStrategyApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSetSpec"):
+		return &workloadsv1alpha1.InstanceSetSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSetStatus"):
+		return &workloadsv1alpha1.InstanceSetStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSetUpdateStrategy"):
+		return &workloadsv1alpha1.InstanceSetUpdateStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InstanceSpec"):
 		return &workloadsv1alpha1.InstanceSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InstanceStatus"):
 		return &workloadsv1alpha1.InstanceStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("InstanceTemplate"):
+		return &workloadsv1alpha1.InstanceTemplateApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("KubeSchedulingPodGroupPolicySource"):
 		return &workloadsv1alpha1.KubeSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("LeaderWorkerTemplate"):
 		return &workloadsv1alpha1.LeaderWorkerTemplateApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("Lifecycle"):
+		return &workloadsv1alpha1.LifecycleApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("LifecycleHook"):
+		return &workloadsv1alpha1.LifecycleHookApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodGroupPolicy"):
 		return &workloadsv1alpha1.PodGroupPolicyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodGroupPolicySource"):

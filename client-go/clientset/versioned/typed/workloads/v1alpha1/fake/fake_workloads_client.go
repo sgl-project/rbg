@@ -35,6 +35,10 @@ func (c *FakeWorkloadsV1alpha1) Instances(namespace string) v1alpha1.InstanceInt
 	return newFakeInstances(c, namespace)
 }
 
+func (c *FakeWorkloadsV1alpha1) InstanceSets(namespace string) v1alpha1.InstanceSetInterface {
+	return newFakeInstanceSets(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha1) RoleBasedGroups(namespace string) v1alpha1.RoleBasedGroupInterface {
 	return newFakeRoleBasedGroups(c, namespace)
 }

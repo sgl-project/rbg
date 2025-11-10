@@ -27,6 +27,8 @@ type Interface interface {
 	ClusterEngineRuntimeProfiles() ClusterEngineRuntimeProfileInformer
 	// Instances returns a InstanceInformer.
 	Instances() InstanceInformer
+	// InstanceSets returns a InstanceSetInformer.
+	InstanceSets() InstanceSetInformer
 	// RoleBasedGroups returns a RoleBasedGroupInformer.
 	RoleBasedGroups() RoleBasedGroupInformer
 	// RoleBasedGroupScalingAdapters returns a RoleBasedGroupScalingAdapterInformer.
@@ -54,6 +56,11 @@ func (v *version) ClusterEngineRuntimeProfiles() ClusterEngineRuntimeProfileInfo
 // Instances returns a InstanceInformer.
 func (v *version) Instances() InstanceInformer {
 	return &instanceInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// InstanceSets returns a InstanceSetInformer.
+func (v *version) InstanceSets() InstanceSetInformer {
+	return &instanceSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // RoleBasedGroups returns a RoleBasedGroupInformer.
