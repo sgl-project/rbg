@@ -33,6 +33,14 @@ type InstanceListerExpansion interface{}
 // InstanceNamespaceLister.
 type InstanceNamespaceListerExpansion interface{}
 
+// InstanceSetListerExpansion allows custom methods to be added to
+// InstanceSetLister.
+type InstanceSetListerExpansion interface{}
+
+// InstanceSetNamespaceListerExpansion allows custom methods to be added to
+// InstanceSetNamespaceLister.
+type InstanceSetNamespaceListerExpansion interface{}
+
 // RoleBasedGroupListerExpansion allows custom methods to be added to
 // RoleBasedGroupLister.
 type RoleBasedGroupListerExpansion interface{}
