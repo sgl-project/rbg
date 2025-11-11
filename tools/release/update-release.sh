@@ -8,6 +8,9 @@ cd "$REPO_ROOT" || { echo "Error: Failed to change to repo root"; exit 1; }
 # Set paths relative to repo root
 CHARTS_DIR="deploy/helm"
 
+# Set paths relative to manifest root
+MANIFEST_DIR="deploy/kubectl"
+
 # Function to extract variable values from Makefile
 extract_make_var() {
     local var_name=$1
@@ -82,5 +85,44 @@ else
     echo "Error: $VALUES_FILE not found at ${VALUES_FILE}!"
     exit 1
 fi
+
+# Update manifest.yaml used by kubectl
+HELM_CHART_PATH="${CHARTS_DIR}/rbgs"
+MANIFEST_FILE="${MANIFEST_DIR}/manifests.yaml"
+
+# create target dir if not exits
+mkdir -p "$MANIFEST_DIR"
+
+# Clear or create the manifest file
+echo "apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/name: rbgs
+    control-plane: rbgs-controller
+  name: rbgs-system"> "$MANIFEST_FILE"
+
+# process crds
+if [ -d "$HELM_CHART_PATH/crds" ]; then
+    echo "Processing CRDs..."
+    for crd_file in "$HELM_CHART_PATH/crds"/*.yaml; do
+        if [ -f "$crd_file" ]; then
+            echo "---" >> "$MANIFEST_FILE"
+            cat "$crd_file" >> "$MANIFEST_FILE"
+        fi
+    done
+fi
+
+# use helm template to generate manifests
+helm template \
+  -n rbgs-system \
+  --values "$HELM_CHART_PATH/values.yaml" \
+  --show-only templates/clusterrole.yaml \
+  --show-only templates/manager.yaml \
+  --show-only templates/rolebinding.yaml \
+  --show-only templates/serviceaccount.yaml \
+  --dry-run \
+  rbgs "$HELM_CHART_PATH" >> "$MANIFEST_FILE"
+echo "Updated manifests at $MANIFEST_FILE"
 
 echo "Update completed successfully!"
