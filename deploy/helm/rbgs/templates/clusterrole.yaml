@@ -27,6 +27,8 @@ rules:
     resources:
       - rolebasedgroupscalingadapters
       - rolebasedgroups
+      - instancesets
+      - instances
     verbs:
       - get
       - list
