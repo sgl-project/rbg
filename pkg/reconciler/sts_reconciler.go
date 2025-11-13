@@ -43,9 +43,9 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 
 func (r *StatefulSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	revisionKey string,
+	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,
 ) error {
-	if err := r.reconcileStatefulSet(ctx, rbg, role, revisionKey); err != nil {
+	if err := r.reconcileStatefulSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey); err != nil {
 		return err
 	}
 
@@ -55,7 +55,7 @@ func (r *StatefulSetReconciler) Reconciler(
 func (r *StatefulSetReconciler) reconcileStatefulSet(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	revisionKey string,
+	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling sts workload")
@@ -108,7 +108,7 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	}
 
 	stsUpdated := !semanticallyEqual || !revisionHashEqual
-	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated)
+	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated, rollingUpdateStrategy)
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,9 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 //     we should reclaim the extra replicas gradually to accommodate for the new replicas.
 
 func (r *StatefulSetReconciler) rollingUpdateParameters(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec, sts *appsv1.StatefulSet, stsUpdated bool,
+	ctx context.Context, role *workloadsv1alpha1.RoleSpec,
+	sts *appsv1.StatefulSet, stsUpdated bool,
+	coordinationRollout *workloadsv1alpha1.RollingUpdate,
 ) (stsPartition int32, replicas int32, err error) {
 	logger := log.FromContext(ctx)
 	roleReplicas := *role.Replicas
@@ -180,6 +182,12 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	// replicas should not change.
 	if sts == nil || sts.UID == "" {
 		return 0, roleReplicas, nil
+	}
+
+	// Case 2:
+	// If coordination enabled, maxSurge will not be considered.
+	if coordinationRollout != nil && coordinationRollout.Partition != nil {
+		return *coordinationRollout.Partition, roleReplicas, nil
 	}
 
 	stsReplicas := *sts.Spec.Replicas
@@ -209,21 +217,21 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 		return burstReplicas
 	}
 
-	// Case 2:
+	// Case 3:
 	// Indicates a new rolling update here.
 	if stsUpdated {
 		partition, replicas := min(roleReplicas, stsReplicas), wantReplicas(roleReplicas)
 		// Processing scaling up/down first prior to rolling update.
-		logger.V(1).Info(fmt.Sprintf("case 2: rolling update started. partition %d, replicas: %d", partition, replicas))
+		logger.V(1).Info(fmt.Sprintf("case 3: rolling update started. partition %d, replicas: %d", partition, replicas))
 		return partition, replicas, nil
 	}
 
 	partition := *sts.Spec.UpdateStrategy.RollingUpdate.Partition
 	rollingUpdateCompleted := partition == 0 && stsReplicas == roleReplicas
-	// Case 3:
+	// Case 4:
 	// In normal cases, return the values directly.
 	if rollingUpdateCompleted {
-		logger.V(1).Info("case 3: rolling update completed.")
+		logger.V(1).Info("case 4: rolling update completed.")
 		return 0, roleReplicas, nil
 	}
 
@@ -238,20 +246,20 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 		return 0, 0, err
 	}
 	replicasUpdated := originalRoleReplicas != int(*role.Replicas)
-	// Case 4:
+	// Case 5:
 	// Replicas changed during rolling update.
 	if replicasUpdated {
 		partition = min(partition, burstReplicas)
 		replicas := wantReplicas(roleUnreadyReplicas)
 		logger.V(1).Info(
 			fmt.Sprintf(
-				"case 4: Replicas changed during rolling update. partition %d, replicas: %d", partition, replicas,
+				"case 5: Replicas changed during rolling update. partition %d, replicas: %d", partition, replicas,
 			),
 		)
 		return partition, replicas, nil
 	}
 
-	// Case 5:
+	// Case 6:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(
 		&role.RolloutStrategy.RollingUpdate.MaxUnavailable, int(roleReplicas), false,
@@ -266,7 +274,7 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	replicas = wantReplicas(roleUnreadyReplicas)
 	logger.V(1).Info(
 		fmt.Sprintf(
-			"case 5: Calculating the Partition during rolling update. partition %d, replicas: %d", partition, replicas,
+			"case 6: Calculating the Partition during rolling update. partition %d, replicas: %d", partition, replicas,
 		),
 	)
 	return partition, replicas, nil
@@ -486,6 +494,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 				WithServiceName(svcName).
 				WithReplicas(*role.Replicas).
 				WithTemplate(podTemplateApplyConfiguration).
+				WithMinReadySeconds(role.MinReadySeconds).
 				WithPodManagementPolicy(appsv1.ParallelPodManagement).
 				WithSelector(
 					metaapplyv1.LabelSelector().
@@ -545,22 +554,31 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 ) (workloadsv1alpha1.RoleStatus, bool, error) {
-	updateStatus := false
 	sts := &appsv1.StatefulSet{}
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
 	); err != nil {
-		return workloadsv1alpha1.RoleStatus{}, updateStatus, err
+		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
 
+	if sts.Status.ObservedGeneration < sts.Generation {
+		err := fmt.Errorf("sts generation not equal to observed generation")
+		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+	}
+
+	updateStatus := false
 	currentReplicas := *sts.Spec.Replicas
 	currentReady := sts.Status.ReadyReplicas
+	updatedReplicas := sts.Status.UpdatedReplicas
 	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas || status.ReadyReplicas != currentReady {
+	if !found || status.Replicas != currentReplicas ||
+		status.ReadyReplicas != currentReady ||
+		status.UpdatedReplicas != updatedReplicas {
 		status = workloadsv1alpha1.RoleStatus{
-			Name:          role.Name,
-			Replicas:      currentReplicas,
-			ReadyReplicas: currentReady,
+			Name:            role.Name,
+			Replicas:        currentReplicas,
+			ReadyReplicas:   currentReady,
+			UpdatedReplicas: updatedReplicas,
 		}
 		updateStatus = true
 	}
@@ -575,6 +593,12 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
 	); err != nil {
 		return false, err
+	}
+
+	// We don't check ready if workload is rolling update if maxSkew is set.
+	if utils.RoleInMaxSkewCoordination(rbg, role.Name) &&
+		sts.Status.CurrentRevision != sts.Status.UpdateRevision {
+		return true, nil
 	}
 	return sts.Status.ReadyReplicas == *sts.Spec.Replicas, nil
 }
@@ -725,17 +749,10 @@ func statefulSetSpecEqual(spec1, spec2 appsv1.StatefulSetSpec) (bool, error) {
 }
 
 func statefulSetStatusEqual(oldStatus, newStatus appsv1.StatefulSetStatus) (bool, error) {
-	if oldStatus.Replicas != newStatus.Replicas {
-		return false, fmt.Errorf("status.replicas not equal, old: %v, new: %v", oldStatus.Replicas, newStatus.Replicas)
-	}
-
-	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
-		return false, fmt.Errorf(
-			"status.ReadyReplicas not equal, old: %v, new: %v", oldStatus.ReadyReplicas, newStatus.ReadyReplicas,
-		)
+	if !reflect.DeepEqual(oldStatus, newStatus) {
+		return false, fmt.Errorf("status not equal")
 	}
 	return true, nil
-
 }
 
 func SemanticallyEqualService(svc1, svc2 *corev1.Service) (bool, error) {

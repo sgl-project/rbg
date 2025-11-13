@@ -38,6 +38,55 @@ type RoleBasedGroupSpec struct {
 
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
+
+	// CoordinationRequirements describes the requirements of coordination strategies for some specified roles.
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	CoordinationRequirements []Coordination `json:"coordination,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+}
+
+// Coordination describes the requirements of coordination strategies for roles.
+type Coordination struct {
+	// Name of the coordination.
+	Name string `json:"name"`
+
+	// Roles that should be constrained by this coordination.
+	Roles []string `json:"roles"`
+
+	// RolloutStrategy describes the coordination strategies.
+	Strategy *CoordinationStrategy `json:"strategy,omitempty"`
+}
+
+type CoordinationStrategy struct {
+	// RollingUpdate defines the coordination strategies about rolling update.
+	RollingUpdate *CoordinationRollingUpdate `json:"rollingUpdate,omitempty"`
+}
+
+// CoordinationRollingUpdate describes the rolling update coordination strategy.
+type CoordinationRollingUpdate struct {
+	// MaxSkew defines the max skew requirement about updated replicas between the roles when rolling update.
+	// For example, one RoleBasedGroup with (200 prefills, 100 decodes) will have the
+	// constraint `abs(updated_prefills/200 - updated_decodes/100) <= MaxSkew`.
+	// Only support percentage value, and defaults to nil.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	MaxSkew *string `json:"maxSkew,omitempty"`
+
+	// Partition indicates the replicas at which the role should be partitioned for rolling update.
+	// If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+	// Only support percentage value, and defaults to nil.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	Partition *string `json:"partition,omitempty"`
+
+	// MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+	// the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+	// Only support percentage value, and defaults to nil.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	MaxUnavailable *string `json:"maxUnavailable,omitempty"`
 }
 
 // PodGroupPolicy represents a PodGroup configuration for gang-scheduling.
@@ -191,6 +240,13 @@ type RoleSpec struct {
 
 	// +optional
 	ScalingAdapter *ScalingAdapter `json:"scalingAdapter,omitempty"`
+
+	// MinReadySeconds is the minimum number of seconds for which a newly created pod/instance should be ready
+	// without any of its container crashing for it to be considered available.
+	// Defaults to 0 (pod will be considered available as soon as it is ready)
+	// +optional
+	// +kubebuilder:default=0
+	MinReadySeconds int32 `json:"minReadySeconds,omitempty" protobuf:"varint,9,opt,name=minReadySeconds"`
 }
 
 type WorkloadSpec struct {
@@ -274,6 +330,9 @@ type RoleStatus struct {
 
 	// Total number of desired replicas
 	Replicas int32 `json:"replicas"`
+
+	// Total number of updated replicas
+	UpdatedReplicas int32 `json:"updatedReplicas"`
 }
 
 // +genclient
@@ -296,7 +355,7 @@ type RoleBasedGroupConditionType string
 
 // These are built-in conditions of a RBG.
 const (
-	// RoleBasedGroupAvailable means the rbg is available, ie, at least the
+	// RoleBasedGroupReady means the rbg is available, ie, at least the
 	// minimum available groups are up and running.
 	RoleBasedGroupReady RoleBasedGroupConditionType = "Ready"
 

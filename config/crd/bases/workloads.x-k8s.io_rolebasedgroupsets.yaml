@@ -60,6 +60,57 @@ spec:
               template:
                 description: Template describes the RoleBasedGroup that will be created.
                 properties:
+                  coordination:
+                    description: CoordinationRequirements describes the requirements
+                      of coordination strategies for some specified roles.
+                    items:
+                      description: Coordination describes the requirements of coordination
+                        strategies for roles.
+                      properties:
+                        name:
+                          description: Name of the coordination.
+                          type: string
+                        roles:
+                          description: Roles that should be constrained by this coordination.
+                          items:
+                            type: string
+                          type: array
+                        strategy:
+                          description: RolloutStrategy describes the coordination
+                            strategies.
+                          properties:
+                            rollingUpdate:
+                              description: RollingUpdate defines the coordination
+                                strategies about rolling update.
+                              properties:
+                                maxSkew:
+                                  description: MaxSkew defines the max skew requirement
+                                    about updated replicas between the roles when
+                                    rolling update.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                                maxUnavailable:
+                                  description: |-
+                                    MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+                                    the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                                partition:
+                                  description: |-
+                                    Partition indicates the replicas at which the role should be partitioned for rolling update.
+                                    If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                              type: object
+                          type: object
+                      required:
+                      - name
+                      - roles
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   podGroupPolicy:
                     description: Configuration for the PodGroup to enable gang-scheduling
                       via supported plugins.
@@ -1523,6 +1574,13 @@ spec:
                               format: int32
                               type: integer
                           type: object
+                        minReadySeconds:
+                          default: 0
+                          description: |-
+                            MinReadySeconds is the minimum number of seconds for which a newly created pod/instance should be ready
+                            without any of its container crashing for it to be considered available.
+                          format: int32
+                          type: integer
                         name:
                           description: Unique identifier for the role
                           minLength: 1

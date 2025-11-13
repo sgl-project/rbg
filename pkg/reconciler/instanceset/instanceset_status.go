@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/reconciler/instanceset/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/instanceset/sync"
 	"sigs.k8s.io/rbgs/pkg/reconciler/instanceset/utils"
+	utils2 "sigs.k8s.io/rbgs/pkg/utils"
 )
 
 // StatusUpdater is interface for updating InstanceSet status.
@@ -91,7 +92,7 @@ func (r *realStatusUpdater) calculateStatus(set *appsv1alpha1.InstanceSet, newSt
 	if newStatus.UpdateRevision == newStatus.CurrentRevision {
 		newStatus.ExpectedUpdatedReplicas = *set.Spec.Replicas
 	} else {
-		if partition, err := utils.CalculatePartitionReplicas(set.Spec.UpdateStrategy.Partition, set.Spec.Replicas); err == nil {
+		if partition, err := utils2.CalculatePartitionReplicas(set.Spec.UpdateStrategy.Partition, set.Spec.Replicas); err == nil {
 			newStatus.ExpectedUpdatedReplicas = *set.Spec.Replicas - int32(partition)
 		}
 	}

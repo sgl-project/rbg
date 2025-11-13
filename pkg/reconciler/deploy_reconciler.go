@@ -36,7 +36,7 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 
 func (r *DeploymentReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	revisionKey string) error {
+	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling deployment workload")
 
@@ -46,7 +46,7 @@ func (r *DeploymentReconciler) Reconciler(
 		return err
 	}
 
-	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, revisionKey)
+	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, rollingUpdateStrategy, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct deployment apply configuration")
 		return err
@@ -92,6 +92,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 	oldDeploy *appsv1.Deployment,
+	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
 	revisionKey string,
 ) (*appsapplyv1.DeploymentApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
@@ -145,6 +146,32 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 			),
 		)
 	}
+	if rollingUpdateStrategy != nil {
+		if deployConfig.Spec.Strategy == nil {
+			deployConfig = deployConfig.WithSpec(
+				deployConfig.Spec.WithStrategy(
+					appsapplyv1.DeploymentStrategy(),
+				),
+			)
+		}
+		if deployConfig.Spec.Strategy.RollingUpdate == nil {
+			deployConfig = deployConfig.WithSpec(
+				deployConfig.Spec.WithStrategy(
+					deployConfig.Spec.Strategy.WithRollingUpdate(
+						appsapplyv1.RollingUpdateDeployment(),
+					),
+				),
+			)
+		}
+		deployConfig = deployConfig.WithSpec(
+			deployConfig.Spec.WithStrategy(
+				deployConfig.Spec.Strategy.WithRollingUpdate(
+					deployConfig.Spec.Strategy.RollingUpdate.
+						WithMaxUnavailable(rollingUpdateStrategy.MaxUnavailable),
+				),
+			),
+		)
+	}
 	return deployConfig, nil
 
 }
@@ -159,17 +186,26 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
 	); err != nil {
-		return workloadsv1alpha1.RoleStatus{}, false, err
+		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+	}
+
+	if deploy.Status.ObservedGeneration < deploy.Generation {
+		err := fmt.Errorf("role(%s) workload generation not equal to observed generation", role.Name)
+		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
 
 	currentReplicas := *deploy.Spec.Replicas
 	currentReady := deploy.Status.ReadyReplicas
+	updatedReplicas := deploy.Status.UpdatedReplicas
 	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas || status.ReadyReplicas != currentReady {
+	if !found || status.Replicas != currentReplicas ||
+		status.ReadyReplicas != currentReady ||
+		status.UpdatedReplicas != updatedReplicas {
 		status = workloadsv1alpha1.RoleStatus{
-			Name:          role.Name,
-			Replicas:      currentReplicas,
-			ReadyReplicas: currentReady,
+			Name:            role.Name,
+			Replicas:        currentReplicas,
+			ReadyReplicas:   currentReady,
+			UpdatedReplicas: updatedReplicas,
 		}
 		updateStatus = true
 	}
@@ -185,6 +221,12 @@ func (r *DeploymentReconciler) CheckWorkloadReady(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
 	); err != nil {
 		return false, err
+	}
+
+	// We don't check ready if workload is rolling update if maxSkew is set.
+	if utils.RoleInMaxSkewCoordination(rbg, role.Name) &&
+		deploy.Status.UpdatedReplicas != deploy.Status.Replicas {
+		return true, nil
 	}
 	return deploy.Status.ReadyReplicas == *deploy.Spec.Replicas, nil
 }
@@ -323,19 +365,8 @@ func deploymentSpecEqual(spec1, spec2 appsv1.DeploymentSpec) (bool, error) {
 }
 
 func deploymentStatusEqual(oldStatus, newStatus appsv1.DeploymentStatus) (bool, error) {
-	if oldStatus.Replicas != newStatus.Replicas {
-		return false, fmt.Errorf(
-			"status.replicas not equal, old: %v, new: %v",
-			oldStatus.Replicas, newStatus.Replicas,
-		)
-	}
-
-	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
-		return false, fmt.Errorf(
-			"status.ReadyReplicas not equal, old: %v, new: %v",
-			oldStatus.ReadyReplicas, newStatus.ReadyReplicas,
-		)
+	if !reflect.DeepEqual(oldStatus, newStatus) {
+		return false, fmt.Errorf("status not equal")
 	}
 	return true, nil
-
 }

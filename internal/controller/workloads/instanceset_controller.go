@@ -25,6 +25,10 @@ func NewInstanceSetReconciler(mgr ctrl.Manager) *InstanceSetReconciler {
 	}
 }
 
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instancesets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instancesets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instancesets/finalizers,verbs=update
+
 func (i *InstanceSetReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	return i.reconcileFunc(ctx, request)
 }

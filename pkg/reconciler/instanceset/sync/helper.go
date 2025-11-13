@@ -13,7 +13,8 @@ import (
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/specifieddelete"
 	"sigs.k8s.io/rbgs/pkg/reconciler/instanceset/core"
-	"sigs.k8s.io/rbgs/pkg/reconciler/instanceset/utils"
+	instancesetutils "sigs.k8s.io/rbgs/pkg/reconciler/instanceset/utils"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type expectationDiffs struct {
@@ -90,7 +91,7 @@ func calculateDiffsWithExpectation(set *appsv1alpha1.InstanceSet, instances []*a
 	}()
 
 	for _, instance := range instances {
-		if utils.EqualToRevisionHash("", instance, updateRevision) {
+		if instancesetutils.EqualToRevisionHash("", instance, updateRevision) {
 			newRevisionCount++
 
 			switch state := lifecycle.GetInstanceLifecycleState(instance); state {

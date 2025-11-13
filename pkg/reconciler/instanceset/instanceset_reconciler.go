@@ -52,12 +52,6 @@ type ReconcileInstanceSet struct {
 	syncControl       synccontrol.Interface
 }
 
-// +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps.red.io,resources=instancesets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps.red.io,resources=instancesets/finalizers,verbs=get;update;patch;delete
-// +kubebuilder:rbac:groups=apps.red.io,resources=instancesets/status,verbs=get;update;patch
-
 // Reconcile reads that state of the cluster for a InstanceSet object and makes changes based on the state read
 // and what is in the InstanceSet.Spec
 func (r *ReconcileInstanceSet) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {

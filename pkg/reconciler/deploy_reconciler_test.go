@@ -121,7 +121,7 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 				}
 
 				ctx := context.Background()
-				err := r.Reconciler(ctx, tt.rbg, tt.role, expectedRevisionHash)
+				err := r.Reconciler(ctx, tt.rbg, tt.role, nil, expectedRevisionHash)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf("DeploymentReconciler.Reconciler() error = %v, expectError %v", err, tt.expectError)
@@ -652,7 +652,7 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 				}
 
 				ctx := context.Background()
-				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, "revision-key")
+				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, nil, "revision-key")
 
 				if (err != nil) != tt.expectError {
 					t.Errorf(

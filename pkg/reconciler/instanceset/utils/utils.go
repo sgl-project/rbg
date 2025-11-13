@@ -29,7 +29,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/integer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -182,35 +181,6 @@ func DumpJSON(instance *v1alpha1.Instance) string {
 		return err.Error()
 	}
 	return string(b)
-}
-
-// CalculatePartitionReplicas returns absolute value of partition for workload. This func can solve some
-// corner cases about percentage-type partition, such as:
-// - if partition > "0%" and replicas > 0, we will ensure at least 1 old pod is reserved.
-// - if partition < "100%" and replicas > 1, we will ensure at least 1 pod is upgraded.
-func CalculatePartitionReplicas(partition *intstrutil.IntOrString, replicasPointer *int32) (int, error) {
-	if partition == nil {
-		return 0, nil
-	}
-
-	replicas := 1
-	if replicasPointer != nil {
-		replicas = int(*replicasPointer)
-	}
-
-	// 'roundUp=true' will ensure at least 1 old pod is reserved if partition > "0%" and replicas > 0.
-	pValue, err := intstrutil.GetValueFromIntOrPercent(partition, replicas, true)
-	if err != nil {
-		return pValue, err
-	}
-
-	// if partition < "100%" and replicas >= 1, we will ensure at least 1 pod is upgraded.
-	if replicas >= 1 && pValue == replicas && partition.Type == intstrutil.String && partition.StrVal != "100%" {
-		pValue = replicas - 1
-	}
-
-	pValue = integer.IntMax(integer.IntMin(pValue, replicas), 0)
-	return pValue, nil
 }
 
 // DoItSlowly tries to call the provided function a total of 'count' times,

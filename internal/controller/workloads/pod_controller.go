@@ -175,7 +175,8 @@ func ToRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha1.RoleStatus) [
 		out = append(out, applyconfiguration.RoleStatus().
 			WithName(rs.Name).
 			WithReplicas(rs.Replicas).
-			WithReadyReplicas(rs.ReadyReplicas))
+			WithReadyReplicas(rs.ReadyReplicas).
+			WithUpdatedReplicas(rs.UpdatedReplicas))
 	}
 	return out
 }
