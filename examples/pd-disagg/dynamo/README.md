@@ -6,7 +6,7 @@ prefill computation should be performed locally or remotely. If remote computati
 the PrefillQueue. A PrefillWorker pulls the request from the queue and performs the prefill computation; once complete,
 it transfers the Prefill KVCache back to the Decode Worker.
 
-![](img/dynamo-sequence.png)
+![dynamo-sequence](img/dynamo-sequence.png)
 
 ## Prerequisites
 
@@ -19,16 +19,19 @@ it transfers the Prefill KVCache back to the Decode Worker.
 
 1. Install dependencies
     1. Deploy etcd service
+
    ```bash
    kubectl apply -f ./etcd.yaml
     ```
+
     2. Deploy NATS service
+
    ```bash
    kubectl apply -f ./nats.yaml
     ```
 
 2. Deploy PD Disaggregation with Dynamo-SGLang
-   ![](img/dynamo.png)
+   ![dynamo](img/dynamo.png)
 
 ```bash
 kubectl apply -f ./dynamo.yaml

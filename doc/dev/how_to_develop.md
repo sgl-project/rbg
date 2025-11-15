@@ -56,9 +56,11 @@ We assume you already have a GitHub account.
     ```
 
 ### Update Generated Code
+
 `Makefile` under project directory provides many tasks you may want to use including Test, Build, Debug, Deploy etc.
 
 When your modification involves the CRD API definition, you need to update the generated code
+
 ```shell
 # Generates WebhookConfiguration, CustomResourceDefinition objects.
 $ make manifests
@@ -67,7 +69,9 @@ $ make generate
 ```
 
 ### Build Binary
+
 You can simply get a binary by running:
+
 ```shell
 # Build controller binary
 $ make build
@@ -77,13 +81,15 @@ $ make build
 # If you want to build rbg cli
 $ make build-cli
 ```
+
 By default, the binary would be put under `<rbg-path>/bin/`, and the controller default executable file name is manager.
 
 ### Build Image
+
 Before running RBG Controller, you need to push the built image to an accessible image registry or just use the default image.
 
 1. Build image
-    
+
     ```shell
     # Set name for image of controller
     $ export IMG=<your-registry>/<your-namespace>/<img-name>
@@ -95,10 +101,11 @@ Before running RBG Controller, you need to push the built image to an accessible
     ```
 
 2. Login to a image registry
-    
+
     Make sure you've login to a docker image registry that you'd like to push your image to:
+
     ```shell
-    $ docker login <your-registry> -u <username>
+    docker login <your-registry> -u <username>
     ```
 
 3. Push your image:
@@ -109,11 +116,13 @@ Before running RBG Controller, you need to push the built image to an accessible
     ```
 
 ### Run Your RBG on Kubernetes Cluster
+
 In the following steps, we assume you have properly configured `KUBECONFIG` environment variable or set up `~/.kube/config`. See [Kubeconfig docs](https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/) for more information.
 
 1. Push your images to a image registry accessible to your Kubernetes cluster
 
     If your images are pushed to some private repositories, make sure your Kubernetes cluster hold credentials for accessing those repositories. You can add image pull credentials in [controller deploy](../../config/manager/manager.yaml)
+
     ```yaml
     spec:
       template:
@@ -123,7 +132,7 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
     ```
 
 2. Specify the custom controller image name to use
-    
+
     ```shell
     # Set name for image of controller
     $ export IMG=<your-registry>/<your-namespace>/<img-name>
@@ -132,12 +141,13 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
     ```
 
 3. Install CRDs
+
     ```shell
-    $ make install
+    make install
     ```
-    
+
     Check CRD with:
-    
+
     ```shell
     $ kubectl get crd | grep -e rolebasedgroup -e clusterengineruntimeprofiles
     clusterengineruntimeprofiles.workloads.x-k8s.io                  2025-09-01T09:22:57Z
@@ -147,12 +157,13 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
     ```
 
 4. Install your implementation
+
     ```shell
-    $ make deploy
+    make deploy
     ```
-    
+
     Check rbg system with:
-    
+
     ```shell
     $ kubectl get po -n rbgs-system
     NAME                                            READY   STATUS    RESTARTS   AGE
@@ -163,12 +174,13 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
 5. Run samples to verify your implementation
 
     Here is a sample provided by us, you may want to rewrite it according to your implementation.
+
     ```shell
-    $ kubectl apply -f examples/rbgs/rbgs-base.yaml
+    kubectl apply -f examples/rbgs/rbgs-base.yaml
     ```
-    
+
     Check sample pods:
-    
+
     ```shell
     $ kubectl get po
     NAME                                      READY   STATUS    RESTARTS   AGE
@@ -181,13 +193,15 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
     ```
 
 6. Check logs to verify your implementation
+
     ```shell
-    $ kubectl logs -n rbgs-system <controller_manager_name>
+    kubectl logs -n rbgs-system <controller_manager_name>
     ```
 
 7. Clean up
+
     ```shell
-    $ make undeploy
+    make undeploy
     ```
 
 ### Unit Testing
@@ -197,26 +211,29 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
 Execute following command from project root to run basic unit tests:
 
 ```shell
-$ make test
+make test
 ```
 
 #### Integration Tests
+
 Execute following command from project root to run integration tests:
 
 ```shell
-$ make test-e2e
+make test-e2e
 ```
 
 ### Running RGB Controller Locally
+
 The RGB controller supports local operation or debugging. Before running the controller locally, it is necessary to configure kubeconfig in advance in the local environment (configured through the `KUBECONFIG` environment variable or through the `$HOME/.kube/config` file) and be able to access a Kubernetes cluster normally.
 
 1. Install CRDs
+
     ```shell
-    $ make install
+    make install
     ```
-    
+
     Check CRD with:
-    
+
     ```shell
     $ kubectl get crd | grep -e rolebasedgroup -e clusterengineruntimeprofiles
     clusterengineruntimeprofiles.workloads.x-k8s.io                  2025-09-01T09:22:57Z
@@ -226,6 +243,7 @@ The RGB controller supports local operation or debugging. Before running the con
     ```
 
 2. Build binary:
+
     ```shell
     # Build controller binary
     $ make build
@@ -249,13 +267,15 @@ The RBG controller component supports local operation or debugging. Before runni
 Ensure that go help is installed in the environment, and refer to the [go installation manual](https://github.com/go-delve/delve/tree/master/Documentation/installation) for the specific installation process
 
 ```shell
-$ dlv debug cmd/rbgs/main.go
+dlv debug cmd/rbgs/main.go
 ```
 
 #### Debugging with VSCode Locally
+
 If VSCode is used as the development environment, the [Go plugin](https://marketplace.visualstudio.com/items?itemName=golang.go) of VSCode can be directly installed and conduct local debugging.
 
 ##### Debugging Controller Components
+
 The Go code debugging task is defined in `./.vscode/launch.json` as follows:
 
 ```json
@@ -278,23 +298,21 @@ The Go code debugging task is defined in `./.vscode/launch.json` as follows:
 ```
 
 #### Remote Debugging
-Please ensure that go help is correctly installed on both the local machine and component images.
 
+Please ensure that go help is correctly installed on both the local machine and component images.
 
 On remote host:
 
 ```shell
-$ dlv debug --headless --listen ":12345" --log --api-version=2 cmd/rbgs/main.go
+dlv debug --headless --listen ":12345" --log --api-version=2 cmd/rbgs/main.go
 ```
 
-
 This will cause the remote host's debugging program to listen to the specified port (e.g. 12345)
-
 
 On local machine:
 
 ```shell
-$ dlv connect "<remote-addr>:12345" --api-version=2
+dlv connect "<remote-addr>:12345" --api-version=2
 ```
 
 > Note: To debug remotely, make sure the specified port is not occupied and the firewall has been properly configured.

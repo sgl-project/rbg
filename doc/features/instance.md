@@ -1,26 +1,26 @@
 # Instance
 
-An Instance is a collection of Pods. The lifecycle of Pods managed by the Instance is tightly bound, as shown in the figure below. 
+An Instance is a collection of Pods. The lifecycle of Pods managed by the Instance is tightly bound, as shown in the figure below.
 The Instance controls the upgrades and status updates for this group of Pods.
 
 More importantly, the Instance supports the in-place update of its Pods.
 
-![](../img/instanceset.jpeg)
+![instanceset](../img/instanceset.jpeg)
 
 ## Instance Ready Status
 
-The Instance's ReadyPolicy supports two types: `AllPodReady` and `None`. When set to `AllPodReady`, 
+The Instance's ReadyPolicy supports two types: `AllPodReady` and `None`. When set to `AllPodReady`,
 the Instance will be `Ready` only when all its owned Pods are in the `Ready` condition.
 
 ```go
 type InstanceReadyPolicyType string
 
 const (
-	// InstanceReadyOnAllPodReady means all Pods in the Instance must be ready when Instance Ready
-	InstanceReadyOnAllPodReady InstanceReadyPolicyType = "AllPodReady"
+ // InstanceReadyOnAllPodReady means all Pods in the Instance must be ready when Instance Ready
+ InstanceReadyOnAllPodReady InstanceReadyPolicyType = "AllPodReady"
 
-	// InstanceReadyPolicyTypeNone means do nothing for Pods
-	InstanceReadyPolicyTypeNone InstanceReadyPolicyType = "None"
+ // InstanceReadyPolicyTypeNone means do nothing for Pods
+ InstanceReadyPolicyTypeNone InstanceReadyPolicyType = "None"
 )
 ```
 

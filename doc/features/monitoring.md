@@ -9,17 +9,16 @@
 
 1. Collect inference engine monitoring metrics
 
-```bash
-kubectl apply -f examples/monitoring/podmonitor.yaml
-```
+   ```bash
+   kubectl apply -f examples/monitoring/podmonitor.yaml
+   ```
 
-2. Access the monitoring interfaces   
+2. Access the monitoring interfaces
    Install Prometheus and Grafana
    by [doc](https://github.com/sgl-project/sglang/blob/main/examples/monitoring/README.md).
 
-- Grafana: http://localhost:3000
-- Prometheus: http://localhost:9090
+- Grafana: `http://localhost:3000`
+- Prometheus: `http://localhost:9090`
 
 If you have an existing Prometheus instance, import the corresponding Grafana dashboard using the
-provided [SGLang Grafana JSON].(https://github.com/sgl-project/sglang/blob/main/examples/monitoring/grafana/dashboards/json/sglang-dashboard.json)
-
+provided [SGLang Grafana JSON](https://github.com/sgl-project/sglang/blob/main/examples/monitoring/grafana/dashboards/json/sglang-dashboard.json).

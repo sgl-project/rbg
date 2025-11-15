@@ -1,13 +1,16 @@
+# kubectl-rbg
 
 kubectl-rbg is a local executable command-line tool for managing RBG (RoleBasedGroup) and related resources such as ControllerRevision. Currently, it provides features such as viewing the RBG status, viewing RBG historical revisions, and rolling back the RBG. kubectl-rbg can be used both as a standalone tool or as a kubectl plugin.
 
+## 📜 Deploying kubectl-rbg
 
-# 📜 Deploying kubectl-rbg
-## Prerequisites
+### Prerequisites
+
 1. Go 1.24 development environment
 2. Access to a Kubernetes cluster
 
-## Installation Steps
+### Installation Steps
+
 ```shell
 # Download source code
 $ git clone https://github.com/sgl-project/rbg.git
@@ -17,7 +20,9 @@ $ make build-cli
 $ chmod +x bin/kubectl-rbg
 $ sudo mv bin/kubectl-rbg /usr/local/bin/
 ```
-## Verify Installation
+
+### Verify Installation
+
 ```shell
 $ kubectl plugin list | grep rbg
 # Expected output
@@ -62,10 +67,13 @@ Flags:
 Use "kubectl [command] --help" for more information about a command.
 ```
 
-# 📖 Feature Overview
-## Prepare Test Environment
+## 📖 Feature Overview
+
+### Prepare Test Environment
+
 1. For example, after applying [RBG Base](../../examples/basics/rbg-base.yaml), the RBG will automatically create ControllerRevisions and the corresponding workloads.
 2. Update the RBG object specification:
+
 ```shell
 $ kubectl patch rolebasedgroup nginx-cluster --type=json -p='[
   {
@@ -83,7 +91,8 @@ $ kubectl patch rolebasedgroup nginx-cluster --type=json -p='[
 ]'
 ```
 
-## View RBG Status
+### View RBG Status
+
 ```shell
 $ kubectl rbg status nginx-cluster -n default
 📊 Resource Overview
@@ -99,7 +108,8 @@ worker       3/3                (total: 3)      [██████████�
 ∑ Summary: 2 roles | 4/4 Ready
 ```
 
-## View All ControllerRevisions Corresponding to an RBG
+### View All ControllerRevisions Corresponding to an RBG
+
 ```shell
 $ kubectl rbg rollout history nginx-cluster
 Name                                 Revision
@@ -107,7 +117,8 @@ nginx-cluster-8676cf98bd-1           1
 nginx-cluster-6f9cf75ddf-2           2
 ```
 
-## View Details of a Specific ControllerRevision
+### View Details of a Specific ControllerRevision
+
 ```shell
 $ kubectl rbg rollout history nginx-cluster --revision=1
 data:
@@ -162,7 +173,8 @@ revision: 1
 
 ```
 
-## View Differences Between Current RBG Object and Specified Revision
+### View Differences Between Current RBG Object and Specified Revision
+
 ```shell
 $ kubectl rbg rollout diff nginx-cluster --revision=1
   (
@@ -182,7 +194,9 @@ $ kubectl rbg rollout diff nginx-cluster --revision=1
         """
   )
 ```
-## Roll Back RBG to a Specific ControllerRevision
+
+### Roll Back RBG to a Specific ControllerRevision
+
 ```shell
 $ kubectl rbg rollout undo nginx-cluster --revision=1
 rbg nginx-cluster rollback to revision 1 successfully

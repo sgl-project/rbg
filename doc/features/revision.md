@@ -1,4 +1,5 @@
 # Revision
+
 ControllerRevisions are used to store the historical spec of RBG (RoleBasedGroup) objects, serving to determine whether the RBG itself or the workloads it manages have changed. You can inspect the ControllerRevisions of an RBG to retrieve its historical configurations. This feature is enabled by default without requiring additional configuration.
 
 For example, after applying [RBG Base](../../examples/basics/rbg-base.yaml), the RBG will automatically create ControllerRevisions.
@@ -59,7 +60,9 @@ metadata:
     name: nginx-cluster
 revision: 1
 ```
+
 The Role workload objects created by RBG will carry revision hash label.
+
 ```yaml
 apiVersion: apps/v1
 kind: Deployment

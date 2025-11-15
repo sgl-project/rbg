@@ -2,7 +2,7 @@
 
 RBG allows configuring any number of roles and any workload types, and defining the startup order among roles.
 
-![](../img/rbg.jpg)
+![rbg](../img/rbg.jpg)
 
 ## Examples
 

@@ -2,7 +2,7 @@
 
 RBG support multi failure handling polices: [None | RecreateRBGOnPodRestart | RecreateRoleInstanceOnPodRestart]
 
-![](../img/failure-handling.png)
+![failure-handling](../img/failure-handling.png)
 
 ## Examples
 
