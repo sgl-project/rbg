@@ -45,7 +45,7 @@ decode和scheduler等角色），支持大语言模型（LLM）跨多节点设�
 
 ## 参与贡献
 
-欢迎通过提交 Issue 和 PR 参与贡献！详见[贡献指南](doc/CONTRIBUTING.md)
+欢迎通过提交 Issue 和 PR 参与贡献！详见[贡献指南](CONTRIBUTING.md)
 
 ### Community, discussion, contribution, and support
 
@@ -62,6 +62,3 @@ decode和scheduler等角色），支持大语言模型（LLM）跨多节点设�
 ## Acknowledgment
 
 我们在设计和实现时参考了这些优秀的开源项目: [lws](https://github.com/kubernetes-sigs/lws)
-
-
-

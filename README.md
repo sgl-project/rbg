@@ -36,7 +36,7 @@ tackles the following challenges:
 
 ## Architecture
 
-![](doc/rbgs-concept.png)
+![rbgs-concept](doc/rbgs-concept.png)
 
 ## Getting Started
 
@@ -56,7 +56,7 @@ You can see our documentation at [docs](doc/TOC.md) for more in-depth installati
 
 ## Contributing
 
-We welcome contributions through issues and PRs! See [CONTRIBUTING.md](doc/CONTRIBUTING.md)
+We welcome contributions through issues and PRs! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Community, discussion, contribution, and support
 

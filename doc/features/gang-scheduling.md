@@ -1,4 +1,5 @@
 # Gang Scheduling
+
 Gang Scheduling is a critical feature for Deep Learning workloads to enable all-or-nothing scheduling capability. Gang Scheduling avoids resource inefficiency and scheduling deadlock.
 
 RBG supports two gang scheduling strategies: **Scheduler Plugins** and **Volcano**, providing flexibility for different cluster environments.
@@ -15,7 +16,9 @@ spec:
        kubeScheduling: 
            scheduleTimeoutSeconds: 120
 ```
+
 Based on this configuration, RBG will automatically create a `PodGroup.scheduling.x-k8s.io` CR; the PodGroup's minNumber equals the sum of all pods across all Roles in the RBG.
+
 ```yaml
 apiVersion: scheduling.x-k8s.io/v1alpha1
 kind: PodGroup
@@ -54,7 +57,9 @@ spec:
           # Important ensure that Pods are scheduled by the Volcano scheduler.
           schedulerName: volcano
 ```
+
 Based on this configuration, RBG will automatically create a `PodGroup.scheduling.volcano.sh` CR; the PodGroup's minNumber equals the sum of all pods across all Roles in the RBG.
+
 ```yaml
 apiVersion: scheduling.volcano.sh/v1beta1
 kind: PodGroup
@@ -70,5 +75,6 @@ status:
 ```
 
 ## Examples
-- [Scheduler Plugins Gang Scheduling](../../examples/basics/gang-scheduling.yaml)
-- [Volcano Gang Scheduling](../../examples/basics/gang-scheduling.yaml)
+
+- [Scheduler Plugins Gang Scheduling](../../examples/basics/scheduler-plugins-gang.yaml)
+- [Volcano Gang Scheduling](../../examples/basics/volcano-gang.yaml)
