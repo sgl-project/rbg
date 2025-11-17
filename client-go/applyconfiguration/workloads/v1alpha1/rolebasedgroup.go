@@ -39,7 +39,7 @@ func RoleBasedGroup(name, namespace string) *RoleBasedGroupApplyConfiguration {
 	b.WithName(name)
 	b.WithNamespace(namespace)
 	b.WithKind("RoleBasedGroup")
-	b.WithAPIVersion("workloads/v1alpha1")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha1")
 	return b
 }
 func (b RoleBasedGroupApplyConfiguration) IsApplyConfiguration() {}
