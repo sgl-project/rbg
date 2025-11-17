@@ -32,7 +32,7 @@ service on a single node.
 
 ![single-node](./img/single-node.jpg)
 
-#### Examples
+#### Single-node inference examples
 
 - [SGLang](../examples/single-node/sglang.yaml)
 - [Others](../examples/single-node/vllm.yaml)
@@ -43,7 +43,7 @@ When the model is too large for a single Node to load all files, use multi-node 
 
 ![multi-nodes](./img/multi-nodes.jpg)
 
-#### Examples of multi-nodes inference
+#### Multi-nodes inference examples
 
 - [SGLang](../examples/multi-nodes/sglang.yaml)
 - [Others](../examples/multi-nodes/vllm.yaml)
@@ -56,7 +56,7 @@ Disaggregating the prefill and decoding computation improves the performance of 
 
 ![pd-disagg](./img/pd-disagg.jpg)
 
-### Examples of PD-disagg inference
+### PD-disagg inference examples
 
 Deploying PD-disagg inference service with RBG.
 
