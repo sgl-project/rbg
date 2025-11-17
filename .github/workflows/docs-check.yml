@@ -15,7 +15,7 @@ jobs:
       - name: AutoCorrect
         uses: huacnlee/autocorrect-action@main
         with:
-          args: --fix doc/**/*.md doc/*.md *.md
+          args: doc/**/*.md doc/*.md *.md
 
       - name: Markdown Lint
         uses: DavidAnson/markdownlint-cli2-action@v20
