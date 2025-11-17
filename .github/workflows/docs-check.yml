@@ -21,7 +21,7 @@ jobs:
         uses: DavidAnson/markdownlint-cli2-action@v20
         with:
           config: '.github/.markdownlint.json'
-          fix: true
+          fix: false
           globs: |
             doc/**/*.md
             doc/*.md
