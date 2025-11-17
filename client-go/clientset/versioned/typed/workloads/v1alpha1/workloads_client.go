@@ -35,7 +35,7 @@ type WorkloadsV1alpha1Interface interface {
 	RoleBasedGroupSetsGetter
 }
 
-// WorkloadsV1alpha1Client is used to interact with features provided by the workloads group.
+// WorkloadsV1alpha1Client is used to interact with features provided by the workloads.x-k8s.io group.
 type WorkloadsV1alpha1Client struct {
 	restClient rest.Interface
 }
