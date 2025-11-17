@@ -118,7 +118,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
 								},
 								{
 
@@ -131,7 +131,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
 								},
 							},
 						).Obj()
@@ -163,7 +163,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: template,
+									Template: &template,
 								},
 								{
 
@@ -176,7 +176,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: template,
+									Template: &template,
 								},
 							},
 						).Obj()
@@ -209,7 +209,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "Deployment",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
 								},
 								{
 									Name:     "prefill",
@@ -221,7 +221,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
 								},
 								{
 									Name:     "decode",
@@ -233,7 +233,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "leaderworkerset.x-k8s.io/v1",
 										Kind:       "LeaderWorkerSet",
 									},
-									Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
 								},
 							},
 						).Obj()

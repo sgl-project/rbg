@@ -189,7 +189,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		return nil, err
 	}
 	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), leaderTemp,
+		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *leaderTemp,
 	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
@@ -206,7 +206,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), workerTemp,
+		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *workerTemp,
 	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
@@ -426,7 +426,10 @@ func leaderWorkerTemplateEqual(oldLwt, newLwt lwsv1.LeaderWorkerTemplate) (bool,
 	return true, nil
 }
 
-func patchPodTemplate(template corev1.PodTemplateSpec, patch runtime.RawExtension) (corev1.PodTemplateSpec, error) {
+func patchPodTemplate(template *corev1.PodTemplateSpec, patch runtime.RawExtension) (*corev1.PodTemplateSpec, error) {
+	if template == nil {
+		template = &corev1.PodTemplateSpec{}
+	}
 	if patch.Raw == nil {
 		return template, nil
 	}
@@ -439,7 +442,7 @@ func patchPodTemplate(template corev1.PodTemplateSpec, patch runtime.RawExtensio
 	if err = json.Unmarshal(modified, newTemp); err != nil {
 		return template, err
 	}
-	return *newTemp, nil
+	return newTemp, nil
 }
 
 func keyOfRbg(rbg *workloadsv1alpha1.RoleBasedGroup) string {

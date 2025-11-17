@@ -221,7 +221,7 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 						APIVersion: "leaderworkerset.x-k8s.io/v1",
 						Kind:       "LeaderWorkerSet",
 					},
-					Template: corev1.PodTemplateSpec{
+					Template: &corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{

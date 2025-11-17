@@ -9076,7 +9076,6 @@ spec:
                       required:
                       - name
                       - replicas
-                      - template
                       type: object
                     minItems: 1
                     type: array
