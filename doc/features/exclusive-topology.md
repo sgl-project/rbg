@@ -45,6 +45,7 @@ In this example:
 - All pods within each individual RoleBasedGroup will be co-located on the same node
 
 ## Use Cases
+
 1. **Disaggregated Inference**: Deploy Prefill and Decode on the same node to reduce inter-PD communication overhead
 2. **High-Performance Computing**: Place related computational tasks on the same physical hardware
 

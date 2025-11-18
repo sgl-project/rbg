@@ -3,12 +3,12 @@
 [English](./README.md)｜简体中文
 
 **RoleBasedGroup**：用于编排多角色协作分布式工作负载服务的 API，专注于解决 AI/ML
-推理工作负载的常见部署模式。特别适用于Prefill/Decode分离场景（如prefill,
-decode和scheduler等角色），支持大语言模型（LLM）跨多节点设备的分布式运行。
+推理工作负载的常见部署模式。特别适用于 Prefill/Decode 分离场景（如 prefill,
+decode 和 scheduler 等角色），支持大语言模型（LLM）跨多节点设备的分布式运行。
 
 ## 最新消息 🔥
 
-[2025-07-21] 发布RBG v0.3.0版本,
+[2025-07-21] 发布 RBG v0.3.0 版本，
 发布内容请参考[release notes](https://github.com/sgl-project/rbg/releases)。
 
 ## 概述
@@ -32,20 +32,20 @@ decode和scheduler等角色），支持大语言模型（LLM）跨多节点设�
 
 ## 架构图
 
-![](doc/rbgs-concept.png)
+![rbgs-concept](doc/rbgs-concept.png)
 
 ## 快速开始
 
-- [安装RBG Controller](doc/install.md)
+- [安装 RBG Controller](doc/install.md)
 - [快速开始](doc/quick_start.md)
 
 ## Documentation
 
-如果需要详细了解RBG的特性及使用示例，请参考[文档](doc/TOC.md).
+如果需要详细了解 RBG 的特性及使用示例，请参考[文档](doc/TOC.md).
 
 ## 参与贡献
 
-欢迎通过提交 Issue 和 PR 参与贡献！详见[贡献指南](doc/CONTRIBUTING.md)
+欢迎通过提交 Issue 和 PR 参与贡献！详见[贡献指南](CONTRIBUTING.md)
 
 ### Community, discussion, contribution, and support
 
@@ -61,7 +61,4 @@ decode和scheduler等角色），支持大语言模型（LLM）跨多节点设�
 
 ## Acknowledgment
 
-我们在设计和实现时参考了这些优秀的开源项目: [lws](https://github.com/kubernetes-sigs/lws)
-
-
-
+我们在设计和实现时参考了这些优秀的开源项目：[lws](https://github.com/kubernetes-sigs/lws)

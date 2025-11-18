@@ -11,26 +11,33 @@
    to [install the Kubernetes tools](https://kubernetes.io/docs/tasks/tools/).
 5. Prepare the Qwen3-32B model files
     1. Run the following command to download the Qwen3-32B model from ModelScope:
+
    ```shell
    git lfs install
    GIT_LFS_SKIP_SMUDGE=1 git clone git clone https://www.modelscope.cn/Qwen/Qwen3-32B.git
    cd Qwen3-32B/
    git lfs pull
    ```
+
     2. Create an Object Storage Service (OSS) directory and upload the model files to the directory.
+
    ```shell
    ossutil mkdir oss://<your-bucket-name>/models/Qwen3-32B
    ossutil cp -r ./Qwen3-32B oss://<your-bucket-name>/models/Qwen3-32B
    ```
+
     3. Create a persistent volume (PV) and a persistent volume claim (PVC). Create a PV named llm-model and a PVC in the
        cluster.
+
    ```shell
    # replace OSS variables in model.yaml
    kubectl apply -f model.yaml
    ```
 
 ## Deploy SGLang Inference Service with SGLang Router
+
 1. Install RBG Cluster Engine Runtime Profile (i.e. Patio)
+
 ```bash
 kubectl apply -f ./patio-profile.yaml
 ```

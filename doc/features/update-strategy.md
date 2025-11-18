@@ -22,9 +22,9 @@ rolloutStrategy:
 
 1. Create a RBG with three roles
 
-```bash
-kubectl apply -f examples/basics/rolling-update.yaml
-```
+    ```bash
+    kubectl apply -f examples/basics/rolling-update.yaml
+    ```
 
 2. Update the label for roles and verify the rollout  
    2.1 Update the label for the role with `StatefulSet` workload
@@ -79,9 +79,9 @@ rolloutStrategy:
 
 1. Create a RBG with two roles
 
-```bash
-kubectl apply -f examples/basics/rolling-update-with-partition.yaml
-```
+    ```bash
+    kubectl apply -f examples/basics/rolling-update-with-partition.yaml
+    ```
 
 2. Update the label for roles and verify the rollout  
    2.1 Update the label for the role with `StatefulSet` workload

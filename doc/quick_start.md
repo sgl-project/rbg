@@ -6,7 +6,7 @@ scheduling, lifecycle management, rolling updates, and optional gang-scheduling 
 
 ## Conceptual View
 
-![](./img/rbg.jpg)
+![rbg](./img/rbg.jpg)
 
 ## Key Feature
 
@@ -23,15 +23,16 @@ When a request comes into an LLM inference engine, the system will first take th
 token (**prefill**), then generate outputs token-by-token autoregressively (**decode**). A request usually consists of
 one prefill step, and multiple decoding steps until termination.
 
-![](./img/colocation.png)
+![colocation](./img/colocation.png)
 
 ### Single Node
 
 When the model is small enough that a single Kubernetes Node can load all model files, you can deploy the LLM inference
 service on a single node.  
-![](./img/single-node.jpg)
 
-#### Examples
+![single-node](./img/single-node.jpg)
+
+#### Single-node inference examples
 
 - [SGLang](../examples/single-node/sglang.yaml)
 - [Others](../examples/single-node/vllm.yaml)
@@ -39,9 +40,10 @@ service on a single node.
 ### Multi Nodes
 
 When the model is too large for a single Node to load all files, use multi-node distributed inference.
-![](./img/multi-nodes.jpg)
 
-#### Examples
+![multi-nodes](./img/multi-nodes.jpg)
+
+#### Multi-nodes inference examples
 
 - [SGLang](../examples/multi-nodes/sglang.yaml)
 - [Others](../examples/multi-nodes/vllm.yaml)
@@ -51,13 +53,14 @@ When the model is too large for a single Node to load all files, use multi-node 
 Colocating the two phases and batch the computation of prefill and decoding across all users and requests not only leads
 to strong prefill-decoding interferences but also couples the resource allocation and parallelism plans for both phases.
 Disaggregating the prefill and decoding computation improves the performance of large language models(LLMs) serving.
-![](./img/pd-disagg.jpg)
 
-### Examples
+![pd-disagg](./img/pd-disagg.jpg)
+
+### PD-disagg inference examples
 
 Deploying PD-disagg inference service with RBG.
-![](./img/rbg-pd.jpg)
+
+![rbg-pd](./img/rbg-pd.jpg)
 
 - [SGLang PD-Disagg](../examples/pd-disagg/sglang/sgl.md)
 - [Others](../examples/pd-disagg/dynamo/README.md)
-
