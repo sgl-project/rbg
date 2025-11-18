@@ -60,6 +60,58 @@ spec:
               template:
                 description: Template describes the RoleBasedGroup that will be created.
                 properties:
+                  coordination:
+                    description: Coordination describes the requirements of coordination
+                      strategies for some specified roles.
+                    items:
+                      description: Coordination describes the requirements of coordination
+                        strategies for roles.
+                      properties:
+                        name:
+                          description: Name of the coordination.
+                          type: string
+                        roles:
+                          description: Roles that should be constrained by this coordination.
+                          items:
+                            type: string
+                          type: array
+                        rolloutStrategy:
+                          description: RolloutStrategy describes the coordination
+                            strategy for rolling update.
+                          properties:
+                            maxSkew:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: MaxSkew defines the max skew requirement
+                                about updated replicas between the roles when rolling
+                                update.
+                              x-kubernetes-int-or-string: true
+                            maxUnavailable:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+                                the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+                              x-kubernetes-int-or-string: true
+                            partition:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                Partition indicates the replicas at which the role should be partitioned for rolling update.
+                                If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+                              x-kubernetes-int-or-string: true
+                          type: object
+                      required:
+                      - name
+                      - roles
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   podGroupPolicy:
                     description: Configuration for the PodGroup to enable gang-scheduling
                       via supported plugins.

@@ -22,6 +22,7 @@ package v1alpha1
 type RoleBasedGroupSpecApplyConfiguration struct {
 	Roles          []RoleSpecApplyConfiguration      `json:"roles,omitempty"`
 	PodGroupPolicy *PodGroupPolicyApplyConfiguration `json:"podGroupPolicy,omitempty"`
+	Coordination   []CoordinationApplyConfiguration  `json:"coordination,omitempty"`
 }
 
 // RoleBasedGroupSpecApplyConfiguration constructs a declarative configuration of the RoleBasedGroupSpec type for use with
@@ -48,5 +49,18 @@ func (b *RoleBasedGroupSpecApplyConfiguration) WithRoles(values ...*RoleSpecAppl
 // If called multiple times, the PodGroupPolicy field is set to the value of the last call.
 func (b *RoleBasedGroupSpecApplyConfiguration) WithPodGroupPolicy(value *PodGroupPolicyApplyConfiguration) *RoleBasedGroupSpecApplyConfiguration {
 	b.PodGroupPolicy = value
+	return b
+}
+
+// WithCoordination adds the given value to the Coordination field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Coordination field.
+func (b *RoleBasedGroupSpecApplyConfiguration) WithCoordination(values ...*CoordinationApplyConfiguration) *RoleBasedGroupSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithCoordination")
+		}
+		b.Coordination = append(b.Coordination, *values[i])
+	}
 	return b
 }

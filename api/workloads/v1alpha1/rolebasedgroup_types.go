@@ -38,6 +38,44 @@ type RoleBasedGroupSpec struct {
 
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
+
+	// Coordination describes the requirements of coordination strategies for some specified roles.
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	Coordination []Coordination `json:"coordination,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+}
+
+// Coordination describes the requirements of coordination strategies for roles.
+type Coordination struct {
+	// Name of the coordination.
+	Name string `json:"name"`
+
+	// Roles that should be constrained by this coordination.
+	Roles []string `json:"roles"`
+
+	// RolloutStrategy describes the coordination strategy for rolling update.
+	RolloutStrategy *CoordinationRolloutStrategy `json:"rolloutStrategy,omitempty"`
+}
+
+// CoordinationRolloutStrategy describes the rolling update coordination strategy.
+type CoordinationRolloutStrategy struct {
+	// MaxSkew defines the max skew requirement about updated replicas between the roles when rolling update.
+	// For example, one RoleBasedGroup with (200 prefills, 100 decodes) will have the
+	// constraint `abs(updated_prefills/200, updated_decodes/100) <= MaxSkew`.
+	// Only support percentage value, and defaults to nil.
+	MaxSkew *intstr.IntOrString `json:"maxSkew,omitempty"`
+
+	// Partition indicates the replicas at which the role should be partitioned for rolling update.
+	// If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+	// Only support percentage value, and defaults to nil.
+	Partition *intstr.IntOrString `json:"partition,omitempty"`
+
+	// MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+	// the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+	// Only support percentage value, and defaults to nil.
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
 // PodGroupPolicy represents a PodGroup configuration for gang-scheduling.
