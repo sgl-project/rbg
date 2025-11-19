@@ -10,15 +10,15 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
-// TestGetPodComponentID 测试修复后的GetPodComponentID函数
+// TestGetPodComponentID tests the GetPodComponentID function after the fix
 func TestGetPodComponentID(t *testing.T) {
-	// 测试用例：覆盖标签存在/不存在、合法值、边界值、超出范围、非数字等场景
+	// Test cases: covers scenarios with labels present/absent, valid values, boundary values, out-of-range, and non-numeric cases
 	tests := []struct {
-		name     string      // 测试用例名称
-		pod      *corev1.Pod // 输入的Pod对象
-		expected int32       // 预期返回的ComponentID
+		name     string      // Test case name
+		pod      *corev1.Pod // Input Pod object
+		expected int32       // Expected returned ComponentID
 	}{
-		// 场景1：通过标签获取ID（正常情况）
+		// Scenario 1: Get ID from label (normal case)
 		{
 			name: "valid id from label (positive)",
 			pod: &corev1.Pod{
@@ -42,7 +42,7 @@ func TestGetPodComponentID(t *testing.T) {
 			expected: -456,
 		},
 
-		// 场景2：标签存在但值不合法（非数字、超出范围）
+		// Scenario 2: Label exists but value is invalid (non-numeric, out of range)
 		{
 			name: "invalid non-numeric id in label",
 			pod: &corev1.Pod{
@@ -52,7 +52,7 @@ func TestGetPodComponentID(t *testing.T) {
 					},
 				},
 			},
-			expected: 0, // 错误时返回默认值0
+			expected: 0, // Return default value 0 on error
 		},
 		{
 			name: "id in label exceeds int32 max",
@@ -70,14 +70,14 @@ func TestGetPodComponentID(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						v1alpha1.InstanceComponentIDKey: "-2147483649", // 比MinInt32小1
+						v1alpha1.InstanceComponentIDKey: "-2147483649", // 1 less than MinInt32
 					},
 				},
 			},
 			expected: 0,
 		},
 
-		// 场景3：标签不存在，从Pod名称解析ID（名称格式：前缀-组件名-ID）
+		// Scenario 3: Label doesn't exist, parse ID from Pod name (name format: prefix-componentName-ID)
 		{
 			name: "valid id from pod name (positive)",
 			pod: &corev1.Pod{
@@ -92,19 +92,19 @@ func TestGetPodComponentID(t *testing.T) {
 			name: "valid id from pod name (negative)",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:   "instance-db--987", // 最后一段为负ID
+					Name:   "instance-db--987", // Last segment is negative ID
 					Labels: map[string]string{},
 				},
 			},
 			expected: -987,
 		},
 
-		// 场景4：标签不存在，名称解析不合法
+		// Scenario 4: Label doesn't exist, name parsing is invalid
 		{
 			name: "invalid non-numeric id in pod name",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:   "instance-cache-xyz", // 最后一段非数字
+					Name:   "instance-cache-xyz", // Last segment is non-numeric
 					Labels: map[string]string{},
 				},
 			},
@@ -131,7 +131,7 @@ func TestGetPodComponentID(t *testing.T) {
 			expected: 0,
 		},
 
-		// 场景5：边界值测试（int32最大/最小值）
+		// Scenario 5: Boundary value tests (int32 max/min values)
 		{
 			name: "int32 max value in label",
 			pod: &corev1.Pod{
@@ -166,7 +166,7 @@ func TestGetPodComponentID(t *testing.T) {
 		},
 	}
 
-	// 执行测试用例
+	// Execute test cases
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := GetPodComponentID(tt.pod)
