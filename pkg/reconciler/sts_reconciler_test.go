@@ -77,7 +77,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 				}
 
 				expectedRevisionHash := "revision-hash-value"
-				err := r.Reconciler(context.Background(), tt.rbg, tt.role, expectedRevisionHash)
+				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -912,7 +912,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				retPartition, retReplicas, retErr := r.rollingUpdateParameters(
-					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated)
+					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated, nil)
 
 				if tt.wantErr != (retErr != nil) {
 					t.Errorf("rollingUpdateParameters() error = %v, wantErr %v", retErr, tt.wantErr)

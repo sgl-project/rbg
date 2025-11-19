@@ -18,6 +18,8 @@ package workloads
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -29,20 +31,302 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
 )
+
+func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
+	type testCase struct {
+		name            string
+		maxSkew         string
+		roles           sets.Set[string]
+		desiredReplicas map[string]int32
+		updatedReplicas map[string]int32
+	}
+
+	testCases := []testCase{
+		{
+			name:    "(200p, 100d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 200,
+				"decode":  100,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 20,
+				"decode":  0,
+			},
+		},
+		{
+			name:    "(200p, 100d): maxSkew=10%",
+			maxSkew: "10%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 200,
+				"decode":  100,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 71,
+				"decode":  53,
+			},
+		},
+		{
+			name:    "(3p, 1d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 3,
+				"decode":  1,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  1,
+			},
+		},
+		{
+			name:    "(7p, 5d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 7,
+				"decode":  5,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 2,
+				"decode":  1,
+			},
+		},
+		{
+			name:    "(1p, 1d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  1,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 0,
+				"decode":  0,
+			},
+		},
+		{
+			name:    "(10p, 10d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 10,
+				"decode":  10,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 2,
+				"decode":  0,
+			},
+		},
+		{
+			name:    "(10p, 10d, 10e): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode", "encoder"),
+			desiredReplicas: map[string]int32{
+				"prefill": 10,
+				"decode":  10,
+				"encoder": 10,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  2,
+				"encoder": 3,
+			},
+		},
+		{
+			name:    "(7p, 5d, 3e): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode", "encoder"),
+			desiredReplicas: map[string]int32{
+				"prefill": 7,
+				"decode":  5,
+				"encoder": 3,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 3,
+				"decode":  1,
+				"encoder": 1,
+			},
+		},
+		{
+			name:    "(7p, 5d, 3e): maxSkew=10%",
+			maxSkew: "10%",
+			roles:   sets.New[string]("prefill", "decode", "encoder"),
+			desiredReplicas: map[string]int32{
+				"prefill": 7,
+				"decode":  5,
+				"encoder": 3,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  1,
+				"encoder": 1,
+			},
+		},
+		{
+			name:    "(10p, 2d): maxSkew=10%",
+			maxSkew: "10%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 10,
+				"decode":  2,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 0,
+				"decode":  0,
+			},
+		},
+	}
+
+	GetSkewAllowedBias := func(desired map[string]int32) int {
+		skewAllowedBias := 0
+		for _, replicas := range desired {
+			skewAllowed := int(math.Ceil(10000.0 / float64(replicas)))
+			if skewAllowed > skewAllowedBias {
+				skewAllowedBias = skewAllowed
+			}
+		}
+		return skewAllowedBias
+	}
+
+	GetCurrentSkew := func(fastUpdated, slowUpdated, fastDesired, slowDesired int32) int {
+		fastRatio := float64(fastUpdated) / float64(fastDesired)
+		slowRatio := float64(slowUpdated) / float64(slowDesired)
+		return int(math.Ceil(10000.0 * (fastRatio - slowRatio)))
+	}
+
+	CheckSkewSatisfied := func(fastUpdated, slowUpdated, fastDesired, slowDesired int32, maxSkew, skewAllowedBias int) bool {
+		currentSkew := GetCurrentSkew(fastUpdated, slowUpdated, fastDesired, slowDesired)
+		return currentSkew <= skewAllowedBias+maxSkew
+	}
+
+	CheckRollingSatisfied := func(updated, desired map[string]int32) bool {
+		for role, replicas := range desired {
+			if updated[role] < replicas {
+				return false
+			}
+		}
+		return true
+	}
+
+	for _, ts := range testCases {
+		t.Run(ts.name, func(t *testing.T) {
+			skewAllowedBias := GetSkewAllowedBias(ts.desiredReplicas)
+			for {
+				nextRollingTarget := calculateNextRollingTarget(&ts.maxSkew, ts.roles, ts.desiredReplicas, ts.updatedReplicas, ts.desiredReplicas)
+				t.Logf("%s calculated next rolling target: %v", ts.name, nextRollingTarget)
+				for role, newUpdated := range nextRollingTarget {
+					ts.updatedReplicas[role] = newUpdated
+				}
+
+				maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(ts.maxSkew), 10000)
+				fast, slow := getFastestAndSlowestRole(ts.roles, ts.desiredReplicas, ts.updatedReplicas)
+				if !CheckSkewSatisfied(ts.updatedReplicas[fast], ts.updatedReplicas[slow], ts.desiredReplicas[fast], ts.desiredReplicas[slow], int(maxSkew), skewAllowedBias) {
+					t.Fatal("Skew is out of MaxSkew")
+				}
+				if CheckRollingSatisfied(ts.updatedReplicas, ts.desiredReplicas) {
+					break
+				}
+			}
+		})
+	}
+
+	for prefill := 1; prefill < 100; prefill++ {
+		for decode := 1; decode < 100; decode++ {
+			ts := testCase{
+				name:    fmt.Sprintf("(%d p, %d d): maxSkew=1%%", prefill, decode),
+				maxSkew: "1%",
+				roles:   sets.New[string]("prefill", "decode"),
+				desiredReplicas: map[string]int32{
+					"prefill": int32(prefill),
+					"decode":  int32(decode),
+				},
+				updatedReplicas: map[string]int32{
+					"prefill": 0,
+					"decode":  0,
+				},
+			}
+			t.Run(ts.name, func(t *testing.T) {
+				skewAllowedBias := GetSkewAllowedBias(ts.desiredReplicas)
+				for {
+					nextRollingTarget := calculateNextRollingTarget(&ts.maxSkew, ts.roles, ts.desiredReplicas, ts.updatedReplicas, ts.desiredReplicas)
+					t.Logf("%s calculated next rolling target: %v", ts.name, nextRollingTarget)
+					for role, newUpdated := range nextRollingTarget {
+						ts.updatedReplicas[role] = newUpdated
+					}
+
+					maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(ts.maxSkew), 10000)
+					fast, slow := getFastestAndSlowestRole(ts.roles, ts.desiredReplicas, ts.updatedReplicas)
+					if !CheckSkewSatisfied(ts.updatedReplicas[fast], ts.updatedReplicas[slow], ts.desiredReplicas[fast], ts.desiredReplicas[slow], int(maxSkew), skewAllowedBias) {
+						t.Fatal("Skew is out of MaxSkew")
+					}
+					if CheckRollingSatisfied(ts.updatedReplicas, ts.desiredReplicas) {
+						break
+					}
+				}
+			})
+		}
+	}
+
+	for prefill := 1; prefill < 20; prefill++ {
+		for decode := 1; decode < 20; decode++ {
+			for prefillUpdated := 1; prefillUpdated <= prefill; prefillUpdated++ {
+				for decodeUpdated := 1; decodeUpdated <= decode; decodeUpdated++ {
+					ts := testCase{
+						name:    fmt.Sprintf("(%d p, %d d): maxSkew=1%%", prefill, decode),
+						maxSkew: "1%",
+						roles:   sets.New[string]("prefill", "decode"),
+						desiredReplicas: map[string]int32{
+							"prefill": int32(prefill),
+							"decode":  int32(decode),
+						},
+						updatedReplicas: map[string]int32{
+							"prefill": int32(prefillUpdated),
+							"decode":  int32(decodeUpdated),
+						},
+					}
+					t.Run(ts.name, func(t *testing.T) {
+						skewAllowedBias := GetSkewAllowedBias(ts.desiredReplicas)
+						for {
+							nextRollingTarget := calculateNextRollingTarget(&ts.maxSkew, ts.roles, ts.desiredReplicas, ts.updatedReplicas, ts.desiredReplicas)
+							t.Logf("%s calculated next rolling target: %v", ts.name, nextRollingTarget)
+							for role, newUpdated := range nextRollingTarget {
+								ts.updatedReplicas[role] = newUpdated
+							}
+
+							maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(ts.maxSkew), 10000)
+							fast, slow := getFastestAndSlowestRole(ts.roles, ts.desiredReplicas, ts.updatedReplicas)
+							if !CheckSkewSatisfied(ts.updatedReplicas[fast], ts.updatedReplicas[slow], ts.desiredReplicas[fast], ts.desiredReplicas[slow], int(maxSkew), skewAllowedBias) {
+								t.Fatal("Skew is out of MaxSkew")
+							}
+							if CheckRollingSatisfied(ts.updatedReplicas, ts.desiredReplicas) {
+								break
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
 
 func TestRoleBasedGroupReconciler_CheckCrdExists_Partial(t *testing.T) {
 	testScheme := runtime.NewScheme()
@@ -628,4 +912,444 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 			},
 		)
 	}
+}
+
+func Test_getFastestAndSlowestRole(t *testing.T) {
+	tests := []struct {
+		name              string
+		coordinationRoles sets.Set[string]
+		desiredReplicas   map[string]int32
+		updatedReplicas   map[string]int32
+		expectedFastest   string
+		expectedSlowest   string
+	}{
+		{
+			name:              "two roles with different ratios",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 100,
+				"role2": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 50, // 50%
+				"role2": 10, // 10%
+			},
+			expectedFastest: "role1",
+			expectedSlowest: "role2",
+		},
+		{
+			name:              "two roles with same ratio, different desired",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 200,
+				"role2": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 100, // 50%
+				"role2": 50,  // 50%
+			},
+			expectedFastest: "role2", // Same ratio, but role1 has more desired replicas
+			expectedSlowest: "role1",
+		},
+		{
+			name:              "three roles with different ratios",
+			coordinationRoles: sets.New[string]("role1", "role2", "role3"),
+			desiredReplicas: map[string]int32{
+				"role1": 100,
+				"role2": 100,
+				"role3": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 80, // 80%
+				"role2": 50, // 50%
+				"role3": 20, // 20%
+			},
+			expectedFastest: "role1",
+			expectedSlowest: "role3",
+		},
+		{
+			name:              "small replicas with different ratios",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 10,
+				"role2": 10,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 7, // 70%
+				"role2": 3, // 30%
+			},
+			expectedFastest: "role1",
+			expectedSlowest: "role2",
+		},
+		{
+			name:              "unequal desired replicas",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 200,
+				"role2": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 20, // 10%
+				"role2": 15, // 15%
+			},
+			expectedFastest: "role2",
+			expectedSlowest: "role1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fastest, slowest := getFastestAndSlowestRole(tt.coordinationRoles, tt.desiredReplicas, tt.updatedReplicas)
+			if fastest != tt.expectedFastest {
+				t.Errorf("getFastestAndSlowestRole() fastest = %v, want %v", fastest, tt.expectedFastest)
+			}
+			if slowest != tt.expectedSlowest {
+				t.Errorf("getFastestAndSlowestRole() slowest = %v, want %v", slowest, tt.expectedSlowest)
+			}
+		},
+		)
+	}
+}
+
+func Test_getFastestAndSlowestRole_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name              string
+		coordinationRoles sets.Set[string]
+		desiredReplicas   map[string]int32
+		updatedReplicas   map[string]int32
+		expectedFastest   string
+		expectedSlowest   string
+	}{
+		{
+			name:              "single role",
+			coordinationRoles: sets.New[string]("role1"),
+			desiredReplicas: map[string]int32{
+				"role1": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 50,
+			},
+			expectedFastest: "", // Should return empty for single role
+			expectedSlowest: "",
+		},
+		{
+			name:              "empty roles",
+			coordinationRoles: sets.New[string](),
+			desiredReplicas:   map[string]int32{},
+			updatedReplicas:   map[string]int32{},
+			expectedFastest:   "",
+			expectedSlowest:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				fastest, slowest := getFastestAndSlowestRole(tt.coordinationRoles, tt.desiredReplicas, tt.updatedReplicas)
+				if fastest != tt.expectedFastest {
+					t.Errorf("getFastestAndSlowestRole() fastest = %v, want %v", fastest, tt.expectedFastest)
+				}
+				if slowest != tt.expectedSlowest {
+					t.Errorf("getFastestAndSlowestRole() slowest = %v, want %v", slowest, tt.expectedSlowest)
+				}
+			},
+		)
+	}
+}
+
+func Test_mergeStrategyRollingUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		strategiesA map[string]workloadsv1alpha1.RollingUpdate
+		strategiesB map[string]workloadsv1alpha1.RollingUpdate
+		expected    map[string]workloadsv1alpha1.RollingUpdate
+	}{
+		{
+			name:        "merge empty maps",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{},
+			expected:    map[string]workloadsv1alpha1.RollingUpdate{},
+		},
+		{
+			name: "merge with no overlap",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(10)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+				"role2": {
+					MaxUnavailable: intstr.FromInt(3),
+					Partition:      ptr.To(int32(5)),
+				},
+			},
+			expected: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(10)),
+				},
+				"role2": {
+					MaxUnavailable: intstr.FromInt(3),
+					Partition:      ptr.To(int32(5)),
+				},
+			},
+		},
+		{
+			name: "merge with overlap, B has smaller maxUnavailable",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(10),
+					Partition:      ptr.To(int32(5)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(3)),
+				},
+			},
+			expected: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5), // Smaller value
+					Partition:      ptr.To(int32(5)),  // Larger partition
+				},
+			},
+		},
+		{
+			name: "merge with overlap, B has larger partition",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(3)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(10)),
+				},
+			},
+			expected: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(10)), // Larger partition
+				},
+			},
+		},
+		{
+			name: "merge with percentage maxUnavailable",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromString("20%"),
+					Partition:      ptr.To(int32(5)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromString("10%"),
+					Partition:      ptr.To(int32(3)),
+				},
+			},
+			expected: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromString("10%"), // Smaller value
+					Partition:      ptr.To(int32(5)),         // Larger partition
+				},
+			},
+		},
+		{
+			name: "merge with nil partition",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      nil,
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(3),
+					Partition:      ptr.To(int32(10)),
+				},
+			},
+			expected: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(3),
+					Partition:      ptr.To(int32(10)), // B's partition
+				},
+			},
+		},
+		{
+			name: "merge multiple roles",
+			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(10),
+					Partition:      ptr.To(int32(5)),
+				},
+				"role2": {
+					MaxUnavailable: intstr.FromInt(5),
+					Partition:      ptr.To(int32(3)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+				"role2": {
+					MaxUnavailable: intstr.FromInt(3),
+					Partition:      ptr.To(int32(10)),
+				},
+				"role3": {
+					MaxUnavailable: intstr.FromInt(7),
+					Partition:      ptr.To(int32(8)),
+				},
+			},
+			expected: map[string]workloadsv1alpha1.RollingUpdate{
+				"role1": {
+					MaxUnavailable: intstr.FromInt(10),
+					Partition:      ptr.To(int32(5)),
+				},
+				"role2": {
+					MaxUnavailable: intstr.FromInt(3),
+					Partition:      ptr.To(int32(10)),
+				},
+				"role3": {
+					MaxUnavailable: intstr.FromInt(7),
+					Partition:      ptr.To(int32(8)),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := mergeStrategyRollingUpdate(tt.strategiesA, tt.strategiesB)
+				if len(result) != len(tt.expected) {
+					t.Errorf("mergeStrategyRollingUpdate() result length = %v, want %v", len(result), len(tt.expected))
+					return
+				}
+				for role, expectedStrategy := range tt.expected {
+					actualStrategy, ok := result[role]
+					if !ok {
+						t.Errorf("mergeStrategyRollingUpdate() missing role %v", role)
+						continue
+					}
+					if actualStrategy.MaxUnavailable.String() != expectedStrategy.MaxUnavailable.String() {
+						t.Errorf("mergeStrategyRollingUpdate() MaxUnavailable for %v = %v, want %v", role, actualStrategy.MaxUnavailable, expectedStrategy.MaxUnavailable)
+					}
+					if (actualStrategy.Partition == nil) != (expectedStrategy.Partition == nil) {
+						t.Errorf("mergeStrategyRollingUpdate() Partition nil for %v = %v, want %v", role, actualStrategy.Partition == nil, expectedStrategy.Partition == nil)
+						continue
+					}
+					if actualStrategy.Partition != nil && expectedStrategy.Partition != nil {
+						if *actualStrategy.Partition != *expectedStrategy.Partition {
+							t.Errorf("mergeStrategyRollingUpdate() Partition for %v = %v, want %v", role, *actualStrategy.Partition, *expectedStrategy.Partition)
+						}
+					}
+				}
+			},
+		)
+	}
+}
+
+func Test_calculateCoordinationUpdatedReplicasBound(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxSkew        *intstr.IntOrString
+		refUpdated     int32
+		refDesired     int32
+		requestDesired int32
+		expectedLower  int32
+		expectedUpper  int32
+	}{
+		{
+			name:           "normal case with 10% maxSkew",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     50,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  40, // (100*50*100 - 10*100*100) / (100*100) = 40
+			expectedUpper:  60, // (10*100*100 + 100*50*100) / (100*100) = 60
+		},
+		{
+			name:           "normal case with 1% maxSkew",
+			maxSkew:        ptrToIntStr(intstr.FromString("1%")),
+			refUpdated:     20,
+			refDesired:     200,
+			requestDesired: 100,
+			expectedLower:  9,  // floor calculation
+			expectedUpper:  11, // ceil calculation
+		},
+		{
+			name:           "different desired replicas",
+			maxSkew:        ptrToIntStr(intstr.FromString("5%")),
+			refUpdated:     50,
+			refDesired:     100,
+			requestDesired: 200,
+			expectedLower:  90,  // (100*50*200 - 5*100*200) / (100*100) = 90
+			expectedUpper:  110, // (5*100*200 + 100*50*200) / (100*100) = 110
+		},
+		{
+			name:           "zero refDesired",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     0,
+			refDesired:     0,
+			requestDesired: 100,
+			expectedLower:  0,
+			expectedUpper:  0,
+		},
+		{
+			name:           "small values",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     1,
+			refDesired:     10,
+			requestDesired: 10,
+			expectedLower:  0, // floor calculation
+			expectedUpper:  2, // ceil calculation
+		},
+		{
+			name:           "large maxSkew",
+			maxSkew:        ptrToIntStr(intstr.FromString("50%")),
+			refUpdated:     50,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  0,   // (100*50*100 - 50*100*100) / (100*100) = 0
+			expectedUpper:  100, // (50*100*100 + 100*50*100) / (100*100) = 100
+		},
+		{
+			name:           "refUpdated equals refDesired",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     100,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  90,  // (100*100*100 - 10*100*100) / (100*100) = 90
+			expectedUpper:  110, // (10*100*100 + 100*100*100) / (100*100) = 110
+		},
+		{
+			name:           "zero refUpdated",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     0,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  0,  // (100*0*100 - 10*100*100) / (100*100) = -10, max with 0 = 0
+			expectedUpper:  10, // (10*100*100 + 100*0*100) / (100*100) = 10
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				lower, upper := calculateCoordinationUpdatedReplicasBound(*tt.maxSkew, tt.refUpdated, tt.refDesired, tt.requestDesired)
+				if lower != tt.expectedLower {
+					t.Errorf("calculateCoordinationUpdatedReplicasBound() lower = %v, want %v", lower, tt.expectedLower)
+				}
+				if upper != tt.expectedUpper {
+					t.Errorf("calculateCoordinationUpdatedReplicasBound() upper = %v, want %v", upper, tt.expectedUpper)
+				}
+			},
+		)
+	}
+}
+
+// Helper function to create intstr.IntOrString pointer
+func ptrToIntStr(v intstr.IntOrString) *intstr.IntOrString {
+	return &v
 }

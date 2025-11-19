@@ -20,9 +20,10 @@ package v1alpha1
 // RoleStatusApplyConfiguration represents a declarative configuration of the RoleStatus type for use
 // with apply.
 type RoleStatusApplyConfiguration struct {
-	Name          *string `json:"name,omitempty"`
-	ReadyReplicas *int32  `json:"readyReplicas,omitempty"`
-	Replicas      *int32  `json:"replicas,omitempty"`
+	Name            *string `json:"name,omitempty"`
+	ReadyReplicas   *int32  `json:"readyReplicas,omitempty"`
+	Replicas        *int32  `json:"replicas,omitempty"`
+	UpdatedReplicas *int32  `json:"updatedReplicas,omitempty"`
 }
 
 // RoleStatusApplyConfiguration constructs a declarative configuration of the RoleStatus type for use with
@@ -52,5 +53,13 @@ func (b *RoleStatusApplyConfiguration) WithReadyReplicas(value int32) *RoleStatu
 // If called multiple times, the Replicas field is set to the value of the last call.
 func (b *RoleStatusApplyConfiguration) WithReplicas(value int32) *RoleStatusApplyConfiguration {
 	b.Replicas = &value
+	return b
+}
+
+// WithUpdatedReplicas sets the UpdatedReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdatedReplicas field is set to the value of the last call.
+func (b *RoleStatusApplyConfiguration) WithUpdatedReplicas(value int32) *RoleStatusApplyConfiguration {
+	b.UpdatedReplicas = &value
 	return b
 }

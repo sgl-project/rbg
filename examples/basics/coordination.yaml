@@ -1,0 +1,69 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: nginx-cluster
+spec:
+  coordination:
+    - name: pd-rollout
+      roles:
+        - prefill
+        - decode
+      strategy:
+        rollingUpdate:
+          maxSkew: 1%
+          maxUnavailable: 10%
+  roles:
+    - minReadySeconds: 10
+      name: prefill
+      replicas: 7
+      template:
+        metadata:
+          labels:
+            version: v1
+        spec:
+          containers:
+            - image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              name: nginx-leader
+              ports:
+                - containerPort: 80
+                  protocol: TCP
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet
+    - minReadySeconds: 3000
+      dependencies:
+        - prefill
+      name: decode
+      replicas: 3
+      template:
+        metadata:
+          labels:
+            version: v1
+        spec:
+          containers:
+            - image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              name: nginx-worker
+              ports:
+                - containerPort: 8080
+                  protocol: TCP
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet

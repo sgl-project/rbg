@@ -20,10 +20,13 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"math"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/modern-go/reflect2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +35,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -85,6 +90,7 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
+
 func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the RoleBasedGroup instance
 	rbg := &workloadsv1alpha1.RoleBasedGroup{}
@@ -148,9 +154,62 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile role, add & update
-	roleStatuses := []workloadsv1alpha1.RoleStatus{}
 	var updateStatus bool
+	roleStatuses := make([]workloadsv1alpha1.RoleStatus, 0, len(rbg.Spec.Roles))
+	roleReconciler := make(map[string]reconciler.WorkloadReconciler)
+	for _, role := range rbg.Spec.Roles {
+		logger := log.FromContext(ctx)
+		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
+		// first check whether watch lws cr
+		dynamicWatchCustomCRD(roleCtx, role.Workload.Kind)
+
+		reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
+		if err != nil {
+			logger.Error(err, "Failed to create workload reconciler")
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to reconcile role %s: %v", role.Name, err,
+			)
+			return ctrl.Result{}, err
+		}
+		roleReconciler[role.Name] = reconciler
+
+		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				r.recorder.Eventf(
+					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+					"Failed to construct role %s status: %v", role.Name, err,
+				)
+				return ctrl.Result{}, err
+			}
+		}
+		updateStatus = updateStatus || updateRoleStatus
+		roleStatuses = append(roleStatuses, roleStatus)
+	}
+
+	// Update the status based on the observed role statuses.
+	if updateStatus {
+		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+				"Failed to update status for %s: %v", rbg.Name, err,
+			)
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Calculate the rolling update strategy for all coordination specifications in rbg.
+	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to update status for %s: %v", rbg.Name, err,
+		)
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile roles, do create/update actions for roles.
 	for _, roleList := range sortedRoles {
 		var errs error
 
@@ -158,25 +217,22 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			logger := log.FromContext(ctx)
 			roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
 
-			// first check whether watch lws cr
-			dynamicWatchCustomCRD(roleCtx, role.Workload.Kind)
 			// Check dependencies first
 			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
 			if err != nil {
 				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
-				errs = stderrors.Join(errs, err)
-				continue
+				return ctrl.Result{}, err
 			}
 			if !ready {
 				err := fmt.Errorf("dependencies not met for role '%s'", role.Name)
 				r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
-				errs = stderrors.Join(errs, err)
-				continue
+				return ctrl.Result{}, err
 			}
 
-			reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
-			if err != nil {
-				logger.Error(err, "Failed to create workload reconciler")
+			reconciler, ok := roleReconciler[role.Name]
+			if !ok || reflect2.IsNil(reconciler) {
+				err = fmt.Errorf("workload reconciler not found")
+				logger.Error(err, "Failed to get workload reconciler")
 				r.recorder.Eventf(
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
 					"Failed to reconcile role %s: %v", role.Name, err,
@@ -185,7 +241,12 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				continue
 			}
 
-			if err := reconciler.Reconciler(roleCtx, rbg, role, expectedRolesRevisionHash[role.Name]); err != nil {
+			var rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate
+			if rollout, ok := rollingUpdateStrategies[role.Name]; ok {
+				rollingUpdateStrategy = &rollout
+			}
+
+			if err := reconciler.Reconciler(roleCtx, rbg, role, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
 				logger.Error(err, "Failed to reconcile workload")
 				r.recorder.Eventf(
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
@@ -204,20 +265,6 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				errs = stderrors.Join(errs, err)
 				continue
 			}
-
-			roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, role)
-			if err != nil {
-				if !apierrors.IsNotFound(err) {
-					r.recorder.Eventf(
-						rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-						"Failed to construct role %s status: %v", role.Name, err,
-					)
-				}
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-			updateStatus = updateStatus || updateRoleStatus
-			roleStatuses = append(roleStatuses, roleStatus)
 		}
 
 		if errs != nil {
@@ -225,18 +272,8 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	if updateStatus {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// delete role
-	if err := r.deleteRoles(ctx, rbg); err != nil {
+	// delete orphan roles
+	if err := r.deleteOrphanRoles(ctx, rbg); err != nil {
 		r.recorder.Eventf(
 			rbg, corev1.EventTypeWarning, "delete role error",
 			"Failed to delete roles for %s: %v", rbg.Name, err,
@@ -257,7 +294,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *RoleBasedGroupReconciler) deleteRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
 	errs := make([]error, 0)
 	deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
 	if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
@@ -282,12 +319,18 @@ func (r *RoleBasedGroupReconciler) deleteRoles(ctx context.Context, rbg *workloa
 }
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatus []workloadsv1alpha1.RoleStatus,
+	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatuses []workloadsv1alpha1.RoleStatus,
 ) error {
 	// update ready condition
-	rbgReady := true
-	for _, role := range roleStatus {
-		if role.ReadyReplicas != role.Replicas {
+	var rbgReady = true
+	statusMap := make(map[string]workloadsv1alpha1.RoleStatus, len(roleStatuses))
+	for _, rs := range roleStatuses {
+		statusMap[rs.Name] = rs
+	}
+	for _, role := range rbg.Spec.Roles {
+		if rs, ok := statusMap[role.Name]; !ok ||
+			*role.Replicas != rs.Replicas ||
+			rs.Replicas != rs.ReadyReplicas {
 			rbgReady = false
 			break
 		}
@@ -313,22 +356,23 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	setCondition(rbg, readyCondition)
+	rbg.Status.ObservedGeneration = rbg.Generation
 
 	// update role status
-	for i := range roleStatus {
+	for i := range roleStatuses {
 		found := false
 		for j, oldStatus := range rbg.Status.RoleStatuses {
 			// if found, update
-			if roleStatus[i].Name == oldStatus.Name {
+			if roleStatuses[i].Name == oldStatus.Name {
 				found = true
-				if roleStatus[i].Replicas != oldStatus.Replicas || roleStatus[i].ReadyReplicas != oldStatus.ReadyReplicas {
-					rbg.Status.RoleStatuses[j] = roleStatus[i]
+				if roleStatuses[i].Replicas != oldStatus.Replicas || roleStatuses[i].ReadyReplicas != oldStatus.ReadyReplicas {
+					rbg.Status.RoleStatuses[j] = roleStatuses[i]
 				}
 				break
 			}
 		}
 		if !found {
-			rbg.Status.RoleStatuses = append(rbg.Status.RoleStatuses, roleStatus[i])
+			rbg.Status.RoleStatuses = append(rbg.Status.RoleStatuses, roleStatuses[i])
 		}
 	}
 
@@ -496,6 +540,256 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 		}
 	}
 	return nil
+}
+
+func (r *RoleBasedGroupReconciler) CalculateRollingUpdateForAllCoordination(
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+) (map[string]workloadsv1alpha1.RollingUpdate, error) {
+	var strategyRollingUpdate map[string]workloadsv1alpha1.RollingUpdate
+	for _, coordination := range rbg.Spec.CoordinationRequirements {
+		strategyByCoord, err := r.calculateRollingUpdateForCoordination(rbg, &coordination, roleStatuses)
+		if err != nil {
+			return nil, err
+		}
+		strategyRollingUpdate = mergeStrategyRollingUpdate(strategyByCoord, strategyRollingUpdate)
+	}
+	return strategyRollingUpdate, nil
+}
+
+func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	coordination *workloadsv1alpha1.Coordination,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+) (map[string]workloadsv1alpha1.RollingUpdate, error) {
+	if coordination == nil ||
+		coordination.Strategy == nil ||
+		coordination.Strategy.RollingUpdate == nil ||
+		len(coordination.Roles) <= 1 {
+		return nil, nil
+	}
+
+	// The roles that are under controlled by this coordination.
+	coordinationRoles := sets.New[string]()
+	for _, role := range coordination.Roles {
+		if replicas := utils.GetRoleReplicas(rbg, role); replicas > 0 {
+			coordinationRoles.Insert(role)
+		}
+	}
+
+	// Initialize the maxUnavailable and partition.
+	strategyRollingUpdate := make(map[string]workloadsv1alpha1.RollingUpdate, len(rbg.Spec.Roles))
+	for _, role := range rbg.Spec.Roles {
+		if !coordinationRoles.Has(role.Name) {
+			continue
+		}
+		strategy := workloadsv1alpha1.RollingUpdate{}
+		if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
+			strategy = *(role.RolloutStrategy.RollingUpdate.DeepCopy())
+		}
+		if coordination.Strategy.RollingUpdate.MaxUnavailable != nil {
+			strategy.MaxUnavailable = intstr.FromString(*coordination.Strategy.RollingUpdate.MaxUnavailable)
+		}
+		if coordination.Strategy.RollingUpdate.Partition != nil {
+			partitionPercent := intstr.FromString(*coordination.Strategy.RollingUpdate.Partition)
+			partition, err := utils.CalculatePartitionReplicas(&partitionPercent, role.Replicas)
+			if err != nil {
+				return nil, err
+			}
+			strategy.Partition = func(a int32) *int32 { return &a }(int32(partition))
+		}
+		strategyRollingUpdate[role.Name] = strategy
+	}
+
+	// Calculate the next rolling target based on maxSkew.
+	nextRollingTarget := CalculateNextRollingTarget(rbg, coordination, roleStatuses, coordinationRoles)
+
+	// Calculate the partition based one the next rolling target.
+	for _, role := range rbg.Spec.Roles {
+		if !coordinationRoles.Has(role.Name) {
+			continue
+		}
+		updatedTarget, ok := nextRollingTarget[role.Name]
+		if !ok {
+			continue
+		}
+		strategy := strategyRollingUpdate[role.Name]
+
+		// finalPartition is the user-settings target partition that should be respected by any coordination.
+		finalPartition := int32(0)
+		if strategy.Partition != nil {
+			finalPartition = *strategy.Partition
+		}
+
+		// stepPartition is the calculated partition based on the maxSkew.
+		stepPartition := max(*role.Replicas-updatedTarget, 0)
+
+		if stepPartition > finalPartition {
+			strategy.Partition = &stepPartition
+		} else {
+			strategy.Partition = &finalPartition
+		}
+		strategyRollingUpdate[role.Name] = strategy
+	}
+	return strategyRollingUpdate, nil
+}
+
+func CalculateNextRollingTarget(rbg *workloadsv1alpha1.RoleBasedGroup,
+	coordination *workloadsv1alpha1.Coordination,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+	coordinationRoles sets.Set[string],
+) map[string]int32 {
+
+	// single role no need coordination for skew, just return
+	if coordination.Strategy.RollingUpdate.MaxSkew == nil || len(coordination.Roles) <= 1 {
+		return nil
+	}
+
+	var (
+		desiredReplicas = make(map[string]int32, len(coordination.Roles))
+		updatedReplicas = make(map[string]int32, len(coordination.Roles))
+		readyReplicas   = make(map[string]int32, len(coordination.Roles))
+	)
+
+	// initialize the desired & updated replicas of each role
+	for _, role := range rbg.Spec.Roles {
+		if !coordinationRoles.Has(role.Name) {
+			continue
+		}
+		desiredReplicas[role.Name] = *role.Replicas
+	}
+	for _, status := range roleStatuses {
+		if !coordinationRoles.Has(status.Name) {
+			continue
+		}
+		readyReplicas[status.Name] = status.ReadyReplicas
+		updatedReplicas[status.Name] = status.UpdatedReplicas
+	}
+	return calculateNextRollingTarget(coordination.Strategy.RollingUpdate.MaxSkew, coordinationRoles, desiredReplicas, updatedReplicas, readyReplicas)
+}
+
+func calculateNextRollingTarget(
+	maxSkewPercent *string,
+	coordinationRoles sets.Set[string],
+	desiredReplicas, updatedReplicas, readyReplicas map[string]int32,
+) map[string]int32 {
+
+	// Get the fastest and slowest role in this coordination roles, to ensure the skew between them is not larger than maxSkew.
+	fastestRole, slowestRole := getFastestAndSlowestRole(coordinationRoles, desiredReplicas, updatedReplicas)
+	if fastestRole == "" || slowestRole == "" {
+		return nil
+	}
+
+	// Initialize the rolling target for each role.
+	rollingTarget := make(map[string]int32, coordinationRoles.Len())
+	for role := range coordinationRoles {
+		rollingTarget[role] = updatedReplicas[role]
+	}
+
+	// Get the max skew with absolute value, we assume the maxSkew must >= 1 so that cannot block the entire upgrade.
+	maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(*maxSkewPercent), desiredReplicas[slowestRole])
+
+	// The following codes calculate the next rolling target step for the slowest role under the constraint of maxSkew condition.
+	// We choose the fastest role as the reference, so we can get the balance threshold between the fastest and the slowest.
+	lowerBound, upperBound := calculateCoordinationUpdatedReplicasBound(intstr.FromString(*maxSkewPercent), updatedReplicas[fastestRole], desiredReplicas[fastestRole], desiredReplicas[slowestRole])
+	balanceThreshold := (lowerBound + upperBound + 1) >> 1
+	distance2Balance := max(balanceThreshold-updatedReplicas[slowestRole], 0)
+
+	// Due to the synchronization between rbg and workloads, the rbg may not get the least updatedReplicas correctly here.
+	// We add maxSkew/2 to the next rolling step to make sure the skew is not too large.
+	nextRollingStep := max(distance2Balance, maxSkew>>1)
+
+	// If balance reached and the fastest role is ready, we add 1 to the next rolling step to make sure the slowest role is updated.
+	if readyReplicas[fastestRole] == desiredReplicas[fastestRole] {
+		nextRollingStep = max(nextRollingStep, 1)
+	}
+
+	// The next rolling target = current rolling target + next rolling step.
+	// `upperBound + 1` is used for limiting the maximum rolling steps in some corner cases.
+	rollingTarget[slowestRole] = min(updatedReplicas[slowestRole]+nextRollingStep, upperBound+1)
+	return rollingTarget
+}
+
+func getFastestAndSlowestRole(coordinationRoles sets.Set[string], desiredReplicas, updatedReplicas map[string]int32) (string, string) {
+	if coordinationRoles.Len() <= 1 {
+		return "", ""
+	}
+	rollingRatio := make(map[string]float64, coordinationRoles.Len())
+	for role := range coordinationRoles {
+		roleUpdatedRatio := float64(updatedReplicas[role]) / float64(desiredReplicas[role])
+		rollingRatio[role] = roleUpdatedRatio
+	}
+	roles := coordinationRoles.UnsortedList()
+	sort.Slice(roles, func(i, j int) bool {
+		if utils.ABSFloat64(rollingRatio[roles[i]]-rollingRatio[roles[j]]) > 1e-6 {
+			return rollingRatio[roles[i]] < rollingRatio[roles[j]]
+		}
+		return desiredReplicas[roles[i]] > desiredReplicas[roles[j]]
+	})
+	return roles[coordinationRoles.Len()-1], roles[0]
+}
+
+func mergeStrategyRollingUpdate(strategiesA, strategiesB map[string]workloadsv1alpha1.RollingUpdate) map[string]workloadsv1alpha1.RollingUpdate {
+	merged := make(map[string]workloadsv1alpha1.RollingUpdate, len(strategiesA))
+	for role, strategyA := range strategiesA {
+		merged[role] = strategyA
+	}
+	for role, strategyB := range strategiesB {
+		strategyA, ok := merged[role]
+		if !ok {
+			merged[role] = strategyB
+			continue
+		}
+		maxUnavailableA, _ := intstr.GetScaledValueFromIntOrPercent(&strategyA.MaxUnavailable, 100, true)
+		maxUnavailableB, _ := intstr.GetScaledValueFromIntOrPercent(&strategyB.MaxUnavailable, 100, true)
+		if maxUnavailableA > maxUnavailableB {
+			strategyA.MaxUnavailable = strategyB.MaxUnavailable
+		}
+
+		partitionA, partitionB := 0, 0
+		if strategyA.Partition != nil {
+			partitionA = int(*strategyA.Partition)
+		}
+		if strategyB.Partition != nil {
+			partitionB = int(*strategyB.Partition)
+		}
+		if partitionA < partitionB {
+			strategyA.Partition = strategyB.Partition
+		}
+		merged[role] = strategyA
+	}
+	return merged
+}
+
+// calculateCoordinationUpdatedReplicasBound calculate the updated replicas bound for the request role based on the reference role.
+// Explanation:
+// a = updated replicas of the given reference role
+// x = updated replicas of the role we want to calculate
+// b = desired replicas of the given reference role
+// d = desired replicas of the role we want to calculate
+// s = allowed percentage max-skew
+//
+// So we should have the following condition and result:
+// a/b - x/d <= s/100
+// x/d - a/b <= s/100
+// => (100*a*d - s*b*d) / (100*b) <= x <= (100*a*d + s*b*d) / (100*b)
+func calculateCoordinationUpdatedReplicasBound(maxSkew intstr.IntOrString, refUpdated, refDesired, requestDesired int32) (int32, int32) {
+	if refDesired == 0 {
+		return 0, 0
+	}
+	// We present maxSkew as a percentage using fraction, e.g., 10/100 for 10%.
+	maxSkewPercent, _ := intstr.GetScaledValueFromIntOrPercent(&maxSkew, 100, true)
+
+	// using int64 to avoid overflow and to maintain precision
+	a := int64(refUpdated)
+	b := int64(refDesired)
+	d := int64(requestDesired)
+	s := int64(maxSkewPercent)
+
+	// handle the case where `A % B != 0`, we use rounding to the nearest integer to get the result.
+	lower := math.Round(float64(max(100*a*d-s*b*d, 0)) / float64(100*b))
+	upper := math.Round(float64(max(s*b*d+100*a*d, 0)) / float64(100*b))
+	return int32(lower), int32(upper)
 }
 
 func RBGPredicate() predicate.Funcs {
