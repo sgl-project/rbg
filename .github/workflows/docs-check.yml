@@ -2,7 +2,6 @@ name: Markdown Quality Check
 
 permissions:
   contents: read
-  
 on:
   push:
     branches: [ main ]
