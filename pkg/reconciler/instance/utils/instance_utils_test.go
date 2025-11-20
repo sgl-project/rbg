@@ -170,7 +170,7 @@ func TestGetPodComponentID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := GetPodComponentID(tt.pod)
-			assert.Equal(t, tt.expected, result, "测试用例[%s]失败", tt.name)
+			assert.Equal(t, tt.expected, result, "Test case [%s] failed", tt.name)
 		})
 	}
 }
