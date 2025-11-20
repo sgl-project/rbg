@@ -82,7 +82,7 @@ func TestGetPodComponentID(t *testing.T) {
 			name: "valid id from pod name (positive)",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:   "instance-web-789",  // 最后一段为ID
+					Name:   "instance-web-789",  // last segment is the ID
 					Labels: map[string]string{}, // 无ComponentID标签
 				},
 			},
