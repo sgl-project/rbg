@@ -59,7 +59,7 @@ func TestGetPodComponentID(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						v1alpha1.InstanceComponentIDKey: "2147483648", // 比MaxInt32大1
+						v1alpha1.InstanceComponentIDKey: "2147483648", // 1 greater than MaxInt32
 					},
 				},
 			},
