@@ -45,9 +45,10 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	var podTemplateSpec corev1.PodTemplateSpec
 	if len(podTmpls) > 0 {
 		podTemplateSpec = podTmpls[0]
-	} else {
+	} else if role.Template != nil {
 		podTemplateSpec = *role.Template.DeepCopy()
 	}
+	// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
 	podAnnotations := podTemplateSpec.Annotations
 	if podAnnotations == nil {
 		podAnnotations = make(map[string]string)

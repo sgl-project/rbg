@@ -225,8 +225,8 @@ type RoleSpec struct {
 	Workload WorkloadSpec `json:"workload,omitempty"`
 
 	// Pod template specification
-	// +kubebuilder:validation:Required
-	Template corev1.PodTemplateSpec `json:"template"`
+	// +optional
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 
 	// LeaderWorkerSet template
 	// +optional
