@@ -28,6 +28,10 @@ func (rbg *RoleBasedGroup) GetGroupSize() int {
 	ret := 0
 	for _, role := range rbg.Spec.Roles {
 		if role.Workload.String() == LeaderWorkerSetWorkloadType {
+			if role.LeaderWorkerSet == nil {
+				ret += 1 * int(*role.Replicas)
+				continue
+			}
 			ret += int(*role.LeaderWorkerSet.Size) * int(*role.Replicas)
 		} else {
 			ret += int(*role.Replicas)

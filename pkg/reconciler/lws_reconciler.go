@@ -37,6 +37,22 @@ func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) 
 	return &LeaderWorkerSetReconciler{scheme: scheme, client: client}
 }
 
+func (r *LeaderWorkerSetReconciler) Validate(
+	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	logger := log.FromContext(ctx)
+	logger.V(1).Info("start to validate role declaration")
+	if role.Template == nil {
+		if role.LeaderWorkerSet == nil {
+			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
+		}
+		if role.LeaderWorkerSet.PatchLeaderTemplate == nil || role.LeaderWorkerSet.PatchWorkerTemplate == nil {
+			return fmt.Errorf("both 'patchLeaderTemplate' and 'patchWorkerTemplate' fields must be provided when 'template' field not set")
+		}
+	}
+
+	return nil
+}
+
 func (r *LeaderWorkerSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error {
@@ -186,9 +202,16 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	revisionKey string,
 ) (*lwsapplyv1.LeaderWorkerSetApplyConfiguration, error) {
 	logger := log.FromContext(ctx)
+	leaderWorkerSet := role.LeaderWorkerSet
+	if leaderWorkerSet == nil {
+		leaderWorkerSet = &workloadsv1alpha1.LeaderWorkerTemplate{
+			Size: ptr.To(int32(1)),
+		}
+	}
+
 	// leaderTemplate
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	leaderTemp, err := patchPodTemplate(role.Template, role.LeaderWorkerSet.PatchLeaderTemplate)
+	leaderTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchLeaderTemplate)
 	if err != nil {
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
 		return nil, err
@@ -202,7 +225,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	}
 
 	// workerTemplate
-	workerTemp, err := patchPodTemplate(role.Template, role.LeaderWorkerSet.PatchWorkerTemplate)
+	workerTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchWorkerTemplate)
 	if err != nil {
 		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
 		return nil, err
@@ -240,7 +263,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 			lwsapplyv1.LeaderWorkerTemplate().
 				WithLeaderTemplate(leaderTemplateApplyCfg).
 				WithWorkerTemplate(workerTemplateApplyCfg).
-				WithSize(*role.LeaderWorkerSet.Size).
+				WithSize(*leaderWorkerSet.Size).
 				WithRestartPolicy(restartPolicy),
 		)
 
@@ -432,11 +455,11 @@ func leaderWorkerTemplateEqual(oldLwt, newLwt lwsv1.LeaderWorkerTemplate) (bool,
 	return true, nil
 }
 
-func patchPodTemplate(template *corev1.PodTemplateSpec, patch runtime.RawExtension) (*corev1.PodTemplateSpec, error) {
+func patchPodTemplate(template *corev1.PodTemplateSpec, patch *runtime.RawExtension) (*corev1.PodTemplateSpec, error) {
 	if template == nil {
 		template = &corev1.PodTemplateSpec{}
 	}
-	if patch.Raw == nil {
+	if patch == nil || patch.Raw == nil {
 		return template, nil
 	}
 	tempBytes, _ := json.Marshal(template)

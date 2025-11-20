@@ -41,6 +41,17 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 	}
 }
 
+func (r *StatefulSetReconciler) Validate(
+	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	logger := log.FromContext(ctx)
+	logger.V(1).Info("start to validate role declaration")
+	if role.Template == nil {
+		return fmt.Errorf("role.template is required when use %s as workload", role.Workload.String())
+	}
+
+	return nil
+}
+
 func (r *StatefulSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,

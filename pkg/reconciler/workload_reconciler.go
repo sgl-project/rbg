@@ -14,6 +14,7 @@ import (
 )
 
 type WorkloadReconciler interface {
+	Validate(ctx context.Context, role *workloadsv1alpha1.RoleSpec) error
 	Reconciler(
 		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 		rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error
