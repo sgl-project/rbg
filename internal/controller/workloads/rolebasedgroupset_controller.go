@@ -479,7 +479,8 @@ func newRBGForSet(rbgset *workloadsv1alpha1.RoleBasedGroupSet, index int) *workl
 			// The OwnerReference will be set in the scaleUp function.
 		},
 		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: rbgset.Spec.Template.Roles,
+			PodGroupPolicy: rbgset.Spec.Template.PodGroupPolicy,
+			Roles:          rbgset.Spec.Template.Roles,
 		},
 	}
 	// Copy annotations from RBGSet to child RBG
