@@ -1,6 +1,7 @@
 package utils
 
 const (
+	InstanceSetCrdName = "instancesets.workloads.x-k8s.io"
 
 	// LwsCrdName is LWS CRD name
 	LwsCrdName = "leaderworkersets.leaderworkerset.x-k8s.io"
