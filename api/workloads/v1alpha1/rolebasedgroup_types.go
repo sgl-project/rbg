@@ -230,7 +230,7 @@ type RoleSpec struct {
 
 	// LeaderWorkerSet template
 	// +optional
-	LeaderWorkerSet LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
+	LeaderWorkerSet *LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
 
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`
@@ -290,13 +290,13 @@ type LeaderWorkerTemplate struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
-	PatchLeaderTemplate runtime.RawExtension `json:"patchLeaderTemplate,omitempty"`
+	PatchLeaderTemplate *runtime.RawExtension `json:"patchLeaderTemplate,omitempty"`
 
 	// PatchWorkerTemplate indicates patching WorkerTemplate.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
-	PatchWorkerTemplate runtime.RawExtension `json:"patchWorkerTemplate,omitempty"`
+	PatchWorkerTemplate *runtime.RawExtension `json:"patchWorkerTemplate,omitempty"`
 }
 
 type ScalingAdapter struct {

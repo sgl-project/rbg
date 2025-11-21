@@ -231,7 +231,7 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 							},
 						},
 					},
-					LeaderWorkerSet: workloadsv1alpha1.LeaderWorkerTemplate{
+					LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 						Size: ptr.To(int32(3)),
 					},
 				},

@@ -55,8 +55,8 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		// update
 		updateLabel := map[string]string{"update-label": "new"}
 		testutils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *workloadsv1alpha1.RoleBasedGroup) {
-			rbg.Spec.Roles[0].LeaderWorkerSet.PatchLeaderTemplate = wrappers.BuildLWSTemplatePatch(updateLabel)
-			rbg.Spec.Roles[0].LeaderWorkerSet.PatchWorkerTemplate = wrappers.BuildLWSTemplatePatch(updateLabel)
+			rbg.Spec.Roles[0].LeaderWorkerSet.PatchLeaderTemplate = ptr.To(wrappers.BuildLWSTemplatePatch(updateLabel))
+			rbg.Spec.Roles[0].LeaderWorkerSet.PatchWorkerTemplate = ptr.To(wrappers.BuildLWSTemplatePatch(updateLabel))
 		})
 		f.ExpectRbgEqual(rbg)
 

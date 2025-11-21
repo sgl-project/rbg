@@ -113,29 +113,9 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Info("Finished reconciling", "duration", time.Since(start))
 	}()
 
-	currentRevision, err := r.getCurrentRevision(ctx, rbg)
+	// Process revisions
+	expectedRolesRevisionHash, err := r.handleRevisions(ctx, rbg)
 	if err != nil {
-		logger.Error(err, "Failed get or create revision")
-		return ctrl.Result{}, err
-	}
-	expectedRevision, err := utils.NewRevision(ctx, r.client, rbg, currentRevision)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !utils.EqualRevision(currentRevision, expectedRevision) {
-		logger.Info("Current revision need to be updated")
-		if err := r.client.Create(ctx, expectedRevision); err != nil {
-			logger.Error(err, fmt.Sprintf("Failed to create revision %v", expectedRevision))
-			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
-			return ctrl.Result{}, err
-		} else {
-			logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
-			r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
-		}
-	}
-	expectedRolesRevisionHash, err := utils.GetRolesRevisionHash(expectedRevision)
-	if err != nil {
-		logger.Error(err, "Failed to get roles revision hash")
 		return ctrl.Result{}, err
 	}
 
@@ -168,10 +148,20 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			logger.Error(err, "Failed to create workload reconciler")
 			r.recorder.Eventf(
 				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s: %v", role.Name, err,
+				"Failed to reconcile role %s, err: %v", role.Name, err,
 			)
 			return ctrl.Result{}, err
 		}
+
+		if err := reconciler.Validate(ctx, &role); err != nil {
+			logger.Error(err, "Failed to validate role declaration")
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to validate role %s declaration, err: %v", role.Name, err,
+			)
+			return ctrl.Result{}, err
+		}
+
 		roleReconciler[role.Name] = reconciler
 
 		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
@@ -292,6 +282,41 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
 	return ctrl.Result{}, nil
+}
+
+func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (map[string]string, error) {
+	logger := log.FromContext(ctx)
+
+	currentRevision, err := r.getCurrentRevision(ctx, rbg)
+	if err != nil {
+		logger.Error(err, "Failed get or create revision")
+		return nil, err
+	}
+
+	expectedRevision, err := utils.NewRevision(ctx, r.client, rbg, currentRevision)
+	if err != nil {
+		return nil, err
+	}
+
+	if !utils.EqualRevision(currentRevision, expectedRevision) {
+		logger.Info("Current revision need to be updated")
+		if err := r.client.Create(ctx, expectedRevision); err != nil {
+			logger.Error(err, fmt.Sprintf("Failed to create revision %v", expectedRevision))
+			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
+			return nil, err
+		} else {
+			logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
+			r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
+		}
+	}
+
+	expectedRolesRevisionHash, err := utils.GetRolesRevisionHash(expectedRevision)
+	if err != nil {
+		logger.Error(err, "Failed to get roles revision hash")
+		return nil, err
+	}
+
+	return expectedRolesRevisionHash, nil
 }
 
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {

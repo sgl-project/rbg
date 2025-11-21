@@ -96,8 +96,8 @@ func (roleWrapper *RoleWrapper) WithEngineRuntime(engineRuntimes []workloadsv1al
 	return roleWrapper
 }
 
-func (roleWrapper *RoleWrapper) WithLeaderWorkerTemplate(leaderPatch, workerPatch runtime.RawExtension) *RoleWrapper {
-	roleWrapper.LeaderWorkerSet = workloadsv1alpha.LeaderWorkerTemplate{
+func (roleWrapper *RoleWrapper) WithLeaderWorkerTemplate(leaderPatch, workerPatch *runtime.RawExtension) *RoleWrapper {
+	roleWrapper.LeaderWorkerSet = &workloadsv1alpha.LeaderWorkerTemplate{
 		PatchLeaderTemplate: leaderPatch,
 		PatchWorkerTemplate: workerPatch,
 	}
@@ -146,10 +146,10 @@ func BuildLwsRole(name string) *RoleWrapper {
 				Kind:       "LeaderWorkerSet",
 			},
 			Template: &template,
-			LeaderWorkerSet: workloadsv1alpha.LeaderWorkerTemplate{
+			LeaderWorkerSet: &workloadsv1alpha.LeaderWorkerTemplate{
 				Size:                ptr.To(int32(2)),
-				PatchLeaderTemplate: leaderPatch,
-				PatchWorkerTemplate: workerPatch,
+				PatchLeaderTemplate: &leaderPatch,
+				PatchWorkerTemplate: &workerPatch,
 			},
 		},
 	}
