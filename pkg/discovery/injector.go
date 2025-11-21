@@ -197,6 +197,56 @@ func (i *DefaultInjector) InjectEnv(
 	return nil
 }
 
+func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
+	podSpec *corev1.PodTemplateSpec,
+	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, i.client, rbg, role)
+	if err != nil {
+		return err
+	}
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "LWS_LEADER_ADDRESS",
+			Value: fmt.Sprintf("$INSTANCE_NAME-leader-0.%s.%s", svcName, rbg.Namespace),
+		},
+		{
+			Name: "LWS_WORKER_INDEX",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.SetLWSWorkerIndexLabelKey),
+				},
+			},
+		},
+	}
+
+	for idx := range podSpec.Spec.Containers {
+		container := &podSpec.Spec.Containers[idx]
+		// 1. Convert env to Map to remove duplicates
+		existingEnv := make(map[string]corev1.EnvVar)
+		for _, e := range container.Env {
+			existingEnv[e.Name] = e
+		}
+		for _, newEnv := range envVars {
+			existingEnv[newEnv.Name] = newEnv // Overwrite env.Value if the name exists
+		}
+		// 2. Convert back to slice
+		mergedEnv := make([]corev1.EnvVar, 0, len(existingEnv))
+		for _, env := range existingEnv {
+			mergedEnv = append(mergedEnv, env)
+		}
+		// Avoid sts updates caused by env order changes
+		sort.Slice(
+			mergedEnv, func(i, j int) bool {
+				return mergedEnv[i].Name < mergedEnv[j].Name
+			},
+		)
+		container.Env = mergedEnv
+	}
+
+	return nil
+}
+
 func (i *DefaultInjector) InjectSidecar(
 	ctx context.Context, podSpec *corev1.PodTemplateSpec,
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,

@@ -61,3 +61,7 @@ func GetRbgScalingAdapterGVK() schema.GroupVersionKind {
 func GetLwsGVK() schema.GroupVersionKind {
 	return schema.FromAPIVersionAndKind(lwsv1.GroupVersion.String(), "LeaderWorkerSet")
 }
+
+func GetInstanceSetGVK() schema.GroupVersionKind {
+	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "InstanceSet")
+}

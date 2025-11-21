@@ -16,6 +16,10 @@ const (
 	// Value: RoleSpec.name from RoleBasedGroup.spec.roles[]
 	SetRoleLabelKey = RBGPrefix + "role"
 
+	SetLWSComponentLabelKey = RBGPrefix + "lws-component"
+
+	SetLWSWorkerIndexLabelKey = RBGPrefix + "lws-worker-index"
+
 	// SetGroupUniqueHashLabelKey is set on every Pod and carries a short hash
 	// that identifies all Pods belonging to the same RoleBasedGroup instance.
 	// Used as the match label for topology affinity.
@@ -127,9 +131,35 @@ const (
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
 )
 
+// UpdateStrategyType defines strategies for Instances in-place update.
+type UpdateStrategyType string
+
+const (
+	// RecreateUpdateStrategyType indicates that we always delete Instances and create new Instances
+	// during Instances update.
+	RecreateUpdateStrategyType UpdateStrategyType = "ReCreate"
+
+	// InPlaceIfPossibleUpdateStrategyType indicates that we try to in-place update Instances instead of
+	// recreating Instances when possible. Currently, all field but size update of Instances spec is allowed.
+	// Size changes to the Instances spec will fall back to ReCreate UpdateStrategyType where Instances will be recreated.
+	// Note that if InPlaceIfPossibleUpdateStrategyType was set, the Pods owned by the Instances will also be updated in-place when possible.
+	// Due to the constraints of the Kubernetes APIServer on Pod update operations, a Pod can only be upgraded in-place when there are changes to its Metadata or Image.
+	// Any other modifications will trigger a rebuild-based upgrade.
+	// InPlaceIfPossibleUpdateStrategyType is the default behavior
+	InPlaceIfPossibleUpdateStrategyType UpdateStrategyType = "InPlaceIfPossible"
+)
+
+type LwsComponentType string
+
+const (
+	LeaderLwsComponentType LwsComponentType = "Leader"
+	WorkerLwsComponentType LwsComponentType = "Worker"
+)
+
 const (
 	DeploymentWorkloadType      string = "apps/v1/Deployment"
 	StatefulSetWorkloadType     string = "apps/v1/StatefulSet"
+	InstanceSetWorkloadType     string = "workloads.x-k8s.io/v1alpha1/InstanceSet"
 	LeaderWorkerSetWorkloadType string = "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"
 )
 

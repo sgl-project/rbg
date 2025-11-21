@@ -69,8 +69,13 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 			return nil, fmt.Errorf("failed to inject sidecar: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "env") {
+	if utils.ContainsString(r.injectObjects, "common_env") {
 		if err := injector.InjectEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
+			return nil, fmt.Errorf("failed to inject env vars: %w", err)
+		}
+	}
+	if utils.ContainsString(r.injectObjects, "lws_env") {
+		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}

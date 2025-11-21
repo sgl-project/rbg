@@ -85,6 +85,12 @@ func (roleWrapper *RoleWrapper) WithWorkload(workloadType string) *RoleWrapper {
 			APIVersion: "leaderworkerset.x-k8s.io/v1",
 			Kind:       "LeaderWorkerSet",
 		}
+	case workloadsv1alpha.InstanceSetWorkloadType:
+		roleWrapper.Workload = workloadsv1alpha.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha1",
+			Kind:       "InstanceSet",
+		}
+
 	default:
 		panic(fmt.Sprintf("workload type not supported: %s", workloadType))
 	}

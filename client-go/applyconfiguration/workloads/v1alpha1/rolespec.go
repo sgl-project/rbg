@@ -36,6 +36,7 @@ type RoleSpecApplyConfiguration struct {
 	Workload        *WorkloadSpecApplyConfiguration         `json:"workload,omitempty"`
 	Template        *v1.PodTemplateSpecApplyConfiguration   `json:"template,omitempty"`
 	LeaderWorkerSet *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerSet,omitempty"`
+	Components      []ComponentsApplyConfiguration          `json:"components,omitempty"`
 	ServicePorts    []corev1.ServicePort                    `json:"servicePorts,omitempty"`
 	EngineRuntimes  []EngineRuntimeApplyConfiguration       `json:"engineRuntimes,omitempty"`
 	ScalingAdapter  *ScalingAdapterApplyConfiguration       `json:"scalingAdapter,omitempty"`
@@ -139,6 +140,19 @@ func (b *RoleSpecApplyConfiguration) WithTemplate(value *v1.PodTemplateSpecApply
 // If called multiple times, the LeaderWorkerSet field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithLeaderWorkerSet(value *LeaderWorkerTemplateApplyConfiguration) *RoleSpecApplyConfiguration {
 	b.LeaderWorkerSet = value
+	return b
+}
+
+// WithComponents adds the given value to the Components field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Components field.
+func (b *RoleSpecApplyConfiguration) WithComponents(values ...*ComponentsApplyConfiguration) *RoleSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithComponents")
+		}
+		b.Components = append(b.Components, *values[i])
+	}
 	return b
 }
 

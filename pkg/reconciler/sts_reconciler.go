@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
-	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -61,7 +60,7 @@ func (r *StatefulSetReconciler) Reconciler(
 		return err
 	}
 
-	return r.reconcileHeadlessService(ctx, rbg, role)
+	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role)
 }
 
 func (r *StatefulSetReconciler) reconcileStatefulSet(
@@ -418,59 +417,6 @@ func calculateContinuousReadyReplicas(states []replicaState) int32 {
 	return continuousReadyCount
 }
 
-func (r *StatefulSetReconciler) reconcileHeadlessService(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-) error {
-	logger := log.FromContext(ctx)
-	logger.V(1).Info("start to reconciling headless service")
-
-	sts := &appsv1.StatefulSet{}
-	err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts)
-	if err != nil {
-		return fmt.Errorf("get sts error, skip reconcile svc. error:  %s", err.Error())
-	}
-
-	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, rbg, role, sts)
-	if err != nil {
-		return fmt.Errorf("constructServiceApplyConfiguration error: %s", err.Error())
-	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(svcApplyConfig)
-	if err != nil {
-		logger.Error(err, "Converting obj apply configuration to json.")
-		return err
-	}
-
-	newSvc := &corev1.Service{}
-	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newSvc); err != nil {
-		return fmt.Errorf("convert svcApplyConfig to svc error: %s", err.Error())
-	}
-
-	oldSvc := &corev1.Service{}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-	if err != nil {
-		return fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
-	}
-	err = r.client.Get(ctx, types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, oldSvc)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	equal, err := SemanticallyEqualService(oldSvc, newSvc)
-	if equal {
-		logger.V(1).Info("svc equal, skip reconcile")
-		return nil
-	}
-
-	logger.V(1).Info(fmt.Sprintf("svc not equal, diff: %s", err.Error()))
-
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, svcApplyConfig, utils.PatchSpec); err != nil {
-		logger.Error(err, "Failed to patch svc apply configuration")
-		return err
-	}
-
-	return nil
-}
-
 func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
@@ -525,40 +471,6 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 				WithController(true),
 		)
 	return statefulSetConfig, nil
-}
-
-func (r *StatefulSetReconciler) constructServiceApplyConfiguration(
-	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-	sts *appsv1.StatefulSet,
-) (*coreapplyv1.ServiceApplyConfiguration, error) {
-	selectMap := map[string]string{
-		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		workloadsv1alpha1.SetRoleLabelKey: role.Name,
-	}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-	if err != nil {
-		return nil, err
-	}
-	serviceConfig := coreapplyv1.Service(svcName, rbg.Namespace).
-		WithSpec(
-			coreapplyv1.ServiceSpec().
-				WithClusterIP("None").
-				WithSelector(selectMap).
-				WithPublishNotReadyAddresses(true),
-		).
-		WithLabels(rbg.GetCommonLabelsFromRole(role)).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithOwnerReferences(
-			metaapplyv1.OwnerReference().
-				WithAPIVersion(sts.APIVersion).
-				WithKind(sts.Kind).
-				WithName(sts.Name).
-				WithUID(sts.GetUID()).
-				WithBlockOwnerDeletion(true),
-		)
-	return serviceConfig, nil
 }
 
 func (r *StatefulSetReconciler) ConstructRoleStatus(
@@ -764,26 +676,6 @@ func statefulSetStatusEqual(oldStatus, newStatus appsv1.StatefulSetStatus) (bool
 	if !reflect.DeepEqual(oldStatus, newStatus) {
 		return false, fmt.Errorf("status not equal")
 	}
-	return true, nil
-}
-
-func SemanticallyEqualService(svc1, svc2 *corev1.Service) (bool, error) {
-	if svc1 == nil || svc2 == nil {
-		if svc1 != svc2 {
-			return false, fmt.Errorf("object is nil")
-		} else {
-			return true, nil
-		}
-	}
-
-	if equal, err := objectMetaEqual(svc1.ObjectMeta, svc2.ObjectMeta); !equal {
-		return false, fmt.Errorf("objectMeta not equal: %s", err.Error())
-	}
-
-	if !reflect.DeepEqual(svc1.Spec.Selector, svc2.Spec.Selector) {
-		return false, fmt.Errorf("selector not equal, old: %v, new: %v", svc1.Spec.Selector, svc2.Spec.Selector)
-	}
-
 	return true, nil
 }
 
