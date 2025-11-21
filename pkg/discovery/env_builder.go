@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -54,6 +55,35 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 					},
 				},
 			})
+	}
+
+	if g.role.Workload.Kind == "InstanceSet" {
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name: "INSTANCE_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.InstanceNameLabelKey),
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: "COMPONENT_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.InstanceComponentNameKey),
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: "COMPONENT_INDEX",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.InstanceComponentIDKey),
+					},
+				},
+			},
+		)
 	}
 
 	return envVars

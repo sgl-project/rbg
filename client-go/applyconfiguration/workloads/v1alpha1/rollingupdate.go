@@ -19,20 +19,32 @@ package v1alpha1
 
 import (
 	intstr "k8s.io/apimachinery/pkg/util/intstr"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 // RollingUpdateApplyConfiguration represents a declarative configuration of the RollingUpdate type for use
 // with apply.
 type RollingUpdateApplyConfiguration struct {
-	Partition      *int32              `json:"partition,omitempty"`
-	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
-	MaxSurge       *intstr.IntOrString `json:"maxSurge,omitempty"`
+	Type                  *workloadsv1alpha1.UpdateStrategyType    `json:"type,omitempty"`
+	Partition             *int32                                   `json:"partition,omitempty"`
+	MaxUnavailable        *intstr.IntOrString                      `json:"maxUnavailable,omitempty"`
+	MaxSurge              *intstr.IntOrString                      `json:"maxSurge,omitempty"`
+	Paused                *bool                                    `json:"paused,omitempty"`
+	InPlaceUpdateStrategy *InPlaceUpdateStrategyApplyConfiguration `json:"inPlaceUpdateStrategy,omitempty"`
 }
 
 // RollingUpdateApplyConfiguration constructs a declarative configuration of the RollingUpdate type for use with
 // apply.
 func RollingUpdate() *RollingUpdateApplyConfiguration {
 	return &RollingUpdateApplyConfiguration{}
+}
+
+// WithType sets the Type field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Type field is set to the value of the last call.
+func (b *RollingUpdateApplyConfiguration) WithType(value workloadsv1alpha1.UpdateStrategyType) *RollingUpdateApplyConfiguration {
+	b.Type = &value
+	return b
 }
 
 // WithPartition sets the Partition field in the declarative configuration to the given value
@@ -56,5 +68,21 @@ func (b *RollingUpdateApplyConfiguration) WithMaxUnavailable(value intstr.IntOrS
 // If called multiple times, the MaxSurge field is set to the value of the last call.
 func (b *RollingUpdateApplyConfiguration) WithMaxSurge(value intstr.IntOrString) *RollingUpdateApplyConfiguration {
 	b.MaxSurge = &value
+	return b
+}
+
+// WithPaused sets the Paused field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Paused field is set to the value of the last call.
+func (b *RollingUpdateApplyConfiguration) WithPaused(value bool) *RollingUpdateApplyConfiguration {
+	b.Paused = &value
+	return b
+}
+
+// WithInPlaceUpdateStrategy sets the InPlaceUpdateStrategy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the InPlaceUpdateStrategy field is set to the value of the last call.
+func (b *RollingUpdateApplyConfiguration) WithInPlaceUpdateStrategy(value *InPlaceUpdateStrategyApplyConfiguration) *RollingUpdateApplyConfiguration {
+	b.InPlaceUpdateStrategy = value
 	return b
 }

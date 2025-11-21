@@ -38,6 +38,8 @@ func NewWorkloadReconciler(
 		return NewStatefulSetReconciler(scheme, client), nil
 	case workload.String() == workloadsv1alpha1.LeaderWorkerSetWorkloadType:
 		return NewLeaderWorkerSetReconciler(scheme, client), nil
+	case workload.String() == workloadsv1alpha1.InstanceSetWorkloadType:
+		return NewInstanceSetReconciler(scheme, client), nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type: %s", workload.String())
 	}
@@ -63,6 +65,13 @@ func WorkloadEqual(obj1, obj2 interface{}) (bool, error) {
 			}
 			return true, nil
 		}
+	case *workloadsv1alpha1.InstanceSet:
+		if o2, ok := obj2.(*workloadsv1alpha1.InstanceSet); ok {
+			if o1.Generation != o2.Generation {
+				return false, fmt.Errorf("instanceset: %s/%s generation not equal", o1.Namespace, o1.Name)
+			}
+		}
+		return false, fmt.Errorf("instanceSet not equal")
 	case *lwsv1.LeaderWorkerSet:
 		if o2, ok := obj2.(*lwsv1.LeaderWorkerSet); ok {
 			if equal, err := semanticallyEqualLeaderWorkerSet(o1, o2, true); !equal {
