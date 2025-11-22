@@ -173,18 +173,13 @@ func GetPodComponentName(pod *v1.Pod) string {
 // This prevents parse errors from masquerading as valid component ID 0.
 func GetPodComponentID(pod *v1.Pod) int32 {
 	componentId := pod.Labels[constants.ComponentIDLabelKey]
-	if len(componentId) != 0 {
-		id, err := strconv.ParseInt(componentId, 10, 32)
-		if err != nil {
+	if len(componentId) == 0 {
+		list := strings.Split(pod.Name, "-")
+		if len(list) == 0 {
 			return -1
 		}
-		return int32(id)
+		componentId = list[len(list)-1]
 	}
-	list := strings.Split(pod.Name, "-")
-	if len(list) == 0 {
-		return -1
-	}
-	componentId = list[len(list)-1]
 	id, err := strconv.ParseInt(componentId, 10, 32)
 	if err != nil {
 		return -1
