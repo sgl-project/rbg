@@ -164,6 +164,16 @@ func TestGetPodComponentID(t *testing.T) {
 			},
 			expected: math.MaxInt32,
 		},
+		{
+			name: "int32 min value in pod name",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "instance-min--2147483648", // math.MinInt32
+					Labels: map[string]string{},
+				},
+			},
+			expected: math.MinInt32,
+		},
 	}
 
 	// Execute test cases
