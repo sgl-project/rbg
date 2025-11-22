@@ -60,6 +60,15 @@ func TestGetPodComponentID(t *testing.T) {
 			expected: 789,
 		},
 		{
+			name: "double hyphen pod name uses the final segment",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "instance-db--987",
+				},
+			},
+			expected: 987,
+		},
+		{
 			name: "invalid non-numeric id in pod name",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
