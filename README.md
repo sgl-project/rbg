@@ -47,7 +47,7 @@ Based on this philosophy, RBG has built the five core capabilities of **SCOPE**:
 - Topology self-aware service discovery - injects complete role topology into Pods, eliminating external service dependencies.
 
 #### ⚡ **Performance**
-Topology-aware placement with hardware affinity (GPU-NVLink > PCIe > RDMA) and role affinity scheduling.
+Topology-aware placement with hardware affinity (GPU-NVLink > PCIe > RDMA > VPC) and role affinity scheduling.
 
 #### 🧩 **Extensible**
 Future-proof deployment abstraction using declarative APIs and plugin mechanisms to adapt new architectures in weeks.
