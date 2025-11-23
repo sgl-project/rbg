@@ -8,8 +8,11 @@ It provides a common deployment pattern for production LLM inference, especially
 
 ## Latest News 🔥
 
+**[2025-09-23]** RBG v0.4.0 is released. Please check out
+the [release notes](https://github.com/sgl-project/rbg/releases/tag/v0.4.0) for more details.
+
 **[2025-07-21]** RBG v0.3.0 is released. Please check out
-the [release notes](https://github.com/sgl-project/rbg/releases) for more details.
+the [release notes](https://github.com/sgl-project/rbg/releases/tag/v0.3.0) for more details.
 
 ## Overview
 
@@ -40,7 +43,7 @@ Based on this philosophy, RBG has built the five core capabilities of **SCOPE**:
 - Topology-aware deterministic operations with unique RoleID injection and minimal replacement domain principles.
 
 #### 🤝 **Coordination**
-- Cross-role policy engine supporting deployment pairing, two-phase commit upgrades, linked recovery, and coordinated scaling.
+- Cross-role policy engine supporting deployment pairing, coordinated upgrades, linked recovery, and coordinated scaling.
 
 #### 🧭 **Orchestration**
 - Defines role dependencies and precise startup sequences within a RoleBasedGroup.  
