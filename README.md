@@ -2,9 +2,8 @@
 
 English｜[简体中文](./README-zh_CN.md)
 
-**RoleBasedGroup**: An API for orchestrating distributed workload services with multirole collaboration and automated
-service discovery. It provides a common deployment pattern of AI inference workloads, especially for disaggregated
-prefill and decode architecture.
+**RoleBasedGroup(RBG)**: An API for orchestrating distributed AI inference workloads with multi-role collaboration and automated service discovery. It provides production-ready deployment patterns for AI Inferences, especially like disaggregated architectures like prefill and decode.
+
 
 ## Latest News 🔥
 
@@ -13,26 +12,35 @@ the [release notes](https://github.com/sgl-project/rbg/releases) for more detail
 
 ## Overview
 
-Kubernetes StatefulSet is ill-suited for coordinating multiple roles in distributed, stateful services. This solution
-tackles the following challenges:
+RoleBasedGroup(RBG) coordinates multiple roles in distributed, stateful services, addressing key challenges in modern AI inference:
 
-- Role startup-order dependencies
-- Complex, cross-role service discovery
-- Fragmented configuration management
+- **Rapid Architecture Evolution** - Adapts quickly to new disaggregated model architectures. 
+- **Performance Sensitivity** - Millisecond optimization for TTFT/TPOT with GPU topology awareness. 
+- **Strong Component Dependencies** - Atomic upgrades and 1:1 role binding (e.g., Prefill-Decode). 
+- **Operational Efficiency** - Reduces GPU idle time from frequent restarts and scaling. 
+- **Resource Fluctuations** - Handles 10x traffic variations, improving GPU utilization beyond 30%. 
+
 
 ### Key Features
 
-- **Multirole Template Spec** - Model distributed stateful workloads as unified K8s workload groups.
-- **Role-based Startup Control** - Orchestrate StatefulSets by defining role dependencies and precise startup sequences
-  within a RoleBasedGroup.
-- **Auto Service Discovery** - Inject topology details via configs and env vars.
-- **Elastic Scaling** - Enable group/role-level scaling operations.
-- **Atomic Rollout** - Role-level rollout/update: Upgrade entire Roles sequentially as single units (all pods in the
-  same role updated simultaneously).
-- **Topology-aware Placement** - Guarantee co-location of group/role pods within the same topology domain.
-- **Atomic Failure Recovery** - Trigger full role recreation if any pod/container fails within the same group/role.
-- **Customizable Workload** - Support for multiple workload types (e.g. StatefulSet, Deployment, LeaderWorkerSet etc.)
-  for the role.
+RBG treats "Role" as the atomic unit for scheduling orchestration, while establishing configurable relationships between different roles. It views a single inference service as a topological, stateful, and collaborative "Role Organism," rather than an isolated collection of Deployments.
+
+Based on this philosophy, RBG has built the five core capabilities of **SCOPE**:
+
+#### 🔁 **Stable**
+Topology-aware deterministic operations with unique RoleID injection and minimal replacement domain principles.
+
+#### 🤝 **Coordination**
+Cross-role policy engine supporting deployment pairing, two-phase commit upgrades, failure联动, and coordinated scaling.
+
+#### 🧭 **Orchestration**
+Topology self-aware service discovery - injects complete role topology into Pods, eliminating external service dependencies.
+
+#### ⚡ **Performance**
+Topology-aware placement with hardware affinity (GPU-NVLink > PCIe > RDMA) and role affinity scheduling.
+
+#### 🧩 **Extensible**
+Future-proof deployment abstraction using declarative APIs and plugin mechanisms to adapt new architectures in weeks.
 
 ## Architecture
 
@@ -52,6 +60,7 @@ You can see our documentation at [docs](doc/TOC.md) for more in-depth installati
 | RBG Version | Kubernetes Version | LeaderWorkerSet Version |
 |:-----------:|:------------------:|:-----------------------:|
 |    main     |     >=v1.28.x      |        >=v0.7.0         |
+|   v0.4.0    |     >=v1.28.x      |        >=v0.7.0         |
 |   v0.3.0    |     >=v1.28.x      |        >=v0.6.0         |
 
 ## Contributing
