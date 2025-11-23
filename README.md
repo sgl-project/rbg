@@ -2,7 +2,7 @@
 
 English｜[简体中文](./README-zh_CN.md)
 
-**RoleBasedGroup (RBG)** is a Kubernetes API for orchestrating distributed, stateful AI inference workloads with **multi‑role collaboration** and **built‑in service discovery**.  
+**RoleBasedGroup (RBG)** is a Kubernetes API for orchestrating distributed, stateful AI inference workloads with **multi-role collaboration** and **built-in service discovery**.  
 It provides a common deployment pattern for production LLM inference, especially **disaggregated architectures** such as prefill/decode separation.
 
 
@@ -16,13 +16,13 @@ the [release notes](https://github.com/sgl-project/rbg/releases/tag/v0.3.0) for 
 
 ## Overview
 
-Traditional Kubernetes primitives (e.g. plain StatefulSets / Deployments) are ill‑suited for LLM inference services that:
+Traditional Kubernetes primitives (e.g. plain StatefulSets / Deployments) are ill-suited for LLM inference services that:
 
-- run as **multi‑role topologies** (gateway / router / prefill / decode),
-- are **performance‑sensitive** to GPU / network topology,
-- and require **atomic, cross‑role operations** (deploy, upgrade, scale, failover).
+- run as **multi-role topologies** (gateway / router / prefill / decode),
+- are **performance-sensitive** to GPU / network topology,
+- and require **atomic, cross-role operations** (deploy, upgrade, scale, failover).
 
-**RBG** treats an inference service as a **role‑based group**, not a loose set of workloads. It models the service as a **topologized, stateful, coordinated multi‑role organism** and manages it as a single unit.
+**RBG** treats an inference service as a **role-based group**, not a loose set of workloads. It models the service as a **topologized, stateful, coordinated multi-role organism** and manages it as a single unit.
 
 ## Key Concepts
 
