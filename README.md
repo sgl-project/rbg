@@ -33,26 +33,26 @@ Traditional Kubernetes primitives (e.g. plain StatefulSets / Deployments) are il
   A group of roles that together form one logical service (e.g. one LLM inference deployment).
 
 
-### Key Features
+## Key Features
 
 RBG treats "Role" as the atomic unit for scheduling orchestration, while establishing configurable relationships between different roles. It views a single inference service as a topological, stateful, and collaborative "Role Organism," rather than an isolated collection of Deployments.
 
 Based on this philosophy, RBG has built the five core capabilities of **SCOPE**:
 
-#### 🔁 **Stable**
+### 🔁 **Stable**
 - Topology-aware deterministic operations with unique RoleID injection and minimal replacement domain principles.
 
-#### 🤝 **Coordination**
+### 🤝 **Coordination**
 - Cross-role policy engine supporting deployment pairing, coordinated upgrades, linked recovery, and coordinated scaling.
 
-#### 🧭 **Orchestration**
+### 🧭 **Orchestration**
 - Defines role dependencies and precise startup sequences within a RoleBasedGroup.  
 - Topology self-aware service discovery - injects complete role topology into Pods, eliminating external service dependencies.
 
-#### ⚡ **Performance**
+### ⚡ **Performance**
 Topology-aware placement with hardware affinity (GPU-NVLink > PCIe > RDMA > VPC) and role affinity scheduling.
 
-#### 🧩 **Extensible**
+### 🧩 **Extensible**
 Future-proof deployment abstraction using declarative APIs and plugin mechanisms to adapt new architectures in weeks.
 
 ## Architecture
