@@ -2,7 +2,8 @@
 
 English｜[简体中文](./README-zh_CN.md)
 
-**RoleBasedGroup(RBG)**: An API for orchestrating distributed AI inference workloads with multi-role collaboration and automated service discovery. It provides production-ready deployment patterns for AI Inferences, especially like disaggregated architectures like prefill and decode.
+**RoleBasedGroup (RBG)** is a Kubernetes API for orchestrating distributed, stateful AI inference workloads with **multi‑role collaboration** and **built‑in service discovery**.  
+It provides a common deployment pattern for production LLM inference, especially **disaggregated architectures** such as prefill/decode separation.
 
 
 ## Latest News 🔥
@@ -12,13 +13,21 @@ the [release notes](https://github.com/sgl-project/rbg/releases) for more detail
 
 ## Overview
 
-RoleBasedGroup(RBG) coordinates multiple roles in distributed, stateful services, addressing key challenges in modern AI inference:
+Traditional Kubernetes primitives (e.g. plain StatefulSets / Deployments) are ill‑suited for LLM inference services that:
 
-- **Rapid Architecture Evolution** - Adapts quickly to new disaggregated model architectures. 
-- **Performance Sensitivity** - Millisecond optimization for TTFT/TPOT with GPU topology awareness. 
-- **Strong Component Dependencies** - Atomic upgrades and 1:1 role binding (e.g., Prefill-Decode). 
-- **Operational Efficiency** - Reduces GPU idle time from frequent restarts and scaling. 
-- **Resource Fluctuations** - Handles 10x traffic variations, improving GPU utilization beyond 30%. 
+- run as **multi‑role topologies** (gateway / router / prefill / decode),
+- are **performance‑sensitive** to GPU / network topology,
+- and require **atomic, cross‑role operations** (deploy, upgrade, scale, failover).
+
+**RBG** treats an inference service as a **role‑based group**, not a loose set of workloads. It models the service as a **topologized, stateful, coordinated multi‑role organism** and manages it as a single unit.
+
+## Key Concepts
+
+- **Role**  
+  The basic scheduling and rollout unit. Each role (e.g. prefill, decode) has its own spec, lifecycle and policies.
+
+- **RoleBasedGroup**  
+  A group of roles that together form one logical service (e.g. one LLM inference deployment).
 
 
 ### Key Features
@@ -28,13 +37,14 @@ RBG treats "Role" as the atomic unit for scheduling orchestration, while establi
 Based on this philosophy, RBG has built the five core capabilities of **SCOPE**:
 
 #### 🔁 **Stable**
-Topology-aware deterministic operations with unique RoleID injection and minimal replacement domain principles.
+- Topology-aware deterministic operations with unique RoleID injection and minimal replacement domain principles.
 
 #### 🤝 **Coordination**
-Cross-role policy engine supporting deployment pairing, two-phase commit upgrades, failure联动, and coordinated scaling.
+- Cross-role policy engine supporting deployment pairing, two-phase commit upgrades, linked recovery, and coordinated scaling.
 
 #### 🧭 **Orchestration**
-Topology self-aware service discovery - injects complete role topology into Pods, eliminating external service dependencies.
+- Defines role dependencies and precise startup sequences within a RoleBasedGroup.  
+- Topology self-aware service discovery - injects complete role topology into Pods, eliminating external service dependencies.
 
 #### ⚡ **Performance**
 Topology-aware placement with hardware affinity (GPU-NVLink > PCIe > RDMA) and role affinity scheduling.
