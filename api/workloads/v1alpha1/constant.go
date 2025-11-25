@@ -16,10 +16,6 @@ const (
 	// Value: RoleSpec.name from RoleBasedGroup.spec.roles[]
 	SetRoleLabelKey = RBGPrefix + "role"
 
-	SetLWSComponentLabelKey = RBGPrefix + "lws-component"
-
-	SetLWSWorkerIndexLabelKey = RBGPrefix + "lws-worker-index"
-
 	// SetGroupUniqueHashLabelKey is set on every Pod and carries a short hash
 	// that identifies all Pods belonging to the same RoleBasedGroup instance.
 	// Used as the match label for topology affinity.
@@ -53,6 +49,46 @@ const (
 
 	// SetRBGIndexLabelKey SetRBGIndex identifies the index of the rbg within the rbgset
 	SetRBGIndexLabelKey = RBGSetPrefix + "rbg-index"
+)
+
+const ComponentLabelPrefix = "component." + RBGPrefix
+
+// Generic component label keys
+const (
+	// RBGComponentNameLabelKey identifies the component name (e.g., leader/worker/coordinator)
+	RBGComponentNameLabelKey = ComponentLabelPrefix + "name"
+
+	// RBGComponentIndexLabelKey identifies the component instance index
+	// Under InstanceSet/StatefulSet pattern, RBGComponentIndex = InstanceComponentID
+	// Under LeaderWorkerSet pattern:
+	// - leader's RBGComponentIndex = "0"
+	// - worker's RBGComponentIndex = InstanceComponentIDKey.value + 1
+	RBGComponentIndexLabelKey = ComponentLabelPrefix + "index"
+
+	// RBGComponentSizeLabelKey identifies the component size
+	RBGComponentSizeLabelKey = ComponentLabelPrefix + "size"
+
+	// RBGComponentPatternLabelKey identifies the component organization pattern
+	RBGComponentPatternLabelKey = ComponentLabelPrefix + "pattern"
+)
+
+// ComponentPatternType defines supported component organization patterns
+type ComponentPatternType string
+
+const (
+	// LeaderWorkerSetPattern represents leader-worker topology pattern
+	LeaderWorkerSetPattern ComponentPatternType = "LeaderWorkerSet"
+
+	// DeploymentPattern represents Deployment ordered topology pattern
+	DeploymentPattern ComponentPatternType = "Deployment"
+
+	// StatefulSetPattern represents StatefulSet ordered topology pattern
+	StatefulSetPattern ComponentPatternType = "StatefulSet"
+
+	// InstanceSetPattern represents InstanceSet multi-component pattern
+	InstanceSetPattern ComponentPatternType = "InstanceSet"
+
+	// Future extensible: DeploymentPattern, DaemonSetPattern, etc.
 )
 
 // InstanceSet labels and annotations

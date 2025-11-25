@@ -34,7 +34,7 @@ type InstanceSetSpec struct {
 	// If unspecified, defaults to 1.
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Components describes the Instance components that will be created.
+	// InstanceTemplate describes the data an instance should have when created from a template
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	InstanceTemplate InstanceTemplate `json:"instanceTemplate"`

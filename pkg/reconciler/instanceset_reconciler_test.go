@@ -34,7 +34,7 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "valid components without template or leaderWorkerSet",
 			role: &workloadsv1alpha1.RoleSpec{
-				Components: []workloadsv1alpha1.Components{
+				Components: []workloadsv1alpha1.InstanceComponent{
 					{
 						Name: "test-component",
 						Size: ptr.To(int32(1)),
@@ -56,7 +56,7 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid components with template",
 			role: &workloadsv1alpha1.RoleSpec{
-				Components: []workloadsv1alpha1.Components{
+				Components: []workloadsv1alpha1.InstanceComponent{
 					{
 						Name: "test-component",
 						Size: ptr.To(int32(1)),
@@ -69,7 +69,7 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid components with leaderWorkerSet",
 			role: &workloadsv1alpha1.RoleSpec{
-				Components: []workloadsv1alpha1.Components{
+				Components: []workloadsv1alpha1.InstanceComponent{
 					{
 						Name: "test-component",
 						Size: ptr.To(int32(1)),
@@ -154,11 +154,6 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	// Create test objects
 	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
-	//.WithRoles(
-	//	[]workloadsv1alpha1.RoleSpec{
-	//		wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj(),
-	//	},
-
 	// Setup fake client
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg).Build()
 
@@ -173,7 +168,7 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 			Name:            "test-role",
 			Replicas:        ptr.To(int32(3)),
 			MinReadySeconds: int32(10),
-			Components: []workloadsv1alpha1.Components{
+			Components: []workloadsv1alpha1.InstanceComponent{
 				{
 					Name: "component-1",
 					Size: ptr.To(int32(2)),
@@ -220,7 +215,7 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		assert.Equal(t, role.MinReadySeconds, *config.Spec.MinReadySeconds)
 
 		// Check labels
-		expectedLabelKey := "rolebasedgroup.workloads.x-k8s.io/role-revision-hash-test-role"
+		expectedLabelKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
 		assert.Equal(t, revisionKey, config.Labels[expectedLabelKey])
 
 		// Check components
@@ -312,7 +307,7 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		assert.Equal(t, role.MinReadySeconds, *config.Spec.MinReadySeconds)
 
 		// Check labels
-		expectedLabelKey := "rolebasedgroup.workloads.x-k8s.io/role-revision-hash-test-role-lws"
+		expectedLabelKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
 		assert.Equal(t, revisionKey, config.Labels[expectedLabelKey])
 
 		// Check components - should have leader and worker components
@@ -460,8 +455,6 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 					scheme: scheme,
 					client: client,
 				}
-
-				expectedRevisionHash := "revision-hash-value"
 				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
@@ -692,12 +685,12 @@ func TestInstanceSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 
 					// Check that orphaned workloads were deleted
 					for _, name := range tt.expectDeleted {
-						sts := &appsv1.StatefulSet{}
+						instanceSet := &workloadsv1alpha1.InstanceSet{}
 						err = client.Get(
 							context.Background(), types.NamespacedName{
 								Name:      name,
 								Namespace: tt.rbg.Namespace,
-							}, sts,
+							}, instanceSet,
 						)
 						assert.True(t, apierrors.IsNotFound(err), "Expected %s to be deleted", name)
 					}
@@ -718,7 +711,7 @@ func TestInstanceSetReconciler_RecreateWorkload(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg-test-role",
 			Namespace: "default",
-			UID:       "sts-uid",
+			UID:       "instanceset-uid",
 		},
 	}
 
@@ -795,7 +788,7 @@ func TestInstanceSetReconciler_RecreateWorkload(t *testing.T) {
 
 				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
 				if (err != nil) != tt.expectErr {
-					t.Errorf("StsReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
+					t.Errorf("InstanceSetReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
 				}
 			},
 		)

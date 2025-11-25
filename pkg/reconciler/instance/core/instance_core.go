@@ -119,12 +119,10 @@ func (c *commonControl) NewUpdatePods(updateVersion string, componentName string
 
 		// 3. init pod labels
 		componentPodLabels := instanceutil.InitComponentPodLabels(instance.Name, componentName, id)
-		if pod.Labels[v1alpha1.SetLWSComponentLabelKey] != "" {
-			lwsWorkerIndex := fmt.Sprintf("%d", id)
-			if pod.Labels[v1alpha1.SetLWSComponentLabelKey] == string(v1alpha1.WorkerLwsComponentType) {
-				lwsWorkerIndex = fmt.Sprintf("%d", id+1)
+		if pod.Labels[v1alpha1.RBGComponentPatternLabelKey] == string(v1alpha1.LeaderWorkerSetPattern) {
+			if pod.Labels[v1alpha1.RBGComponentNameLabelKey] == "worker" {
+				componentPodLabels[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
 			}
-			componentPodLabels[v1alpha1.SetLWSWorkerIndexLabelKey] = lwsWorkerIndex
 		}
 		for key, value := range componentPodLabels {
 			pod.Labels[key] = value

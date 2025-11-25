@@ -73,7 +73,7 @@ spec:
             description: InstanceSetSpec defines the desired state of InstanceSet
             properties:
               instanceTemplate:
-                description: Components describes the Instance components that will
+                description: Component describes the Instance components that will
                   be created.
                 x-kubernetes-preserve-unknown-fields: true
               lifecycle:

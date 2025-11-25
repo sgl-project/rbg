@@ -37,8 +37,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
-	case v1alpha1.SchemeGroupVersion.WithKind("Components"):
-		return &workloadsv1alpha1.ComponentsApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComponentStatus"):
 		return &workloadsv1alpha1.ComponentStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Coordination"):

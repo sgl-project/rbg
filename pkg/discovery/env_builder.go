@@ -30,6 +30,32 @@ func (g *EnvBuilder) Build() []corev1.EnvVar {
 	return envVars
 }
 
+func (b *EnvBuilder) BuildLwsEnv(svcName string) []corev1.EnvVar {
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "LWS_LEADER_ADDRESS",
+			Value: fmt.Sprintf("$(INSTANCE_NAME)-leader-0.%s.%s", svcName, b.rbg.Namespace),
+		},
+		{
+			Name: "LWS_WORKER_INDEX",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.RBGComponentIndexLabelKey),
+				},
+			},
+		},
+		{
+			Name: "LWS_GROUP_SIZE",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.RBGComponentSizeLabelKey),
+				},
+			},
+		},
+	}
+	return envVars
+}
+
 func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 
 	// Inject environment variables for service discovery

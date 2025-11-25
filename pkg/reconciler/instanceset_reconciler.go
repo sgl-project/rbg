@@ -127,13 +127,9 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
 	revisionKey string,
 ) (*workloadsv1alpha1client.InstanceSetApplyConfiguration, error) {
-	logger := log.FromContext(ctx)
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
 
-	// set revision label
-	instanceSetLabel := maps.Clone(matchLabels)
-	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
-
+	// 1. construct instance configuration
 	var restartPolicy workloadsv1alpha1.InstanceRestartPolicyType
 	if role.RestartPolicy == "None" {
 		restartPolicy = workloadsv1alpha1.NoneInstanceRestartPolicy
@@ -145,101 +141,29 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 		// 2. RecreateRBGOnPodRestart will delete lws if pod recreated or containers restarted
 		restartPolicy = workloadsv1alpha1.RecreateInstanceOnPodRestart
 	}
-
-	// construct instance template
 	instanceTemplateConfig := workloadsv1alpha1client.InstanceTemplate().
 		WithRestartPolicy(restartPolicy)
-
-	// construct comment
-	podReconciler := NewPodReconciler(r.scheme, r.client)
-	if len(role.Components) > 0 {
-		for _, component := range role.Components {
-			podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-				ctx, rbg, role, maps.Clone(matchLabels), component.Template)
-			if err != nil {
-				return nil, err
-			}
-			// construct service name
-			svcName := component.ServiceName
-			if svcName == "" {
-				svcName, err = utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-				if err != nil {
-					return nil, err
-				}
-			}
-			instanceTemplateConfig.WithComponents(workloadsv1alpha1client.InstanceComponent().
-				WithName(component.Name).
-				WithServiceName(svcName).
-				WithSize(*component.Size).
-				WithTemplate(podTemplateApplyConfiguration))
-		}
-	} else if role.LeaderWorkerSet != nil {
-		leaderWorkerSet := role.LeaderWorkerSet
-		leaderTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchLeaderTemplate)
-		if err != nil {
-			logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
-			return nil, err
-		}
-		leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-			ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *leaderTemp,
-		)
-		if err != nil {
-			logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
-			return nil, err
-		}
-		// workerTemplate
-		workerTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchWorkerTemplate)
-		if err != nil {
-			logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
-			return nil, err
-		}
-		workerPodReconciler := NewPodReconciler(r.scheme, r.client)
-		// workerTemplate do not need to inject sidecar
-		workerPodReconciler.SetInjectors([]string{"config", "common_env", "lws_env"})
-		workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
-			ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *workerTemp,
-		)
-		if err != nil {
-			logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
-			return nil, err
-		}
-		svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-		if err != nil {
-			return nil, err
-		}
-		instanceTemplateConfig.WithComponents(
-			workloadsv1alpha1client.InstanceComponent().
-				WithName("leader").
-				WithServiceName(svcName).
-				WithSize(1).
-				WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
-					workloadsv1alpha1.SetLWSComponentLabelKey: fmt.Sprintf("%s", workloadsv1alpha1.LeaderLwsComponentType),
-				})),
-			workloadsv1alpha1client.InstanceComponent().
-				WithName("worker").
-				WithSize(*leaderWorkerSet.Size).
-				WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
-					workloadsv1alpha1.SetLWSComponentLabelKey: fmt.Sprintf("%s", workloadsv1alpha1.WorkerLwsComponentType),
-				})))
-	} else if role.Template != nil {
-		svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-		if err != nil {
-			return nil, err
-		}
-		podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-			ctx, rbg, role, maps.Clone(matchLabels),
-		)
-		if err != nil {
-			return nil, err
-		}
-		instanceTemplateConfig.WithComponents(workloadsv1alpha1client.InstanceComponent().
-			WithName(role.Name).
-			WithServiceName(svcName).
-			WithTemplate(podTemplateApplyConfiguration).
-			WithSize(1))
+	var constructErr error
+	switch {
+	case len(role.Components) > 0:
+		constructErr = r.constructInstanceTemplateByComponents(ctx, rbg, role, matchLabels, instanceTemplateConfig)
+	case role.LeaderWorkerSet != nil:
+		constructErr = r.constructInstanceTemplateByLWS(ctx, rbg, role, matchLabels, instanceTemplateConfig)
+	case role.Template != nil:
+		constructErr = r.constructInstanceTemplateByTemplate(ctx, rbg, role, matchLabels, instanceTemplateConfig)
+	default:
+		constructErr = fmt.Errorf("no valid template configuration found for role %s", role.Name)
 	}
 
-	// construct instanceset apply configuration
+	if constructErr != nil {
+		return nil, constructErr
+	}
+
+	// 2. construct instanceset configuration
+	// set revision label
+	instanceSetLabel := maps.Clone(matchLabels)
+	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
+
 	instanceSetConfig := workloadsv1alpha1client.InstanceSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(
 			workloadsv1alpha1client.InstanceSetSpec().
@@ -300,6 +224,143 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	}
 
 	return instanceSetConfig, nil
+}
+
+func (r *InstanceSetReconciler) constructInstanceTemplateByComponents(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+	matchLabels map[string]string,
+	instanceTemplateConfig *workloadsv1alpha1client.InstanceTemplateApplyConfiguration,
+) error {
+	podReconciler := NewPodReconciler(r.scheme, r.client)
+	for _, component := range role.Components {
+		podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+			ctx, rbg, role, maps.Clone(matchLabels), component.Template)
+		if err != nil {
+			return err
+		}
+		// construct service name
+		svcName := component.ServiceName
+		if svcName == "" {
+			svcName, err = utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+			if err != nil {
+				return err
+			}
+		}
+		instanceTemplateConfig.WithComponents(workloadsv1alpha1client.InstanceComponent().
+			WithName(component.Name).
+			WithServiceName(svcName).
+			WithSize(*component.Size).
+			WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
+				workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.InstanceSetPattern),
+				workloadsv1alpha1.RBGComponentSizeLabelKey:    fmt.Sprintf("%d", *component.Size),
+			})))
+	}
+	return nil
+}
+
+func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+	matchLabels map[string]string,
+	instanceTemplateConfig *workloadsv1alpha1client.InstanceTemplateApplyConfiguration,
+) error {
+	logger := log.FromContext(ctx)
+	leaderWorkerSet := role.LeaderWorkerSet
+	leaderTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchLeaderTemplate)
+	if err != nil {
+		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
+		return err
+	}
+
+	podReconciler := NewPodReconciler(r.scheme, r.client)
+	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, matchLabels, *leaderTemp,
+	)
+	if err != nil {
+		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
+		return err
+	}
+
+	// workerTemplate
+	workerTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchWorkerTemplate)
+	if err != nil {
+		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
+		return err
+	}
+
+	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
+	// workerTemplate do not need to inject sidecar
+	workerPodReconciler.SetInjectors([]string{"config", "common_env", "lws_env"})
+	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, matchLabels, *workerTemp,
+	)
+	if err != nil {
+		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
+		return err
+	}
+
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	if err != nil {
+		return err
+	}
+
+	workerSize := *leaderWorkerSet.Size - 1
+	if workerSize < 0 {
+		workerSize = 0
+	}
+	instanceTemplateConfig.WithComponents(
+		workloadsv1alpha1client.InstanceComponent().
+			WithName("leader").
+			WithServiceName(svcName).
+			WithSize(1).
+			WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
+				workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.LeaderWorkerSetPattern),
+				workloadsv1alpha1.RBGComponentNameLabelKey:    "leader",
+				workloadsv1alpha1.RBGComponentSizeLabelKey:    "1",
+			})),
+		workloadsv1alpha1client.InstanceComponent().
+			WithName("worker").
+			WithSize(workerSize).
+			WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
+				workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.LeaderWorkerSetPattern),
+				workloadsv1alpha1.RBGComponentNameLabelKey:    "worker",
+				workloadsv1alpha1.RBGComponentSizeLabelKey:    fmt.Sprintf("%d", workerSize),
+			})))
+	return nil
+}
+
+func (r *InstanceSetReconciler) constructInstanceTemplateByTemplate(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+	matchLabels map[string]string,
+	instanceTemplateConfig *workloadsv1alpha1client.InstanceTemplateApplyConfiguration,
+) error {
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	if err != nil {
+		return err
+	}
+
+	podReconciler := NewPodReconciler(r.scheme, r.client)
+	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+		ctx, rbg, role, maps.Clone(matchLabels),
+	)
+	if err != nil {
+		return err
+	}
+
+	instanceTemplateConfig.WithComponents(workloadsv1alpha1client.InstanceComponent().
+		WithName(role.Name).
+		WithServiceName(svcName).
+		WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
+			workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.InstanceSetPattern),
+			workloadsv1alpha1.RBGComponentNameLabelKey:    "1",
+		})).
+		WithSize(1))
+	return nil
 }
 
 func (r *InstanceSetReconciler) ConstructRoleStatus(

@@ -259,7 +259,7 @@ type RoleSpec struct {
 
 	// Components describe the components that will be created.
 	// +optional
-	Components []Components `json:"components,omitempty"`
+	Components []InstanceComponent `json:"components,omitempty"`
 
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`
@@ -326,24 +326,6 @@ type LeaderWorkerTemplate struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	PatchWorkerTemplate *runtime.RawExtension `json:"patchWorkerTemplate,omitempty"`
-}
-
-type Components struct {
-	// Name is the type name of the component.
-	Name string `json:"name"`
-
-	// Size is the number of replicas for Pods that match the PodRule.
-	Size *int32 `json:"size,omitempty"`
-
-	// serviceName is the name of the service that governs this Instance Component.
-	// This service must exist before the Instance, and is responsible for
-	// the network identity of the set. Pods get DNS/hostnames that follow the
-	// pattern: pod-specific-string.serviceName.default.svc.cluster.local
-	// where "pod-specific-string" is managed by the Instance controller.
-	ServiceName string `json:"serviceName,omitempty"`
-
-	// Template is the template for the component pods.
-	Template corev1.PodTemplateSpec `json:"template"`
 }
 
 type ScalingAdapter struct {

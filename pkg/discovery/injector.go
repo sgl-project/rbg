@@ -201,25 +201,16 @@ func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
 	podSpec *corev1.PodTemplateSpec,
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
 
+	builder := &EnvBuilder{
+		rbg:  rbg,
+		role: role,
+	}
 	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, i.client, rbg, role)
 	if err != nil {
 		return err
 	}
-	envVars := []corev1.EnvVar{
-		{
-			Name:  "LWS_LEADER_ADDRESS",
-			Value: fmt.Sprintf("$INSTANCE_NAME-leader-0.%s.%s", svcName, rbg.Namespace),
-		},
-		{
-			Name: "LWS_WORKER_INDEX",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.SetLWSWorkerIndexLabelKey),
-				},
-			},
-		},
-	}
 
+	envVars := builder.BuildLwsEnv(svcName)
 	for idx := range podSpec.Spec.Containers {
 		container := &podSpec.Spec.Containers[idx]
 		// 1. Convert env to Map to remove duplicates

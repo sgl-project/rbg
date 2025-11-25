@@ -65,6 +65,7 @@ func InitComponentPodLabels(instanceName, componentName string, id int32) map[st
 	l := GetSelectorMatchLabels(instanceName)
 	l[v1alpha1.InstanceComponentNameKey] = componentName
 	l[v1alpha1.InstanceComponentIDKey] = fmt.Sprintf("%d", id)
+	l[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id)
 	return l
 }
 
