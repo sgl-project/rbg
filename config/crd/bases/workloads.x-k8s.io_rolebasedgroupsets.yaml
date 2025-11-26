@@ -147,6 +147,13 @@ spec:
                       description: RoleSpec defines the specification for a role in
                         the group
                       properties:
+                        annotations:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Annotations is an unstructured key value map stored with a resource that may be
+                            set by external tools to store and retrieve arbitrary metadata.
+                          type: object
                         dependencies:
                           description: Dependencies of the role
                           items:
@@ -1555,6 +1562,15 @@ spec:
                             - profileName
                             type: object
                           type: array
+                        labels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Map of string keys and values that can be used to organize and categorize
+                            (scope and select) objects. May match selectors of replication controllers
+                            and services.
+                            More info: https://kubernetes.
+                          type: object
                         leaderWorkerSet:
                           description: LeaderWorkerSet template
                           properties:

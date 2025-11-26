@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -662,5 +663,151 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+func TestConstructDeploymentApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
+	role := &workloadsv1alpha1.RoleSpec{
+		Name:     "test-role",
+		Replicas: ptr.To(int32(3)),
+		Workload: workloadsv1alpha1.WorkloadSpec{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		},
+	}
+
+	rbg := &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha1.RoleSpec{*role},
+		},
+	}
+
+	tests := []struct {
+		name                string
+		roleLabels          map[string]string
+		roleAnnotations     map[string]string
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name: "test role labels and annotations",
+			roleLabels: map[string]string{
+				"app":          "my-app",
+				"version":      "v1.0",
+				"custom-label": "role-value",
+			},
+			expectedLabels: map[string]string{
+				"app":                             "my-app",
+				"version":                         "v1.0",
+				"custom-label":                    "role-value",
+				workloadsv1alpha1.SetRoleLabelKey: role.Name,
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			roleAnnotations: map[string]string{
+				"description":       "custom description",
+				"custom-annotation": "role-value",
+			},
+			expectedAnnotations: map[string]string{
+				"description":                           "custom description",
+				"custom-annotation":                     "role-value",
+				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name: "test role labels and annotations with priority",
+			roleLabels: map[string]string{
+				"app":                             "my-app",
+				"version":                         "v1.0",
+				"custom-label":                    "role-value",
+				workloadsv1alpha1.SetRoleLabelKey: "custom",
+				workloadsv1alpha1.SetNameLabelKey: "custom",
+				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      "custom",
+				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): "custom",
+			},
+			expectedLabels: map[string]string{
+				"app":                             "my-app",
+				"version":                         "v1.0",
+				"custom-label":                    "role-value",
+				workloadsv1alpha1.SetRoleLabelKey: role.Name,
+				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			roleAnnotations: map[string]string{
+				"description":                           "custom description",
+				"custom-annotation":                     "role-value",
+				workloadsv1alpha1.RoleSizeAnnotationKey: "custom",
+			},
+			expectedAnnotations: map[string]string{
+				"description":                           "custom description",
+				"custom-annotation":                     "role-value",
+				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name:            "no role labels or annotations",
+			roleLabels:      nil,
+			roleAnnotations: nil,
+			expectedLabels: map[string]string{
+				workloadsv1alpha1.SetRoleLabelKey:                                 role.Name,
+				workloadsv1alpha1.SetNameLabelKey:                                 rbg.Name,
+				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			expectedAnnotations: map[string]string{
+				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name:            "empty role labels and annotations",
+			roleLabels:      map[string]string{},
+			roleAnnotations: map[string]string{},
+			expectedLabels: map[string]string{
+				workloadsv1alpha1.SetRoleLabelKey:                                 role.Name,
+				workloadsv1alpha1.SetNameLabelKey:                                 rbg.Name,
+				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			expectedAnnotations: map[string]string{
+				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = appsv1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+			_ = workloadsv1alpha1.AddToScheme(scheme)
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewDeploymentReconciler(scheme, fakeClient)
+
+			role.Labels = tt.roleLabels
+			role.Annotations = tt.roleAnnotations
+
+			result, err := reconciler.constructDeployApplyConfiguration(
+				context.Background(),
+				rbg,
+				role,
+				&appsv1.Deployment{},
+				nil,
+				expectedRevisionHash,
+			)
+
+			if err != nil {
+				t.Fatalf("constructDeployApplyConfiguration() error = %v", err)
+			}
+
+			assert.Equal(t, tt.expectedLabels, result.Labels)
+			assert.Equal(t, tt.expectedAnnotations, result.Annotations)
+		})
 	}
 }

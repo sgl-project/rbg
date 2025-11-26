@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	corev1 "k8s.io/api/core/v1"
@@ -297,8 +299,8 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	// construct lws apply configuration
 	lwsConfig := lwsapplyv1.LeaderWorkerSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(lwsSpecConfig).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(lwsLabel).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithLabels(labels.Merge(maps.Clone(role.Labels), lwsLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).
