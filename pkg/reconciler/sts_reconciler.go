@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -512,8 +513,8 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(stsLabel).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithLabels(labels.Merge(maps.Clone(role.Labels), stsLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).
