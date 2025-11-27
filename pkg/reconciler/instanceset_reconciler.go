@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/wait"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -49,6 +48,15 @@ func (r *InstanceSetReconciler) Validate(
 		if role.LeaderWorkerSet.PatchLeaderTemplate == nil || role.LeaderWorkerSet.PatchWorkerTemplate == nil {
 			return fmt.Errorf("both 'patchLeaderTemplate' and 'patchWorkerTemplate' fields must be provided when 'template' field not set")
 		}
+	}
+
+	if len(role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey]) == 0 {
+		return fmt.Errorf("currently role.labels[instance.rolebasedgroup.workloads.x-k8s.io/pattern] is required")
+	}
+
+	if role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey] !=
+		string(workloadsv1alpha1.DeploymentInstancePattern) {
+		return fmt.Errorf("currently only 'Deployment' pattern is supported")
 	}
 
 	return nil
@@ -128,6 +136,9 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	revisionKey string,
 ) (*workloadsv1alpha1client.InstanceSetApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
+	// set revision label
+	instanceSetLabel := maps.Clone(matchLabels)
+	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// 1. construct instance configuration
 	var restartPolicy workloadsv1alpha1.InstanceRestartPolicyType
@@ -146,10 +157,13 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	var constructErr error
 	switch {
 	case len(role.Components) > 0:
+		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.ComponentsTemplateType)
 		constructErr = r.constructInstanceTemplateByComponents(ctx, rbg, role, matchLabels, instanceTemplateConfig)
 	case role.LeaderWorkerSet != nil:
+		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.LeaderWorkerSetTemplateType)
 		constructErr = r.constructInstanceTemplateByLWS(ctx, rbg, role, matchLabels, instanceTemplateConfig)
 	case role.Template != nil:
+		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.PodTemplateTemplateType)
 		constructErr = r.constructInstanceTemplateByTemplate(ctx, rbg, role, matchLabels, instanceTemplateConfig)
 	default:
 		constructErr = fmt.Errorf("no valid template configuration found for role %s", role.Name)
@@ -160,10 +174,6 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	}
 
 	// 2. construct instanceset configuration
-	// set revision label
-	instanceSetLabel := maps.Clone(matchLabels)
-	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
-
 	instanceSetConfig := workloadsv1alpha1client.InstanceSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(
 			workloadsv1alpha1client.InstanceSetSpec().
@@ -171,8 +181,8 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 				WithInstanceTemplate(instanceTemplateConfig).
 				WithMinReadySeconds(role.MinReadySeconds),
 		).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(instanceSetLabel).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithLabels(labels.Merge(maps.Clone(role.Labels), instanceSetLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).
@@ -253,8 +263,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByComponents(
 			WithServiceName(svcName).
 			WithSize(*component.Size).
 			WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
-				workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.InstanceSetPattern),
-				workloadsv1alpha1.RBGComponentSizeLabelKey:    fmt.Sprintf("%d", *component.Size),
+				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *component.Size),
 			})))
 	}
 	return nil
@@ -307,27 +316,22 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 		return err
 	}
 
-	workerSize := *leaderWorkerSet.Size - 1
-	if workerSize < 0 {
-		workerSize = 0
-	}
+	workerSize := utils.NonZeroValue(*leaderWorkerSet.Size - 1)
 	instanceTemplateConfig.WithComponents(
 		workloadsv1alpha1client.InstanceComponent().
 			WithName("leader").
 			WithServiceName(svcName).
 			WithSize(1).
 			WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
-				workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.LeaderWorkerSetPattern),
-				workloadsv1alpha1.RBGComponentNameLabelKey:    "leader",
-				workloadsv1alpha1.RBGComponentSizeLabelKey:    "1",
+				workloadsv1alpha1.RBGComponentNameLabelKey: "leader",
+				workloadsv1alpha1.RBGComponentSizeLabelKey: "1",
 			})),
 		workloadsv1alpha1client.InstanceComponent().
 			WithName("worker").
 			WithSize(workerSize).
 			WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
-				workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.LeaderWorkerSetPattern),
-				workloadsv1alpha1.RBGComponentNameLabelKey:    "worker",
-				workloadsv1alpha1.RBGComponentSizeLabelKey:    fmt.Sprintf("%d", workerSize),
+				workloadsv1alpha1.RBGComponentNameLabelKey: "worker",
+				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *leaderWorkerSet.Size),
 			})))
 	return nil
 }
@@ -356,8 +360,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByTemplate(
 		WithName(role.Name).
 		WithServiceName(svcName).
 		WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
-			workloadsv1alpha1.RBGComponentPatternLabelKey: string(workloadsv1alpha1.InstanceSetPattern),
-			workloadsv1alpha1.RBGComponentNameLabelKey:    "1",
+			workloadsv1alpha1.RBGComponentSizeLabelKey: "1",
 		})).
 		WithSize(1))
 	return nil
@@ -380,22 +383,10 @@ func (r *InstanceSetReconciler) ConstructRoleStatus(
 		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
 
-	updateStatus := false
-	currentReplicas := *instanceSet.Spec.Replicas
-	currentReady := instanceSet.Status.ReadyReplicas
-	updatedReplicas := instanceSet.Status.UpdatedReplicas
-	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas ||
-		status.ReadyReplicas != currentReady ||
-		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
-			Name:            role.Name,
-			Replicas:        currentReplicas,
-			ReadyReplicas:   currentReady,
-			UpdatedReplicas: updatedReplicas,
-		}
-		updateStatus = true
-	}
+	status, updateStatus := ConstructRoleStatue(rbg, role,
+		*instanceSet.Spec.Replicas,
+		instanceSet.Status.ReadyReplicas,
+		instanceSet.Status.UpdatedReplicas)
 	return status, updateStatus, nil
 }
 
@@ -420,86 +411,17 @@ func (r *InstanceSetReconciler) CheckWorkloadReady(
 func (r *InstanceSetReconciler) CleanupOrphanedWorkloads(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
 ) error {
-	logger := log.FromContext(ctx)
-	// list instanceSet managed by rbg
-	instanceSetList := &workloadsv1alpha1.InstanceSetList{}
-	if err := r.client.List(
-		context.Background(), instanceSetList, client.InNamespace(rbg.Namespace),
-		client.MatchingLabels(
-			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-			},
-		),
-	); err != nil {
-		return err
-	}
-
-	for _, instanceSet := range instanceSetList.Items {
-		if !v1.IsControlledBy(&instanceSet, rbg) {
-			continue
-		}
-		found := false
-		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == "InstanceSet" && rbg.GetWorkloadName(&role) == instanceSet.Name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			if err := r.client.Delete(ctx, &instanceSet); err != nil {
-				return fmt.Errorf("delete instanceSet %s error: %s", instanceSet.Name, err.Error())
-			}
-			// The deletion of headless services depends on its own reference
-			logger.Info("delete instanceSet", "instanceSet", instanceSet.Name)
-		}
-	}
-	return nil
+	return CleanupOrphanedObjs(ctx, r.client, rbg, schema.GroupVersionKind{
+		Group:   "workloads.x-k8s.io",
+		Version: "v1alpha1",
+		Kind:    "InstanceSet"})
 }
 
 func (r *InstanceSetReconciler) RecreateWorkload(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 ) error {
-	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
-		return nil
-	}
-
-	instanceSetName := rbg.GetWorkloadName(role)
-	var instanceSet workloadsv1alpha1.InstanceSet
-	err := r.client.Get(ctx, types.NamespacedName{Name: instanceSetName, Namespace: rbg.Namespace}, &instanceSet)
-	// if instanceSet is not found, skip delete instanceSet
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-
-	logger.Info(fmt.Sprintf("Recreate instanceSet workload, delete instanceSet %s", instanceSetName))
-	if err := r.client.Delete(ctx, &instanceSet); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	// wait new instanceSet create
-	var retErr error
-	err = wait.PollUntilContextTimeout(
-		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-			var newInstanceSet workloadsv1alpha1.InstanceSet
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: instanceSetName, Namespace: rbg.Namespace}, &newInstanceSet)
-			if retErr != nil {
-				if apierrors.IsNotFound(retErr) {
-					return false, nil
-				}
-				return false, retErr
-			}
-			return true, nil
-		},
-	)
-
-	if err != nil {
-		logger.Error(retErr, "wait new InstanceSet creating error")
-		return retErr
-	}
-
-	return nil
+	return RecreateObj(ctx, r.client, rbg, role, schema.GroupVersionKind{
+		Group:   "workloads.x-k8s.io",
+		Version: "v1alpha1",
+		Kind:    "InstanceSet"})
 }

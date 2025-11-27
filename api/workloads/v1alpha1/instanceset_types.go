@@ -66,8 +66,8 @@ type InstanceSetSpec struct {
 }
 
 const (
-	LifecycleStateKey     = "lifecycle.apps.red.io/state"
-	LifecycleTimestampKey = "lifecycle.apps.red.io/timestamp"
+	LifecycleStateKey     = "lifecycle.workloads.x-k8s.io/state"
+	LifecycleTimestampKey = "lifecycle.workloads.x-k8s.io/timestamp"
 
 	LifecycleStateNormal          LifecycleStateType = "Normal"
 	LifecycleStatePreparingUpdate LifecycleStateType = "PreparingUpdate"

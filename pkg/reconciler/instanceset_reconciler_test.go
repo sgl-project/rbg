@@ -34,6 +34,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "valid components without template or leaderWorkerSet",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				Components: []workloadsv1alpha1.InstanceComponent{
 					{
 						Name: "test-component",
@@ -56,6 +59,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid components with template",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				Components: []workloadsv1alpha1.InstanceComponent{
 					{
 						Name: "test-component",
@@ -69,6 +75,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid components with leaderWorkerSet",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				Components: []workloadsv1alpha1.InstanceComponent{
 					{
 						Name: "test-component",
@@ -80,15 +89,38 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "valid template without components or leaderWorkerSet",
+			name: "valid template with Deployment pattern",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				Template: &corev1.PodTemplateSpec{},
 			},
 			expectError: false,
 		},
 		{
+			name: "valid template without instance pattern",
+			role: &workloadsv1alpha1.RoleSpec{
+				Template: &corev1.PodTemplateSpec{},
+			},
+			expectError: true,
+		},
+		{
+			name: "valid template with invalid pattern",
+			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.StatefulSetInstancePattern),
+				},
+				Template: &corev1.PodTemplateSpec{},
+			},
+			expectError: true,
+		},
+		{
 			name: "valid leaderWorkerSet without components or template",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 					PatchLeaderTemplate: &runtime.RawExtension{},
 					PatchWorkerTemplate: &runtime.RawExtension{},
@@ -104,6 +136,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid leaderWorkerSet without patchLeaderTemplate",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 					PatchWorkerTemplate: &runtime.RawExtension{},
 				},
@@ -113,6 +148,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid leaderWorkerSet without patchWorkerTemplate",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 					PatchLeaderTemplate: &runtime.RawExtension{},
 				},
@@ -122,6 +160,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid leaderWorkerSet with neither patch templates",
 			role: &workloadsv1alpha1.RoleSpec{
+				Labels: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{},
 			},
 			expectError: true,
@@ -332,7 +373,7 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		// Check worker component
 		assert.NotNil(t, workerComponent)
 		assert.Equal(t, "worker", *workerComponent.Name)
-		assert.Equal(t, int32(3), *workerComponent.Size) // Should match LeaderWorkerSet.Size
+		assert.Equal(t, int32(2), *workerComponent.Size) // Should match LeaderWorkerSet.Size
 		assert.NotNil(t, workerComponent.Template)
 	})
 

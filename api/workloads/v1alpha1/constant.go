@@ -67,28 +67,47 @@ const (
 
 	// RBGComponentSizeLabelKey identifies the component size
 	RBGComponentSizeLabelKey = ComponentLabelPrefix + "size"
-
-	// RBGComponentPatternLabelKey identifies the component organization pattern
-	RBGComponentPatternLabelKey = ComponentLabelPrefix + "pattern"
 )
 
-// ComponentPatternType defines supported component organization patterns
-type ComponentPatternType string
+const InstanceLabelPrefix = "instance." + RBGPrefix
+
+// Generic instance label keys
+const (
+	// RBGInstancePatternLabelKey identifies the instance organization pattern
+	RBGInstancePatternLabelKey = InstanceLabelPrefix + "pattern"
+)
+
+// InstancePatternType defines supported organization patterns
+type InstancePatternType string
 
 const (
-	// LeaderWorkerSetPattern represents leader-worker topology pattern
-	LeaderWorkerSetPattern ComponentPatternType = "LeaderWorkerSet"
+	// DeploymentInstancePattern represents Deployment ordered topology pattern
+	DeploymentInstancePattern InstancePatternType = "Deployment"
 
-	// DeploymentPattern represents Deployment ordered topology pattern
-	DeploymentPattern ComponentPatternType = "Deployment"
+	// StatefulSetInstancePattern represents StatefulSet ordered topology pattern
+	StatefulSetInstancePattern InstancePatternType = "StatefulSet"
+)
 
-	// StatefulSetPattern represents StatefulSet ordered topology pattern
-	StatefulSetPattern ComponentPatternType = "StatefulSet"
+const RoleLabelPrefix = "role." + RBGPrefix
 
-	// InstanceSetPattern represents InstanceSet multi-component pattern
-	InstanceSetPattern ComponentPatternType = "InstanceSet"
+// Generic role label keys
+const (
+	// RBGRoleTemplateTypeLabelKey identifies the role organization pattern
+	RBGRoleTemplateTypeLabelKey = RoleLabelPrefix + "template-type"
+)
 
-	// Future extensible: DeploymentPattern, DaemonSetPattern, etc.
+// RBGRoleTemplateType defines supported organization patterns
+type RBGRoleTemplateType string
+
+const (
+	// ComponentsTemplateType represents template is constructed from role.components field
+	ComponentsTemplateType RBGRoleTemplateType = "Components"
+
+	// LeaderWorkerSetTemplateType represents template is constructed from role.leaderWorkerSet field
+	LeaderWorkerSetTemplateType RBGRoleTemplateType = "LeaderWorkerSet"
+
+	// PodTemplateTemplateType represents template is constructed from role.template field
+	PodTemplateTemplateType RBGRoleTemplateType = "PodTemplate"
 )
 
 // InstanceSet labels and annotations
@@ -173,7 +192,7 @@ type UpdateStrategyType string
 const (
 	// RecreateUpdateStrategyType indicates that we always delete Instances and create new Instances
 	// during Instances update.
-	RecreateUpdateStrategyType UpdateStrategyType = "ReCreate"
+	RecreateUpdateStrategyType UpdateStrategyType = "Recreate"
 
 	// InPlaceIfPossibleUpdateStrategyType indicates that we try to in-place update Instances instead of
 	// recreating Instances when possible. Currently, all field but size update of Instances spec is allowed.

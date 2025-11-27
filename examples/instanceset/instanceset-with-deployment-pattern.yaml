@@ -5,6 +5,8 @@ metadata:
 spec:
   roles:
     - name: engine
+      labels:
+        instance.rolebasedgroup.workloads.x-k8s.io/pattern: Deployment
       replicas: 10
       rolloutStrategy:
         type: RollingUpdate

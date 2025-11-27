@@ -111,19 +111,15 @@ func (c *commonControl) NewUpdatePods(updateVersion string, componentName string
 			metav1.NewControllerRef(instance, instanceutil.ControllerKind))
 
 		// 1. init pod's object key
-		pod.Name = instanceutil.FormatComponentPodName(instance.Name, componentName, id)
+		pod.Name = instanceutil.FormatComponentPodName(instance.Name, componentName, id,
+			instance.GetInstancePattern(), instance.GetRoleTemplateType())
 		pod.Namespace = instance.Namespace
 
 		// 2. init pod revision hash
 		instanceutil.WriteRevisionHash(pod, updateVersion)
 
 		// 3. init pod labels
-		componentPodLabels := instanceutil.InitComponentPodLabels(instance.Name, componentName, id)
-		if pod.Labels[v1alpha1.RBGComponentPatternLabelKey] == string(v1alpha1.LeaderWorkerSetPattern) {
-			if pod.Labels[v1alpha1.RBGComponentNameLabelKey] == "worker" {
-				componentPodLabels[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
-			}
-		}
+		componentPodLabels := instanceutil.InitComponentPodLabels(instance.Name, componentName, id, instance.GetRoleTemplateType())
 		for key, value := range componentPodLabels {
 			pod.Labels[key] = value
 		}

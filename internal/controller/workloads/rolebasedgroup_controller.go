@@ -336,6 +336,11 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 		errs = append(errs, err)
 	}
 
+	instanceSetRecon := reconciler.NewInstanceSetReconciler(r.scheme, r.client)
+	if err := instanceSetRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+		errs = append(errs, err)
+	}
+
 	if err := r.CleanupOrphanedScalingAdapters(ctx, rbg); err != nil {
 		errs = append(errs, err)
 	}
