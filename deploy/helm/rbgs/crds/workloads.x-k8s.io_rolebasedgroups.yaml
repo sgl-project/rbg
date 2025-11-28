@@ -1644,12 +1644,14 @@ spec:
                                 Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
                               x-kubernetes-int-or-string: true
                             partition:
+                              anyOf:
+                              - type: integer
+                              - type: string
                               default: 0
                               description: |-
                                 Partition indicates the ordinal at which the role should be partitioned for updates.
                                 During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
-                              format: int32
-                              type: integer
+                              x-kubernetes-int-or-string: true
                             paused:
                               description: |-
                                 Paused indicates that the InstanceSet is paused.

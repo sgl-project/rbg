@@ -34,9 +34,9 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 	rollingRole := wrappers.BuildBasicRole("test-role").WithReplicas(4).
 		WithRollingUpdate(
 			workloadsv1alpha1.RollingUpdate{
-				MaxUnavailable: intstr.FromInt32(2),
-				MaxSurge:       intstr.FromInt32(2),
-				Partition:      ptr.To(int32(1)),
+				MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+				MaxSurge:       ptr.To(intstr.FromInt32(2)),
+				Partition:      ptr.To(intstr.FromInt32(1)),
 			},
 		).Obj()
 
@@ -445,9 +445,9 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
 				Type: workloadsv1alpha1.RollingUpdateStrategyType,
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					MaxUnavailable: intstr.FromInt32(2),
-					MaxSurge:       intstr.FromInt32(2),
-					Partition:      ptr.To(int32(0)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+					MaxSurge:       ptr.To(intstr.FromInt32(2)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -562,9 +562,9 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
 				Type: workloadsv1alpha1.RollingUpdateStrategyType,
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					MaxUnavailable: intstr.FromInt32(2),
-					MaxSurge:       intstr.FromInt32(2),
-					Partition:      ptr.To(int32(0)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+					MaxSurge:       ptr.To(intstr.FromInt32(2)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -721,9 +721,9 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
 				Type: workloadsv1alpha1.RollingUpdateStrategyType,
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					MaxUnavailable: intstr.FromInt32(2),
-					MaxSurge:       intstr.FromInt32(2),
-					Partition:      ptr.To(int32(0)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+					MaxSurge:       ptr.To(intstr.FromInt32(2)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{

@@ -379,8 +379,8 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 
 	t.Run("with rollout strategy", func(t *testing.T) {
 		rollingUpdateStrategy := &workloadsv1alpha1.RollingUpdate{
-			Partition:      ptr.To(int32(1)),
-			MaxUnavailable: intstr.FromInt32(1),
+			Partition:      ptr.To(intstr.FromInt32(1)),
+			MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 		}
 
 		role := &workloadsv1alpha1.RoleSpec{
@@ -399,8 +399,8 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 			RolloutStrategy: &workloadsv1alpha1.RolloutStrategy{
 				Type: workloadsv1alpha1.RollingUpdateStrategyType,
 				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					Partition:      ptr.To(int32(2)),
-					MaxUnavailable: intstr.FromInt32(2),
+					Partition:      ptr.To(intstr.FromInt32(2)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 				},
 			},
 		}
@@ -455,9 +455,9 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 		WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
 		WithRollingUpdate(
 			workloadsv1alpha1.RollingUpdate{
-				MaxUnavailable: intstr.FromInt32(2),
-				MaxSurge:       intstr.FromInt32(2),
-				Partition:      ptr.To(int32(1)),
+				MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+				MaxSurge:       ptr.To(intstr.FromInt32(2)),
+				Partition:      ptr.To(intstr.FromInt32(1)),
 			},
 		).Obj()
 

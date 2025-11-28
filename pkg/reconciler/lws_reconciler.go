@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	corev1 "k8s.io/api/core/v1"
@@ -271,21 +272,32 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// RollingUpdate
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
-		rollingUpdateConfiguration := lwsapplyv1.RollingUpdateConfiguration().
-			WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
-			WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable)
-
-		if rollingUpdateStrategy != nil {
-			rollingUpdateConfiguration =
-				rollingUpdateConfiguration.WithMaxUnavailable(rollingUpdateStrategy.MaxUnavailable)
+		rollingUpdateConfiguration := lwsapplyv1.RollingUpdateConfiguration()
+		if role.RolloutStrategy.RollingUpdate.MaxSurge != nil {
+			rollingUpdateConfiguration = rollingUpdateConfiguration.WithMaxSurge(*role.RolloutStrategy.RollingUpdate.MaxSurge)
+		}
+		if role.RolloutStrategy.RollingUpdate.MaxUnavailable != nil {
+			rollingUpdateConfiguration = rollingUpdateConfiguration.WithMaxUnavailable(*role.RolloutStrategy.RollingUpdate.MaxUnavailable)
 		}
 
+		if rollingUpdateStrategy != nil && rollingUpdateStrategy.MaxUnavailable != nil {
+			rollingUpdateConfiguration =
+				rollingUpdateConfiguration.WithMaxUnavailable(*rollingUpdateStrategy.MaxUnavailable)
+		}
+
+		var partitionIntOrStr *intstr.IntOrString
 		if rollingUpdateStrategy != nil && rollingUpdateStrategy.Partition != nil {
-			rollingUpdateConfiguration =
-				rollingUpdateConfiguration.WithPartition(*rollingUpdateStrategy.Partition)
+			partitionIntOrStr = rollingUpdateStrategy.Partition
 		} else if role.RolloutStrategy.RollingUpdate.Partition != nil {
-			rollingUpdateConfiguration =
-				rollingUpdateConfiguration.WithPartition(*role.RolloutStrategy.RollingUpdate.Partition)
+			partitionIntOrStr = role.RolloutStrategy.RollingUpdate.Partition
+		}
+
+		if partitionIntOrStr != nil {
+			partition, err := intstr.GetScaledValueFromIntOrPercent(partitionIntOrStr, int(*role.Replicas), true)
+			if err != nil {
+				return nil, err
+			}
+			rollingUpdateConfiguration = rollingUpdateConfiguration.WithPartition(int32(partition))
 		}
 
 		lwsSpecConfig = lwsSpecConfig.WithRolloutStrategy(

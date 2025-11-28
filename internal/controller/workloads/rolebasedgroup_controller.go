@@ -619,7 +619,7 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 			strategy = *(role.RolloutStrategy.RollingUpdate.DeepCopy())
 		}
 		if coordination.Strategy.RollingUpdate.MaxUnavailable != nil {
-			strategy.MaxUnavailable = intstr.FromString(*coordination.Strategy.RollingUpdate.MaxUnavailable)
+			strategy.MaxUnavailable = ptr.To(intstr.FromString(*coordination.Strategy.RollingUpdate.MaxUnavailable))
 		}
 		if coordination.Strategy.RollingUpdate.Partition != nil {
 			partitionPercent := intstr.FromString(*coordination.Strategy.RollingUpdate.Partition)
@@ -627,7 +627,9 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 			if err != nil {
 				return nil, err
 			}
-			strategy.Partition = func(a int32) *int32 { return &a }(int32(partition))
+			strategy.Partition = func(a int32) *intstr.IntOrString {
+				return ptr.To(intstr.FromInt32(a))
+			}(int32(partition))
 		}
 		strategyRollingUpdate[role.Name] = strategy
 	}
@@ -649,16 +651,20 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 		// finalPartition is the user-settings target partition that should be respected by any coordination.
 		finalPartition := int32(0)
 		if strategy.Partition != nil {
-			finalPartition = *strategy.Partition
+			finalPartitionInt, err := intstr.GetScaledValueFromIntOrPercent(strategy.Partition, int(*role.Replicas), true)
+			if err != nil {
+				return nil, err
+			}
+			finalPartition = int32(finalPartitionInt)
 		}
 
 		// stepPartition is the calculated partition based on the maxSkew.
 		stepPartition := max(*role.Replicas-updatedTarget, 0)
 
 		if stepPartition > finalPartition {
-			strategy.Partition = &stepPartition
+			strategy.Partition = ptr.To(intstr.FromInt32(stepPartition))
 		} else {
-			strategy.Partition = &finalPartition
+			strategy.Partition = ptr.To(intstr.FromInt32(finalPartition))
 		}
 		strategyRollingUpdate[role.Name] = strategy
 	}
@@ -771,18 +777,18 @@ func mergeStrategyRollingUpdate(strategiesA, strategiesB map[string]workloadsv1a
 			merged[role] = strategyB
 			continue
 		}
-		maxUnavailableA, _ := intstr.GetScaledValueFromIntOrPercent(&strategyA.MaxUnavailable, 100, true)
-		maxUnavailableB, _ := intstr.GetScaledValueFromIntOrPercent(&strategyB.MaxUnavailable, 100, true)
+		maxUnavailableA, _ := intstr.GetScaledValueFromIntOrPercent(strategyA.MaxUnavailable, 100, true)
+		maxUnavailableB, _ := intstr.GetScaledValueFromIntOrPercent(strategyB.MaxUnavailable, 100, true)
 		if maxUnavailableA > maxUnavailableB {
 			strategyA.MaxUnavailable = strategyB.MaxUnavailable
 		}
 
 		partitionA, partitionB := 0, 0
 		if strategyA.Partition != nil {
-			partitionA = int(*strategyA.Partition)
+			partitionA, _ = intstr.GetScaledValueFromIntOrPercent(strategyA.Partition, 100, true)
 		}
 		if strategyB.Partition != nil {
-			partitionB = int(*strategyB.Partition)
+			partitionB, _ = intstr.GetScaledValueFromIntOrPercent(strategyB.Partition, 100, true)
 		}
 		if partitionA < partitionB {
 			strategyA.Partition = strategyB.Partition

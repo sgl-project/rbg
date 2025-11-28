@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -200,10 +199,16 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 		}
 		updateStrategyConfig := workloadsv1alpha1client.InstanceSetUpdateStrategy().
 			WithType(rollingUpdate.Type).
-			WithPartition(intstr.FromInt32(*rollingUpdate.Partition)).
-			WithPaused(rollingUpdate.Paused).
-			WithMaxUnavailable(rollingUpdate.MaxUnavailable).
-			WithMaxSurge(rollingUpdate.MaxSurge)
+			WithPaused(rollingUpdate.Paused)
+		if rollingUpdate.Partition != nil {
+			updateStrategyConfig = updateStrategyConfig.WithPartition(*rollingUpdate.Partition)
+		}
+		if rollingUpdate.MaxUnavailable != nil {
+			updateStrategyConfig = updateStrategyConfig.WithMaxUnavailable(*rollingUpdate.MaxUnavailable)
+		}
+		if rollingUpdate.MaxSurge != nil {
+			updateStrategyConfig = updateStrategyConfig.WithMaxSurge(*rollingUpdate.MaxSurge)
+		}
 
 		if rollingUpdate.InPlaceUpdateStrategy != nil {
 			updateStrategyConfig = updateStrategyConfig.WithInPlaceUpdateStrategy(
@@ -224,12 +229,15 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 			)
 		}
 
+		updateStrategy := instanceSetConfig.Spec.UpdateStrategy
+		if rollingUpdateStrategy.Partition != nil {
+			updateStrategy = updateStrategy.WithPartition(*rollingUpdateStrategy.Partition)
+		}
+		if rollingUpdateStrategy.MaxUnavailable != nil {
+			updateStrategy = updateStrategy.WithMaxUnavailable(*rollingUpdateStrategy.MaxUnavailable)
+		}
 		instanceSetConfig = instanceSetConfig.WithSpec(
-			instanceSetConfig.Spec.WithUpdateStrategy(
-				instanceSetConfig.Spec.UpdateStrategy.
-					WithPartition(intstr.FromInt32(*rollingUpdateStrategy.Partition)).
-					WithMaxUnavailable(rollingUpdateStrategy.MaxUnavailable),
-			),
+			instanceSetConfig.Spec.WithUpdateStrategy(updateStrategy),
 		)
 	}
 

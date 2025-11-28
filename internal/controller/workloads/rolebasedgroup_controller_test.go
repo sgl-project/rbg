@@ -1074,24 +1074,24 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 			name: "merge with no overlap",
 			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(10)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 			},
 			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
 				"role2": {
-					MaxUnavailable: intstr.FromInt(3),
-					Partition:      ptr.To(int32(5)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
 			expected: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(10)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 				"role2": {
-					MaxUnavailable: intstr.FromInt(3),
-					Partition:      ptr.To(int32(5)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
 		},
@@ -1099,20 +1099,20 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 			name: "merge with overlap, B has smaller maxUnavailable",
 			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(10),
-					Partition:      ptr.To(int32(5)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
 			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(3)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
 			expected: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5), // Smaller value
-					Partition:      ptr.To(int32(5)),  // Larger partition
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)), // Smaller value
+					Partition:      ptr.To(intstr.FromInt32(5)), // Larger partition
 				},
 			},
 		},
@@ -1120,20 +1120,20 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 			name: "merge with overlap, B has larger partition",
 			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(3)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
 			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(10)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 			},
 			expected: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(10)), // Larger partition
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)), // Larger partition
 				},
 			},
 		},
@@ -1141,20 +1141,20 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 			name: "merge with percentage maxUnavailable",
 			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromString("20%"),
-					Partition:      ptr.To(int32(5)),
+					MaxUnavailable: ptr.To(intstr.FromString("20%")),
+					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
 			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromString("10%"),
-					Partition:      ptr.To(int32(3)),
+					MaxUnavailable: ptr.To(intstr.FromString("10%")),
+					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
 			expected: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromString("10%"), // Smaller value
-					Partition:      ptr.To(int32(5)),         // Larger partition
+					MaxUnavailable: ptr.To(intstr.FromString("10%")), // Smaller value
+					Partition:      ptr.To(intstr.FromInt32(5)),      // Larger partition
 				},
 			},
 		},
@@ -1162,20 +1162,20 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 			name: "merge with nil partition",
 			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(5),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      nil,
 				},
 			},
 			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(3),
-					Partition:      ptr.To(int32(10)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 			},
 			expected: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(3),
-					Partition:      ptr.To(int32(10)), // B's partition
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)), // B's partition
 				},
 			},
 		},
@@ -1183,36 +1183,36 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 			name: "merge multiple roles",
 			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(10),
-					Partition:      ptr.To(int32(5)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 				"role2": {
-					MaxUnavailable: intstr.FromInt(5),
-					Partition:      ptr.To(int32(3)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
 			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
 				"role2": {
-					MaxUnavailable: intstr.FromInt(3),
-					Partition:      ptr.To(int32(10)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 				"role3": {
-					MaxUnavailable: intstr.FromInt(7),
-					Partition:      ptr.To(int32(8)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(7)),
+					Partition:      ptr.To(intstr.FromInt32(8)),
 				},
 			},
 			expected: map[string]workloadsv1alpha1.RollingUpdate{
 				"role1": {
-					MaxUnavailable: intstr.FromInt(10),
-					Partition:      ptr.To(int32(5)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 				"role2": {
-					MaxUnavailable: intstr.FromInt(3),
-					Partition:      ptr.To(int32(10)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 				"role3": {
-					MaxUnavailable: intstr.FromInt(7),
-					Partition:      ptr.To(int32(8)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(7)),
+					Partition:      ptr.To(intstr.FromInt32(8)),
 				},
 			},
 		},
