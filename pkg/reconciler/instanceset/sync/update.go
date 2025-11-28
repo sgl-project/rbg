@@ -162,7 +162,7 @@ func (rc *realControl) updateInstance(set *appsv1alpha1.InstanceSet, coreControl
 	instance *appsv1alpha1.Instance,
 ) (time.Duration, error) {
 
-	if set.Spec.UpdateStrategy.Type == appsv1alpha1.InPlaceIfPossibleInstanceSetUpdateStrategyType {
+	if set.Spec.UpdateStrategy.Type == appsv1alpha1.InPlaceIfPossibleUpdateStrategyType {
 		var oldRevision *apps.ControllerRevision
 		for _, r := range revisions {
 			if utils.EqualToRevisionHash("", instance, r.Name) {

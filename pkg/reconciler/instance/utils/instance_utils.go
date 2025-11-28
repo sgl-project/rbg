@@ -57,14 +57,37 @@ func GetShortHash(hash string) string {
 	return list[len(list)-1]
 }
 
-func FormatComponentPodName(instanceName, componentName string, id int32) string {
+func FormatComponentPodName(instanceName, componentName string, id int32, instancePattern v1alpha1.InstancePatternType, roleTemplateType v1alpha1.RBGRoleTemplateType) string {
+	if instancePattern == v1alpha1.DeploymentInstancePattern {
+		switch roleTemplateType {
+		case v1alpha1.LeaderWorkerSetTemplateType:
+			podIndex := id
+			if componentName == "worker" {
+				podIndex++
+			}
+			return fmt.Sprintf("%s-%d", instanceName, podIndex)
+		case v1alpha1.ComponentsTemplateType:
+			return fmt.Sprintf("%s-%s-%d", instanceName, componentName, id)
+		default:
+			return instanceName
+		}
+	}
+
 	return fmt.Sprintf("%s-%s-%d", instanceName, componentName, id)
 }
 
-func InitComponentPodLabels(instanceName, componentName string, id int32) map[string]string {
+func InitComponentPodLabels(instanceName, componentName string, id int32, roleTemplateType v1alpha1.RBGRoleTemplateType) map[string]string {
 	l := GetSelectorMatchLabels(instanceName)
 	l[v1alpha1.InstanceComponentNameKey] = componentName
 	l[v1alpha1.InstanceComponentIDKey] = fmt.Sprintf("%d", id)
+	if roleTemplateType == v1alpha1.LeaderWorkerSetTemplateType {
+		l[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id)
+		// when roleTemplateType is LWS, component name will be controlled by RBG-controller
+		if componentName == "worker" {
+			l[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
+		}
+	}
+
 	return l
 }
 

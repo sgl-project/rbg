@@ -7,7 +7,6 @@ import (
 	"maps"
 	"reflect"
 	"strconv"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -15,11 +14,10 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/wait"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
-	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -61,7 +59,7 @@ func (r *StatefulSetReconciler) Reconciler(
 		return err
 	}
 
-	return r.reconcileHeadlessService(ctx, rbg, role)
+	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role)
 }
 
 func (r *StatefulSetReconciler) reconcileStatefulSet(
@@ -418,59 +416,6 @@ func calculateContinuousReadyReplicas(states []replicaState) int32 {
 	return continuousReadyCount
 }
 
-func (r *StatefulSetReconciler) reconcileHeadlessService(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-) error {
-	logger := log.FromContext(ctx)
-	logger.V(1).Info("start to reconciling headless service")
-
-	sts := &appsv1.StatefulSet{}
-	err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts)
-	if err != nil {
-		return fmt.Errorf("get sts error, skip reconcile svc. error:  %s", err.Error())
-	}
-
-	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, rbg, role, sts)
-	if err != nil {
-		return fmt.Errorf("constructServiceApplyConfiguration error: %s", err.Error())
-	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(svcApplyConfig)
-	if err != nil {
-		logger.Error(err, "Converting obj apply configuration to json.")
-		return err
-	}
-
-	newSvc := &corev1.Service{}
-	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newSvc); err != nil {
-		return fmt.Errorf("convert svcApplyConfig to svc error: %s", err.Error())
-	}
-
-	oldSvc := &corev1.Service{}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-	if err != nil {
-		return fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
-	}
-	err = r.client.Get(ctx, types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, oldSvc)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	equal, err := SemanticallyEqualService(oldSvc, newSvc)
-	if equal {
-		logger.V(1).Info("svc equal, skip reconcile")
-		return nil
-	}
-
-	logger.V(1).Info(fmt.Sprintf("svc not equal, diff: %s", err.Error()))
-
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, svcApplyConfig, utils.PatchSpec); err != nil {
-		logger.Error(err, "Failed to patch svc apply configuration")
-		return err
-	}
-
-	return nil
-}
-
 func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
@@ -527,40 +472,6 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	return statefulSetConfig, nil
 }
 
-func (r *StatefulSetReconciler) constructServiceApplyConfiguration(
-	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-	sts *appsv1.StatefulSet,
-) (*coreapplyv1.ServiceApplyConfiguration, error) {
-	selectMap := map[string]string{
-		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		workloadsv1alpha1.SetRoleLabelKey: role.Name,
-	}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
-	if err != nil {
-		return nil, err
-	}
-	serviceConfig := coreapplyv1.Service(svcName, rbg.Namespace).
-		WithSpec(
-			coreapplyv1.ServiceSpec().
-				WithClusterIP("None").
-				WithSelector(selectMap).
-				WithPublishNotReadyAddresses(true),
-		).
-		WithLabels(rbg.GetCommonLabelsFromRole(role)).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithOwnerReferences(
-			metaapplyv1.OwnerReference().
-				WithAPIVersion(sts.APIVersion).
-				WithKind(sts.Kind).
-				WithName(sts.Name).
-				WithUID(sts.GetUID()).
-				WithBlockOwnerDeletion(true),
-		)
-	return serviceConfig, nil
-}
-
 func (r *StatefulSetReconciler) ConstructRoleStatus(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
@@ -578,22 +489,10 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
 
-	updateStatus := false
-	currentReplicas := *sts.Spec.Replicas
-	currentReady := sts.Status.ReadyReplicas
-	updatedReplicas := sts.Status.UpdatedReplicas
-	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas ||
-		status.ReadyReplicas != currentReady ||
-		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
-			Name:            role.Name,
-			Replicas:        currentReplicas,
-			ReadyReplicas:   currentReady,
-			UpdatedReplicas: updatedReplicas,
-		}
-		updateStatus = true
-	}
+	status, updateStatus := ConstructRoleStatue(rbg, role,
+		*sts.Spec.Replicas,
+		sts.Status.ReadyReplicas,
+		sts.Status.UpdatedReplicas)
 	return status, updateStatus, nil
 }
 
@@ -618,40 +517,10 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
 ) error {
-	logger := log.FromContext(ctx)
-	// list sts managed by rbg
-	stsList := &appsv1.StatefulSetList{}
-	if err := r.client.List(
-		context.Background(), stsList, client.InNamespace(rbg.Namespace),
-		client.MatchingLabels(
-			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-			},
-		),
-	); err != nil {
-		return err
-	}
-
-	for _, sts := range stsList.Items {
-		if !v1.IsControlledBy(&sts, rbg) {
-			continue
-		}
-		found := false
-		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == "StatefulSet" && rbg.GetWorkloadName(&role) == sts.Name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			if err := r.client.Delete(ctx, &sts); err != nil {
-				return fmt.Errorf("delete sts %s error: %s", sts.Name, err.Error())
-			}
-			// The deletion of headless services depends on its own reference
-			logger.Info("delete sts", "sts", sts.Name)
-		}
-	}
-	return nil
+	return CleanupOrphanedObjs(ctx, r.client, rbg, schema.GroupVersionKind{
+		Group:   "apps",
+		Version: "v1",
+		Kind:    "StatefulSet"})
 }
 
 func (r *StatefulSetReconciler) getHighestRevision(
@@ -675,49 +544,10 @@ func (r *StatefulSetReconciler) getHighestRevision(
 func (r *StatefulSetReconciler) RecreateWorkload(
 	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 ) error {
-	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
-		return nil
-	}
-
-	stsName := rbg.GetWorkloadName(role)
-	var sts appsv1.StatefulSet
-	err := r.client.Get(ctx, types.NamespacedName{Name: stsName, Namespace: rbg.Namespace}, &sts)
-	// if sts is not found, skip delete sts
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-
-	logger.Info(fmt.Sprintf("Recreate sts workload, delete sts %s", stsName))
-	if err := r.client.Delete(ctx, &sts); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	// wait new sts create
-	var retErr error
-	err = wait.PollUntilContextTimeout(
-		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-			var newSts appsv1.StatefulSet
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: stsName, Namespace: rbg.Namespace}, &newSts)
-			if retErr != nil {
-				if apierrors.IsNotFound(retErr) {
-					return false, nil
-				}
-				return false, retErr
-			}
-			return true, nil
-		},
-	)
-
-	if err != nil {
-		logger.Error(retErr, "wait new sts creating error")
-		return retErr
-	}
-
-	return nil
+	return RecreateObj(ctx, r.client, rbg, role, schema.GroupVersionKind{
+		Group:   "apps",
+		Version: "v1",
+		Kind:    "StatefulSet"})
 }
 
 func semanticallyEqualStatefulSet(oldSts, newSts *appsv1.StatefulSet, checkStatus bool) (bool, error) {
@@ -764,26 +594,6 @@ func statefulSetStatusEqual(oldStatus, newStatus appsv1.StatefulSetStatus) (bool
 	if !reflect.DeepEqual(oldStatus, newStatus) {
 		return false, fmt.Errorf("status not equal")
 	}
-	return true, nil
-}
-
-func SemanticallyEqualService(svc1, svc2 *corev1.Service) (bool, error) {
-	if svc1 == nil || svc2 == nil {
-		if svc1 != svc2 {
-			return false, fmt.Errorf("object is nil")
-		} else {
-			return true, nil
-		}
-	}
-
-	if equal, err := objectMetaEqual(svc1.ObjectMeta, svc2.ObjectMeta); !equal {
-		return false, fmt.Errorf("objectMeta not equal: %s", err.Error())
-	}
-
-	if !reflect.DeepEqual(svc1.Spec.Selector, svc2.Spec.Selector) {
-		return false, fmt.Errorf("selector not equal, old: %v, new: %v", svc1.Spec.Selector, svc2.Spec.Selector)
-	}
-
 	return true, nil
 }
 

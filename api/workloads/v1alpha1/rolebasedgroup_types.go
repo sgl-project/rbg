@@ -147,6 +147,10 @@ type RolloutStrategy struct {
 
 // RollingUpdate defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdate struct {
+	// Type indicates the type of the InstanceSetUpdateStrategy.
+	// Default is InPlaceIfPossible.
+	Type UpdateStrategyType `json:"type,omitempty"`
+
 	// Partition indicates the ordinal at which the role should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 	// The groups from 0 to Partition-1 will not be updated.
@@ -191,6 +195,13 @@ type RollingUpdate struct {
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=0
 	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
+
+	// Paused indicates that the InstanceSet is paused.
+	// Default value is false
+	Paused bool `json:"paused,omitempty"`
+
+	// InPlaceUpdateStrategy contains strategies for in-place update.
+	InPlaceUpdateStrategy *InPlaceUpdateStrategy `json:"inPlaceUpdateStrategy,omitempty"`
 }
 
 // RoleSpec defines the specification for a role in the group
@@ -245,6 +256,10 @@ type RoleSpec struct {
 	// LeaderWorkerSet template
 	// +optional
 	LeaderWorkerSet *LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
+
+	// Components describe the components that will be created.
+	// +optional
+	Components []InstanceComponent `json:"components,omitempty"`
 
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`

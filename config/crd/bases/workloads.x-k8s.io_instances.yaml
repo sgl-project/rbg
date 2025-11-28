@@ -62,7 +62,7 @@ spec:
                       type: string
                     serviceName:
                       description: |-
-                        serviceName is the name of the service that governs this Instance Component.
+                        ServiceName is the name of the service that governs this Instance Component.
                         This service must exist before the Instance, and is responsible for
                         the network identity of the set.
                       type: string

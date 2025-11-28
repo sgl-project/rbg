@@ -336,6 +336,11 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 		errs = append(errs, err)
 	}
 
+	instanceSetRecon := reconciler.NewInstanceSetReconciler(r.scheme, r.client)
+	if err := instanceSetRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+		errs = append(errs, err)
+	}
+
 	if err := r.CleanupOrphanedScalingAdapters(ctx, rbg); err != nil {
 		errs = append(errs, err)
 	}
@@ -530,6 +535,7 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		For(&workloadsv1alpha1.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
 		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate())).
+		Owns(&workloadsv1alpha1.InstanceSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&corev1.Service{}).
 		Named("workloads-rolebasedgroup")
 
@@ -923,6 +929,13 @@ func dynamicWatchCustomCRD(ctx context.Context, kind string) {
 			watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
 			runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
 			logger.Info("rbgs controller watch LeaderWorkerSet CRD")
+		}
+	case utils.GetInstanceSetGVK().Kind:
+		_, instanceSetExist := watchedWorkload.Load(utils.InstanceSetCrdName)
+		if !instanceSetExist {
+			watchedWorkload.LoadOrStore(utils.InstanceSetCrdName, struct{}{})
+			runtimeController.Owns(&workloadsv1alpha1.InstanceSet{}, builder.WithPredicates(WorkloadPredicate()))
+			logger.Info("rbgs controller watch InstanceSet CRD")
 		}
 	}
 }

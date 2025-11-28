@@ -25,12 +25,12 @@ import (
 // InstanceSetUpdateStrategyApplyConfiguration represents a declarative configuration of the InstanceSetUpdateStrategy type for use
 // with apply.
 type InstanceSetUpdateStrategyApplyConfiguration struct {
-	Type                  *workloadsv1alpha1.InstanceSetUpdateStrategyType `json:"type,omitempty"`
-	Partition             *intstr.IntOrString                              `json:"partition,omitempty"`
-	MaxUnavailable        *intstr.IntOrString                              `json:"maxUnavailable,omitempty"`
-	MaxSurge              *intstr.IntOrString                              `json:"maxSurge,omitempty"`
-	Paused                *bool                                            `json:"paused,omitempty"`
-	InPlaceUpdateStrategy *InPlaceUpdateStrategyApplyConfiguration         `json:"inPlaceUpdateStrategy,omitempty"`
+	Type                  *workloadsv1alpha1.UpdateStrategyType    `json:"type,omitempty"`
+	Partition             *intstr.IntOrString                      `json:"partition,omitempty"`
+	MaxUnavailable        *intstr.IntOrString                      `json:"maxUnavailable,omitempty"`
+	MaxSurge              *intstr.IntOrString                      `json:"maxSurge,omitempty"`
+	Paused                *bool                                    `json:"paused,omitempty"`
+	InPlaceUpdateStrategy *InPlaceUpdateStrategyApplyConfiguration `json:"inPlaceUpdateStrategy,omitempty"`
 }
 
 // InstanceSetUpdateStrategyApplyConfiguration constructs a declarative configuration of the InstanceSetUpdateStrategy type for use with
@@ -42,7 +42,7 @@ func InstanceSetUpdateStrategy() *InstanceSetUpdateStrategyApplyConfiguration {
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Type field is set to the value of the last call.
-func (b *InstanceSetUpdateStrategyApplyConfiguration) WithType(value workloadsv1alpha1.InstanceSetUpdateStrategyType) *InstanceSetUpdateStrategyApplyConfiguration {
+func (b *InstanceSetUpdateStrategyApplyConfiguration) WithType(value workloadsv1alpha1.UpdateStrategyType) *InstanceSetUpdateStrategyApplyConfiguration {
 	b.Type = &value
 	return b
 }

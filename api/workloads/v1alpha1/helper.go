@@ -154,3 +154,11 @@ func (p *PodGroupPolicy) IsVolcanoGangScheduling() bool {
 func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
 	return p != nil && p.PodGroupPolicySource.KubeScheduling != nil
 }
+
+func (instance *Instance) GetInstancePattern() InstancePatternType {
+	return InstancePatternType(instance.Labels[RBGInstancePatternLabelKey])
+}
+
+func (instance *Instance) GetRoleTemplateType() RBGRoleTemplateType {
+	return RBGRoleTemplateType(instance.Labels[RBGRoleTemplateTypeLabelKey])
+}

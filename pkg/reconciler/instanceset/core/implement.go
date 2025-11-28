@@ -140,7 +140,7 @@ func (c *commonControl) GetUpdateOptions() *inplaceupdate.UpdateOptions {
 }
 
 func (c *commonControl) ValidateInstanceSetUpdate(oldSet, newSet *appsv1alpha1.InstanceSet) error {
-	if newSet.Spec.UpdateStrategy.Type != appsv1alpha1.InPlaceIfPossibleInstanceSetUpdateStrategyType {
+	if newSet.Spec.UpdateStrategy.Type != appsv1alpha1.InPlaceIfPossibleUpdateStrategyType {
 		return nil
 	}
 
@@ -154,7 +154,7 @@ func (c *commonControl) ValidateInstanceSetUpdate(oldSet, newSet *appsv1alpha1.I
 	for _, p := range patches {
 		if p.Operation == "replace" && inPlaceUpdateTemplateSpecPatchRexp.MatchString(p.Path) {
 			return fmt.Errorf("do not allowed to update component size in spec for %s, but found %s %s",
-				appsv1alpha1.InPlaceIfPossibleInstanceSetUpdateStrategyType, p.Operation, p.Path)
+				appsv1alpha1.InPlaceIfPossibleUpdateStrategyType, p.Operation, p.Path)
 		}
 	}
 	return nil

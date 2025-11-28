@@ -34,7 +34,7 @@ type InstanceSetSpec struct {
 	// If unspecified, defaults to 1.
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Components describes the Instance components that will be created.
+	// InstanceTemplate describes the data an instance should have when created from a template
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	InstanceTemplate InstanceTemplate `json:"instanceTemplate"`
@@ -66,8 +66,8 @@ type InstanceSetSpec struct {
 }
 
 const (
-	LifecycleStateKey     = "lifecycle.apps.red.io/state"
-	LifecycleTimestampKey = "lifecycle.apps.red.io/timestamp"
+	LifecycleStateKey     = "lifecycle.workloads.x-k8s.io/state"
+	LifecycleTimestampKey = "lifecycle.workloads.x-k8s.io/timestamp"
 
 	LifecycleStateNormal          LifecycleStateType = "Normal"
 	LifecycleStatePreparingUpdate LifecycleStateType = "PreparingUpdate"
@@ -113,7 +113,7 @@ type InstanceSetScaleStrategy struct {
 type InstanceSetUpdateStrategy struct {
 	// Type indicates the type of the InstanceSetUpdateStrategy.
 	// Default is ReCreate.
-	Type InstanceSetUpdateStrategyType `json:"type,omitempty"`
+	Type UpdateStrategyType `json:"type,omitempty"`
 
 	// Partition is the desired number of Instances in old revisions.
 	// Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
@@ -149,23 +149,6 @@ type InPlaceUpdateStrategy struct {
 	// when in-place update a Pod.
 	GracePeriodSeconds int32 `json:"gracePeriodSeconds,omitempty"`
 }
-
-// InstanceSetUpdateStrategyType defines strategies for Instances in-place update.
-type InstanceSetUpdateStrategyType string
-
-const (
-	// RecreateInstanceSetUpdateStrategyType indicates that we always delete Instances and create new Instances
-	// during Instances update, which is the default behavior.
-	RecreateInstanceSetUpdateStrategyType InstanceSetUpdateStrategyType = "ReCreate"
-
-	// InPlaceIfPossibleInstanceSetUpdateStrategyType indicates that we try to in-place update Instances instead of
-	// recreating Instances when possible. Currently, all field but size update of Instances spec is allowed.
-	// Size changes to the Instances spec will fall back to ReCreate InstanceSetUpdateStrategyType where Instances will be recreated.
-	// Note that if InPlaceIfPossibleInstanceSetUpdateStrategyType was set, the Pods owned by the Instances will also be updated in-place when possible.
-	// Due to the constraints of the Kubernetes APIServer on Pod update operations, a Pod can only be upgraded in-place when there are changes to its Metadata or Image.
-	// Any other modifications will trigger a rebuild-based upgrade.
-	InPlaceIfPossibleInstanceSetUpdateStrategyType InstanceSetUpdateStrategyType = "InPlaceIfPossible"
-)
 
 // InstanceSetStatus defines the observed state of InstanceSet
 type InstanceSetStatus struct {

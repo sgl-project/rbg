@@ -76,7 +76,7 @@ type InstanceComponent struct {
 	// Size is the number of replicas for Pods that match the PodRule.
 	Size *int32 `json:"size,omitempty"`
 
-	// serviceName is the name of the service that governs this Instance Component.
+	// ServiceName is the name of the service that governs this Instance Component.
 	// This service must exist before the Instance, and is responsible for
 	// the network identity of the set. Pods get DNS/hostnames that follow the
 	// pattern: pod-specific-string.serviceName.default.svc.cluster.local

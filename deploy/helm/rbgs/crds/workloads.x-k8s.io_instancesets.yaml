@@ -73,8 +73,8 @@ spec:
             description: InstanceSetSpec defines the desired state of InstanceSet
             properties:
               instanceTemplate:
-                description: Components describes the Instance components that will
-                  be created.
+                description: InstanceTemplate describes the data an instance should
+                  have when created from a template
                 x-kubernetes-preserve-unknown-fields: true
               lifecycle:
                 description: Lifecycle defines the lifecycle hooks for Instances pre-delete,
