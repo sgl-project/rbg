@@ -4400,7 +4400,7 @@ spec:
                       type: string
                     serviceName:
                       description: |-
-                        serviceName is the name of the service that governs this Instance Component.
+                        ServiceName is the name of the service that governs this Instance Component.
                         This service must exist before the Instance, and is responsible for
                         the network identity of the set.
                       type: string
@@ -4662,8 +4662,8 @@ spec:
             description: InstanceSetSpec defines the desired state of InstanceSet
             properties:
               instanceTemplate:
-                description: Components describes the Instance components that will
-                  be created.
+                description: InstanceTemplate describes the data an instance should
+                  have when created from a template
                 x-kubernetes-preserve-unknown-fields: true
               lifecycle:
                 description: Lifecycle defines the lifecycle hooks for Instances pre-delete,
@@ -4954,6 +4954,56 @@ spec:
           spec:
             description: RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
             properties:
+              coordination:
+                description: CoordinationRequirements describes the requirements of
+                  coordination strategies for some specified roles.
+                items:
+                  description: Coordination describes the requirements of coordination
+                    strategies for roles.
+                  properties:
+                    name:
+                      description: Name of the coordination.
+                      type: string
+                    roles:
+                      description: Roles that should be constrained by this coordination.
+                      items:
+                        type: string
+                      type: array
+                    strategy:
+                      description: RolloutStrategy describes the coordination strategies.
+                      properties:
+                        rollingUpdate:
+                          description: RollingUpdate defines the coordination strategies
+                            about rolling update.
+                          properties:
+                            maxSkew:
+                              description: MaxSkew defines the max skew requirement
+                                about updated replicas between the roles when rolling
+                                update.
+                              pattern: ^([0-9]|[1-9][0-9]|100)%$
+                              type: string
+                            maxUnavailable:
+                              description: |-
+                                MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+                                the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+                              pattern: ^([0-9]|[1-9][0-9]|100)%$
+                              type: string
+                            partition:
+                              description: |-
+                                Partition indicates the replicas at which the role should be partitioned for rolling update.
+                                If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+                              pattern: ^([0-9]|[1-9][0-9]|100)%$
+                              type: string
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  - roles
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               podGroupPolicy:
                 description: Configuration for the PodGroup to enable gang-scheduling
                   via supported plugins.
@@ -4990,6 +5040,41 @@ spec:
                   description: RoleSpec defines the specification for a role in the
                     group
                   properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Annotations is an unstructured key value map stored with a resource that may be
+                        set by external tools to store and retrieve arbitrary metadata.
+                      type: object
+                    components:
+                      description: Components describe the components that will be
+                        created.
+                      items:
+                        properties:
+                          name:
+                            description: Name is the type name of the component.
+                            type: string
+                          serviceName:
+                            description: |-
+                              ServiceName is the name of the service that governs this Instance Component.
+                              This service must exist before the Instance, and is responsible for
+                              the network identity of the set.
+                            type: string
+                          size:
+                            description: Size is the number of replicas for Pods that
+                              match the PodRule.
+                            format: int32
+                            type: integer
+                          template:
+                            description: Template is the template for the component
+                              pods.
+                            x-kubernetes-preserve-unknown-fields: true
+                        required:
+                        - name
+                        - template
+                        type: object
+                      type: array
                     dependencies:
                       description: Dependencies of the role
                       items:
@@ -6377,6 +6462,15 @@ spec:
                         - profileName
                         type: object
                       type: array
+                    labels:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Map of string keys and values that can be used to organize and categorize
+                        (scope and select) objects. May match selectors of replication controllers
+                        and services.
+                        More info: https://kubernetes.
+                      type: object
                     leaderWorkerSet:
                       description: LeaderWorkerSet template
                       properties:
@@ -6394,6 +6488,13 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    minReadySeconds:
+                      default: 0
+                      description: |-
+                        MinReadySeconds is the minimum number of seconds for which a newly created pod/instance should be ready
+                        without any of its container crashing for it to be considered available.
+                      format: int32
+                      type: integer
                     name:
                       description: Unique identifier for the role
                       minLength: 1
@@ -6421,6 +6522,17 @@ spec:
                           description: RollingUpdate defines the parameters to be
                             used when type is RollingUpdateStrategyType.
                           properties:
+                            inPlaceUpdateStrategy:
+                              description: InPlaceUpdateStrategy contains strategies
+                                for in-place update.
+                              properties:
+                                gracePeriodSeconds:
+                                  description: |-
+                                    GracePeriodSeconds is the timespan between set Pod status to not-ready and update images in Pod spec
+                                    when in-place update a Pod.
+                                  format: int32
+                                  type: integer
+                              type: object
                             maxSurge:
                               anyOf:
                               - type: integer
@@ -6440,12 +6552,24 @@ spec:
                                 Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
                               x-kubernetes-int-or-string: true
                             partition:
+                              anyOf:
+                              - type: integer
+                              - type: string
                               default: 0
                               description: |-
                                 Partition indicates the ordinal at which the role should be partitioned for updates.
                                 During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
-                              format: int32
-                              type: integer
+                              x-kubernetes-int-or-string: true
+                            paused:
+                              description: |-
+                                Paused indicates that the InstanceSet is paused.
+                                Default value is false
+                              type: boolean
+                            type:
+                              description: |-
+                                Type indicates the type of the InstanceSetUpdateStrategy.
+                                Default is InPlaceIfPossible.
+                              type: string
                           type: object
                         type:
                           default: RollingUpdate
@@ -13832,7 +13956,6 @@ spec:
                   required:
                   - name
                   - replicas
-                  - template
                   type: object
                 minItems: 1
                 type: array
@@ -13918,10 +14041,15 @@ spec:
                       description: Total number of desired replicas
                       format: int32
                       type: integer
+                    updatedReplicas:
+                      description: Total number of updated replicas
+                      format: int32
+                      type: integer
                   required:
                   - name
                   - readyReplicas
                   - replicas
+                  - updatedReplicas
                   type: object
                 type: array
             required:
@@ -14096,6 +14224,57 @@ spec:
               template:
                 description: Template describes the RoleBasedGroup that will be created.
                 properties:
+                  coordination:
+                    description: CoordinationRequirements describes the requirements
+                      of coordination strategies for some specified roles.
+                    items:
+                      description: Coordination describes the requirements of coordination
+                        strategies for roles.
+                      properties:
+                        name:
+                          description: Name of the coordination.
+                          type: string
+                        roles:
+                          description: Roles that should be constrained by this coordination.
+                          items:
+                            type: string
+                          type: array
+                        strategy:
+                          description: RolloutStrategy describes the coordination
+                            strategies.
+                          properties:
+                            rollingUpdate:
+                              description: RollingUpdate defines the coordination
+                                strategies about rolling update.
+                              properties:
+                                maxSkew:
+                                  description: MaxSkew defines the max skew requirement
+                                    about updated replicas between the roles when
+                                    rolling update.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                                maxUnavailable:
+                                  description: |-
+                                    MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+                                    the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                                partition:
+                                  description: |-
+                                    Partition indicates the replicas at which the role should be partitioned for rolling update.
+                                    If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                              type: object
+                          type: object
+                      required:
+                      - name
+                      - roles
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   podGroupPolicy:
                     description: Configuration for the PodGroup to enable gang-scheduling
                       via supported plugins.
@@ -14132,6 +14311,41 @@ spec:
                       description: RoleSpec defines the specification for a role in
                         the group
                       properties:
+                        annotations:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Annotations is an unstructured key value map stored with a resource that may be
+                            set by external tools to store and retrieve arbitrary metadata.
+                          type: object
+                        components:
+                          description: Components describe the components that will
+                            be created.
+                          items:
+                            properties:
+                              name:
+                                description: Name is the type name of the component.
+                                type: string
+                              serviceName:
+                                description: |-
+                                  ServiceName is the name of the service that governs this Instance Component.
+                                  This service must exist before the Instance, and is responsible for
+                                  the network identity of the set.
+                                type: string
+                              size:
+                                description: Size is the number of replicas for Pods
+                                  that match the PodRule.
+                                format: int32
+                                type: integer
+                              template:
+                                description: Template is the template for the component
+                                  pods.
+                                x-kubernetes-preserve-unknown-fields: true
+                            required:
+                            - name
+                            - template
+                            type: object
+                          type: array
                         dependencies:
                           description: Dependencies of the role
                           items:
@@ -15540,6 +15754,15 @@ spec:
                             - profileName
                             type: object
                           type: array
+                        labels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Map of string keys and values that can be used to organize and categorize
+                            (scope and select) objects. May match selectors of replication controllers
+                            and services.
+                            More info: https://kubernetes.
+                          type: object
                         leaderWorkerSet:
                           description: LeaderWorkerSet template
                           properties:
@@ -15559,6 +15782,13 @@ spec:
                               format: int32
                               type: integer
                           type: object
+                        minReadySeconds:
+                          default: 0
+                          description: |-
+                            MinReadySeconds is the minimum number of seconds for which a newly created pod/instance should be ready
+                            without any of its container crashing for it to be considered available.
+                          format: int32
+                          type: integer
                         name:
                           description: Unique identifier for the role
                           minLength: 1
@@ -15586,6 +15816,17 @@ spec:
                               description: RollingUpdate defines the parameters to
                                 be used when type is RollingUpdateStrategyType.
                               properties:
+                                inPlaceUpdateStrategy:
+                                  description: InPlaceUpdateStrategy contains strategies
+                                    for in-place update.
+                                  properties:
+                                    gracePeriodSeconds:
+                                      description: |-
+                                        GracePeriodSeconds is the timespan between set Pod status to not-ready and update images in Pod spec
+                                        when in-place update a Pod.
+                                      format: int32
+                                      type: integer
+                                  type: object
                                 maxSurge:
                                   anyOf:
                                   - type: integer
@@ -15605,12 +15846,24 @@ spec:
                                     Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
                                   x-kubernetes-int-or-string: true
                                 partition:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
                                   default: 0
                                   description: |-
                                     Partition indicates the ordinal at which the role should be partitioned for updates.
                                     During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
-                                  format: int32
-                                  type: integer
+                                  x-kubernetes-int-or-string: true
+                                paused:
+                                  description: |-
+                                    Paused indicates that the InstanceSet is paused.
+                                    Default value is false
+                                  type: boolean
+                                type:
+                                  description: |-
+                                    Type indicates the type of the InstanceSetUpdateStrategy.
+                                    Default is InPlaceIfPossible.
+                                  type: string
                               type: object
                             type:
                               default: RollingUpdate
@@ -23112,7 +23365,6 @@ spec:
                       required:
                       - name
                       - replicas
-                      - template
                       type: object
                     minItems: 1
                     type: array
@@ -23410,7 +23662,7 @@ spec:
             - /manager
           securityContext:
             {}
-          image: "rolebasedgroup/rbgs-controller:v0.5.0-9597a77"
+          image: "rolebasedgroup/rbgs-controller:v0.5.0-ccb66a6"
           imagePullPolicy: IfNotPresent
           resources:
             limits:
