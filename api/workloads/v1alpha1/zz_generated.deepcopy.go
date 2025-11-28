@@ -1244,11 +1244,19 @@ func (in *RollingUpdate) DeepCopyInto(out *RollingUpdate) {
 	*out = *in
 	if in.Partition != nil {
 		in, out := &in.Partition, &out.Partition
-		*out = new(int32)
+		*out = new(intstr.IntOrString)
 		**out = **in
 	}
-	out.MaxUnavailable = in.MaxUnavailable
-	out.MaxSurge = in.MaxSurge
+	if in.MaxUnavailable != nil {
+		in, out := &in.MaxUnavailable, &out.MaxUnavailable
+		*out = new(intstr.IntOrString)
+		**out = **in
+	}
+	if in.MaxSurge != nil {
+		in, out := &in.MaxSurge, &out.MaxSurge
+		*out = new(intstr.IntOrString)
+		**out = **in
+	}
 	if in.InPlaceUpdateStrategy != nil {
 		in, out := &in.InPlaceUpdateStrategy, &out.InPlaceUpdateStrategy
 		*out = new(InPlaceUpdateStrategy)

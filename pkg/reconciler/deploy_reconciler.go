@@ -146,15 +146,19 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 				WithController(true),
 		)
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
+		rollingUpdate := appsapplyv1.RollingUpdateDeployment()
+		if role.RolloutStrategy.RollingUpdate.MaxSurge != nil {
+			rollingUpdate = rollingUpdate.WithMaxSurge(*role.RolloutStrategy.RollingUpdate.MaxSurge)
+		}
+		if role.RolloutStrategy.RollingUpdate.MaxUnavailable != nil {
+			rollingUpdate = rollingUpdate.WithMaxUnavailable(*role.RolloutStrategy.RollingUpdate.MaxUnavailable)
+		}
+
 		deployConfig = deployConfig.WithSpec(
 			deployConfig.Spec.WithStrategy(
 				appsapplyv1.DeploymentStrategy().
 					WithType(appsv1.DeploymentStrategyType(role.RolloutStrategy.Type)).
-					WithRollingUpdate(
-						appsapplyv1.RollingUpdateDeployment().
-							WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
-							WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
-					),
+					WithRollingUpdate(rollingUpdate),
 			),
 		)
 	}
@@ -175,12 +179,15 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 				),
 			)
 		}
+
+		rollingUpdate := appsapplyv1.RollingUpdateDeployment()
+		if rollingUpdateStrategy.MaxUnavailable != nil {
+			rollingUpdate = rollingUpdate.WithMaxUnavailable(*rollingUpdateStrategy.MaxUnavailable)
+		}
+
 		deployConfig = deployConfig.WithSpec(
 			deployConfig.Spec.WithStrategy(
-				deployConfig.Spec.Strategy.WithRollingUpdate(
-					deployConfig.Spec.Strategy.RollingUpdate.
-						WithMaxUnavailable(rollingUpdateStrategy.MaxUnavailable),
-				),
+				deployConfig.Spec.Strategy.WithRollingUpdate(rollingUpdate),
 			),
 		)
 	}

@@ -33,7 +33,7 @@ func (roleWrapper *RoleWrapper) WithMaxUnavailable(value int32) *RoleWrapper {
 	if roleWrapper.RolloutStrategy.RollingUpdate == nil {
 		roleWrapper.RolloutStrategy.RollingUpdate = &workloadsv1alpha.RollingUpdate{}
 	}
-	roleWrapper.RolloutStrategy.RollingUpdate.MaxUnavailable = intstr.FromInt32(value)
+	roleWrapper.RolloutStrategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt32(value))
 	return roleWrapper
 }
 
@@ -41,7 +41,7 @@ func (roleWrapper *RoleWrapper) WithMaxSurge(value int32) *RoleWrapper {
 	if roleWrapper.RolloutStrategy.RollingUpdate == nil {
 		roleWrapper.RolloutStrategy.RollingUpdate = &workloadsv1alpha.RollingUpdate{}
 	}
-	roleWrapper.RolloutStrategy.RollingUpdate.MaxSurge = intstr.FromInt32(value)
+	roleWrapper.RolloutStrategy.RollingUpdate.MaxSurge = ptr.To(intstr.FromInt32(value))
 	return roleWrapper
 }
 

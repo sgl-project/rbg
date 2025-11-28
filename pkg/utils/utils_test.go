@@ -341,7 +341,7 @@ func TestCalculatePartitionReplicas(t *testing.T) {
 		},
 		{
 			name:      "absolute partition value",
-			partition: ptrToIntStr(intstr.FromInt(5)),
+			partition: ptrToIntStr(intstr.FromInt32(5)),
 			replicas:  ptrToInt32(10),
 			expected:  5,
 		},
@@ -390,19 +390,19 @@ func TestCalculatePartitionReplicas(t *testing.T) {
 		},
 		{
 			name:      "partition exceeds replicas",
-			partition: ptrToIntStr(intstr.FromInt(15)),
+			partition: ptrToIntStr(intstr.FromInt32(15)),
 			replicas:  ptrToInt32(10),
 			expected:  10, // Clamped to replicas
 		},
 		{
 			name:      "negative partition",
-			partition: ptrToIntStr(intstr.FromInt(-5)),
+			partition: ptrToIntStr(intstr.FromInt32(-5)),
 			replicas:  ptrToInt32(10),
 			expected:  0, // Clamped to 0
 		},
 		{
 			name:      "nil replicas with absolute partition",
-			partition: ptrToIntStr(intstr.FromInt(5)),
+			partition: ptrToIntStr(intstr.FromInt32(5)),
 			replicas:  nil,
 			expected:  1,
 		},
@@ -414,7 +414,7 @@ func TestCalculatePartitionReplicas(t *testing.T) {
 		},
 		{
 			name:      "zero replicas",
-			partition: ptrToIntStr(intstr.FromInt(5)),
+			partition: ptrToIntStr(intstr.FromInt32(5)),
 			replicas:  ptrToInt32(0),
 			expected:  0,
 		},
@@ -476,7 +476,7 @@ func TestParseIntStrAsNonZero(t *testing.T) {
 		// Normal cases
 		{
 			name:     "absolute value",
-			input:    ptrToIntStr(intstr.FromInt(5)),
+			input:    ptrToIntStr(intstr.FromInt32(5)),
 			replicas: 100,
 			expected: 5,
 		},
@@ -507,13 +507,13 @@ func TestParseIntStrAsNonZero(t *testing.T) {
 		// Edge cases - should return at least 1
 		{
 			name:     "zero value should become 1",
-			input:    ptrToIntStr(intstr.FromInt(0)),
+			input:    ptrToIntStr(intstr.FromInt32(0)),
 			replicas: 100,
 			expected: 1,
 		},
 		{
 			name:     "negative value should become 1",
-			input:    ptrToIntStr(intstr.FromInt(-5)),
+			input:    ptrToIntStr(intstr.FromInt32(-5)),
 			replicas: 100,
 			expected: 1,
 		},
@@ -525,7 +525,7 @@ func TestParseIntStrAsNonZero(t *testing.T) {
 		},
 		{
 			name:     "large absolute value",
-			input:    ptrToIntStr(intstr.FromInt(1000)),
+			input:    ptrToIntStr(intstr.FromInt32(1000)),
 			replicas: 100,
 			expected: 1000,
 		},

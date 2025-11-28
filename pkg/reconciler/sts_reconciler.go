@@ -129,16 +129,17 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return nil
 	}
 
+	rollingUpdate := appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(partition)
+	if role.RolloutStrategy.RollingUpdate.MaxUnavailable != nil {
+		rollingUpdate = rollingUpdate.WithMaxUnavailable(*role.RolloutStrategy.RollingUpdate.MaxUnavailable)
+	}
+
 	stsApplyConfig = stsApplyConfig.WithSpec(
 		stsApplyConfig.Spec.WithReplicas(replicas).
 			WithUpdateStrategy(
 				appsapplyv1.StatefulSetUpdateStrategy().
 					WithType(appsv1.StatefulSetUpdateStrategyType(role.RolloutStrategy.Type)).
-					WithRollingUpdate(
-						appsapplyv1.RollingUpdateStatefulSetStrategy().
-							WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable).
-							WithPartition(partition),
-					),
+					WithRollingUpdate(rollingUpdate),
 			),
 	)
 
@@ -183,7 +184,12 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 
 	defer func() {
 		// Limit the replicas with less than partition will not be updated.
-		stsPartition = max(stsPartition, *role.RolloutStrategy.RollingUpdate.Partition)
+		var partition int
+		partition, err = intstr.GetScaledValueFromIntOrPercent(role.RolloutStrategy.RollingUpdate.Partition, int(*role.Replicas), true)
+		if err != nil {
+			return
+		}
+		stsPartition = max(stsPartition, int32(partition))
 
 	}()
 
@@ -197,12 +203,17 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	// Case 2:
 	// If coordination enabled, maxSurge will not be considered.
 	if coordinationRollout != nil && coordinationRollout.Partition != nil {
-		return *coordinationRollout.Partition, roleReplicas, nil
+		partition, err := intstr.GetScaledValueFromIntOrPercent(coordinationRollout.Partition, int(*role.Replicas), true)
+		if err != nil {
+			return 0, 0, err
+		}
+
+		return int32(partition), roleReplicas, nil
 	}
 
 	stsReplicas := *sts.Spec.Replicas
 	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(
-		&role.RolloutStrategy.RollingUpdate.MaxSurge,
+		role.RolloutStrategy.RollingUpdate.MaxSurge,
 		int(roleReplicas), true,
 	)
 	if err != nil {
@@ -272,7 +283,7 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	// Case 6:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(
-		&role.RolloutStrategy.RollingUpdate.MaxUnavailable, int(roleReplicas), false,
+		role.RolloutStrategy.RollingUpdate.MaxUnavailable, int(roleReplicas), false,
 	)
 	if err != nil {
 		return 0, 0, err
@@ -604,23 +615,23 @@ func validateRolloutStrategy(
 		return &workloadsv1alpha1.RolloutStrategy{
 			Type: workloadsv1alpha1.RollingUpdateStrategyType,
 			RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-				MaxUnavailable: intstr.FromInt32(1),
-				MaxSurge:       intstr.FromInt32(0),
-				Partition:      ptr.To(int32(0)),
+				MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+				MaxSurge:       ptr.To(intstr.FromInt32(0)),
+				Partition:      ptr.To(intstr.FromInt32(0)),
 			},
 		}, nil
 	}
 
 	if rollingStrategy.RollingUpdate.Partition == nil {
-		rollingStrategy.RollingUpdate.Partition = ptr.To(int32(0))
+		rollingStrategy.RollingUpdate.Partition = ptr.To(intstr.FromInt32(0))
 	}
 
-	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(&rollingStrategy.RollingUpdate.MaxSurge, replicas, true)
+	maxSurge, err := intstr.GetScaledValueFromIntOrPercent(rollingStrategy.RollingUpdate.MaxSurge, replicas, true)
 	if err != nil {
 		return nil, err
 	}
 	maxAvailable, err := intstr.GetScaledValueFromIntOrPercent(
-		&rollingStrategy.RollingUpdate.MaxUnavailable, replicas, false,
+		rollingStrategy.RollingUpdate.MaxUnavailable, replicas, false,
 	)
 	if err != nil {
 		return nil, err

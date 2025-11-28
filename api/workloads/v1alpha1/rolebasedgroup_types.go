@@ -163,7 +163,7 @@ type RollingUpdate struct {
 	//
 	// +optional
 	// +kubebuilder:default=0
-	Partition *int32 `json:"partition,omitempty"`
+	Partition *intstr.IntOrString `json:"partition,omitempty"`
 
 	// The maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
@@ -178,7 +178,7 @@ type RollingUpdate struct {
 	//
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=1
-	MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 
 	// The maximum number of replicas that can be scheduled above the original number of
 	// replicas.
@@ -194,7 +194,7 @@ type RollingUpdate struct {
 	//
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=0
-	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
+	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
 
 	// Paused indicates that the InstanceSet is paused.
 	// Default value is false

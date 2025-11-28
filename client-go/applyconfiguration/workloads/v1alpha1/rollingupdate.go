@@ -26,7 +26,7 @@ import (
 // with apply.
 type RollingUpdateApplyConfiguration struct {
 	Type                  *workloadsv1alpha1.UpdateStrategyType    `json:"type,omitempty"`
-	Partition             *int32                                   `json:"partition,omitempty"`
+	Partition             *intstr.IntOrString                      `json:"partition,omitempty"`
 	MaxUnavailable        *intstr.IntOrString                      `json:"maxUnavailable,omitempty"`
 	MaxSurge              *intstr.IntOrString                      `json:"maxSurge,omitempty"`
 	Paused                *bool                                    `json:"paused,omitempty"`
@@ -50,7 +50,7 @@ func (b *RollingUpdateApplyConfiguration) WithType(value workloadsv1alpha1.Updat
 // WithPartition sets the Partition field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Partition field is set to the value of the last call.
-func (b *RollingUpdateApplyConfiguration) WithPartition(value int32) *RollingUpdateApplyConfiguration {
+func (b *RollingUpdateApplyConfiguration) WithPartition(value intstr.IntOrString) *RollingUpdateApplyConfiguration {
 	b.Partition = &value
 	return b
 }

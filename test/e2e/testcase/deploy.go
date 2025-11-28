@@ -38,8 +38,8 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 					WithReplicas(2).
 					WithWorkload(workloadsv1alpha1.DeploymentWorkloadType).
 					WithRollingUpdate(workloadsv1alpha1.RollingUpdate{
-						MaxUnavailable: intstr.FromInt32(1),
-						MaxSurge:       intstr.FromInt32(1),
+						MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+						MaxSurge:       ptr.To(intstr.FromInt32(1)),
 					}).Obj(),
 			}).Obj()
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
