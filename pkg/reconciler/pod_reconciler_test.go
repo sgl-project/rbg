@@ -632,7 +632,7 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(
 
 	t.Run(
 		"with env injector enabled", func(t *testing.T) {
-			reconciler.SetInjectors([]string{"env"})
+			reconciler.SetInjectors([]string{"common_env"})
 
 			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
 				context.Background(),
