@@ -56,7 +56,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	// inject objects
 	injector := discovery.NewDefaultInjector(r.scheme, r.client)
 	if r.injectObjects == nil {
-		r.injectObjects = []string{"config", "sidecar", "env"}
+		r.injectObjects = []string{"config", "sidecar", "common_env"}
 	}
 	if utils.ContainsString(r.injectObjects, "config") {
 		if err := injector.InjectConfig(ctx, &podTemplateSpec, rbg, role); err != nil {

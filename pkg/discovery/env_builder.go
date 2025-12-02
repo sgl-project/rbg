@@ -34,7 +34,7 @@ func (b *EnvBuilder) BuildLwsEnv(svcName string) []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "LWS_LEADER_ADDRESS",
-			Value: fmt.Sprintf("$(INSTANCE_NAME)-leader-0.%s.%s", svcName, b.rbg.Namespace),
+			Value: fmt.Sprintf("$(INSTANCE_NAME)-0.%s.%s", svcName, b.rbg.Namespace),
 		},
 		{
 			Name: "LWS_WORKER_INDEX",
