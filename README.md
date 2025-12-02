@@ -2,37 +2,58 @@
 
 English｜[简体中文](./README-zh_CN.md)
 
-**RoleBasedGroup**: An API for orchestrating distributed workload services with multirole collaboration and automated
-service discovery. It provides a common deployment pattern of AI inference workloads, especially for disaggregated
-prefill and decode architecture.
+**RoleBasedGroup (RBG)** is a Kubernetes API for orchestrating distributed, stateful AI inference workloads with **multi-role collaboration** and **built-in service discovery**.  
+It provides a common deployment pattern for production LLM inference, especially **disaggregated architectures** such as prefill/decode separation.
+
 
 ## Latest News 🔥
 
+**[2025-09-23]** RBG v0.4.0 is released. Please check out
+the [release notes](https://github.com/sgl-project/rbg/releases/tag/v0.4.0) for more details.
+
 **[2025-07-21]** RBG v0.3.0 is released. Please check out
-the [release notes](https://github.com/sgl-project/rbg/releases) for more details.
+the [release notes](https://github.com/sgl-project/rbg/releases/tag/v0.3.0) for more details.
 
 ## Overview
 
-Kubernetes StatefulSet is ill-suited for coordinating multiple roles in distributed, stateful services. This solution
-tackles the following challenges:
+Traditional Kubernetes primitives (e.g. plain StatefulSets / Deployments) are ill-suited for LLM inference services that:
 
-- Role startup-order dependencies
-- Complex, cross-role service discovery
-- Fragmented configuration management
+- run as **multi-role topologies** (gateway / router / prefill / decode),
+- are **performance-sensitive** to GPU / network topology,
+- and require **atomic, cross-role operations** (deploy, upgrade, scale, failover).
 
-### Key Features
+**RBG** treats an inference service as a **role-based group**, not a loose set of workloads. It models the service as a **topologized, stateful, coordinated multi-role organism** and manages it as a single unit.
 
-- **Multirole Template Spec** - Model distributed stateful workloads as unified K8s workload groups.
-- **Role-based Startup Control** - Orchestrate StatefulSets by defining role dependencies and precise startup sequences
-  within a RoleBasedGroup.
-- **Auto Service Discovery** - Inject topology details via configs and env vars.
-- **Elastic Scaling** - Enable group/role-level scaling operations.
-- **Atomic Rollout** - Role-level rollout/update: Upgrade entire Roles sequentially as single units (all pods in the
-  same role updated simultaneously).
-- **Topology-aware Placement** - Guarantee co-location of group/role pods within the same topology domain.
-- **Atomic Failure Recovery** - Trigger full role recreation if any pod/container fails within the same group/role.
-- **Customizable Workload** - Support for multiple workload types (e.g. StatefulSet, Deployment, LeaderWorkerSet etc.)
-  for the role.
+## Key Concepts
+
+- **Role**  
+  The basic scheduling and rollout unit. Each role (e.g. prefill, decode) has its own spec, lifecycle and policies.
+
+- **RoleBasedGroup**  
+  A group of roles that together form one logical service (e.g. one LLM inference deployment).
+
+
+## Key Features
+
+RBG treats "Role" as the atomic unit for scheduling orchestration, while establishing configurable relationships between different roles. It views a single inference service as a topological, stateful, and collaborative "Role Organism," rather than an isolated collection of Deployments.
+
+Based on this philosophy, RBG has built the five core capabilities of **SCOPE**:
+
+### 🔁 **Stable**
+- Topology-aware deterministic operations with unique RoleID injection and minimal replacement domain principles.
+
+### 🤝 **Coordination**
+- Cross-role policy engine supporting deployment pairing, coordinated upgrades, linked recovery, and coordinated scaling.
+
+### 🧭 **Orchestration**
+- Defines role dependencies and precise startup sequences within a RoleBasedGroup.  
+- Topology self-aware service discovery - injects complete role topology into Pods, eliminating external service dependencies.
+
+### ⚡ **Performance**
+Topology-aware placement with hardware affinity (GPU-NVLink > PCIe > RDMA > VPC) and role affinity scheduling.
+
+### 🧩 **Extensible**
+Future-proof deployment abstraction using declarative APIs and plugin mechanisms to adapt new architectures in weeks.
 
 ## Architecture
 
@@ -52,6 +73,7 @@ You can see our documentation at [docs](doc/TOC.md) for more in-depth installati
 | RBG Version | Kubernetes Version | LeaderWorkerSet Version |
 |:-----------:|:------------------:|:-----------------------:|
 |    main     |     >=v1.28.x      |        >=v0.7.0         |
+|   v0.4.0    |     >=v1.28.x      |        >=v0.7.0         |
 |   v0.3.0    |     >=v1.28.x      |        >=v0.6.0         |
 
 ## Contributing
