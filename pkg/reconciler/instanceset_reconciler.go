@@ -292,8 +292,9 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 		return err
 	}
 
-	podReconciler := NewPodReconciler(r.scheme, r.client)
-	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
+	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
+	leaderPodReconciler.SetInjectors([]string{"config", "sidecar", "common_env", "lws_env"})
+	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, *leaderTemp,
 	)
 	if err != nil {
@@ -332,7 +333,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 			WithSize(1).
 			WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
 				workloadsv1alpha1.RBGComponentNameLabelKey: "leader",
-				workloadsv1alpha1.RBGComponentSizeLabelKey: "1",
+				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *leaderWorkerSet.Size),
 			})),
 		workloadsv1alpha1client.InstanceComponent().
 			WithName("worker").
