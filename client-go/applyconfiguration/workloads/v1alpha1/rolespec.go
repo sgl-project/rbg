@@ -19,6 +19,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
 	v1 "k8s.io/client-go/applyconfigurations/core/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
@@ -34,6 +35,8 @@ type RoleSpecApplyConfiguration struct {
 	RestartPolicy   *workloadsv1alpha1.RestartPolicyType    `json:"restartPolicy,omitempty"`
 	Dependencies    []string                                `json:"dependencies,omitempty"`
 	Workload        *WorkloadSpecApplyConfiguration         `json:"workload,omitempty"`
+	TemplateRef     *TemplateRefApplyConfiguration          `json:"templateRef,omitempty"`
+	TemplatePatch   *runtime.RawExtension                   `json:"templatePatch,omitempty"`
 	Template        *v1.PodTemplateSpecApplyConfiguration   `json:"template,omitempty"`
 	LeaderWorkerSet *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerSet,omitempty"`
 	Components      []InstanceComponentApplyConfiguration   `json:"components,omitempty"`
@@ -124,6 +127,22 @@ func (b *RoleSpecApplyConfiguration) WithDependencies(values ...string) *RoleSpe
 // If called multiple times, the Workload field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithWorkload(value *WorkloadSpecApplyConfiguration) *RoleSpecApplyConfiguration {
 	b.Workload = value
+	return b
+}
+
+// WithTemplateRef sets the TemplateRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TemplateRef field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithTemplateRef(value *TemplateRefApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.TemplateRef = value
+	return b
+}
+
+// WithTemplatePatch sets the TemplatePatch field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TemplatePatch field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithTemplatePatch(value runtime.RawExtension) *RoleSpecApplyConfiguration {
+	b.TemplatePatch = &value
 	return b
 }
 

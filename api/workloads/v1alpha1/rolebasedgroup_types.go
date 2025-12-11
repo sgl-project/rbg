@@ -25,6 +25,30 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// RoleTemplate defines a reusable Pod template that can be referenced by roles.
+type RoleTemplate struct {
+	// Name is the unique identifier for this template.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Template defines the Pod template specification.
+	// +kubebuilder:validation:Required
+	Template corev1.PodTemplateSpec `json:"template"`
+}
+
+// TemplateRef references a RoleTemplate defined in spec.roleTemplates.
+type TemplateRef struct {
+	// Name of the RoleTemplate to reference.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+}
+
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -35,6 +59,14 @@ type RoleBasedGroupSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	Roles []RoleSpec `json:"roles" patchStrategy:"merge" patchMergeKey:"name"`
+
+	// RoleTemplates defines reusable Pod templates that can be referenced by roles.
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	RoleTemplates []RoleTemplate `json:"roleTemplates,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
@@ -249,7 +281,22 @@ type RoleSpec struct {
 	// +optional
 	Workload WorkloadSpec `json:"workload,omitempty"`
 
-	// Pod template specification
+	// TemplateRef references a RoleTemplate from spec.roleTemplates.
+	// When set, the Pod template is derived by merging the referenced template with templatePatch.
+	// Cannot be used together with template field.
+	// +optional
+	TemplateRef *TemplateRef `json:"templateRef,omitempty"`
+
+	// TemplatePatch specifies modifications to apply to the referenced template.
+	// Uses strategic merge patch semantics.
+	// Required when templateRef is set, use empty object ({}) for no modifications.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	TemplatePatch runtime.RawExtension `json:"templatePatch,omitempty"`
+
+	// Pod template specification.
+	// Required when templateRef is not set.
 	// +optional
 	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 
