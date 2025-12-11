@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,10 +47,26 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	var podTemplateSpec corev1.PodTemplateSpec
 	if len(podTmpls) > 0 {
 		podTemplateSpec = podTmpls[0]
-	} else if role.Template != nil {
-		podTemplateSpec = *role.Template.DeepCopy()
+	} else {
+		// KEP-8: Resolve role template (supports both traditional mode and templateRef)
+		if role.UsesRoleTemplate() {
+			// Template mode: find template and apply patch
+			roleTemplate, err := rbg.FindRoleTemplate(role.GetEffectiveTemplateName())
+			if err != nil {
+				return nil, fmt.Errorf("failed to find roleTemplate: %w", err)
+			}
+
+			merged, err := applyStrategicMergePatch(roleTemplate.Template, role.TemplatePatch)
+			if err != nil {
+				return nil, fmt.Errorf("failed to apply templatePatch: %w", err)
+			}
+			podTemplateSpec = merged
+		} else if role.Template != nil {
+			// Traditional mode: use role.Template directly (pointer type after migration)
+			podTemplateSpec = *role.Template.DeepCopy()
+		}
+		// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
 	}
-	// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
 	podAnnotations := podTemplateSpec.Annotations
 	if podAnnotations == nil {
 		podAnnotations = make(map[string]string)
@@ -328,4 +346,30 @@ func mapsEqual(map1, map2 map[string]string) bool {
 	}
 
 	return true
+}
+
+// applyStrategicMergePatch applies a strategic merge patch to a PodTemplateSpec.
+// If the patch is nil or empty, returns the base template unchanged.
+// This function is used by both RoleTemplates (KEP-8) and LeaderWorkerSet patches.
+func applyStrategicMergePatch(base corev1.PodTemplateSpec, patch runtime.RawExtension) (corev1.PodTemplateSpec, error) {
+	if patch.Raw == nil || len(patch.Raw) == 0 {
+		return base, nil
+	}
+
+	baseBytes, err := json.Marshal(base)
+	if err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to marshal base template: %w", err)
+	}
+
+	mergedBytes, err := strategicpatch.StrategicMergePatch(baseBytes, patch.Raw, &corev1.PodTemplateSpec{})
+	if err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to merge patch: %w", err)
+	}
+
+	result := &corev1.PodTemplateSpec{}
+	if err := json.Unmarshal(mergedBytes, result); err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to unmarshal merged template: %w", err)
+	}
+
+	return *result, nil
 }
