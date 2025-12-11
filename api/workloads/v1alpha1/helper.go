@@ -162,3 +162,32 @@ func (instance *Instance) GetInstancePattern() InstancePatternType {
 func (instance *Instance) GetRoleTemplateType() RBGRoleTemplateType {
 	return RBGRoleTemplateType(instance.Labels[RBGRoleTemplateTypeLabelKey])
 }
+
+// FindRoleTemplate finds a RoleTemplate by name in the RoleBasedGroup's spec.
+// Returns the template if found, or an error if not found.
+func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) {
+	if name == "" {
+		return nil, errors.New("template name cannot be empty")
+	}
+
+	for i := range rbg.Spec.RoleTemplates {
+		if rbg.Spec.RoleTemplates[i].Name == name {
+			return &rbg.Spec.RoleTemplates[i], nil
+		}
+	}
+	return nil, fmt.Errorf("roleTemplate %q not found in spec.roleTemplates", name)
+}
+
+// UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
+func (r *RoleSpec) UsesRoleTemplate() bool {
+	return r.TemplateRef != nil
+}
+
+// GetEffectiveTemplateName returns the name of the template this role uses.
+// Returns empty string if the role doesn't use a template.
+func (r *RoleSpec) GetEffectiveTemplateName() string {
+	if r.TemplateRef != nil {
+		return r.TemplateRef.Name
+	}
+	return ""
+}
