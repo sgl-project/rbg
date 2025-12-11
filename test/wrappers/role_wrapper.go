@@ -116,6 +116,20 @@ func (roleWrapper *RoleWrapper) WithScalingAdapter(enable bool) *RoleWrapper {
 	return roleWrapper
 }
 
+func (roleWrapper *RoleWrapper) WithTemplateRef(name string) *RoleWrapper {
+	roleWrapper.TemplateRef = &workloadsv1alpha.TemplateRef{
+		Name: name,
+	}
+	// Clear Template to satisfy mutual exclusivity (templateRef and template cannot both be set)
+	roleWrapper.Template = nil
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithTemplatePatch(patch runtime.RawExtension) *RoleWrapper {
+	roleWrapper.TemplatePatch = patch
+	return roleWrapper
+}
+
 func BuildBasicRole(name string) *RoleWrapper {
 	template := BuildBasicPodTemplateSpec().Obj()
 	return &RoleWrapper{

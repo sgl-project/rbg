@@ -1,0 +1,54 @@
+# Example: RoleBasedGroup with RoleTemplates
+# This example demonstrates how to use roleTemplates to define reusable Pod templates
+# and reference them in roles with role-specific overrides via templatePatch.
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: rbg-with-roletemplates
+spec:
+  # Define reusable templates
+  roleTemplates:
+    - name: nginx-base
+      template:
+        metadata:
+          labels:
+            app: nginx
+        spec:
+          containers:
+            - name: nginx
+              image: nginx:1.24
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "100m"
+
+  # Use templates in roles with role-specific overrides
+  roles:
+    - name: frontend
+      replicas: 2
+      templateRef:
+        name: nginx-base
+      templatePatch:
+        spec:
+          containers:
+            - name: nginx
+              ports:
+                - containerPort: 80
+                  name: http
+
+    - name: backend
+      replicas: 3
+      dependencies: ["frontend"]
+      templateRef:
+        name: nginx-base
+      templatePatch:
+        spec:
+          containers:
+            - name: nginx
+              ports:
+                - containerPort: 8080
+                  name: http
+              resources:
+                requests:
+                  memory: "128Mi"  # Override base template
+                  cpu: "200m"
