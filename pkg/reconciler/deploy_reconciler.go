@@ -39,8 +39,8 @@ func (r *DeploymentReconciler) Validate(
 	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
-	if role.Template == nil {
-		return fmt.Errorf("role.template is required when use %s as workload", role.Workload.String())
+	if role.Template == nil && !role.UsesRoleTemplate() {
+		return fmt.Errorf("either 'template' or 'templateRef' is required when use %s as workload", role.Workload.String())
 	}
 
 	return nil

@@ -109,12 +109,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.RoleSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleStatus"):
 		return &workloadsv1alpha1.RoleStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("RoleTemplate"):
+		return &workloadsv1alpha1.RoleTemplateApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RollingUpdate"):
 		return &workloadsv1alpha1.RollingUpdateApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RolloutStrategy"):
 		return &workloadsv1alpha1.RolloutStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingAdapter"):
 		return &workloadsv1alpha1.ScalingAdapterApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("TemplateRef"):
+		return &workloadsv1alpha1.TemplateRefApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("VolcanoSchedulingPodGroupPolicySource"):
 		return &workloadsv1alpha1.VolcanoSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("WorkloadSpec"):

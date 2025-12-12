@@ -105,6 +105,18 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
+	// Validate RoleTemplates
+	if err := workloadsv1alpha1.ValidateRoleTemplates(rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
+		return ctrl.Result{}, err
+	}
+
+	// Validate template references in roles
+	if err := workloadsv1alpha1.ValidateRoleTemplateReferences(rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidTemplateRef, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	logger := log.FromContext(ctx).WithValues("rbg", klog.KObj(rbg))
 	ctx = ctrl.LoggerInto(ctx, logger)
 	logger.Info("Start reconciling")

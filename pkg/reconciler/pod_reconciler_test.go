@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -964,6 +965,142 @@ func Test_exclusiveAffinityApplied(t *testing.T) {
 			got := exclusiveAffinityApplied(tt.podTemplateSpec, tt.topologyKey)
 			if got != tt.want {
 				t.Errorf("exclusiveAffinityApplied() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_applyStrategicMergePatch(t *testing.T) {
+	type args struct {
+		base  corev1.PodTemplateSpec
+		patch runtime.RawExtension
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    corev1.PodTemplateSpec
+		wantErr bool
+	}{
+		{
+			name: "nil or empty patch returns base unchanged",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{Raw: nil},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "patch adds new field",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{"spec":{"restartPolicy":"Always"}}`),
+				},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20"},
+					},
+					RestartPolicy: corev1.RestartPolicyAlways,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "patch overrides existing field",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+						RestartPolicy: corev1.RestartPolicyNever,
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{"spec":{"restartPolicy":"Always"}}`),
+				},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20"},
+					},
+					RestartPolicy: corev1.RestartPolicyAlways,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "patch modifies container",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{"spec":{"containers":[{"name":"app","command":["sh","-c","echo hello"]}]}}`),
+				},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20", Command: []string{"sh", "-c", "echo hello"}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid JSON patch returns error",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{invalid json}`),
+				},
+			},
+			want:    corev1.PodTemplateSpec{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyStrategicMergePatch(tt.args.base, tt.args.patch)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("applyStrategicMergePatch() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("applyStrategicMergePatch() got = %v, want %v", got, tt.want)
 			}
 		})
 	}
