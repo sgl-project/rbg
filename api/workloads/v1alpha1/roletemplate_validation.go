@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // ValidateRoleTemplates validates roleTemplates array for uniqueness and completeness.
@@ -24,10 +26,10 @@ func ValidateRoleTemplates(rbg *RoleBasedGroup) error {
 			)
 		}
 
-		if !isDNSLabel(rt.Name) {
+		if errs := validation.IsDNS1123Label(rt.Name); len(errs) > 0 {
 			return fmt.Errorf(
-				"spec.roleTemplates[%d].name: %q is not a valid DNS label (must be lowercase alphanumeric, may contain hyphens, cannot start or end with hyphen)",
-				i, rt.Name,
+				"spec.roleTemplates[%d].name: %q is not a valid DNS label: %s",
+				i, rt.Name, errs[0],
 			)
 		}
 	}
@@ -42,8 +44,8 @@ func ValidateRoleTemplateReferences(rbg *RoleBasedGroup) error {
 		templateNames[rt.Name] = true
 	}
 
-	for i, role := range rbg.Spec.Roles {
-		if err := validateRoleTemplateFields(i, &role, templateNames); err != nil {
+	for i := range rbg.Spec.Roles {
+		if err := validateRoleTemplateFields(i, &rbg.Spec.Roles[i], templateNames); err != nil {
 			return err
 		}
 	}
@@ -104,25 +106,3 @@ func validateRoleTemplateFields(
 	return nil
 }
 
-// isDNSLabel validates if string is a valid DNS label (RFC 1123).
-func isDNSLabel(s string) bool {
-	if len(s) == 0 || len(s) > 63 {
-		return false
-	}
-
-	for i, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
-			return false
-		}
-
-		if i == 0 && c == '-' {
-			return false
-		}
-
-		if i == len(s)-1 && c == '-' {
-			return false
-		}
-	}
-
-	return true
-}

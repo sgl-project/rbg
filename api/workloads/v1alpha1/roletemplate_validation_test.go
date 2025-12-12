@@ -261,24 +261,3 @@ func TestValidateRoleTemplateReferences(t *testing.T) {
 	}
 }
 
-func TestIsDNSLabel(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"nginx-base", true},
-		{"sglang-v0-5-1", true},
-		{"-invalid", false},  // starts with hyphen
-		{"invalid-", false},  // ends with hyphen
-		{"Has-Upper", false}, // uppercase
-		{"", false},          // empty
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			if got := isDNSLabel(tt.input); got != tt.want {
-				t.Errorf("isDNSLabel(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
