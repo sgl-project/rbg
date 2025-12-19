@@ -108,7 +108,7 @@ func validateRoleTemplateFields(
 			)
 		}
 
-		if !hasTemplate {
+		if !hasTemplate && role.Workload.Kind != "InstanceSet" {
 			return fmt.Errorf(
 				"spec.roles[%d].template: required when templateRef is not set",
 				index,
