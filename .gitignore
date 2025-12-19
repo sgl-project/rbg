@@ -25,6 +25,7 @@ main
 # editor and IDE paraphernalia
 .idea
 .vscode
+.qoder
 *.swp
 *.swo
 *~
