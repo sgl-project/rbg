@@ -49,6 +49,22 @@ type TemplateRef struct {
 	Name string `json:"name"`
 }
 
+// TemplateSource defines either an inline template or a reference to a RoleTemplate.
+// Only one of its members may be specified.
+// +kubebuilder:validation:XValidation:rule="!(has(self.template) && has(self.templateRef))",message="template and templateRef are mutually exclusive"
+type TemplateSource struct {
+	// Template defines the Pod template specification inline.
+	// Required when templateRef is not set.
+	// +optional
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
+
+	// TemplateRef references a RoleTemplate from spec.roleTemplates.
+	// When set, the Pod template is derived by merging the referenced template with templatePatch.
+	// Cannot be used together with template field.
+	// +optional
+	TemplateRef *TemplateRef `json:"templateRef,omitempty"`
+}
+
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -237,6 +253,9 @@ type RollingUpdate struct {
 }
 
 // RoleSpec defines the specification for a role in the group
+// +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
+// Note: "templatePatch is only valid when templateRef is set" validation is done in controller
+// because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -281,11 +300,9 @@ type RoleSpec struct {
 	// +optional
 	Workload WorkloadSpec `json:"workload,omitempty"`
 
-	// TemplateRef references a RoleTemplate from spec.roleTemplates.
-	// When set, the Pod template is derived by merging the referenced template with templatePatch.
-	// Cannot be used together with template field.
+	// TemplateSource defines the Pod template source, either inline or via reference.
 	// +optional
-	TemplateRef *TemplateRef `json:"templateRef,omitempty"`
+	TemplateSource `json:",inline"`
 
 	// TemplatePatch specifies modifications to apply to the referenced template.
 	// Uses strategic merge patch semantics.
@@ -294,11 +311,6 @@ type RoleSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	TemplatePatch runtime.RawExtension `json:"templatePatch,omitempty"`
-
-	// Pod template specification.
-	// Required when templateRef is not set.
-	// +optional
-	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 
 	// LeaderWorkerSet template
 	// +optional

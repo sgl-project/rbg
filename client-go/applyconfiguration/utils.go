@@ -119,6 +119,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.ScalingAdapterApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("TemplateRef"):
 		return &workloadsv1alpha1.TemplateRefApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("TemplateSource"):
+		return &workloadsv1alpha1.TemplateSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("VolcanoSchedulingPodGroupPolicySource"):
 		return &workloadsv1alpha1.VolcanoSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("WorkloadSpec"):

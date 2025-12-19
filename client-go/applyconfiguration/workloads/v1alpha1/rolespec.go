@@ -18,32 +18,31 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
-	v1 "k8s.io/client-go/applyconfigurations/core/v1"
+	corev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 // RoleSpecApplyConfiguration represents a declarative configuration of the RoleSpec type for use
 // with apply.
 type RoleSpecApplyConfiguration struct {
-	Name            *string                                 `json:"name,omitempty"`
-	Labels          map[string]string                       `json:"labels,omitempty"`
-	Annotations     map[string]string                       `json:"annotations,omitempty"`
-	Replicas        *int32                                  `json:"replicas,omitempty"`
-	RolloutStrategy *RolloutStrategyApplyConfiguration      `json:"rolloutStrategy,omitempty"`
-	RestartPolicy   *workloadsv1alpha1.RestartPolicyType    `json:"restartPolicy,omitempty"`
-	Dependencies    []string                                `json:"dependencies,omitempty"`
-	Workload        *WorkloadSpecApplyConfiguration         `json:"workload,omitempty"`
-	TemplateRef     *TemplateRefApplyConfiguration          `json:"templateRef,omitempty"`
-	TemplatePatch   *runtime.RawExtension                   `json:"templatePatch,omitempty"`
-	Template        *v1.PodTemplateSpecApplyConfiguration   `json:"template,omitempty"`
-	LeaderWorkerSet *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerSet,omitempty"`
-	Components      []InstanceComponentApplyConfiguration   `json:"components,omitempty"`
-	ServicePorts    []corev1.ServicePort                    `json:"servicePorts,omitempty"`
-	EngineRuntimes  []EngineRuntimeApplyConfiguration       `json:"engineRuntimes,omitempty"`
-	ScalingAdapter  *ScalingAdapterApplyConfiguration       `json:"scalingAdapter,omitempty"`
-	MinReadySeconds *int32                                  `json:"minReadySeconds,omitempty"`
+	Name                             *string                              `json:"name,omitempty"`
+	Labels                           map[string]string                    `json:"labels,omitempty"`
+	Annotations                      map[string]string                    `json:"annotations,omitempty"`
+	Replicas                         *int32                               `json:"replicas,omitempty"`
+	RolloutStrategy                  *RolloutStrategyApplyConfiguration   `json:"rolloutStrategy,omitempty"`
+	RestartPolicy                    *workloadsv1alpha1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	Dependencies                     []string                             `json:"dependencies,omitempty"`
+	Workload                         *WorkloadSpecApplyConfiguration      `json:"workload,omitempty"`
+	TemplateSourceApplyConfiguration `json:",inline"`
+	TemplatePatch                    *runtime.RawExtension                   `json:"templatePatch,omitempty"`
+	LeaderWorkerSet                  *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerSet,omitempty"`
+	Components                       []InstanceComponentApplyConfiguration   `json:"components,omitempty"`
+	ServicePorts                     []v1.ServicePort                        `json:"servicePorts,omitempty"`
+	EngineRuntimes                   []EngineRuntimeApplyConfiguration       `json:"engineRuntimes,omitempty"`
+	ScalingAdapter                   *ScalingAdapterApplyConfiguration       `json:"scalingAdapter,omitempty"`
+	MinReadySeconds                  *int32                                  `json:"minReadySeconds,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -130,11 +129,19 @@ func (b *RoleSpecApplyConfiguration) WithWorkload(value *WorkloadSpecApplyConfig
 	return b
 }
 
+// WithTemplate sets the Template field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Template field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithTemplate(value *corev1.PodTemplateSpecApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.TemplateSourceApplyConfiguration.Template = value
+	return b
+}
+
 // WithTemplateRef sets the TemplateRef field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the TemplateRef field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithTemplateRef(value *TemplateRefApplyConfiguration) *RoleSpecApplyConfiguration {
-	b.TemplateRef = value
+	b.TemplateSourceApplyConfiguration.TemplateRef = value
 	return b
 }
 
@@ -143,14 +150,6 @@ func (b *RoleSpecApplyConfiguration) WithTemplateRef(value *TemplateRefApplyConf
 // If called multiple times, the TemplatePatch field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithTemplatePatch(value runtime.RawExtension) *RoleSpecApplyConfiguration {
 	b.TemplatePatch = &value
-	return b
-}
-
-// WithTemplate sets the Template field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Template field is set to the value of the last call.
-func (b *RoleSpecApplyConfiguration) WithTemplate(value *v1.PodTemplateSpecApplyConfiguration) *RoleSpecApplyConfiguration {
-	b.Template = value
 	return b
 }
 
@@ -178,7 +177,7 @@ func (b *RoleSpecApplyConfiguration) WithComponents(values ...*InstanceComponent
 // WithServicePorts adds the given value to the ServicePorts field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the ServicePorts field.
-func (b *RoleSpecApplyConfiguration) WithServicePorts(values ...corev1.ServicePort) *RoleSpecApplyConfiguration {
+func (b *RoleSpecApplyConfiguration) WithServicePorts(values ...v1.ServicePort) *RoleSpecApplyConfiguration {
 	for i := range values {
 		b.ServicePorts = append(b.ServicePorts, values[i])
 	}

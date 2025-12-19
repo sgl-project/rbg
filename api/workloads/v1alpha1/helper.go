@@ -180,14 +180,14 @@ func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) 
 
 // UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
 func (r *RoleSpec) UsesRoleTemplate() bool {
-	return r.TemplateRef != nil
+	return r.TemplateSource.TemplateRef != nil
 }
 
 // GetEffectiveTemplateName returns the name of the template this role uses.
 // Returns empty string if the role doesn't use a template.
 func (r *RoleSpec) GetEffectiveTemplateName() string {
-	if r.TemplateRef != nil {
-		return r.TemplateRef.Name
+	if r.TemplateSource.TemplateRef != nil {
+		return r.TemplateSource.TemplateRef.Name
 	}
 	return ""
 }
