@@ -9210,7 +9210,7 @@ spec:
                         template:
                           description: |-
                             Template defines the Pod template specification inline.
-                            Required when templateRef is not set.
+                            Required when templateRef is not set for non-InstanceSet workloads.
                           properties:
                             metadata:
                               description: |-
@@ -16672,9 +16672,10 @@ spec:
                       - message: templateRef is not supported for InstanceSet workloads
                         rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
                           != ''InstanceSet'''
-                      - message: template or templateRef must be set for non-InstanceSet workloads
-                        rule: '!has(self.workload) || self.workload.kind == ''InstanceSet'' || (has(self.template)
-                          != has(self.templateRef))'
+                      - message: template or templateRef must be set for non-InstanceSet
+                          workloads
+                        rule: '!has(self.workload) || self.workload.kind == ''InstanceSet''
+                          || (has(self.template) != has(self.templateRef))'
                       - message: template and templateRef are mutually exclusive
                         rule: '!(has(self.template) && has(self.templateRef))'
                     minItems: 1
