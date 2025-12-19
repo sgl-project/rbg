@@ -54,7 +54,7 @@ type TemplateRef struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.template) && has(self.templateRef))",message="template and templateRef are mutually exclusive"
 type TemplateSource struct {
 	// Template defines the Pod template specification inline.
-	// Required when templateRef is not set.
+	// Required when templateRef is not set for non-InstanceSet workloads.
 	// +optional
 	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 
@@ -254,6 +254,7 @@ type RollingUpdate struct {
 
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
+// +kubebuilder:validation:XValidation:rule="!has(self.workload) || self.workload.kind == 'InstanceSet' || (has(self.template) != has(self.templateRef))",message="template or templateRef must be set for non-InstanceSet workloads"
 // Note: "templatePatch is only valid when templateRef is set" validation is done in controller
 // because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
 type RoleSpec struct {

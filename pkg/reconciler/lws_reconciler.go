@@ -44,8 +44,8 @@ func (r *LeaderWorkerSetReconciler) Validate(
 	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
-	// KEP-8: 支持 templateRef 模式
-	hasTemplate := role.Template != nil || role.UsesRoleTemplate()
+	// KEP-8: support templateRef mode
+	hasTemplate := role.TemplateSource.Template != nil || role.UsesRoleTemplate()
 
 	if !hasTemplate {
 		if role.LeaderWorkerSet == nil {
@@ -209,7 +209,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 ) (*lwsapplyv1.LeaderWorkerSetApplyConfiguration, error) {
 	logger := log.FromContext(ctx)
 
-	// v0.5.0: LeaderWorkerSet nil check（指针类型）
+	// v0.5.0: LeaderWorkerSet nil check (pointer type)
 	leaderWorkerSet := role.LeaderWorkerSet
 	if leaderWorkerSet == nil {
 		leaderWorkerSet = &workloadsv1alpha1.LeaderWorkerTemplate{
@@ -218,10 +218,10 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	}
 
 	// KEP-8: Resolve base template (handles both traditional mode and templateRef)
-	// baseTemplate 使用值类型（与 applyStrategicMergePatch 返回类型一致）
+	// baseTemplate uses value type (consistent with applyStrategicMergePatch return type)
 	var baseTemplate corev1.PodTemplateSpec
 	if role.UsesRoleTemplate() {
-		// RoleTemplate 模式
+		// RoleTemplate mode
 		roleTemplate, err := rbg.FindRoleTemplate(role.GetEffectiveTemplateName())
 		if err != nil {
 			return nil, fmt.Errorf("failed to find roleTemplate: %w", err)
@@ -231,12 +231,12 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 			return nil, fmt.Errorf("failed to apply templatePatch: %w", err)
 		}
 		baseTemplate = merged
-	} else if role.Template != nil {
-		// 传统模式：role.Template 是指针，需要解引用
-		baseTemplate = *role.Template
+	} else if role.TemplateSource.Template != nil {
+		// Traditional mode: role.Template is a pointer, dereference it
+		baseTemplate = *role.TemplateSource.Template
 	}
 
-	// 适配 v0.5.0 的指针类型：解引用 *runtime.RawExtension
+	// Adapt to v0.5.0 pointer type: dereference *runtime.RawExtension
 	var leaderPatch, workerPatch runtime.RawExtension
 	if leaderWorkerSet.PatchLeaderTemplate != nil {
 		leaderPatch = *leaderWorkerSet.PatchLeaderTemplate
@@ -247,7 +247,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// leaderTemplate
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	// KEP-8: 使用 applyStrategicMergePatch
+	// KEP-8: use applyStrategicMergePatch
 	leaderTemp, err := applyStrategicMergePatch(baseTemplate, leaderPatch)
 	if err != nil {
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))

@@ -118,7 +118,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									},
 								},
 								{
 
@@ -131,7 +133,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									},
 								},
 							},
 						).Obj()
@@ -163,7 +167,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: &template,
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: &template,
+									},
 								},
 								{
 
@@ -176,7 +182,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: &template,
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: &template,
+									},
 								},
 							},
 						).Obj()
@@ -209,7 +217,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "Deployment",
 									},
-									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									},
 								},
 								{
 									Name:     "prefill",
@@ -221,7 +231,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "apps/v1",
 										Kind:       "StatefulSet",
 									},
-									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									},
 								},
 								{
 									Name:     "decode",
@@ -233,7 +245,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										APIVersion: "leaderworkerset.x-k8s.io/v1",
 										Kind:       "LeaderWorkerSet",
 									},
-									Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									TemplateSource: workloadsv1alpha1.TemplateSource{
+										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
+									},
 								},
 							},
 						).Obj()

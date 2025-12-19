@@ -213,6 +213,24 @@ func TestValidateRoleTemplateReferences(t *testing.T) {
 			errMsg:  "not supported for InstanceSet",
 		},
 		{
+			name: "instanceSet without template or templateRef",
+			rbg: &RoleBasedGroup{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{
+							Name:     "prefill",
+							Replicas: ptr.To(int32(1)),
+							Workload: WorkloadSpec{
+								APIVersion: "workloads.x-k8s.io/v1alpha1",
+								Kind:       "InstanceSet",
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "mutual exclusivity: templateRef and template both set",
 			rbg: &RoleBasedGroup{
 				Spec: RoleBasedGroupSpec{

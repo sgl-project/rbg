@@ -37,10 +37,10 @@ func (r *InstanceSetReconciler) Validate(
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
 	if len(role.Components) > 0 {
-		if role.Template != nil || role.LeaderWorkerSet != nil {
+		if role.TemplateSource.Template != nil || role.LeaderWorkerSet != nil {
 			return fmt.Errorf("when 'components' field is set, 'template' and 'leaderWorkerSet' fields must not be set")
 		}
-	} else if role.Template == nil {
+	} else if role.TemplateSource.Template == nil {
 		if role.LeaderWorkerSet == nil {
 			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
 		}
@@ -161,7 +161,7 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	case role.LeaderWorkerSet != nil:
 		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.LeaderWorkerSetTemplateType)
 		constructErr = r.constructInstanceTemplateByLWS(ctx, rbg, role, matchLabels, instanceTemplateConfig)
-	case role.Template != nil:
+	case role.TemplateSource.Template != nil:
 		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.PodTemplateTemplateType)
 		constructErr = r.constructInstanceTemplateByTemplate(ctx, rbg, role, matchLabels, instanceTemplateConfig)
 	default:
@@ -286,7 +286,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 ) error {
 	logger := log.FromContext(ctx)
 	leaderWorkerSet := role.LeaderWorkerSet
-	leaderTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchLeaderTemplate)
+	leaderTemp, err := patchPodTemplate(role.TemplateSource.Template, leaderWorkerSet.PatchLeaderTemplate)
 	if err != nil {
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
 		return err
@@ -303,7 +303,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 	}
 
 	// workerTemplate
-	workerTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchWorkerTemplate)
+	workerTemp, err := patchPodTemplate(role.TemplateSource.Template, leaderWorkerSet.PatchWorkerTemplate)
 	if err != nil {
 		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
 		return err
