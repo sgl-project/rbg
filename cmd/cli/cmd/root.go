@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/rollout"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/status"
 	"sigs.k8s.io/rbgs/version"
@@ -81,4 +82,5 @@ func init() {
 
 	rootCmd.AddCommand(status.NewStatusCmd(cf))
 	rootCmd.AddCommand(rollout.NewRolloutCmd(cf))
+	rootCmd.AddCommand(llm.NewLLMCmd())
 }
