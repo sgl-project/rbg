@@ -1,0 +1,172 @@
+name: E2E Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  GO_VERSION: 1.24.1
+  KIND_VERSION: v0.31.0
+  KUBERNETES_VERSION: v1.31.12
+  VOLCANO_VERSION: v1.12.0
+  LWS_VERSION: v0.7.0
+  SCHEDULER_PLUGINS_VERSION: v0.32.7
+
+# Declare default permissions as read only.
+permissions: read-all
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.filter.outputs.should_run }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Check if only docs/examples/python/test changed
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD^1"
+          fi
+          
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD)
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Check if all changes are in skip directories
+          SKIP_DIRS="^(examples|doc|python)/"
+          SHOULD_RUN="true"
+          
+          if [ -n "$CHANGED_FILES" ]; then
+            # Filter out files in skip directories
+            NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
+            
+            if [ -z "$NON_SKIP_FILES" ]; then
+              echo "All changes are in examples, doc, python, or test directories. Skipping e2e tests."
+              SHOULD_RUN="false"
+            else
+              echo "Found changes outside skip directories. Running e2e tests."
+              echo "Files requiring e2e tests:"
+              echo "$NON_SKIP_FILES"
+            fi
+          fi
+          
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+
+  e2e-test:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name rbgs-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install CRDs
+        run: |
+          make manifests
+          kubectl apply --server-side -f config/crd/bases/
+
+      - name: Install LeaderWorkerSet CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
+          kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+      - name: Install Scheduler Plugins
+        run: |
+          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
+            --create-namespace \
+            --namespace scheduler-plugins \
+            --wait \
+            --timeout 300s
+          kubectl get pods -n scheduler-plugins
+
+      - name: Install Volcano Scheduler
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
+          kubectl get pods -n volcano-system
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Build and load controller image
+        run: |
+          make docker-build-controller TAG=e2e-test
+          docker images | grep rbgs-controller || true
+          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-e2e
+
+      - name: Deploy controller
+        run: |
+          make helm-deploy TAG=e2e-test
+          kubectl get deploy -n rbgs-system
+
+      - name: Wait for controller to be ready
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+
+      - name: Run E2E tests
+        run: |
+          make test-e2e
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Controller logs ==="
+          kubectl logs -n rbgs-system -l control-plane=controller-manager --tail=200 || true
+          echo "=== All pods in test namespaces ==="
+          kubectl get pods -A | grep test-ns || true
+          echo "=== Events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
+          echo "=== Kind cluster info ==="
+          kind export logs /tmp/kind-logs --name rbgs-e2e || true
+
+      - name: Upload Kind logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs
+          path: /tmp/kind-logs
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name rbgs-e2e || true
