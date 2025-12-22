@@ -233,6 +233,18 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: helm-deploy
+helm-deploy: manifests ## Deploy controller via Helm to the K8s cluster specified in ~/.kube/config.
+	$(HELM) upgrade --install rbgs deploy/helm/rbgs \
+		--create-namespace \
+		--namespace rbgs-system \
+		--set image.tag=$(TAG) \
+		--wait
+
+.PHONY: helm-undeploy
+helm-undeploy: ## Undeploy controller installed via Helm from the K8s cluster.
+	$(HELM) uninstall rbgs --namespace rbgs-system --ignore-not-found || true
+
 ##@ Dependencies
 
 ## Location to install dependencies to
@@ -245,6 +257,7 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+HELM ?= helm
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
