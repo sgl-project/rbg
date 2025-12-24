@@ -1,4 +1,4 @@
-# KEP-XX: Image and Volume Warmup for RoleBasedGroup
+# KEP-129: Image and Volume Warmup for RoleBasedGroup
 
 ## Table of Contents
 
@@ -51,7 +51,7 @@
 ## Summary
 
 This KEP proposes adding image and volume warmup capabilities to RoleBasedGroup (RBG). Cold start is a common problem for serving large language models(LLMs).
-Cold start latency can be reduced by pre-warming the model files and the container image before a serving instance starts. In RBG's design, upgradation can be done in a fine-grained manner (e.g. [Role Coordination](../30-role-coordination/README.md)). Image and volume warmup can be an additional step to speed up the upgrade process, avoiding resource utilization downgradation.
+Cold start latency can be reduced by pre-warming the model files and the container image before a serving instance starts. In RBG's design, upgrades can be done in a fine-grained manner (e.g. [Role Coordination](../30-role-coordination/README.md)). Image and volume warmup can be an additional step to speed up the upgrade process, avoiding resource utilization degradation.
 
 ## Motivation
 
@@ -73,7 +73,7 @@ With WarmUp
 
 ### Non-Goals
 
-- Althgouh it's possible to upgrade RBG and warm up images & volumes in a coordinated way, co-design between WarmUp and RBG's upgradation process is not a goal in this enhancement. 
+- Although it's possible to upgrade RBG and warm up images & volumes in a coordinated way, co-design between WarmUp and RBG's upgradation process is not a goal in this enhancement. 
 
 ## Proposal
 
@@ -172,22 +172,9 @@ The implementation will add a new reconciler called "WarmUpReconciler" in RBG's 
 
 - **Step 3:**  If the sum of `WarmUp.status.succeededNodeNum` and `WarmUp.status.failedNodeNum` is equal to `WarmUp.status.desiredNodeNum`. The WarmUp job finishes.
   - **Step 3.1:** If `WarmUp.status.failedNodeNum == 0`, controller sets `WarmUp.status.phase` to `Completed`. 
-  - **Step 3.2:** If `WarmUp.status.failedNodeNum > 0`, controller sets `WarmUp.status.phase` to `Failed`. Also, controller records failed node names in `WarmUp.status.
+  - **Step 3.2:** If `WarmUp.status.failedNodeNum > 0`, controller sets `WarmUp.status.phase` to `Failed`. Also, controller records failed node names in `WarmUp.status.failedNodes`.
 
 #### Important Notes
-
-1. **Complexity Risk**: Adding coordination logic increases controller complexity
-    - Mitigation: Implement thorough unit and integration tests
-
-2. **Deadlock Risk**: Poorly configured coordination strategies could cause updates to stall
-    - Mitigation: Add timeouts and clear status reporting
-
-3. **Backward Compatibility**: Existing RoleBasedGroups should continue to work unchanged
-    - Mitigation: Only apply coordination logic when `coordination` is specified
-
-4. **Configuration conflict**: Coordination settings may conflict with each role’s own updateStrategy and Dependency configuration.
-    - Mitigation: The coordination-driven upgrade process is not subject to Dependency constraints. Moreover, if a role is defined in coordination, validation will prohibit that role from specifying its own updateStrategy.
-
 
 ### Test Plan
 
