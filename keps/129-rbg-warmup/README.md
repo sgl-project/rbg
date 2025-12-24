@@ -97,49 +97,63 @@ metadata:
   namespace: default
 spec:
   policies:
-    parallelism: 10 # how many nodes will be warmed up at the same time
+    parallelism: 10 # How many nodes will be warmed up in parallel
     backoffLimit: 3 #
     timeoutSeconds: 300
-    ttlSecondsAfterFinished: 86400
-  images:
-  - name: engine
-    image: sglang:v0.5.0
-  - name: router
-    image: router:v0.3.0
-  volumes:
-    - name: model
-      persistenVolumeClaim:
-        claimName: llm-model
-  targets:
-    rbg:
-      namespace: default
-      name: sglang
-      roles:
-      - name: prefill
-        imagesToWarmup: 
-        - name: engine
-        volumesToWarmup: 
-        - name: model-1
-          targetPath: /qwen-32b/
-      - name: decode
-        imagesToWarmup: 
-        - name: engine
-        volumesToWarmup: 
-        - name: model-1
-      - name: router
-        imagesToWarmup: 
-        - name: router
-    nodes:
-      nodeNames:
-      - "mynode-1"
-      - "mynode-2"
-      labelSelector:
-        "foo-label": "bar"
-      imagesToWarmup:
-      - name: engine
-      - name: router
-      volumesToWarmup:
-      - name: model-1
+    ttlSecondsAfterFinished: 86400  
+  targetNodes: # exclusive with spec.targetRoleBasedGroup
+    nodeSelector:
+      <label>: <value>
+    nodeNames:
+    - "<node1>"
+    - "<node2>"
+    imagesPreload:
+      items:
+      - "image1:tag1"
+      - "image2:tag2"
+      pullSecrets:
+      - secret1
+      - secret2
+    dataCopy:
+      items:
+      - source:
+          persistentVolumeClaim:
+            claimName: llm-model
+          subPath: path/to/mymodel
+        target:
+          vfs_cache: {}
+          #hostPath:
+          #  path: /dev/shm/model           
+  targetRoleBasedGroup:  # exclusive with spec.targetNodes
+    name: sglang
+    namespace: default
+    roles:
+      <role-name-1>:
+        imagesPreload:
+          items:
+          - "image1:tag1"
+          - "image2:tag2"
+          pullSecrets:
+          - secret1
+          - secret2
+      <role-name-2>:
+        imagesPreload:
+          items:
+          - "image1:tag1"
+          - "image2:tag2"
+          pullSecrets:
+          - secret1
+          - secret2
+        dataCopy:
+          items:
+          - source:
+              persistentVolumeClaim:
+                claimName: llm-model
+              path: path/to/mymodel
+            target:
+              vfs_cache: {}
+              #hostPath:
+              #  path: /dev/shm/model
 ```
 
 ## Design Details
