@@ -46,7 +46,7 @@ func (roleWrapper *RoleWrapper) WithMaxSurge(value int32) *RoleWrapper {
 }
 
 func (roleWrapper *RoleWrapper) WithTemplate(template corev1.PodTemplateSpec) *RoleWrapper {
-	roleWrapper.Template = &template
+	roleWrapper.TemplateSource.Template = &template
 	return roleWrapper
 }
 
@@ -116,6 +116,23 @@ func (roleWrapper *RoleWrapper) WithScalingAdapter(enable bool) *RoleWrapper {
 	return roleWrapper
 }
 
+// WithTemplateRef sets the role to use a template reference by name.
+// This method automatically clears the Template field to satisfy mutual exclusivity requirements
+// (templateRef and template cannot both be set).
+func (roleWrapper *RoleWrapper) WithTemplateRef(name string) *RoleWrapper {
+	roleWrapper.TemplateSource.TemplateRef = &workloadsv1alpha.TemplateRef{
+		Name: name,
+	}
+	// Clear Template to satisfy mutual exclusivity (templateRef and template cannot both be set)
+	roleWrapper.TemplateSource.Template = nil
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithTemplatePatch(patch runtime.RawExtension) *RoleWrapper {
+	roleWrapper.TemplatePatch = patch
+	return roleWrapper
+}
+
 func BuildBasicRole(name string) *RoleWrapper {
 	template := BuildBasicPodTemplateSpec().Obj()
 	return &RoleWrapper{
@@ -129,7 +146,9 @@ func BuildBasicRole(name string) *RoleWrapper {
 				APIVersion: "apps/v1",
 				Kind:       "StatefulSet",
 			},
-			Template: &template,
+			TemplateSource: workloadsv1alpha.TemplateSource{
+				Template: &template,
+			},
 		},
 	}
 }
@@ -150,7 +169,9 @@ func BuildLwsRole(name string) *RoleWrapper {
 				APIVersion: "leaderworkerset.x-k8s.io/v1",
 				Kind:       "LeaderWorkerSet",
 			},
-			Template: &template,
+			TemplateSource: workloadsv1alpha.TemplateSource{
+				Template: &template,
+			},
 			LeaderWorkerSet: &workloadsv1alpha.LeaderWorkerTemplate{
 				Size:                ptr.To(int32(2)),
 				PatchLeaderTemplate: &leaderPatch,

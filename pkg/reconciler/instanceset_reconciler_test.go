@@ -68,7 +68,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 						Size: ptr.To(int32(1)),
 					},
 				},
-				Template: &corev1.PodTemplateSpec{},
+				TemplateSource: workloadsv1alpha1.TemplateSource{
+					Template: &corev1.PodTemplateSpec{},
+				},
 			},
 			expectError: true,
 		},
@@ -94,14 +96,18 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 				Labels: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
 				},
-				Template: &corev1.PodTemplateSpec{},
+				TemplateSource: workloadsv1alpha1.TemplateSource{
+					Template: &corev1.PodTemplateSpec{},
+				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid template without instance pattern",
 			role: &workloadsv1alpha1.RoleSpec{
-				Template: &corev1.PodTemplateSpec{},
+				TemplateSource: workloadsv1alpha1.TemplateSource{
+					Template: &corev1.PodTemplateSpec{},
+				},
 			},
 			expectError: true,
 		},
@@ -111,7 +117,9 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 				Labels: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.StatefulSetInstancePattern),
 				},
-				Template: &corev1.PodTemplateSpec{},
+				TemplateSource: workloadsv1alpha1.TemplateSource{
+					Template: &corev1.PodTemplateSpec{},
+				},
 			},
 			expectError: true,
 		},
@@ -280,12 +288,14 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 			Name:            "test-role-template",
 			Replicas:        ptr.To(int32(2)),
 			MinReadySeconds: int32(5),
-			Template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main-container",
-							Image: "nginx:alpine",
+			TemplateSource: workloadsv1alpha1.TemplateSource{
+				Template: &corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "main-container",
+								Image: "nginx:alpine",
+							},
 						},
 					},
 				},
@@ -386,12 +396,14 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		role := &workloadsv1alpha1.RoleSpec{
 			Name:     "test-role-strategy",
 			Replicas: ptr.To(int32(3)),
-			Template: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "test-container",
-							Image: "nginx:latest",
+			TemplateSource: workloadsv1alpha1.TemplateSource{
+				Template: &corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "test-container",
+								Image: "nginx:latest",
+							},
 						},
 					},
 				},

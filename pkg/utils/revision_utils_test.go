@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -418,17 +419,19 @@ func TestGetPatchAndRestore(t *testing.T) {
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},
-					Template: &v1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": "nginx",
+					TemplateSource: workloadsv1alpha1.TemplateSource{
+						Template: &v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									"app": "nginx",
+								},
 							},
-						},
-						Spec: v1.PodSpec{
-							Containers: []v1.Container{
-								{
-									Name:  "nginx",
-									Image: "1.0.0",
+							Spec: v1.PodSpec{
+								Containers: []v1.Container{
+									{
+										Name:  "nginx",
+										Image: "1.0.0",
+									},
 								},
 							},
 						},
@@ -636,6 +639,44 @@ func TestGetRolesRevisionHash(t *testing.T) {
 	})
 }
 
+func TestRoleTemplateUpdatesAffectRevisionAndRoleHash(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	ctx := context.Background()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	rbg := getRBGWithRoleTemplates()
+
+	revision1, err := NewRevision(ctx, client, rbg, nil)
+	assert.NoError(t, err)
+	assert.NotNil(t, revision1)
+
+	var raw1 map[string]interface{}
+	assert.NoError(t, json.Unmarshal(revision1.Data.Raw, &raw1))
+	spec1, ok := raw1["spec"].(map[string]interface{})
+	assert.True(t, ok, "revision spec should exist")
+	roleTemplates1, ok := spec1["roleTemplates"].([]interface{})
+	assert.True(t, ok, "roleTemplates should be persisted in revision payload")
+	assert.GreaterOrEqual(t, len(roleTemplates1), 1)
+
+	hashes1, err := GetRolesRevisionHash(revision1)
+	assert.NoError(t, err)
+	initialHash := hashes1["prefill"]
+	assert.NotEmpty(t, initialHash)
+
+	rbg.Spec.RoleTemplates[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+
+	revision2, err := NewRevision(ctx, client, rbg, revision1)
+	assert.NoError(t, err)
+	assert.NotNil(t, revision2)
+	assert.NotEqual(t, revision1.Data.Raw, revision2.Data.Raw, "roleTemplate change should impact revision payload")
+
+	hashes2, err := GetRolesRevisionHash(revision2)
+	assert.NoError(t, err)
+	assert.NotEqual(t, initialHash, hashes2["prefill"], "role hash should change when referenced template changes")
+}
+
 func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 	return &workloadsv1alpha1.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -659,74 +700,76 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 						APIVersion: "apps/v1",
 						Kind:       "Deployment",
 					},
-					Template: &v1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": "router",
-							},
-							Annotations: map[string]string{
-								"prometheus.io/scrape": "true",
-								"prometheus.io/port":   "8080",
-							},
-						},
-						Spec: v1.PodSpec{
-							Containers: []v1.Container{
-								{
-									Name:  "router",
-									Image: "nginx:1.21",
-									Ports: []v1.ContainerPort{
-										{
-											Name:          "http",
-											ContainerPort: 80,
-											Protocol:      v1.ProtocolTCP,
-										},
-										{
-											Name:          "https",
-											ContainerPort: 443,
-											Protocol:      v1.ProtocolTCP,
-										},
-									},
-									Env: []v1.EnvVar{
-										{
-											Name:  "ENV",
-											Value: "production",
-										},
-									},
-									Resources: v1.ResourceRequirements{
-										Limits: v1.ResourceList{
-											v1.ResourceCPU:    resource.MustParse("500m"),
-											v1.ResourceMemory: resource.MustParse("128Mi"),
-										},
-										Requests: v1.ResourceList{
-											v1.ResourceCPU:    resource.MustParse("250m"),
-											v1.ResourceMemory: resource.MustParse("64Mi"),
-										},
-									},
+					TemplateSource: workloadsv1alpha1.TemplateSource{
+						Template: &v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									"app": "router",
+								},
+								Annotations: map[string]string{
+									"prometheus.io/scrape": "true",
+									"prometheus.io/port":   "8080",
 								},
 							},
-							Affinity: &v1.Affinity{
-								PodAntiAffinity: &v1.PodAntiAffinity{
-									PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
-										{
-											Weight: 100,
-											PodAffinityTerm: v1.PodAffinityTerm{
-												LabelSelector: &metav1.LabelSelector{
-													MatchLabels: map[string]string{
-														"app": "router",
-													},
-												},
-												TopologyKey: "kubernetes.io/hostname",
+							Spec: v1.PodSpec{
+								Containers: []v1.Container{
+									{
+										Name:  "router",
+										Image: "nginx:1.21",
+										Ports: []v1.ContainerPort{
+											{
+												Name:          "http",
+												ContainerPort: 80,
+												Protocol:      v1.ProtocolTCP,
+											},
+											{
+												Name:          "https",
+												ContainerPort: 443,
+												Protocol:      v1.ProtocolTCP,
+											},
+										},
+										Env: []v1.EnvVar{
+											{
+												Name:  "ENV",
+												Value: "production",
+											},
+										},
+										Resources: v1.ResourceRequirements{
+											Limits: v1.ResourceList{
+												v1.ResourceCPU:    resource.MustParse("500m"),
+												v1.ResourceMemory: resource.MustParse("128Mi"),
+											},
+											Requests: v1.ResourceList{
+												v1.ResourceCPU:    resource.MustParse("250m"),
+												v1.ResourceMemory: resource.MustParse("64Mi"),
 											},
 										},
 									},
 								},
-							},
-							Tolerations: []v1.Toleration{
-								{
-									Key:      "dedicated",
-									Operator: v1.TolerationOpEqual,
-									Value:    "router",
-									Effect:   v1.TaintEffectNoSchedule,
+								Affinity: &v1.Affinity{
+									PodAntiAffinity: &v1.PodAntiAffinity{
+										PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+											{
+												Weight: 100,
+												PodAffinityTerm: v1.PodAffinityTerm{
+													LabelSelector: &metav1.LabelSelector{
+														MatchLabels: map[string]string{
+															"app": "router",
+														},
+													},
+													TopologyKey: "kubernetes.io/hostname",
+												},
+											},
+										},
+									},
+								},
+								Tolerations: []v1.Toleration{
+									{
+										Key:      "dedicated",
+										Operator: v1.TolerationOpEqual,
+										Value:    "router",
+										Effect:   v1.TaintEffectNoSchedule,
+									},
 								},
 							},
 						},
@@ -739,37 +782,39 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},
-					Template: &v1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app":  "decode",
-								"tier": "backend",
+					TemplateSource: workloadsv1alpha1.TemplateSource{
+						Template: &v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									"app":  "decode",
+									"tier": "backend",
+								},
 							},
-						},
-						Spec: v1.PodSpec{
-							Containers: []v1.Container{
-								{
-									Name:  "decode",
-									Image: "busybox:1.35",
-									Command: []string{
-										"sh",
-										"-c",
-										"sleep 300",
-									},
-									Resources: v1.ResourceRequirements{
-										Limits: v1.ResourceList{
-											v1.ResourceCPU:    resource.MustParse("200m"),
-											v1.ResourceMemory: resource.MustParse("64Mi"),
+							Spec: v1.PodSpec{
+								Containers: []v1.Container{
+									{
+										Name:  "decode",
+										Image: "busybox:1.35",
+										Command: []string{
+											"sh",
+											"-c",
+											"sleep 300",
 										},
-										Requests: v1.ResourceList{
-											v1.ResourceCPU:    resource.MustParse("100m"),
-											v1.ResourceMemory: resource.MustParse("32Mi"),
+										Resources: v1.ResourceRequirements{
+											Limits: v1.ResourceList{
+												v1.ResourceCPU:    resource.MustParse("200m"),
+												v1.ResourceMemory: resource.MustParse("64Mi"),
+											},
+											Requests: v1.ResourceList{
+												v1.ResourceCPU:    resource.MustParse("100m"),
+												v1.ResourceMemory: resource.MustParse("32Mi"),
+											},
 										},
 									},
 								},
-							},
-							NodeSelector: map[string]string{
-								"disktype": "ssd",
+								NodeSelector: map[string]string{
+									"disktype": "ssd",
+								},
 							},
 						},
 					},
@@ -781,75 +826,77 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 						APIVersion: "apps/v1",
 						Kind:       "Deployment",
 					},
-					Template: &v1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app":  "prefill",
-								"tier": "backend",
-							},
-							Annotations: map[string]string{
-								"prometheus.io/scrape": "true",
-								"prometheus.io/port":   "8080",
-							},
-						},
-						Spec: v1.PodSpec{
-							Containers: []v1.Container{
-								{
-									Name:  "prefill",
-									Image: "nginx:1.21",
-									Ports: []v1.ContainerPort{
-										{
-											Name:          "http",
-											ContainerPort: 180,
-											Protocol:      v1.ProtocolTCP,
-										},
-										{
-											Name:          "https",
-											ContainerPort: 1443,
-											Protocol:      v1.ProtocolTCP,
-										},
-									},
-									Env: []v1.EnvVar{
-										{
-											Name:  "ENV",
-											Value: "production",
-										},
-									},
-									Resources: v1.ResourceRequirements{
-										Limits: v1.ResourceList{
-											v1.ResourceCPU:    resource.MustParse("500m"),
-											v1.ResourceMemory: resource.MustParse("128Mi"),
-										},
-										Requests: v1.ResourceList{
-											v1.ResourceCPU:    resource.MustParse("250m"),
-											v1.ResourceMemory: resource.MustParse("64Mi"),
-										},
-									},
+					TemplateSource: workloadsv1alpha1.TemplateSource{
+						Template: &v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									"app":  "prefill",
+									"tier": "backend",
+								},
+								Annotations: map[string]string{
+									"prometheus.io/scrape": "true",
+									"prometheus.io/port":   "8080",
 								},
 							},
-							Affinity: &v1.Affinity{
-								PodAntiAffinity: &v1.PodAntiAffinity{
-									PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
-										{
-											Weight: 100,
-											PodAffinityTerm: v1.PodAffinityTerm{
-												LabelSelector: &metav1.LabelSelector{
-													MatchLabels: map[string]string{
-														"app": "prefill",
-													},
-												},
-												TopologyKey: "kubernetes.io/hostname",
+							Spec: v1.PodSpec{
+								Containers: []v1.Container{
+									{
+										Name:  "prefill",
+										Image: "nginx:1.21",
+										Ports: []v1.ContainerPort{
+											{
+												Name:          "http",
+												ContainerPort: 180,
+												Protocol:      v1.ProtocolTCP,
+											},
+											{
+												Name:          "https",
+												ContainerPort: 1443,
+												Protocol:      v1.ProtocolTCP,
+											},
+										},
+										Env: []v1.EnvVar{
+											{
+												Name:  "ENV",
+												Value: "production",
+											},
+										},
+										Resources: v1.ResourceRequirements{
+											Limits: v1.ResourceList{
+												v1.ResourceCPU:    resource.MustParse("500m"),
+												v1.ResourceMemory: resource.MustParse("128Mi"),
+											},
+											Requests: v1.ResourceList{
+												v1.ResourceCPU:    resource.MustParse("250m"),
+												v1.ResourceMemory: resource.MustParse("64Mi"),
 											},
 										},
 									},
 								},
-							},
-							Tolerations: []v1.Toleration{
-								{
-									Key:      "dedicated",
-									Operator: v1.TolerationOpEqual,
-									Value:    "prefill",
-									Effect:   v1.TaintEffectNoSchedule,
+								Affinity: &v1.Affinity{
+									PodAntiAffinity: &v1.PodAntiAffinity{
+										PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+											{
+												Weight: 100,
+												PodAffinityTerm: v1.PodAffinityTerm{
+													LabelSelector: &metav1.LabelSelector{
+														MatchLabels: map[string]string{
+															"app": "prefill",
+														},
+													},
+													TopologyKey: "kubernetes.io/hostname",
+												},
+											},
+										},
+									},
+								},
+								Tolerations: []v1.Toleration{
+									{
+										Key:      "dedicated",
+										Operator: v1.TolerationOpEqual,
+										Value:    "prefill",
+										Effect:   v1.TaintEffectNoSchedule,
+									},
 								},
 							},
 						},
@@ -860,6 +907,48 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 				PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
 					KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
 						ScheduleTimeoutSeconds: ptr.To(int32(600)),
+					},
+				},
+			},
+		},
+	}
+}
+
+func getRBGWithRoleTemplates() *workloadsv1alpha1.RoleBasedGroup {
+	return &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "template-rbg",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+			RoleTemplates: []workloadsv1alpha1.RoleTemplate{
+				{
+					Name: "shared",
+					Template: v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "app",
+									Image: "nginx:1.0",
+								},
+							},
+						},
+					},
+				},
+			},
+			Roles: []workloadsv1alpha1.RoleSpec{
+				{
+					Name:     "prefill",
+					Replicas: ptr.To(int32(1)),
+					TemplateSource: workloadsv1alpha1.TemplateSource{
+						TemplateRef: &workloadsv1alpha1.TemplateRef{Name: "shared"},
+					},
+					TemplatePatch: runtime.RawExtension{
+						Raw: []byte(`{"spec":{"containers":[{"name":"app","command":["sleep","3600"]}]}}`),
+					},
+					Workload: workloadsv1alpha1.WorkloadSpec{
+						APIVersion: "apps/v1",
+						Kind:       "StatefulSet",
 					},
 				},
 			},

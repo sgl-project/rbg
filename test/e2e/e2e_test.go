@@ -57,6 +57,7 @@ func TestE2E(t *testing.T) {
 			testcase.RunStatefulSetWorkloadTestCases(f)
 			testcase.RunLeaderWorkerSetWorkloadTestCases(f)
 			testcase.RunRbgSetControllerTestCases(f)
+			testcase.RunRoleTemplateTestCases(f)
 		},
 	)
 
