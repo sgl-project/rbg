@@ -1,4 +1,4 @@
-# KEP-130: Configuration Refine for RoleBasedGroup (RBG)
+# KEP-130: Configmap Refine for RoleBasedGroup (RBG)
 
 <!-- toc -->
 - [Release Signoff Checklist](#release-signoff-checklist)
