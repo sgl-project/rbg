@@ -1,0 +1,23 @@
+title: Configmap Refine
+kep-number: NNNN
+authors:
+  - "@wenqing.he"
+status: provisional
+creation-date: 2025-12-29
+reviewers:
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+
+
+stage: alpha
+
+
+latest-milestone: "v0.5.0"
+
+
+milestone:
+  alpha: "v0.5.0"
+
+
