@@ -1,0 +1,73 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: nginx-segment-deployment
+spec:
+  coordination:
+    - name: segment-rollout
+      roles:
+        - prefill
+        - decode
+      strategy:
+        segmentScheduling:
+          # First segment: deploy 5 prefill and 2 decode pods
+          segment:
+            prefill: 5
+            decode: 2
+          # Wait for current segment to be ready before proceeding
+          partitionStrategy: SequentialWait
+  roles:
+    - minReadySeconds: 10
+      name: prefill
+      replicas: 10  # Total desired replicas
+      template:
+        metadata:
+          labels:
+            version: v1
+        spec:
+          containers:
+            - image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              name: nginx-prefill
+              ports:
+                - containerPort: 80
+                  protocol: TCP
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet
+    - minReadySeconds: 10
+      dependencies:
+        - prefill
+      name: decode
+      replicas: 5  # Total desired replicas
+      template:
+        metadata:
+          labels:
+            version: v1
+        spec:
+          containers:
+            - image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              name: nginx-decode
+              ports:
+                - containerPort: 8080
+                  protocol: TCP
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet

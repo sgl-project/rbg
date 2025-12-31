@@ -62,7 +62,38 @@ type Coordination struct {
 type CoordinationStrategy struct {
 	// RollingUpdate defines the coordination strategies about rolling update.
 	RollingUpdate *CoordinationRollingUpdate `json:"rollingUpdate,omitempty"`
+
+	// SegmentScheduling defines the coordination strategies for segment-based deployment.
+	// It enables deploying workloads in segments (batches) with configurable partition strategies.
+	SegmentScheduling *SegmentScheduling `json:"segmentScheduling,omitempty"`
 }
+
+type SegmentScheduling struct {
+	// Segment defines the deployment segments and their replica counts for each role.
+	// Key is the role name, value is the number of replicas in this segment.
+	Segment map[string]int `json:"segment"`
+
+	// PartitionStrategy defines the strategy for deploying segments in a partitioned manner.
+	// Determines whether to wait for the current segment to be ready before creating the next one.
+	// Defaults to SegmentPartitionStrategySequentialWait.
+	// +optional
+	// +kubebuilder:validation:Enum={Sequential,SequentialWait}
+	// +kubebuilder:default=SequentialWait
+	PartitionStrategy SegmentPartitionStrategyType `json:"partitionStrategy,omitempty"`
+}
+
+// SegmentPartitionStrategyType defines the partition strategy for segment scheduling.
+type SegmentPartitionStrategyType string
+
+const (
+	// SegmentPartitionStrategySequential creates segments one by one without waiting for readiness.
+	// The controller will immediately proceed to create the next segment after the current one is created.
+	SegmentPartitionStrategySequential SegmentPartitionStrategyType = "Sequential"
+
+	// SegmentPartitionStrategySequentialWait creates segments one by one and waits for each to be ready.
+	// The controller will wait until all replicas in the current segment are ready before creating the next segment.
+	SegmentPartitionStrategySequentialWait SegmentPartitionStrategyType = "SequentialWait"
+)
 
 // CoordinationRollingUpdate describes the rolling update coordination strategy.
 type CoordinationRollingUpdate struct {
