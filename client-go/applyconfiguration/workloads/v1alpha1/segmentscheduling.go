@@ -24,7 +24,7 @@ import (
 // SegmentSchedulingApplyConfiguration represents a declarative configuration of the SegmentScheduling type for use
 // with apply.
 type SegmentSchedulingApplyConfiguration struct {
-	Segment           map[string]int                                  `json:"segment,omitempty"`
+	SegmentSize       map[string]int32                                `json:"segment,omitempty"`
 	PartitionStrategy *workloadsv1alpha1.SegmentPartitionStrategyType `json:"partitionStrategy,omitempty"`
 }
 
@@ -34,16 +34,16 @@ func SegmentScheduling() *SegmentSchedulingApplyConfiguration {
 	return &SegmentSchedulingApplyConfiguration{}
 }
 
-// WithSegment puts the entries into the Segment field in the declarative configuration
+// WithSegmentSize puts the entries into the SegmentSize field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, the entries provided by each call will be put on the Segment field,
-// overwriting an existing map entries in Segment field with the same key.
-func (b *SegmentSchedulingApplyConfiguration) WithSegment(entries map[string]int) *SegmentSchedulingApplyConfiguration {
-	if b.Segment == nil && len(entries) > 0 {
-		b.Segment = make(map[string]int, len(entries))
+// If called multiple times, the entries provided by each call will be put on the SegmentSize field,
+// overwriting an existing map entries in SegmentSize field with the same key.
+func (b *SegmentSchedulingApplyConfiguration) WithSegmentSize(entries map[string]int32) *SegmentSchedulingApplyConfiguration {
+	if b.SegmentSize == nil && len(entries) > 0 {
+		b.SegmentSize = make(map[string]int32, len(entries))
 	}
 	for k, v := range entries {
-		b.Segment[k] = v
+		b.SegmentSize[k] = v
 	}
 	return b
 }

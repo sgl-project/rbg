@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/coordination/segmentscheduling"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scale"
@@ -178,18 +179,18 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		roleStatuses = append(roleStatuses, roleStatus)
 	}
 
-	// Update the status based on the observed role statuses.
-	if updateStatus {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
+	// [Coordination - SegmentScheduling] Calculate segment target replicas.
+	segmentScheduler := segmentscheduling.NewSegmentScheduler(rbg, roleStatuses)
+	segmentTargetReplicas, err := segmentScheduler.CalculateTargetReplicas()
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to calculate segment target replicas for %s: %v", rbg.Name, err,
+		)
+		return ctrl.Result{}, err
 	}
 
-	// Calculate the rolling update strategy for all coordination specifications in rbg.
+	// [Coordination - RollingUpdate] Calculate the rolling update strategy for all coordination specifications in rbg.
 	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
 	if err != nil {
 		r.recorder.Eventf(
@@ -199,14 +200,15 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Calculate segment target replicas if segment scheduling is enabled
-	segmentTargetReplicas, err := r.CalculateSegmentTargetReplicas(rbg, roleStatuses)
-	if err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-			"Failed to calculate segment target replicas for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
+	// Update the status based on the observed role statuses.
+	if updateStatus {
+		if err := r.updateRBGStatus(ctx, rbg, roleStatuses, segmentTargetReplicas); err != nil {
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+				"Failed to update status for %s: %v", rbg.Name, err,
+			)
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Reconcile roles, do create/update actions for roles.
@@ -369,32 +371,27 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 	return errors.NewAggregate(errs)
 }
 
+// updateRBGStatus updates the status of the RoleBasedGroup based on the current role statuses
+// Parameters:
+//   - ctx: context for the operation
+//   - rbg: the RoleBasedGroup resource to update
+//   - roleStatuses: current status of all roles
+//   - segmentTargetReplicas: pre-calculated segment target replicas (nil if segment scheduling is not active)
+//     This is passed as parameter to avoid redundant calculation in the reconcile loop
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatuses []workloadsv1alpha1.RoleStatus,
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+	segmentTargetReplicas map[string]int32,
 ) error {
 	// Check if segment scheduling is active
-	segmentSchedulingActive := r.isSegmentSchedulingActive(rbg)
+	segmentSchedulingActive := segmentscheduling.IsActive(rbg)
 
 	// update ready condition
 	var rbgReady = true
 	statusMap := make(map[string]workloadsv1alpha1.RoleStatus, len(roleStatuses))
 	for _, rs := range roleStatuses {
 		statusMap[rs.Name] = rs
-	}
-
-	// Build target replicas map if segment scheduling is active
-	var segmentTargetReplicas map[string]int32
-	if segmentSchedulingActive {
-		for _, coordination := range rbg.Spec.CoordinationRequirements {
-			if coordination.Strategy != nil && coordination.Strategy.SegmentScheduling != nil {
-				scheduler := reconciler.NewSegmentScheduler(rbg, &coordination, roleStatuses)
-				var err error
-				segmentTargetReplicas, err = scheduler.CalculateTargetReplicas()
-				if err == nil && segmentTargetReplicas != nil {
-					break
-				}
-			}
-		}
 	}
 
 	for _, role := range rbg.Spec.Roles {
@@ -889,31 +886,6 @@ func calculateCoordinationUpdatedReplicasBound(maxSkew intstr.IntOrString, refUp
 	lower := math.Round(float64(max(100*a*d-s*b*d, 0)) / float64(100*b))
 	upper := math.Round(float64(max(s*b*d+100*a*d, 0)) / float64(100*b))
 	return int32(lower), int32(upper)
-}
-
-// CalculateSegmentTargetReplicas calculates the target replicas for each role based on segment scheduling
-func (r *RoleBasedGroupReconciler) CalculateSegmentTargetReplicas(
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	roleStatuses []workloadsv1alpha1.RoleStatus,
-) (map[string]int32, error) {
-	// Check if any coordination has segment scheduling
-	for _, coordination := range rbg.Spec.CoordinationRequirements {
-		if coordination.Strategy != nil && coordination.Strategy.SegmentScheduling != nil {
-			scheduler := reconciler.NewSegmentScheduler(rbg, &coordination, roleStatuses)
-			return scheduler.CalculateTargetReplicas()
-		}
-	}
-	return nil, nil
-}
-
-// isSegmentSchedulingActive checks if any coordination has segment scheduling enabled
-func (r *RoleBasedGroupReconciler) isSegmentSchedulingActive(rbg *workloadsv1alpha1.RoleBasedGroup) bool {
-	for _, coordination := range rbg.Spec.CoordinationRequirements {
-		if coordination.Strategy != nil && coordination.Strategy.SegmentScheduling != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func RBGPredicate() predicate.Funcs {

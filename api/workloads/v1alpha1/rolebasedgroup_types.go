@@ -69,9 +69,9 @@ type CoordinationStrategy struct {
 }
 
 type SegmentScheduling struct {
-	// Segment defines the deployment segments and their replica counts for each role.
+	// SegmentSize defines the deployment segments and their replica counts for each role.
 	// Key is the role name, value is the number of replicas in this segment.
-	Segment map[string]int `json:"segment"`
+	SegmentSize map[string]int32 `json:"segment"`
 
 	// PartitionStrategy defines the strategy for deploying segments in a partitioned manner.
 	// Determines whether to wait for the current segment to be ready before creating the next one.
