@@ -82,10 +82,12 @@ With WarmUp
 ![alt text](arch.png)
 
 The WarmUp Controller collects node information of all Pods under the target RBG. It deploys one WarmUp Pod to each node. Each WarmUp Pod contains:
-- N containers for image warmup, configured with image=<new_image> and a startup command set to "sleep infinity"
-- 1 container for volume warmup, which shares volumes with the inference service Pods of the RBG. The model files in the volume will be read sequentially after the container starts.
+- X init containers for image preload action, configured with image=<new_image> and a startup command set to "exit 0"
+- Y containers for customized action, which allow users to define a customized warmup process in RoleBasedGroupWarmup.
+  - For customized action, RBG Warmup controller periodically checks the container status. If all of the container shift to phase "Ready", the WarmUp process is considered to be completed.
+  - Use Cases for customized warmup: (1) Model download & copy from a external storage; (2) CUDA kernel build before launching a new model inference instance.
 
-When the Pod becomes ready, the node is considered warmed up successfully. If all nodes have completed the process, the WarmUp succeeds.
+When the Pod becomes ready (or the Pod finishes without any error), the node is considered warmed up successfully. If all nodes have completed the process, the WarmUp succeeds.
 
 ### API Changes
 
@@ -114,16 +116,27 @@ spec:
       pullSecrets:
       - secret1
       - secret2
-    dataCopy:
-      items:
-      - source:
-          persistentVolumeClaim:
-            claimName: llm-model
-          subPath: path/to/mymodel
-        target:
-          vfs_cache: {}
-          #hostPath:
-          #  path: /dev/shm/model           
+    #dataCopy:
+    #  items:
+    #  - source:
+    #      subPath: path/to/mymodel
+    #      persistentVolumeClaim:
+    #        claimName: llm-model
+    #      #hostPath:
+    #      #  path: /mnt/models
+    #    target:
+    #      vfs_cache: 
+    #        memoryPin: true
+    #        delaySecondsAfterCopy: 1200
+    #      #hostPath:
+    #      #  path: /dev/shm/model
+    customizedAction:
+      podTemplate:
+        # <Job.spec.template>
+        restartPolicy: Never|OnFailure
+        spec:
+          containers:
+          ...         
   targetRoleBasedGroup:  # exclusive with spec.targetNodes
     name: sglang
     namespace: default
@@ -136,6 +149,13 @@ spec:
           pullSecrets:
           - secret1
           - secret2
+        customizedAction:
+          podTemplate:
+            # <Job.spec.template>
+            restartPolicy: Never|OnFailure
+            spec:
+              containers:
+              ...
       <role-name-2>:
         imagesPreload:
           items:
@@ -144,16 +164,14 @@ spec:
           pullSecrets:
           - secret1
           - secret2
-        dataCopy:
-          items:
-          - source:
-              persistentVolumeClaim:
-                claimName: llm-model
-              path: path/to/mymodel
-            target:
-              vfs_cache: {}
-              #hostPath:
-              #  path: /dev/shm/model
+        customizedAction:
+          podTemplate:
+            # <Job.spec.template>
+            restartPolicy: Never|OnFailure
+            spec:
+              containers:
+              ...
+
 ```
 
 ## Design Details
