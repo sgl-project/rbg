@@ -1,0 +1,15 @@
+title: Segment Placement for Multi-Level Gang Scheduling
+kep-number: 32
+authors:
+  - "syspretor"
+status: implementable
+creation-date: 2025-12-30
+reviewers:
+  - TBD
+
+stage: alpha
+
+latest-milestone: "v0.6.0"
+
+milestone:
+  alpha: "v0.6.0"
