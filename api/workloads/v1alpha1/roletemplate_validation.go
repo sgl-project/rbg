@@ -13,7 +13,16 @@ func ValidateRoleTemplates(rbg *RoleBasedGroup) error {
 	var allErrs []error
 
 	for i, rt := range rbg.Spec.RoleTemplates {
-		// Validate DNS label format first
+		// Check empty name first for clearer error message
+		if rt.Name == "" {
+			allErrs = append(allErrs, fmt.Errorf(
+				"spec.roleTemplates[%d].name: must not be empty",
+				i,
+			))
+			continue
+		}
+
+		// Validate DNS label format
 		if errs := validation.IsDNS1123Label(rt.Name); len(errs) > 0 {
 			allErrs = append(allErrs, fmt.Errorf(
 				"spec.roleTemplates[%d].name: %q is not a valid DNS label: %s",
@@ -124,6 +133,7 @@ func validateRoleTemplateFields(
 	}
 
 	// Defense-in-depth: reconcilers also validate template presence for supported workloads.
+	// Note: Empty Kind is treated as non-InstanceSet (defaults to StatefulSet), which requires template.
 	if !hasTemplate && role.Workload.Kind != "InstanceSet" {
 		return fmt.Errorf(
 			"spec.roles[%d].template: required when templateRef is not set",

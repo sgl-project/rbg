@@ -164,7 +164,7 @@ func (instance *Instance) GetRoleTemplateType() RBGRoleTemplateType {
 }
 
 // FindRoleTemplate finds a RoleTemplate by name in the RoleBasedGroup's spec.
-// Returns the template if found, or an error if not found.
+// Returns a deep copy of the template if found, or an error if not found.
 func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) {
 	if name == "" {
 		return nil, errors.New("template name cannot be empty")
@@ -172,7 +172,7 @@ func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) 
 
 	for i := range rbg.Spec.RoleTemplates {
 		if rbg.Spec.RoleTemplates[i].Name == name {
-			return &rbg.Spec.RoleTemplates[i], nil
+			return rbg.Spec.RoleTemplates[i].DeepCopy(), nil
 		}
 	}
 	return nil, fmt.Errorf("roleTemplate %q not found in spec.roleTemplates", name)
