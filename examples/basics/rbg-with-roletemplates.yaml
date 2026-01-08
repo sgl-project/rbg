@@ -26,6 +26,9 @@ spec:
   roles:
     - name: frontend
       replicas: 2
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet
       templateRef:
         name: nginx-base
       templatePatch:
@@ -39,6 +42,9 @@ spec:
     - name: backend
       replicas: 3
       dependencies: ["frontend"]
+      workload:
+        apiVersion: apps/v1
+        kind: StatefulSet
       templateRef:
         name: nginx-base
       templatePatch:

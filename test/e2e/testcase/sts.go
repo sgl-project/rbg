@@ -23,7 +23,7 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 		utils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *workloadsv1alpha1.RoleBasedGroup) {
 			// update
 			rbg.Spec.Roles[0].Replicas = ptr.To(*rbg.Spec.Roles[0].Replicas + 1)
-			rbg.Spec.Roles[0].Template.Labels = updateLabel
+			rbg.Spec.Roles[0].TemplateSource.Template.Labels = updateLabel
 		})
 		f.ExpectRbgEqual(rbg)
 
@@ -48,7 +48,7 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 		// update, start rolling update
 		updateLabel := map[string]string{"update-label": "new"}
 		utils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *workloadsv1alpha1.RoleBasedGroup) {
-			rbg.Spec.Roles[0].Template.Labels = updateLabel
+			rbg.Spec.Roles[0].TemplateSource.Template.Labels = updateLabel
 		})
 		f.ExpectRbgEqual(rbg)
 

@@ -16672,10 +16672,14 @@ spec:
                       - message: templateRef is not supported for InstanceSet workloads
                         rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
                           != ''InstanceSet'''
+                      - message: templateRef is not supported for LeaderWorkerSet
+                          workloads
+                        rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
+                          != ''LeaderWorkerSet'''
                       - message: template or templateRef must be set for non-InstanceSet
                           workloads
-                        rule: '!has(self.workload) || self.workload.kind == ''InstanceSet''
-                          || (has(self.template) != has(self.templateRef))'
+                        rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
+                          && self.workload.kind == 'InstanceSet')
                       - message: template and templateRef are mutually exclusive
                         rule: '!(has(self.template) && has(self.templateRef))'
                     minItems: 1

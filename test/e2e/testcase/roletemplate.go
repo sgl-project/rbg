@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
@@ -315,109 +314,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 				},
 			)
 
-			// Test 4: LWS workload with templateRef and two-layer patch
-			ginkgo.It(
-				"create LWS workload with templateRef and verify two-layer patch", func() {
-					// Base template
-					baseTemplate := wrappers.BuildBasicPodTemplateSpec().
-						WithContainers([]corev1.Container{
-							{
-								Name:  "app",
-								Image: testutils.DefaultImage,
-								Resources: corev1.ResourceRequirements{
-									Requests: corev1.ResourceList{
-										corev1.ResourceCPU:    resource.MustParse("100m"),
-										corev1.ResourceMemory: resource.MustParse("128Mi"),
-									},
-								},
-							},
-						}).Obj()
-
-					// First layer: role-level templatePatch
-					rolePatch := buildTemplatePatch(map[string]interface{}{
-						"spec": map[string]interface{}{
-							"containers": []map[string]interface{}{
-								{
-									"name": "app",
-									"resources": map[string]interface{}{
-										"requests": map[string]interface{}{
-											"memory": "256Mi", // Override memory
-										},
-									},
-								},
-							},
-						},
-					})
-
-					// Second layer: leader/worker patches
-					leaderPatch := buildTemplatePatch(map[string]interface{}{
-						"metadata": map[string]interface{}{
-							"labels": map[string]interface{}{
-								"node-type": "leader",
-							},
-						},
-					})
-					workerPatch := buildTemplatePatch(map[string]interface{}{
-						"metadata": map[string]interface{}{
-							"labels": map[string]interface{}{
-								"node-type": "worker",
-							},
-						},
-					})
-
-					leaderPatchExt := runtime.RawExtension{Raw: leaderPatch.Raw}
-					workerPatchExt := runtime.RawExtension{Raw: workerPatch.Raw}
-
-					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-lws-templateref", f.Namespace).
-						WithRoleTemplates([]workloadsv1alpha1.RoleTemplate{
-							{Name: "lws-base", Template: baseTemplate},
-						}).
-						WithRoles([]workloadsv1alpha1.RoleSpec{
-							wrappers.BuildBasicRole("lws-role").
-								WithTemplateRef("lws-base").
-								WithTemplatePatch(rolePatch).
-								WithWorkload(workloadsv1alpha1.LeaderWorkerSetWorkloadType).
-								WithLeaderWorkerTemplate(&leaderPatchExt, &workerPatchExt).
-								Obj(),
-						}).Obj()
-
-					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-					f.ExpectRbgEqual(rbg)
-
-					// Verify LWS resource
-					lws := &lwsv1.LeaderWorkerSet{}
-					gomega.Eventually(func() error {
-						return f.Client.Get(f.Ctx, types.NamespacedName{
-							Name:      fmt.Sprintf("%s-%s", rbg.Name, "lws-role"),
-							Namespace: f.Namespace,
-						}, lws)
-					}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
-
-					// Verify Leader: memory from templatePatch (256Mi), CPU from base (100m)
-					gomega.Expect(lws.Spec.LeaderWorkerTemplate.LeaderTemplate).NotTo(gomega.BeNil())
-					leaderContainer := lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0]
-					gomega.Expect(leaderContainer.Resources.Requests[corev1.ResourceCPU]).To(
-						gomega.Equal(resource.MustParse("100m")))
-					gomega.Expect(leaderContainer.Resources.Requests[corev1.ResourceMemory]).To(
-						gomega.Equal(resource.MustParse("256Mi")))
-					gomega.Expect(lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Labels["node-type"]).To(
-						gomega.Equal("leader"))
-
-					// Verify Worker: same resources, different label
-					workerContainer := lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0]
-					gomega.Expect(workerContainer.Resources.Requests[corev1.ResourceCPU]).To(
-						gomega.Equal(resource.MustParse("100m")))
-					gomega.Expect(workerContainer.Resources.Requests[corev1.ResourceMemory]).To(
-						gomega.Equal(resource.MustParse("256Mi")))
-					gomega.Expect(lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Labels["node-type"]).To(
-						gomega.Equal("worker"))
-
-					gomega.Expect(f.Client.Delete(f.Ctx, rbg)).Should(gomega.Succeed())
-					f.ExpectRbgDeleted(rbg)
-				},
-			)
-
-			// Test 5: Rollback roleTemplate to previous version restores workload spec
+				// Test 4: Rollback roleTemplate to previous version restores workload spec
 			ginkgo.It(
 				"rollback roleTemplate to previous version restores workload spec", func() {
 					// V1: CPU 100m

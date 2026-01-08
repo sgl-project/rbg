@@ -213,6 +213,30 @@ func TestValidateRoleTemplateReferences(t *testing.T) {
 			errMsg:  "not supported for InstanceSet",
 		},
 		{
+			name: "templateRef not supported for LeaderWorkerSet",
+			rbg: &RoleBasedGroup{
+				Spec: RoleBasedGroupSpec{
+					RoleTemplates: baseTemplate,
+					Roles: []RoleSpec{
+						{
+							Name:     "inference",
+							Replicas: ptr.To(int32(1)),
+							Workload: WorkloadSpec{
+								APIVersion: "leaderworkerset.x-k8s.io/v1",
+								Kind:       "LeaderWorkerSet",
+							},
+							TemplateSource: TemplateSource{
+								TemplateRef: &TemplateRef{Name: "base"},
+							},
+							TemplatePatch: runtime.RawExtension{Raw: []byte(`{}`)},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "not supported for LeaderWorkerSet",
+		},
+		{
 			name: "instanceSet without template or templateRef",
 			rbg: &RoleBasedGroup{
 				Spec: RoleBasedGroupSpec{
