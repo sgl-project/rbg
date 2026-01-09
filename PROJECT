@@ -35,4 +35,13 @@ resources:
   kind: ClusterEngineRuntimeProfile
   path: sigs.k8s.io/rbgs/api/workloads/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: x-k8s.io
+  group: workloads
+  kind: RoleBasedGroupWarmUp
+  path: sigs.k8s.io/rbgs/api/workloads/v1alpha1
+  version: v1alpha1
 version: "3"

@@ -6,6 +6,7 @@ resources:
 - bases/workloads.x-k8s.io_rolebasedgroupsets.yaml
 - bases/workloads.x-k8s.io_clusterengineruntimeprofiles.yaml
 - bases/workloads.x-k8s.io_rolebasedgroupscalingadapters.yaml
+- bases/workloads.x-k8s.io.x-k8s.io_rolebasedgroupwarmups.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
