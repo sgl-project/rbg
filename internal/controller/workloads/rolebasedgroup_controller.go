@@ -92,20 +92,29 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
 
 func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
 	// Fetch the RoleBasedGroup instance
 	rbg := &workloadsv1alpha1.RoleBasedGroup{}
 	if err := r.client.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedGetRBG,
-			"Failed to get rbg, err: %s", err.Error(),
-		)
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// Object not found, might be deleted after reconcile request.
+			logger.Info("RoleBasedGroup resource not found. Ignoring since object must be deleted",
+				"name", req.Name,
+				"namespace", req.Namespace)
+			return ctrl.Result{}, nil
+		}
+		// Error reading the object - requeue the request.
+		logger.Error(err, "Failed to get RoleBasedGroup",
+			"name", req.Name,
+			"namespace", req.Namespace)
+		return ctrl.Result{}, err
 	}
-	if rbg.DeletionTimestamp != nil {
+	if !rbg.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 
-	logger := log.FromContext(ctx).WithValues("rbg", klog.KObj(rbg))
+	logger = logger.WithValues("rbg", klog.KObj(rbg))
 	ctx = ctrl.LoggerInto(ctx, logger)
 	logger.Info("Start reconciling")
 	start := time.Now()
