@@ -97,10 +97,18 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Fetch the RoleBasedGroup instance
 	rbg := &workloadsv1alpha1.RoleBasedGroup{}
 	if err := r.client.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbg); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Object not found, might be deleted after reconcile request.
+			logger.Info("RoleBasedGroup resource not found. Ignoring since object must be deleted",
+				"name", req.Name,
+				"namespace", req.Namespace)
+			return ctrl.Result{}, nil
+		}
+		// Error reading the object - requeue the request.
 		logger.Error(err, "Failed to get RoleBasedGroup",
 			"name", req.Name,
 			"namespace", req.Namespace)
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, err
 	}
 	if !rbg.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
