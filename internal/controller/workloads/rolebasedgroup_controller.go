@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/coordination/segmentscheduling"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scale"
@@ -187,25 +188,36 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		roleStatuses = append(roleStatuses, roleStatus)
 	}
 
+	// [Coordination - SegmentScheduling] Calculate segment target replicas.
+	segmentScheduler := segmentscheduling.NewSegmentScheduler(rbg, roleStatuses)
+	segmentTargetReplicas, err := segmentScheduler.CalculateTargetReplicas()
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to calculate segment target replicas for %s: %v", rbg.Name, err,
+		)
+		return ctrl.Result{}, err
+	}
+
+	// [Coordination - RollingUpdate] Calculate the rolling update strategy for all coordination specifications in rbg.
+	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to calculate rolling update strategy for %s: %v", rbg.Name, err,
+		)
+		return ctrl.Result{}, err
+	}
+
 	// Update the status based on the observed role statuses.
 	if updateStatus {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+		if err := r.updateRBGStatus(ctx, rbg, roleStatuses, segmentTargetReplicas); err != nil {
 			r.recorder.Eventf(
 				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
 				"Failed to update status for %s: %v", rbg.Name, err,
 			)
 			return ctrl.Result{}, err
 		}
-	}
-
-	// Calculate the rolling update strategy for all coordination specifications in rbg.
-	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
-	if err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-			"Failed to update status for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
 	}
 
 	// Reconcile roles, do create/update actions for roles.
@@ -245,7 +257,18 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				rollingUpdateStrategy = &rollout
 			}
 
-			if err := reconciler.Reconciler(roleCtx, rbg, role, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
+			// Apply segment target replicas if exists
+			actualRole := role
+			if segmentTargetReplicas != nil {
+				if targetReplicas, ok := segmentTargetReplicas[role.Name]; ok {
+					// Create a copy of the role with segment target replicas
+					roleCopy := role.DeepCopy()
+					roleCopy.Replicas = ptr.To(targetReplicas)
+					actualRole = roleCopy
+				}
+			}
+
+			if err := reconciler.Reconciler(roleCtx, rbg, actualRole, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
 				logger.Error(err, "Failed to reconcile workload")
 				r.recorder.Eventf(
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
@@ -357,19 +380,55 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 	return errors.NewAggregate(errs)
 }
 
+// updateRBGStatus updates the status of the RoleBasedGroup based on the current role statuses
+// Parameters:
+//   - ctx: context for the operation
+//   - rbg: the RoleBasedGroup resource to update
+//   - roleStatuses: current status of all roles
+//   - segmentTargetReplicas: pre-calculated segment target replicas (nil if segment scheduling is not active)
+//     This is passed as parameter to avoid redundant calculation in the reconcile loop
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatuses []workloadsv1alpha1.RoleStatus,
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+	segmentTargetReplicas map[string]int32,
 ) error {
+	// Check if segment scheduling is active
+	segmentSchedulingActive := segmentscheduling.IsActive(rbg)
+
 	// update ready condition
 	var rbgReady = true
 	statusMap := make(map[string]workloadsv1alpha1.RoleStatus, len(roleStatuses))
 	for _, rs := range roleStatuses {
 		statusMap[rs.Name] = rs
 	}
+
 	for _, role := range rbg.Spec.Roles {
-		if rs, ok := statusMap[role.Name]; !ok ||
-			*role.Replicas != rs.Replicas ||
-			rs.Replicas != rs.ReadyReplicas {
+		rs, ok := statusMap[role.Name]
+		if !ok {
+			rbgReady = false
+			break
+		}
+
+		// Check replicas count
+		if role.Replicas == nil {
+			continue
+		}
+
+		// For segment scheduling, check against target replicas instead of desired replicas
+		if segmentSchedulingActive && segmentTargetReplicas != nil {
+			if targetReplicas, hasTarget := segmentTargetReplicas[role.Name]; hasTarget {
+				// Check if current replicas match segment target and are ready
+				if rs.Replicas != targetReplicas || rs.ReadyReplicas != targetReplicas {
+					rbgReady = false
+					break
+				}
+				continue
+			}
+		}
+
+		// For normal scheduling or roles not in segment scheduling, check against desired replicas
+		if *role.Replicas != rs.Replicas || rs.Replicas != rs.ReadyReplicas {
 			rbgReady = false
 			break
 		}

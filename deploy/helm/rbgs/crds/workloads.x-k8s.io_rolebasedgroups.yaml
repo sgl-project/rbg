@@ -87,6 +87,31 @@ spec:
                               pattern: ^([0-9]|[1-9][0-9]|100)%$
                               type: string
                           type: object
+                        segmentScheduling:
+                          description: |-
+                            SegmentScheduling defines the coordination strategies for segment-based deployment.
+                            It enables deploying workloads in segments (batches) with configurable partition strategies.
+                          properties:
+                            partitionStrategy:
+                              default: SequentialWait
+                              description: |-
+                                PartitionStrategy defines the strategy for deploying segments in a partitioned manner.
+                                Determines whether to wait for the current segment to be ready before creating the next one.
+                              enum:
+                              - Sequential
+                              - SequentialWait
+                              type: string
+                            segment:
+                              additionalProperties:
+                                format: int32
+                                type: integer
+                              description: |-
+                                SegmentSize defines the deployment segments and their replica counts for each role.
+                                Key is the role name, value is the number of replicas in this segment.
+                              type: object
+                          required:
+                          - segment
+                          type: object
                       type: object
                   required:
                   - name
