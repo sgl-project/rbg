@@ -212,27 +212,37 @@ namespace: <namespace>
 group: <group-name>
 roles:
   <role-name>:
-    size: <number-of-instances>
+    replicas: <number-of-instances>
+    size: <size-of-an-instance>
     excludes: [<list-of-excluded-indices>] # Optional
 ```
-For instance: one RBG with 4 instances, 1 router, 2 encoder (excluding index 1), 2 prefill, 2 decode, the config file is like below:
+For instance: one RBG with 4 instances, 1 router, 2 encoder, 2 prefill, 2 decode (excluding role index 1), the config file is like below:
 ```yaml
 namespace: sgl-workspace
 group: epd-test
 roles:  
    router: 
+    replicas: 1
     size: 1 
-   encoder: 
+   encoder:
+    replicas: 2
     size: 2
    prefill:
+     replicas: 2
      size: 2 
    decode: 
-     size: 2
+     replicas: 2
      excludes: [1] # Optional
+     size: 2
 ```
 
-As long as the service name pattern is consistent, the full FQDNs can be derived using the template:
-`{role}-{i}.s-{group}-{role}.{namespace}.svc.cluster.local`, such as `encoder-0.s-epd-test-encoder.sgl-workspace.svc.cluster.local`.
+As long as the service name pattern is consistent, the full FQDNs can be derived using the template as below:
+SatefulSet Pattern:
+`{group}-{role}-{role index}-{replica index}.s-{group}-{role}.{namespace}.svc.cluster.local`, such as `epd-encoder-0-0.s-epd-test-encoder.sgl-workspace.svc.cluster.local`.
+
+Deployment Pattern:
+`{group}-{role}-{id}-{replica index}.s-{group}-{role}.{namespace}.svc.cluster.local`, such as `epd-router-abcde-0.s-epd-test-router.sgl-workspace.svc.cluster.local`.
+As the `id` is generated randomly in function `getOrGenInstanceID()`, it cannot be derived when the pod is created.
 
 
 ### Test Plan
