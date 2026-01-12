@@ -75,9 +75,15 @@ func (s *LeaderWorkerSetEqualChecker) ExpectLabelContains(
 		return fmt.Errorf("failed to get existing lws: %w", err)
 	}
 
-	for key, value := range labels[0] {
-		if !utils.MapContains(lws.Labels, key, value) {
-			return fmt.Errorf("lws labels do not have key %s, value: %s", key, value)
+	if len(labels) == 0 {
+		return fmt.Errorf("labels is empty")
+	}
+
+	for _, labelMap := range labels {
+		for key, value := range labelMap {
+			if !utils.MapContains(lws.Labels, key, value) {
+				return fmt.Errorf("lws labels do not have key %s, value: %s", key, value)
+			}
 		}
 	}
 

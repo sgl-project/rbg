@@ -68,6 +68,11 @@ func (roleWrapper *RoleWrapper) WithRestartPolicy(restartPolicy workloadsv1alpha
 	return roleWrapper
 }
 
+func (roleWrapper *RoleWrapper) WithLabels(labels map[string]string) *RoleWrapper {
+	roleWrapper.Labels = labels
+	return roleWrapper
+}
+
 func (roleWrapper *RoleWrapper) WithWorkload(workloadType string) *RoleWrapper {
 	switch workloadType {
 	case workloadsv1alpha.DeploymentWorkloadType:

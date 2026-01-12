@@ -72,9 +72,15 @@ func (d *DeploymentEqualChecker) ExpectLabelContains(rbg *v1alpha1.RoleBasedGrou
 		return fmt.Errorf("failed to get existing deployment: %w", err)
 	}
 
-	for key, value := range labels[0] {
-		if !utils.MapContains(deployment.Labels, key, value) {
-			return fmt.Errorf("deployment labels do not have key %s, value: %s", key, value)
+	if len(labels) == 0 {
+		return fmt.Errorf("labels is empty")
+	}
+
+	for _, labelMap := range labels {
+		for key, value := range labelMap {
+			if !utils.MapContains(deployment.Labels, key, value) {
+				return fmt.Errorf("deployment labels do not have key %s, value: %s", key, value)
+			}
 		}
 	}
 
@@ -97,9 +103,15 @@ func (d *DeploymentEqualChecker) ExpectPodTemplateLabelContains(
 		return fmt.Errorf("failed to get existing Deployment: %w", err)
 	}
 
-	for key, value := range labels[0] {
-		if !utils.MapContains(deployment.Spec.Template.Labels, key, value) {
-			return fmt.Errorf("pod labels do not have key %s, value: %s", key, value)
+	if len(labels) == 0 {
+		return fmt.Errorf("labels is empty")
+	}
+
+	for _, labelMap := range labels {
+		for key, value := range labelMap {
+			if !utils.MapContains(deployment.Spec.Template.Labels, key, value) {
+				return fmt.Errorf("pod labels do not have key %s, value: %s", key, value)
+			}
 		}
 	}
 
@@ -122,9 +134,15 @@ func (d *DeploymentEqualChecker) ExpectPodTemplateAnnotationContains(
 		return fmt.Errorf("failed to get existing Deployment: %w", err)
 	}
 
-	for key, value := range annotations[0] {
-		if !utils.MapContains(deployment.Spec.Template.Annotations, key, value) {
-			return fmt.Errorf("pod anotations do not have key %s, value: %s", key, value)
+	if len(annotations) == 0 {
+		return fmt.Errorf("annotations is empty")
+	}
+
+	for _, annotationMap := range annotations {
+		for key, value := range annotationMap {
+			if !utils.MapContains(deployment.Spec.Template.Annotations, key, value) {
+				return fmt.Errorf("pod anotations do not have key %s, value: %s", key, value)
+			}
 		}
 	}
 	return nil

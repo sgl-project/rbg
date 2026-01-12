@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -380,15 +379,11 @@ func (r *RoleBasedGroupScalingAdapterReconciler) updateRoleReplicas(
 	)
 }
 
-// extractLabelSelectorDefault extracts a LabelSelector string from the given role object.
+// extractLabelSelectorDefault extracts a LabelSelector string from the given role's scale subresource.
 func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
 	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
 ) (string, error) {
 	apiVersion, kind := role.Workload.APIVersion, role.Workload.Kind
-	if kind == "LeaderWorkerSet" {
-		// For lws role, we extract leader statefulset selector
-		apiVersion, kind = "apps/v1", "StatefulSet"
-	}
 
 	targetGV, err := schema.ParseGroupVersion(apiVersion)
 	if err != nil {
@@ -400,35 +395,39 @@ func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
 		Version: targetGV.Version,
 		Kind:    kind,
 	}
-	roleObj := &unstructured.Unstructured{}
-	roleObj.SetGroupVersionKind(gvk)
-	roleObj.SetNamespace(rbg.Namespace)
-	roleObj.SetName(rbg.GetWorkloadName(role))
+
+	// Get the scale subresource
+	scaleObj := &unstructured.Unstructured{}
+	scaleObj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   gvk.Group,
+		Version: gvk.Version,
+		Kind:    kind,
+	})
+	scaleObj.SetNamespace(rbg.Namespace)
+	scaleObj.SetName(rbg.GetWorkloadName(role))
 
 	if err := r.client.Get(
 		context.TODO(),
-		client.ObjectKey{Namespace: rbg.Namespace, Name: rbg.GetWorkloadName(role)}, roleObj,
+		client.ObjectKey{Namespace: rbg.Namespace, Name: rbg.GetWorkloadName(role)}, scaleObj,
 	); err != nil {
-		return "", err
-	}
-	// Retrieve the selector string from the Scale object's 'spec' field.
-	selectorMap, found, err := unstructured.NestedMap(roleObj.Object, "spec", "selector")
-	if err != nil {
-		return "", fmt.Errorf("failed to get 'spec.selector' from scale: %v", err)
-	}
-	if !found {
-		return "", fmt.Errorf("the 'spec.selector' field was not found in the scale object")
+		return "", fmt.Errorf("failed to get workload: %v", err)
 	}
 
-	selector := &metav1.LabelSelector{}
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(selectorMap, selector)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert 'spec.selector' to LabelSelector: %v", err)
+	// Try to get selector from status
+	// For LeaderWorkerSet: use status.hpaPodSelector
+	// For InstanceSet/StatefulSet/Deployment: use status.labelSelector
+	selectorField := "labelSelector"
+	if kind == "LeaderWorkerSet" {
+		selectorField = "hpaPodSelector"
 	}
-	pairs := make([]string, 0, len(selector.MatchLabels))
-	for k, v := range selector.MatchLabels {
-		pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
+	selectorStr, _, err := unstructured.NestedString(scaleObj.Object, "status", selectorField)
+	if err != nil {
+		return "", fmt.Errorf("failed to get selectore field in status: %v", err)
 	}
 
-	return strings.Join(pairs, ","), nil
+	if kind == "InstanceSet" && role.LeaderWorkerSet != nil {
+		selectorStr += fmt.Sprintf(",%s=0", workloadsv1alpha1.RBGComponentIndexLabelKey)
+	}
+
+	return selectorStr, nil
 }

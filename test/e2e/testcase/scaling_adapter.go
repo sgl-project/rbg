@@ -161,7 +161,29 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
-								wrappers.BuildBasicRole("role-1").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								// sts
+								wrappers.BuildBasicRole("role-1").
+									WithReplicas(int32(1)).
+									WithScalingAdapter(true).Obj(),
+								// lws
+								wrappers.BuildLwsRole("role-2").
+									WithReplicas(int32(1)).
+									WithScalingAdapter(true).Obj(),
+								// instanceset
+								wrappers.BuildBasicRole("role-3").
+									WithReplicas(int32(1)).
+									WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
+									WithLabels(map[string]string{
+										workloadsv1alpha1.RBGInstancePatternLabelKey: "Deployment",
+									}).
+									WithScalingAdapter(true).Obj(),
+								// instanceset - leaderWorkerPattern
+								wrappers.BuildLwsRole("role-4").
+									WithReplicas(int32(1)).
+									WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
+									WithLabels(map[string]string{
+										workloadsv1alpha1.RBGInstancePatternLabelKey: "Deployment",
+									}).
 									WithScalingAdapter(true).Obj(),
 							},
 						).Obj()
@@ -171,29 +193,28 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 
 					f.ExpectRbgScalingAdapterEqual(rbg)
 
-					targetRole := rbg.Spec.Roles[0]
-					rbgSa := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
-					gomega.Expect(
-						f.Client.Get(
-							f.Ctx, client.ObjectKey{
-								Name:      scale.GenerateScalingAdapterName(rbg.Name, targetRole.Name),
-								Namespace: rbg.Namespace,
-							}, rbgSa,
-						),
-					).Should(gomega.Succeed())
+					for _, targetRole := range rbg.Spec.Roles {
+						rbgSa := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
+						gomega.Expect(
+							f.Client.Get(
+								f.Ctx, client.ObjectKey{
+									Name:      scale.GenerateScalingAdapterName(rbg.Name, targetRole.Name),
+									Namespace: rbg.Namespace,
+								}, rbgSa,
+							),
+						).Should(gomega.Succeed())
 
-					scale := &autoscalingv1.Scale{}
-					gomega.Expect(f.Client.SubResource("scale").Get(f.Ctx, rbgSa, scale)).Should(gomega.Succeed())
-					newReplicas := int32(2)
-					scale.Spec.Replicas = newReplicas
-					gomega.Expect(
-						f.Client.SubResource("scale").Update(
-							f.Ctx, rbgSa, client.WithSubResourceBody(scale),
-						),
-					).Should(gomega.Succeed())
+						scale := &autoscalingv1.Scale{}
+						gomega.Expect(f.Client.SubResource("scale").Get(f.Ctx, rbgSa, scale)).Should(gomega.Succeed())
+						newReplicas := int32(2)
+						scale.Spec.Replicas = newReplicas
+						gomega.Expect(
+							f.Client.SubResource("scale").Update(
+								f.Ctx, rbgSa, client.WithSubResourceBody(scale),
+							),
+						).Should(gomega.Succeed())
 
-					for _, role := range rbg.Spec.Roles {
-						f.ExpectRoleScalingAdapterEqual(rbg, role, &newReplicas)
+						f.ExpectRoleScalingAdapterEqual(rbg, targetRole, &newReplicas)
 					}
 
 					gomega.Expect(f.Client.Delete(f.Ctx, rbg)).Should(gomega.Succeed())

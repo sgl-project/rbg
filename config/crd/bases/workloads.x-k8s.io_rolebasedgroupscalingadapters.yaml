@@ -17,12 +17,18 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.phase
+    - description: The current phase of the adapter
+      jsonPath: .status.phase
       name: PHASE
       type: string
-    - jsonPath: .status.replicas
+    - description: The current number of replicas
+      jsonPath: .status.replicas
       name: REPLICAS
-      type: string
+      type: integer
+    - description: Time since creation.
+      jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
