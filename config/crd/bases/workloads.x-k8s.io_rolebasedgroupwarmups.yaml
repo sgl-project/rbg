@@ -4,17 +4,26 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: rolebasedgroupwarmups.workloads.x-k8s.io.x-k8s.io
+  name: rolebasedgroupwarmups.workloads.x-k8s.io
 spec:
-  group: workloads.x-k8s.io.x-k8s.io
+  group: workloads.x-k8s.io
   names:
     kind: RoleBasedGroupWarmUp
     listKind: RoleBasedGroupWarmUpList
     plural: rolebasedgroupwarmups
+    shortNames:
+    - rbgwarmup
     singular: rolebasedgroupwarmup
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: PHASE
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: RoleBasedGroupWarmUp is the Schema for the rolebasedgroupwarmups
@@ -38,14 +47,56 @@ spec:
           spec:
             description: spec defines the desired state of RoleBasedGroupWarmUp
             properties:
-              foo:
+              targetNodes:
                 description: foo is an example field of RoleBasedGroupWarmUp. Edit
                   rolebasedgroupwarmup_types.go to remove/update
-                type: string
+                properties:
+                  imagePreload:
+                    properties:
+                      items:
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                      pullSecrets:
+                        items:
+                          description: |-
+                            LocalObjectReference contains enough information to let you locate the
+                            referenced object inside the same namespace.
+                          properties:
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                              type: string
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        type: array
+                    required:
+                    - items
+                    type: object
+                  nodeNames:
+                    items:
+                      type: string
+                    type: array
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    type: object
+                type: object
             type: object
           status:
             description: status defines the observed state of RoleBasedGroupWarmUp
             properties:
+              active:
+                format: int32
+                type: integer
+              completionTime:
+                format: date-time
+                type: string
               conditions:
                 description: |-
                   conditions represent the current state of the RoleBasedGroupWarmUp resource.
@@ -103,6 +154,25 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              desired:
+                format: int32
+                type: integer
+              failed:
+                format: int32
+                type: integer
+              phase:
+                type: string
+              ready:
+                format: int32
+                type: integer
+              startTime:
+                format: date-time
+                type: string
+              succeeded:
+                format: int32
+                type: integer
+            required:
+            - phase
             type: object
         required:
         - spec

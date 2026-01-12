@@ -49,9 +49,11 @@ type WarmUpActions struct {
 }
 
 type TargetNodes struct {
-	NodeNames []string `json:"nodeNames"`
+	NodeNames []string `json:"nodeNames,omitempty"`
 
-	WarmUpActions WarmUpActions `json:",inline"`
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	WarmUpActions `json:",inline"`
 }
 
 // RoleBasedGroupWarmUpSpec defines the desired state of RoleBasedGroupWarmUp
@@ -105,8 +107,12 @@ type RoleBasedGroupWarmUpStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="PHASE",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:resource:shortName={rbgwarmup}
 
 // RoleBasedGroupWarmUp is the Schema for the rolebasedgroupwarmups API
 type RoleBasedGroupWarmUp struct {
@@ -114,7 +120,7 @@ type RoleBasedGroupWarmUp struct {
 
 	// metadata is a standard object metadata
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// spec defines the desired state of RoleBasedGroupWarmUp
 	// +required
