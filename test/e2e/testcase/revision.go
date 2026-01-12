@@ -98,10 +98,10 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-			utils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *v1alpha1.RoleBasedGroup) {
-				// update
-				rbg.Spec.Roles[0].TemplateSource.Template.Spec.Containers[0].Command = []string{"sleep", "1000001"}
-			})
+				utils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *v1alpha1.RoleBasedGroup) {
+					// update
+					rbg.Spec.Roles[0].TemplateSource.Template.Spec.Containers[0].Command = []string{"sleep", "1000001"}
+				})
 				f.ExpectRbgEqual(rbg)
 
 				newSts := &appsv1.StatefulSet{}

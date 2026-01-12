@@ -44,15 +44,14 @@ func (r *LeaderWorkerSetReconciler) Validate(
 	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
-	// KEP-8: support templateRef mode
-	hasTemplate := role.TemplateSource.Template != nil || role.UsesRoleTemplate()
 
-	if !hasTemplate {
+	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
+	if role.TemplateSource.Template == nil {
 		if role.LeaderWorkerSet == nil {
-			return fmt.Errorf("either 'template'/'templateRef' or 'leaderWorkerSet' field must be provided")
+			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
 		}
 		if role.LeaderWorkerSet.PatchLeaderTemplate == nil || role.LeaderWorkerSet.PatchWorkerTemplate == nil {
-			return fmt.Errorf("both 'patchLeaderTemplate' and 'patchWorkerTemplate' fields must be provided when 'template'/'templateRef' field not set")
+			return fmt.Errorf("both 'patchLeaderTemplate' and 'patchWorkerTemplate' fields must be provided when 'template' field not set")
 		}
 	}
 
@@ -217,22 +216,10 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		}
 	}
 
-	// KEP-8: Resolve base template (handles both traditional mode and templateRef)
+	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
 	// baseTemplate uses value type (consistent with applyStrategicMergePatch return type)
 	var baseTemplate corev1.PodTemplateSpec
-	if role.UsesRoleTemplate() {
-		// RoleTemplate mode
-		roleTemplate, err := rbg.FindRoleTemplate(role.GetEffectiveTemplateName())
-		if err != nil {
-			return nil, fmt.Errorf("failed to find roleTemplate: %w", err)
-		}
-		merged, err := applyStrategicMergePatch(roleTemplate.Template, role.TemplatePatch)
-		if err != nil {
-			return nil, fmt.Errorf("failed to apply templatePatch: %w", err)
-		}
-		baseTemplate = merged
-	} else if role.TemplateSource.Template != nil {
-		// Traditional mode: role.Template is a pointer, dereference it
+	if role.TemplateSource.Template != nil {
 		baseTemplate = *role.TemplateSource.Template
 	}
 

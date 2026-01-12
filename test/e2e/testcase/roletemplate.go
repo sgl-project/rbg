@@ -314,7 +314,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 				},
 			)
 
-				// Test 4: Rollback roleTemplate to previous version restores workload spec
+			// Test 4: Rollback roleTemplate to previous version restores workload spec
 			ginkgo.It(
 				"rollback roleTemplate to previous version restores workload spec", func() {
 					// V1: CPU 100m
