@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 
 	corev1 "k8s.io/api/core/v1"
@@ -18,7 +19,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,7 +44,9 @@ func (r *LeaderWorkerSetReconciler) Validate(
 	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
-	if role.Template == nil {
+
+	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
+	if role.TemplateSource.Template == nil {
 		if role.LeaderWorkerSet == nil {
 			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
 		}
@@ -205,6 +207,8 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	revisionKey string,
 ) (*lwsapplyv1.LeaderWorkerSetApplyConfiguration, error) {
 	logger := log.FromContext(ctx)
+
+	// v0.5.0: LeaderWorkerSet nil check (pointer type)
 	leaderWorkerSet := role.LeaderWorkerSet
 	if leaderWorkerSet == nil {
 		leaderWorkerSet = &workloadsv1alpha1.LeaderWorkerTemplate{
@@ -212,15 +216,32 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		}
 	}
 
+	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
+	// baseTemplate uses value type (consistent with applyStrategicMergePatch return type)
+	var baseTemplate corev1.PodTemplateSpec
+	if role.TemplateSource.Template != nil {
+		baseTemplate = *role.TemplateSource.Template
+	}
+
+	// Adapt to v0.5.0 pointer type: dereference *runtime.RawExtension
+	var leaderPatch, workerPatch runtime.RawExtension
+	if leaderWorkerSet.PatchLeaderTemplate != nil {
+		leaderPatch = *leaderWorkerSet.PatchLeaderTemplate
+	}
+	if leaderWorkerSet.PatchWorkerTemplate != nil {
+		workerPatch = *leaderWorkerSet.PatchWorkerTemplate
+	}
+
 	// leaderTemplate
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	leaderTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchLeaderTemplate)
+	// KEP-8: use applyStrategicMergePatch
+	leaderTemp, err := applyStrategicMergePatch(baseTemplate, leaderPatch)
 	if err != nil {
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
 		return nil, err
 	}
 	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *leaderTemp,
+		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), leaderTemp,
 	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
@@ -228,7 +249,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	}
 
 	// workerTemplate
-	workerTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchWorkerTemplate)
+	workerTemp, err := applyStrategicMergePatch(baseTemplate, workerPatch)
 	if err != nil {
 		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
 		return nil, err
@@ -237,7 +258,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "common_env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *workerTemp,
+		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), workerTemp,
 	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))

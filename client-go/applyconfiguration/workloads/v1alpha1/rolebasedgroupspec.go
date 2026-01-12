@@ -21,6 +21,7 @@ package v1alpha1
 // with apply.
 type RoleBasedGroupSpecApplyConfiguration struct {
 	Roles                    []RoleSpecApplyConfiguration      `json:"roles,omitempty"`
+	RoleTemplates            []RoleTemplateApplyConfiguration  `json:"roleTemplates,omitempty"`
 	PodGroupPolicy           *PodGroupPolicyApplyConfiguration `json:"podGroupPolicy,omitempty"`
 	CoordinationRequirements []CoordinationApplyConfiguration  `json:"coordination,omitempty"`
 }
@@ -40,6 +41,19 @@ func (b *RoleBasedGroupSpecApplyConfiguration) WithRoles(values ...*RoleSpecAppl
 			panic("nil value passed to WithRoles")
 		}
 		b.Roles = append(b.Roles, *values[i])
+	}
+	return b
+}
+
+// WithRoleTemplates adds the given value to the RoleTemplates field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RoleTemplates field.
+func (b *RoleBasedGroupSpecApplyConfiguration) WithRoleTemplates(values ...*RoleTemplateApplyConfiguration) *RoleBasedGroupSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRoleTemplates")
+		}
+		b.RoleTemplates = append(b.RoleTemplates, *values[i])
 	}
 	return b
 }

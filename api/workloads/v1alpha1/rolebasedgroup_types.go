@@ -25,6 +25,46 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// RoleTemplate defines a reusable Pod template that can be referenced by roles.
+type RoleTemplate struct {
+	// Name is the unique identifier for this template.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Template defines the Pod template specification.
+	// +kubebuilder:validation:Required
+	Template corev1.PodTemplateSpec `json:"template"`
+}
+
+// TemplateRef references a RoleTemplate defined in spec.roleTemplates.
+type TemplateRef struct {
+	// Name of the RoleTemplate to reference.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+}
+
+// TemplateSource defines either an inline template or a reference to a RoleTemplate.
+// Only one of its members may be specified.
+// +kubebuilder:validation:XValidation:rule="!(has(self.template) && has(self.templateRef))",message="template and templateRef are mutually exclusive"
+type TemplateSource struct {
+	// Template defines the Pod template specification inline.
+	// Required when templateRef is not set for non-InstanceSet workloads.
+	// +optional
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
+
+	// TemplateRef references a RoleTemplate from spec.roleTemplates.
+	// When set, the Pod template is derived by merging the referenced template with templatePatch.
+	// Cannot be used together with template field.
+	// +optional
+	TemplateRef *TemplateRef `json:"templateRef,omitempty"`
+}
+
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -35,6 +75,14 @@ type RoleBasedGroupSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	Roles []RoleSpec `json:"roles" patchStrategy:"merge" patchMergeKey:"name"`
+
+	// RoleTemplates defines reusable Pod templates that can be referenced by roles.
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	RoleTemplates []RoleTemplate `json:"roleTemplates,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
@@ -205,6 +253,11 @@ type RollingUpdate struct {
 }
 
 // RoleSpec defines the specification for a role in the group
+// +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
+// +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'LeaderWorkerSet'",message="templateRef is not supported for LeaderWorkerSet workloads"
+// +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && self.workload.kind == 'InstanceSet')",message="template or templateRef must be set for non-InstanceSet workloads"
+// Note: "templatePatch is only valid when templateRef is set" validation is done in controller
+// because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -249,9 +302,17 @@ type RoleSpec struct {
 	// +optional
 	Workload WorkloadSpec `json:"workload,omitempty"`
 
-	// Pod template specification
+	// TemplateSource defines the Pod template source, either inline or via reference.
 	// +optional
-	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
+	TemplateSource `json:",inline"`
+
+	// TemplatePatch specifies modifications to apply to the referenced template.
+	// Uses strategic merge patch semantics.
+	// Required when templateRef is set, use empty object ({}) for no modifications.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	TemplatePatch runtime.RawExtension `json:"templatePatch,omitempty"`
 
 	// LeaderWorkerSet template
 	// +optional

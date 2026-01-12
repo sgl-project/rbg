@@ -3,6 +3,8 @@ package workloads
 // rbg-controller events
 const (
 	FailedGetRBG               = "FailedGetRBG"
+	InvalidRoleTemplates       = "InvalidRoleTemplates"
+	InvalidTemplateRef         = "InvalidTemplateRef"
 	InvalidRoleDependency      = "InvalidRoleDependency"
 	FailedCheckRoleDependency  = "FailedCheckRoleDependency"
 	DependencyNotMet           = "DependencyNotMet"

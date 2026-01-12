@@ -229,6 +229,30 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 		return nil, fmt.Errorf("roles not found or wrong type")
 	}
 
+	templateLookup := make(map[string]map[string]interface{})
+	if rawTemplates, ok := spec["roleTemplates"]; ok {
+		templateSlice, ok := rawTemplates.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("roleTemplates not found or wrong type")
+		}
+
+		for _, t := range templateSlice {
+			templateMap, ok := t.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid roleTemplate structure")
+			}
+			if patch, ok := templateMap["$patch"].(string); ok && patch == "replace" {
+				continue
+			}
+
+			nameVal, ok := templateMap["name"].(string)
+			if !ok || nameVal == "" {
+				return nil, fmt.Errorf("roleTemplate missing name field")
+			}
+			templateLookup[nameVal] = templateMap
+		}
+	}
+
 	for _, r := range roles {
 		roleMap, ok := r.(map[string]interface{})
 		if !ok {
@@ -251,6 +275,24 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 		if len(roleBytes) > 0 {
 			hf.Write(roleBytes)
 		}
+
+		if templateRef, ok := roleMap["templateRef"].(map[string]interface{}); ok {
+			if templateName, ok := templateRef["name"].(string); ok && templateName != "" {
+				template, found := templateLookup[templateName]
+				if !found {
+					return nil, fmt.Errorf("role references unknown roleTemplate %q", templateName)
+				}
+
+				if templateSpec, ok := template["template"]; ok {
+					templateBytes, err := json.Marshal(templateSpec)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal roleTemplate %q: %w", templateName, err)
+					}
+					hf.Write(templateBytes)
+				}
+			}
+		}
+
 		result[nameVal] = rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
 	}
 
@@ -288,6 +330,15 @@ func getRBGPatch(rbg *workloadsv1alpha1.RoleBasedGroup) ([]byte, error) {
 	rolesPatch = append(rolesPatch, roles...)
 
 	specCopy["roles"] = rolesPatch
+
+	roleTemplatesPatch := []interface{}{
+		map[string]interface{}{"$patch": "replace"},
+	}
+	if roleTemplates, ok := spec["roleTemplates"].([]interface{}); ok {
+		roleTemplatesPatch = append(roleTemplatesPatch, roleTemplates...)
+	}
+	specCopy["roleTemplates"] = roleTemplatesPatch
+
 	objCopy["spec"] = specCopy
 
 	return json.Marshal(objCopy)

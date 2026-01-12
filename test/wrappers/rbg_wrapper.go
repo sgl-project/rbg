@@ -77,6 +77,20 @@ func (rbgWrapper *RoleBasedGroupWrapper) WithStatus(
 	return rbgWrapper
 }
 
+func (rbgWrapper *RoleBasedGroupWrapper) WithRoleTemplates(
+	templates []workloadsv1alpha.RoleTemplate,
+) *RoleBasedGroupWrapper {
+	rbgWrapper.Spec.RoleTemplates = templates
+	return rbgWrapper
+}
+
+func (rbgWrapper *RoleBasedGroupWrapper) AddRoleTemplate(
+	template workloadsv1alpha.RoleTemplate,
+) *RoleBasedGroupWrapper {
+	rbgWrapper.Spec.RoleTemplates = append(rbgWrapper.Spec.RoleTemplates, template)
+	return rbgWrapper
+}
+
 func BuildBasicRoleBasedGroup(name, ns string) *RoleBasedGroupWrapper {
 	return &RoleBasedGroupWrapper{
 		workloadsv1alpha.RoleBasedGroup{
