@@ -72,19 +72,19 @@ func TestConfigBuilder_Build(t *testing.T) {
 roles:
   leader:
     instances:
-    - address: leader-0.s-test-cluster-leader
+    - address: test-cluster-leader-0.s-test-cluster-leader
       ports:
         api: 6443
     size: 1
   worker:
     instances:
-    - address: worker-0.s-test-cluster-worker
+    - address: test-cluster-worker-0.s-test-cluster-worker
       ports:
         http: 8080
-    - address: worker-1.s-test-cluster-worker
+    - address: test-cluster-worker-1.s-test-cluster-worker
       ports:
         http: 8080
-    - address: worker-2.s-test-cluster-worker
+    - address: test-cluster-worker-2.s-test-cluster-worker
       ports:
         http: 8080
     size: 3
@@ -149,19 +149,19 @@ roles:
 roles:
   leader:
     instances:
-    - address: leader-0.test-cluster-leader
+    - address: test-cluster-leader-0.test-cluster-leader
       ports:
         api: 6443
     size: 1
   worker:
     instances:
-    - address: worker-0.test-cluster-worker
+    - address: test-cluster-worker-0.test-cluster-worker
       ports:
         http: 8080
-    - address: worker-1.test-cluster-worker
+    - address: test-cluster-worker-1.test-cluster-worker
       ports:
         http: 8080
-    - address: worker-2.test-cluster-worker
+    - address: test-cluster-worker-2.test-cluster-worker
       ports:
         http: 8080
     size: 3
@@ -205,7 +205,7 @@ roles:
 roles:
   web:
     instances:
-    - address: web-0.s-test-cluster-web
+    - address: test-cluster-web-0.s-test-cluster-web
       ports:
         port80: 80
         port443: 443
@@ -258,19 +258,19 @@ roles:
 roles:
   leader:
     instances:
-    - address: leader-0.s-1-test-cluster-leader
+    - address: 1-test-cluster-leader-0.s-1-test-cluster-leader
       ports:
         api: 6443
     size: 1
   worker:
     instances:
-    - address: worker-0.s-1-test-cluster-worker
+    - address: 1-test-cluster-worker-0.s-1-test-cluster-worker
       ports:
         http: 8080
-    - address: worker-1.s-1-test-cluster-worker
+    - address: 1-test-cluster-worker-1.s-1-test-cluster-worker
       ports:
         http: 8080
-    - address: worker-2.s-1-test-cluster-worker
+    - address: 1-test-cluster-worker-2.s-1-test-cluster-worker
       ports:
         http: 8080
     size: 3
@@ -590,8 +590,8 @@ func TestConfigBuilder_buildInstances(t *testing.T) {
 	}
 
 	// Verify first instance
-	if instances[0].Address != "server-0.s-test-cluster-server" {
-		t.Errorf("Expected address 's-server-0.test-cluster-server', got '%s'", instances[0].Address)
+	if instances[0].Address != "test-cluster-server-0.s-test-cluster-server" {
+		t.Errorf("Expected address 'test-cluster-server-0.test-cluster-server', got '%s'", instances[0].Address)
 	}
 
 	if len(instances[0].Ports) != 2 {

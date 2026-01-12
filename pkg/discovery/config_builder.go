@@ -95,7 +95,7 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Inst
 
 	for i := 0; i < int(*role.Replicas); i++ {
 		instance := Instance{
-			Address: fmt.Sprintf("%s-%d.%s", role.Name, i, serviceName),
+			Address: fmt.Sprintf("%s-%d.%s", b.rbg.GetWorkloadName(role), i, serviceName),
 			Ports:   make(map[string]int32),
 		}
 
