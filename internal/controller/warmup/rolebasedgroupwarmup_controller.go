@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 const (
@@ -360,7 +360,7 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 	customizedActionContainerSet := map[string]bool{}
 	for _, action := range actions {
 		for _, ctr := range action.CustomizedAction.Containers {
-			ctrHash := fmt.Sprintf("%v", inplaceupdate.HashContainer(&ctr))
+			ctrHash := fmt.Sprintf("%v", utils.HashContainer(&ctr))
 			if !customizedActionContainerSet[ctrHash] {
 				customizedActionContainerSet[ctrHash] = true
 				ctr.Name = fmt.Sprintf("customized-%s", ctr.Name)
