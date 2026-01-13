@@ -48,8 +48,8 @@ spec:
             description: spec defines the desired state of RoleBasedGroupWarmUp
             properties:
               targetNodes:
-                description: foo is an example field of RoleBasedGroupWarmUp. Edit
-                  rolebasedgroupwarmup_types.go to remove/update
+                description: TargetNodes specifies explicit nodes and warmup actions
+                  to perform on them.
                 properties:
                   imagePreload:
                     properties:
@@ -86,6 +86,48 @@ spec:
                     additionalProperties:
                       type: string
                     type: object
+                type: object
+              targetRoleBasedGroup:
+                description: TargetRoleBasedGroup specifies a RoleBasedGroup resource
+                  to discover nodes from.
+                properties:
+                  name:
+                    type: string
+                  roles:
+                    additionalProperties:
+                      properties:
+                        imagePreload:
+                          properties:
+                            items:
+                              items:
+                                type: string
+                              minItems: 1
+                              type: array
+                            pullSecrets:
+                              items:
+                                description: |-
+                                  LocalObjectReference contains enough information to let you locate the
+                                  referenced object inside the same namespace.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              type: array
+                          required:
+                          - items
+                          type: object
+                      type: object
+                    type: object
+                required:
+                - name
+                - roles
                 type: object
             type: object
           status:

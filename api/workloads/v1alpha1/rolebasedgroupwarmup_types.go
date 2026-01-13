@@ -59,8 +59,6 @@ type TargetNodes struct {
 type TargetRoleBasedGroup struct {
 	Name string `json:"name"`
 
-	Namespace string `json:"namespace"`
-
 	Roles map[string]WarmUpActions `json:"roles"`
 }
 
@@ -71,9 +69,16 @@ type RoleBasedGroupWarmUpSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of RoleBasedGroupWarmUp. Edit rolebasedgroupwarmup_types.go to remove/update
+	// TargetNodes specifies explicit nodes and warmup actions to perform on them.
 	// +optional
 	TargetNodes *TargetNodes `json:"targetNodes,omitempty"`
+
+	// TargetRoleBasedGroup specifies a RoleBasedGroup resource to discover nodes from.
+	// The controller will find all Pods belonging to the RoleBasedGroup, extract their nodes,
+	// and perform role-specific warmup actions. Multiple warmup actions for the same node
+	// will be merged into a single warmup Pod.
+	// +optional
+	TargetRoleBasedGroup *TargetRoleBasedGroup `json:"targetRoleBasedGroup,omitempty"`
 }
 
 // RoleBasedGroupWarmUpStatus defines the observed state of RoleBasedGroupWarmUp.

@@ -92,18 +92,18 @@ func TestRoleBasedGroupWarmUpReconciler_buildWarmUpPod(t *testing.T) {
 		t.Errorf("Expected node selector 'node-1', got '%s'", pod.Spec.NodeSelector["kubernetes.io/hostname"])
 	}
 
-	// Verify containers
-	if len(pod.Spec.Containers) != 2 {
-		t.Fatalf("Expected 2 containers, got %d", len(pod.Spec.Containers))
+	// Verify init containers (images are loaded as init containers)
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("Expected 2 init containers, got %d", len(pod.Spec.InitContainers))
 	}
-	if pod.Spec.Containers[0].Name != "warmup-0" {
-		t.Errorf("Expected container name 'warmup-0', got '%s'", pod.Spec.Containers[0].Name)
+	if pod.Spec.InitContainers[0].Name != "warmup-0" {
+		t.Errorf("Expected container name 'warmup-0', got '%s'", pod.Spec.InitContainers[0].Name)
 	}
-	if pod.Spec.Containers[0].Image != "nginx:latest" {
-		t.Errorf("Expected image 'nginx:latest', got '%s'", pod.Spec.Containers[0].Image)
+	if pod.Spec.InitContainers[0].Image != "nginx:latest" {
+		t.Errorf("Expected image 'nginx:latest', got '%s'", pod.Spec.InitContainers[0].Image)
 	}
-	if len(pod.Spec.Containers[0].Command) != 3 || pod.Spec.Containers[0].Command[0] != "sh" {
-		t.Errorf("Expected command ['sh', '-c', 'sleep 1'], got %v", pod.Spec.Containers[0].Command)
+	if len(pod.Spec.InitContainers[0].Command) != 3 || pod.Spec.InitContainers[0].Command[0] != "sh" {
+		t.Errorf("Expected command ['sh', '-c', 'exit 0'], got %v", pod.Spec.InitContainers[0].Command)
 	}
 
 	// Verify image pull secrets
@@ -272,18 +272,14 @@ func TestRoleBasedGroupWarmUpReconciler_Reconcile_SkipWhenNoImages(t *testing.T)
 	_ = corev1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 
+	// This warmup has no valid warmup actions, so validation should fail
 	warmup := &workloadsv1alpha1.RoleBasedGroupWarmUp{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-warmup",
 			Namespace: "default",
 		},
 		Spec: workloadsv1alpha1.RoleBasedGroupWarmUpSpec{
-			TargetNodes: &workloadsv1alpha1.TargetNodes{
-				NodeNames: []string{"node-1"},
-				WarmUpActions: workloadsv1alpha1.WarmUpActions{
-					ImagePreload: nil,
-				},
-			},
+			// No targets specified at all
 		},
 	}
 
@@ -301,9 +297,10 @@ func TestRoleBasedGroupWarmUpReconciler_Reconcile_SkipWhenNoImages(t *testing.T)
 		},
 	}
 
+	// This should fail validation
 	result, err := reconciler.Reconcile(context.Background(), req)
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
+	if err == nil {
+		t.Error("Expected validation error, got nil")
 	}
 	if result.Requeue {
 		t.Error("Expected no requeue")

@@ -52,6 +52,7 @@ type RoleBasedGroupWarmUpReconciler struct {
 // +kubebuilder:rbac:groups=workloads.x-k8s.io.x-k8s.io,resources=rolebasedgroupwarmups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=workloads.x-k8s.io.x-k8s.io,resources=rolebasedgroupwarmups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io.x-k8s.io,resources=rolebasedgroupwarmups/finalizers,verbs=update
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -156,17 +157,46 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) validate(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
-	_ = log.FromContext(ctx)
-	// TODO 1: validate warm up target (either targetNode or targetRBG should be set)
+	logger := log.FromContext(ctx)
 
-	// TODO 2: validate warm up actions (at least one warm up action should be set)
+	// Validate that either targetNodes or targetRoleBasedGroup is set
+	if warmup.Spec.TargetNodes == nil && warmup.Spec.TargetRoleBasedGroup == nil {
+		return fmt.Errorf("either targetNodes or targetRoleBasedGroup must be specified")
+	}
 
-	// TODO 3 : validate warm up pod configuration
+	// Validate TargetNodes if specified
+	if warmup.Spec.TargetNodes != nil {
+		if warmup.Spec.TargetNodes.WarmUpActions.ImagePreload == nil || len(warmup.Spec.TargetNodes.WarmUpActions.ImagePreload.Items) == 0 {
+			return fmt.Errorf("targetNodes.imagePreload.items must contain at least one image")
+		}
+	}
+
+	// Validate TargetRoleBasedGroup if specified
+	if warmup.Spec.TargetRoleBasedGroup != nil {
+		if warmup.Spec.TargetRoleBasedGroup.Name == "" {
+			return fmt.Errorf("targetRoleBasedGroup.name must be specified")
+		}
+		if len(warmup.Spec.TargetRoleBasedGroup.Roles) == 0 {
+			return fmt.Errorf("targetRoleBasedGroup.roles must contain at least one role")
+		}
+
+		// Validate each role's warmup actions
+		for roleName, actions := range warmup.Spec.TargetRoleBasedGroup.Roles {
+			if actions.ImagePreload == nil || len(actions.ImagePreload.Items) == 0 {
+				logger.Info("Role has no image preload actions", "role", roleName)
+				// This is a warning, not an error - allow roles without actions
+			}
+		}
+	}
+
 	return nil
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) getDesiredNodesToWarmUp(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) (desiredNodesWithActions map[string][]workloadsv1alpha1.WarmUpActions, err error) {
+	logger := log.FromContext(ctx)
 	desiredNodesWithActions = make(map[string][]workloadsv1alpha1.WarmUpActions)
+
+	// Handle TargetNodes configuration
 	if warmup.Spec.TargetNodes != nil {
 		if warmup.Spec.TargetNodes.NodeSelector != nil {
 			nodeList := &corev1.NodeList{}
@@ -184,6 +214,76 @@ func (r *RoleBasedGroupWarmUpReconciler) getDesiredNodesToWarmUp(ctx context.Con
 				desiredNodesWithActions[nodeName] = append(desiredNodesWithActions[nodeName], warmup.Spec.TargetNodes.WarmUpActions)
 			}
 		}
+	}
+
+	// Handle TargetRoleBasedGroup configuration
+	if warmup.Spec.TargetRoleBasedGroup != nil {
+		rbgTarget := warmup.Spec.TargetRoleBasedGroup
+
+		// Fetch the RoleBasedGroup resource
+		rbg := &workloadsv1alpha1.RoleBasedGroup{}
+		rbgKey := client.ObjectKey{
+			Name:      rbgTarget.Name,
+			Namespace: warmup.Namespace,
+		}
+		if err := r.Get(ctx, rbgKey, rbg); err != nil {
+			logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
+			return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+		}
+
+		// List all Pods belonging to this RoleBasedGroup
+		podList := &corev1.PodList{}
+		if err := r.List(ctx, podList,
+			client.InNamespace(warmup.Namespace),
+			client.MatchingLabels{workloadsv1alpha1.SetNameLabelKey: rbgTarget.Name}); err != nil {
+			logger.Error(err, "Failed to list Pods for RoleBasedGroup", "name", rbgTarget.Name)
+			return nil, fmt.Errorf("failed to list Pods for RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+		}
+
+		logger.Info("Found Pods for RoleBasedGroup", "count", len(podList.Items))
+
+		// Group Pods by role and extract node names
+		roleToNodes := make(map[string][]string)
+		for _, pod := range podList.Items {
+			// Skip pods that are not scheduled yet
+			if pod.Spec.NodeName == "" {
+				continue
+			}
+
+			// Extract role from pod labels
+			roleName := pod.Labels[workloadsv1alpha1.SetRoleLabelKey]
+			if roleName == "" {
+				logger.Info("Pod missing role label, skipping", "pod", klog.KObj(&pod))
+				continue
+			}
+
+			// Add node to the role's node list
+			roleToNodes[roleName] = append(roleToNodes[roleName], pod.Spec.NodeName)
+		}
+
+		// For each role, apply the corresponding warmup actions to its nodes
+		for roleName, nodes := range roleToNodes {
+			// Get warmup actions for this role
+			actions, exists := rbgTarget.Roles[roleName]
+			if !exists {
+				logger.Info("No warmup actions defined for role, skipping", "role", roleName)
+				continue
+			}
+
+			// Deduplicate nodes for this role
+			nodeSet := make(map[string]bool)
+			for _, nodeName := range nodes {
+				nodeSet[nodeName] = true
+			}
+
+			// Add warmup actions for each unique node
+			for nodeName := range nodeSet {
+				desiredNodesWithActions[nodeName] = append(desiredNodesWithActions[nodeName], actions)
+				logger.V(1).Info("Added warmup actions for node", "node", nodeName, "role", roleName)
+			}
+		}
+
+		logger.Info("Processed RoleBasedGroup target", "rbg", rbgTarget.Name, "roles", len(roleToNodes), "nodes", len(desiredNodesWithActions))
 	}
 
 	return desiredNodesWithActions, nil
@@ -267,7 +367,7 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 		},
 		Spec: corev1.PodSpec{
 			ImagePullSecrets: imagePullSecrets,
-			InitContainers:   imagePreloadContainers,
+			Containers:       imagePreloadContainers,
 			RestartPolicy:    corev1.RestartPolicyNever,
 			NodeSelector: map[string]string{
 				"kubernetes.io/hostname": nodeName,
