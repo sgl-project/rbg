@@ -51,9 +51,10 @@ type AdapterScaleTargetRef struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
-// +kubebuilder:printcolumn:name="PHASE",type="string",JSONPath=".status.phase"
-// +kubebuilder:printcolumn:name="REPLICAS",type="string",JSONPath=".status.replicas"
 // +kubebuilder:resource:shortName={rbgsa}
+// +kubebuilder:printcolumn:name="PHASE",type="string",JSONPath=".status.phase",description="The current phase of the adapter"
+// +kubebuilder:printcolumn:name="REPLICAS",type="integer",JSONPath=".status.replicas",description="The current number of replicas"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="Time since creation."
 
 // RoleBasedGroupScalingAdapter is the Schema for the rolebasedgroupscalingadapters API.
 type RoleBasedGroupScalingAdapter struct {

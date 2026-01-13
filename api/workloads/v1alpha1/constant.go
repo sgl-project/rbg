@@ -110,6 +110,15 @@ const (
 	PodTemplateTemplateType RBGRoleTemplateType = "PodTemplate"
 )
 
+// LeaderWorkerSet labels and annotations
+const (
+	LeaderWorkerSetPrefix = "leaderworkerset.sigs.k8s.io/"
+
+	// LwsWorkerIndexLabelKey identifies the worker index in LeaderWorkerSet
+	// Value: "0" for leader replica selection
+	LwsWorkerIndexLabelKey = LeaderWorkerSetPrefix + "worker-index"
+)
+
 // InstanceSet labels and annotations
 const (
 	InstanceSetPrefix = "instanceset.workloads.x-k8s.io/"

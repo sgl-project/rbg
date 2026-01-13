@@ -30,6 +30,8 @@ func NewWorkloadEqualChecker(
 		return NewStatefulSetEqualChecker(ctx, client), nil
 	case v1alpha1.LeaderWorkerSetWorkloadType:
 		return NewLeaderWorkerSetEqualChecker(ctx, client), nil
+	case v1alpha1.InstanceSetWorkloadType:
+		return NewInstanceSetChecker(ctx, client), nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type: %s", workloadType)
 	}
