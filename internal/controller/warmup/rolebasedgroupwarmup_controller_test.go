@@ -63,7 +63,7 @@ func TestRoleBasedGroupWarmUpReconciler_buildWarmUpPod(t *testing.T) {
 		},
 	}
 
-	pod := reconciler.buildWarmUpPod(warmup, "node-1")
+	pod := reconciler.buildWarmUpPod(warmup, "node-1", []workloadsv1alpha1.WarmUpActions{warmup.Spec.TargetNodes.WarmUpActions})
 
 	// Verify pod metadata
 	if pod.Name != "test-warmup-node-1" {

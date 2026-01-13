@@ -77,17 +77,25 @@ func (r *RoleBasedGroupWarmUpReconciler) Reconcile(ctx context.Context, req ctrl
 		logger.Info("Finished reconciling", "duration", time.Since(start))
 	}()
 
+	switch warmup.Status.Phase {
+	case workloadsv1alpha1.WarmUpJobPhaseFailed, workloadsv1alpha1.WarmUpJobPhaseCompleted:
+		return r.reconcileFinished(ctx, warmup)
+	case workloadsv1alpha1.WarmUpJobPhaseRunning, workloadsv1alpha1.WarmUpJobPhaseNone:
+		return r.reconcileUnfinished(ctx, warmup)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *RoleBasedGroupWarmUpReconciler) reconcileFinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) (ctrl.Result, error) {
+	return ctrl.Result{}, nil
+}
+
+func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	if err := r.validate(ctx, *warmup); err != nil {
 		logger.Error(err, "Validation failed")
 		return ctrl.Result{}, err
-	}
-
-	// Validate that spec.targetNodes and imagePreload configuration are present
-	if warmup.Spec.TargetNodes == nil ||
-		warmup.Spec.TargetNodes.WarmUpActions.ImagePreload == nil ||
-		len(warmup.Spec.TargetNodes.WarmUpActions.ImagePreload.Items) == 0 {
-		logger.Info("No target nodes or images specified, skipping")
-		return ctrl.Result{}, nil
 	}
 
 	// 1. GetExistingPods
@@ -116,10 +124,10 @@ func (r *RoleBasedGroupWarmUpReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, err
 	}
 
-	for nodeName := range desiredNodes {
+	for nodeName, actions := range desiredNodes {
 		if _, exists := nodeToPodMap[nodeName]; !exists {
 			logger.Info("Creating warmup Pod", "node", nodeName)
-			pod := r.buildWarmUpPod(warmup, nodeName)
+			pod := r.buildWarmUpPod(warmup, nodeName, actions)
 			if err := controllerutil.SetControllerReference(warmup, pod, r.Scheme); err != nil {
 				logger.Error(err, "Failed to set owner reference", "node", nodeName)
 				continue
@@ -157,8 +165,8 @@ func (r *RoleBasedGroupWarmUpReconciler) validate(ctx context.Context, warmup wo
 	return nil
 }
 
-func (r *RoleBasedGroupWarmUpReconciler) getDesiredNodesToWarmUp(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) (desiredNodes map[string]bool, err error) {
-	desiredNodes = make(map[string]bool)
+func (r *RoleBasedGroupWarmUpReconciler) getDesiredNodesToWarmUp(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) (desiredNodesWithActions map[string][]workloadsv1alpha1.WarmUpActions, err error) {
+	desiredNodesWithActions = make(map[string][]workloadsv1alpha1.WarmUpActions)
 	if warmup.Spec.TargetNodes != nil {
 		if warmup.Spec.TargetNodes.NodeSelector != nil {
 			nodeList := &corev1.NodeList{}
@@ -167,18 +175,18 @@ func (r *RoleBasedGroupWarmUpReconciler) getDesiredNodesToWarmUp(ctx context.Con
 			}
 
 			for _, node := range nodeList.Items {
-				desiredNodes[node.Name] = true
+				desiredNodesWithActions[node.Name] = append(desiredNodesWithActions[node.Name], warmup.Spec.TargetNodes.WarmUpActions)
 			}
 		}
 
 		if warmup.Spec.TargetNodes.NodeNames != nil {
 			for _, nodeName := range warmup.Spec.TargetNodes.NodeNames {
-				desiredNodes[nodeName] = true
+				desiredNodesWithActions[nodeName] = append(desiredNodesWithActions[nodeName], warmup.Spec.TargetNodes.WarmUpActions)
 			}
 		}
 	}
 
-	return desiredNodes, nil
+	return desiredNodesWithActions, nil
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) listWarmUpPods(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) (activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod, err error) {
@@ -218,15 +226,33 @@ func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(ctx context.Con
 }
 
 // buildWarmUpPod constructs a Pod specification for warming up images on a specific node
-func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha1.RoleBasedGroupWarmUp, nodeName string) *corev1.Pod {
-	containers := make([]corev1.Container, 0, len(warmup.Spec.TargetNodes.WarmUpActions.ImagePreload.Items))
-	for i, image := range warmup.Spec.TargetNodes.WarmUpActions.ImagePreload.Items {
-		containers = append(containers, corev1.Container{
-			Name:            fmt.Sprintf("warmup-%d", i),
-			Image:           image,
-			Command:         []string{"sh", "-c", "sleep 1"},
-			ImagePullPolicy: corev1.PullIfNotPresent,
-		})
+func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha1.RoleBasedGroupWarmUp, nodeName string, actions []workloadsv1alpha1.WarmUpActions) *corev1.Pod {
+	// handle image preload actions
+	imagePreloadContainers := []corev1.Container{}
+	imageToPreloadSet := map[string]bool{}
+	for _, action := range actions {
+		for _, image := range action.ImagePreload.Items {
+			if !imageToPreloadSet[image] {
+				imageToPreloadSet[image] = true
+				imagePreloadContainers = append(imagePreloadContainers, corev1.Container{
+					Name:            fmt.Sprintf("warmup-%d", len(imagePreloadContainers)),
+					Image:           image,
+					Command:         []string{"sh", "-c", "exit 0"},
+					ImagePullPolicy: corev1.PullIfNotPresent,
+				})
+			}
+		}
+	}
+
+	imagePullSecrets := []corev1.LocalObjectReference{}
+	imagePullSecretsSet := map[string]bool{}
+	for _, action := range actions {
+		for _, pullSecret := range action.ImagePreload.PullSecrets {
+			if !imagePullSecretsSet[pullSecret.Name] {
+				imagePullSecretsSet[pullSecret.Name] = true
+				imagePullSecrets = append(imagePullSecrets, pullSecret)
+			}
+		}
 	}
 
 	pod := &corev1.Pod{
@@ -240,8 +266,9 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 			},
 		},
 		Spec: corev1.PodSpec{
-			Containers:    containers,
-			RestartPolicy: corev1.RestartPolicyNever,
+			ImagePullSecrets: imagePullSecrets,
+			InitContainers:   imagePreloadContainers,
+			RestartPolicy:    corev1.RestartPolicyNever,
 			NodeSelector: map[string]string{
 				"kubernetes.io/hostname": nodeName,
 			},
@@ -260,7 +287,7 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 // }
 
 // updateStatus calculates and updates the status based on observed Pod states
-func (r *RoleBasedGroupWarmUpReconciler) updateStatus(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp, activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod, desiredNodes map[string]bool) error {
+func (r *RoleBasedGroupWarmUpReconciler) updateStatus(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp, activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod, desiredNodes map[string][]workloadsv1alpha1.WarmUpActions) error {
 	var (
 		active    int32
 		succeeded int32

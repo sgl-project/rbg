@@ -56,6 +56,14 @@ type TargetNodes struct {
 	WarmUpActions `json:",inline"`
 }
 
+type TargetRoleBasedGroup struct {
+	Name string `json:"name"`
+
+	Namespace string `json:"namespace"`
+
+	Roles map[string]WarmUpActions `json:"roles"`
+}
+
 // RoleBasedGroupWarmUpSpec defines the desired state of RoleBasedGroupWarmUp
 type RoleBasedGroupWarmUpSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
