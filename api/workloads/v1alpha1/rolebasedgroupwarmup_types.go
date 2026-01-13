@@ -43,9 +43,21 @@ type ImagePreloadAction struct {
 	PullSecrets []corev1.LocalObjectReference `json:"pullSecrets,omitempty"`
 }
 
+type CustomizedAction struct {
+	// +kubebuilder:validation:MinItems=1
+	// +required
+	Containers []corev1.Container `json:"containers"`
+
+	// +optional
+	Volumes []corev1.Volume `json:"volumes,omitempty"`
+}
+
 type WarmUpActions struct {
 	// +optional
 	ImagePreload *ImagePreloadAction `json:"imagePreload,omitempty"`
+
+	// +optional
+	CustomizedAction *CustomizedAction `json:"customizedAction,omitempty"`
 }
 
 type TargetNodes struct {

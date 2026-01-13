@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
 )
 
 const (
@@ -328,14 +329,14 @@ func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(ctx context.Con
 // buildWarmUpPod constructs a Pod specification for warming up images on a specific node
 func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha1.RoleBasedGroupWarmUp, nodeName string, actions []workloadsv1alpha1.WarmUpActions) *corev1.Pod {
 	// handle image preload actions
-	imagePreloadContainers := []corev1.Container{}
+	containers := []corev1.Container{}
 	imageToPreloadSet := map[string]bool{}
 	for _, action := range actions {
 		for _, image := range action.ImagePreload.Items {
 			if !imageToPreloadSet[image] {
 				imageToPreloadSet[image] = true
-				imagePreloadContainers = append(imagePreloadContainers, corev1.Container{
-					Name:            fmt.Sprintf("warmup-%d", len(imagePreloadContainers)),
+				containers = append(containers, corev1.Container{
+					Name:            fmt.Sprintf("image-warmup-%d", len(containers)),
 					Image:           image,
 					Command:         []string{"sh", "-c", "exit 0"},
 					ImagePullPolicy: corev1.PullIfNotPresent,
@@ -355,10 +356,23 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 		}
 	}
 
+	// handle customized actions
+	customizedActionContainerSet := map[string]bool{}
+	for _, action := range actions {
+		for _, ctr := range action.CustomizedAction.Containers {
+			ctrHash := fmt.Sprintf("%v", inplaceupdate.HashContainer(&ctr))
+			if !customizedActionContainerSet[ctrHash] {
+				customizedActionContainerSet[ctrHash] = true
+				ctr.Name = fmt.Sprintf("customized-%s", ctr.Name)
+				containers = append(containers, ctr)
+			}
+		}
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-%s", warmup.Name, nodeName),
-			Namespace: warmup.Namespace,
+			GenerateName: fmt.Sprintf("%s-", warmup.Name),
+			Namespace:    warmup.Namespace,
 			Labels: map[string]string{
 				LabelWarmUpName: warmup.Name,
 				LabelWarmUpUID:  string(warmup.UID),
@@ -367,7 +381,7 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 		},
 		Spec: corev1.PodSpec{
 			ImagePullSecrets: imagePullSecrets,
-			Containers:       imagePreloadContainers,
+			Containers:       containers,
 			RestartPolicy:    corev1.RestartPolicyNever,
 			NodeSelector: map[string]string{
 				"kubernetes.io/hostname": nodeName,
