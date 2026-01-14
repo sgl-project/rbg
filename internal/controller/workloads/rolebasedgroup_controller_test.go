@@ -1353,3 +1353,296 @@ func Test_calculateCoordinationUpdatedReplicasBound(t *testing.T) {
 func ptrToIntStr(v intstr.IntOrString) *intstr.IntOrString {
 	return &v
 }
+
+// TestCalculateScalingForAllCoordination_MultipleCoordinations tests multiple coordination scaling scenarios
+func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) {
+	tests := []struct {
+		name          string
+		coordinations []workloadsv1alpha1.Coordination
+		roles         []workloadsv1alpha1.RoleSpec
+		roleStatuses  []workloadsv1alpha1.RoleStatus
+		pods          []*corev1.Pod
+		wantTargets   map[string]int32
+		wantErr       bool
+	}{
+		{
+			name: "two coordinations - no overlapping roles",
+			coordinations: []workloadsv1alpha1.Coordination{
+				{
+					Name:  "coord1",
+					Roles: []string{"prefill", "decode"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("5%"),
+						},
+					},
+				},
+				{
+					Name:  "coord2",
+					Roles: []string{"router", "worker"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("10%"),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha1.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(300))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "router", Replicas: ptr.To(int32(50))},
+				{Name: "worker", Replicas: ptr.To(int32(100))},
+			},
+			roleStatuses: []workloadsv1alpha1.RoleStatus{
+				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
+				{Name: "router", Replicas: 0, ReadyReplicas: 0},
+				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
+			},
+			wantTargets: map[string]int32{
+				"prefill": 15, // 300 * 5% = 15
+				"decode":  5,  // 100 * 5% = 5
+				"router":  5,  // 50 * 10% = 5
+				"worker":  10, // 100 * 10% = 10
+			},
+			wantErr: false,
+		},
+		{
+			name: "two coordinations - with overlapping roles - take minimum",
+			coordinations: []workloadsv1alpha1.Coordination{
+				{
+					Name:  "coord1",
+					Roles: []string{"prefill", "decode"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("5%"),
+						},
+					},
+				},
+				{
+					Name:  "coord2",
+					Roles: []string{"prefill", "worker"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("10%"),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha1.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(300))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "worker", Replicas: ptr.To(int32(100))},
+			},
+			roleStatuses: []workloadsv1alpha1.RoleStatus{
+				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
+				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
+			},
+			wantTargets: map[string]int32{
+				// coord1: prefill=15 (300*5%), decode=5 (100*5%)
+				// coord2: prefill=30 (300*10%), worker=10 (100*10%)
+				// prefill takes minimum: min(15, 30) = 15
+				"prefill": 15, // Take minimum from coord1 and coord2
+				"decode":  5,  // Only in coord1
+				"worker":  10, // Only in coord2
+			},
+			wantErr: false,
+		},
+		{
+			name: "three coordinations - complex overlapping",
+			coordinations: []workloadsv1alpha1.Coordination{
+				{
+					Name:  "coord1",
+					Roles: []string{"prefill", "decode"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("5%"),
+						},
+					},
+				},
+				{
+					Name:  "coord2",
+					Roles: []string{"decode", "router"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("8%"),
+						},
+					},
+				},
+				{
+					Name:  "coord3",
+					Roles: []string{"router", "worker"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To("10%"),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha1.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(200))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "router", Replicas: ptr.To(int32(50))},
+				{Name: "worker", Replicas: ptr.To(int32(100))},
+			},
+			roleStatuses: []workloadsv1alpha1.RoleStatus{
+				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
+				{Name: "router", Replicas: 0, ReadyReplicas: 0},
+				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
+			},
+			wantTargets: map[string]int32{
+				// coord1: prefill=10 (200*5%), decode=5 (100*5%)
+				// coord2: decode=8 (100*8%), router=4 (50*8%)
+				// coord3: router=5 (50*10%), worker=10 (100*10%)
+				// decode: min(5, 8) = 5
+				// router: min(4, 5) = 4
+				"prefill": 10, // Only in coord1
+				"decode":  5,  // min(5 from coord1, 8 from coord2)
+				"router":  4,  // min(4 from coord2, 5 from coord3)
+				"worker":  10, // Only in coord3
+			},
+			wantErr: false,
+		},
+		{
+			name: "two coordinations - partial overlap with progression",
+			coordinations: []workloadsv1alpha1.Coordination{
+				{
+					Name:  "coord1",
+					Roles: []string{"prefill", "decode"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew:     ptr.To("5%"),
+							Progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+						},
+					},
+				},
+				{
+					Name:  "coord2",
+					Roles: []string{"decode", "router"},
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew:     ptr.To("10%"),
+							Progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha1.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(100))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "router", Replicas: ptr.To(int32(50))},
+			},
+			roleStatuses: []workloadsv1alpha1.RoleStatus{
+				{Name: "prefill", Replicas: 5, ReadyReplicas: 5},
+				{Name: "decode", Replicas: 5, ReadyReplicas: 5},
+				{Name: "router", Replicas: 0, ReadyReplicas: 0},
+			},
+			pods: []*corev1.Pod{
+				// prefill pods - all scheduled
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-2", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-3", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-4", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				// decode pods - all scheduled
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-0", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-1", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-2", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-3", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-4", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+			},
+			wantTargets: map[string]int32{
+				// All pods scheduled, can proceed to next batch
+				// coord1: prefill=10 (100*10%), decode=10 (100*10%)
+				// coord2: decode=15 (100*15%), router=5 (50*10%)
+				"prefill": 10, // Only in coord1
+				"decode":  10, // min(10 from coord1, 15 from coord2)
+				"router":  5,  // Only in coord2
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+			// Setup scheme
+			scheme := runtime.NewScheme()
+			_ = clientgoscheme.AddToScheme(scheme)
+			_ = workloadsv1alpha1.AddToScheme(scheme)
+
+			// Build RBG
+			rbg := &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg",
+					Namespace: "default",
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles:                    tt.roles,
+					CoordinationRequirements: tt.coordinations,
+				},
+				Status: workloadsv1alpha1.RoleBasedGroupStatus{
+					RoleStatuses: tt.roleStatuses,
+				},
+			}
+
+			// Setup fake client with pods
+			objects := []client.Object{rbg}
+			for _, pod := range tt.pods {
+				pod.Namespace = "default"
+				if pod.Labels == nil {
+					pod.Labels = make(map[string]string)
+				}
+				pod.Labels[workloadsv1alpha1.SetNameLabelKey] = "test-rbg"
+				objects = append(objects, pod)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			reconciler := &RoleBasedGroupReconciler{
+				client:   fakeClient,
+				scheme:   scheme,
+				recorder: record.NewFakeRecorder(100),
+			}
+
+			// Call the method
+			ctx := context.Background()
+			gotTargets, err := reconciler.CalculateScalingForAllCoordination(ctx, rbg, tt.roleStatuses)
+
+			// Check error
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CalculateScalingForAllCoordination() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr {
+				return
+			}
+
+			// Check targets
+			for roleName, wantTarget := range tt.wantTargets {
+				gotTarget, exists := gotTargets[roleName]
+				if !exists {
+					t.Errorf("missing role %s in result", roleName)
+					continue
+				}
+				if gotTarget != wantTarget {
+					t.Errorf("role %s = %d, want %d", roleName, gotTarget, wantTarget)
+				}
+			}
+
+			// Check no extra roles
+			for roleName := range gotTargets {
+				if _, expected := tt.wantTargets[roleName]; !expected {
+					t.Errorf("unexpected role %s in result", roleName)
+				}
+			}
+		})
+	}
+}

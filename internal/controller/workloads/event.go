@@ -10,6 +10,7 @@ const (
 	DependencyNotMet           = "DependencyNotMet"
 	FailedReconcileWorkload    = "FailedReconcileWorkload"
 	FailedCreateScalingAdapter = "FailedCreateScalingAdapter"
+	FailedCalculateScaling     = "FailedCalculateScaling"
 	Succeed                    = "Succeed"
 	FailedUpdateStatus         = "FailedUpdateStatus"
 	FailedCreatePodGroup       = "FailedCreatePodGroup"

@@ -1,0 +1,43 @@
+# Simple coordination scaling example
+# This example demonstrates basic progressive deployment with coordination scaling
+# Useful for deployments in resource-constrained environments
+
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: simple-inference
+  namespace: default
+spec:
+  coordination:
+    - name: coordinated-scaling
+      roles:
+        - prefill
+        - decode
+      strategy:
+        scaling:
+          # 10% deployment progress difference between roles
+          # This is a balanced value for most use cases
+          maxSkew: "10%"
+          # Wait for pods to be scheduled before next batch
+          progression: OrderScheduled
+
+  roles:
+    - name: prefill
+      replicas: 10
+      template:
+        spec:
+          containers:
+            - name: nginx-prefill
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 80
+
+    - name: decode
+      replicas: 10
+      template:
+        spec:
+          containers:
+            - name: nginx-decode
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 8080

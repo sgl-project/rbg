@@ -1,0 +1,81 @@
+# Coordination scaling with OrderReady progression
+# This example uses OrderReady progression to ensure pods are fully ready
+# before proceeding to the next batch, providing stronger deployment guarantees
+
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: safe-progressive-deployment
+  namespace: default
+spec:
+  coordination:
+    - name: safe-coordinated-scaling
+      roles:
+        - frontend
+        - backend
+        - cache
+      strategy:
+        scaling:
+          # Small maxSkew for careful, incremental deployment
+          maxSkew: "5%"
+          # OrderReady: Wait for all pods in current batch to be ready
+          # This is safer but slower than OrderScheduled
+          progression: OrderReady
+
+  roles:
+    - name: frontend
+      replicas: 50
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 80
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
+
+    - name: backend
+      replicas: 30
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 8080
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
+
+    - name: cache
+      replicas: 10
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 6379
+              readinessProbe:
+                successThreshold: 3
+                periodSeconds: 3
+                initialDelaySeconds: 10
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - echo "1"
