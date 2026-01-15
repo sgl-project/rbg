@@ -332,15 +332,18 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 	containers := []corev1.Container{}
 	imageToPreloadSet := map[string]bool{}
 	for _, action := range actions {
-		for _, image := range action.ImagePreload.Items {
-			if !imageToPreloadSet[image] {
-				imageToPreloadSet[image] = true
-				containers = append(containers, corev1.Container{
-					Name:            fmt.Sprintf("image-warmup-%d", len(containers)),
-					Image:           image,
-					Command:         []string{"sh", "-c", "exit 0"},
-					ImagePullPolicy: corev1.PullIfNotPresent,
-				})
+		// Check if ImagePreload is not nil before accessing its fields
+		if action.ImagePreload != nil {
+			for _, image := range action.ImagePreload.Items {
+				if !imageToPreloadSet[image] {
+					imageToPreloadSet[image] = true
+					containers = append(containers, corev1.Container{
+						Name:            fmt.Sprintf("image-warmup-%d", len(containers)),
+						Image:           image,
+						Command:         []string{"sh", "-c", "exit 0"},
+						ImagePullPolicy: corev1.PullIfNotPresent,
+					})
+				}
 			}
 		}
 	}
@@ -348,10 +351,13 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 	imagePullSecrets := []corev1.LocalObjectReference{}
 	imagePullSecretsSet := map[string]bool{}
 	for _, action := range actions {
-		for _, pullSecret := range action.ImagePreload.PullSecrets {
-			if !imagePullSecretsSet[pullSecret.Name] {
-				imagePullSecretsSet[pullSecret.Name] = true
-				imagePullSecrets = append(imagePullSecrets, pullSecret)
+		// Check if ImagePreload is not nil before accessing its fields
+		if action.ImagePreload != nil {
+			for _, pullSecret := range action.ImagePreload.PullSecrets {
+				if !imagePullSecretsSet[pullSecret.Name] {
+					imagePullSecretsSet[pullSecret.Name] = true
+					imagePullSecrets = append(imagePullSecrets, pullSecret)
+				}
 			}
 		}
 	}
@@ -359,12 +365,15 @@ func (r *RoleBasedGroupWarmUpReconciler) buildWarmUpPod(warmup *workloadsv1alpha
 	// handle customized actions
 	customizedActionContainerSet := map[string]bool{}
 	for _, action := range actions {
-		for _, ctr := range action.CustomizedAction.Containers {
-			ctrHash := fmt.Sprintf("%v", utils.HashContainer(&ctr))
-			if !customizedActionContainerSet[ctrHash] {
-				customizedActionContainerSet[ctrHash] = true
-				ctr.Name = fmt.Sprintf("customized-%s", ctr.Name)
-				containers = append(containers, ctr)
+		// Check if CustomizedAction is not nil before accessing its fields
+		if action.CustomizedAction != nil {
+			for _, ctr := range action.CustomizedAction.Containers {
+				ctrHash := fmt.Sprintf("%v", utils.HashContainer(&ctr))
+				if !customizedActionContainerSet[ctrHash] {
+					customizedActionContainerSet[ctrHash] = true
+					ctr.Name = fmt.Sprintf("customized-%s", ctr.Name)
+					containers = append(containers, ctr)
+				}
 			}
 		}
 	}
