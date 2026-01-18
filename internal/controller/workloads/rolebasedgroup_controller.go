@@ -18,7 +18,6 @@ package workloads
 
 import (
 	"context"
-	stderrors "errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -26,7 +25,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/modern-go/reflect2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -90,13 +88,12 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
-
 func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the RoleBasedGroup instance
-	rbg := &workloadsv1alpha1.RoleBasedGroup{}
-	if err := r.client.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbg); err != nil {
+	// 1. Fetch the RoleBasedGroup
+	rbg, err := utils.GetRBG(ctx, r.client, req.NamespacedName)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Object not found, might be deleted after reconcile request.
 			logger.Info("RoleBasedGroup resource not found. Ignoring since object must be deleted",
@@ -110,7 +107,9 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			"namespace", req.Namespace)
 		return ctrl.Result{}, err
 	}
-	if !rbg.DeletionTimestamp.IsZero() {
+	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
+
+	if rbg.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
 	}
 
@@ -134,210 +133,33 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Info("Finished reconciling", "duration", time.Since(start))
 	}()
 
-	// Process revisions
-	expectedRolesRevisionHash, err := r.handleRevisions(ctx, rbg)
+	// 2. Create reconciliation data context
+	data := NewReconcileData(rbg, dependencyManager)
+
+	// 3. Build and execute the reconciliation pipeline
+	pipeline := r.createPipeline()
+	result, err := pipeline.Execute(ctx, data)
+
+	// 4. Record Kubernetes events based on reconciliation outcome
 	if err != nil {
-		return ctrl.Result{}, err
+		r.recorder.Event(rbg, corev1.EventTypeWarning, "ReconcileFailed", err.Error())
+	} else {
+		r.recorder.Event(rbg, corev1.EventTypeNormal, "ReconcileSucceeded", "Reconcile completed successfully")
 	}
 
-	// Process roles in dependency order
-	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
-	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
-	if err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
-		return ctrl.Result{}, err
-	}
-
-	// Process PodGroup
-	podGroupManager := scheduler.NewPodGroupScheduler(r.client)
-	if err := podGroupManager.Reconcile(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreatePodGroup, err.Error())
-		return ctrl.Result{}, err
-	}
-
-	var updateStatus bool
-	roleStatuses := make([]workloadsv1alpha1.RoleStatus, 0, len(rbg.Spec.Roles))
-	roleReconciler := make(map[string]reconciler.WorkloadReconciler)
-	for _, role := range rbg.Spec.Roles {
-		logger := log.FromContext(ctx)
-		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
-		// first check whether watch lws cr
-		dynamicWatchCustomCRD(roleCtx, role.Workload.Kind)
-
-		reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
-		if err != nil {
-			logger.Error(err, "Failed to create workload reconciler")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s, err: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-
-		if err := reconciler.Validate(ctx, &role); err != nil {
-			logger.Error(err, "Failed to validate role declaration")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to validate role %s declaration, err: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-
-		roleReconciler[role.Name] = reconciler
-
-		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to construct role %s status: %v", role.Name, err,
-				)
-				return ctrl.Result{}, err
-			}
-		}
-		updateStatus = updateStatus || updateRoleStatus
-		roleStatuses = append(roleStatuses, roleStatus)
-	}
-
-	// Update the status based on the observed role statuses.
-	if updateStatus {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Calculate the rolling update strategy for all coordination specifications in rbg.
-	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
-	if err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-			"Failed to update status for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
-	}
-
-	// Reconcile roles, do create/update actions for roles.
-	for _, roleList := range sortedRoles {
-		var errs error
-
-		for _, role := range roleList {
-			logger := log.FromContext(ctx)
-			roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
-
-			// Check dependencies first
-			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
-			if err != nil {
-				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
-				return ctrl.Result{}, err
-			}
-			if !ready {
-				err := fmt.Errorf("dependencies not met for role '%s'", role.Name)
-				r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
-				return ctrl.Result{}, err
-			}
-
-			reconciler, ok := roleReconciler[role.Name]
-			if !ok || reflect2.IsNil(reconciler) {
-				err = fmt.Errorf("workload reconciler not found")
-				logger.Error(err, "Failed to get workload reconciler")
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to reconcile role %s: %v", role.Name, err,
-				)
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-
-			var rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate
-			if rollout, ok := rollingUpdateStrategies[role.Name]; ok {
-				rollingUpdateStrategy = &rollout
-			}
-
-			if err := reconciler.Reconciler(roleCtx, rbg, role, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
-				logger.Error(err, "Failed to reconcile workload")
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to reconcile role %s: %v", role.Name, err,
-				)
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-
-			if err := r.ReconcileScalingAdapter(roleCtx, rbg, role); err != nil {
-				logger.Error(err, "Failed to reconcile scaling adapter")
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
-					"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
-				)
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-		}
-
-		if errs != nil {
-			return ctrl.Result{}, errs
-		}
-	}
-
-	// delete orphan roles
-	if err := r.deleteOrphanRoles(ctx, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, "delete role error",
-			"Failed to delete roles for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
-	}
-
-	// delete expired controllerRevision
-	if _, err := utils.CleanExpiredRevision(ctx, r.client, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, "delete expired revision error",
-			"Failed to delete expired revision for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
-	}
-
-	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
-	return ctrl.Result{}, nil
+	return result, err
 }
 
-func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (map[string]string, error) {
-	logger := log.FromContext(ctx)
-
-	currentRevision, err := r.getCurrentRevision(ctx, rbg)
-	if err != nil {
-		logger.Error(err, "Failed get or create revision")
-		return nil, err
-	}
-
-	expectedRevision, err := utils.NewRevision(ctx, r.client, rbg, currentRevision)
-	if err != nil {
-		return nil, err
-	}
-
-	if !utils.EqualRevision(currentRevision, expectedRevision) {
-		logger.Info("Current revision need to be updated")
-		if err := r.client.Create(ctx, expectedRevision); err != nil {
-			logger.Error(err, fmt.Sprintf("Failed to create revision %v", expectedRevision))
-			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
-			return nil, err
-		} else {
-			logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
-			r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
-		}
-	}
-
-	expectedRolesRevisionHash, err := utils.GetRolesRevisionHash(expectedRevision)
-	if err != nil {
-		logger.Error(err, "Failed to get roles revision hash")
-		return nil, err
-	}
-
-	return expectedRolesRevisionHash, nil
+func (r *RoleBasedGroupReconciler) createPipeline() *Pipeline {
+	return NewPipeline(
+		&RevisionStep{r},
+		&DependencyStep{r},
+		&PodGroupStep{r},
+		&RoleStatusStep{r},
+		&CoordinationStep{r},
+		&ReconcileRolesStep{r},
+		&CleanupStep{r},
+	)
 }
 
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
