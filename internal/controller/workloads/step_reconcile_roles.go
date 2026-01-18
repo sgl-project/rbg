@@ -57,7 +57,7 @@ func (r *ReconcileRolesStep) Execute(ctx context.Context, data *ReconcileData) (
 				return ctrl.Result{}, err
 			}
 
-			reconciler, ok := data.roleReconciler[role.Name]
+			reconciler, ok := data.GetRoleReconcilers()[role.Name]
 			if !ok || reflect2.IsNil(reconciler) {
 				err = fmt.Errorf("workload reconciler not found")
 				logger.Error(err, "Failed to get workload reconciler")

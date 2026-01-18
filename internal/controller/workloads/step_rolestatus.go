@@ -39,7 +39,7 @@ func (r *RoleStatusStep) Execute(ctx context.Context, data *ReconcileData) (ctrl
 
 	var updateStatus bool
 	roleStatuses := make([]workloadsv1alpha1.RoleStatus, 0, len(rbg.Spec.Roles))
-	data.roleReconciler = make(map[string]reconciler.WorkloadReconciler)
+	data.SetRoleReconcilers(make(map[string]reconciler.WorkloadReconciler))
 	for _, role := range rbg.Spec.Roles {
 		logger := log.FromContext(ctx)
 		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))

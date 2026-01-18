@@ -23,13 +23,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// ReconcileStep 管道步骤接口
+// ReconcileStep defines the interface for a step in the reconciliation pipeline.
 type ReconcileStep interface {
 	Execute(ctx context.Context, data *ReconcileData) (ctrl.Result, error)
 	Name() string
 }
 
-// Pipeline 管道执行器
+// Pipeline executes a series of reconciliation steps in order.
 type Pipeline struct {
 	steps []ReconcileStep
 }
