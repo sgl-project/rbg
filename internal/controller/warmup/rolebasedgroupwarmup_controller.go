@@ -81,24 +81,25 @@ func (r *RoleBasedGroupWarmUpReconciler) Reconcile(ctx context.Context, req ctrl
 
 	switch warmup.Status.Phase {
 	case workloadsv1alpha1.WarmUpJobPhaseFailed, workloadsv1alpha1.WarmUpJobPhaseCompleted:
-		return r.reconcileFinished(ctx, warmup)
+		return ctrl.Result{}, r.reconcileFinished(ctx, warmup)
 	case workloadsv1alpha1.WarmUpJobPhaseRunning, workloadsv1alpha1.WarmUpJobPhaseNone:
-		return r.reconcileUnfinished(ctx, warmup)
+		return ctrl.Result{}, r.reconcileUnfinished(ctx, warmup)
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *RoleBasedGroupWarmUpReconciler) reconcileFinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) (ctrl.Result, error) {
+func (r *RoleBasedGroupWarmUpReconciler) reconcileFinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) error {
 	_ = log.FromContext(ctx)
-	return ctrl.Result{}, nil
+	_ = warmup
+	return nil
 }
 
-func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) (ctrl.Result, error) {
+func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) error {
 	logger := log.FromContext(ctx)
 	if err := r.validate(*warmup); err != nil {
 		logger.Error(err, "Validation failed")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// 1. GetExistingPods
@@ -106,7 +107,7 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 	activePods, succeededPods, failedPods, err := r.listWarmUpPods(ctx, *warmup)
 	if err != nil {
 		logger.Error(err, "failed to list warmup pods")
-		return ctrl.Result{}, err
+		return err
 	}
 	// 3. sort desired nodes
 
@@ -115,16 +116,11 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
 
-	nodeToPodMap, err := r.getExistingNodeToPodMap(allPods)
-	if err != nil {
-		logger.Error(err, "failed to get existing node to pod map")
-		return ctrl.Result{}, err
-	}
-
+	nodeToPodMap := r.getExistingNodeToPodMap(allPods)
 	desiredNodes, err := r.getDesiredNodesToWarmUp(ctx, *warmup)
 	if err != nil {
 		logger.Error(err, "failed to get desired nodes to warm up")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	for nodeName, actions := range desiredNodes {
@@ -152,10 +148,10 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 	// Calculate and update the status based on observed Pod states
 	if err := r.updateStatus(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes); err != nil {
 		logger.Error(err, "Failed to update status")
-		return ctrl.Result{}, err
+		return err
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) validate(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
@@ -334,7 +330,7 @@ func (r *RoleBasedGroupWarmUpReconciler) listWarmUpPods(ctx context.Context, war
 	return activePods, succeededPods, failedPods, nil
 }
 
-func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(pods []*corev1.Pod) (nodeToPodMap map[string]*corev1.Pod, error error) {
+func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(pods []*corev1.Pod) (nodeToPodMap map[string]*corev1.Pod) {
 	nodeToPodMap = make(map[string]*corev1.Pod)
 
 	for _, p := range pods {
@@ -343,7 +339,7 @@ func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(pods []*corev1.
 		}
 	}
 
-	return nodeToPodMap, nil
+	return nodeToPodMap
 }
 
 // buildWarmUpPod constructs a Pod specification for warming up images on a specific node
