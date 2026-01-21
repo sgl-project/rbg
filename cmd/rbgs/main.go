@@ -51,8 +51,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
 	warmupcontroller "sigs.k8s.io/rbgs/internal/controller/warmup"
+	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"sigs.k8s.io/rbgs/version"
 	// +kubebuilder:scaffold:imports

@@ -33,6 +33,7 @@ type WorkloadsV1alpha1Interface interface {
 	RoleBasedGroupsGetter
 	RoleBasedGroupScalingAdaptersGetter
 	RoleBasedGroupSetsGetter
+	RoleBasedGroupWarmUpsGetter
 }
 
 // WorkloadsV1alpha1Client is used to interact with features provided by the workloads.x-k8s.io group.
@@ -62,6 +63,10 @@ func (c *WorkloadsV1alpha1Client) RoleBasedGroupScalingAdapters(namespace string
 
 func (c *WorkloadsV1alpha1Client) RoleBasedGroupSets(namespace string) RoleBasedGroupSetInterface {
 	return newRoleBasedGroupSets(c, namespace)
+}
+
+func (c *WorkloadsV1alpha1Client) RoleBasedGroupWarmUps(namespace string) RoleBasedGroupWarmUpInterface {
+	return newRoleBasedGroupWarmUps(c, namespace)
 }
 
 // NewForConfig creates a new WorkloadsV1alpha1Client for the given config.

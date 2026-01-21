@@ -28,3 +28,5 @@ type RoleBasedGroupExpansion interface{}
 type RoleBasedGroupScalingAdapterExpansion interface{}
 
 type RoleBasedGroupSetExpansion interface{}
+
+type RoleBasedGroupWarmUpExpansion interface{}
