@@ -18,6 +18,7 @@ package workloadsxk8sio
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,8 +68,8 @@ func TestRoleBasedGroupWarmUpReconciler_buildWarmUpPod(t *testing.T) {
 	pod := reconciler.buildWarmUpPod(warmup, "node-1", []workloadsv1alpha1.WarmUpActions{warmup.Spec.TargetNodes.WarmUpActions})
 
 	// Verify pod metadata
-	if pod.Name != "test-warmup-node-1" {
-		t.Errorf("Expected pod name 'test-warmup-node-1', got '%s'", pod.Name)
+	if pod.GenerateName == "" || !strings.HasPrefix(pod.GenerateName, "test-warmup-") {
+		t.Errorf("Expected pod GenerateName to start with 'test-warmup-', got '%s'", pod.GenerateName)
 	}
 	if pod.Namespace != "default" {
 		t.Errorf("Expected pod namespace 'default', got '%s'", pod.Namespace)
@@ -93,18 +94,18 @@ func TestRoleBasedGroupWarmUpReconciler_buildWarmUpPod(t *testing.T) {
 		t.Errorf("Expected node selector 'node-1', got '%s'", pod.Spec.NodeSelector["kubernetes.io/hostname"])
 	}
 
-	// Verify init containers (images are loaded as init containers)
-	if len(pod.Spec.InitContainers) != 2 {
-		t.Fatalf("Expected 2 init containers, got %d", len(pod.Spec.InitContainers))
+	// Verify containers (images are loaded as regular containers)
+	if len(pod.Spec.Containers) != 2 {
+		t.Fatalf("Expected 2 containers, got %d", len(pod.Spec.Containers))
 	}
-	if pod.Spec.InitContainers[0].Name != "warmup-0" {
-		t.Errorf("Expected container name 'warmup-0', got '%s'", pod.Spec.InitContainers[0].Name)
+	if !strings.HasPrefix(pod.Spec.Containers[0].Name, "image-warmup-") {
+		t.Errorf("Expected container name to start with 'image-warmup-', got '%s'", pod.Spec.Containers[0].Name)
 	}
-	if pod.Spec.InitContainers[0].Image != "nginx:latest" {
-		t.Errorf("Expected image 'nginx:latest', got '%s'", pod.Spec.InitContainers[0].Image)
+	if pod.Spec.Containers[0].Image != "nginx:latest" {
+		t.Errorf("Expected image 'nginx:latest', got '%s'", pod.Spec.Containers[0].Image)
 	}
-	if len(pod.Spec.InitContainers[0].Command) != 3 || pod.Spec.InitContainers[0].Command[0] != "sh" {
-		t.Errorf("Expected command ['sh', '-c', 'exit 0'], got %v", pod.Spec.InitContainers[0].Command)
+	if len(pod.Spec.Containers[0].Command) != 3 || pod.Spec.Containers[0].Command[0] != "sh" {
+		t.Errorf("Expected command ['sh', '-c', 'exit 0'], got %v", pod.Spec.Containers[0].Command)
 	}
 
 	// Verify image pull secrets

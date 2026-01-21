@@ -267,8 +267,8 @@ func TestBuildWarmUpPod_MergedActions(t *testing.T) {
 	pod := reconciler.buildWarmUpPod(warmup, "node-1", actions)
 
 	// Verify images are deduplicated
-	if len(pod.Spec.InitContainers) != 3 {
-		t.Errorf("Expected 3 unique init containers, got %d", len(pod.Spec.InitContainers))
+	if len(pod.Spec.Containers) != 3 {
+		t.Errorf("Expected 3 unique containers, got %d", len(pod.Spec.Containers))
 	}
 
 	// Verify pull secrets are deduplicated
@@ -278,14 +278,14 @@ func TestBuildWarmUpPod_MergedActions(t *testing.T) {
 
 	// Verify image names
 	imageSet := make(map[string]bool)
-	for _, container := range pod.Spec.InitContainers {
+	for _, container := range pod.Spec.Containers {
 		imageSet[container.Image] = true
 	}
 
 	expectedImages := []string{"nginx:latest", "redis:7.0", "postgres:15"}
 	for _, img := range expectedImages {
 		if !imageSet[img] {
-			t.Errorf("Expected image %s in init containers", img)
+			t.Errorf("Expected image %s in containers", img)
 		}
 	}
 }
