@@ -158,35 +158,54 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) validate(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
-	logger := log.FromContext(ctx)
 
-	// Validate that either targetNodes or targetRoleBasedGroup is set
-	if warmup.Spec.TargetNodes == nil && warmup.Spec.TargetRoleBasedGroup == nil {
-		return fmt.Errorf("either targetNodes or targetRoleBasedGroup must be specified")
+	targetValidationFunc := func(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
+		// Validate that either targetNodes or targetRoleBasedGroup is set
+		if warmup.Spec.TargetNodes == nil && warmup.Spec.TargetRoleBasedGroup == nil {
+			return fmt.Errorf("either targetNodes or targetRoleBasedGroup must be specified")
+		}
+
+		if warmup.Spec.TargetNodes != nil && warmup.Spec.TargetRoleBasedGroup != nil {
+			return fmt.Errorf("only one of targetNodes or targetRoleBasedGroup may be specified")
+		}
+
+		return nil
 	}
 
-	// Validate TargetNodes if specified
-	if warmup.Spec.TargetNodes != nil {
-		if warmup.Spec.TargetNodes.WarmUpActions.ImagePreload == nil || len(warmup.Spec.TargetNodes.WarmUpActions.ImagePreload.Items) == 0 {
-			return fmt.Errorf("targetNodes.imagePreload.items must contain at least one image")
-		}
-	}
-
-	// Validate TargetRoleBasedGroup if specified
-	if warmup.Spec.TargetRoleBasedGroup != nil {
-		if warmup.Spec.TargetRoleBasedGroup.Name == "" {
-			return fmt.Errorf("targetRoleBasedGroup.name must be specified")
-		}
-		if len(warmup.Spec.TargetRoleBasedGroup.Roles) == 0 {
-			return fmt.Errorf("targetRoleBasedGroup.roles must contain at least one role")
-		}
-
-		// Validate each role's warmup actions
-		for roleName, actions := range warmup.Spec.TargetRoleBasedGroup.Roles {
-			if actions.ImagePreload == nil || len(actions.ImagePreload.Items) == 0 {
-				logger.Info("Role has no image preload actions", "role", roleName)
-				// This is a warning, not an error - allow roles without actions
+	targetNodesValidationFunc := func(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
+		if warmup.Spec.TargetNodes != nil {
+			if len(warmup.Spec.TargetNodes.NodeSelector) == 0 && len(warmup.Spec.TargetNodes.NodeNames) == 0 {
+				return fmt.Errorf("either spec.targetNodes.nodeSelector or spec.targetNodes.nodeNames must be specified")
 			}
+		}
+
+		return nil
+	}
+
+	targetRoleBasedGroupValidationFunc := func(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
+		if warmup.Spec.TargetRoleBasedGroup != nil {
+			if warmup.Spec.TargetRoleBasedGroup.Name == "" {
+				return fmt.Errorf("spec.targetRoleBasedGroup.name must be specified")
+			}
+
+			if len(warmup.Spec.TargetRoleBasedGroup.Roles) == 0 {
+				return fmt.Errorf("spec.targetRoleBasedGroup.roles must contain at least one role")
+			}
+		}
+
+		return nil
+	}
+
+	validationFuncs := []func(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error{
+		targetValidationFunc,
+		targetNodesValidationFunc,
+		targetRoleBasedGroupValidationFunc,
+	}
+
+	for _, validateFn := range validationFuncs {
+		if err := validateFn(warmup); err != nil {
+			r.Recorder.Eventf(&warmup, corev1.EventTypeWarning, "ValidationFailed", err.Error())
+			return err
 		}
 	}
 
