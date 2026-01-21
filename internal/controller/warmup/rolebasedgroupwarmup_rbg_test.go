@@ -374,7 +374,7 @@ func TestValidate_TargetRoleBasedGroup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := reconciler.validate(context.Background(), tt.warmup)
+			err := reconciler.validate(tt.warmup)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validate() error = %v, wantErr %v", err, tt.wantErr)
 			}

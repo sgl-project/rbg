@@ -19,6 +19,7 @@ package workloadsxk8sio
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -262,7 +263,7 @@ func TestRoleBasedGroupWarmUpReconciler_Reconcile_SkipWhenDeleting(t *testing.T)
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if result.Requeue {
+	if result.RequeueAfter != time.Duration(0) {
 		t.Error("Expected no requeue")
 	}
 }
@@ -302,7 +303,7 @@ func TestRoleBasedGroupWarmUpReconciler_Reconcile_SkipWhenNoImages(t *testing.T)
 	if err == nil {
 		t.Error("Expected validation error, got nil")
 	}
-	if result.Requeue {
+	if result.RequeueAfter != time.Duration(0) {
 		t.Error("Expected no requeue")
 	}
 }

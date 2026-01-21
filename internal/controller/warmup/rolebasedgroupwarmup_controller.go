@@ -90,12 +90,13 @@ func (r *RoleBasedGroupWarmUpReconciler) Reconcile(ctx context.Context, req ctrl
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) reconcileFinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) (ctrl.Result, error) {
+	_ = log.FromContext(ctx)
 	return ctrl.Result{}, nil
 }
 
 func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context, warmup *workloadsv1alpha1.RoleBasedGroupWarmUp) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	if err := r.validate(ctx, *warmup); err != nil {
+	if err := r.validate(*warmup); err != nil {
 		logger.Error(err, "Validation failed")
 		return ctrl.Result{}, err
 	}
@@ -114,7 +115,7 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
 
-	nodeToPodMap, err := r.getExistingNodeToPodMap(ctx, allPods)
+	nodeToPodMap, err := r.getExistingNodeToPodMap(allPods)
 	if err != nil {
 		logger.Error(err, "failed to get existing node to pod map")
 		return ctrl.Result{}, err
@@ -157,7 +158,7 @@ func (r *RoleBasedGroupWarmUpReconciler) reconcileUnfinished(ctx context.Context
 	return ctrl.Result{}, nil
 }
 
-func (r *RoleBasedGroupWarmUpReconciler) validate(ctx context.Context, warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
+func (r *RoleBasedGroupWarmUpReconciler) validate(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
 
 	targetValidationFunc := func(warmup workloadsv1alpha1.RoleBasedGroupWarmUp) error {
 		// Validate that either targetNodes or targetRoleBasedGroup is set
@@ -333,7 +334,7 @@ func (r *RoleBasedGroupWarmUpReconciler) listWarmUpPods(ctx context.Context, war
 	return activePods, succeededPods, failedPods, nil
 }
 
-func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(ctx context.Context, pods []*corev1.Pod) (nodeToPodMap map[string]*corev1.Pod, error error) {
+func (r *RoleBasedGroupWarmUpReconciler) getExistingNodeToPodMap(pods []*corev1.Pod) (nodeToPodMap map[string]*corev1.Pod, error error) {
 	nodeToPodMap = make(map[string]*corev1.Pod)
 
 	for _, p := range pods {
