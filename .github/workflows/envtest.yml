@@ -1,0 +1,144 @@
+name: Envtest
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  GO_VERSION: 1.24.1
+  ENVTEST_K8S_VERSION: "1.31.0"
+
+# Declare default permissions as read only.
+permissions: read-all
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.filter.outputs.should_run }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Check if relevant files changed
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD^1"
+          fi
+          
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD)
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Skip directories that don't need envtest
+          SKIP_DIRS="^(examples|doc|python|deploy)/"
+          SHOULD_RUN="true"
+          
+          if [ -n "$CHANGED_FILES" ]; then
+            # Filter out files in skip directories
+            NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
+            
+            if [ -z "$NON_SKIP_FILES" ]; then
+              echo "All changes are in skip directories. Skipping envtest."
+              SHOULD_RUN="false"
+            else
+              echo "Found changes outside skip directories. Running envtest."
+              echo "Files requiring envtest:"
+              echo "$NON_SKIP_FILES"
+            fi
+          fi
+          
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+
+  envtest:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs/bin
+          key: ${{ runner.os }}-envtest-${{ env.ENVTEST_K8S_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-envtest-
+
+      - name: Install setup-envtest
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+      - name: Setup envtest binaries
+        run: |
+          setup-envtest use ${{ env.ENVTEST_K8S_VERSION }} --bin-dir ./bin -p path
+          echo "KUBEBUILDER_ASSETS=$(setup-envtest use ${{ env.ENVTEST_K8S_VERSION }} --bin-dir ./bin -p path)" >> $GITHUB_ENV
+
+      - name: Generate manifests
+        run: |
+          make manifests generate
+
+      - name: Run envtest
+        run: |
+          go test -v ./test/envtest/testcase/... -timeout 30m 2>&1 | tee envtest.log
+          
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: envtest-logs
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs/envtest.log
+          retention-days: 7
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## Envtest Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f envtest.log ]; then
+            # Count passed/failed tests
+            PASSED=$(grep -c "PASS:" envtest.log || echo "0")
+            FAILED=$(grep -c "FAIL:" envtest.log || echo "0")
+            echo "- **Passed**: $PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "- **Failed**: $FAILED" >> $GITHUB_STEP_SUMMARY
+            
+            # Show failed tests if any
+            if [ "$FAILED" != "0" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Failed Tests" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              grep -A 5 "FAIL:" envtest.log | head -50 >> $GITHUB_STEP_SUMMARY || true
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          fi

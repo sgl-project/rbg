@@ -44,18 +44,28 @@ ls $(setup-envtest use -p path)
 # Set environment variable
 export KUBEBUILDER_ASSETS="$(setup-envtest use -p path)"
 
-# Run tests
-go test -v ./test/envtest/...
+# Run all tests
+go test -v ./test/envtest/testcase/...
+```
+
+### Run Specific Controller Tests
+
+```bash
+# Run RBG controller tests
+go test -v ./test/envtest/testcase/rbg/
+
+# Run InstanceSet controller tests
+go test -v ./test/envtest/testcase/instanceset/
+
+# Run RoleBasedGroupSet controller tests
+go test -v ./test/envtest/testcase/rbgs/
 ```
 
 ### Run Specific Tests
 
 ```bash
 # Use -ginkgo.focus to run specific tests
-go test -v ./test/envtest -ginkgo.focus="Hello World"
-
-# Run tests from a specific file
-go test -v ./test/envtest -run TestControllers
+go test -v ./test/envtest/testcase/rbg/ -ginkgo.focus="basic creation"
 ```
 
 ### Debug Mode
@@ -72,16 +82,36 @@ go test -v ./test/envtest -ginkgo.skip="slow tests"
 
 ```
 test/envtest/
-├── README.md                # This file
-├── TEST_PLAN.md            # Detailed test plan and cases
-├── suite_test.go           # Test suite setup and common utilities
-├── helloworld_test.go      # Hello World example tests
-├── rbg_controller_test.go  # RoleBasedGroup controller tests
-├── pod_controller_test.go  # Pod controller tests
-├── rbgscalingadapter_controller_test.go  # ScalingAdapter controller tests
-├── rbgs_controller_test.go              # RoleBasedGroupSet controller tests
-├── instance_controller_test.go          # Instance controller tests
-└── instanceset_controller_test.go       # InstanceSet controller tests
+├── README.md                    # This file
+├── doc.go                       # Package documentation
+├── testutil/                    # Shared test utilities
+│   └── setup.go                 # Test environment setup functions
+└── testcase/                    # Test cases organized by controller
+    ├── rbg/                     # RoleBasedGroup controller tests
+    │   ├── suite_test.go
+    │   ├── basic_test.go
+    │   ├── advanced_test.go
+    │   ├── coordination_test.go
+    │   ├── dependency_test.go
+    │   └── update_test.go
+    ├── rbgs/                    # RoleBasedGroupSet controller tests
+    │   ├── suite_test.go
+    │   ├── controller_test.go
+    │   └── extended_test.go
+    ├── instanceset/             # InstanceSet controller tests
+    │   ├── suite_test.go
+    │   ├── controller_test.go
+    │   └── advanced_test.go
+    ├── instance/                # Instance controller tests
+    │   ├── suite_test.go
+    │   └── controller_test.go
+    ├── pod/                     # Pod controller tests
+    │   ├── suite_test.go
+    │   └── controller_test.go
+    └── scalingadapter/          # ScalingAdapter controller tests
+        ├── suite_test.go
+        ├── controller_test.go
+        └── extended_test.go
 ```
 
 ## Test Conventions
@@ -91,9 +121,11 @@ test/envtest/
 Each test case should use an independent namespace:
 
 ```go
+import "sigs.k8s.io/rbgs/test/envtest/testutil"
+
 testNs := "test-rbg-basic-create"
-createNamespace(testNs)
-defer deleteNamespace(testNs)
+testutil.CreateNamespace(testNs)
+defer testutil.DeleteNamespace(testNs)
 ```
 
 ### Timeout and Retry
@@ -103,12 +135,12 @@ Use `Eventually` and `Consistently` for asynchronous operations:
 ```go
 // Wait for resource creation
 Eventually(func() error {
-    return k8sClient.Get(ctx, key, obj)
+    return testutil.K8sClient.Get(testutil.Ctx, key, obj)
 }, timeout, interval).Should(Succeed())
 
 // Verify state stability
 Consistently(func() int32 {
-    _ = k8sClient.Get(ctx, key, obj)
+    _ = testutil.K8sClient.Get(testutil.Ctx, key, obj)
     return obj.Status.Replicas
 }, duration, interval).Should(Equal(int32(3)))
 ```
@@ -120,77 +152,71 @@ Always clean up resources after tests:
 ```go
 AfterEach(func() {
     // Delete test object
-    _ = k8sClient.Delete(ctx, testObj)
+    _ = testutil.K8sClient.Delete(testutil.Ctx, testObj)
     
     // Delete namespace
-    deleteNamespace(testNs)
+    testutil.DeleteNamespace(testNs)
 })
 ```
 
 ## Writing New Tests
 
-Refer to [TEST_PLAN.md](./TEST_PLAN.md) for test cases that need to be covered.
+Refer to test files in `testcase/` directory for examples.
 
 ### Basic Template
 
 ```go
+import "sigs.k8s.io/rbgs/test/envtest/testutil"
+
 var _ = Describe("Feature Name", func() {
     var (
         testNs string
     )
 
     BeforeEach(func() {
-        testNs = "test-feature-" + generateRandomString(5)
-        createNamespace(testNs)
+        testNs = fmt.Sprintf("test-feature-%d", time.Now().UnixNano())
+        testutil.CreateNamespace(testNs)
     })
 
     AfterEach(func() {
-        deleteNamespace(testNs)
+        testutil.DeleteNamespace(testNs)
     })
 
     Context("When testing scenario", func() {
         It("Should behave correctly", func() {
-            // Test logic
+            // Use testutil.K8sClient and testutil.Ctx
+            Expect(testutil.K8sClient.Create(testutil.Ctx, obj)).Should(Succeed())
         })
     })
 })
 ```
 
-### Controller Manager Testing
+### Suite Setup
 
-If you need to test controller reconcile logic:
+Each controller test directory has its own `suite_test.go`:
 
 ```go
-var _ = Describe("RBG Controller", func() {
-    var (
-        mgr    manager.Manager
-        ctx    context.Context
-        cancel context.CancelFunc
-    )
+package mycontroller
 
-    BeforeEach(func() {
-        ctx, cancel = context.WithCancel(context.Background())
-        
-        var err error
-        mgr, err = setupManager(ctx)
-        Expect(err).NotTo(HaveOccurred())
-        
-        err = setupRBGController(mgr)
-        Expect(err).NotTo(HaveOccurred())
-        
-        // Start manager
-        go func() {
-            defer GinkgoRecover()
-            err := mgr.Start(ctx)
-            Expect(err).NotTo(HaveOccurred())
-        }()
-    })
+import (
+    "testing"
 
-    AfterEach(func() {
-        cancel()
-    })
+    . "github.com/onsi/ginkgo/v2"
+    . "github.com/onsi/gomega"
+    "sigs.k8s.io/rbgs/test/envtest/testutil"
+)
 
-    // Test cases...
+func TestMyController(t *testing.T) {
+    RegisterFailHandler(Fail)
+    RunSpecs(t, "My Controller Suite")
+}
+
+var _ = BeforeSuite(func() {
+    testutil.SetupTestEnv()
+})
+
+var _ = AfterSuite(func() {
+    testutil.TeardownTestEnv()
 })
 ```
 
@@ -210,7 +236,7 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path)"
 
 ```go
 Eventually(func() error {
-    return k8sClient.Get(ctx, key, obj)
+    return testutil.K8sClient.Get(testutil.Ctx, key, obj)
 }, time.Second*30, time.Millisecond*500).Should(Succeed())
 ```
 

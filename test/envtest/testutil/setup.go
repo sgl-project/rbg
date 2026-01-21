@@ -14,12 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package envtest
+// Package testutil provides shared test utilities for envtest-based controller tests.
+package testutil
 
 import (
 	"context"
 	"path/filepath"
-	"testing"
+	"runtime"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -42,38 +43,37 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
 
-// Global variables for test suite
+// Global variables for test suite - exported for use by test packages
 var (
-	cfg       *rest.Config
-	k8sClient client.Client
-	testEnv   *envtest.Environment
-	ctx       context.Context
-	cancel    context.CancelFunc
-	testMgr   manager.Manager
+	Cfg       *rest.Config
+	K8sClient client.Client
+	TestEnv   *envtest.Environment
+	Ctx       context.Context
+	Cancel    context.CancelFunc
+	TestMgr   manager.Manager
 )
 
-func TestControllers(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Controller Envtest Suite")
-}
-
-var _ = BeforeSuite(func() {
+// SetupTestEnv initializes the test environment. Call this in BeforeSuite.
+func SetupTestEnv() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	ctx, cancel = context.WithCancel(context.TODO())
+	Ctx, Cancel = context.WithCancel(context.TODO())
 
 	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "config", "crd", "bases"),
-		},
+
+	// Get the path to CRD directory relative to this file
+	_, currentFile, _, _ := runtime.Caller(0)
+	crdPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "..", "config", "crd", "bases")
+
+	TestEnv = &envtest.Environment{
+		CRDDirectoryPaths:     []string{crdPath},
 		ErrorIfCRDPathMissing: true,
 	}
 
 	var err error
-	cfg, err = testEnv.Start()
+	Cfg, err = TestEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
+	Expect(Cfg).NotTo(BeNil())
 
 	// Add schemes
 	err = workloadsv1alpha1.AddToScheme(scheme.Scheme)
@@ -82,81 +82,80 @@ var _ = BeforeSuite(func() {
 	err = apiextensionsv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
-	// Create k8sClient
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	// Create K8sClient
+	K8sClient, err = client.New(Cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	Expect(K8sClient).NotTo(BeNil())
 
 	// Create and start controller manager
 	By("setting up controller manager")
-	testMgr, err = setupManager(ctx)
+	TestMgr, err = SetupManager(Ctx)
 	Expect(err).NotTo(HaveOccurred())
 
 	// Register field indexes
-	err = fieldindex.RegisterFieldIndexes(testMgr.GetCache())
+	err = fieldindex.RegisterFieldIndexes(TestMgr.GetCache())
 	Expect(err).NotTo(HaveOccurred())
 
 	// Setup all controllers
-	err = setupRBGController(testMgr)
+	err = SetupRBGController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = setupInstanceSetController(testMgr)
+	err = SetupInstanceSetController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = setupInstanceController(testMgr)
+	err = SetupInstanceController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = setupPodController(testMgr)
+	err = SetupPodController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = setupRBGScalingAdapterController(testMgr)
+	err = SetupRBGScalingAdapterController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = setupRBGSController(testMgr)
+	err = SetupRBGSController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	// Start the manager
 	go func() {
 		defer GinkgoRecover()
-		err := testMgr.Start(ctx)
+		err := TestMgr.Start(Ctx)
 		Expect(err).NotTo(HaveOccurred())
 	}()
 
 	// Wait for manager to be ready
 	time.Sleep(100 * time.Millisecond)
-})
+}
 
-var _ = AfterSuite(func() {
-	cancel()
+// TeardownTestEnv cleans up the test environment. Call this in AfterSuite.
+func TeardownTestEnv() {
+	Cancel()
 	By("tearing down the test environment")
-	err := testEnv.Stop()
+	err := TestEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
-})
+}
 
-// Helper functions for tests
-
-// createNamespace creates a namespace for testing
-func createNamespace(name string) *corev1.Namespace {
+// CreateNamespace creates a namespace for testing
+func CreateNamespace(name string) *corev1.Namespace {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 	}
-	Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+	Expect(K8sClient.Create(Ctx, ns)).Should(Succeed())
 	return ns
 }
 
-// deleteNamespace deletes a namespace and waits for deletion to complete
-func deleteNamespace(name string) {
+// DeleteNamespace deletes a namespace and waits for deletion to complete
+func DeleteNamespace(name string) {
 	ns := &corev1.Namespace{}
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, ns)
+	err := K8sClient.Get(Ctx, types.NamespacedName{Name: name}, ns)
 	if err != nil {
 		// Namespace doesn't exist, nothing to delete
 		return
 	}
 
 	// Delete the namespace
-	err = k8sClient.Delete(ctx, ns)
+	err = K8sClient.Delete(Ctx, ns)
 	if err != nil {
 		// Ignore not found errors
 		return
@@ -164,7 +163,7 @@ func deleteNamespace(name string) {
 
 	// Wait for namespace to be deleted (with timeout)
 	for i := 0; i < 30; i++ {
-		err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, ns)
+		err := K8sClient.Get(Ctx, types.NamespacedName{Name: name}, ns)
 		if err != nil {
 			// Namespace is gone
 			return
@@ -173,14 +172,14 @@ func deleteNamespace(name string) {
 	}
 }
 
-// waitForReconcile waits for a short period to allow reconciliation
-func waitForReconcile() {
+// WaitForReconcile waits for a short period to allow reconciliation
+func WaitForReconcile() {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// setupManager creates and starts a controller manager for testing
-func setupManager(ctx context.Context) (manager.Manager, error) {
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+// SetupManager creates and starts a controller manager for testing
+func SetupManager(ctx context.Context) (manager.Manager, error) {
+	mgr, err := ctrl.NewManager(Cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
 	})
 	if err != nil {
@@ -190,48 +189,49 @@ func setupManager(ctx context.Context) (manager.Manager, error) {
 	return mgr, nil
 }
 
-// setupRBGController sets up the RoleBasedGroup controller
-func setupRBGController(mgr manager.Manager) error {
+// SetupRBGController sets up the RoleBasedGroup controller
+func SetupRBGController(mgr manager.Manager) error {
 	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr)
 	return rbgReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
-// setupPodController sets up the Pod controller
-func setupPodController(mgr manager.Manager) error {
+// SetupPodController sets up the Pod controller
+func SetupPodController(mgr manager.Manager) error {
 	podReconciler := workloadscontroller.NewPodReconciler(mgr)
 	return podReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
-// setupRBGScalingAdapterController sets up the RoleBasedGroupScalingAdapter controller
-func setupRBGScalingAdapterController(mgr manager.Manager) error {
+// SetupRBGScalingAdapterController sets up the RoleBasedGroupScalingAdapter controller
+func SetupRBGScalingAdapterController(mgr manager.Manager) error {
 	rbgScalingAdapterReconciler := workloadscontroller.NewRoleBasedGroupScalingAdapterReconciler(mgr)
 	return rbgScalingAdapterReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
-// setupRBGSController sets up the RoleBasedGroupSet controller
-func setupRBGSController(mgr manager.Manager) error {
+// SetupRBGSController sets up the RoleBasedGroupSet controller
+func SetupRBGSController(mgr manager.Manager) error {
 	rbgsReconciler := workloadscontroller.NewRoleBasedGroupSetReconciler(mgr)
 	return rbgsReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
-// setupInstanceController sets up the Instance controller
-func setupInstanceController(mgr manager.Manager) error {
+// SetupInstanceController sets up the Instance controller
+func SetupInstanceController(mgr manager.Manager) error {
 	instanceReconciler := workloadscontroller.NewInstanceReconciler(mgr)
 	return instanceReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
-// setupInstanceSetController sets up the InstanceSet controller
-func setupInstanceSetController(mgr manager.Manager) error {
+// SetupInstanceSetController sets up the InstanceSet controller
+func SetupInstanceSetController(mgr manager.Manager) error {
 	instanceSetReconciler := workloadscontroller.NewInstanceSetReconciler(mgr)
 	return instanceSetReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
-// eventuallyWithTimeout returns an Eventually assertion with default timeout
-func eventuallyWithTimeout() AsyncAssertion {
-	return Eventually(timeout(10 * time.Second))
+// EventuallyWithTimeout returns an Eventually assertion with default timeout
+func EventuallyWithTimeout() AsyncAssertion {
+	return Eventually(Timeout(10 * time.Second))
 }
 
-func timeout(d time.Duration) func() time.Duration {
+// Timeout returns a timeout function for Eventually
+func Timeout(d time.Duration) func() time.Duration {
 	return func() time.Duration {
 		return d
 	}
