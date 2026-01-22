@@ -39,7 +39,6 @@ type RoleScalingState struct {
 	CurrentReplicas   int32
 	ScheduledReplicas int32 // Number of replicas that have been scheduled (have nodeName)
 	ReadyReplicas     int32 // Number of replicas that are ready
-	TargetReplicas    int32 // Calculated target replicas for this round
 }
 
 // NewCoordinationScaler creates a new CoordinationScaler instance.

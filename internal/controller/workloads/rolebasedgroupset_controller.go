@@ -376,6 +376,16 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 		return true
 	}
 
+	// Check if CoordinationRequirements have changed
+	if !reflect.DeepEqual(rbg.Spec.CoordinationRequirements, rbgset.Spec.Template.CoordinationRequirements) {
+		return true
+	}
+
+	// Check if PodGroupPolicy have changed
+	if !reflect.DeepEqual(rbg.Spec.PodGroupPolicy, rbgset.Spec.Template.PodGroupPolicy) {
+		return true
+	}
+
 	// Check if annotations need to be propagated
 	return r.needsAnnotationUpdate(rbgset, rbg)
 }
@@ -427,6 +437,8 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 
 				// Update the spec from template
 				latestRBG.Spec.Roles = rbgset.Spec.Template.Roles
+				latestRBG.Spec.CoordinationRequirements = rbgset.Spec.Template.CoordinationRequirements
+				latestRBG.Spec.PodGroupPolicy = rbgset.Spec.Template.PodGroupPolicy
 
 				// Update annotations
 				r.updateRBGAnnotations(rbgset, latestRBG)

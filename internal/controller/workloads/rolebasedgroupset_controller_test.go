@@ -292,6 +292,153 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 			expectedUpdate: true,
 		},
 		{
+			name: "RBG needs update - different CoordinationRequirements",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+						CoordinationRequirements: []workloadsv1alpha1.Coordination{
+							{
+								Name:  "new-coordination",
+								Roles: []string{"role-1", "role-2"},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					CoordinationRequirements: []workloadsv1alpha1.Coordination{
+						{
+							Name:  "old-coordination",
+							Roles: []string{"role-1"},
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG needs update - CoordinationRequirements added",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+						CoordinationRequirements: []workloadsv1alpha1.Coordination{
+							{
+								Name:  "coordination",
+								Roles: []string{"role-1"},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles:                    []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					CoordinationRequirements: nil,
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG needs update - different PodGroupPolicy",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+						PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
+							PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
+								KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
+									ScheduleTimeoutSeconds: ptr.To(int32(120)),
+								},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
+						PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
+							KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
+								ScheduleTimeoutSeconds: ptr.To(int32(60)),
+							},
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG needs update - PodGroupPolicy added",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+						PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
+							PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
+								KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
+									ScheduleTimeoutSeconds: ptr.To(int32(60)),
+								},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles:          []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					PodGroupPolicy: nil,
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG no update needed - same CoordinationRequirements and PodGroupPolicy",
+			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+						CoordinationRequirements: []workloadsv1alpha1.Coordination{
+							{
+								Name:  "coordination",
+								Roles: []string{"role-1"},
+							},
+						},
+						PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
+							PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
+								KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
+									ScheduleTimeoutSeconds: ptr.To(int32(60)),
+								},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha1.RoleBasedGroup{
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{{Name: "role-1"}},
+					CoordinationRequirements: []workloadsv1alpha1.Coordination{
+						{
+							Name:  "coordination",
+							Roles: []string{"role-1"},
+						},
+					},
+					PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
+						PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
+							KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
+								ScheduleTimeoutSeconds: ptr.To(int32(60)),
+							},
+						},
+					},
+				},
+			},
+			expectedUpdate: false,
+		},
+		{
 			name: "RBG no update needed",
 			rbgset: &workloadsv1alpha1.RoleBasedGroupSet{
 				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
