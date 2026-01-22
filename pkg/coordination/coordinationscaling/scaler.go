@@ -47,11 +47,13 @@ func NewCoordinationScaler(coordination *workloadsv1alpha1.Coordination) (*Coord
 		return nil, fmt.Errorf("invalid coordination configuration: scaling strategy is nil")
 	}
 
-	if coordination.Strategy.Scaling.MaxSkew == nil {
-		return nil, fmt.Errorf("maxSkew is required for coordination scaling")
+	// Use default maxSkew of 100% if not specified (no coordination limit)
+	maxSkewStr := "100%"
+	if coordination.Strategy.Scaling.MaxSkew != nil {
+		maxSkewStr = *coordination.Strategy.Scaling.MaxSkew
 	}
 
-	maxSkew, err := parsePercentage(*coordination.Strategy.Scaling.MaxSkew)
+	maxSkew, err := parsePercentage(maxSkewStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse maxSkew: %w", err)
 	}
@@ -97,11 +99,21 @@ func (s *CoordinationScaler) CalculateTargetReplicas(roleStates map[string]RoleS
 	roleProgresses := make([]roleProgress, 0, len(s.coordination.Roles))
 	for _, roleName := range s.coordination.Roles {
 		state := roleStates[roleName]
+
+		// Calculate progress, handling zero desired replicas (scale down to zero)
+		var progress float64
 		if state.DesiredReplicas == 0 {
-			return nil, fmt.Errorf("role %s has zero desired replicas", roleName)
+			// When scaling down to zero, progress is 1.0 if already at zero,
+			// otherwise 0.0 indicating scale-down has not completed
+			if state.CurrentReplicas == 0 {
+				progress = 1.0
+			} else {
+				progress = 0.0
+			}
+		} else {
+			progress = float64(state.CurrentReplicas) / float64(state.DesiredReplicas)
 		}
 
-		progress := float64(state.CurrentReplicas) / float64(state.DesiredReplicas)
 		roleProgresses = append(roleProgresses, roleProgress{
 			roleName:        roleName,
 			desiredReplicas: state.DesiredReplicas,
@@ -115,7 +127,16 @@ func (s *CoordinationScaler) CalculateTargetReplicas(roleStates map[string]RoleS
 		return roleProgresses[i].progress < roleProgresses[j].progress
 	})
 
+	// Find minimum progress among roles that haven't reached desired replicas
+	// Roles that are already at desired replicas should not limit other roles
 	minProgress := roleProgresses[0].progress
+	for _, rp := range roleProgresses {
+		if rp.currentReplicas < rp.desiredReplicas {
+			minProgress = rp.progress
+			break
+		}
+	}
+
 	maxAllowedProgress := minProgress + s.maxSkew
 
 	// Calculate target replicas for each role

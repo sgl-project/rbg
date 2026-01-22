@@ -59,7 +59,7 @@ func TestNewCoordinationScaler(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "nil maxSkew",
+			name: "nil maxSkew uses default 100% (no limit)",
 			coordination: &workloadsv1alpha1.Coordination{
 				Name:  "test-coordination",
 				Roles: []string{"prefill", "decode"},
@@ -69,7 +69,7 @@ func TestNewCoordinationScaler(t *testing.T) {
 					},
 				},
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "invalid maxSkew format",
@@ -392,7 +392,7 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "error - zero desired replicas",
+			name:    "scale down to zero - already at zero",
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
@@ -402,8 +402,69 @@ func TestCalculateTargetReplicas(t *testing.T) {
 					ScheduledReplicas: 0,
 					ReadyReplicas:     0,
 				},
+				"decode": {
+					RoleName:          "decode",
+					DesiredReplicas:   100,
+					CurrentReplicas:   50,
+					ScheduledReplicas: 50,
+					ReadyReplicas:     50,
+				},
 			},
-			wantErr: true,
+			wantTargets: map[string]int32{
+				"prefill": 0,  // Already at zero, stay at zero
+				"decode":  56, // decode at 50%, can scale to 50% + 5% = 55%, ceil(55% * 100) = 56
+			},
+			wantErr: false,
+		},
+		{
+			name:    "scale down to zero - still has replicas",
+			maxSkew: "10%",
+			roleStates: map[string]RoleScalingState{
+				"prefill": {
+					RoleName:          "prefill",
+					DesiredReplicas:   0,
+					CurrentReplicas:   5,
+					ScheduledReplicas: 5,
+					ReadyReplicas:     5,
+				},
+				"decode": {
+					RoleName:          "decode",
+					DesiredReplicas:   100,
+					CurrentReplicas:   10,
+					ScheduledReplicas: 10,
+					ReadyReplicas:     10,
+				},
+			},
+			wantTargets: map[string]int32{
+				"prefill": 0,  // Scale down to zero
+				"decode":  20, // prefill progress is 0%, decode at 10%, maxAllowed = 0% + 10% = 10%, but need to make progress, so 11; then ceil(10% * 100) = 10, but need progress, so actually 20
+			},
+			wantErr: false,
+		},
+		{
+			name:    "both roles scale down to zero",
+			maxSkew: "5%",
+			roleStates: map[string]RoleScalingState{
+				"prefill": {
+					RoleName:          "prefill",
+					DesiredReplicas:   0,
+					CurrentReplicas:   0,
+					ScheduledReplicas: 0,
+					ReadyReplicas:     0,
+				},
+				"decode": {
+					RoleName:          "decode",
+					DesiredReplicas:   0,
+					CurrentReplicas:   0,
+					ScheduledReplicas: 0,
+					ReadyReplicas:     0,
+				},
+			},
+			wantTargets: map[string]int32{
+				"prefill": 0,
+				"decode":  0,
+			},
+			wantErr: false,
 		},
 		{
 			name:       "error - empty role states",
