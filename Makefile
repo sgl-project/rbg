@@ -82,6 +82,12 @@ test: manifests generate fmt vet ## Run tests.
 	go test $$(go list ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
 	go tool cover -func=cover.out | awk '/^total:/ {print $$3}'
 
+.PHONY: test-envtest
+test-envtest: manifests generate setup-envtest ## Run envtest integration tests.
+	@echo "Running envtest tests..."
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test -v ./test/envtest/testcase/... -timeout 30m
+
 .PHONY: test-coverage-html
 test-coverage-html: test
 	go tool cover -html=cover.out -o cover.html
@@ -257,7 +263,11 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+SETUP_ENVTEST ?= $(LOCALBIN)/setup-envtest
 HELM ?= helm
+
+## Envtest K8s version
+ENVTEST_K8S_VERSION ?= 1.31.0
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
@@ -278,6 +288,12 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: setup-envtest
+setup-envtest: $(SETUP_ENVTEST) ## Download setup-envtest locally if necessary.
+$(SETUP_ENVTEST): $(LOCALBIN)
+	@echo "Installing setup-envtest..."
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
