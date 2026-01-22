@@ -132,7 +132,7 @@ BUILD_DATE=$(shell date +%Y-%m-%dT%H:%M:%S%z)
 ldflags="-s -w -X $(VERSION_PKG).Version=$(TAG) -X $(VERSION_PKG).GitCommit=${GIT_COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}"
 
 .PHONY: build
-build: test ## Build manager binary.
+build: ## Build manager binary.
 	GOARCH=${TARGETARCH} \
 	GOOS=${TARGETOS} \
 	CGO_ENABLED=0 \
