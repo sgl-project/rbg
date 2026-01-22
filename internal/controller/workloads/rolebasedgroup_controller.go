@@ -191,23 +191,11 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	// Calculate target replicas for coordination scaling
-	scalingTargets, err := r.CalculateScalingForAllCoordination(ctx, rbg, roleStatuses)
+	// Calculate coordination strategies for scaling and rolling update
+	// TODO: This is a simple method consolidation for now. The coordination logic will be
+	// refactored later to improve extensibility and readability.
+	scalingTargets, rollingUpdateStrategies, err := r.calculateCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedCalculateScaling,
-			"Failed to calculate scaling targets for %s: %v", rbg.Name, err,
-		)
-		return ctrl.Result{}, err
-	}
-
-	// Calculate the rolling update strategy for all coordination specifications in rbg.
-	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
-	if err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-			"Failed to update status for %s: %v", rbg.Name, err,
-		)
 		return ctrl.Result{}, err
 	}
 
@@ -595,6 +583,35 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 		}
 	}
 	return nil
+}
+
+// calculateCoordinationStrategies calculates coordination scaling targets and rolling update strategies.
+func (r *RoleBasedGroupReconciler) calculateCoordinationStrategies(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+) (map[string]int32, map[string]workloadsv1alpha1.RollingUpdate, error) {
+	// Calculate target replicas for coordination scaling
+	scalingTargets, err := r.CalculateScalingForAllCoordination(ctx, rbg, roleStatuses)
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedCalculateScaling,
+			"Failed to calculate scaling targets for %s: %v", rbg.Name, err,
+		)
+		return nil, nil, err
+	}
+
+	// Calculate the rolling update strategy for all coordination specifications in rbg.
+	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to update status for %s: %v", rbg.Name, err,
+		)
+		return nil, nil, err
+	}
+
+	return scalingTargets, rollingUpdateStrategies, nil
 }
 
 // CalculateScalingForAllCoordination calculates target replicas for each role based on coordination scaling strategies.
