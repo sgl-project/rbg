@@ -1,0 +1,18 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroupWarmUp
+metadata:
+  name: example-warmup
+  namespace: default
+spec:
+  targetNodes:
+    nodeNames:
+      - node-1
+      - node-2
+      - node-3
+    imagePreload:
+      items:
+        - nginx:1.21
+        - redis:7.0
+        - postgres:15
+      pullSecrets:
+        - name: my-registry-secret

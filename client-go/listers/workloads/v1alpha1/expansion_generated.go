@@ -64,3 +64,11 @@ type RoleBasedGroupSetListerExpansion interface{}
 // RoleBasedGroupSetNamespaceListerExpansion allows custom methods to be added to
 // RoleBasedGroupSetNamespaceLister.
 type RoleBasedGroupSetNamespaceListerExpansion interface{}
+
+// RoleBasedGroupWarmUpListerExpansion allows custom methods to be added to
+// RoleBasedGroupWarmUpLister.
+type RoleBasedGroupWarmUpListerExpansion interface{}
+
+// RoleBasedGroupWarmUpNamespaceListerExpansion allows custom methods to be added to
+// RoleBasedGroupWarmUpNamespaceLister.
+type RoleBasedGroupWarmUpNamespaceListerExpansion interface{}
