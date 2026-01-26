@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -445,6 +446,94 @@ func TestLeaderWorkerSetReconciler_RecreateWorkload(t *testing.T) {
 		)
 
 	}
+}
+
+// TestLwsSpecEqual_RolloutStrategyDiff tests that lwsSpecEqual detects RolloutStrategy
+// differences, which is necessary for triggering reconciliation on partition changes (PR #151 fix)
+func TestLwsSpecEqual_RolloutStrategyDiff(t *testing.T) {
+	baseSpec := func() lwsv1.LeaderWorkerSetSpec {
+		return lwsv1.LeaderWorkerSetSpec{
+			Replicas: ptr.To(int32(3)),
+			LeaderWorkerTemplate: lwsv1.LeaderWorkerTemplate{
+				Size: ptr.To(int32(2)),
+				LeaderTemplate: &corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+					},
+				},
+				WorkerTemplate: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+					},
+				},
+			},
+		}
+	}
+
+	// Test: different partition values should be detected as not equal
+	spec1 := baseSpec()
+	spec1.RolloutStrategy = lwsv1.RolloutStrategy{
+		Type: lwsv1.RollingUpdateStrategyType,
+		RollingUpdateConfiguration: &lwsv1.RollingUpdateConfiguration{
+			Partition: ptr.To(int32(5)),
+		},
+	}
+
+	spec2 := baseSpec()
+	spec2.RolloutStrategy = lwsv1.RolloutStrategy{
+		Type: lwsv1.RollingUpdateStrategyType,
+		RollingUpdateConfiguration: &lwsv1.RollingUpdateConfiguration{
+			Partition: ptr.To(int32(8)),
+		},
+	}
+
+	equal, _ := lwsSpecEqual(spec1, spec2)
+	assert.False(t, equal, "lwsSpecEqual should detect partition difference")
+}
+
+// TestConstructLWSApplyConfiguration_CoordinationRollingUpdate verifies that coordination-level
+// rolling update parameters are applied even when role-level RolloutStrategy is nil.
+func TestConstructLWSApplyConfiguration_CoordinationRollingUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+
+	role := &workloadsv1alpha1.RoleSpec{
+		Name:            "test-role",
+		Replicas:        ptr.To(int32(3)),
+		RolloutStrategy: nil, // no role-level rolling update
+	}
+
+	rbg := &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha1.RoleSpec{*role},
+		},
+	}
+
+	coordinationRollingUpdate := &workloadsv1alpha1.RollingUpdate{
+		Partition: ptr.To(intstr.FromInt32(2)),
+	}
+
+	result, err := reconciler.constructLWSApplyConfiguration(
+		context.Background(),
+		rbg,
+		role,
+		coordinationRollingUpdate,
+		expectedRevisionHash,
+	)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, result.Spec.RolloutStrategy)
+	assert.NotNil(t, result.Spec.RolloutStrategy.RollingUpdateConfiguration)
+	assert.Equal(t, int32(2), *result.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition)
 }
 
 func TestConstructLWSApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
