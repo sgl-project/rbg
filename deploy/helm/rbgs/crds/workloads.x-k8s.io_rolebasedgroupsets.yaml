@@ -102,6 +102,26 @@ spec:
                                   pattern: ^([0-9]|[1-9][0-9]|100)%$
                                   type: string
                               type: object
+                            scaling:
+                              description: |-
+                                CoordinationScaling defines the scaling coordination strategy for progressive deployment.
+                                It ensures that multiple roles are deployed in a coordinated manner to avoid resource imbalance.
+                              properties:
+                                maxSkew:
+                                  description: MaxSkew defines the maximum allowed
+                                    difference in deployment progress between roles.
+                                  pattern: ^([0-9]|[1-9][0-9]|100)%$
+                                  type: string
+                                progression:
+                                  default: OrderScheduled
+                                  description: |-
+                                    Progression defines the progression strategy for scaling.
+                                    It controls when to proceed to the next batch of deployment.
+                                  enum:
+                                  - OrderScheduled
+                                  - OrderReady
+                                  type: string
+                              type: object
                           type: object
                       required:
                       - name

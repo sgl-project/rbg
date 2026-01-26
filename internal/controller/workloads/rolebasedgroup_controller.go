@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scale"
@@ -194,6 +195,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				)
 				return ctrl.Result{}, err
 			}
+			logger.V(1).Info("Workload not found for role, using empty status", "role", role.Name)
 		}
 		updateStatus = updateStatus || updateRoleStatus
 		roleStatuses = append(roleStatuses, roleStatus)
@@ -210,13 +212,11 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	// Calculate the rolling update strategy for all coordination specifications in rbg.
-	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
+	// Calculate coordination strategies for scaling and rolling update
+	// TODO: This is a simple method consolidation for now. The coordination logic will be
+	// refactored later to improve extensibility and readability.
+	scalingTargets, rollingUpdateStrategies, err := r.calculateCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-			"Failed to update status for %s: %v", rbg.Name, err,
-		)
 		return ctrl.Result{}, err
 	}
 
@@ -257,7 +257,19 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				rollingUpdateStrategy = &rollout
 			}
 
-			if err := reconciler.Reconciler(roleCtx, rbg, role, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
+			// Apply coordination scaling target replicas if available
+			roleToReconcile := role
+			if targetReplicas, ok := scalingTargets[role.Name]; ok {
+				// Always apply the target replicas from coordination scaling
+				// This handles both scale-up scenarios
+				roleToReconcile = role.DeepCopy()
+				roleToReconcile.Replicas = ptr.To(targetReplicas)
+				if role.Replicas != nil && targetReplicas != *role.Replicas {
+					logger.Info("Applying coordination scaling", "role", role.Name, "original", *role.Replicas, "target", targetReplicas)
+				}
+			}
+
+			if err := reconciler.Reconciler(roleCtx, rbg, roleToReconcile, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
 				logger.Error(err, "Failed to reconcile workload")
 				r.recorder.Eventf(
 					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
@@ -380,6 +392,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 	for _, role := range rbg.Spec.Roles {
 		if rs, ok := statusMap[role.Name]; !ok ||
+			role.Replicas == nil ||
 			*role.Replicas != rs.Replicas ||
 			rs.Replicas != rs.ReadyReplicas {
 			rbgReady = false
@@ -594,6 +607,149 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 	return nil
 }
 
+// calculateCoordinationStrategies calculates coordination scaling targets and rolling update strategies.
+func (r *RoleBasedGroupReconciler) calculateCoordinationStrategies(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+) (map[string]int32, map[string]workloadsv1alpha1.RollingUpdate, error) {
+	// Calculate target replicas for coordination scaling
+	scalingTargets, err := r.CalculateScalingForAllCoordination(ctx, rbg, roleStatuses)
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedCalculateScaling,
+			"Failed to calculate scaling targets for %s: %v", rbg.Name, err,
+		)
+		return nil, nil, err
+	}
+
+	// Calculate the rolling update strategy for all coordination specifications in rbg.
+	rollingUpdateStrategies, err := r.CalculateRollingUpdateForAllCoordination(rbg, roleStatuses)
+	if err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to update status for %s: %v", rbg.Name, err,
+		)
+		return nil, nil, err
+	}
+
+	return scalingTargets, rollingUpdateStrategies, nil
+}
+
+// CalculateScalingForAllCoordination calculates target replicas for each role based on coordination scaling strategies.
+func (r *RoleBasedGroupReconciler) CalculateScalingForAllCoordination(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha1.RoleStatus,
+) (map[string]int32, error) {
+	logger := log.FromContext(ctx)
+	if rbg == nil {
+		return nil, fmt.Errorf("rbg is nil")
+	}
+
+	result := make(map[string]int32)
+	processedRoles := make(map[string]bool)
+
+	for _, coordination := range rbg.Spec.CoordinationRequirements {
+		// Skip if no scaling strategy
+		if coordination.Strategy == nil || coordination.Strategy.Scaling == nil {
+			logger.V(2).Info("Skipping coordination without scaling strategy", "coordination", coordination.Name)
+			continue
+		}
+
+		maxSkewStr := "100%"
+		if coordination.Strategy.Scaling.MaxSkew != nil {
+			maxSkewStr = *coordination.Strategy.Scaling.MaxSkew
+		}
+		logger.V(1).Info("Processing coordination scaling", "coordination", coordination.Name, "roles", coordination.Roles, "maxSkew", maxSkewStr)
+
+		// Create scaler
+		scaler, err := coordinationscaling.NewCoordinationScaler(&coordination)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create coordination scaler for %s: %w", coordination.Name, err)
+		}
+
+		// Build role states for this coordination
+		roleStates := make(map[string]coordinationscaling.RoleScalingState)
+		for _, roleName := range coordination.Roles {
+			// Get desired replicas from spec
+			desired := utils.GetRoleReplicas(rbg, roleName)
+
+			// Get current and ready replicas from status
+			var current, ready int32
+			for _, status := range roleStatuses {
+				if status.Name == roleName {
+					current = status.Replicas
+					ready = status.ReadyReplicas
+					break
+				}
+			}
+
+			// Query scheduled replicas from pods
+			scheduled, err := r.getScheduledReplicas(ctx, rbg, roleName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to query scheduled replicas for role %s: %w", roleName, err)
+			}
+
+			roleStates[roleName] = coordinationscaling.RoleScalingState{
+				RoleName:          roleName,
+				DesiredReplicas:   desired,
+				CurrentReplicas:   current,
+				ScheduledReplicas: scheduled,
+				ReadyReplicas:     ready,
+			}
+		}
+
+		// Calculate target replicas
+		targets, err := scaler.CalculateTargetReplicas(roleStates)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate target replicas for coordination %s: %w", coordination.Name, err)
+		}
+
+		// Merge results, taking the minimum target for roles in multiple coordinations
+		for roleName, target := range targets {
+			if processedRoles[roleName] {
+				// Role already processed by another coordination, take minimum
+				if existing := result[roleName]; target < existing {
+					logger.V(1).Info("Taking minimum target for role in multiple coordinations", "role", roleName, "previous", existing, "new", target)
+					result[roleName] = target
+				}
+			} else {
+				result[roleName] = target
+				processedRoles[roleName] = true
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// getScheduledReplicas queries the number of scheduled pods (with nodeName) for a given role.
+func (r *RoleBasedGroupReconciler) getScheduledReplicas(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	roleName string,
+) (int32, error) {
+	podList := &corev1.PodList{}
+	labelSelector := client.MatchingLabels{
+		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+		workloadsv1alpha1.SetRoleLabelKey: roleName,
+	}
+
+	if err := r.client.List(ctx, podList, client.InNamespace(rbg.Namespace), labelSelector); err != nil {
+		return 0, err
+	}
+
+	var scheduled int32
+	for _, pod := range podList.Items {
+		if pod.Spec.NodeName != "" {
+			scheduled++
+		}
+	}
+
+	return scheduled, nil
+}
+
 func (r *RoleBasedGroupReconciler) CalculateRollingUpdateForAllCoordination(
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	roleStatuses []workloadsv1alpha1.RoleStatus,
@@ -671,7 +827,7 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 
 		// finalPartition is the user-settings target partition that should be respected by any coordination.
 		finalPartition := int32(0)
-		if strategy.Partition != nil {
+		if strategy.Partition != nil && role.Replicas != nil {
 			finalPartitionInt, err := intstr.GetScaledValueFromIntOrPercent(strategy.Partition, int(*role.Replicas), true)
 			if err != nil {
 				return nil, err
@@ -680,6 +836,9 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 		}
 
 		// stepPartition is the calculated partition based on the maxSkew.
+		if role.Replicas == nil {
+			continue
+		}
 		stepPartition := max(*role.Replicas-updatedTarget, 0)
 
 		if stepPartition > finalPartition {

@@ -110,6 +110,46 @@ type Coordination struct {
 type CoordinationStrategy struct {
 	// RollingUpdate defines the coordination strategies about rolling update.
 	RollingUpdate *CoordinationRollingUpdate `json:"rollingUpdate,omitempty"`
+
+	Scaling *CoordinationScaling `json:"scaling,omitempty"`
+}
+
+// ProgressionType defines how to wait for pods before proceeding to next batch.
+type ProgressionType string
+
+const (
+	// OrderScheduled means wait for all pods in current batch to be scheduled (have nodeName).
+	OrderScheduled ProgressionType = "OrderScheduled"
+
+	// OrderReady means wait for all pods in current batch to be ready.
+	OrderReady ProgressionType = "OrderReady"
+)
+
+// CoordinationScaling defines the scaling coordination strategy for progressive deployment.
+// It ensures that multiple roles are deployed in a coordinated manner to avoid resource imbalance.
+type CoordinationScaling struct {
+	// MaxSkew defines the maximum allowed difference in deployment progress between roles.
+	// For example, with 300 prefill and 100 decode replicas, if MaxSkew is "5%",
+	// the deployment progress difference cannot exceed 5%.
+	// - Round 1: prefill deploys to 300*5%=15 (5% progress)
+	// - Round 2: decode deploys to 100*10%=10 (10% progress, diff with prefill is 5%)
+	// - Round 3: prefill deploys to 300*15%=45 (15% progress)
+	// Only percentage values are supported.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	// +optional
+	MaxSkew *string `json:"maxSkew,omitempty"`
+
+	// Progression defines the progression strategy for scaling.
+	// It controls when to proceed to the next batch of deployment.
+	// - OrderScheduled: Wait for all pods in current batch to be scheduled (have nodeName).
+	// - OrderReady: Wait for all pods in current batch to be ready.
+	// Defaults to OrderScheduled.
+	//
+	// +kubebuilder:validation:Enum=OrderScheduled;OrderReady
+	// +kubebuilder:default=OrderScheduled
+	// +optional
+	Progression *ProgressionType `json:"progression,omitempty"`
 }
 
 // CoordinationRollingUpdate describes the rolling update coordination strategy.

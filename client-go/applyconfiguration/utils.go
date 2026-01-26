@@ -43,6 +43,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.CoordinationApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationRollingUpdate"):
 		return &workloadsv1alpha1.CoordinationRollingUpdateApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationScaling"):
+		return &workloadsv1alpha1.CoordinationScalingApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationStrategy"):
 		return &workloadsv1alpha1.CoordinationStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntime"):

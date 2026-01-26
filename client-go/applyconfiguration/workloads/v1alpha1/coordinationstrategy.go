@@ -21,6 +21,7 @@ package v1alpha1
 // with apply.
 type CoordinationStrategyApplyConfiguration struct {
 	RollingUpdate *CoordinationRollingUpdateApplyConfiguration `json:"rollingUpdate,omitempty"`
+	Scaling       *CoordinationScalingApplyConfiguration       `json:"scaling,omitempty"`
 }
 
 // CoordinationStrategyApplyConfiguration constructs a declarative configuration of the CoordinationStrategy type for use with
@@ -34,5 +35,13 @@ func CoordinationStrategy() *CoordinationStrategyApplyConfiguration {
 // If called multiple times, the RollingUpdate field is set to the value of the last call.
 func (b *CoordinationStrategyApplyConfiguration) WithRollingUpdate(value *CoordinationRollingUpdateApplyConfiguration) *CoordinationStrategyApplyConfiguration {
 	b.RollingUpdate = value
+	return b
+}
+
+// WithScaling sets the Scaling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scaling field is set to the value of the last call.
+func (b *CoordinationStrategyApplyConfiguration) WithScaling(value *CoordinationScalingApplyConfiguration) *CoordinationStrategyApplyConfiguration {
+	b.Scaling = value
 	return b
 }

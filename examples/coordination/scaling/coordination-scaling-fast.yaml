@@ -1,0 +1,43 @@
+# Fast coordination scaling example
+# This example uses larger maxSkew for faster deployment
+# Suitable when you have sufficient resources but still want coordination
+
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: fast-deployment
+  namespace: default
+spec:
+  coordination:
+    - name: fast-coordinated-scaling
+      roles:
+        - worker-a
+        - worker-b
+      strategy:
+        scaling:
+          # Larger maxSkew (20%) for faster deployment
+          # Each batch will deploy more pods at once
+          maxSkew: "20%"
+          # OrderScheduled for faster progression
+          progression: OrderScheduled
+
+  roles:
+    - name: worker-a
+      replicas: 100
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 80
+
+    - name: worker-b
+      replicas: 50
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+              ports:
+                - containerPort: 8080
