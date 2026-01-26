@@ -201,8 +201,8 @@ docker-push: ${DOCKER_PUSH}
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross if not already present
+	awk '/^FROM[[:space:]]+/ && !/^[[:space:]]*FROM[[:space:]]+--platform/ {sub(/^FROM/, "FROM --platform=$${BUILDPLATFORM}")} {print}' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name rbgs-builder
 	$(CONTAINER_TOOL) buildx use rbgs-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_IMG}:${TAG} -f Dockerfile.cross .
