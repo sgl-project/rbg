@@ -77,7 +77,19 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 				}
 
 				expectedRevisionHash := "revision-hash-value"
-				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
+
+				roleData := &RoleData{
+					Spec:                 tt.role,
+					ExpectedRevisionHash: expectedRevisionHash,
+					WorkloadName:         tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				err := r.Reconciler(context.Background(), roleData)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -190,7 +202,17 @@ func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 					client: clientBuilder.Build(),
 				}
 
-				ready, err := r.CheckWorkloadReady(context.Background(), tt.rbg, tt.role)
+				roleData := &RoleData{
+					Spec:         tt.role,
+					WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				ready, err := r.CheckWorkloadReady(context.Background(), roleData)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -299,7 +321,20 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 					client: client,
 				}
 
-				err := r.CleanupOrphanedWorkloads(context.Background(), tt.rbg)
+				roles := []*RoleData{}
+				for _, role := range tt.rbg.Spec.Roles {
+					roles = append(roles, &RoleData{
+						Spec:         &role,
+						WorkloadName: tt.rbg.GetWorkloadName(&role),
+						OwnerInfo: OwnerInfo{
+							Name:      tt.rbg.Name,
+							Namespace: tt.rbg.Namespace,
+							UID:       tt.rbg.UID,
+						},
+					})
+				}
+
+				err := r.CleanupOrphanedWorkloads(context.Background(), roles)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -408,7 +443,17 @@ func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
 					}()
 				}
 
-				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
+				roleData := &RoleData{
+					Spec:         tt.role,
+					WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				err := r.RecreateWorkload(ctx, roleData)
 				if (err != nil) != tt.expectErr {
 					t.Errorf("StsReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
 				}
@@ -1167,10 +1212,20 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 			role.Labels = tt.roleLabels
 			role.Annotations = tt.roleAnnotations
 
+			roleData := &RoleData{
+				Spec:                 role,
+				ExpectedRevisionHash: expectedRevisionHash,
+				WorkloadName:         rbg.GetWorkloadName(role),
+				OwnerInfo: OwnerInfo{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+					UID:       rbg.UID,
+				},
+			}
+
 			result, err := reconciler.constructStatefulSetApplyConfiguration(
 				context.Background(),
-				rbg,
-				role,
+				roleData,
 				&appsv1.StatefulSet{},
 				expectedRevisionHash,
 			)

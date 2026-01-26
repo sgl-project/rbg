@@ -66,7 +66,17 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 
 	t.Run("successful reconciliation", func(t *testing.T) {
 		for i := 0; i < len(rbg.Spec.Roles); i++ {
-			err := reconciler.reconcileHeadlessService(context.TODO(), rbg, &rbg.Spec.Roles[i])
+			roleData := &RoleData{
+				Spec:         &rbg.Spec.Roles[i],
+				WorkloadName: rbg.GetWorkloadName(&rbg.Spec.Roles[i]),
+				OwnerInfo: OwnerInfo{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+					UID:       rbg.UID,
+				},
+			}
+
+			err := reconciler.reconcileHeadlessService(context.TODO(), roleData)
 			assert.NoError(t, err)
 
 			// Check that service was created

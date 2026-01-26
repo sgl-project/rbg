@@ -1,4 +1,4 @@
-package discovery
+package reconciler
 
 import (
 	"fmt"
@@ -9,8 +9,7 @@ import (
 )
 
 type EnvBuilder struct {
-	rbg  *workloadsv1alpha1.RoleBasedGroup
-	role *workloadsv1alpha1.RoleSpec
+	RoleData *RoleData
 }
 
 func (g *EnvBuilder) Build() []corev1.EnvVar {
@@ -34,7 +33,7 @@ func (b *EnvBuilder) BuildLwsEnv(svcName string) []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "LWS_LEADER_ADDRESS",
-			Value: fmt.Sprintf("$(INSTANCE_NAME)-0.%s.%s", svcName, b.rbg.Namespace),
+			Value: fmt.Sprintf("$(INSTANCE_NAME)-0.%s.%s", svcName, b.RoleData.OwnerInfo.Namespace),
 		},
 		{
 			Name: "LWS_WORKER_INDEX",
@@ -63,15 +62,15 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "GROUP_NAME",
-			Value: g.rbg.Name,
+			Value: g.RoleData.OwnerInfo.Name,
 		},
 		{
 			Name:  "ROLE_NAME",
-			Value: g.role.Name,
+			Value: g.RoleData.Spec.Name,
 		},
 	}
 
-	if g.role.Workload.Kind == "StatefulSet" || g.role.Workload.Kind == "LeaderWorkerSet" {
+	if g.RoleData.Spec.Workload.Kind == "StatefulSet" || g.RoleData.Spec.Workload.Kind == "LeaderWorkerSet" {
 		envVars = append(envVars,
 			corev1.EnvVar{
 				Name: "ROLE_INDEX",
@@ -83,7 +82,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 			})
 	}
 
-	if g.role.Workload.Kind == "InstanceSet" {
+	if g.RoleData.Spec.Workload.Kind == "InstanceSet" {
 		envVars = append(envVars,
 			corev1.EnvVar{
 				Name: "INSTANCE_NAME",

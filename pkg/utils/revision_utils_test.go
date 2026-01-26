@@ -510,7 +510,7 @@ func TestCleanExpiredRevision(t *testing.T) {
 			}(revisions)...).
 			Build()
 
-		result, err := CleanExpiredRevision(ctx, fakeClientWithObjects, rbg)
+		result, err := CleanExpiredRevision(ctx, fakeClientWithObjects, rbg.Name, rbg.Namespace, rbg.UID)
 		assert.NoError(t, err)
 		assert.Len(t, result, 5, "Should retain all revisions")
 	})
@@ -544,7 +544,7 @@ func TestCleanExpiredRevision(t *testing.T) {
 			}(revisions)...).
 			Build()
 
-		result, err := CleanExpiredRevision(ctx, fakeClientWithObjects, rbg)
+		result, err := CleanExpiredRevision(ctx, fakeClientWithObjects, rbg.Name, rbg.Namespace, rbg.UID)
 		assert.NoError(t, err)
 		assert.Len(t, result, 5, "Should only retain the latest 5 revisions")
 

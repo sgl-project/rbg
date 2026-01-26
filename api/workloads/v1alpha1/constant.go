@@ -5,6 +5,9 @@ import v1 "k8s.io/api/core/v1"
 const (
 	ControllerName = "rolebasedgroup-controller"
 
+	// RoleBasedGroupKind is the kind name for RoleBasedGroup CRD
+	RoleBasedGroupKind = "RoleBasedGroup"
+
 	// RBGPrefix Domain prefix for all labels/annotations to avoid conflicts
 	RBGPrefix = "rolebasedgroup.workloads.x-k8s.io/"
 

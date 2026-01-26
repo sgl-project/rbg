@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
@@ -113,18 +114,30 @@ func ApplyRevision(
 	return restoredRbg, nil
 }
 
+// CleanExpiredRevision cleans expired ControllerRevisions for a RoleBasedGroup.
+// It takes the RBG name, namespace, and UID to identify and clean old revisions.
 func CleanExpiredRevision(
-	ctx context.Context, client client.Client,
-	rbg *workloadsv1alpha1.RoleBasedGroup) ([]*appsv1.ControllerRevision, error) {
+	ctx context.Context, k8sClient client.Client,
+	rbgName, rbgNamespace string, rbgUID types.UID) ([]*appsv1.ControllerRevision, error) {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			workloadsv1alpha1.SetNameLabelKey: rbgName,
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
-	revisions, err := ListRevisions(ctx, client, rbg, selector)
+
+	// Create a minimal object that implements metav1.Object interface for ListRevisions
+	parent := &metav1.PartialObjectMetadata{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbgName,
+			Namespace: rbgNamespace,
+			UID:       rbgUID,
+		},
+	}
+
+	revisions, err := ListRevisions(ctx, k8sClient, parent, selector)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +162,7 @@ func CleanExpiredRevision(
 			break
 		}
 
-		if err := client.Delete(ctx, revision); err != nil {
+		if err := k8sClient.Delete(ctx, revision); err != nil {
 			return revisions, err
 		}
 	}

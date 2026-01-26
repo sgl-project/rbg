@@ -84,8 +84,23 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 				errs = errors.Join(errs, err)
 				continue
 			}
+			// Construct roleData from rbg and role
+			metadata := reconciler.Metadata{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			}
+			roleData := &reconciler.RoleData{
+				Spec:         role,
+				WorkloadName: metadata.GetWorkloadName(role),
+				OwnerInfo: reconciler.OwnerInfo{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+					UID:       rbg.UID,
+				},
+			}
 			// 3. recreate role
-			if err := recon.RecreateWorkload(ctx, rbg, role); err != nil {
+			if err := recon.RecreateWorkload(ctx, roleData); err != nil {
 				errs = errors.Join(errs, err)
 				continue
 			}

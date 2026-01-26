@@ -1,4 +1,4 @@
-package discovery
+package reconciler
 
 import (
 	"context"
@@ -78,10 +78,18 @@ func TestSidecarBuilder_Build(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
+				roleData := &RoleData{
+					Spec: tt.role,
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
 				b := &SidecarBuilder{
-					rbg:    tt.rbg,
-					role:   tt.role,
-					client: tt.client,
+					RoleData: roleData,
+					Client:   tt.client,
 				}
 
 				err := b.Build(context.TODO(), tt.podSpec)
@@ -316,10 +324,18 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
+				roleData := &RoleData{
+					Spec: tt.role,
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
 				b := &SidecarBuilder{
-					rbg:    tt.rbg,
-					role:   tt.role,
-					client: tt.client,
+					RoleData: roleData,
+					Client:   tt.client,
 				}
 
 				ctx := log.IntoContext(context.TODO(), klog.NewKlogr())
@@ -347,9 +363,17 @@ func TestNewSidecarBuilder(t *testing.T) {
 	rbg := &workloadsv1alpha.RoleBasedGroup{}
 	role := &workloadsv1alpha.RoleSpec{}
 
-	builder := NewSidecarBuilder(client, rbg, role)
+	roleData := &RoleData{
+		Spec: role,
+		OwnerInfo: OwnerInfo{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			UID:       rbg.UID,
+		},
+	}
+
+	builder := NewSidecarBuilder(client, roleData)
 	assert.NotEmpty(t, builder, "NewSidecarBuilder() should not return nil")
-	assert.Equal(t, client, builder.client)
-	assert.Equal(t, rbg, builder.rbg)
-	assert.Equal(t, role, builder.role)
+	assert.Equal(t, client, builder.Client)
+	assert.Equal(t, roleData, builder.RoleData)
 }

@@ -1,4 +1,4 @@
-package discovery
+package reconciler
 
 import (
 	"sort"
@@ -113,9 +113,16 @@ func TestEnvBuilder_Build(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
+				// Create RoleData
+				roleData := &RoleData{
+					Spec: tt.role,
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+					},
+				}
 				g := &EnvBuilder{
-					rbg:  tt.rbg,
-					role: tt.role,
+					RoleData: roleData,
 				}
 				got := g.Build()
 
@@ -185,9 +192,16 @@ func TestEnvBuilder_buildLocalRoleVars(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
+				// Create RoleData
+				roleData := &RoleData{
+					Spec: tt.role,
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+					},
+				}
 				g := &EnvBuilder{
-					rbg:  tt.rbg,
-					role: tt.role,
+					RoleData: roleData,
 				}
 				got := g.buildLocalRoleVars()
 

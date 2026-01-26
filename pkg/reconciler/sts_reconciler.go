@@ -41,9 +41,10 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 }
 
 func (r *StatefulSetReconciler) Validate(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	ctx context.Context, roleData *RoleData) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
+	role := roleData.Spec
 	if role.Template == nil {
 		return fmt.Errorf("role.template is required when use %s as workload", role.Workload.String())
 	}
@@ -52,23 +53,25 @@ func (r *StatefulSetReconciler) Validate(
 }
 
 func (r *StatefulSetReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,
+	ctx context.Context, roleData *RoleData,
 ) error {
-	if err := r.reconcileStatefulSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey); err != nil {
+	if err := r.reconcileStatefulSet(ctx, roleData); err != nil {
 		return err
 	}
 
-	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role)
+	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, roleData)
 }
 
 func (r *StatefulSetReconciler) reconcileStatefulSet(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,
+	roleData *RoleData,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling sts workload")
+
+	role := roleData.Spec
+	rollingUpdateStrategy := roleData.RollingUpdateStrategy
+	revisionKey := roleData.ExpectedRevisionHash
 
 	rollingStrategy, err := validateRolloutStrategy(role.RolloutStrategy, int(*role.Replicas))
 	if err != nil {
@@ -78,12 +81,12 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	role.RolloutStrategy = rollingStrategy
 
 	oldSts := &appsv1.StatefulSet{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldSts)
+	err = r.client.Get(ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, oldSts)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 
-	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts, revisionKey)
+	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, roleData, oldSts, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct statefulset apply configuration")
 		return err
@@ -429,12 +432,14 @@ func calculateContinuousReadyReplicas(states []replicaState) int32 {
 
 func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 	oldSts *appsv1.StatefulSet,
 	revisionKey string,
 ) (*appsapplyv1.StatefulSetApplyConfiguration, error) {
-	matchLabels := rbg.GetCommonLabelsFromRole(role)
+	role := roleData.Spec
+	ownerInfo := roleData.OwnerInfo
+
+	matchLabels := workloadsv1alpha1.GetCommonLabelsFromRole(ownerInfo.Name, ownerInfo.Namespace, role)
 	if oldSts.UID != "" {
 		// do not update selector when workload exists
 		matchLabels = oldSts.Spec.Selector.MatchLabels
@@ -442,7 +447,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, maps.Clone(matchLabels),
+		ctx, roleData, maps.Clone(matchLabels),
 	)
 	if err != nil {
 		return nil, err
@@ -450,15 +455,23 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	stsLabel := maps.Clone(matchLabels)
 	stsLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
+	// Construct temporary RBG for GetCompatibleHeadlessServiceName
+	rbg := &workloadsv1alpha1.RoleBasedGroup{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      ownerInfo.Name,
+			Namespace: ownerInfo.Namespace,
+			UID:       ownerInfo.UID,
+		},
+	}
 	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
 		return nil, err
 	}
 	// construct statefulset apply configuration
-	statefulSetConfig := appsapplyv1.StatefulSet(rbg.GetWorkloadName(role), rbg.Namespace).
+	statefulSetConfig := appsapplyv1.StatefulSet(roleData.WorkloadName, ownerInfo.Namespace).
 		WithSpec(
 			appsapplyv1.StatefulSetSpec().
-				// WithServiceName(rbg.GetWorkloadName(role)).
+				// WithServiceName(roleData.WorkloadName).
 				WithServiceName(svcName).
 				WithReplicas(*role.Replicas).
 				WithTemplate(podTemplateApplyConfiguration).
@@ -469,14 +482,14 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), workloadsv1alpha1.GetCommonAnnotationsFromRole(ownerInfo.Name, role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), stsLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
-				WithAPIVersion(rbg.APIVersion).
-				WithKind(rbg.Kind).
-				WithName(rbg.Name).
-				WithUID(rbg.GetUID()).
+				WithAPIVersion(workloadsv1alpha1.GroupVersion.String()).
+				WithKind("RoleBasedGroup").
+				WithName(ownerInfo.Name).
+				WithUID(ownerInfo.UID).
 				WithBlockOwnerDeletion(true).
 				WithController(true),
 		)
@@ -485,12 +498,12 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 
 func (r *StatefulSetReconciler) ConstructRoleStatus(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 ) (workloadsv1alpha1.RoleStatus, bool, error) {
+	role := roleData.Spec
 	sts := &appsv1.StatefulSet{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
+		ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, sts,
 	); err != nil {
 		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
@@ -500,35 +513,33 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
 
-	status, updateStatus := ConstructRoleStatue(rbg, role,
-		*sts.Spec.Replicas,
-		sts.Status.ReadyReplicas,
-		sts.Status.UpdatedReplicas)
-	return status, updateStatus, nil
+	// Return current status, let controller decide if update is needed
+	status := workloadsv1alpha1.RoleStatus{
+		Name:            role.Name,
+		Replicas:        *sts.Spec.Replicas,
+		ReadyReplicas:   sts.Status.ReadyReplicas,
+		UpdatedReplicas: sts.Status.UpdatedReplicas,
+	}
+	return status, true, nil
 }
 
 func (r *StatefulSetReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) (bool, error) {
 	sts := &appsv1.StatefulSet{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
+		ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, sts,
 	); err != nil {
 		return false, err
 	}
 
-	// We don't check ready if workload is rolling update if maxSkew is set.
-	if utils.RoleInMaxSkewCoordination(rbg, role.Name) &&
-		sts.Status.CurrentRevision != sts.Status.UpdateRevision {
-		return true, nil
-	}
 	return sts.Status.ReadyReplicas == *sts.Spec.Replicas, nil
 }
 
 func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, roles []*RoleData,
 ) error {
-	return CleanupOrphanedObjs(ctx, r.client, rbg, schema.GroupVersionKind{
+	return CleanupOrphanedObjs(ctx, r.client, roles, schema.GroupVersionKind{
 		Group:   "apps",
 		Version: "v1",
 		Kind:    "StatefulSet"})
@@ -553,9 +564,9 @@ func (r *StatefulSetReconciler) getHighestRevision(
 }
 
 func (r *StatefulSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) error {
-	return RecreateObj(ctx, r.client, rbg, role, schema.GroupVersionKind{
+	return RecreateObj(ctx, r.client, roleData, schema.GroupVersionKind{
 		Group:   "apps",
 		Version: "v1",
 		Kind:    "StatefulSet"})

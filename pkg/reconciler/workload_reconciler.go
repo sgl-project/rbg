@@ -14,18 +14,18 @@ import (
 )
 
 type WorkloadReconciler interface {
-	Validate(ctx context.Context, role *workloadsv1alpha1.RoleSpec) error
+	Validate(ctx context.Context, roleData *RoleData) error
 	Reconciler(
-		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-		rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error
+		ctx context.Context, roleData *RoleData,
+	) error
 	ConstructRoleStatus(
-		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+		ctx context.Context, roleData *RoleData,
 	) (workloadsv1alpha1.RoleStatus, bool, error)
 	CheckWorkloadReady(
-		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+		ctx context.Context, roleData *RoleData,
 	) (bool, error)
-	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error
-	RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
+	CleanupOrphanedWorkloads(ctx context.Context, roles []*RoleData) error
+	RecreateWorkload(ctx context.Context, roleData *RoleData) error
 }
 
 func NewWorkloadReconciler(

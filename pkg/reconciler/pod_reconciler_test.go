@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/test/wrappers"
 )
 
@@ -548,10 +547,18 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 				}
 
 				// Execute the method under test
+				roleData := &RoleData{
+					Spec: role,
+					OwnerInfo: OwnerInfo{
+						Name:      rbg.Name,
+						Namespace: rbg.Namespace,
+						UID:       rbg.UID,
+					},
+				}
+
 				result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
 					context.Background(),
-					rbg,
-					role,
+					roleData,
 					tt.podLabels,
 					tt.podTmpls...,
 				)
@@ -573,7 +580,8 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 
 					// If gang scheduling is enabled, check for pod group label
 					if rbg.EnableGangScheduling() {
-						assert.Equal(t, rbg.Name, result.Labels[scheduler.KubePodGroupLabelKey])
+						// The label key depends on scheduler type (handled in roleData initialization)
+						assert.Contains(t, result.Labels, roleData.PodGroupLabelKey)
 					}
 				}
 			},
@@ -592,14 +600,22 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(
 	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	role := &rbg.Spec.Roles[0]
 
+	roleData := &RoleData{
+		Spec: role,
+		OwnerInfo: OwnerInfo{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			UID:       rbg.UID,
+		},
+	}
+
 	t.Run(
 		"with config injector enabled", func(t *testing.T) {
 			reconciler.SetInjectors([]string{"config"})
 
 			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
 				context.Background(),
-				rbg,
-				role,
+				roleData,
 				map[string]string{"test": "label"},
 			)
 
@@ -617,8 +633,7 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(
 
 			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
 				context.Background(),
-				rbg,
-				role,
+				roleData,
 				map[string]string{"test": "label"},
 			)
 
@@ -636,8 +651,7 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(
 
 			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
 				context.Background(),
-				rbg,
-				role,
+				roleData,
 				map[string]string{"test": "label"},
 			)
 

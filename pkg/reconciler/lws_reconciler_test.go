@@ -45,7 +45,19 @@ func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
 	// Test successful reconciliation
 	ctx := context.Background()
 	expectedRevisionHash := "revision-hash-value"
-	err := reconciler.Reconciler(ctx, rbg, &lwsRole, nil, expectedRevisionHash)
+
+	roleData := &RoleData{
+		Spec:                 &lwsRole,
+		ExpectedRevisionHash: expectedRevisionHash,
+		WorkloadName:         rbg.GetWorkloadName(&lwsRole),
+		OwnerInfo: OwnerInfo{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			UID:       rbg.UID,
+		},
+	}
+
+	err := reconciler.Reconciler(ctx, roleData)
 	assert.NoError(t, err)
 
 	// Verify LWS was created
@@ -95,7 +107,18 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 
 	// Test status construction
 	ctx := context.Background()
-	status, updateStatus, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
+
+	roleData := &RoleData{
+		Spec:         &lwsRole,
+		WorkloadName: rbg.GetWorkloadName(&lwsRole),
+		OwnerInfo: OwnerInfo{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			UID:       rbg.UID,
+		},
+	}
+
+	status, updateStatus, err := reconciler.ConstructRoleStatus(ctx, roleData)
 	assert.NoError(t, err)
 	assert.True(t, updateStatus) // Should be true since there was no previous status
 	assert.Equal(t, "test-role", status.Name)
@@ -108,7 +131,7 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 	}
 
 	// Test when status is the same (should not need update)
-	status2, updateStatus2, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
+	status2, updateStatus2, err := reconciler.ConstructRoleStatus(ctx, roleData)
 	assert.NoError(t, err)
 	assert.False(t, updateStatus2) // Should be false since status is the same
 	assert.Equal(t, status, status2)
@@ -184,7 +207,18 @@ func TestLeaderWorkerSetReconciler_CheckWorkloadReady(t *testing.T) {
 
 				// Test ready check
 				ctx := context.Background()
-				ready, err := reconciler.CheckWorkloadReady(ctx, rbg, &lwsRole)
+
+				roleData := &RoleData{
+					Spec:         &lwsRole,
+					WorkloadName: rbg.GetWorkloadName(&lwsRole),
+					OwnerInfo: OwnerInfo{
+						Name:      rbg.Name,
+						Namespace: rbg.Namespace,
+						UID:       rbg.UID,
+					},
+				}
+
+				ready, err := reconciler.CheckWorkloadReady(ctx, roleData)
 
 				if tt.expectError {
 					assert.Error(t, err)
@@ -320,7 +354,21 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 
 	// Test cleanup
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
-	err := reconciler.CleanupOrphanedWorkloads(ctx, rbg)
+
+	roles := []*RoleData{}
+	for _, role := range rbg.Spec.Roles {
+		roles = append(roles, &RoleData{
+			Spec:         &role,
+			WorkloadName: rbg.GetWorkloadName(&role),
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		})
+	}
+
+	err := reconciler.CleanupOrphanedWorkloads(ctx, roles)
 	assert.NoError(t, err)
 
 	// Verify owned LWS still exists
@@ -435,7 +483,18 @@ func TestLeaderWorkerSetReconciler_RecreateWorkload(t *testing.T) {
 						}
 					}()
 				}
-				err := r.RecreateWorkload(context.TODO(), tt.rbg, tt.role)
+
+				roleData := &RoleData{
+					Spec:         tt.role,
+					WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				err := r.RecreateWorkload(context.TODO(), roleData)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("RecreateWorkload() error = %v, wantErr %v", err, tt.wantErr)
 				}
@@ -568,12 +627,20 @@ func TestConstructLWSApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
 			role.Labels = tt.roleLabels
 			role.Annotations = tt.roleAnnotations
 
+			roleData := &RoleData{
+				Spec:                 role,
+				ExpectedRevisionHash: expectedRevisionHash,
+				WorkloadName:         rbg.GetWorkloadName(role),
+				OwnerInfo: OwnerInfo{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+					UID:       rbg.UID,
+				},
+			}
+
 			result, err := reconciler.constructLWSApplyConfiguration(
 				context.Background(),
-				rbg,
-				role,
-				nil,
-				expectedRevisionHash,
+				roleData,
 			)
 
 			if err != nil {

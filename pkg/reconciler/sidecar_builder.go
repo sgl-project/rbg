@@ -1,4 +1,4 @@
-package discovery
+package reconciler
 
 import (
 	"context"
@@ -13,27 +13,25 @@ import (
 )
 
 type SidecarBuilder struct {
-	rbg    *workloadsv1alpha.RoleBasedGroup
-	role   *workloadsv1alpha.RoleSpec
-	client client.Client
+	RoleData *RoleData
+	Client   client.Client
 }
 
 func NewSidecarBuilder(
-	k8sClient client.Client, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+	k8sClient client.Client, roleData *RoleData,
 ) *SidecarBuilder {
 	return &SidecarBuilder{
-		rbg:    rbg,
-		role:   role,
-		client: k8sClient,
+		RoleData: roleData,
+		Client:   k8sClient,
 	}
 }
 
 func (b *SidecarBuilder) Build(ctx context.Context, podSpec *v1.PodTemplateSpec) error {
 	logger := log.FromContext(ctx)
 
-	curRole, err := b.rbg.GetRole(b.role.Name)
-	if err != nil || curRole == nil {
-		return err
+	curRole := b.RoleData.Spec
+	if curRole == nil {
+		return fmt.Errorf("role spec is nil")
 	}
 
 	if len(curRole.EngineRuntimes) == 0 {
@@ -57,7 +55,7 @@ func (b *SidecarBuilder) injectRuntime(
 	logger := log.FromContext(ctx)
 
 	engineRuntime := &workloadsv1alpha.ClusterEngineRuntimeProfile{}
-	if err := b.client.Get(
+	if err := b.Client.Get(
 		ctx, types.NamespacedName{
 			Name: runtime.ProfileName,
 		}, engineRuntime,

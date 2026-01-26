@@ -29,17 +29,17 @@ func NewServiceReconciler(client client.Client) *ServiceReconciler {
 }
 
 func (r *ServiceReconciler) reconcileHeadlessService(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling headless service")
 
-	workload, err := r.getObjectByKind(ctx, rbg, role)
+	workload, err := r.getObjectByKind(ctx, roleData)
 	if err != nil {
 		return err
 	}
 
-	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, rbg, role, workload)
+	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, roleData, workload)
 	if err != nil {
 		return fmt.Errorf("constructServiceApplyConfiguration error: %s", err.Error())
 	}
@@ -55,11 +55,11 @@ func (r *ServiceReconciler) reconcileHeadlessService(
 	}
 
 	oldSvc := &corev1.Service{}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	svcName, err := GetCompatibleHeadlessServiceNameFromRoleData(ctx, r.client, roleData)
 	if err != nil {
 		return fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
-	err = r.client.Get(ctx, types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, oldSvc)
+	err = r.client.Get(ctx, types.NamespacedName{Name: svcName, Namespace: roleData.OwnerInfo.Namespace}, oldSvc)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -82,28 +82,30 @@ func (r *ServiceReconciler) reconcileHeadlessService(
 
 func (r *ServiceReconciler) constructServiceApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 	workload client.Object,
 ) (*coreapplyv1.ServiceApplyConfiguration, error) {
+	role := roleData.Spec
+	ownerInfo := roleData.OwnerInfo
+
 	selectMap := map[string]string{
-		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+		workloadsv1alpha1.SetNameLabelKey: ownerInfo.Name,
 		workloadsv1alpha1.SetRoleLabelKey: role.Name,
 	}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
+	svcName, err := GetCompatibleHeadlessServiceNameFromRoleData(ctx, r.client, roleData)
 	if err != nil {
 		return nil, err
 	}
 	gvk := workload.GetObjectKind().GroupVersionKind()
-	serviceConfig := coreapplyv1.Service(svcName, rbg.Namespace).
+	serviceConfig := coreapplyv1.Service(svcName, ownerInfo.Namespace).
 		WithSpec(
 			coreapplyv1.ServiceSpec().
 				WithClusterIP("None").
 				WithSelector(selectMap).
 				WithPublishNotReadyAddresses(true),
 		).
-		WithLabels(rbg.GetCommonLabelsFromRole(role)).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
+		WithLabels(workloadsv1alpha1.GetCommonLabelsFromRole(ownerInfo.Name, ownerInfo.Namespace, role)).
+		WithAnnotations(workloadsv1alpha1.GetCommonAnnotationsFromRole(ownerInfo.Name, role)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(gvk.GroupVersion().String()).
@@ -117,19 +119,20 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 
 func (r *ServiceReconciler) getObjectByKind(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 ) (client.Object, error) {
-	workloadName := rbg.GetWorkloadName(role)
+	role := roleData.Spec
+	workloadName := roleData.WorkloadName
+	namespace := roleData.OwnerInfo.Namespace
 
 	switch role.Workload.String() {
 	case workloadsv1alpha1.InstanceSetWorkloadType:
 		obj := &workloadsv1alpha1.InstanceSet{}
-		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: rbg.Namespace}, obj)
+		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: namespace}, obj)
 		return obj, err
 	case workloadsv1alpha1.StatefulSetWorkloadType:
 		obj := &appsv1.StatefulSet{}
-		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: rbg.Namespace}, obj)
+		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: namespace}, obj)
 		return obj, err
 	default:
 		return nil, fmt.Errorf("unsupported workload type: %s", role.Workload.String())

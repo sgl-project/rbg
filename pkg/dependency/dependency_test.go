@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
 )
 
 // TestDependencyOrder tests the DependencyOrder function with various dependency scenarios
@@ -308,7 +309,8 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 				dependencyManager := NewDefaultDependencyManager(scheme, client)
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
-				ready, err := dependencyManager.CheckDependencyReady(ctx, rbg, &rbg.Spec.Roles[0])
+				data := reconciler.NewRBGReconcileData(rbg, func(eventType, reason, message string) {})
+				ready, err := dependencyManager.CheckDependencyReady(ctx, data, &rbg.Spec.Roles[0])
 				assert.Equal(t, err != nil, tt.wantErr)
 				assert.Equal(t, ready, tt.expectReady)
 			},

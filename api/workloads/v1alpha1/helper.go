@@ -18,7 +18,25 @@ func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]st
 	}
 }
 
+// GetCommonLabelsFromRole returns common labels for a role without requiring an RBG instance.
+func GetCommonLabelsFromRole(rbgName, namespace string, role *RoleSpec) map[string]string {
+	// Be careful to change these labels.
+	// They are used as sts.spec.selector which can not be updated. If changed, may cause all exist rbgs failed.
+	return map[string]string{
+		SetNameLabelKey:            rbgName,
+		SetRoleLabelKey:            role.Name,
+		SetGroupUniqueHashLabelKey: GenGroupUniqueKey(rbgName, namespace),
+	}
+}
+
 func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[string]string {
+	return map[string]string{
+		RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
+	}
+}
+
+// GetCommonAnnotationsFromRole returns common annotations for a role without requiring an RBG instance.
+func GetCommonAnnotationsFromRole(rbgName string, role *RoleSpec) map[string]string {
 	return map[string]string{
 		RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
 	}
@@ -104,6 +122,11 @@ func (rbg *RoleBasedGroup) GetExclusiveKey() (topologyKey string, found bool) {
 
 func (rbg *RoleBasedGroup) GenGroupUniqueKey() string {
 	return sha1Hash(fmt.Sprintf("%s/%s", rbg.GetNamespace(), rbg.GetName()))
+}
+
+// GenGroupUniqueKey generates a unique key for the RBG without requiring an RBG instance.
+func GenGroupUniqueKey(rbgName, namespace string) string {
+	return sha1Hash(fmt.Sprintf("%s/%s", namespace, rbgName))
 }
 
 // sha1Hash accepts an input string and returns the 40 character SHA1 hash digest of the input string.

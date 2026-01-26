@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
@@ -758,7 +759,16 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 
 				roleSpec.ScalingAdapter.Enable = !tt.expectDelete
 
-				err := r.ReconcileScalingAdapter(context.Background(), rbg, roleSpec)
+				// Create RoleData for the reconciler
+				roleData := &reconciler.RoleData{
+					Spec: roleSpec,
+					OwnerInfo: reconciler.OwnerInfo{
+						Name:      rbg.Name,
+						Namespace: rbg.Namespace,
+						UID:       rbg.UID,
+					},
+				}
+				err := r.ReconcileScalingAdapter(context.Background(), roleData)
 
 				if (err != nil) != tt.wantErr {
 					t.Errorf("ReconcileScalingAdapter() error = %v, wantErr %v", err, tt.wantErr)
@@ -878,7 +888,9 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 					scheme:    testScheme,
 				}
 
-				err := r.CleanupOrphanedScalingAdapters(context.Background(), rbg)
+				// Create RBGReconcileData for the reconciler
+				data := reconciler.NewRBGReconcileData(rbg, func(eventType, reason, message string) {})
+				err := r.CleanupOrphanedScalingAdapters(context.Background(), data)
 				if err != nil {
 					t.Fatalf("CleanupOrphanedScalingAdapters() error = %v", err)
 				}

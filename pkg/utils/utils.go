@@ -113,7 +113,17 @@ func CalculatePartitionReplicas(partition *intstrutil.IntOrString, replicasPoint
 }
 
 func GetRoleReplicas(rbg *v1alpha1.RoleBasedGroup, roleName string) int32 {
-	for _, role := range rbg.Spec.Roles {
+	// Convert []RoleSpec to []*RoleSpec for compatibility
+	roleSpecs := make([]*v1alpha1.RoleSpec, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		roleSpecs[i] = &rbg.Spec.Roles[i]
+	}
+	return GetRoleReplicasFromSpecs(roleSpecs, roleName)
+}
+
+// GetRoleReplicasFromSpecs returns the replicas of the specified role from role specs.
+func GetRoleReplicasFromSpecs(roleSpecs []*v1alpha1.RoleSpec, roleName string) int32 {
+	for _, role := range roleSpecs {
 		if role.Name == roleName {
 			return *role.Replicas
 		}

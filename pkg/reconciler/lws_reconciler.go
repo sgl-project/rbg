@@ -15,7 +15,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -41,9 +40,10 @@ func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) 
 }
 
 func (r *LeaderWorkerSetReconciler) Validate(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	ctx context.Context, roleData *RoleData) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
+	role := roleData.Spec
 	if role.Template == nil {
 		if role.LeaderWorkerSet == nil {
 			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
@@ -57,12 +57,13 @@ func (r *LeaderWorkerSetReconciler) Validate(
 }
 
 func (r *LeaderWorkerSetReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error {
+	ctx context.Context, roleData *RoleData,
+) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling lws workload")
 
-	lwsApplyConfig, err := r.constructLWSApplyConfiguration(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
+	role := roleData.Spec
+	lwsApplyConfig, err := r.constructLWSApplyConfiguration(ctx, roleData)
 	if err != nil {
 		logger.Error(err, "Failed to construct lws apply configuration")
 		return err
@@ -78,7 +79,7 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 		return err
 	}
 	oldLWS := &lwsv1.LeaderWorkerSet{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldLWS)
+	err = r.client.Get(ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, oldLWS)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "get lws failed")
 		return err
@@ -109,12 +110,12 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 }
 
 func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) (workloadsv1alpha1.RoleStatus, bool, error) {
-	updateStatus := false
+	role := roleData.Spec
 	lws := &lwsv1.LeaderWorkerSet{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws,
+		ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, lws,
 	); err != nil {
 		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
@@ -122,28 +123,24 @@ func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
 	currentReplicas := lws.Status.Replicas
 	currentReady := lws.Status.ReadyReplicas
 	updatedReplicas := lws.Status.UpdatedReplicas
-	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas ||
-		status.ReadyReplicas != currentReady ||
-		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
-			Name:            role.Name,
-			Replicas:        currentReplicas,
-			ReadyReplicas:   currentReady,
-			UpdatedReplicas: updatedReplicas,
-		}
-		updateStatus = true
+
+	// Return current status, let controller decide if update is needed
+	status := workloadsv1alpha1.RoleStatus{
+		Name:            role.Name,
+		Replicas:        currentReplicas,
+		ReadyReplicas:   currentReady,
+		UpdatedReplicas: updatedReplicas,
 	}
 
-	return status, updateStatus, nil
+	return status, true, nil
 }
 
 func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) (bool, error) {
 	lws := &lwsv1.LeaderWorkerSet{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws,
+		ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, lws,
 	); err != nil {
 		return false, err
 	}
@@ -151,9 +148,15 @@ func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
 }
 
 func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, roles []*RoleData,
 ) error {
 	logger := log.FromContext(ctx)
+	if len(roles) == 0 {
+		return nil
+	}
+	// Get ownerInfo from the first role (all roles have the same owner)
+	ownerInfo := roles[0].OwnerInfo
+
 	err := utils.CheckCrdExists(r.client, utils.LwsCrdName)
 	if err != nil {
 		logger.V(1).Info(
@@ -166,10 +169,10 @@ func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
 	// list lws managed by rbg
 	lwsList := &lwsv1.LeaderWorkerSetList{}
 	if err := r.client.List(
-		ctx, lwsList, client.InNamespace(rbg.Namespace),
+		ctx, lwsList, client.InNamespace(ownerInfo.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				workloadsv1alpha1.SetNameLabelKey: ownerInfo.Name,
 			},
 		),
 	); err != nil {
@@ -177,12 +180,21 @@ func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
 	}
 
 	for _, lws := range lwsList.Items {
-		if !metav1.IsControlledBy(&lws, rbg) {
+		// Check if controlled by this RBG
+		isControlled := false
+		for _, owner := range lws.OwnerReferences {
+			if owner.UID == ownerInfo.UID {
+				isControlled = true
+				break
+			}
+		}
+		if !isControlled {
 			continue
 		}
+
 		found := false
-		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == "LeaderWorkerSet" && rbg.GetWorkloadName(&role) == lws.Name {
+		for _, roleData := range roles {
+			if roleData.Spec.Workload.Kind == "LeaderWorkerSet" && roleData.WorkloadName == lws.Name {
 				found = true
 				break
 			}
@@ -199,12 +211,14 @@ func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
 
 func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
-	revisionKey string,
+	roleData *RoleData,
 ) (*lwsapplyv1.LeaderWorkerSetApplyConfiguration, error) {
 	logger := log.FromContext(ctx)
+	role := roleData.Spec
+	ownerInfo := roleData.OwnerInfo
+	rollingUpdateStrategy := roleData.RollingUpdateStrategy
+	revisionKey := roleData.ExpectedRevisionHash
+
 	leaderWorkerSet := role.LeaderWorkerSet
 	if leaderWorkerSet == nil {
 		leaderWorkerSet = &workloadsv1alpha1.LeaderWorkerTemplate{
@@ -216,31 +230,32 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	leaderTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchLeaderTemplate)
 	if err != nil {
-		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
+		logger.Error(err, "patch leader podTemplate failed", "rbg", fmt.Sprintf("%s/%s", ownerInfo.Namespace, ownerInfo.Name))
 		return nil, err
 	}
+	matchLabels := workloadsv1alpha1.GetCommonLabelsFromRole(ownerInfo.Name, ownerInfo.Namespace, role)
 	leaderTemplateApplyCfg, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *leaderTemp,
+		ctx, roleData, maps.Clone(matchLabels), *leaderTemp,
 	)
 	if err != nil {
-		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
+		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", fmt.Sprintf("%s/%s", ownerInfo.Namespace, ownerInfo.Name))
 		return nil, err
 	}
 
 	// workerTemplate
 	workerTemp, err := patchPodTemplate(role.Template, leaderWorkerSet.PatchWorkerTemplate)
 	if err != nil {
-		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
+		logger.Error(err, "patch worker podTemplate failed", "rbg", fmt.Sprintf("%s/%s", ownerInfo.Namespace, ownerInfo.Name))
 		return nil, err
 	}
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "common_env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), *workerTemp,
+		ctx, roleData, maps.Clone(matchLabels), *workerTemp,
 	)
 	if err != nil {
-		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
+		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", fmt.Sprintf("%s/%s", ownerInfo.Namespace, ownerInfo.Name))
 		return nil, err
 	}
 	// TODO support SubGroupPolicy
@@ -305,20 +320,20 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		)
 	}
 
-	lwsLabel := rbg.GetCommonLabelsFromRole(role)
+	lwsLabel := maps.Clone(matchLabels)
 	lwsLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct lws apply configuration
-	lwsConfig := lwsapplyv1.LeaderWorkerSet(rbg.GetWorkloadName(role), rbg.Namespace).
+	lwsConfig := lwsapplyv1.LeaderWorkerSet(roleData.WorkloadName, ownerInfo.Namespace).
 		WithSpec(lwsSpecConfig).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), workloadsv1alpha1.GetCommonAnnotationsFromRole(ownerInfo.Name, role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), lwsLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
-				WithAPIVersion(rbg.APIVersion).
-				WithKind(rbg.Kind).
-				WithName(rbg.Name).
-				WithUID(rbg.GetUID()).
+				WithAPIVersion(workloadsv1alpha1.GroupVersion.String()).
+				WithKind("RoleBasedGroup").
+				WithName(ownerInfo.Name).
+				WithUID(ownerInfo.UID).
 				WithBlockOwnerDeletion(true).
 				WithController(true),
 		)
@@ -327,16 +342,16 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 }
 
 func (r *LeaderWorkerSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) error {
 	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
+	if roleData == nil || roleData.Spec == nil {
 		return nil
 	}
 
-	lwsName := rbg.GetWorkloadName(role)
+	lwsName := roleData.WorkloadName
 	var lws lwsv1.LeaderWorkerSet
-	err := r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, &lws)
+	err := r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: roleData.OwnerInfo.Namespace}, &lws)
 	// if lws is not found, skip delete lws
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
@@ -355,7 +370,7 @@ func (r *LeaderWorkerSetReconciler) RecreateWorkload(
 	err = wait.PollUntilContextTimeout(
 		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 			var newLws lwsv1.LeaderWorkerSet
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, &newLws)
+			retErr = r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: roleData.OwnerInfo.Namespace}, &newLws)
 			if retErr != nil {
 				if apierrors.IsNotFound(retErr) {
 					return false, nil

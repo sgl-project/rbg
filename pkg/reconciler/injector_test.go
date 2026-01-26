@@ -1,4 +1,4 @@
-package discovery
+package reconciler
 
 import (
 	"context"
@@ -6,12 +6,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/test/wrappers"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -204,7 +202,15 @@ func TestDefaultInjector_InjectSidecar(t *testing.T) {
 		t.Run(
 			tt.name, func(t *testing.T) {
 				role, _ := rbg.GetRole("test")
-				b := NewSidecarBuilder(fakeClient, rbg, role)
+				// Create RoleData
+				roleData := &RoleData{
+					Spec: role,
+					OwnerInfo: OwnerInfo{
+						Name:      rbg.Name,
+						Namespace: rbg.Namespace,
+					},
+				}
+				b := NewSidecarBuilder(fakeClient, roleData)
 				err := b.Build(context.TODO(), tt.podSpec)
 				if err != nil {
 					t.Errorf("build error: %s", err.Error())
@@ -213,162 +219,6 @@ func TestDefaultInjector_InjectSidecar(t *testing.T) {
 					t.Errorf("Build expect err, want %v, got %v", tt.want, tt.podSpec)
 				}
 
-			},
-		)
-	}
-}
-
-func TestDefaultInjector_InjectConfig(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-
-	tests := []struct {
-		name            string
-		rbg             *workloadsv1alpha1.RoleBasedGroup
-		initialPodSpec  *corev1.PodTemplateSpec
-		expectedVolumes []corev1.Volume
-		expectedMounts  []corev1.VolumeMount
-	}{
-		{
-			name: "Inject config volume and mount when they don't exist",
-			rbg:  wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
-			// Pod spec without config volume or mount
-			initialPodSpec: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "main",
-							Image: "test-image",
-						},
-					},
-				},
-			},
-			// Expected volume to be added
-			expectedVolumes: []corev1.Volume{
-				{
-					Name: "rbg-cluster-config",
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-rbg-test-role",
-							},
-							Items: []corev1.KeyToPath{
-								{
-									Key:  "config.yaml",
-									Path: "config.yaml",
-								},
-							},
-						},
-					},
-				},
-			},
-			// Expected mount to be added to container
-			expectedMounts: []corev1.VolumeMount{
-				{
-					Name:      "rbg-cluster-config",
-					MountPath: "/etc/rbg",
-					ReadOnly:  true,
-				},
-			},
-		},
-		{
-			name: "Skip injection when volume and mount already exist",
-			rbg:  wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
-			// Pod spec that already has the config volume and mount
-			initialPodSpec: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Volumes: []corev1.Volume{
-						{
-							Name: "rbg-cluster-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "test-rbg-test-role",
-									},
-									Items: []corev1.KeyToPath{
-										{
-											Key:  "config.yaml",
-											Path: "config.yaml",
-										},
-									},
-								},
-							},
-						},
-					},
-					Containers: []corev1.Container{
-						{
-							Name:  "main",
-							Image: "test-image",
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "rbg-cluster-config",
-									MountPath: "/etc/rbg",
-									ReadOnly:  true,
-								},
-							},
-						},
-					},
-				},
-			},
-			// Should remain unchanged
-			expectedVolumes: []corev1.Volume{
-				{
-					Name: "rbg-cluster-config",
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-rbg-test-role",
-							},
-							Items: []corev1.KeyToPath{
-								{
-									Key:  "config.yaml",
-									Path: "config.yaml",
-								},
-							},
-						},
-					},
-				},
-			},
-			// Should remain unchanged
-			expectedMounts: []corev1.VolumeMount{
-				{
-					Name:      "rbg-cluster-config",
-					MountPath: "/etc/rbg",
-					ReadOnly:  true,
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-				injector := NewDefaultInjector(scheme, fakeClient)
-
-				// Execute InjectConfig method
-				err := injector.InjectConfig(context.TODO(), tt.initialPodSpec, tt.rbg, &tt.rbg.Spec.Roles[0])
-				if err != nil {
-					t.Fatalf("InjectConfig() error = %v", err)
-				}
-
-				// Check if volumes are correctly injected
-				if diff := cmp.Diff(
-					tt.expectedVolumes, tt.initialPodSpec.Spec.Volumes,
-					cmpopts.IgnoreFields(corev1.ConfigMapVolumeSource{}, "DefaultMode"),
-				); diff != "" {
-					t.Errorf("Volumes mismatch (-want +got):\n%s", diff)
-				}
-
-				// Check if volume mounts are correctly injected
-				if len(tt.initialPodSpec.Spec.Containers) > 0 {
-					if diff := cmp.Diff(
-						tt.expectedMounts, tt.initialPodSpec.Spec.Containers[0].VolumeMounts,
-					); diff != "" {
-						t.Errorf("VolumeMounts mismatch (-want +got):\n%s", diff)
-					}
-				}
 			},
 		)
 	}
@@ -497,8 +347,17 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 				fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 				injector := NewDefaultInjector(scheme, fakeClient)
 
+				// Create RoleData
+				roleData := &RoleData{
+					Spec: tt.role,
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+					},
+				}
+
 				// Execute InjectEnv method
-				err := injector.InjectEnv(context.Background(), tt.initialPodSpec, tt.rbg, tt.role)
+				err := injector.InjectEnv(context.Background(), tt.initialPodSpec, roleData)
 				if err != nil {
 					t.Fatalf("InjectEnv() error = %v", err)
 				}

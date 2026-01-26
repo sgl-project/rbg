@@ -76,19 +76,19 @@ func (m *DefaultDependencyManager) SortRoles(
 }
 
 func (m *DefaultDependencyManager) CheckDependencyReady(
-	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+	ctx context.Context, data *reconciler.RBGReconcileData, role *workloadsv1alpha.RoleSpec,
 ) (bool, error) {
-
 	for _, dep := range role.Dependencies {
-		depRole, err := rbg.GetRole(dep)
+		depRole := data.GetRole(dep)
+		if depRole == nil {
+			return false, fmt.Errorf("dependency role %s not found", dep)
+		}
+		r, err := reconciler.NewWorkloadReconciler(depRole.Spec.Workload, m.scheme, m.client)
 		if err != nil {
 			return false, err
 		}
-		r, err := reconciler.NewWorkloadReconciler(depRole.Workload, m.scheme, m.client)
-		if err != nil {
-			return false, err
-		}
-		ready, err := r.CheckWorkloadReady(ctx, rbg, depRole)
+
+		ready, err := r.CheckWorkloadReady(ctx, depRole)
 		if err != nil {
 			return false, err
 		}

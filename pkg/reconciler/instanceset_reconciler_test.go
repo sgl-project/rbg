@@ -175,7 +175,11 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := instanceSetReconciler.Validate(ctx, tt.role)
+			// Construct roleData for validation
+			roleData := &RoleData{
+				Spec: tt.role,
+			}
+			err := instanceSetReconciler.Validate(ctx, roleData)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -243,8 +247,18 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 
 		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
 
-		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
-			ctx, rbg, role, nil, revisionKey)
+		roleData := &RoleData{
+			Spec:                 role,
+			ExpectedRevisionHash: revisionKey,
+			WorkloadName:         rbg.GetWorkloadName(role),
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		}
+
+		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(ctx, roleData)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, config)
@@ -293,8 +307,18 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		}
 		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
 
-		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
-			ctx, rbg, role, nil, revisionKey)
+		roleData := &RoleData{
+			Spec:                 role,
+			ExpectedRevisionHash: revisionKey,
+			WorkloadName:         rbg.GetWorkloadName(role),
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		}
+
+		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(ctx, roleData)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, config)
@@ -335,8 +359,18 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		}
 		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
 
-		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
-			ctx, rbg, role, nil, revisionKey)
+		roleData := &RoleData{
+			Spec:                 role,
+			ExpectedRevisionHash: revisionKey,
+			WorkloadName:         rbg.GetWorkloadName(role),
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		}
+
+		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(ctx, roleData)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, config)
@@ -406,8 +440,19 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		}
 		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
 
-		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
-			ctx, rbg, role, rollingUpdateStrategy, revisionKey)
+		roleData := &RoleData{
+			Spec:                  role,
+			ExpectedRevisionHash:  revisionKey,
+			WorkloadName:          rbg.GetWorkloadName(role),
+			RollingUpdateStrategy: rollingUpdateStrategy,
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		}
+
+		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(ctx, roleData)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, config)
@@ -434,8 +479,18 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 		}
 		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
 
-		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
-			ctx, rbg, role, nil, revisionKey)
+		roleData := &RoleData{
+			Spec:                 role,
+			ExpectedRevisionHash: revisionKey,
+			WorkloadName:         rbg.GetWorkloadName(role),
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		}
+
+		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(ctx, roleData)
 
 		// Should fail due to invalid JSON in patch
 		assert.Error(t, err)
@@ -496,7 +551,19 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 					scheme: scheme,
 					client: client,
 				}
-				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
+
+				roleData := &RoleData{
+					Spec:                 tt.role,
+					ExpectedRevisionHash: expectedRevisionHash,
+					WorkloadName:         tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				err := r.Reconciler(context.Background(), roleData)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -609,7 +676,17 @@ func TestInstanceSetReconciler_CheckWorkloadReady(t *testing.T) {
 					client: clientBuilder.Build(),
 				}
 
-				ready, err := r.CheckWorkloadReady(context.Background(), tt.rbg, tt.role)
+				roleData := &RoleData{
+					Spec:         tt.role,
+					WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				ready, err := r.CheckWorkloadReady(context.Background(), roleData)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -718,7 +795,20 @@ func TestInstanceSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 					client: client,
 				}
 
-				err := r.CleanupOrphanedWorkloads(context.Background(), tt.rbg)
+				roles := []*RoleData{}
+				for _, role := range tt.rbg.Spec.Roles {
+					roles = append(roles, &RoleData{
+						Spec:         &role,
+						WorkloadName: tt.rbg.GetWorkloadName(&role),
+						OwnerInfo: OwnerInfo{
+							Name:      tt.rbg.Name,
+							Namespace: tt.rbg.Namespace,
+							UID:       tt.rbg.UID,
+						},
+					})
+				}
+
+				err := r.CleanupOrphanedWorkloads(context.Background(), roles)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -827,7 +917,17 @@ func TestInstanceSetReconciler_RecreateWorkload(t *testing.T) {
 					}()
 				}
 
-				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
+				roleData := &RoleData{
+					Spec:         tt.role,
+					WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
+				err := r.RecreateWorkload(ctx, roleData)
 				if (err != nil) != tt.expectErr {
 					t.Errorf("InstanceSetReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
 				}

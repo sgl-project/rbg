@@ -13,8 +13,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/pkg/discovery"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -37,56 +35,54 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 	podLabels map[string]string,
 	podTmpls ...corev1.PodTemplateSpec,
 ) (*coreapplyv1.PodTemplateSpecApplyConfiguration, error) {
+	roleSpec := roleData.Spec
+
+	// Prepare pod template spec
 	var podTemplateSpec corev1.PodTemplateSpec
 	if len(podTmpls) > 0 {
 		podTemplateSpec = podTmpls[0]
-	} else if role.Template != nil {
-		podTemplateSpec = *role.Template.DeepCopy()
+	} else if roleSpec.Template != nil {
+		podTemplateSpec = *roleSpec.Template.DeepCopy()
 	}
-	// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
+	// else: podTemplateSpec stays as zero value
 	podAnnotations := podTemplateSpec.Annotations
 	if podAnnotations == nil {
 		podAnnotations = make(map[string]string)
 	}
-	// inject objects
-	injector := discovery.NewDefaultInjector(r.scheme, r.client)
+
+	// Inject objects using discovery injectors
+	injector := NewDefaultInjector(r.scheme, r.client)
 	if r.injectObjects == nil {
-		r.injectObjects = []string{"config", "sidecar", "common_env"}
-	}
-	if utils.ContainsString(r.injectObjects, "config") {
-		if err := injector.InjectConfig(ctx, &podTemplateSpec, rbg, role); err != nil {
-			return nil, fmt.Errorf("failed to inject config: %w", err)
-		}
+		r.injectObjects = []string{"sidecar", "common_env"}
 	}
 	if utils.ContainsString(r.injectObjects, "sidecar") {
 		// The sidecar containers also need rbg-related envs, so inject them first
-		if err := injector.InjectSidecar(ctx, &podTemplateSpec, rbg, role); err != nil {
+		if err := injector.InjectSidecar(ctx, &podTemplateSpec, roleData); err != nil {
 			return nil, fmt.Errorf("failed to inject sidecar: %w", err)
 		}
 	}
 	if utils.ContainsString(r.injectObjects, "common_env") {
-		if err := injector.InjectEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
+		if err := injector.InjectEnv(ctx, &podTemplateSpec, roleData); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}
 	if utils.ContainsString(r.injectObjects, "lws_env") {
-		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
+		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, roleData); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}
 
 	// Set Exclusive topology
-	if topologyKey, found := rbg.GetExclusiveKey(); found {
+	if roleData.ExclusiveTopologyKey != "" {
 		if podAnnotations[workloadsv1alpha1.DisableExclusiveKeyAnnotationKey] == "" {
-			podAnnotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = topologyKey
-			uniqueKey := rbg.GenGroupUniqueKey()
+			podAnnotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = roleData.ExclusiveTopologyKey
+			uniqueKey := workloadsv1alpha1.GenGroupUniqueKey(roleData.OwnerInfo.Namespace, roleData.Spec.Name)
 			err := setExclusiveAffinities(
-				&podTemplateSpec, uniqueKey, topologyKey, workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+				&podTemplateSpec, uniqueKey, roleData.ExclusiveTopologyKey, workloadsv1alpha1.SetGroupUniqueHashLabelKey,
 			)
 			if err != nil {
 				return nil, err
@@ -105,7 +101,20 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	scheduler.InjectPodGroupProtocol(rbg, podTemplateApplyConfiguration)
+	// Inject pod group label/annotation if configured
+	if roleData.PodGroupLabelKey != "" {
+		if roleData.PodGroupLabelKey == "pod-group.scheduling.sigs.k8s.io/name" {
+			// KubeScheduler PodGroup uses label
+			podTemplateApplyConfiguration.WithLabels(map[string]string{
+				roleData.PodGroupLabelKey: roleData.PodGroupKey,
+			})
+		} else {
+			// Volcano PodGroup uses annotation
+			podTemplateApplyConfiguration.WithAnnotations(map[string]string{
+				roleData.PodGroupLabelKey: roleData.PodGroupKey,
+			})
+		}
+	}
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
 	return podTemplateApplyConfiguration, nil

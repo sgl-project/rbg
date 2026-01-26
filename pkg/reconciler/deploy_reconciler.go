@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,9 +35,10 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 }
 
 func (r *DeploymentReconciler) Validate(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	ctx context.Context, roleData *RoleData) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
+	role := roleData.Spec
 	if role.Template == nil {
 		return fmt.Errorf("role.template is required when use %s as workload", role.Workload.String())
 	}
@@ -47,18 +47,19 @@ func (r *DeploymentReconciler) Validate(
 }
 
 func (r *DeploymentReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error {
+	ctx context.Context, roleData *RoleData,
+) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling deployment workload")
 
+	role := roleData.Spec
 	oldDeploy := &appsv1.Deployment{}
-	err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldDeploy)
+	err := r.client.Get(ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, oldDeploy)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 
-	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, rollingUpdateStrategy, revisionKey)
+	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, roleData, oldDeploy)
 	if err != nil {
 		logger.Error(err, "Failed to construct deployment apply configuration")
 		return err
@@ -101,13 +102,15 @@ func (r *DeploymentReconciler) Reconciler(
 
 func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 	oldDeploy *appsv1.Deployment,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
-	revisionKey string,
 ) (*appsapplyv1.DeploymentApplyConfiguration, error) {
-	matchLabels := rbg.GetCommonLabelsFromRole(role)
+	role := roleData.Spec
+	ownerInfo := roleData.OwnerInfo
+	rollingUpdateStrategy := roleData.RollingUpdateStrategy
+	revisionKey := roleData.ExpectedRevisionHash
+
+	matchLabels := workloadsv1alpha1.GetCommonLabelsFromRole(ownerInfo.Name, ownerInfo.Namespace, role)
 	if oldDeploy.UID != "" {
 		// do not update selector when workload exists
 		matchLabels = oldDeploy.Spec.Selector.MatchLabels
@@ -115,7 +118,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, maps.Clone(matchLabels),
+		ctx, roleData, maps.Clone(matchLabels),
 	)
 	if err != nil {
 		return nil, err
@@ -124,7 +127,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	deployLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct deployment apply configuration
-	deployConfig := appsapplyv1.Deployment(rbg.GetWorkloadName(role), rbg.Namespace).
+	deployConfig := appsapplyv1.Deployment(roleData.WorkloadName, ownerInfo.Namespace).
 		WithSpec(
 			appsapplyv1.DeploymentSpec().
 				WithReplicas(*role.Replicas).
@@ -134,14 +137,14 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), workloadsv1alpha1.GetCommonAnnotationsFromRole(ownerInfo.Name, role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), deployLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
-				WithAPIVersion(rbg.APIVersion).
-				WithKind(rbg.Kind).
-				WithName(rbg.Name).
-				WithUID(rbg.GetUID()).
+				WithAPIVersion(workloadsv1alpha1.GroupVersion.String()).
+				WithKind("RoleBasedGroup").
+				WithName(ownerInfo.Name).
+				WithUID(ownerInfo.UID).
 				WithBlockOwnerDeletion(true).
 				WithController(true),
 		)
@@ -197,13 +200,12 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 
 func (r *DeploymentReconciler) ConstructRoleStatus(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	roleData *RoleData,
 ) (workloadsv1alpha1.RoleStatus, bool, error) {
-	updateStatus := false
+	role := roleData.Spec
 	deploy := &appsv1.Deployment{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
+		ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, deploy,
 	); err != nil {
 		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
 	}
@@ -216,51 +218,48 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 	currentReplicas := *deploy.Spec.Replicas
 	currentReady := deploy.Status.ReadyReplicas
 	updatedReplicas := deploy.Status.UpdatedReplicas
-	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas ||
-		status.ReadyReplicas != currentReady ||
-		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
-			Name:            role.Name,
-			Replicas:        currentReplicas,
-			ReadyReplicas:   currentReady,
-			UpdatedReplicas: updatedReplicas,
-		}
-		updateStatus = true
+
+	// Return the current status and let the controller decide if update is needed
+	status := workloadsv1alpha1.RoleStatus{
+		Name:            role.Name,
+		Replicas:        currentReplicas,
+		ReadyReplicas:   currentReady,
+		UpdatedReplicas: updatedReplicas,
 	}
 
-	return status, updateStatus, nil
+	return status, true, nil
 }
 
 func (r *DeploymentReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) (bool, error) {
 	deploy := &appsv1.Deployment{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
+		ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, deploy,
 	); err != nil {
 		return false, err
 	}
 
-	// We don't check ready if workload is rolling update if maxSkew is set.
-	if utils.RoleInMaxSkewCoordination(rbg, role.Name) &&
-		deploy.Status.UpdatedReplicas != deploy.Status.Replicas {
-		return true, nil
-	}
 	return deploy.Status.ReadyReplicas == *deploy.Spec.Replicas, nil
 }
 
 func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, roles []*RoleData,
 ) error {
 	logger := log.FromContext(ctx)
+	if len(roles) == 0 {
+		return nil
+	}
+	// Get ownerInfo from the first role (all roles have the same owner)
+	ownerInfo := roles[0].OwnerInfo
+
 	// list deploy managed by rbg
 	deployList := &appsv1.DeploymentList{}
 	if err := r.client.List(
-		context.Background(), deployList, client.InNamespace(rbg.Namespace),
+		context.Background(), deployList, client.InNamespace(ownerInfo.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				workloadsv1alpha1.SetNameLabelKey: ownerInfo.Name,
 			},
 		),
 	); err != nil {
@@ -268,12 +267,21 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 	}
 
 	for _, deploy := range deployList.Items {
-		if !metav1.IsControlledBy(&deploy, rbg) {
+		// Check if controlled by this RBG
+		isControlled := false
+		for _, owner := range deploy.OwnerReferences {
+			if owner.UID == ownerInfo.UID {
+				isControlled = true
+				break
+			}
+		}
+		if !isControlled {
 			continue
 		}
+
 		found := false
-		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == "Deployment" && rbg.GetWorkloadName(&role) == deploy.Name {
+		for _, roleData := range roles {
+			if roleData.Spec.Workload.Kind == "Deployment" && roleData.WorkloadName == deploy.Name {
 				found = true
 				break
 			}
@@ -281,7 +289,7 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 		if !found {
 			logger.Info("delete deploy", "deploy", deploy.Name)
 			if err := r.client.Delete(ctx, &deploy); err != nil {
-				return fmt.Errorf("delete sts %s error: %s", deploy.Name, err.Error())
+				return fmt.Errorf("delete deployment %s error: %s", deploy.Name, err.Error())
 			}
 		}
 	}
@@ -289,17 +297,16 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 }
 
 func (r *DeploymentReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, roleData *RoleData,
 ) error {
 	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
+	if roleData.Spec == nil {
 		return nil
 	}
 
-	deployName := rbg.GetWorkloadName(role)
+	deployName := roleData.WorkloadName
 	var deploy appsv1.Deployment
-	err := r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &deploy)
+	err := r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: roleData.OwnerInfo.Namespace}, &deploy)
 	// if deploy is not found, skip delete deploy
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
@@ -318,7 +325,7 @@ func (r *DeploymentReconciler) RecreateWorkload(
 	err = wait.PollUntilContextTimeout(
 		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 			var newDeploy appsv1.Deployment
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &newDeploy)
+			retErr = r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: roleData.OwnerInfo.Namespace}, &newDeploy)
 			if retErr != nil {
 				if apierrors.IsNotFound(retErr) {
 					return false, nil

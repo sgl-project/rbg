@@ -161,8 +161,20 @@ func TestCleanupOrphanedObjs(t *testing.T) {
 		Kind:    "InstanceSet",
 	}
 
+	// Convert to RoleData
+	roles := []*RoleData{
+		{
+			Spec: &rbg.Spec.Roles[0],
+			OwnerInfo: OwnerInfo{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				UID:       rbg.UID,
+			},
+		},
+	}
+
 	// Execute cleanup
-	err := CleanupOrphanedObjs(context.Background(), fakeClient, rbg, gvk)
+	err := CleanupOrphanedObjs(context.Background(), fakeClient, roles, gvk)
 	assert.NoError(t, err)
 
 	// Verify valid object still exists

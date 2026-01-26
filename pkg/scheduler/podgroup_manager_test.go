@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
@@ -235,7 +236,11 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 				if tt.preFunc != nil {
 					tt.preFunc()
 				}
-				err := scheduler.Reconcile(ctx, tt.rbg, &runtimeController, &watchedWorkload, tt.apiReader)
+
+				// Create RBGReconcileData from rbg
+				data := reconciler.NewRBGReconcileData(tt.rbg, func(eventType, reason, message string) {})
+
+				err := scheduler.Reconcile(ctx, data, &runtimeController, &watchedWorkload, tt.apiReader)
 
 				// Verify
 				if (err != nil) != tt.expectError {

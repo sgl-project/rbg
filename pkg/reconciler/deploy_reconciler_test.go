@@ -121,8 +121,20 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 					client: tt.client,
 				}
 
+				// Create RoleData
+				roleData := &RoleData{
+					Spec:                 tt.role,
+					ExpectedRevisionHash: expectedRevisionHash,
+					WorkloadName:         tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
 				ctx := context.Background()
-				err := r.Reconciler(ctx, tt.rbg, tt.role, nil, expectedRevisionHash)
+				err := r.Reconciler(ctx, roleData)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf("DeploymentReconciler.Reconciler() error = %v, expectError %v", err, tt.expectError)
@@ -264,8 +276,19 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 					client: tt.client,
 				}
 
+				// Create RoleData
+				roleData := &RoleData{
+					Spec:         tt.role,
+					WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
 				ctx := context.Background()
-				got, err := r.CheckWorkloadReady(ctx, tt.rbg, tt.role)
+				got, err := r.CheckWorkloadReady(ctx, roleData)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf(
@@ -390,8 +413,24 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 					client: tt.client,
 				}
 
+				// Convert to RoleData list
+				roles := []*RoleData{}
+				if tt.rbg != nil {
+					for _, role := range tt.rbg.Spec.Roles {
+						roles = append(roles, &RoleData{
+							Spec:         &role,
+							WorkloadName: tt.rbg.GetWorkloadName(&role),
+							OwnerInfo: OwnerInfo{
+								Name:      tt.rbg.Name,
+								Namespace: tt.rbg.Namespace,
+								UID:       tt.rbg.UID,
+							},
+						})
+					}
+				}
+
 				ctx := context.Background()
-				err := r.CleanupOrphanedWorkloads(ctx, tt.rbg)
+				err := r.CleanupOrphanedWorkloads(ctx, roles)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf(
@@ -562,7 +601,21 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 					}()
 				}
 
-				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
+				// Create RoleData
+				var roleData *RoleData
+				if tt.rbg != nil && tt.role != nil {
+					roleData = &RoleData{
+						Spec:         tt.role,
+						WorkloadName: tt.rbg.GetWorkloadName(tt.role),
+						OwnerInfo: OwnerInfo{
+							Name:      tt.rbg.Name,
+							Namespace: tt.rbg.Namespace,
+							UID:       tt.rbg.UID,
+						},
+					}
+				}
+
+				err := r.RecreateWorkload(ctx, roleData)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf("DeploymentReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectError)
@@ -652,8 +705,20 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 					client: client,
 				}
 
+				// Create RoleData
+				roleData := &RoleData{
+					Spec:                 tt.role,
+					ExpectedRevisionHash: "revision-key",
+					WorkloadName:         tt.rbg.GetWorkloadName(tt.role),
+					OwnerInfo: OwnerInfo{
+						Name:      tt.rbg.Name,
+						Namespace: tt.rbg.Namespace,
+						UID:       tt.rbg.UID,
+					},
+				}
+
 				ctx := context.Background()
-				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, nil, "revision-key")
+				_, err := r.constructDeployApplyConfiguration(ctx, roleData, tt.oldDeploy)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf(
@@ -793,13 +858,23 @@ func TestConstructDeploymentApplyConfiguration_LabelsAndAnnotations(t *testing.T
 			role.Labels = tt.roleLabels
 			role.Annotations = tt.roleAnnotations
 
+			// Create RoleData
+			roleData := &RoleData{
+				Spec:                 role,
+				ExpectedRevisionHash: expectedRevisionHash,
+				WorkloadName:         rbg.GetWorkloadName(role),
+				OwnerInfo: OwnerInfo{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+					UID:       rbg.UID,
+				},
+				GroupUniqueHash: rbg.GenGroupUniqueKey(),
+			}
+
 			result, err := reconciler.constructDeployApplyConfiguration(
 				context.Background(),
-				rbg,
-				role,
+				roleData,
 				&appsv1.Deployment{},
-				nil,
-				expectedRevisionHash,
 			)
 
 			if err != nil {

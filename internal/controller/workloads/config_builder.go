@@ -1,4 +1,4 @@
-package discovery
+package workloads
 
 import (
 	"context"
@@ -7,20 +7,22 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/rbgs/pkg/utils"
-
-	"sigs.k8s.io/yaml"
-
 	corev1 "k8s.io/api/core/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
+	"sigs.k8s.io/rbgs/pkg/utils"
+	"sigs.k8s.io/yaml"
 )
 
+// ConfigBuilder builds cluster configuration for RoleBasedGroup.
 type ConfigBuilder struct {
-	client client.Client
-	rbg    *workloadsv1alpha1.RoleBasedGroup
-	role   *workloadsv1alpha1.RoleSpec
+	Client    client.Client
+	GroupName string
+	// Roles contains all roles in the RBG for building cluster config
+	Roles []*reconciler.RoleData
 }
 
 type ClusterConfig struct {
@@ -46,6 +48,7 @@ type Instance struct {
 	Ports   map[string]int32 `json:"ports,omitempty"` // Key: port name, Value: port number
 }
 
+// Build generates the cluster configuration YAML.
 func (b *ConfigBuilder) Build() ([]byte, error) {
 	roles, err := b.buildRolesInfo()
 	if err != nil {
@@ -54,8 +57,8 @@ func (b *ConfigBuilder) Build() ([]byte, error) {
 
 	config := ClusterConfig{
 		Group: GroupInfo{
-			Name:  b.rbg.Name,
-			Size:  len(b.rbg.Spec.Roles),
+			Name:  b.GroupName,
+			Size:  len(b.Roles),
 			Roles: b.getRoleNames(),
 		},
 		Roles: roles,
@@ -64,42 +67,42 @@ func (b *ConfigBuilder) Build() ([]byte, error) {
 }
 
 func (b *ConfigBuilder) getRoleNames() []string {
-	names := make([]string, 0, len(b.rbg.Spec.Roles))
-	for _, r := range b.rbg.Spec.Roles {
-		names = append(names, r.Name)
+	names := make([]string, 0, len(b.Roles))
+	for _, r := range b.Roles {
+		names = append(names, r.Spec.Name)
 	}
 	return names
 }
 
 func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 	roles := make(RolesInfo)
-	for _, role := range b.rbg.Spec.Roles {
-		instances, err := b.buildInstances(&role)
+	for _, roleData := range b.Roles {
+		instances, err := b.buildInstances(roleData)
 		if err != nil {
 			return nil, err
 		}
-		roles[role.Name] = RoleInstances{
-			Size:      int(*role.Replicas),
+		roles[roleData.Spec.Name] = RoleInstances{
+			Size:      int(*roleData.Spec.Replicas),
 			Instances: instances,
 		}
 	}
 	return roles, nil
 }
 
-func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Instance, error) {
-	instances := make([]Instance, 0, *role.Replicas)
-	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
+func (b *ConfigBuilder) buildInstances(roleData *reconciler.RoleData) ([]Instance, error) {
+	instances := make([]Instance, 0, *roleData.Spec.Replicas)
+	serviceName, err := getCompatibleHeadlessServiceNameFromRoleData(context.TODO(), b.Client, roleData)
 	if err != nil {
 		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 
-	for i := 0; i < int(*role.Replicas); i++ {
+	for i := 0; i < int(*roleData.Spec.Replicas); i++ {
 		instance := Instance{
-			Address: fmt.Sprintf("%s-%d.%s", role.Name, i, serviceName),
+			Address: fmt.Sprintf("%s-%d.%s", roleData.Spec.Name, i, serviceName),
 			Ports:   make(map[string]int32),
 		}
 
-		for _, port := range role.ServicePorts {
+		for _, port := range roleData.Spec.ServicePorts {
 			portName := generatePortKey(port)
 			instance.Ports[portName] = port.Port
 		}
@@ -109,6 +112,30 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Inst
 	return instances, nil
 }
 
+// getCompatibleHeadlessServiceNameFromRoleData returns the compatible headless service name from roleData.
+// It checks if the old service name (workloadName) exists, otherwise uses the new service name.
+func getCompatibleHeadlessServiceNameFromRoleData(
+	ctx context.Context, kclient client.Client, roleData *reconciler.RoleData,
+) (string, error) {
+	svc := &corev1.Service{}
+	err := kclient.Get(ctx, types.NamespacedName{Name: roleData.WorkloadName, Namespace: roleData.OwnerInfo.Namespace}, svc)
+	if err == nil {
+		// if oldService exists, use old ServiceName (workloadName)
+		return roleData.WorkloadName, nil
+	} else {
+		// if oldService not exists, use new ServiceName
+		if apierrors.IsNotFound(err) {
+			metadata := reconciler.Metadata{
+				Name:      roleData.OwnerInfo.Name,
+				Namespace: roleData.OwnerInfo.Namespace,
+				UID:       roleData.OwnerInfo.UID,
+			}
+			return metadata.GetServiceName(roleData.Spec), nil
+		}
+	}
+	return "", err
+}
+
 func generatePortKey(port corev1.ServicePort) string {
 	if port.Name != "" {
 		return strings.ToLower(strings.ReplaceAll(port.Name, "-", "_"))
@@ -116,7 +143,8 @@ func generatePortKey(port corev1.ServicePort) string {
 	return fmt.Sprintf("port%d", port.Port)
 }
 
-func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
+// SemanticallyEqualConfigmap compares two ConfigMaps semantically, ignoring system annotations and metadata.
+func SemanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
 	if old == nil && new == nil {
 		return true, ""
 	}
