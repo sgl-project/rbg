@@ -292,24 +292,26 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		)
 
 	// RollingUpdate
-	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
+	hasRoleRollingUpdate := role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil
+	hasCoordinationRollingUpdate := rollingUpdateStrategy != nil
+	if hasRoleRollingUpdate || hasCoordinationRollingUpdate {
 		rollingUpdateConfiguration := lwsapplyv1.RollingUpdateConfiguration()
-		if role.RolloutStrategy.RollingUpdate.MaxSurge != nil {
-			rollingUpdateConfiguration = rollingUpdateConfiguration.WithMaxSurge(*role.RolloutStrategy.RollingUpdate.MaxSurge)
+		if hasRoleRollingUpdate {
+			if role.RolloutStrategy.RollingUpdate.MaxSurge != nil {
+				rollingUpdateConfiguration = rollingUpdateConfiguration.WithMaxSurge(*role.RolloutStrategy.RollingUpdate.MaxSurge)
+			}
+			if role.RolloutStrategy.RollingUpdate.MaxUnavailable != nil {
+				rollingUpdateConfiguration = rollingUpdateConfiguration.WithMaxUnavailable(*role.RolloutStrategy.RollingUpdate.MaxUnavailable)
+			}
 		}
-		if role.RolloutStrategy.RollingUpdate.MaxUnavailable != nil {
-			rollingUpdateConfiguration = rollingUpdateConfiguration.WithMaxUnavailable(*role.RolloutStrategy.RollingUpdate.MaxUnavailable)
-		}
-
 		if rollingUpdateStrategy != nil && rollingUpdateStrategy.MaxUnavailable != nil {
 			rollingUpdateConfiguration =
 				rollingUpdateConfiguration.WithMaxUnavailable(*rollingUpdateStrategy.MaxUnavailable)
 		}
-
 		var partitionIntOrStr *intstr.IntOrString
 		if rollingUpdateStrategy != nil && rollingUpdateStrategy.Partition != nil {
 			partitionIntOrStr = rollingUpdateStrategy.Partition
-		} else if role.RolloutStrategy.RollingUpdate.Partition != nil {
+		} else if hasRoleRollingUpdate && role.RolloutStrategy.RollingUpdate.Partition != nil {
 			partitionIntOrStr = role.RolloutStrategy.RollingUpdate.Partition
 		}
 
@@ -450,6 +452,10 @@ func lwsSpecEqual(lws1, lws2 lwsv1.LeaderWorkerSetSpec) (bool, error) {
 	if *lws1.Replicas != *lws2.Replicas {
 		return false, fmt.Errorf("LeaderWorkerSetSpec replicas not equal")
 	}
+	if !reflect.DeepEqual(lws1.RolloutStrategy, lws2.RolloutStrategy) {
+		return false, fmt.Errorf("RolloutStrategy not equal")
+	}
+
 	return true, nil
 }
 
