@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/modern-go/reflect2"
+	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/errors"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
@@ -71,18 +71,21 @@ func init() {
 
 // RoleBasedGroupReconciler reconciles a RoleBasedGroup object
 type RoleBasedGroupReconciler struct {
-	client    client.Client
-	apiReader client.Reader
-	scheme    *runtime.Scheme
-	recorder  record.EventRecorder
+	client             client.Client
+	apiReader          client.Reader
+	scheme             *runtime.Scheme
+	recorder           record.EventRecorder
+	workloadReconciler map[string]reconciler.WorkloadReconciler
+	reconcilerMu       sync.RWMutex
 }
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
 	return &RoleBasedGroupReconciler{
-		client:    mgr.GetClient(),
-		apiReader: mgr.GetAPIReader(),
-		scheme:    mgr.GetScheme(),
-		recorder:  mgr.GetEventRecorderFor("RoleBasedGroup"),
+		client:             mgr.GetClient(),
+		apiReader:          mgr.GetAPIReader(),
+		scheme:             mgr.GetScheme(),
+		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
+		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 	}
 }
 
@@ -115,18 +118,6 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Validate RoleTemplates
-	if err := workloadsv1alpha1.ValidateRoleTemplates(rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
-		return ctrl.Result{}, err
-	}
-
-	// Validate template references in roles
-	if err := workloadsv1alpha1.ValidateRoleTemplateReferences(rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidTemplateRef, err.Error())
-		return ctrl.Result{}, err
-	}
-
 	logger = logger.WithValues("rbg", klog.KObj(rbg))
 	ctx = ctrl.LoggerInto(ctx, logger)
 	logger.Info("Start reconciling")
@@ -135,181 +126,45 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Info("Finished reconciling", "duration", time.Since(start))
 	}()
 
-	// Process revisions
+	// Step 0: Pre-check validations
+	if err := r.preCheck(ctx, rbg); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 1: Process revisions
 	expectedRolesRevisionHash, err := r.handleRevisions(ctx, rbg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Process roles in dependency order
-	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
-	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
-	if err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
-		return ctrl.Result{}, err
-	}
-
-	// Process PodGroup
+	// Step 2: Process PodGroup
 	podGroupManager := scheduler.NewPodGroupScheduler(r.client)
 	if err := podGroupManager.Reconcile(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreatePodGroup, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	var updateStatus bool
-	roleStatuses := make([]workloadsv1alpha1.RoleStatus, 0, len(rbg.Spec.Roles))
-	roleReconciler := make(map[string]reconciler.WorkloadReconciler)
-	for _, role := range rbg.Spec.Roles {
-		logger := log.FromContext(ctx)
-		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
-		// first check whether watch lws cr
-		dynamicWatchCustomCRD(roleCtx, role.Workload.Kind)
-
-		reconciler, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
-		if err != nil {
-			logger.Error(err, "Failed to create workload reconciler")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to reconcile role %s, err: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-
-		if err := reconciler.Validate(ctx, &role); err != nil {
-			logger.Error(err, "Failed to validate role declaration")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to validate role %s declaration, err: %v", role.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-
-		roleReconciler[role.Name] = reconciler
-
-		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to construct role %s status: %v", role.Name, err,
-				)
-				return ctrl.Result{}, err
-			}
-			logger.V(1).Info("Workload not found for role, using empty status", "role", role.Name)
-		}
-		updateStatus = updateStatus || updateRoleStatus
-		roleStatuses = append(roleStatuses, roleStatus)
-	}
-
-	// Update the status based on the observed role statuses.
-	if updateStatus {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err,
-			)
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Calculate coordination strategies for scaling and rolling update
-	// TODO: This is a simple method consolidation for now. The coordination logic will be
-	// refactored later to improve extensibility and readability.
-	scalingTargets, rollingUpdateStrategies, err := r.calculateCoordinationStrategies(ctx, rbg, roleStatuses)
+	// Step 3: Construct role statuses
+	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile roles, do create/update actions for roles.
-	for _, roleList := range sortedRoles {
-		var errs error
-
-		for _, role := range roleList {
-			logger := log.FromContext(ctx)
-			roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
-
-			// Check dependencies first
-			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
-			if err != nil {
-				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
-				return ctrl.Result{}, err
-			}
-			if !ready {
-				err := fmt.Errorf("dependencies not met for role '%s'", role.Name)
-				r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
-				return ctrl.Result{}, err
-			}
-
-			reconciler, ok := roleReconciler[role.Name]
-			if !ok || reflect2.IsNil(reconciler) {
-				err = fmt.Errorf("workload reconciler not found")
-				logger.Error(err, "Failed to get workload reconciler")
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to reconcile role %s: %v", role.Name, err,
-				)
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-
-			var rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate
-			if rollout, ok := rollingUpdateStrategies[role.Name]; ok {
-				rollingUpdateStrategy = &rollout
-			}
-
-			// Apply coordination scaling target replicas if available
-			roleToReconcile := role
-			if targetReplicas, ok := scalingTargets[role.Name]; ok {
-				// Always apply the target replicas from coordination scaling
-				// This handles both scale-up scenarios
-				roleToReconcile = role.DeepCopy()
-				roleToReconcile.Replicas = ptr.To(targetReplicas)
-				if role.Replicas != nil && targetReplicas != *role.Replicas {
-					logger.Info("Applying coordination scaling", "role", role.Name, "original", *role.Replicas, "target", targetReplicas)
-				}
-			}
-
-			if err := reconciler.Reconciler(roleCtx, rbg, roleToReconcile, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
-				logger.Error(err, "Failed to reconcile workload")
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-					"Failed to reconcile role %s: %v", role.Name, err,
-				)
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-
-			if err := r.ReconcileScalingAdapter(roleCtx, rbg, role); err != nil {
-				logger.Error(err, "Failed to reconcile scaling adapter")
-				r.recorder.Eventf(
-					rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
-					"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
-				)
-				errs = stderrors.Join(errs, err)
-				continue
-			}
-		}
-
-		if errs != nil {
-			return ctrl.Result{}, errs
-		}
-	}
-
-	// delete orphan roles
-	if err := r.deleteOrphanRoles(ctx, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, "delete role error",
-			"Failed to delete roles for %s: %v", rbg.Name, err,
-		)
+	// Step 4: Calculate coordination strategies for scaling and rolling update
+	// TODO: This is a simple method consolidation for now.
+	// The coordination logic will be refactored later to improve extensibility and readability.
+	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// delete expired controllerRevision
-	if _, err := utils.CleanExpiredRevision(ctx, r.client, rbg); err != nil {
-		r.recorder.Eventf(
-			rbg, corev1.EventTypeWarning, "delete expired revision error",
-			"Failed to delete expired revision for %s: %v", rbg.Name, err,
-		)
+	// Step 5: Reconcile roles, do create/update actions for roles.
+	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 6: Cleanup orphaned resources
+	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -352,6 +207,269 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 	return expectedRolesRevisionHash, nil
 }
 
+func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+	// Validate RoleTemplates
+	if err := workloadsv1alpha1.ValidateRoleTemplates(rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
+		return errors.Wrap(err, "invalid role templates")
+	}
+
+	// Validate template references in roles
+	if err := workloadsv1alpha1.ValidateRoleTemplateReferences(rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidTemplateRef, err.Error())
+		return errors.Wrap(err, "invalid template references")
+	}
+
+	// Validate role workload declarations
+	var errs []error
+	for _, role := range rbg.Spec.Roles {
+		logger := log.FromContext(ctx)
+		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
+
+		workloadReconciler, err := r.getOrCreateWorkloadReconciler(ctx, roleCtx, role.Workload)
+		if err != nil {
+			logger.Error(err, "Failed to create workload workloadReconciler")
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to validate role %s, err: %v", role.Name, err,
+			)
+			errs = append(errs, fmt.Errorf("role %s: %w", role.Name, err))
+			continue
+		}
+
+		if err := workloadReconciler.Validate(ctx, &role); err != nil {
+			logger.Error(err, "Failed to validate role declaration")
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to validate role %s declaration, err: %v", role.Name, err,
+			)
+			errs = append(errs, fmt.Errorf("role %s: %w", role.Name, err))
+		}
+	}
+
+	return kerrors.NewAggregate(errs)
+}
+
+func (r *RoleBasedGroupReconciler) reconcileRoles(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	expectedRolesRevisionHash map[string]string,
+	scalingTargets map[string]int32,
+	rollingUpdateStrategies map[string]workloadsv1alpha1.RollingUpdate,
+) error {
+	// Process roles in dependency order
+	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
+	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
+	if err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
+		return err
+	}
+
+	// Reconcile roles, do create/update actions for roles.
+	for _, roleList := range sortedRoles {
+		var errs error
+
+		for _, role := range roleList {
+			logger := log.FromContext(ctx)
+			roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
+
+			// Check dependencies first
+			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
+			if err != nil {
+				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
+				return err
+			}
+			if !ready {
+				err := fmt.Errorf("dependencies not met for role '%s'", role.Name)
+				r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
+				return err
+			}
+
+			if err := r.reconcileSingleRole(roleCtx, rbg, role, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
+				errs = stderrors.Join(errs, err)
+				continue
+			}
+		}
+
+		if errs != nil {
+			return errs
+		}
+	}
+
+	return nil
+}
+
+func (r *RoleBasedGroupReconciler) reconcileSingleRole(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+	expectedRolesRevisionHash map[string]string,
+	scalingTargets map[string]int32,
+	rollingUpdateStrategies map[string]workloadsv1alpha1.RollingUpdate,
+) error {
+	logger := log.FromContext(ctx)
+
+	// Get or create workload reconciler
+	reconciler, err := r.getOrCreateWorkloadReconciler(ctx, ctx, role.Workload)
+	if err != nil {
+		logger.Error(err, "Failed to get workload reconciler")
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+			"Failed to reconcile role %s, err: %v", role.Name, err,
+		)
+		return err
+	}
+
+	// Get rolling update strategy
+	var rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate
+	if rollout, ok := rollingUpdateStrategies[role.Name]; ok {
+		rollingUpdateStrategy = &rollout
+	}
+
+	// Apply coordination scaling target replicas if available
+	roleToReconcile := role
+	if targetReplicas, ok := scalingTargets[role.Name]; ok {
+		// Always apply the target replicas from coordination scaling
+		// This handles both scale-up scenarios
+		roleToReconcile = role.DeepCopy()
+		roleToReconcile.Replicas = ptr.To(targetReplicas)
+		if role.Replicas != nil && targetReplicas != *role.Replicas {
+			logger.Info("Applying coordination scaling", "role", role.Name, "original", *role.Replicas, "target", targetReplicas)
+		}
+	}
+
+	// Reconcile workload
+	if err := reconciler.Reconciler(ctx, rbg, roleToReconcile, rollingUpdateStrategy, expectedRolesRevisionHash[role.Name]); err != nil {
+		logger.Error(err, "Failed to reconcile workload")
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+			"Failed to reconcile role %s: %v", role.Name, err,
+		)
+		return err
+	}
+
+	// Reconcile scaling adapter
+	if err := r.ReconcileScalingAdapter(ctx, rbg, role); err != nil {
+		logger.Error(err, "Failed to reconcile scaling adapter")
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedCreateScalingAdapter,
+			"Failed to reconcile scaling adapter for role %s: %v", role.Name, err,
+		)
+		return err
+	}
+
+	return nil
+}
+
+func (r *RoleBasedGroupReconciler) cleanup(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+	// Delete orphan roles
+	if err := r.deleteOrphanRoles(ctx, rbg); err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, "delete role error",
+			"Failed to delete orphan roles for %s: %v", rbg.Name, err,
+		)
+		return err
+	}
+
+	// Delete expired controllerRevision
+	if _, err := utils.CleanExpiredRevision(ctx, r.client, rbg); err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, "delete expired revision error",
+			"Failed to delete expired revision for %s: %v", rbg.Name, err,
+		)
+		return err
+	}
+
+	return nil
+}
+
+func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
+	ctx context.Context,
+	roleCtx context.Context,
+	workloadSpec workloadsv1alpha1.WorkloadSpec,
+) (reconciler.WorkloadReconciler, error) {
+	workloadType := workloadSpec.String()
+
+	// Fast path: check if reconciler already exists with read lock
+	r.reconcilerMu.RLock()
+	if rec, ok := r.workloadReconciler[workloadType]; ok {
+		r.reconcilerMu.RUnlock()
+		return rec, nil
+	}
+	r.reconcilerMu.RUnlock()
+
+	// Slow path: create reconciler with write lock
+	r.reconcilerMu.Lock()
+	defer r.reconcilerMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if rec, ok := r.workloadReconciler[workloadType]; ok {
+		return rec, nil
+	}
+
+	// first check whether watch lws cr
+	dynamicWatchCustomCRD(roleCtx, workloadSpec.Kind)
+
+	// Create new reconciler
+	rec, err := reconciler.NewWorkloadReconciler(workloadSpec, r.scheme, r.client)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the reconciler
+	r.workloadReconciler[workloadType] = rec
+	return rec, nil
+}
+
+func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
+	ctx context.Context,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+) ([]workloadsv1alpha1.RoleStatus, error) {
+	var updateStatus bool
+	roleStatuses := make([]workloadsv1alpha1.RoleStatus, 0, len(rbg.Spec.Roles))
+
+	for _, role := range rbg.Spec.Roles {
+		logger := log.FromContext(ctx)
+		roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
+
+		reconciler, err := r.getOrCreateWorkloadReconciler(ctx, roleCtx, role.Workload)
+		if err != nil {
+			logger.Error(err, "Failed to get workload reconciler")
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+				"Failed to get workload reconciler for role %s, err: %v", role.Name, err,
+			)
+			return nil, err
+		}
+
+		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				r.recorder.Eventf(
+					rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
+					"Failed to construct role %s status: %v", role.Name, err,
+				)
+				return nil, err
+			}
+		}
+		updateStatus = updateStatus || updateRoleStatus
+		roleStatuses = append(roleStatuses, roleStatus)
+	}
+
+	// Update the status based on the observed role statuses.
+	if updateStatus {
+		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+			r.recorder.Eventf(
+				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+				"Failed to update status for %s: %v", rbg.Name, err,
+			)
+			return nil, err
+		}
+	}
+
+	return roleStatuses, nil
+}
+
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
 	errs := make([]error, 0)
 	deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
@@ -378,7 +496,7 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 		errs = append(errs, err)
 	}
 
-	return errors.NewAggregate(errs)
+	return kerrors.NewAggregate(errs)
 }
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
@@ -607,8 +725,8 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 	return nil
 }
 
-// calculateCoordinationStrategies calculates coordination scaling targets and rolling update strategies.
-func (r *RoleBasedGroupReconciler) calculateCoordinationStrategies(
+// handleCoordinationStrategies calculates coordination scaling targets and rolling update strategies.
+func (r *RoleBasedGroupReconciler) handleCoordinationStrategies(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
 	roleStatuses []workloadsv1alpha1.RoleStatus,
