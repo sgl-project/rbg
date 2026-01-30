@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/scale"
@@ -668,10 +669,11 @@ func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 					Build()
 
 				r := &RoleBasedGroupReconciler{
-					client:    fakeClient,
-					apiReader: fakeClient,
-					scheme:    testScheme,
-					recorder:  fakeRecorder,
+					client:             fakeClient,
+					apiReader:          fakeClient,
+					scheme:             testScheme,
+					recorder:           fakeRecorder,
+					workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 				}
 
 				logger := zap.New().WithValues("env", "unit-test")
@@ -873,9 +875,10 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 					Build()
 
 				r := &RoleBasedGroupReconciler{
-					client:    fakeClient,
-					apiReader: fakeClient,
-					scheme:    testScheme,
+					client:             fakeClient,
+					apiReader:          fakeClient,
+					scheme:             testScheme,
+					workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 				}
 
 				err := r.CleanupOrphanedScalingAdapters(context.Background(), rbg)
@@ -1606,9 +1609,10 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				Build()
 
 			reconciler := &RoleBasedGroupReconciler{
-				client:   fakeClient,
-				scheme:   scheme,
-				recorder: record.NewFakeRecorder(100),
+				client:             fakeClient,
+				scheme:             scheme,
+				recorder:           record.NewFakeRecorder(100),
+				workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 			}
 
 			// Call the method
