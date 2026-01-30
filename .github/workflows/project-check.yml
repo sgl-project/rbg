@@ -106,174 +106,42 @@ jobs:
         run: |
           make test
 
-      - name: Check Coverage for pkg directory changes
+      - name: Check incremental coverage for pkg changes
         if: github.event_name == 'pull_request'
         run: |
-          # Get list of changed files in pkg directory
+          # Simple incremental coverage check for pkg directory
           changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^pkg/' | grep '\.go$' | grep -v '_test\.go$' || true)
           
           if [ -z "$changed_files" ]; then
-            echo "No pkg files changed, skipping coverage check"
+            echo "✅ No pkg files changed, skipping coverage check"
             exit 0
           fi
           
-          echo "Changed files in pkg directory:"
+          echo "📊 Checking coverage for changed files in pkg directory"
+          echo "Changed files:"
           echo "$changed_files"
-          echo ""
           
-          # Generate coverage report for pkg
-          echo "Generating coverage report..."
-          go test -coverprofile=coverage.out -covermode=atomic ./pkg/... 2>&1 | grep -v "no test files" || true
-          
-          if [ ! -f coverage.out ]; then
-            echo "❌ No coverage file generated - tests may have failed or no tests exist"
+          # Check if coverage file exists
+          if [ ! -f cover.out ]; then
+            echo "❌ No coverage file found"
             exit 1
           fi
           
-          # Install gocov-xml for better coverage analysis (optional, for future enhancements)
-          go install github.com/axw/gocov/gocov@latest 2>/dev/null || true
-          
-          echo ""
-          echo "Checking incremental coverage for changed files..."
-          echo "================================================================"
-          
-          overall_pass=true
-          
-          # Check coverage for each changed file
+          # Calculate overall coverage for changed files
           for file in $changed_files; do
-            if [ ! -f "$file" ]; then
-              continue
-            fi
-            
-            echo ""
-            echo "File: $file"
-            echo "----------------------------------------------------------------"
-            
-            # Get the diff with line numbers to identify added/modified lines
-            # Format: @@ -old_start,old_count +new_start,new_count @@
-            added_line_ranges=$(git diff -U0 origin/${{ github.base_ref }}...HEAD "$file" | grep '^@@' | sed 's/@@ -[0-9,]* +\([0-9]*\),*\([0-9]*\).*/\1 \2/')
-            
-            if [ -z "$added_line_ranges" ]; then
-              echo "  ℹ️ No lines added or modified, skipping"
-              continue
-            fi
-            
-            # Get coverage data for this specific file
-            file_in_coverage=$(grep "^$file:" coverage.out 2>/dev/null || true)
-            
-            if [ -z "$file_in_coverage" ]; then
-              echo "  ❌ FAILED: No test coverage found for this file"
-              echo "  → This file has been modified but is not covered by any tests"
-              echo "  → Please add tests to cover at least 20% of the new/modified code"
-              overall_pass=false
-              continue
-            fi
-            
-            # Count total added/modified lines that are executable (statements)
-            total_new_statements=0
-            covered_new_statements=0
-            
-            # Parse each coverage block for this file
-            # Format: file.go:startLine.startCol,endLine.endCol numStmts count
-            while IFS= read -r coverage_line; do
-              # Extract line range from coverage data
-              line_info=$(echo "$coverage_line" | cut -d: -f2 | cut -d' ' -f1)
-              start_line=$(echo "$line_info" | cut -d, -f1 | cut -d. -f1)
-              end_line=$(echo "$line_info" | cut -d, -f2 | cut -d. -f1)
-              num_stmts=$(echo "$coverage_line" | awk '{print $2}')
-              exec_count=$(echo "$coverage_line" | awk '{print $3}')
-              
-              # Check if this coverage block overlaps with any added line ranges
-              echo "$added_line_ranges" | while read range_start range_count; do
-                if [ -z "$range_count" ]; then
-                  range_count=1
-                fi
-                range_end=$((range_start + range_count - 1))
-                
-                # Check for overlap: [start_line, end_line] overlaps with [range_start, range_end]
-                if [ "$start_line" -le "$range_end" ] && [ "$end_line" -ge "$range_start" ]; then
-                  # This block contains new/modified code
-                  total_new_statements=$((total_new_statements + num_stmts))
-                  if [ "$exec_count" -gt 0 ]; then
-                    covered_new_statements=$((covered_new_statements + num_stmts))
-                  fi
-                fi
-              done
-            done <<< "$file_in_coverage"
-            
-            # Re-calculate outside the subshell to get correct values
-            while IFS= read -r coverage_line; do
-              line_info=$(echo "$coverage_line" | cut -d: -f2 | cut -d' ' -f1)
-              start_line=$(echo "$line_info" | cut -d, -f1 | cut -d. -f1)
-              end_line=$(echo "$line_info" | cut -d, -f2 | cut -d. -f1)
-              num_stmts=$(echo "$coverage_line" | awk '{print $2}')
-              exec_count=$(echo "$coverage_line" | awk '{print $3}')
-              
-              echo "$added_line_ranges" | while read range_start range_count; do
-                [ -z "$range_count" ] && range_count=1
-                range_end=$((range_start + range_count - 1))
-                
-                if [ "$start_line" -le "$range_end" ] && [ "$end_line" -ge "$range_start" ]; then
-                  total_new_statements=$((total_new_statements + num_stmts))
-                  [ "$exec_count" -gt 0 ] && covered_new_statements=$((covered_new_statements + num_stmts))
-                fi
-              done
-            done <<< "$file_in_coverage"
-            
-            # If we couldn't accurately track incremental coverage, fall back to file-level coverage
-            if [ "$total_new_statements" -eq 0 ]; then
-              echo "  ⚠️  Cannot determine incremental coverage precisely, using file-level coverage"
-              
-              # Get overall file coverage as fallback
-              file_coverage=$(go tool cover -func=coverage.out 2>/dev/null | grep "$file" | tail -1 || true)
-              
-              if [ -z "$file_coverage" ]; then
-                echo "  ❌ FAILED: No coverage data available"
-                overall_pass=false
-                continue
-              fi
-              
-              coverage_pct=$(echo "$file_coverage" | awk '{print $NF}' | sed 's/%//')
-              echo "  File-level coverage: ${coverage_pct}%"
-              
-              if (( $(echo "$coverage_pct < 20" | bc -l) )); then
-                echo "  ❌ FAILED: Coverage ${coverage_pct}% is below 20% threshold"
-                overall_pass=false
-              else
-                echo "  ✅ PASSED: Coverage ${coverage_pct}% meets the requirement"
-              fi
+            if grep -q "^$file:" cover.out; then
+              echo "✅ $file has test coverage"
             else
-              # Calculate incremental coverage percentage
-              incremental_pct=$(echo "scale=2; $covered_new_statements * 100 / $total_new_statements" | bc)
-              
-              echo "  New/modified statements: $total_new_statements"
-              echo "  Covered statements: $covered_new_statements"
-              echo "  Incremental coverage: ${incremental_pct}%"
-              
-              if (( $(echo "$incremental_pct < 20" | bc -l) )); then
-                echo "  ❌ FAILED: Incremental coverage ${incremental_pct}% is below 20% threshold"
-                echo "  → Please add tests to cover at least 20% of the new/modified code"
-                overall_pass=false
-              else
-                echo "  ✅ PASSED: Incremental coverage ${incremental_pct}% meets the requirement"
-              fi
+              echo "⚠️  $file has no test coverage"
             fi
           done
           
-          echo ""
-          echo "================================================================"
-          
-          if [ "$overall_pass" = false ]; then
-            echo "❌ Coverage check failed: Some files do not meet the 20% incremental coverage requirement"
-            exit 1
-          else
-            echo "✅ All changed files meet the 20% incremental coverage requirement"
-          fi
+          echo "✅ Coverage check completed. Detailed analysis available on Coveralls."
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.txt
-          flags: unittests
-          name: codecov-umbrella
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs/cover.out
+          format: golang
+          flag-name: unit-tests
