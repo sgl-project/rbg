@@ -148,7 +148,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], podGroupLabel)
 				},
 			)
-			ginkgo.PIt(
+			ginkgo.It(
 				"rbg with volcano gang scheduling", func() {
 					template := wrappers.BuildBasicPodTemplateSpec().Obj()
 					template.Spec.SchedulerName = "volcano"
