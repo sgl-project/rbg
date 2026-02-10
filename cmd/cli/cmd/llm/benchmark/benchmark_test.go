@@ -241,8 +241,9 @@ func TestApplyConfigToOptions(t *testing.T) {
 			},
 		}
 
+		cmd := NewBenchmarkRunCmd(cf)
 		benchmarkOpts.extraArgs = nil
-		applyConfigToOptions(cfg, nil)
+		applyConfigToOptions(cfg, cmd)
 
 		assert.Equal(t, "file-val", benchmarkOpts.extraArgs["from-file"])
 	})

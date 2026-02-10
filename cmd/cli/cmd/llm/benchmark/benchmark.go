@@ -236,69 +236,73 @@ func loadBenchmarkConfig(path string) (*BenchmarkConfig, error) {
 // Only fields whose corresponding CLI flag was NOT explicitly set by the user are overridden.
 // This ensures the priority order: defaults < config file < CLI flags.
 func applyConfigToOptions(cfg *BenchmarkConfig, cmd *cobra.Command) {
-	if cfg.Task != "" && !cmd.Flags().Changed("task") {
-		benchmarkOpts.task = cfg.Task
+	setStringOpt(&benchmarkOpts.task, cfg.Task, "task", cmd)
+	setIntPtrOpt(&benchmarkOpts.maxTimePerRun, cfg.MaxTimePerRun, "max-time-per-run", cmd)
+	setIntPtrOpt(&benchmarkOpts.maxRequestsPerRun, cfg.MaxRequestsPerRun, "max-requests-per-run", cmd)
+	setStringSliceOpt(&benchmarkOpts.trafficScenarios, cfg.TrafficScenarios, "traffic-scenario", cmd)
+	setIntSliceOpt(&benchmarkOpts.numConcurrency, cfg.NumConcurrency, "num-concurrency", cmd)
+	setStringOpt(&benchmarkOpts.apiBackend, cfg.APIBackend, "api-backend", cmd)
+	setStringOpt(&benchmarkOpts.apiBase, cfg.APIBase, "api-base", cmd)
+	setStringOpt(&benchmarkOpts.apiKey, cfg.APIKey, "api-key", cmd)
+	setStringOpt(&benchmarkOpts.apiModelName, cfg.APIModelName, "api-model-name", cmd)
+	setStringOpt(&benchmarkOpts.modelTokenizer, cfg.ModelTokenizer, "model-tokenizer", cmd)
+	setStringOpt(&benchmarkOpts.experimentBaseDir, cfg.ExperimentBaseDir, "experiment-base-dir", cmd)
+	setStringOpt(&benchmarkOpts.experimentFolderName, cfg.ExperimentFolderName, "experiment-folder-name", cmd)
+	setStringOpt(&benchmarkOpts.image, cfg.Image, "image", cmd)
+	setStringOpt(&benchmarkOpts.cpuRequest, cfg.CPURequest, "cpu-request", cmd)
+	setStringOpt(&benchmarkOpts.cpuLimit, cfg.CPULimit, "cpu-limit", cmd)
+	setStringOpt(&benchmarkOpts.memoryRequest, cfg.MemoryRequest, "memory-request", cmd)
+	setStringOpt(&benchmarkOpts.memoryLimit, cfg.MemoryLimit, "memory-limit", cmd)
+	setBoolPtrOpt(&benchmarkOpts.wait, cfg.Wait, "wait", cmd)
+	mergeExtraArgs(cfg.ExtraArgs)
+}
+
+// setStringOpt applies a config file string value if non-empty and the CLI flag was not explicitly set.
+func setStringOpt(dst *string, val, flagName string, cmd *cobra.Command) {
+	if val != "" && !cmd.Flags().Changed(flagName) {
+		*dst = val
 	}
-	if cfg.MaxTimePerRun != nil && !cmd.Flags().Changed("max-time-per-run") {
-		benchmarkOpts.maxTimePerRun = *cfg.MaxTimePerRun
+}
+
+// setIntPtrOpt applies a config file *int value if non-nil and the CLI flag was not explicitly set.
+func setIntPtrOpt(dst *int, val *int, flagName string, cmd *cobra.Command) {
+	if val != nil && !cmd.Flags().Changed(flagName) {
+		*dst = *val
 	}
-	if cfg.MaxRequestsPerRun != nil && !cmd.Flags().Changed("max-requests-per-run") {
-		benchmarkOpts.maxRequestsPerRun = *cfg.MaxRequestsPerRun
+}
+
+// setBoolPtrOpt applies a config file *bool value if non-nil and the CLI flag was not explicitly set.
+func setBoolPtrOpt(dst *bool, val *bool, flagName string, cmd *cobra.Command) {
+	if val != nil && !cmd.Flags().Changed(flagName) {
+		*dst = *val
 	}
-	if len(cfg.TrafficScenarios) > 0 && !cmd.Flags().Changed("traffic-scenario") {
-		benchmarkOpts.trafficScenarios = cfg.TrafficScenarios
+}
+
+// setStringSliceOpt applies a config file string slice if non-empty and the CLI flag was not explicitly set.
+func setStringSliceOpt(dst *[]string, val []string, flagName string, cmd *cobra.Command) {
+	if len(val) > 0 && !cmd.Flags().Changed(flagName) {
+		*dst = val
 	}
-	if len(cfg.NumConcurrency) > 0 && !cmd.Flags().Changed("num-concurrency") {
-		benchmarkOpts.numConcurrency = cfg.NumConcurrency
+}
+
+// setIntSliceOpt applies a config file int slice if non-empty and the CLI flag was not explicitly set.
+func setIntSliceOpt(dst *[]int, val []int, flagName string, cmd *cobra.Command) {
+	if len(val) > 0 && !cmd.Flags().Changed(flagName) {
+		*dst = val
 	}
-	if cfg.APIBackend != "" && !cmd.Flags().Changed("api-backend") {
-		benchmarkOpts.apiBackend = cfg.APIBackend
+}
+
+// mergeExtraArgs merges config file extra args into benchmarkOpts without overwriting existing keys.
+func mergeExtraArgs(cfgExtraArgs map[string]string) {
+	if len(cfgExtraArgs) == 0 {
+		return
 	}
-	if cfg.APIBase != "" && !cmd.Flags().Changed("api-base") {
-		benchmarkOpts.apiBase = cfg.APIBase
+	if benchmarkOpts.extraArgs == nil {
+		benchmarkOpts.extraArgs = make(map[string]string)
 	}
-	if cfg.APIKey != "" && !cmd.Flags().Changed("api-key") {
-		benchmarkOpts.apiKey = cfg.APIKey
-	}
-	if cfg.APIModelName != "" && !cmd.Flags().Changed("api-model-name") {
-		benchmarkOpts.apiModelName = cfg.APIModelName
-	}
-	if cfg.ModelTokenizer != "" && !cmd.Flags().Changed("model-tokenizer") {
-		benchmarkOpts.modelTokenizer = cfg.ModelTokenizer
-	}
-	if cfg.ExperimentBaseDir != "" && !cmd.Flags().Changed("experiment-base-dir") {
-		benchmarkOpts.experimentBaseDir = cfg.ExperimentBaseDir
-	}
-	if cfg.ExperimentFolderName != "" && !cmd.Flags().Changed("experiment-folder-name") {
-		benchmarkOpts.experimentFolderName = cfg.ExperimentFolderName
-	}
-	if cfg.Image != "" && !cmd.Flags().Changed("image") {
-		benchmarkOpts.image = cfg.Image
-	}
-	if cfg.CPURequest != "" && !cmd.Flags().Changed("cpu-request") {
-		benchmarkOpts.cpuRequest = cfg.CPURequest
-	}
-	if cfg.CPULimit != "" && !cmd.Flags().Changed("cpu-limit") {
-		benchmarkOpts.cpuLimit = cfg.CPULimit
-	}
-	if cfg.MemoryRequest != "" && !cmd.Flags().Changed("memory-request") {
-		benchmarkOpts.memoryRequest = cfg.MemoryRequest
-	}
-	if cfg.MemoryLimit != "" && !cmd.Flags().Changed("memory-limit") {
-		benchmarkOpts.memoryLimit = cfg.MemoryLimit
-	}
-	if cfg.Wait != nil && !cmd.Flags().Changed("wait") {
-		benchmarkOpts.wait = *cfg.Wait
-	}
-	// Merge extraArgs from config file as the base; CLI --extra-args will override later.
-	if len(cfg.ExtraArgs) > 0 {
-		if benchmarkOpts.extraArgs == nil {
-			benchmarkOpts.extraArgs = make(map[string]string)
-		}
-		for k, v := range cfg.ExtraArgs {
-			if _, exists := benchmarkOpts.extraArgs[k]; !exists {
-				benchmarkOpts.extraArgs[k] = v
-			}
+	for k, v := range cfgExtraArgs {
+		if _, exists := benchmarkOpts.extraArgs[k]; !exists {
+			benchmarkOpts.extraArgs[k] = v
 		}
 	}
 }

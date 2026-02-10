@@ -61,7 +61,9 @@ func runBenchmarkList(ctx context.Context, cf *genericclioptions.ConfigFlags, rb
 	})
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintf(w, "NAME\tSTATUS\tCREATED\tDURATION\n")
+	if _, err := fmt.Fprintf(w, "NAME\tSTATUS\tCREATED\tDURATION\n"); err != nil {
+		return err
+	}
 	for _, job := range jobs {
 		state := deriveJobState(&job)
 		created := job.CreationTimestamp.Format(time.RFC3339)
@@ -69,9 +71,9 @@ func runBenchmarkList(ctx context.Context, cf *genericclioptions.ConfigFlags, rb
 		if job.Status.StartTime != nil && job.Status.CompletionTime != nil {
 			duration = job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Round(time.Second).String()
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", job.Name, state, created, duration)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", job.Name, state, created, duration); err != nil {
+			return err
+		}
 	}
-	w.Flush()
-
-	return nil
+	return w.Flush()
 }
