@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Benchmark Results</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .loading { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">Benchmark Results</h1>
+                <div class="flex space-x-4">
+                    <a href="/" class="text-blue-600 hover:text-blue-800 font-medium">Experiments</a>
+                    <a href="/compare.html" class="text-gray-600 hover:text-gray-800">Compare</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <div id="loading" class="loading text-center py-8">
+            <div class="text-gray-500">Loading experiments...</div>
+        </div>
+        
+        <div id="experiments" class="hidden">
+            <div class="mb-6 flex justify-between items-center">
+                <div class="flex items-center space-x-4">
+                    <input type="text" id="search" placeholder="Search experiments..." 
+                           class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <span id="count" class="text-gray-500 text-sm"></span>
+                </div>
+                <button onclick="refreshExperiments()" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg">
+                    Refresh
+                </button>
+            </div>
+            
+            <div id="experiment-list" class="grid gap-4"></div>
+        </div>
+
+        <div id="error" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded"></div>
+    </main>
+
+    <script>
+        let allExperiments = [];
+
+        async function fetchExperiments() {
+            try {
+                const response = await fetch('/api/experiments');
+                if (!response.ok) throw new Error('Failed to fetch experiments');
+                const data = await response.json();
+                allExperiments = data.experiments || [];
+                renderExperiments(allExperiments);
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('experiments').classList.remove('hidden');
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        function renderExperiments(experiments) {
+            const container = document.getElementById('experiment-list');
+            document.getElementById('count').textContent = `${experiments.length} experiment(s)`;
+            
+            if (experiments.length === 0) {
+                container.innerHTML = '<div class="text-center py-8 text-gray-500">No experiments found</div>';
+                return;
+            }
+
+            container.innerHTML = experiments.map(exp => `
+                <div class="bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow cursor-pointer"
+                     onclick="viewExperiment('${exp.name}')">
+                    <div class="flex justify-between items-start">
+                        <div class="flex-1">
+                            <h3 class="text-lg font-semibold text-gray-800 mb-2">${escapeHtml(exp.name)}</h3>
+                            ${exp.metadata ? `
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600">
+                                    <div>
+                                        <span class="text-gray-400">Backend:</span>
+                                        <span class="font-medium">${escapeHtml(exp.metadata.api_backend || 'N/A')}</span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">Model:</span>
+                                        <span class="font-medium">${escapeHtml(exp.metadata.api_model_name || 'N/A')}</span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">Task:</span>
+                                        <span class="font-medium">${escapeHtml(exp.metadata.task || 'N/A')}</span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">Concurrency:</span>
+                                        <span class="font-medium">${exp.metadata.num_concurrency ? exp.metadata.num_concurrency.join(', ') : 'N/A'}</span>
+                                    </div>
+                                </div>
+                                <div class="mt-2 text-sm text-gray-500">
+                                    <span class="text-gray-400">Scenarios:</span>
+                                    ${exp.metadata.traffic_scenario ? exp.metadata.traffic_scenario.map(s => 
+                                        `<span class="inline-block bg-gray-100 px-2 py-1 rounded mr-1">${escapeHtml(s)}</span>`
+                                    ).join('') : 'N/A'}
+                                </div>
+                            ` : '<p class="text-gray-500 text-sm">No metadata available</p>'}
+                        </div>
+                        <div class="text-right text-sm text-gray-400">
+                            <div>${new Date(exp.created_at).toLocaleDateString()}</div>
+                            <div class="mt-2">
+                                <span class="text-gray-500">${(exp.result_files || []).length} results</span>
+                                <span class="mx-1">|</span>
+                                <span class="text-gray-500">${(exp.image_files || []).length} images</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function viewExperiment(name) {
+            window.location.href = `/experiment.html?name=${encodeURIComponent(name)}`;
+        }
+
+        function refreshExperiments() {
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('experiments').classList.add('hidden');
+            fetchExperiments();
+        }
+
+        function showError(message) {
+            document.getElementById('loading').classList.add('hidden');
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Search functionality
+        document.getElementById('search').addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            const filtered = allExperiments.filter(exp => 
+                exp.name.toLowerCase().includes(query) ||
+                (exp.metadata && (
+                    (exp.metadata.api_backend || '').toLowerCase().includes(query) ||
+                    (exp.metadata.api_model_name || '').toLowerCase().includes(query) ||
+                    (exp.metadata.task || '').toLowerCase().includes(query)
+                ))
+            );
+            renderExperiments(filtered);
+        });
+
+        // Initial load
+        fetchExperiments();
+    </script>
+</body>
+</html>

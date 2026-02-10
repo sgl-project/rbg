@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Experiment Details</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .loading { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">Benchmark Results</h1>
+                <div class="flex space-x-4">
+                    <a href="/" class="text-gray-600 hover:text-gray-800">Experiments</a>
+                    <a href="/compare.html" class="text-gray-600 hover:text-gray-800">Compare</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <div id="loading" class="loading text-center py-8">
+            <div class="text-gray-500">Loading experiment...</div>
+        </div>
+
+        <div id="content" class="hidden">
+            <!-- Breadcrumb -->
+            <div class="mb-4">
+                <a href="/" class="text-blue-600 hover:text-blue-800">Experiments</a>
+                <span class="mx-2 text-gray-400">/</span>
+                <span id="exp-name-breadcrumb" class="text-gray-600"></span>
+            </div>
+
+            <!-- Metadata Section -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 id="exp-name" class="text-xl font-bold text-gray-800 mb-4"></h2>
+                <div id="metadata" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm"></div>
+            </div>
+
+            <!-- Results Table -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Results</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenario</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Concurrency</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">RPS</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Throughput (tok/s)</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mean TTFT</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P99 TTFT</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mean E2E</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P99 E2E</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Error Rate</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requests</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-table" class="bg-white divide-y divide-gray-200"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Performance Charts</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <canvas id="throughputChart"></canvas>
+                    </div>
+                    <div>
+                        <canvas id="latencyChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Images Section -->
+            <div id="images-section" class="bg-white rounded-lg shadow p-6 mb-6 hidden">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Generated Charts</h3>
+                <div id="images-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            </div>
+        </div>
+
+        <div id="error" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded"></div>
+    </main>
+
+    <script>
+        let experimentName = '';
+        let throughputChart = null;
+        let latencyChart = null;
+
+        function getQueryParam(name) {
+            const params = new URLSearchParams(window.location.search);
+            return params.get(name);
+        }
+
+        async function loadExperiment() {
+            experimentName = getQueryParam('name');
+            if (!experimentName) {
+                showError('Experiment name is required');
+                return;
+            }
+
+            try {
+                // Load experiment details
+                const expResponse = await fetch(`/api/experiments/${encodeURIComponent(experimentName)}`);
+                if (!expResponse.ok) throw new Error('Failed to load experiment');
+                const experiment = await expResponse.json();
+
+                // Load results
+                const resultsResponse = await fetch(`/api/experiments/${encodeURIComponent(experimentName)}/results`);
+                if (!resultsResponse.ok) throw new Error('Failed to load results');
+                const results = await resultsResponse.json();
+
+                renderExperiment(experiment, results);
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('content').classList.remove('hidden');
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        function renderExperiment(experiment, results) {
+            document.getElementById('exp-name').textContent = experiment.name;
+            document.getElementById('exp-name-breadcrumb').textContent = experiment.name;
+            document.title = `${experiment.name} - Benchmark Results`;
+
+            // Render metadata
+            const metadataEl = document.getElementById('metadata');
+            if (experiment.metadata) {
+                const meta = experiment.metadata;
+                metadataEl.innerHTML = `
+                    <div><span class="text-gray-400">Backend:</span> <span class="font-medium">${escapeHtml(meta.api_backend || 'N/A')}</span></div>
+                    <div><span class="text-gray-400">Model:</span> <span class="font-medium">${escapeHtml(meta.api_model_name || 'N/A')}</span></div>
+                    <div><span class="text-gray-400">Task:</span> <span class="font-medium">${escapeHtml(meta.task || 'N/A')}</span></div>
+                    <div><span class="text-gray-400">Version:</span> <span class="font-medium">${escapeHtml(meta.benchmark_version || 'N/A')}</span></div>
+                    <div><span class="text-gray-400">Concurrency:</span> <span class="font-medium">${meta.num_concurrency ? meta.num_concurrency.join(', ') : 'N/A'}</span></div>
+                    <div><span class="text-gray-400">Scenarios:</span> <span class="font-medium">${meta.traffic_scenario ? meta.traffic_scenario.join(', ') : 'N/A'}</span></div>
+                    <div><span class="text-gray-400">Max Time/Run:</span> <span class="font-medium">${meta.max_time_per_run_s || 'N/A'}s</span></div>
+                    <div><span class="text-gray-400">Max Requests/Run:</span> <span class="font-medium">${meta.max_requests_per_run || 'N/A'}</span></div>
+                `;
+            }
+
+            // Render results table
+            const tableBody = document.getElementById('results-table');
+            tableBody.innerHTML = results.map(r => `
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${escapeHtml(r.scenario)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${r.num_concurrency}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${r.requests_per_second.toFixed(2)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${r.output_throughput.toFixed(2)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.mean_ttft)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.p99_ttft)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.mean_e2e_latency)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.p99_e2e_latency)}</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm ${r.error_rate > 0 ? 'text-red-600' : ''}">${(r.error_rate * 100).toFixed(2)}%</td>
+                    <td class="px-4 py-3 whitespace-nowrap text-sm">${r.num_requests}</td>
+                </tr>
+            `).join('');
+
+            // Render charts
+            renderCharts(results);
+
+            // Render images
+            if (experiment.image_files && experiment.image_files.length > 0) {
+                const imagesSection = document.getElementById('images-section');
+                const imagesGrid = document.getElementById('images-grid');
+                imagesSection.classList.remove('hidden');
+                imagesGrid.innerHTML = experiment.image_files.map(img => `
+                    <div class="cursor-pointer" onclick="openImage('${encodeURIComponent(img)}')">
+                        <img src="/api/experiments/${encodeURIComponent(experimentName)}/images/${encodeURIComponent(img)}" 
+                             alt="${escapeHtml(img)}" 
+                             class="w-full h-auto rounded border hover:shadow-lg transition-shadow">
+                        <p class="text-xs text-gray-500 mt-1 truncate">${escapeHtml(img)}</p>
+                    </div>
+                `).join('');
+            }
+        }
+
+        function renderCharts(results) {
+            // Group by scenario
+            const scenarios = [...new Set(results.map(r => r.scenario))];
+            const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
+
+            // Throughput chart
+            const throughputCtx = document.getElementById('throughputChart').getContext('2d');
+            throughputChart = new Chart(throughputCtx, {
+                type: 'bar',
+                data: {
+                    labels: results.map(r => `${r.scenario} (c=${r.num_concurrency})`),
+                    datasets: [{
+                        label: 'Output Throughput (tokens/s)',
+                        data: results.map(r => r.output_throughput),
+                        backgroundColor: scenarios.map(s => colors[scenarios.indexOf(s) % colors.length])
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Output Throughput by Configuration' }
+                    }
+                }
+            });
+
+            // Latency chart
+            const latencyCtx = document.getElementById('latencyChart').getContext('2d');
+            latencyChart = new Chart(latencyCtx, {
+                type: 'bar',
+                data: {
+                    labels: results.map(r => `${r.scenario} (c=${r.num_concurrency})`),
+                    datasets: [
+                        {
+                            label: 'Mean TTFT',
+                            data: results.map(r => r.mean_ttft * 1000),
+                            backgroundColor: '#3B82F6'
+                        },
+                        {
+                            label: 'P99 TTFT',
+                            data: results.map(r => r.p99_ttft * 1000),
+                            backgroundColor: '#93C5FD'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'TTFT Latency (ms)' }
+                    }
+                }
+            });
+        }
+
+        function openImage(img) {
+            window.open(`/api/experiments/${encodeURIComponent(experimentName)}/images/${img}`, '_blank');
+        }
+
+        function formatLatency(value) {
+            if (value === undefined || value === null) return 'N/A';
+            if (value < 0.001) return `${(value * 1000000).toFixed(2)}us`;
+            if (value < 1) return `${(value * 1000).toFixed(2)}ms`;
+            return `${value.toFixed(2)}s`;
+        }
+
+        function showError(message) {
+            document.getElementById('loading').classList.add('hidden');
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        loadExperiment();
+    </script>
+</body>
+</html>

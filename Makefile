@@ -4,10 +4,12 @@ IMG_REPO ?= rolebasedgroup
 RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
 PATIO_IMG ?= ${IMG_REPO}/rbgs-patio-runtime
+BENCHMARK_DASHBOARD_IMG ?= ${IMG_REPO}/rbgs-benchmark-dashboard
 
 RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
 PATIO_DOCKERFILE ?= python/patio/Dockerfile
+BENCHMARK_DASHBOARD_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/dashboard/Dockerfile
 
 VERSION ?= v0.5.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
@@ -155,6 +157,15 @@ build-cli:  ## Build cli binary.
 	GOPROXY=${GOPROXY} \
 	go build -mod vendor -v -o bin/kubectl-rbg -ldflags $(ldflags) cmd/cli/main.go
 
+.PHONY: build-benchmark-dashboard
+build-benchmark-dashboard: ## Build benchmark-dashboard binary.
+	GOARCH=${TARGETARCH} \
+	GOOS=${TARGETOS} \
+	CGO_ENABLED=0 \
+	GO111MODULE=on \
+	GOPROXY=${GOPROXY} \
+	go build -v -o bin/benchmark-dashboard -ldflags $(ldflags) ./cmd/cli/cmd/llm/benchmark/dashboard/
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/rbgs/main.go
@@ -173,6 +184,14 @@ docker-build-crd-upgrader:
 .PHONY: docker-build-patio
 docker-build-patio:
 	$(CONTAINER_TOOL) build -f ${PATIO_DOCKERFILE} -t ${PATIO_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+
+.PHONY: docker-build-benchmark-dashboard
+docker-build-benchmark-dashboard: ## Build docker image for benchmark-dashboard
+	$(CONTAINER_TOOL) build -f ${BENCHMARK_DASHBOARD_DOCKERFILE} -t ${BENCHMARK_DASHBOARD_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+
+.PHONY: docker-push-benchmark-dashboard
+docker-push-benchmark-dashboard: ## Push docker image for benchmark-dashboard
+	$(CONTAINER_TOOL) push ${BENCHMARK_DASHBOARD_IMG}:${TAG}
 
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
