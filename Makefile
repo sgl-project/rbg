@@ -11,7 +11,7 @@ RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
 PATIO_DOCKERFILE ?= python/patio/Dockerfile
 BENCHMARK_DASHBOARD_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/dashboard/Dockerfile
-BENCHMARK_BENCHTOOL_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/benchtool/Dockerfile-genai
+BENCHMARK_BENCHTOOL_DOCKERFILE ?= tools/benchmark/genai/Dockerfile
 
 VERSION ?= v0.5.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")

@@ -1,6 +1,6 @@
 # Build the genai-bench benchmark tool image
 # Source: https://github.com/sgl-project/genai-bench
-FROM kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/python:3.12.12
+FROM python:3.12.12
 
 WORKDIR /genai-bench
 ENV PATH="/root/.local/bin:${PATH}"
