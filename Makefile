@@ -5,11 +5,13 @@ RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
 PATIO_IMG ?= ${IMG_REPO}/rbgs-patio-runtime
 BENCHMARK_DASHBOARD_IMG ?= ${IMG_REPO}/rbgs-benchmark-dashboard
+BENCHMARK_BENCHTOOL_IMG ?= ${IMG_REPO}/rbgs-benchtool-genai
 
 RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
 PATIO_DOCKERFILE ?= python/patio/Dockerfile
 BENCHMARK_DASHBOARD_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/dashboard/Dockerfile
+BENCHMARK_BENCHTOOL_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/benchtool/Dockerfile-genai
 
 VERSION ?= v0.5.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
@@ -203,6 +205,14 @@ docker-build-benchmark-dashboard: ## Build docker image for benchmark-dashboard
 .PHONY: docker-push-benchmark-dashboard
 docker-push-benchmark-dashboard: ## Push docker image for benchmark-dashboard
 	$(CONTAINER_TOOL) push ${BENCHMARK_DASHBOARD_IMG}:${TAG}
+
+.PHONY: docker-build-benchtool-genai
+docker-build-benchtool-genai: ## Build docker image for benchmark benchtool (genai-bench)
+	$(CONTAINER_TOOL) build -f ${BENCHMARK_BENCHTOOL_DOCKERFILE} -t ${BENCHMARK_BENCHTOOL_IMG}:${TAG} .
+
+.PHONY: docker-push-benchtool-genai
+docker-push-benchtool-genai: ## Push docker image for benchmark benchtool
+	$(CONTAINER_TOOL) push ${BENCHMARK_BENCHTOOL_IMG}:${TAG}
 
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
