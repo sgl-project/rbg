@@ -1,0 +1,34 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: demo
+spec:
+  roles:
+    - name: engine
+      # Default pattern is Stateful (ordered). To use Stateless (unordered) pattern,
+      # uncomment the following labels section:
+      # labels:
+      #   instance.rolebasedgroup.workloads.x-k8s.io/pattern: Stateless
+      replicas: 3
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+      workload:
+        apiVersion: workloads.x-k8s.io/v1alpha1
+        kind: InstanceSet
+      template:
+        spec:
+          containers:
+            - name: main
+              image: nginx:latest
+      leaderWorkerSet:
+        patchLeaderTemplate:
+          metadata:
+            labels:
+              role: leader
+        patchWorkerTemplate:
+          metadata:
+            labels:
+              role: worker
+        size: 3

@@ -49,15 +49,6 @@ func (r *InstanceSetReconciler) Validate(
 		}
 	}
 
-	if len(role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey]) == 0 {
-		return fmt.Errorf("currently role.labels[instance.rolebasedgroup.workloads.x-k8s.io/pattern] is required")
-	}
-
-	if role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey] !=
-		string(workloadsv1alpha1.DeploymentInstancePattern) {
-		return fmt.Errorf("currently only 'Deployment' pattern is supported")
-	}
-
 	return nil
 }
 
@@ -176,6 +167,7 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	instanceSetConfig := workloadsv1alpha1client.InstanceSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(
 			workloadsv1alpha1client.InstanceSetSpec().
+				WithSelector(metaapplyv1.LabelSelector().WithMatchLabels(maps.Clone(matchLabels))).
 				WithReplicas(*role.Replicas).
 				WithInstanceTemplate(instanceTemplateConfig).
 				WithMinReadySeconds(role.MinReadySeconds),

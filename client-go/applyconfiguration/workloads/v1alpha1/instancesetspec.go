@@ -17,10 +17,15 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+)
+
 // InstanceSetSpecApplyConfiguration represents a declarative configuration of the InstanceSetSpec type for use
 // with apply.
 type InstanceSetSpecApplyConfiguration struct {
 	Replicas             *int32                                       `json:"replicas,omitempty"`
+	Selector             *v1.LabelSelectorApplyConfiguration          `json:"selector,omitempty"`
 	InstanceTemplate     *InstanceTemplateApplyConfiguration          `json:"instanceTemplate,omitempty"`
 	ScaleStrategy        *InstanceSetScaleStrategyApplyConfiguration  `json:"scaleStrategy,omitempty"`
 	UpdateStrategy       *InstanceSetUpdateStrategyApplyConfiguration `json:"updateStrategy,omitempty"`
@@ -40,6 +45,14 @@ func InstanceSetSpec() *InstanceSetSpecApplyConfiguration {
 // If called multiple times, the Replicas field is set to the value of the last call.
 func (b *InstanceSetSpecApplyConfiguration) WithReplicas(value int32) *InstanceSetSpecApplyConfiguration {
 	b.Replicas = &value
+	return b
+}
+
+// WithSelector sets the Selector field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Selector field is set to the value of the last call.
+func (b *InstanceSetSpecApplyConfiguration) WithSelector(value *v1.LabelSelectorApplyConfiguration) *InstanceSetSpecApplyConfiguration {
+	b.Selector = value
 	return b
 }
 

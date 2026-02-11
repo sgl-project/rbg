@@ -178,6 +178,10 @@ func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) 
 	return nil, fmt.Errorf("roleTemplate %q not found in spec.roleTemplates", name)
 }
 
+func (rbg *RoleBasedGroup) GetKey() string {
+	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
+}
+
 // UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
 func (r *RoleSpec) UsesRoleTemplate() bool {
 	return r.TemplateSource.TemplateRef != nil

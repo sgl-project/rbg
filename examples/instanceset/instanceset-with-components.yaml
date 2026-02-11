@@ -5,8 +5,10 @@ metadata:
 spec:
   roles:
     - name: engine
-      labels:
-        instance.rolebasedgroup.workloads.x-k8s.io/pattern: Deployment
+      # Default pattern is Stateful (ordered). To use Stateless (unordered) pattern,
+      # uncomment the following labels section:
+      # labels:
+      #   instance.rolebasedgroup.workloads.x-k8s.io/pattern: Stateless
       replicas: 3
       rolloutStrategy:
         type: RollingUpdate

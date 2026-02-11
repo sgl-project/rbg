@@ -58,22 +58,18 @@ func GetShortHash(hash string) string {
 }
 
 func FormatComponentPodName(instanceName, componentName string, id int32, instancePattern v1alpha1.InstancePatternType, roleTemplateType v1alpha1.RBGRoleTemplateType) string {
-	if instancePattern == v1alpha1.DeploymentInstancePattern {
-		switch roleTemplateType {
-		case v1alpha1.LeaderWorkerSetTemplateType:
-			podIndex := id
-			if componentName == "worker" {
-				podIndex++
-			}
-			return fmt.Sprintf("%s-%d", instanceName, podIndex)
-		case v1alpha1.ComponentsTemplateType:
-			return fmt.Sprintf("%s-%s-%d", instanceName, componentName, id)
-		default:
-			return instanceName
+	switch roleTemplateType {
+	case v1alpha1.LeaderWorkerSetTemplateType:
+		podIndex := id
+		if componentName == "worker" {
+			podIndex++
 		}
+		return fmt.Sprintf("%s-%d", instanceName, podIndex)
+	case v1alpha1.ComponentsTemplateType:
+		return fmt.Sprintf("%s-%s-%d", instanceName, componentName, id)
+	default:
+		return instanceName
 	}
-
-	return fmt.Sprintf("%s-%s-%d", instanceName, componentName, id)
 }
 
 func InitComponentPodLabels(instanceName, componentName string, id int32, roleTemplateType v1alpha1.RBGRoleTemplateType) map[string]string {

@@ -81,11 +81,11 @@ const (
 type InstancePatternType string
 
 const (
-	// DeploymentInstancePattern represents Deployment ordered topology pattern
-	DeploymentInstancePattern InstancePatternType = "Deployment"
+	// StatelessInstancePattern represents stateless (unordered) topology pattern
+	StatelessInstancePattern InstancePatternType = "Stateless"
 
-	// StatefulSetInstancePattern represents StatefulSet ordered topology pattern
-	StatefulSetInstancePattern InstancePatternType = "StatefulSet"
+	// StatefulInstancePattern represents stateful (ordered) topology pattern
+	StatefulInstancePattern InstancePatternType = "Stateful"
 )
 
 const RoleLabelPrefix = "role." + RBGPrefix
