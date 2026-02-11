@@ -17,7 +17,7 @@ import (
 
 const (
 	benchmarkLabelKey        = "rbg-benchmark"
-	defaultBenchmarkImage    = "rolebasedgroup/rbgs-benchmark-dashboard:nightly"
+	defaultBenchmarkImage    = "rolebasedgroup/rbgs-benchtool-genai:latest"
 	defaultCPULimit          = "2"
 	defaultCPURequest        = "1"
 	defaultMemoryLimit       = "2Gi"

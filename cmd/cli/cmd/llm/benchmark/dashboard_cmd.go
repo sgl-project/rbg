@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultDashboardImage   = "todo"
+	defaultDashboardImage   = "rolebasedgroup/rbgs-benchmark-dashboard:nightly"
 	defaultDashboardPort    = 8080
 	defaultLocalPort        = 18888
 	dashboardLabelKey       = "rbg-benchmark-dashboard-app"
@@ -123,7 +123,7 @@ func runDashboard(ctx context.Context) error {
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			fmt.Fprintf(os.Stderr, "Cleaning up Pod %s...\n", podName)
-			deleteCtx, cancelDelete := context.WithTimeout(ctx, 30*time.Second)
+			deleteCtx, cancelDelete := context.WithTimeout(context.TODO(), 30*time.Second)
 			defer cancelDelete()
 
 			err := clientset.CoreV1().Pods(ns).Delete(deleteCtx, podName, metav1.DeleteOptions{})
