@@ -98,6 +98,13 @@ kubectl rbg llm benchmark logs <rbg-name> --job <job-name>
 kubectl rbg llm benchmark logs <rbg-name> --job <job-name> -f=false
 ```
 
+### Get Benchmark Config
+
+```bash
+# Display the benchmark configuration for a specific job
+kubectl rbg llm benchmark get <rbg-name> --job <job-name>
+```
+
 ### Delete Benchmark Job
 
 ```bash
@@ -137,7 +144,7 @@ kubectl rbg llm benchmark dashboard \
 | `--api-key` | `rbg` | API key for model serving |
 | `--api-model-name` | auto | Model name (defaults to RBG name) |
 | `--experiment-folder-name` | auto | Folder name for results (defaults to job name) |
-| `--image` | - | Container image for benchmark job |
+| `--image` | `rolebasedgroup/rbgs-benchmark-dashboard:nightly` | Container image for benchmark job |
 | `--cpu-request` | `1` | CPU request |
 | `--cpu-limit` | `2` | CPU limit |
 | `--memory-request` | `2Gi` | Memory request |
@@ -148,6 +155,12 @@ kubectl rbg llm benchmark dashboard \
 ### list `<rbg-name>`
 
 No additional flags. Lists all benchmark jobs sorted by creation time (oldest first).
+
+### get `<rbg-name>`
+
+| Flag | Description |
+|------|-------------|
+| `--job` | Name of the benchmark job to inspect (required) |
 
 ### delete `<rbg-name>`
 
@@ -176,8 +189,8 @@ No additional flags. Lists all benchmark jobs sorted by creation time (oldest fi
 Supported formats:
 - `pvc://{pvc-name}/`
 - `pvc://{pvc-name}/{sub-path}`
-- `pvc://{namespace}:{pvc-name}/`
-- `pvc://{namespace}:{pvc-name}/{sub-path}`
+
+The PVC namespace is determined by the current kubeconfig context.
 
 ## Example
 
@@ -205,10 +218,11 @@ kubectl rbg llm benchmark run qwen3-8b \
   --experiment-base-dir pvc://benchmark-output/rbg-benchmark \
   --traffic-scenario "D(100,1000)" \
   --traffic-scenario "D(500,500)" \
-  --num-concurrency 1,2,4,8
+  --num-concurrency 1,2,4,8 \
   --image ${image}
 
 # 2.1 Alternatively, use a YAML config file to provide parameters:
+# Note: --config/-f is mutually exclusive with other parameter flags.
 cat <<EOF > benchmark-config.yaml
 modelTokenizer: Qwen/Qwen3-8B
 experimentBaseDir: pvc://benchmark-output/rbg-benchmark
@@ -225,19 +239,19 @@ EOF
 
 kubectl rbg llm benchmark run qwen3-8b -f benchmark-config.yaml
 
-# CLI flags override config file values, e.g. override max-time-per-run:
-kubectl rbg llm benchmark run qwen3-8b -f benchmark-config.yaml --max-time-per-run 60
-
 # 3. List benchmark jobs
 kubectl rbg llm benchmark list qwen3-8b
 
 # 4. View logs of a benchmark job
 kubectl rbg llm benchmark logs qwen3-8b --job <job-name>
 
-# 5. Delete a benchmark job
+# 5. Get benchmark config of a job
+kubectl rbg llm benchmark get qwen3-8b --job <job-name>
+
+# 6. Delete a benchmark job
 kubectl rbg llm benchmark delete qwen3-8b --job <job-name>
 
-# 6. Browse results
+# 7. Browse results
 kubectl rbg llm benchmark dashboard \
   --experiment-base-dir pvc://benchmark-output/rbg-benchmark \
   --image ${image}
