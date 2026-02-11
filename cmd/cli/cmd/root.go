@@ -20,8 +20,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -54,14 +52,6 @@ func getVersion() string {
 }
 
 func Execute() {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-sig
-		os.Exit(1)
-	}()
-
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -82,5 +72,5 @@ func init() {
 
 	rootCmd.AddCommand(status.NewStatusCmd(cf))
 	rootCmd.AddCommand(rollout.NewRolloutCmd(cf))
-	rootCmd.AddCommand(llm.NewLLMCmd())
+	rootCmd.AddCommand(llm.NewLLMCmd(cf))
 }

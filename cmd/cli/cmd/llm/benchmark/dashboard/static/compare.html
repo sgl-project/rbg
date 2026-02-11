@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compare Experiments</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .loading { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-gray-800">Benchmark Results</h1>
+                <div class="flex space-x-4">
+                    <a href="/" class="text-gray-600 hover:text-gray-800">Experiments</a>
+                    <a href="/compare.html" class="text-blue-600 hover:text-blue-800 font-medium">Compare</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Selection Section -->
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Select Experiments to Compare</h2>
+            <div id="loading" class="loading text-center py-4">
+                <div class="text-gray-500">Loading experiments...</div>
+            </div>
+            <div id="selection" class="hidden">
+                <div class="flex flex-wrap gap-2 mb-4" id="experiment-checkboxes"></div>
+                <button onclick="compareSelected()" 
+                        class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg disabled:opacity-50"
+                        id="compare-btn" disabled>
+                    Compare Selected
+                </button>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div id="results" class="hidden">
+            <!-- Comparison Charts -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Throughput Comparison</h3>
+                <canvas id="throughputChart"></canvas>
+            </div>
+
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Latency Comparison</h3>
+                <canvas id="latencyChart"></canvas>
+            </div>
+
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">RPS Comparison</h3>
+                <canvas id="rpsChart"></canvas>
+            </div>
+
+            <!-- Detailed Table -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Detailed Comparison</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Experiment</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenario</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Concurrency</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">RPS</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Throughput</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mean TTFT</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P99 TTFT</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mean E2E</th>
+                            </tr>
+                        </thead>
+                        <tbody id="comparison-table" class="bg-white divide-y divide-gray-200"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="error" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded"></div>
+    </main>
+
+    <script>
+        let allExperiments = [];
+        let selectedExperiments = new Set();
+        let charts = {};
+
+        async function loadExperiments() {
+            try {
+                const response = await fetch('/api/experiments');
+                if (!response.ok) throw new Error('Failed to fetch experiments');
+                const data = await response.json();
+                allExperiments = data.experiments || [];
+                renderCheckboxes();
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('selection').classList.remove('hidden');
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        function renderCheckboxes() {
+            const container = document.getElementById('experiment-checkboxes');
+            container.innerHTML = allExperiments.map(exp => `
+                <label class="flex items-center space-x-2 bg-gray-50 px-3 py-2 rounded cursor-pointer hover:bg-gray-100">
+                    <input type="checkbox" value="${escapeHtml(exp.name)}" 
+                           onchange="toggleExperiment('${escapeHtml(exp.name)}')"
+                           class="rounded text-blue-500">
+                    <span class="text-sm">${escapeHtml(exp.name)}</span>
+                </label>
+            `).join('');
+        }
+
+        function toggleExperiment(name) {
+            if (selectedExperiments.has(name)) {
+                selectedExperiments.delete(name);
+            } else {
+                selectedExperiments.add(name);
+            }
+            document.getElementById('compare-btn').disabled = selectedExperiments.size < 1;
+        }
+
+        async function compareSelected() {
+            if (selectedExperiments.size < 1) return;
+
+            try {
+                const names = Array.from(selectedExperiments).join(',');
+                const response = await fetch(`/api/compare?experiments=${encodeURIComponent(names)}`);
+                if (!response.ok) throw new Error('Failed to compare experiments');
+                const data = await response.json();
+                renderComparison(data.experiments);
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        function renderComparison(experiments) {
+            document.getElementById('results').classList.remove('hidden');
+
+            // Prepare data for charts
+            const colors = [
+                '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+                '#EC4899', '#14B8A6', '#F97316', '#6366F1', '#84CC16'
+            ];
+
+            // Build datasets
+            const labels = new Set();
+            experiments.forEach(exp => {
+                exp.results.forEach(r => {
+                    labels.add(`${r.scenario} (c=${r.num_concurrency})`);
+                });
+            });
+            const sortedLabels = Array.from(labels).sort();
+
+            // Throughput chart
+            destroyChart('throughputChart');
+            charts.throughputChart = new Chart(
+                document.getElementById('throughputChart').getContext('2d'),
+                {
+                    type: 'bar',
+                    data: {
+                        labels: sortedLabels,
+                        datasets: experiments.map((exp, i) => ({
+                            label: exp.name,
+                            data: sortedLabels.map(label => {
+                                const result = exp.results.find(r => 
+                                    `${r.scenario} (c=${r.num_concurrency})` === label
+                                );
+                                return result ? result.output_throughput : null;
+                            }),
+                            backgroundColor: colors[i % colors.length]
+                        }))
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: { display: true, text: 'Output Throughput (tokens/s)' }
+                        }
+                    }
+                }
+            );
+
+            // Latency chart
+            destroyChart('latencyChart');
+            charts.latencyChart = new Chart(
+                document.getElementById('latencyChart').getContext('2d'),
+                {
+                    type: 'bar',
+                    data: {
+                        labels: sortedLabels,
+                        datasets: experiments.map((exp, i) => ({
+                            label: exp.name,
+                            data: sortedLabels.map(label => {
+                                const result = exp.results.find(r => 
+                                    `${r.scenario} (c=${r.num_concurrency})` === label
+                                );
+                                return result ? result.mean_ttft * 1000 : null;
+                            }),
+                            backgroundColor: colors[i % colors.length]
+                        }))
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: { display: true, text: 'Mean TTFT (ms)' }
+                        }
+                    }
+                }
+            );
+
+            // RPS chart
+            destroyChart('rpsChart');
+            charts.rpsChart = new Chart(
+                document.getElementById('rpsChart').getContext('2d'),
+                {
+                    type: 'bar',
+                    data: {
+                        labels: sortedLabels,
+                        datasets: experiments.map((exp, i) => ({
+                            label: exp.name,
+                            data: sortedLabels.map(label => {
+                                const result = exp.results.find(r => 
+                                    `${r.scenario} (c=${r.num_concurrency})` === label
+                                );
+                                return result ? result.requests_per_second : null;
+                            }),
+                            backgroundColor: colors[i % colors.length]
+                        }))
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: { display: true, text: 'Requests per Second' }
+                        }
+                    }
+                }
+            );
+
+            // Render comparison table
+            const tableBody = document.getElementById('comparison-table');
+            tableBody.innerHTML = experiments.flatMap((exp, i) => 
+                exp.results.map(r => `
+                    <tr class="hover:bg-gray-50" style="border-left: 4px solid ${colors[i % colors.length]}">
+                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">${escapeHtml(exp.name)}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${escapeHtml(r.scenario)}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${r.num_concurrency}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${r.requests_per_second.toFixed(2)}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${r.output_throughput.toFixed(2)}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.mean_ttft)}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.p99_ttft)}</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm">${formatLatency(r.mean_e2e_latency)}</td>
+                    </tr>
+                `)
+            ).join('');
+        }
+
+        function destroyChart(id) {
+            if (charts[id]) {
+                charts[id].destroy();
+                charts[id] = null;
+            }
+        }
+
+        function formatLatency(value) {
+            if (value === undefined || value === null) return 'N/A';
+            if (value < 0.001) return `${(value * 1000000).toFixed(2)}us`;
+            if (value < 1) return `${(value * 1000).toFixed(2)}ms`;
+            return `${value.toFixed(2)}s`;
+        }
+
+        function showError(message) {
+            document.getElementById('loading').classList.add('hidden');
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        loadExperiments();
+    </script>
+</body>
+</html>
