@@ -323,7 +323,7 @@ func TestBuildBenchmarkJob(t *testing.T) {
 
 		// Check spec
 		assert.Equal(t, int32(0), *job.Spec.BackoffLimit)
-		assert.Equal(t, int32(3600), *job.Spec.TTLSecondsAfterFinished)
+		assert.Equal(t, int32(604800), *job.Spec.TTLSecondsAfterFinished) // 7 days
 		assert.Equal(t, corev1.RestartPolicyNever, job.Spec.Template.Spec.RestartPolicy)
 
 		// Check container
