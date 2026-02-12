@@ -10,13 +10,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 const (
 	// maxJobNameLength is the maximum length of a Kubernetes resource name.
 	maxJobNameLength = 63
 	// benchmarkConfigAnnotationKey is the annotation key used to store the serialized benchmark config on the Job.
-	benchmarkConfigAnnotationKey = "rbg-benchmark/config"
+	benchmarkConfigAnnotationKey = workloadsv1alpha1.RBGPrefix + "rbg-benchmark-config"
 )
 
 type JobState string
@@ -116,7 +117,7 @@ func buildBenchmarkJob(namespace, rbgName string) (*batchv1.Job, error) {
 	}
 
 	backoffLimit := int32(0)
-	ttlSecondsAfterFinished := int32(3600)
+	ttlSecondsAfterFinished := int32(604800) // 7 days
 
 	annotations, err := buildBenchmarkAnnotations()
 	if err != nil {
@@ -153,7 +154,7 @@ func buildBenchmarkAnnotations() (map[string]string, error) {
 		NumConcurrency:       benchmarkOpts.numConcurrency,
 		APIBackend:           benchmarkOpts.apiBackend,
 		APIBase:              benchmarkOpts.apiBase,
-		APIKey:               benchmarkOpts.apiKey,
+		APIKey:               "***",
 		APIModelName:         benchmarkOpts.apiModelName,
 		ModelTokenizer:       benchmarkOpts.modelTokenizer,
 		ExperimentBaseDir:    benchmarkOpts.experimentBaseDir,
