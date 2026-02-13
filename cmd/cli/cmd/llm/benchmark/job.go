@@ -1,6 +1,7 @@
 package benchmark
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -9,11 +10,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 const (
 	// maxJobNameLength is the maximum length of a Kubernetes resource name.
 	maxJobNameLength = 63
+	// benchmarkConfigAnnotationKey is the annotation key used to store the serialized benchmark config on the Job.
+	benchmarkConfigAnnotationKey = workloadsv1alpha1.RBGPrefix + "rbg-benchmark-config"
 )
 
 type JobState string
@@ -113,13 +117,19 @@ func buildBenchmarkJob(namespace, rbgName string) (*batchv1.Job, error) {
 	}
 
 	backoffLimit := int32(0)
-	ttlSecondsAfterFinished := int32(3600)
+	ttlSecondsAfterFinished := int32(604800) // 7 days
+
+	annotations, err := buildBenchmarkAnnotations()
+	if err != nil {
+		return nil, err
+	}
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: namespace,
-			Labels:    labels,
+			Name:        jobName,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoffLimit,
@@ -131,6 +141,38 @@ func buildBenchmarkJob(namespace, rbgName string) (*batchv1.Job, error) {
 				Spec: podSpec,
 			},
 		},
+	}, nil
+}
+
+// buildBenchmarkAnnotations builds the Job annotations containing the serialized benchmark config.
+func buildBenchmarkAnnotations() (map[string]string, error) {
+	cfg := BenchmarkConfig{
+		Task:                 benchmarkOpts.task,
+		MaxTimePerRun:        &benchmarkOpts.maxTimePerRun,
+		MaxRequestsPerRun:    &benchmarkOpts.maxRequestsPerRun,
+		TrafficScenarios:     benchmarkOpts.trafficScenarios,
+		NumConcurrency:       benchmarkOpts.numConcurrency,
+		APIBackend:           benchmarkOpts.apiBackend,
+		APIBase:              benchmarkOpts.apiBase,
+		APIKey:               "***",
+		APIModelName:         benchmarkOpts.apiModelName,
+		ModelTokenizer:       benchmarkOpts.modelTokenizer,
+		ExperimentBaseDir:    benchmarkOpts.experimentBaseDir,
+		ExperimentFolderName: benchmarkOpts.experimentFolderName,
+		ExtraArgs:            benchmarkOpts.extraArgs,
+		Image:                benchmarkOpts.image,
+		CPURequest:           benchmarkOpts.cpuRequest,
+		CPULimit:             benchmarkOpts.cpuLimit,
+		MemoryRequest:        benchmarkOpts.memoryRequest,
+		MemoryLimit:          benchmarkOpts.memoryLimit,
+		Wait:                 &benchmarkOpts.wait,
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize benchmark config: %w", err)
+	}
+	return map[string]string{
+		benchmarkConfigAnnotationKey: string(data),
 	}, nil
 }
 

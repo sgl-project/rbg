@@ -93,10 +93,10 @@ func startPortForward(kubeconfig, namespace, podName string, localPort, remotePo
 	}()
 
 	// Wait for the command to finish
-	_ = cmd.Wait()
+	err = cmd.Wait()
 
 	// Wait for stderr to be fully read
 	<-stderrDone
 
-	resultChan <- PortForwardResult{Err: nil}
+	resultChan <- PortForwardResult{Err: err}
 }

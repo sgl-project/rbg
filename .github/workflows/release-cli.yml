@@ -1,0 +1,90 @@
+name: Release CLI Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  GO_VERSION: 1.24.1
+
+permissions:
+  contents: write
+
+jobs:
+  release-cli:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version info
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          GIT_COMMIT=$(git rev-parse HEAD)
+          BUILD_DATE=$(date +%Y-%m-%dT%H:%M:%S%z)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
+          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+
+      - name: Build CLI binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION_PKG=sigs.k8s.io/rbgs/version
+          LDFLAGS="-s -w -X ${VERSION_PKG}.Version=${{ steps.version.outputs.tag }} -X ${VERSION_PKG}.GitCommit=${{ steps.version.outputs.git_commit }} -X ${VERSION_PKG}.BuildDate=${{ steps.version.outputs.build_date }}"
+          BINARY_NAME=kubectl-rbg-${{ matrix.goos }}-${{ matrix.goarch }}
+          go build -mod vendor -v -o ${BINARY_NAME} -ldflags "${LDFLAGS}" cmd/cli/main.go
+          chmod +x ${BINARY_NAME}
+
+          # Generate checksum
+          sha256sum ${BINARY_NAME} > ${BINARY_NAME}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubectl-rbg-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            kubectl-rbg-${{ matrix.goos }}-${{ matrix.goarch }}
+            kubectl-rbg-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+  create-release:
+    needs: release-cli
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/kubectl-rbg-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

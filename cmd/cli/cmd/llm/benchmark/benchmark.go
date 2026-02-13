@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,7 +17,7 @@ import (
 
 const (
 	benchmarkLabelKey        = "rbg-benchmark"
-	defaultBenchmarkImage    = "todo"
+	defaultBenchmarkImage    = "rolebasedgroup/rbgs-benchtool-genai:v0.1.0"
 	defaultCPULimit          = "2"
 	defaultCPURequest        = "1"
 	defaultMemoryLimit       = "2Gi"
@@ -100,6 +101,7 @@ func NewBenchmarkCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	}
 
 	cmd.AddCommand(NewBenchmarkRunCmd(cf))
+	cmd.AddCommand(NewBenchmarkGetCmd(cf))
 	cmd.AddCommand(NewBenchmarkListCmd(cf))
 	cmd.AddCommand(NewBenchmarkDeleteCmd(cf))
 	cmd.AddCommand(NewBenchmarkLogsCmd(cf))
@@ -129,10 +131,10 @@ func NewBenchmarkRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 		Short: "Run a genai-bench benchmark against a RoleBasedGroup",
 		Long: `Run a genai-bench benchmark against a RoleBasedGroup.
 
-Parameters can be provided via CLI flags, a YAML config file (--config), or both.
-When both are used, CLI flags take precedence over config file values.
-
-Priority: defaults < config file < CLI flags`,
+Parameters can be provided via CLI flags or a YAML config file (--config/-f),
+but not both. When --config/-f is specified, all other parameter flags are
+disallowed to ensure the config file is the single source of truth for
+version management.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rbgName := args[0]
@@ -142,10 +144,10 @@ Priority: defaults < config file < CLI flags`,
 
 	cmd.Flags().StringVarP(&configFile, "config", "f", "",
 		"Path to a YAML config file that provides benchmark parameters. "+
-			"CLI flags override values from the config file.")
+			"Mutually exclusive with all other parameter flags.")
 
 	cmd.Flags().StringVar(&benchmarkOpts.task, "task", benchmarkOpts.task, "Benchmark task type (e.g. text-to-text)")
-	cmd.Flags().IntVar(&benchmarkOpts.maxTimePerRun, "max-time-per-run", benchmarkOpts.maxTimePerRun, "Maximum time per benchmark run in seconds")
+	cmd.Flags().IntVar(&benchmarkOpts.maxTimePerRun, "max-time-per-run", benchmarkOpts.maxTimePerRun, "Maximum time per benchmark run in minutes")
 	cmd.Flags().IntVar(&benchmarkOpts.maxRequestsPerRun, "max-requests-per-run", benchmarkOpts.maxRequestsPerRun, "Maximum number of requests per benchmark run")
 	cmd.Flags().StringArrayVar(&benchmarkOpts.trafficScenarios, "traffic-scenario", benchmarkOpts.trafficScenarios, "Traffic scenario definitions (e.g. 'D(100,1000)'), can be specified multiple times")
 	cmd.Flags().IntSliceVar(&benchmarkOpts.numConcurrency, "num-concurrency", benchmarkOpts.numConcurrency, "Concurrency levels, can be specified multiple times or comma-separated")
@@ -157,11 +159,13 @@ Priority: defaults < config file < CLI flags`,
 
 	cmd.Flags().StringVar(&benchmarkOpts.modelTokenizer, "model-tokenizer", benchmarkOpts.modelTokenizer,
 		"The tokenizer to use. Can be a Huggingface model name (e.g. Qwen/Qwen3-8B) "+
-			"or a PVC path (e.g. pvc://{pvc-name}/ or pvc://{pvc-name}/{sub-path} or pvc://{namespace}:{pvc-name}/ or pvc://{namespace}:{pvc-name}/{sub-path})")
+			"or a PVC path (e.g. pvc://{pvc-name}/ or pvc://{pvc-name}/{sub-path}). "+
+			"The PVC namespace is determined by the current kubeconfig context.")
 
 	cmd.Flags().StringVar(&benchmarkOpts.experimentBaseDir, "experiment-base-dir", benchmarkOpts.experimentBaseDir,
 		"Base directory for storing experiment results. Must be a PVC path "+
-			"(e.g. pvc://{pvc-name}/ or pvc://{pvc-name}/{sub-path} or pvc://{namespace}:{pvc-name}/ or pvc://{namespace}:{pvc-name}/{sub-path})")
+			"(e.g. pvc://{pvc-name}/ or pvc://{pvc-name}/{sub-path}). "+
+			"The PVC namespace is determined by the current kubeconfig context.")
 
 	cmd.Flags().StringVar(&benchmarkOpts.experimentFolderName, "experiment-folder-name", benchmarkOpts.experimentFolderName,
 		"The name of the folder to save the experiment results. "+
@@ -178,33 +182,28 @@ Priority: defaults < config file < CLI flags`,
 	var extraArgsJSON string
 	cmd.Flags().StringVar(&extraArgsJSON, "extra-args", "", `Extra arguments to pass to genai-bench in JSON format (e.g. '{"key1":"value1","key2":"value2"}')`)
 	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
-		// Step 1: Load config file if provided and apply values for flags not explicitly set via CLI.
-		// Priority: defaults < config file < CLI flags.
+		// Step 1: Enforce mutual exclusivity between --config/-f and other parameter flags.
 		if configFile != "" {
+			if conflicting := getConflictingFlags(cmd); len(conflicting) > 0 {
+				return fmt.Errorf("--config/-f cannot be used together with other parameter flags: %s", strings.Join(conflicting, ", "))
+			}
 			fileCfg, err := loadBenchmarkConfig(configFile)
 			if err != nil {
 				return err
 			}
 			applyConfigToOptions(fileCfg, cmd)
-		}
-
-		// Step 2: Parse extra-args JSON (CLI flag takes precedence; config file extraArgs
-		// are already merged in applyConfigToOptions).
-		if extraArgsJSON != "" {
-			parsed := make(map[string]string)
-			if err := json.Unmarshal([]byte(extraArgsJSON), &parsed); err != nil {
-				return fmt.Errorf("failed to parse --extra-args JSON: %w", err)
-			}
-			// Merge: CLI extra-args override config file extra-args.
-			if benchmarkOpts.extraArgs == nil {
-				benchmarkOpts.extraArgs = make(map[string]string)
-			}
-			for k, v := range parsed {
-				benchmarkOpts.extraArgs[k] = v
+		} else {
+			// Parse extra-args JSON when using CLI flags directly.
+			if extraArgsJSON != "" {
+				parsed := make(map[string]string)
+				if err := json.Unmarshal([]byte(extraArgsJSON), &parsed); err != nil {
+					return fmt.Errorf("failed to parse --extra-args JSON: %w", err)
+				}
+				benchmarkOpts.extraArgs = parsed
 			}
 		}
 
-		// Step 3: Validate required fields (can come from either config file or CLI flags).
+		// Step 2: Validate required fields (can come from either config file or CLI flags).
 		if benchmarkOpts.modelTokenizer == "" {
 			return fmt.Errorf("required flag \"model-tokenizer\" not set (provide via --model-tokenizer or --config file)")
 		}
@@ -232,9 +231,28 @@ func loadBenchmarkConfig(path string) (*BenchmarkConfig, error) {
 	return &cfg, nil
 }
 
-// applyConfigToOptions merges values from a BenchmarkConfig into benchmarkOpts.
-// Only fields whose corresponding CLI flag was NOT explicitly set by the user are overridden.
-// This ensures the priority order: defaults < config file < CLI flags.
+// getConflictingFlags returns the list of parameter flags that were explicitly set by the user.
+func getConflictingFlags(cmd *cobra.Command) []string {
+	parameterFlags := []string{
+		"task", "max-time-per-run", "max-requests-per-run",
+		"traffic-scenario", "num-concurrency",
+		"api-backend", "api-base", "api-key", "api-model-name",
+		"model-tokenizer",
+		"experiment-base-dir", "experiment-folder-name",
+		"image", "cpu-request", "cpu-limit", "memory-request", "memory-limit",
+		"wait", "extra-args",
+	}
+	var conflicting []string
+	for _, name := range parameterFlags {
+		if cmd.Flags().Changed(name) {
+			conflicting = append(conflicting, "--"+name)
+		}
+	}
+	return conflicting
+}
+
+// applyConfigToOptions applies values from a BenchmarkConfig into benchmarkOpts.
+// When --config/-f is used, all values come from the config file exclusively.
 func applyConfigToOptions(cfg *BenchmarkConfig, cmd *cobra.Command) {
 	setStringOpt(&benchmarkOpts.task, cfg.Task, "task", cmd)
 	setIntPtrOpt(&benchmarkOpts.maxTimePerRun, cfg.MaxTimePerRun, "max-time-per-run", cmd)

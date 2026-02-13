@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultDashboardImage   = "todo"
+	defaultDashboardImage   = "rolebasedgroup/rbgs-benchmark-dashboard:nightly"
 	defaultDashboardPort    = 8080
 	defaultLocalPort        = 18888
 	dashboardLabelKey       = "rbg-benchmark-dashboard-app"
@@ -123,8 +123,10 @@ func runDashboard(ctx context.Context) error {
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			fmt.Fprintf(os.Stderr, "Cleaning up Pod %s...\n", podName)
+			deleteCtx, cancelDelete := context.WithTimeout(context.TODO(), 30*time.Second)
+			defer cancelDelete()
 
-			err := clientset.CoreV1().Pods(ns).Delete(context.TODO(), podName, metav1.DeleteOptions{})
+			err := clientset.CoreV1().Pods(ns).Delete(deleteCtx, podName, metav1.DeleteOptions{})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to delete pod: %v\n", err)
 			} else {
@@ -157,12 +159,9 @@ func runDashboard(ctx context.Context) error {
 		fmt.Fprintln(os.Stderr, "Cleanup complete, exiting...")
 	}()
 
-	// Debug: confirm signal handler is set up
-	fmt.Fprintln(os.Stderr, "[Debug] Signal handler registered, Ctrl+C will trigger cleanup")
-
 	// Wait for Pod to be ready
 	fmt.Printf("Waiting for Pod to be ready...\n")
-	if err := waitForPodReady(ctx, clientset, ns, podName); err != nil {
+	if err := waitForPodReady(ctx, clientset, ns, podName, true); err != nil {
 		if ctx.Err() != nil {
 			return nil // Interrupted by signal, cleanup will run via defer
 		}
