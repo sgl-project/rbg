@@ -64,6 +64,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupScalingAdapters().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroupsets"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupSets().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroupwarmups"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupWarmUps().Informer()}, nil
 
 	}
 

@@ -47,8 +47,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.CoordinationScalingApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationStrategy"):
 		return &workloadsv1alpha1.CoordinationStrategyApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("CustomizedAction"):
+		return &workloadsv1alpha1.CustomizedActionApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha1.EngineRuntimeApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ImagePreloadAction"):
+		return &workloadsv1alpha1.ImagePreloadActionApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
 		return &workloadsv1alpha1.InPlaceUpdateStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Instance"):
@@ -107,6 +111,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.RoleBasedGroupSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupStatus"):
 		return &workloadsv1alpha1.RoleBasedGroupStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupWarmUp"):
+		return &workloadsv1alpha1.RoleBasedGroupWarmUpApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupWarmUpSpec"):
+		return &workloadsv1alpha1.RoleBasedGroupWarmUpSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupWarmUpStatus"):
+		return &workloadsv1alpha1.RoleBasedGroupWarmUpStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleSpec"):
 		return &workloadsv1alpha1.RoleSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleStatus"):
@@ -119,12 +129,18 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.RolloutStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingAdapter"):
 		return &workloadsv1alpha1.ScalingAdapterApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("TargetNodes"):
+		return &workloadsv1alpha1.TargetNodesApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("TargetRoleBasedGroup"):
+		return &workloadsv1alpha1.TargetRoleBasedGroupApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("TemplateRef"):
 		return &workloadsv1alpha1.TemplateRefApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("TemplateSource"):
 		return &workloadsv1alpha1.TemplateSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("VolcanoSchedulingPodGroupPolicySource"):
 		return &workloadsv1alpha1.VolcanoSchedulingPodGroupPolicySourceApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("WarmUpActions"):
+		return &workloadsv1alpha1.WarmUpActionsApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("WorkloadSpec"):
 		return &workloadsv1alpha1.WorkloadSpecApplyConfiguration{}
 

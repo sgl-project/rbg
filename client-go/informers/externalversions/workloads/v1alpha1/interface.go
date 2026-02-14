@@ -35,6 +35,8 @@ type Interface interface {
 	RoleBasedGroupScalingAdapters() RoleBasedGroupScalingAdapterInformer
 	// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 	RoleBasedGroupSets() RoleBasedGroupSetInformer
+	// RoleBasedGroupWarmUps returns a RoleBasedGroupWarmUpInformer.
+	RoleBasedGroupWarmUps() RoleBasedGroupWarmUpInformer
 }
 
 type version struct {
@@ -76,4 +78,9 @@ func (v *version) RoleBasedGroupScalingAdapters() RoleBasedGroupScalingAdapterIn
 // RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 func (v *version) RoleBasedGroupSets() RoleBasedGroupSetInformer {
 	return &roleBasedGroupSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleBasedGroupWarmUps returns a RoleBasedGroupWarmUpInformer.
+func (v *version) RoleBasedGroupWarmUps() RoleBasedGroupWarmUpInformer {
+	return &roleBasedGroupWarmUpInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

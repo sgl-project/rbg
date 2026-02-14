@@ -51,6 +51,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	warmupcontroller "sigs.k8s.io/rbgs/internal/controller/warmup"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"sigs.k8s.io/rbgs/version"
@@ -338,6 +339,15 @@ func main() {
 
 	if err = instancesetReconciler.SetupWithManager(mgr, options); err != nil {
 		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
+		os.Exit(1)
+	}
+
+	warmupReconciler := &warmupcontroller.RoleBasedGroupWarmUpReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}
+	if err = warmupReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create warmup controller", "controller", "RoleBasedGroupWarmUp")
 		os.Exit(1)
 	}
 
