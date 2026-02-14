@@ -11,8 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
     git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    build-essential
 
 # Install pipx and uv using pip
 RUN pip install --upgrade pip pipx hatchling wheel && \
@@ -23,11 +22,10 @@ RUN pip install --upgrade pip pipx hatchling wheel && \
 # Clone genai-bench source and install
 RUN git clone --depth 1 \
     https://github.com/sgl-project/genai-bench.git /genai-bench && \
-    uv pip install --system -vvv /genai-bench && \
-    rm -rf /root/.cache
+    uv pip install --system -vvv /genai-bench
 
 # Clean up unnecessary files to reduce the image size
 RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/*
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /root/.cache
 
 ENTRYPOINT ["genai-bench"]
