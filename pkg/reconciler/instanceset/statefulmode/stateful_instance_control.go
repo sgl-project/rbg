@@ -91,7 +91,7 @@ func (sic *StatefulInstanceControl) CreateStatefulInstance(ctx context.Context, 
 	err := sic.objectMgr.CreateInstance(ctx, instance)
 	// sink already exists errors
 	if apierrors.IsAlreadyExists(err) {
-		return err
+		return nil
 	}
 	sic.recordInstanceEvent("create", set, instance, err)
 	return err
@@ -145,13 +145,14 @@ func (sic *StatefulInstanceControl) DeleteStatefulInstance(set *workloadsv1alpha
 // recordInstanceEvent records an event for verb applied to a Instance in a InstanceSet. If err is nil the generated event will
 // have a reason of v1.EventTypeNormal. If err is not nil the generated event will have a reason of v1.EventTypeWarning.
 func (sic *StatefulInstanceControl) recordInstanceEvent(verb string, set *workloadsv1alpha1.InstanceSet, instance *workloadsv1alpha1.Instance, err error) {
+	titleVerb := cases.Title(language.English, cases.Compact).String(verb)
 	if err == nil {
-		reason := fmt.Sprintf("Successful%s", strings.Title(verb))
+		reason := fmt.Sprintf("Successful%s", titleVerb)
 		message := fmt.Sprintf("%s Instance %s in InstanceSet %s successful",
 			strings.ToLower(verb), instance.Name, set.Name)
 		sic.recorder.Event(set, v1.EventTypeNormal, reason, message)
 	} else {
-		reason := fmt.Sprintf("Failed%s", cases.Title(language.English, cases.Compact).String(verb))
+		reason := fmt.Sprintf("Failed%s", titleVerb)
 		message := fmt.Sprintf("%s Instance %s in InstanceSet %s failed error: %s",
 			strings.ToLower(verb), instance.Name, set.Name, err)
 		sic.recorder.Event(set, v1.EventTypeWarning, reason, message)

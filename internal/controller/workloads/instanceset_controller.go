@@ -2,8 +2,11 @@ package workloads
 
 import (
 	"context"
+	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -19,6 +22,7 @@ type InstanceSetReconciler struct {
 	statefulMode  reconcile.Reconciler
 	client        client.Client
 	apiReader     client.Reader
+	recorder      record.EventRecorder
 }
 
 func NewInstanceSetReconciler(mgr ctrl.Manager) *InstanceSetReconciler {
@@ -27,6 +31,7 @@ func NewInstanceSetReconciler(mgr ctrl.Manager) *InstanceSetReconciler {
 		statefulMode:  statefulmode.NewReconciler(mgr),
 		client:        mgr.GetClient(),
 		apiReader:     mgr.GetAPIReader(),
+		recorder:      mgr.GetEventRecorderFor("instanceset-controller"),
 	}
 }
 
@@ -42,23 +47,24 @@ func (r *InstanceSetReconciler) Reconcile(ctx context.Context, request reconcile
 	set := &v1alpha1.InstanceSet{}
 	if err := r.client.Get(ctx, request.NamespacedName, set); err != nil {
 		if errors.IsNotFound(err) {
-			// Dispatch to both modes so they can clean up expectations/state
-			if _, err := r.statelessMode.Reconcile(ctx, request); err != nil {
-				return reconcile.Result{}, err
-			}
-			return r.statefulMode.Reconcile(ctx, request)
+			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
 	}
 
 	// Dispatch based on the instance pattern label
-	pattern := set.Labels[v1alpha1.RBGInstancePatternLabelKey]
-	if pattern == string(v1alpha1.StatelessInstancePattern) {
+	pattern := v1alpha1.InstancePatternType(set.Labels[v1alpha1.RBGInstancePatternLabelKey])
+	switch pattern {
+	case v1alpha1.StatelessInstancePattern:
 		return r.statelessMode.Reconcile(ctx, request)
+	case v1alpha1.StatefulInstancePattern, "":
+		// Empty pattern defaults to stateful mode for backward compatibility
+		return r.statefulMode.Reconcile(ctx, request)
+	default:
+		err := fmt.Errorf("unknown instance pattern %q", pattern)
+		r.recorder.Event(set, corev1.EventTypeWarning, "UnknownInstancePattern", err.Error())
+		return reconcile.Result{}, err
 	}
-
-	// Default: use statefulMode
-	return r.statefulMode.Reconcile(ctx, request)
 }
 
 func (r *InstanceSetReconciler) CheckCrdExists() error {

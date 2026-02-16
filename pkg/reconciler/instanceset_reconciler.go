@@ -129,6 +129,8 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	// set revision label
 	instanceSetLabel := maps.Clone(matchLabels)
 	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
+	// set default instance pattern to Stateful
+	instanceSetLabel[workloadsv1alpha1.RBGInstancePatternLabelKey] = string(workloadsv1alpha1.StatefulInstancePattern)
 
 	// 1. construct instance configuration
 	var restartPolicy workloadsv1alpha1.InstanceRestartPolicyType

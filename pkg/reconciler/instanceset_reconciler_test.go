@@ -109,10 +109,10 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 					Template: &corev1.PodTemplateSpec{},
 				},
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
-			name: "valid template with invalid pattern",
+			name: "valid template with Stateful pattern",
 			role: &workloadsv1alpha1.RoleSpec{
 				Labels: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.StatefulInstancePattern),
@@ -121,7 +121,7 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 					Template: &corev1.PodTemplateSpec{},
 				},
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "valid leaderWorkerSet without components or template",
