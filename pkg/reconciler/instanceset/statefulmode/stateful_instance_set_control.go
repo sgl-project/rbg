@@ -1,4 +1,5 @@
 /*
+Copyright 2026 The RBG Authors.
 Copyright 2019 The Kruise Authors.
 Copyright 2016 The Kubernetes Authors.
 
@@ -258,7 +259,7 @@ func (ssc *defaultStatefulInstanceSetControl) getInstanceSetRevisions(
 			}
 		}
 	} else {
-		//if there is no equivalent revision we create a new one
+		// if there is no equivalent revision we create a new one
 		updateRevision, err = ssc.controllerHistory.CreateControllerRevision(set, updateRevision, &collisionCount)
 		if err != nil {
 			return nil, nil, collisionCount, err

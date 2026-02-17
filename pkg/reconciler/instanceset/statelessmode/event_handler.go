@@ -47,6 +47,10 @@ func (e *instanceEventHandler) Create(ctx context.Context, evt event.TypedCreate
 		if req == nil {
 			return
 		}
+		// Only update ScaleExpectations for Stateless pattern InstanceSet
+		if !e.isStatelessPattern(instance.Namespace, controllerRef.Name) {
+			return
+		}
 		klog.V(4).Infof("Instance %s/%s created, owner: %s", instance.Namespace, instance.Name, req.Name)
 		utils.ScaleExpectations.ObserveScale(req.String(), expectations.Create, instance.Name)
 		q.Add(*req)
@@ -150,6 +154,10 @@ func (e *instanceEventHandler) Delete(ctx context.Context, evt event.TypedDelete
 	if req == nil {
 		return
 	}
+	// Only update ScaleExpectations for Stateless pattern InstanceSet
+	if !e.isStatelessPattern(instance.Namespace, controllerRef.Name) {
+		return
+	}
 
 	klog.V(4).Infof("Instance %s/%s deleted, owner: %s", instance.Namespace, instance.Name, req.Name)
 	utils.ScaleExpectations.ObserveScale(req.String(), expectations.Delete, instance.Name)
@@ -214,4 +222,13 @@ func (e *instanceEventHandler) joinInstanceSetNames(setList []v1alpha1.InstanceS
 		names = append(names, set.Name)
 	}
 	return strings.Join(names, ",")
+}
+
+// isStatelessPattern checks if the InstanceSet has Stateless pattern
+func (e *instanceEventHandler) isStatelessPattern(namespace, name string) bool {
+	set := &v1alpha1.InstanceSet{}
+	if err := e.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: name}, set); err != nil {
+		return false
+	}
+	return set.Labels[v1alpha1.RBGInstancePatternLabelKey] == string(v1alpha1.StatelessInstancePattern)
 }

@@ -1,4 +1,5 @@
 /*
+Copyright 2026 The RBG Authors.
 Copyright 2019 The Kruise Authors.
 Copyright 2016 The Kubernetes Authors.
 
@@ -217,7 +218,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 		return reconcile.Result{}, nil
 	}
 
-	if err := ssc.adoptOrphanRevisions(set); err != nil {
+	if err := ssc.adoptOrphanRevisions(ctx, set); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -231,7 +232,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 }
 
 // adoptOrphanRevisions adopts any orphaned ControllerRevisions matched by set's Selector.
-func (ssc *ReconcileStatefulInstanceSet) adoptOrphanRevisions(set *workloadsv1alpha1.InstanceSet) error {
+func (ssc *ReconcileStatefulInstanceSet) adoptOrphanRevisions(ctx context.Context, set *workloadsv1alpha1.InstanceSet) error {
 	revisions, err := ssc.control.ListRevisions(set)
 	if err != nil {
 		return err
@@ -244,7 +245,7 @@ func (ssc *ReconcileStatefulInstanceSet) adoptOrphanRevisions(set *workloadsv1al
 	}
 	if len(orphanRevisions) > 0 {
 		fresh := &workloadsv1alpha1.InstanceSet{}
-		err := sigsruntimeClient.Get(context.TODO(), sigsclient.ObjectKey{Namespace: set.Namespace, Name: set.Name}, fresh)
+		err := sigsruntimeClient.Get(ctx, sigsclient.ObjectKey{Namespace: set.Namespace, Name: set.Name}, fresh)
 		if err != nil {
 			return err
 		}

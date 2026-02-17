@@ -1,4 +1,5 @@
 /*
+Copyright 2026 The RBG Authors.
 Copyright 2019 The Kruise Authors.
 Copyright 2017 The Kubernetes Authors.
 
@@ -57,7 +58,7 @@ func (ssu *realStatefulInstanceSetStatusUpdater) UpdateInstanceSetStatus(
 	// don't wait due to limited number of clients, but backoff after the default number of steps
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		set.Status = *status
-		updateErr := ssu.client.Status().Update(context.TODO(), set)
+		updateErr := ssu.client.Status().Update(ctx, set)
 		if updateErr == nil {
 			return nil
 		}

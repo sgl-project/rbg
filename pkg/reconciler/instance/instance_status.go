@@ -166,7 +166,7 @@ func (r *realStatusUpdater) getExpectOwnedPods(instance *v1alpha1.Instance) ([]*
 			if err := r.Get(context.TODO(), client.ObjectKey{
 				Namespace: instance.Namespace,
 				Name: instanceutils.FormatComponentPodName(instance.Name, component.Name, int32(i),
-					instance.GetInstancePattern(), instance.GetRoleTemplateType()),
+					instance.GetRoleTemplateType()),
 			}, pod); err != nil {
 				return nil, err
 			}

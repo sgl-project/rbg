@@ -18,8 +18,6 @@ package utils
 
 import (
 	"fmt"
-	"reflect"
-	"unsafe"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -40,8 +38,7 @@ func sliceContains(a, b []string) bool {
 	return true
 }
 
-// ValidatedLabelSelectorAsSelector is faster than native `metav1.LabelSelectorAsSelector` for the newRequirement function
-// performs no validation. MAKE SURE the `ps` param is validated with `metav1.LabelSelectorAsSelector` before.
+// ValidatedLabelSelectorAsSelector converts a LabelSelector to a labels.Selector.
 func ValidatedLabelSelectorAsSelector(ps *metav1.LabelSelector) (labels.Selector, error) {
 	if ps == nil {
 		return labels.Nothing(), nil
@@ -52,7 +49,7 @@ func ValidatedLabelSelectorAsSelector(ps *metav1.LabelSelector) (labels.Selector
 
 	selector := labels.NewSelector()
 	for k, v := range ps.MatchLabels {
-		r, err := newRequirement(k, selection.Equals, []string{v})
+		r, err := labels.NewRequirement(k, selection.Equals, []string{v})
 		if err != nil {
 			return nil, err
 		}
@@ -72,33 +69,11 @@ func ValidatedLabelSelectorAsSelector(ps *metav1.LabelSelector) (labels.Selector
 		default:
 			return nil, fmt.Errorf("%q is not a valid pod selector operator", expr.Operator)
 		}
-		r, err := newRequirement(expr.Key, op, append([]string(nil), expr.Values...))
+		r, err := labels.NewRequirement(expr.Key, op, append([]string(nil), expr.Values...))
 		if err != nil {
 			return nil, err
 		}
 		selector = selector.Add(*r)
 	}
 	return selector, nil
-}
-
-func newRequirement(key string, op selection.Operator, vals []string) (*labels.Requirement, error) {
-	sel := &labels.Requirement{}
-	selVal := reflect.ValueOf(sel)
-	val := reflect.Indirect(selVal)
-
-	keyField := val.FieldByName("key")
-	keyFieldPtr := (*string)(unsafe.Pointer(keyField.UnsafeAddr()))
-	*keyFieldPtr = key
-
-	opField := val.FieldByName("operator")
-	opFieldPtr := (*selection.Operator)(unsafe.Pointer(opField.UnsafeAddr()))
-	*opFieldPtr = op
-
-	if len(vals) > 0 {
-		valuesField := val.FieldByName("strValues")
-		valuesFieldPtr := (*[]string)(unsafe.Pointer(valuesField.UnsafeAddr()))
-		*valuesFieldPtr = vals
-	}
-
-	return sel, nil
 }

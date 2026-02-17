@@ -1,4 +1,5 @@
 /*
+Copyright 2026 The RBG Authors.
 Copyright 2019 The Kruise Authors.
 Copyright 2016 The Kubernetes Authors.
 

@@ -58,7 +58,7 @@ func (r *InstanceSetReconciler) Reconcile(ctx context.Context, request reconcile
 	case v1alpha1.StatelessInstancePattern:
 		return r.statelessMode.Reconcile(ctx, request)
 	case v1alpha1.StatefulInstancePattern, "":
-		// Empty pattern defaults to stateful mode for backward compatibility
+		// Empty pattern defaults to stateful mode as the default behavior
 		return r.statefulMode.Reconcile(ctx, request)
 	default:
 		err := fmt.Errorf("unknown instance pattern %q", pattern)
@@ -84,6 +84,7 @@ func (r *InstanceSetReconciler) SetupWithManager(mgr ctrl.Manager, options contr
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&v1alpha1.InstanceSet{}).
+		Owns(&v1alpha1.Instance{}).
 		Watches(&v1alpha1.Instance{}, statelessmode.NewInstanceEventHandler(mgr.GetClient())).
 		Complete(r)
 }

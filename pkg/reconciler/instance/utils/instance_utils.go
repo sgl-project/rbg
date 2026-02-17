@@ -57,7 +57,7 @@ func GetShortHash(hash string) string {
 	return list[len(list)-1]
 }
 
-func FormatComponentPodName(instanceName, componentName string, id int32, instancePattern v1alpha1.InstancePatternType, roleTemplateType v1alpha1.RBGRoleTemplateType) string {
+func FormatComponentPodName(instanceName, componentName string, id int32, roleTemplateType v1alpha1.RBGRoleTemplateType) string {
 	switch roleTemplateType {
 	case v1alpha1.LeaderWorkerSetTemplateType:
 		podIndex := id
