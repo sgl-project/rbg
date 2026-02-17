@@ -24,6 +24,7 @@ type InstanceSetStatusApplyConfiguration struct {
 	Replicas                *int32                                   `json:"replicas,omitempty"`
 	ReadyReplicas           *int32                                   `json:"readyReplicas,omitempty"`
 	AvailableReplicas       *int32                                   `json:"availableReplicas,omitempty"`
+	CurrentReplicas         *int32                                   `json:"currentReplicas,omitempty"`
 	UpdatedReplicas         *int32                                   `json:"updatedReplicas,omitempty"`
 	UpdatedReadyReplicas    *int32                                   `json:"updatedReadyReplicas,omitempty"`
 	ExpectedUpdatedReplicas *int32                                   `json:"expectedUpdatedReplicas,omitempty"`
@@ -69,6 +70,14 @@ func (b *InstanceSetStatusApplyConfiguration) WithReadyReplicas(value int32) *In
 // If called multiple times, the AvailableReplicas field is set to the value of the last call.
 func (b *InstanceSetStatusApplyConfiguration) WithAvailableReplicas(value int32) *InstanceSetStatusApplyConfiguration {
 	b.AvailableReplicas = &value
+	return b
+}
+
+// WithCurrentReplicas sets the CurrentReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CurrentReplicas field is set to the value of the last call.
+func (b *InstanceSetStatusApplyConfiguration) WithCurrentReplicas(value int32) *InstanceSetStatusApplyConfiguration {
+	b.CurrentReplicas = &value
 	return b
 }
 

@@ -173,17 +173,11 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 								wrappers.BuildBasicRole("role-3").
 									WithReplicas(int32(1)).
 									WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
-									WithLabels(map[string]string{
-										workloadsv1alpha1.RBGInstancePatternLabelKey: "Deployment",
-									}).
 									WithScalingAdapter(true).Obj(),
 								// instanceset - leaderWorkerPattern
 								wrappers.BuildLwsRole("role-4").
 									WithReplicas(int32(1)).
 									WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
-									WithLabels(map[string]string{
-										workloadsv1alpha1.RBGInstancePatternLabelKey: "Deployment",
-									}).
 									WithScalingAdapter(true).Obj(),
 							},
 						).Obj()

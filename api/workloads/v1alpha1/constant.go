@@ -71,21 +71,24 @@ const (
 
 const InstanceLabelPrefix = "instance." + RBGPrefix
 
-// Generic instance label keys
+const InstanceAnnotationPrefix = "instance." + RBGPrefix
+
+// Generic instance annotation keys
 const (
-	// RBGInstancePatternLabelKey identifies the instance organization pattern
-	RBGInstancePatternLabelKey = InstanceLabelPrefix + "pattern"
+	// RBGInstancePatternAnnotationKey identifies the instance organization pattern (Stateful/Stateless)
+	// This annotation is used to control the reconciliation mode of InstanceSet
+	RBGInstancePatternAnnotationKey = InstanceAnnotationPrefix + "pattern"
 )
 
 // InstancePatternType defines supported organization patterns
 type InstancePatternType string
 
 const (
-	// DeploymentInstancePattern represents Deployment ordered topology pattern
-	DeploymentInstancePattern InstancePatternType = "Deployment"
+	// StatelessInstancePattern represents stateless (unordered) topology pattern
+	StatelessInstancePattern InstancePatternType = "Stateless"
 
-	// StatefulSetInstancePattern represents StatefulSet ordered topology pattern
-	StatefulSetInstancePattern InstancePatternType = "StatefulSet"
+	// StatefulInstancePattern represents stateful (ordered) topology pattern
+	StatefulInstancePattern InstancePatternType = "Stateful"
 )
 
 const RoleLabelPrefix = "role." + RBGPrefix
