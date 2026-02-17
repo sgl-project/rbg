@@ -156,7 +156,7 @@ func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
 }
 
 func (instance *Instance) GetInstancePattern() InstancePatternType {
-	return InstancePatternType(instance.Labels[RBGInstancePatternLabelKey])
+	return InstancePatternType(instance.Annotations[RBGInstancePatternAnnotationKey])
 }
 
 func (instance *Instance) GetRoleTemplateType() RBGRoleTemplateType {

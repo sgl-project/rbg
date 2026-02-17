@@ -129,9 +129,11 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	// set revision label
 	instanceSetLabel := maps.Clone(matchLabels)
 	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
-	// set default instance pattern to Stateful only if not explicitly set in role.Labels
-	if role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey] == "" {
-		instanceSetLabel[workloadsv1alpha1.RBGInstancePatternLabelKey] = string(workloadsv1alpha1.StatefulInstancePattern)
+
+	// set default instance pattern annotation to Stateful only if not explicitly set in role.Annotations
+	instanceSetAnnotation := maps.Clone(rbg.GetCommonAnnotationsFromRole(role))
+	if role.Annotations[workloadsv1alpha1.RBGInstancePatternAnnotationKey] == "" {
+		instanceSetAnnotation[workloadsv1alpha1.RBGInstancePatternAnnotationKey] = string(workloadsv1alpha1.StatefulInstancePattern)
 	}
 
 	// 1. construct instance configuration
@@ -176,7 +178,7 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 				WithInstanceTemplate(instanceTemplateConfig).
 				WithMinReadySeconds(role.MinReadySeconds),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), instanceSetAnnotation)).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), instanceSetLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

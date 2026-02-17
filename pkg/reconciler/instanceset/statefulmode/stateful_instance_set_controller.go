@@ -33,18 +33,12 @@ import (
 	"k8s.io/klog/v2"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	sigsclient "sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/rbgs/pkg/reconciler/utils/revisionadapter"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	"sigs.k8s.io/rbgs/pkg/utils/expectations"
 	utilhistory "sigs.k8s.io/rbgs/pkg/utils/history"
-	"sigs.k8s.io/rbgs/pkg/utils/ratelimiter"
 	"sigs.k8s.io/rbgs/pkg/utils/requeueduration"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
@@ -131,47 +125,6 @@ type ReconcileStatefulInstanceSet struct {
 	setLister instancelisters.InstanceSetLister
 }
 
-// add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
-	// Create a new controller
-	c, err := controller.New("stateful-instanceset-controller", mgr, controller.Options{
-		Reconciler:              r,
-		MaxConcurrentReconciles: concurrentReconciles,
-		RateLimiter:             ratelimiter.DefaultControllerRateLimiter[reconcile.Request](),
-	})
-	if err != nil {
-		return err
-	}
-
-	// Watch for changes to InstanceSet
-	err = c.Watch(source.Kind(mgr.GetCache(), &workloadsv1alpha1.InstanceSet{}, &handler.TypedEnqueueRequestForObject[*workloadsv1alpha1.InstanceSet]{},
-		predicate.TypedFuncs[*workloadsv1alpha1.InstanceSet]{
-			UpdateFunc: func(e event.TypedUpdateEvent[*workloadsv1alpha1.InstanceSet]) bool {
-				oldIS := e.ObjectOld
-				newIS := e.ObjectNew
-				if oldIS.Status.Replicas != newIS.Status.Replicas {
-					klog.V(4).InfoS("Observed updated replica count for InstanceSet",
-						"instanceSet", klog.KObj(newIS), "oldReplicas", oldIS.Status.Replicas, "newReplicas", newIS.Status.Replicas)
-				}
-				return true
-			},
-		}))
-	if err != nil {
-		return err
-	}
-
-	// Watch for changes to Instance created by InstanceSet
-	err = c.Watch(source.Kind(mgr.GetCache(), &workloadsv1alpha1.Instance{}, handler.TypedEnqueueRequestForOwner[*workloadsv1alpha1.Instance](
-		mgr.GetScheme(), mgr.GetRESTMapper(), &workloadsv1alpha1.InstanceSet{}, handler.OnlyControllerOwner())))
-	if err != nil {
-		return err
-	}
-
-	klog.V(4).InfoS("Finished to add stateful-instanceset-controller")
-
-	return nil
-}
-
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
@@ -190,7 +143,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 	startTime := time.Now()
 	defer func() {
 		if retErr == nil {
-			if res.Requeue || res.RequeueAfter > 0 {
+			if res.RequeueAfter > 0 {
 				klog.InfoS("Finished syncing InstanceSet", "instanceSet", request, "elapsedTime", time.Since(startTime), "result", res)
 			} else {
 				klog.InfoS("Finished syncing InstanceSet", "instanceSet", request, "elapsedTime", time.Since(startTime))

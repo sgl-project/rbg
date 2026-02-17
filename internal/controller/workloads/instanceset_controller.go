@@ -52,8 +52,8 @@ func (r *InstanceSetReconciler) Reconcile(ctx context.Context, request reconcile
 		return reconcile.Result{}, err
 	}
 
-	// Dispatch based on the instance pattern label
-	pattern := v1alpha1.InstancePatternType(set.Labels[v1alpha1.RBGInstancePatternLabelKey])
+	// Dispatch based on the instance pattern annotation
+	pattern := v1alpha1.InstancePatternType(set.Annotations[v1alpha1.RBGInstancePatternAnnotationKey])
 	switch pattern {
 	case v1alpha1.StatelessInstancePattern:
 		return r.statelessMode.Reconcile(ctx, request)

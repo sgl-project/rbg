@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
-	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/discovery"
@@ -272,7 +272,7 @@ func containersEqual(containers1, containers2 []corev1.Container) (bool, error) 
 	normalizeByApiServerDefaults := func(c corev1.Container) corev1.Container {
 		c.Env = utils.FilterSystemEnvs(c.Env)
 		p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{c}}}
-		scheme.Scheme.Default(p)
+		legacyscheme.Scheme.Default(p)
 		return p.Spec.Containers[0]
 	}
 

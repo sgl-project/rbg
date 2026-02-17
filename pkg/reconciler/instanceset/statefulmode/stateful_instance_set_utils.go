@@ -62,12 +62,6 @@ func getOrdinal(instance *workloadsv1alpha1.Instance) int {
 	return ordinal
 }
 
-// instanceInOrdinalRange determines if the given instance's ordinal number is within the permissible range
-func instanceInOrdinalRange(instance *workloadsv1alpha1.Instance, set *workloadsv1alpha1.InstanceSet) bool {
-	startOrdinal, endOrdinal, reserveOrdinals := getInstanceSetReplicasRange(set)
-	return instanceInOrdinalRangeWithParams(instance, startOrdinal, endOrdinal, reserveOrdinals)
-}
-
 func instanceInOrdinalRangeWithParams(instance *workloadsv1alpha1.Instance, startOrdinal, endOrdinal int, reserveOrdinals sets.Set[int]) bool {
 	ordinal := getOrdinal(instance)
 	return ordinal >= startOrdinal && ordinal < endOrdinal &&
@@ -92,10 +86,6 @@ func identityMatches(set *workloadsv1alpha1.InstanceSet, instance *workloadsv1al
 		instance.Name == getInstanceName(set, ordinal) &&
 		instance.Namespace == set.Namespace &&
 		instance.Labels[apps.StatefulSetPodNameLabel] == instance.Name
-}
-
-func initIdentity(set *workloadsv1alpha1.InstanceSet, instance *workloadsv1alpha1.Instance) {
-	updateIdentity(set, instance)
 }
 
 // updateIdentity updates instance's name and labels to conform to set's name
@@ -144,7 +134,7 @@ func newVersionedInstance(
 	currentSet, updateSet *workloadsv1alpha1.InstanceSet,
 	currentRevision, updateRevision string,
 	ordinal int,
-	replicas []*workloadsv1alpha1.Instance) *workloadsv1alpha1.Instance {
+	_ []*workloadsv1alpha1.Instance) *workloadsv1alpha1.Instance {
 
 	// Determine which set to use based on ordinal and update strategy
 	useUpdateRevision := false
@@ -208,17 +198,6 @@ func newVersionedInstance(
 	return instance
 }
 
-// hasOwnerRef returns true if target has an ownerRef to owner.
-func hasOwnerRef(target, owner metav1.Object) bool {
-	ownerUID := owner.GetUID()
-	for _, ownerRef := range target.GetOwnerReferences() {
-		if ownerRef.UID == ownerUID {
-			return true
-		}
-	}
-	return false
-}
-
 // isHealthy returns true if instance is healthy
 func isHealthy(instance *workloadsv1alpha1.Instance) bool {
 	// Check if instance is ready
@@ -245,11 +224,6 @@ func isRunningAndReady(instance *workloadsv1alpha1.Instance) bool {
 	return isHealthy(instance) && !isTerminating(instance)
 }
 
-// isRunningAndAvailable returns true the instance is running and available given minReadySeconds
-func isRunningAndAvailable(instance *workloadsv1alpha1.Instance, minReadySeconds int32) bool {
-	return isHealthy(instance) && !isTerminating(instance) && isAvailableInstance(instance, minReadySeconds)
-}
-
 // isInstanceRunningAndAvailable returns true if instance is running and available, and the duration since it became available
 func isInstanceRunningAndAvailable(instance *workloadsv1alpha1.Instance, minReadySeconds int32) (bool, time.Duration) {
 	if !isRunningAndReady(instance) {
@@ -268,22 +242,4 @@ func isInstanceRunningAndAvailable(instance *workloadsv1alpha1.Instance, minRead
 	}
 
 	return false, 0
-}
-
-// isAvailableInstance checks if the instance is available based on minReadySeconds
-func isAvailableInstance(instance *workloadsv1alpha1.Instance, minReadySeconds int32) bool {
-	if !isHealthy(instance) {
-		return false
-	}
-
-	for _, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha1.InstanceReady && cond.Status == v1.ConditionTrue {
-			availableFor := metav1.Now().Sub(cond.LastTransitionTime.Time)
-			if availableFor >= time.Duration(minReadySeconds)*time.Second {
-				return true
-			}
-		}
-	}
-
-	return false
 }

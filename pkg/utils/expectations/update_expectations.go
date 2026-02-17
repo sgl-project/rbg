@@ -54,7 +54,7 @@ type realControllerUpdateExpectations struct {
 	// latest revision
 	revision string
 	// item: pod name for this revision
-	objsUpdated               sets.String
+	objsUpdated               sets.Set[string]
 	firstUnsatisfiedTimestamp time.Time
 }
 
@@ -66,7 +66,7 @@ func (r *realUpdateExpectations) ExpectUpdated(controllerKey, revision string, o
 	if expectations == nil || expectations.revision != revision {
 		expectations = &realControllerUpdateExpectations{
 			revision:    revision,
-			objsUpdated: sets.NewString(),
+			objsUpdated: sets.New[string](),
 		}
 		r.controllerCache[controllerKey] = expectations
 	}
@@ -120,11 +120,11 @@ func (r *realUpdateExpectations) SatisfiedExpectations(controllerKey, revision s
 		if oldExpectations.firstUnsatisfiedTimestamp.IsZero() {
 			oldExpectations.firstUnsatisfiedTimestamp = time.Now()
 		}
-		return false, time.Since(oldExpectations.firstUnsatisfiedTimestamp), oldExpectations.objsUpdated.List()
+		return false, time.Since(oldExpectations.firstUnsatisfiedTimestamp), oldExpectations.objsUpdated.UnsortedList()
 	}
 
 	oldExpectations.firstUnsatisfiedTimestamp = time.Time{}
-	return true, 0, oldExpectations.objsUpdated.List()
+	return true, 0, oldExpectations.objsUpdated.UnsortedList()
 }
 
 func (r *realUpdateExpectations) DeleteExpectations(controllerKey string) {

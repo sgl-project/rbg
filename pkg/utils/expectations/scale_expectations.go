@@ -23,7 +23,7 @@ type ScaleExpectations interface {
 	ObserveScale(controllerKey string, action ScaleAction, name string)
 	SatisfiedExpectations(controllerKey string) (bool, time.Duration, map[ScaleAction][]string)
 	DeleteExpectations(controllerKey string)
-	GetExpectations(controllerKey string) map[ScaleAction]sets.String
+	GetExpectations(controllerKey string) map[ScaleAction]sets.Set[string]
 }
 
 // NewScaleExpectations returns a common ScaleExpectations.
@@ -41,11 +41,11 @@ type realScaleExpectations struct {
 
 type realControllerScaleExpectations struct {
 	// item: name for this object
-	objsCache                 map[ScaleAction]sets.String
+	objsCache                 map[ScaleAction]sets.Set[string]
 	firstUnsatisfiedTimestamp time.Time
 }
 
-func (r *realScaleExpectations) GetExpectations(controllerKey string) map[ScaleAction]sets.String {
+func (r *realScaleExpectations) GetExpectations(controllerKey string) map[ScaleAction]sets.Set[string] {
 	r.Lock()
 	defer r.Unlock()
 
@@ -54,9 +54,9 @@ func (r *realScaleExpectations) GetExpectations(controllerKey string) map[ScaleA
 		return nil
 	}
 
-	res := make(map[ScaleAction]sets.String, len(expectations.objsCache))
+	res := make(map[ScaleAction]sets.Set[string], len(expectations.objsCache))
 	for k, v := range expectations.objsCache {
-		res[k] = sets.NewString(v.List()...)
+		res[k] = sets.New[string](v.UnsortedList()...)
 	}
 
 	return res
@@ -69,7 +69,7 @@ func (r *realScaleExpectations) ExpectScale(controllerKey string, action ScaleAc
 	expectations := r.controllerCache[controllerKey]
 	if expectations == nil {
 		expectations = &realControllerScaleExpectations{
-			objsCache: make(map[ScaleAction]sets.String),
+			objsCache: make(map[ScaleAction]sets.Set[string]),
 		}
 		r.controllerCache[controllerKey] = expectations
 	}
@@ -77,7 +77,7 @@ func (r *realScaleExpectations) ExpectScale(controllerKey string, action ScaleAc
 	if s := expectations.objsCache[action]; s != nil {
 		s.Insert(name)
 	} else {
-		expectations.objsCache[action] = sets.NewString(name)
+		expectations.objsCache[action] = sets.New[string](name)
 	}
 }
 
@@ -118,7 +118,7 @@ func (r *realScaleExpectations) SatisfiedExpectations(controllerKey string) (boo
 			if expectations.firstUnsatisfiedTimestamp.IsZero() {
 				expectations.firstUnsatisfiedTimestamp = time.Now()
 			}
-			return false, time.Since(expectations.firstUnsatisfiedTimestamp), map[ScaleAction][]string{a: s.List()}
+			return false, time.Since(expectations.firstUnsatisfiedTimestamp), map[ScaleAction][]string{a: s.UnsortedList()}
 		}
 	}
 

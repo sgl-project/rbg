@@ -24,20 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 )
 
-// a contains b
-func sliceContains(a, b []string) bool {
-	keyExist := make(map[string]bool, len(a))
-	for _, key := range a {
-		keyExist[key] = true
-	}
-	for _, key := range b {
-		if !keyExist[key] {
-			return false
-		}
-	}
-	return true
-}
-
 // ValidatedLabelSelectorAsSelector converts a LabelSelector to a labels.Selector.
 func ValidatedLabelSelectorAsSelector(ps *metav1.LabelSelector) (labels.Selector, error) {
 	if ps == nil {

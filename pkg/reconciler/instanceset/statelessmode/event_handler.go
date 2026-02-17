@@ -230,5 +230,5 @@ func (e *instanceEventHandler) isStatelessPattern(namespace, name string) bool {
 	if err := e.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: name}, set); err != nil {
 		return false
 	}
-	return set.Labels[v1alpha1.RBGInstancePatternLabelKey] == string(v1alpha1.StatelessInstancePattern)
+	return set.Annotations[v1alpha1.RBGInstancePatternAnnotationKey] == string(v1alpha1.StatelessInstancePattern)
 }

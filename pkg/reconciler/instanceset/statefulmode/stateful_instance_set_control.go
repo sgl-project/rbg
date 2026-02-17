@@ -26,7 +26,6 @@ import (
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -433,11 +432,11 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	}
 	updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
 
-	//TODO: support OnDelete
-	//for the OnDelete strategy we short circuit.
-	//if set.Spec.UpdateStrategy.Type == apps.OnDeleteStatefulSetStrategyType {
-	//	return &status, nil
-	//}
+	// TODO: support OnDelete
+	// for the OnDelete strategy we short circuit.
+	// if set.Spec.UpdateStrategy.Type == apps.OnDeleteStatefulSetStrategyType {
+	// 	return &status, nil
+	// }
 
 	return ssc.rollingUpdateInstances(
 		set, &status, currentRevision, updateRevision, revisions, instances, replicas, minReadySeconds,
@@ -464,74 +463,22 @@ func (ssc *defaultStatefulInstanceSetControl) rollingUpdateInstances(
 	klog.InfoS("Update expectations satisfied, proceeding with update", "instanceSet", klog.KObj(set), "updateRevision", updateRevision.Name)
 
 	// refresh states for all instances
-	var modified bool
-	for _, instance := range instances {
-		if instance == nil {
-			continue
-		}
-		refreshed, duration, err := ssc.refreshInstanceState(set, instance, updateRevision.Name)
-		if err != nil {
-			return status, err
-		} else if duration > 0 {
-			durationStore.Push(getInstanceSetKey(set), duration)
-		}
-		if refreshed {
-			modified = true
-		}
-	}
-	if modified {
+	if modified, err := ssc.refreshAllInstanceStates(set, instances, updateRevision.Name); err != nil {
+		return status, err
+	} else if modified {
 		return status, nil
 	}
 
-	var err error
-	// compute the minimum ordinal of the target sequence for a destructive update based on the strategy
-	maxUnavailable := 1
 	if set.Spec.UpdateStrategy.Paused {
 		return status, nil
 	}
 
-	if set.Spec.UpdateStrategy.MaxUnavailable != nil {
-		if set.Spec.Replicas == nil {
-			return status, fmt.Errorf("Replicas is nil")
-		}
-		maxUnavailable, err = intstrutil.GetValueFromIntOrPercent(
-			set.Spec.UpdateStrategy.MaxUnavailable,
-			int(*set.Spec.Replicas), false)
-		if err != nil {
-			return status, err
-		}
-	}
-	// maxUnavailable should not be less than 1
-	if maxUnavailable < 1 {
-		maxUnavailable = 1
+	maxUnavailable, err := ssc.getMaxUnavailable(set)
+	if err != nil {
+		return status, err
 	}
 
-	minWaitTime := MaxMinReadySeconds * time.Second
-	unavailableInstances := sets.NewString()
-	opts := &instanceinplace.UpdateOptions{}
-	opts = instanceinplace.SetOptionsDefaults(opts)
-	// counts any targets in the replicas that are unhealthy for checking maxUnavailable limit
-	for target := range replicas {
-		if replicas[target] == nil {
-			continue
-		}
-		if !isHealthy(replicas[target]) {
-			// count instance as unavailable if it's unhealthy
-			unavailableInstances.Insert(replicas[target].Name)
-		} else if completedErr := opts.CheckInstanceUpdateCompleted(replicas[target]); completedErr != nil {
-			// count instance as unavailable if it's in-place updating and not ready
-			klog.V(4).ErrorS(completedErr, "InstanceSet found Instance in-place update not-ready",
-				"instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[target]))
-			unavailableInstances.Insert(replicas[target].Name)
-		} else if isAvailable, waitTime := isInstanceRunningAndAvailable(replicas[target], minReadySeconds); !isAvailable {
-			// count instance as unavailable if it's not available yet given minReadySeconds
-			unavailableInstances.Insert(replicas[target].Name)
-			if waitTime != 0 && waitTime <= minWaitTime {
-				minWaitTime = waitTime
-				durationStore.Push(getInstanceSetKey(set), waitTime)
-			}
-		}
-	}
+	unavailableInstances := ssc.collectUnavailableInstances(set, replicas, minReadySeconds)
 
 	// Sort instances to update
 	if set.Spec.Replicas == nil {
@@ -544,8 +491,102 @@ func (ssc *defaultStatefulInstanceSetControl) rollingUpdateInstances(
 			klog.InfoS("Instance revision status", "instanceSet", klog.KObj(set), "index", i, "instance", klog.KObj(instance), "currentRevision", getInstanceRevision(instance), "updateRevision", updateRevision.Name, "needsUpdate", getInstanceRevision(instance) != updateRevision.Name)
 		}
 	}
-	klog.InfoS("Prepare to update instance indexes for InstanceSet", "instanceSet", klog.KObj(set), "instanceIndexes", updateIndexes, "maxUnavailable", maxUnavailable, "unavailableInstances", unavailableInstances.List())
+	klog.InfoS("Prepare to update instance indexes for InstanceSet", "instanceSet", klog.KObj(set), "instanceIndexes", updateIndexes, "maxUnavailable", maxUnavailable, "unavailableInstances", unavailableInstances.UnsortedList())
 
+	return ssc.updateInstancesInSequence(set, status, currentRevision, updateRevision, revisions, replicas, updateIndexes, unavailableInstances, maxUnavailable)
+}
+
+// refreshAllInstanceStates refreshes states for all instances and returns if any was modified
+func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
+	set *workloadsv1alpha1.InstanceSet,
+	instances []*workloadsv1alpha1.Instance,
+	updateRevisionName string,
+) (bool, error) {
+	var modified bool
+	for _, instance := range instances {
+		if instance == nil {
+			continue
+		}
+		refreshed, duration, err := ssc.refreshInstanceState(set, instance, updateRevisionName)
+		if err != nil {
+			return false, err
+		}
+		if duration > 0 {
+			durationStore.Push(getInstanceSetKey(set), duration)
+		}
+		if refreshed {
+			modified = true
+		}
+	}
+	return modified, nil
+}
+
+// getMaxUnavailable computes the maxUnavailable value from the update strategy
+func (ssc *defaultStatefulInstanceSetControl) getMaxUnavailable(set *workloadsv1alpha1.InstanceSet) (int, error) {
+	maxUnavailable := 1
+	if set.Spec.UpdateStrategy.MaxUnavailable != nil {
+		if set.Spec.Replicas == nil {
+			return 0, fmt.Errorf("Replicas is nil")
+		}
+		var err error
+		maxUnavailable, err = intstrutil.GetValueFromIntOrPercent(
+			set.Spec.UpdateStrategy.MaxUnavailable,
+			int(*set.Spec.Replicas), false)
+		if err != nil {
+			return 0, err
+		}
+	}
+	// maxUnavailable should not be less than 1
+	if maxUnavailable < 1 {
+		maxUnavailable = 1
+	}
+	return maxUnavailable, nil
+}
+
+// collectUnavailableInstances counts instances that are unhealthy for checking maxUnavailable limit
+func (ssc *defaultStatefulInstanceSetControl) collectUnavailableInstances(
+	set *workloadsv1alpha1.InstanceSet,
+	replicas []*workloadsv1alpha1.Instance,
+	minReadySeconds int32,
+) sets.Set[string] {
+	minWaitTime := MaxMinReadySeconds * time.Second
+	unavailableInstances := sets.New[string]()
+	opts := &instanceinplace.UpdateOptions{}
+	opts = instanceinplace.SetOptionsDefaults(opts)
+
+	for target := range replicas {
+		if replicas[target] == nil {
+			continue
+		}
+		if !isHealthy(replicas[target]) {
+			unavailableInstances.Insert(replicas[target].Name)
+		} else if completedErr := opts.CheckInstanceUpdateCompleted(replicas[target]); completedErr != nil {
+			klog.V(4).ErrorS(completedErr, "InstanceSet found Instance in-place update not-ready",
+				"instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[target]))
+			unavailableInstances.Insert(replicas[target].Name)
+		} else if isAvailable, waitTime := isInstanceRunningAndAvailable(replicas[target], minReadySeconds); !isAvailable {
+			unavailableInstances.Insert(replicas[target].Name)
+			if waitTime != 0 && waitTime <= minWaitTime {
+				minWaitTime = waitTime
+				durationStore.Push(getInstanceSetKey(set), waitTime)
+			}
+		}
+	}
+	return unavailableInstances
+}
+
+// updateInstancesInSequence updates instances in sequence respecting maxUnavailable
+func (ssc *defaultStatefulInstanceSetControl) updateInstancesInSequence(
+	set *workloadsv1alpha1.InstanceSet,
+	status *workloadsv1alpha1.InstanceSetStatus,
+	currentRevision *apps.ControllerRevision,
+	updateRevision *apps.ControllerRevision,
+	revisions []*apps.ControllerRevision,
+	replicas []*workloadsv1alpha1.Instance,
+	updateIndexes []int,
+	unavailableInstances sets.Set[string],
+	maxUnavailable int,
+) (*workloadsv1alpha1.InstanceSetStatus, error) {
 	// Track instances updated in this reconcile loop
 	updatedInThisLoop := 0
 
@@ -561,7 +602,7 @@ func (ssc *defaultStatefulInstanceSetControl) rollingUpdateInstances(
 		// 2. OR there are already maxUnavailable instances that are unavailable (not counting current target)
 		if updatedInThisLoop >= maxUnavailable || (len(unavailableInstances) >= maxUnavailable && !unavailableInstances.Has(replicas[target].Name)) {
 			klog.InfoS("InstanceSet was waiting for unavailable Instances to update, blocked instance",
-				"instanceSet", klog.KObj(set), "unavailableInstances", unavailableInstances.List(), "blockedInstance", klog.KObj(replicas[target]), "updatedInThisLoop", updatedInThisLoop, "maxUnavailable", maxUnavailable)
+				"instanceSet", klog.KObj(set), "unavailableInstances", unavailableInstances.UnsortedList(), "blockedInstance", klog.KObj(replicas[target]), "updatedInThisLoop", updatedInThisLoop, "maxUnavailable", maxUnavailable)
 			return status, nil
 		}
 
@@ -600,12 +641,12 @@ func (ssc *defaultStatefulInstanceSetControl) rollingUpdateInstances(
 func (ssc *defaultStatefulInstanceSetControl) processReplica(
 	ctx context.Context,
 	set *workloadsv1alpha1.InstanceSet,
-	updateSet *workloadsv1alpha1.InstanceSet,
+	_ *workloadsv1alpha1.InstanceSet,
 	monotonic bool,
 	replicas []*workloadsv1alpha1.Instance,
 	i int,
 	status *workloadsv1alpha1.InstanceSetStatus,
-	scaleMaxUnavailable int) (bool, bool, error) {
+	_ int) (bool, bool, error) {
 
 	// if the Instance is in pending create it
 	if !isCreated(replicas[i]) {
@@ -630,18 +671,12 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 		return monotonic, false, nil
 	}
 
-	// If the Instance is in UpdateStrategy.RollingUpdate and is not at the update revision, attempt update
-	if getPodRevision(replicas[i]) != set.Status.UpdateRevision {
-		// Update logic would go here
-		// For minimal viable version, skip update
-	}
-
 	return false, false, nil
 }
 
 // processCondemned processes a condemned instance for deletion
 func (ssc *defaultStatefulInstanceSetControl) processCondemned(
-	ctx context.Context,
+	_ context.Context,
 	set *workloadsv1alpha1.InstanceSet,
 	firstUnhealthyInstance *workloadsv1alpha1.Instance,
 	monotonic bool,
@@ -691,7 +726,7 @@ func (o descendingOrdinal) Less(i, j int) bool {
 func (ssc *defaultStatefulInstanceSetControl) refreshInstanceState(
 	set *workloadsv1alpha1.InstanceSet,
 	instance *workloadsv1alpha1.Instance,
-	updateRevision string,
+	_ string,
 ) (bool, time.Duration, error) {
 	opts := &instanceinplace.UpdateOptions{}
 	opts = instanceinplace.SetOptionsDefaults(opts)
@@ -714,31 +749,6 @@ func (ssc *defaultStatefulInstanceSetControl) refreshInstanceState(
 		}
 	}
 	return false, 0, nil
-}
-
-// getInstanceInPlaceUpdateDuration calculates duration from in-place update timestamp
-func getInstanceInPlaceUpdateDuration(instance *workloadsv1alpha1.Instance) (time.Duration, error) {
-	for _, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha1.InstanceInPlaceUpdateReady {
-			if cond.Status == v1.ConditionTrue {
-				return time.Since(cond.LastTransitionTime.Time), nil
-			}
-		}
-	}
-	return 0, nil
-}
-
-// refreshInstanceStateAfterInplaceUpdate refreshes instance state after inplace update is done
-func (ssc *defaultStatefulInstanceSetControl) refreshInstanceStateAfterInplaceUpdate(instance *workloadsv1alpha1.Instance) (bool, error) {
-	opts := &instanceinplace.UpdateOptions{}
-	opts = instanceinplace.SetOptionsDefaults(opts)
-
-	if opts.CheckInstanceUpdateCompleted(instance) != nil {
-		return false, nil
-	}
-
-	result := ssc.inplaceControl.Refresh(instance, opts)
-	return result.RefreshErr == nil, result.RefreshErr
 }
 
 // inPlaceUpdateInstance performs in-place update on an instance

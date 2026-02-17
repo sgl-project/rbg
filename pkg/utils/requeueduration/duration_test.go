@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testKey = "test-key"
+
 func TestDurationStore_PopFromEmpty(t *testing.T) {
 	store := &DurationStore{}
 
@@ -33,7 +35,7 @@ func TestDurationStore_PopFromEmpty(t *testing.T) {
 
 func TestDurationStore_PushAndPop(t *testing.T) {
 	store := &DurationStore{}
-	key := "test-key"
+	key := testKey
 	expectedDuration := 5 * time.Second
 
 	// Push duration
@@ -69,7 +71,7 @@ func TestDurationStore_MultipleKeys(t *testing.T) {
 
 func TestDurationStore_PushMultipleTimes(t *testing.T) {
 	store := &DurationStore{}
-	key := "test-key"
+	key := testKey
 
 	// Push multiple durations - should keep the shortest
 	store.Push(key, 10*time.Second)
@@ -216,7 +218,7 @@ func TestDuration_ConcurrentOperations(t *testing.T) {
 
 func TestDurationStore_InvalidTypeHandling(t *testing.T) {
 	store := &DurationStore{}
-	key := "test-key"
+	key := testKey
 
 	// Manually store an invalid type to test type assertion handling
 	store.store.Store(key, "invalid-type")

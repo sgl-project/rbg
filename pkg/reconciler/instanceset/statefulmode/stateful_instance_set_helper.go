@@ -278,8 +278,3 @@ func runForAllWithBreak(items interface{}, fn func(int) (bool, bool, error), mon
 	}
 	return false, nil
 }
-
-// getPodRevision returns the revision of the instance (for compatibility with existing code)
-func getPodRevision(instance *workloadsv1alpha1.Instance) string {
-	return getInstanceRevision(instance)
-}

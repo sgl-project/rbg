@@ -135,12 +135,8 @@ func (m *InstanceControllerRefManager) ClaimInstances(ctx context.Context, insta
 		// Check if already owned by this controller
 		controllerRef := metav1.GetControllerOf(obj)
 		if controllerRef != nil {
-			if controllerRef.UID == m.controller.GetUID() {
-				// Already owned
-				return true
-			}
-			// Owned by someone else
-			return false
+			// Already owned by this controller or owned by someone else
+			return controllerRef.UID == m.controller.GetUID()
 		}
 
 		// Orphan, try to adopt if it matches

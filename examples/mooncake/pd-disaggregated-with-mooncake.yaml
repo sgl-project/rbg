@@ -42,8 +42,8 @@ spec:
     - name: mooncake-store
       replicas: 3
       dependencies: [ "mooncake-master" ]
-      labels:
-        instance.rolebasedgroup.workloads.x-k8s.io/pattern: Deployment
+      annotations:
+        instance.rolebasedgroup.workloads.x-k8s.io/pattern: Stateless
       workload:
         apiVersion: workloads.x-k8s.io/v1alpha1
         kind: InstanceSet
