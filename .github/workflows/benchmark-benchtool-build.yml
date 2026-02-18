@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  build-push-benchtool:
+  build-push-benchmark-tool:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -35,23 +35,23 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.image_tag }}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Building benchtool image with genai-bench tag: $TAG"
+          echo "Building benchmark-tool image with genai-bench tag: $TAG"
 
-      - name: Build benchtool image
+      - name: Build benchmark-tool image
         env:
           TAG: ${{ steps.vars.outputs.tag }}
           IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          echo "Building benchtool image with tag: $TAG"
-          make docker-build-benchtool-genai
+          echo "Building benchmark-tool image with tag: $TAG"
+          make docker-build-benchmark-tool-genai
 
-      - name: Push benchtool image
+      - name: Push benchmark-tool image
         env:
           TAG: ${{ steps.vars.outputs.tag }}
           IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          echo "Pushing benchtool image with tag: $TAG"
-          make docker-push-benchtool-genai
+          echo "Pushing benchmark-tool image with tag: $TAG"
+          make docker-push-benchmark-tool-genai
 
       - name: Summary
         run: |
@@ -61,4 +61,4 @@ jobs:
           echo "- **Repository:** ${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Image Pushed" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-benchtool-genai:${{ steps.vars.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-benchmark-tool-genai:${{ steps.vars.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
