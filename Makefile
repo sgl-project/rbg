@@ -221,6 +221,9 @@ docker-push-benchmark-tool-genai: ## Push docker image for benchmark benchmark-t
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
 
+.PHONY: docker-benchmark-build
+docker-build: ${DOCKER_BENCHMARK_BUILD}
+
 .PHONY: docker-push-controller
 docker-push-controller:
 	docker push ${RBG_CONTROLLER_IMG}:${TAG}
@@ -235,6 +238,9 @@ docker-push-patio:
 
 .PHONY: docker-push
 docker-push: ${DOCKER_PUSH}
+
+.PHONY: docker-benchmark-push
+docker-push: ${DOCKER_BENCHMARK_PUSH}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
