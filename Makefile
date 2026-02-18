@@ -121,10 +121,14 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 # Build docker images
 DOCKER_BUILD := docker-build-controller
 DOCKER_BUILD += docker-build-crd-upgrader
+DOCKER_BENCHMARK_BUILD := docker-build-benchmark-dashboard
+DOCKER_BENCHMARK_BUILD += docker-build-benchmark-tool-genai
 
 # Push docker images
 DOCKER_PUSH := docker-push-controller
 DOCKER_PUSH += docker-push-crd-upgrader
+DOCKER_BENCHMARK_PUSH := docker-push-benchmark-dashboard
+DOCKER_BENCHMARK_PUSH += docker-push-benchmark-tool-genai
 
 GOPROXY    ?=
 GOPRIVATE  ?=
