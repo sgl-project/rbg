@@ -121,10 +121,14 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 # Build docker images
 DOCKER_BUILD := docker-build-controller
 DOCKER_BUILD += docker-build-crd-upgrader
+DOCKER_BUILD_BENCHMARK := docker-build-benchmark-dashboard
+DOCKER_BUILD_BENCHMARK += docker-build-benchmark-tool-genai
 
 # Push docker images
 DOCKER_PUSH := docker-push-controller
 DOCKER_PUSH += docker-push-crd-upgrader
+DOCKER_PUSH_BENCHMARK := docker-push-benchmark-dashboard
+DOCKER_PUSH_BENCHMARK += docker-push-benchmark-tool-genai
 
 GOPROXY    ?=
 GOPRIVATE  ?=
@@ -217,6 +221,9 @@ docker-push-benchmark-tool-genai: ## Push docker image for benchmark benchmark-t
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
 
+.PHONY: docker-build-benchmark
+docker-build-benchmark: ${DOCKER_BUILD_BENCHMARK}
+
 .PHONY: docker-push-controller
 docker-push-controller:
 	docker push ${RBG_CONTROLLER_IMG}:${TAG}
@@ -231,6 +238,9 @@ docker-push-patio:
 
 .PHONY: docker-push
 docker-push: ${DOCKER_PUSH}
+
+.PHONY: docker-push-benchmark
+docker-push-benchmark: ${DOCKER_PUSH_BENCHMARK}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
