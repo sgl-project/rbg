@@ -182,7 +182,7 @@ No additional flags. Lists all benchmark jobs sorted by creation time (oldest fi
 | `--experiment-base-dir` | - | PVC path containing experiment results (required) |
 | `--port` | `18888` | Local port for port-forward |
 | `--open-browser` | `true` | Automatically open browser |
-| `--image` | `rolebasedgroup/rbgs-benchmark-dashboard:nightly` | Container image for benchmark server |
+| `--image` | `rolebasedgroup/rbgs-benchmark-dashboard:v0.6.0` | Container image for benchmark server |
 
 ## PVC Path Format
 

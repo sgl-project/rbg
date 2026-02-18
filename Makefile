@@ -13,7 +13,7 @@ PATIO_DOCKERFILE ?= python/patio/Dockerfile
 BENCHMARK_DASHBOARD_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/dashboard/Dockerfile
 BENCHMARK_BENCHTOOL_DOCKERFILE ?= tools/benchmark/genai/Dockerfile
 
-VERSION ?= v0.5.0
+VERSION ?= v0.6.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
 TAG ?= ${VERSION}-${GIT_SHA}
 
