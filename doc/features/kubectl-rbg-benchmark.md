@@ -144,7 +144,7 @@ kubectl rbg llm benchmark dashboard \
 | `--api-key` | `rbg` | API key for model serving |
 | `--api-model-name` | auto | Model name (defaults to RBG name) |
 | `--experiment-folder-name` | auto | Folder name for results (defaults to job name) |
-| `--image` | `rolebasedgroup/rbgs-benchtool-genai:v0.1.0` | Container image for benchmark job |
+| `--image` | `rolebasedgroup/rbgs-benchmark-tool-genai:v0.6.0` | Container image for benchmark job |
 | `--cpu-request` | `1` | CPU request |
 | `--cpu-limit` | `2` | CPU limit |
 | `--memory-request` | `2Gi` | Memory request |
