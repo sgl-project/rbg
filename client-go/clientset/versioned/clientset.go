@@ -25,22 +25,30 @@ import (
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/client-go/clientset/versioned/typed/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/client-go/clientset/versioned/typed/workloads/v1alpha2"
 )
 
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	WorkloadsV1alpha1() workloadsv1alpha1.WorkloadsV1alpha1Interface
+	WorkloadsV1alpha2() workloadsv1alpha2.WorkloadsV1alpha2Interface
 }
 
 // Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
 	workloadsV1alpha1 *workloadsv1alpha1.WorkloadsV1alpha1Client
+	workloadsV1alpha2 *workloadsv1alpha2.WorkloadsV1alpha2Client
 }
 
 // WorkloadsV1alpha1 retrieves the WorkloadsV1alpha1Client
 func (c *Clientset) WorkloadsV1alpha1() workloadsv1alpha1.WorkloadsV1alpha1Interface {
 	return c.workloadsV1alpha1
+}
+
+// WorkloadsV1alpha2 retrieves the WorkloadsV1alpha2Client
+func (c *Clientset) WorkloadsV1alpha2() workloadsv1alpha2.WorkloadsV1alpha2Interface {
+	return c.workloadsV1alpha2
 }
 
 // Discovery retrieves the DiscoveryClient
@@ -91,6 +99,10 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.workloadsV1alpha2, err = workloadsv1alpha2.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 
 	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
@@ -113,6 +125,7 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.workloadsV1alpha1 = workloadsv1alpha1.New(c)
+	cs.workloadsV1alpha2 = workloadsv1alpha2.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &cs

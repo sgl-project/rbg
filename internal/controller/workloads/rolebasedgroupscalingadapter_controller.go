@@ -106,7 +106,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		}
 	}
 
-	if !scale.IsScalingAdapterManagedByRBG(rbgScalingAdapter, rbg) {
+	if !scale.IsScalingAdapterManagedByRBGV1(rbgScalingAdapter, rbg) {
 		logger.Info(
 			"Skip to reconcile the scaling adapter which is not managed by RBG-controller", "rbgScalingAdapterName",
 			rbgScalingAdapter.Name,

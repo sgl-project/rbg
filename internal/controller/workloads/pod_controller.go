@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
@@ -64,6 +65,12 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 	logger := log.FromContext(ctx)
 	logger.Info("Recreating RoleBasedGroup")
 
+	// Convert v1alpha1 to v1alpha2 for dependency and reconciler packages
+	rbgV2 := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := rbg.ConvertTo(rbgV2); err != nil {
+		return fmt.Errorf("failed to convert v1alpha1 to v1alpha2: %w", err)
+	}
+
 	// 1. update rbg status
 	if err := r.setRestartCondition(ctx, rbg, false); err != nil {
 		return err
@@ -71,7 +78,7 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 
 	// 2. sort role
 	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
-	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
+	sortedRoles, err := dependencyManager.SortRoles(ctx, rbgV2)
 	if err != nil {
 		return err
 	}
@@ -85,7 +92,7 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 				continue
 			}
 			// 3. recreate role
-			if err := recon.RecreateWorkload(ctx, rbg, role); err != nil {
+			if err := recon.RecreateWorkload(ctx, rbgV2, role); err != nil {
 				errs = errors.Join(errs, err)
 				continue
 			}

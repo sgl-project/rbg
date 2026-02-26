@@ -31,7 +31,7 @@ func (f *Framework) ExpectRBGRevisionEqual(rbg *v1alpha1.RoleBasedGroup) {
 			current := pkgutils.GetHighestRevision(revisions)
 			gomega.Expect(current).ToNot(gomega.BeNil())
 
-			expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+			expect, err := pkgutils.NewRevisionForV1Alpha1(f.Ctx, f.Client, rbg, nil)
 			if err != nil {
 				logger.Error(err, "failed to get expect revision")
 				return false

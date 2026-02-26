@@ -15,6 +15,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -39,8 +40,8 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	podLabels map[string]string,
 	podTmpls ...corev1.PodTemplateSpec,
 ) (*coreapplyv1.PodTemplateSpecApplyConfiguration, error) {
@@ -61,9 +62,9 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 				return nil, fmt.Errorf("failed to apply templatePatch: %w", err)
 			}
 			podTemplateSpec = merged
-		} else if role.TemplateSource.Template != nil {
+		} else if role.GetTemplate() != nil {
 			// Traditional mode: use role.Template directly (pointer type after migration)
-			podTemplateSpec = *role.TemplateSource.Template.DeepCopy()
+			podTemplateSpec = *role.GetTemplate().DeepCopy()
 		}
 		// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
 	}

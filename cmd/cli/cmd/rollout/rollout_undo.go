@@ -27,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -114,10 +115,23 @@ func runRolloutUndo(ctx context.Context, rbgClient versioned.Interface, k8sClien
 }
 
 func rollback(ctx context.Context, rbgClient versioned.Interface, rbg *workloadsv1alpha1.RoleBasedGroup, specificRevision *appsv1.ControllerRevision) error {
-	newRbg, err := utils.ApplyRevision(rbg, specificRevision)
+	// Convert v1alpha1 to v1alpha2 for ApplyRevision
+	rbgV2 := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := rbg.ConvertTo(rbgV2); err != nil {
+		return fmt.Errorf("failed to convert v1alpha1 to v1alpha2: %w", err)
+	}
+
+	newRbgV2, err := utils.ApplyRevision(rbgV2, specificRevision)
 	if err != nil {
 		return err
 	}
+
+	// Convert back to v1alpha1 for update
+	newRbg := &workloadsv1alpha1.RoleBasedGroup{}
+	if err := newRbg.ConvertFrom(newRbgV2); err != nil {
+		return fmt.Errorf("failed to convert v1alpha2 to v1alpha1: %w", err)
+	}
+
 	// todo: use ssa to update
 	_, err = rbgClient.WorkloadsV1alpha1().RoleBasedGroups(rbg.Namespace).Update(ctx, newRbg, metav1.UpdateOptions{})
 	if err == nil {

@@ -11,6 +11,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/wrappers"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,12 +53,12 @@ func TestDefaultInjector_InjectSidecar(t *testing.T) {
 			},
 		).Build()
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name: "test",
-					EngineRuntimes: []workloadsv1alpha1.EngineRuntime{
+					EngineRuntimes: []workloadsv1alpha2.EngineRuntime{
 						{
 							ProfileName: "patio-runtime",
 							Containers: []corev1.Container{
@@ -225,14 +226,14 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		rbg             *workloadsv1alpha1.RoleBasedGroup
+		rbg             *workloadsv1alpha2.RoleBasedGroup
 		initialPodSpec  *corev1.PodTemplateSpec
 		expectedVolumes []corev1.Volume
 		expectedMounts  []corev1.VolumeMount
 	}{
 		{
 			name: "Inject config volume and mount when they don't exist",
-			rbg:  wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			rbg:  wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj(),
 			// Pod spec without config volume or mount
 			initialPodSpec: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -274,7 +275,7 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 		},
 		{
 			name: "Skip injection when volume and mount already exist",
-			rbg:  wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			rbg:  wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj(),
 			// Pod spec that already has the config volume and mount
 			initialPodSpec: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -381,21 +382,21 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		rbg             *workloadsv1alpha1.RoleBasedGroup
-		role            *workloadsv1alpha1.RoleSpec
+		rbg             *workloadsv1alpha2.RoleBasedGroup
+		role            *workloadsv1alpha2.RoleSpec
 		initialPodSpec  *corev1.PodTemplateSpec
 		expectedEnvVars []corev1.EnvVar
 	}{
 		{
 			name: "Inject environment variables when they don't exist",
 			// RBG with role that will generate some environment variables
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(3)),
@@ -403,7 +404,7 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: ptr.To(int32(3)),
 			},
@@ -433,13 +434,13 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 		{
 			name: "Merge environment variables preserving existing ones",
 			// RBG with role that will generate some environment variables
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(3)),
@@ -447,7 +448,7 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: ptr.To(int32(3)),
 			},

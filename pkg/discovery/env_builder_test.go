@@ -7,26 +7,26 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestEnvBuilder_Build(t *testing.T) {
 	tests := []struct {
 		name     string
-		rbg      *workloadsv1alpha1.RoleBasedGroup
-		role     *workloadsv1alpha1.RoleSpec
+		rbg      *workloadsv1alpha2.RoleBasedGroup
+		role     *workloadsv1alpha2.RoleSpec
 		expected []corev1.EnvVar
 	}{
 		{
 			name: "StatefulSet role",
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-group",
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "stateful-role",
-				Workload: workloadsv1alpha1.WorkloadSpec{
+				Workload: workloadsv1alpha2.WorkloadSpec{
 					APIVersion: "apps/v1",
 					Kind:       "StatefulSet",
 				},
@@ -52,14 +52,14 @@ func TestEnvBuilder_Build(t *testing.T) {
 		},
 		{
 			name: "LeaderWorkerSet role",
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-group",
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "lws-role",
-				Workload: workloadsv1alpha1.WorkloadSpec{
+				Workload: workloadsv1alpha2.WorkloadSpec{
 					APIVersion: "leaderworkerset.x-k8s.io/v1",
 					Kind:       "LeaderWorkerSet",
 				},
@@ -85,14 +85,14 @@ func TestEnvBuilder_Build(t *testing.T) {
 		},
 		{
 			name: "Deployment role",
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-group",
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "deployment-role",
-				Workload: workloadsv1alpha1.WorkloadSpec{
+				Workload: workloadsv1alpha2.WorkloadSpec{
 					APIVersion: "apps/v1",
 					Kind:       "Deployment",
 				},
@@ -143,20 +143,20 @@ func TestEnvBuilder_Build(t *testing.T) {
 func TestEnvBuilder_buildLocalRoleVars(t *testing.T) {
 	tests := []struct {
 		name     string
-		rbg      *workloadsv1alpha1.RoleBasedGroup
-		role     *workloadsv1alpha1.RoleSpec
+		rbg      *workloadsv1alpha2.RoleBasedGroup
+		role     *workloadsv1alpha2.RoleSpec
 		expected []corev1.EnvVar
 	}{
 		{
 			name: "StatefulSet role vars",
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-group",
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "stateful-role",
-				Workload: workloadsv1alpha1.WorkloadSpec{
+				Workload: workloadsv1alpha2.WorkloadSpec{
 					APIVersion: "apps/v1",
 					Kind:       "StatefulSet",
 				},

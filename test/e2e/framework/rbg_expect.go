@@ -40,7 +40,7 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 
 	// check controllerrevision
 	f.ExpectRBGRevisionEqual(rbg)
-	expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+	expect, err := pkgutils.NewRevisionForV1Alpha1(f.Ctx, f.Client, rbg, nil)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	expectedRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(expect)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())

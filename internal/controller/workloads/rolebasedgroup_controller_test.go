@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
@@ -699,8 +700,9 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)
 	_ = workloadsv1alpha1.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -708,9 +710,9 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 		},
 	}
 
-	roleSpec := &workloadsv1alpha1.RoleSpec{
+	roleSpec := &workloadsv1alpha2.RoleSpec{
 		Name: "test-role",
-		ScalingAdapter: &workloadsv1alpha1.ScalingAdapter{
+		ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
 			Enable: true,
 		},
 	}
@@ -792,8 +794,9 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)
 	_ = workloadsv1alpha1.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj()
 
 	tests := []struct {
 		name        string
@@ -1063,31 +1066,31 @@ func Test_getFastestAndSlowestRole_EdgeCases(t *testing.T) {
 func Test_mergeStrategyRollingUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
-		strategiesA map[string]workloadsv1alpha1.RollingUpdate
-		strategiesB map[string]workloadsv1alpha1.RollingUpdate
-		expected    map[string]workloadsv1alpha1.RollingUpdate
+		strategiesA map[string]workloadsv1alpha2.RollingUpdate
+		strategiesB map[string]workloadsv1alpha2.RollingUpdate
+		expected    map[string]workloadsv1alpha2.RollingUpdate
 	}{
 		{
 			name:        "merge empty maps",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{},
-			expected:    map[string]workloadsv1alpha1.RollingUpdate{},
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{},
+			expected:    map[string]workloadsv1alpha2.RollingUpdate{},
 		},
 		{
 			name: "merge with no overlap",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 			},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
 				"role2": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
 					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
-			expected: map[string]workloadsv1alpha1.RollingUpdate{
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      ptr.To(intstr.FromInt32(10)),
@@ -1100,19 +1103,19 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 		},
 		{
 			name: "merge with overlap, B has smaller maxUnavailable",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
 					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
-			expected: map[string]workloadsv1alpha1.RollingUpdate{
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)), // Smaller value
 					Partition:      ptr.To(intstr.FromInt32(5)), // Larger partition
@@ -1121,19 +1124,19 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 		},
 		{
 			name: "merge with overlap, B has larger partition",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 			},
-			expected: map[string]workloadsv1alpha1.RollingUpdate{
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      ptr.To(intstr.FromInt32(10)), // Larger partition
@@ -1142,19 +1145,19 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 		},
 		{
 			name: "merge with percentage maxUnavailable",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromString("20%")),
 					Partition:      ptr.To(intstr.FromInt32(5)),
 				},
 			},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromString("10%")),
 					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
-			expected: map[string]workloadsv1alpha1.RollingUpdate{
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromString("10%")), // Smaller value
 					Partition:      ptr.To(intstr.FromInt32(5)),      // Larger partition
@@ -1163,19 +1166,19 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 		},
 		{
 			name: "merge with nil partition",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
 					Partition:      nil,
 				},
 			},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
 					Partition:      ptr.To(intstr.FromInt32(10)),
 				},
 			},
-			expected: map[string]workloadsv1alpha1.RollingUpdate{
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
 					Partition:      ptr.To(intstr.FromInt32(10)), // B's partition
@@ -1184,7 +1187,7 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 		},
 		{
 			name: "merge multiple roles",
-			strategiesA: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
 					Partition:      ptr.To(intstr.FromInt32(5)),
@@ -1194,7 +1197,7 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 					Partition:      ptr.To(intstr.FromInt32(3)),
 				},
 			},
-			strategiesB: map[string]workloadsv1alpha1.RollingUpdate{
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
 				"role2": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
 					Partition:      ptr.To(intstr.FromInt32(10)),
@@ -1204,7 +1207,7 @@ func Test_mergeStrategyRollingUpdate(t *testing.T) {
 					Partition:      ptr.To(intstr.FromInt32(8)),
 				},
 			},
-			expected: map[string]workloadsv1alpha1.RollingUpdate{
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
 				"role1": {
 					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
 					Partition:      ptr.To(intstr.FromInt32(5)),
@@ -1361,21 +1364,21 @@ func ptrToIntStr(v intstr.IntOrString) *intstr.IntOrString {
 func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) {
 	tests := []struct {
 		name          string
-		coordinations []workloadsv1alpha1.Coordination
-		roles         []workloadsv1alpha1.RoleSpec
-		roleStatuses  []workloadsv1alpha1.RoleStatus
+		coordinations []workloadsv1alpha2.Coordination
+		roles         []workloadsv1alpha2.RoleSpec
+		roleStatuses  []workloadsv1alpha2.RoleStatus
 		pods          []*corev1.Pod
 		wantTargets   map[string]int32
 		wantErr       bool
 	}{
 		{
 			name: "two coordinations - no overlapping roles",
-			coordinations: []workloadsv1alpha1.Coordination{
+			coordinations: []workloadsv1alpha2.Coordination{
 				{
 					Name:  "coord1",
 					Roles: []string{"prefill", "decode"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("5%"),
 						},
 					},
@@ -1383,20 +1386,20 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				{
 					Name:  "coord2",
 					Roles: []string{"router", "worker"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("10%"),
 						},
 					},
 				},
 			},
-			roles: []workloadsv1alpha1.RoleSpec{
+			roles: []workloadsv1alpha2.RoleSpec{
 				{Name: "prefill", Replicas: ptr.To(int32(300))},
 				{Name: "decode", Replicas: ptr.To(int32(100))},
 				{Name: "router", Replicas: ptr.To(int32(50))},
 				{Name: "worker", Replicas: ptr.To(int32(100))},
 			},
-			roleStatuses: []workloadsv1alpha1.RoleStatus{
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
 				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
 				{Name: "router", Replicas: 0, ReadyReplicas: 0},
@@ -1412,12 +1415,12 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 		},
 		{
 			name: "two coordinations - with overlapping roles - take minimum",
-			coordinations: []workloadsv1alpha1.Coordination{
+			coordinations: []workloadsv1alpha2.Coordination{
 				{
 					Name:  "coord1",
 					Roles: []string{"prefill", "decode"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("5%"),
 						},
 					},
@@ -1425,19 +1428,19 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				{
 					Name:  "coord2",
 					Roles: []string{"prefill", "worker"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("10%"),
 						},
 					},
 				},
 			},
-			roles: []workloadsv1alpha1.RoleSpec{
+			roles: []workloadsv1alpha2.RoleSpec{
 				{Name: "prefill", Replicas: ptr.To(int32(300))},
 				{Name: "decode", Replicas: ptr.To(int32(100))},
 				{Name: "worker", Replicas: ptr.To(int32(100))},
 			},
-			roleStatuses: []workloadsv1alpha1.RoleStatus{
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
 				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
 				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
@@ -1454,12 +1457,12 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 		},
 		{
 			name: "three coordinations - complex overlapping",
-			coordinations: []workloadsv1alpha1.Coordination{
+			coordinations: []workloadsv1alpha2.Coordination{
 				{
 					Name:  "coord1",
 					Roles: []string{"prefill", "decode"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("5%"),
 						},
 					},
@@ -1467,8 +1470,8 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				{
 					Name:  "coord2",
 					Roles: []string{"decode", "router"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("8%"),
 						},
 					},
@@ -1476,20 +1479,20 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				{
 					Name:  "coord3",
 					Roles: []string{"router", "worker"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew: ptr.To("10%"),
 						},
 					},
 				},
 			},
-			roles: []workloadsv1alpha1.RoleSpec{
+			roles: []workloadsv1alpha2.RoleSpec{
 				{Name: "prefill", Replicas: ptr.To(int32(200))},
 				{Name: "decode", Replicas: ptr.To(int32(100))},
 				{Name: "router", Replicas: ptr.To(int32(50))},
 				{Name: "worker", Replicas: ptr.To(int32(100))},
 			},
-			roleStatuses: []workloadsv1alpha1.RoleStatus{
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
 				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
 				{Name: "router", Replicas: 0, ReadyReplicas: 0},
@@ -1510,51 +1513,51 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 		},
 		{
 			name: "two coordinations - partial overlap with progression",
-			coordinations: []workloadsv1alpha1.Coordination{
+			coordinations: []workloadsv1alpha2.Coordination{
 				{
 					Name:  "coord1",
 					Roles: []string{"prefill", "decode"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew:     ptr.To("5%"),
-							Progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+							Progression: ptr.To(workloadsv1alpha2.OrderScheduled),
 						},
 					},
 				},
 				{
 					Name:  "coord2",
 					Roles: []string{"decode", "router"},
-					Strategy: &workloadsv1alpha1.CoordinationStrategy{
-						Scaling: &workloadsv1alpha1.CoordinationScaling{
+					Strategy: &workloadsv1alpha2.CoordinationStrategy{
+						Scaling: &workloadsv1alpha2.CoordinationScaling{
 							MaxSkew:     ptr.To("10%"),
-							Progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+							Progression: ptr.To(workloadsv1alpha2.OrderScheduled),
 						},
 					},
 				},
 			},
-			roles: []workloadsv1alpha1.RoleSpec{
+			roles: []workloadsv1alpha2.RoleSpec{
 				{Name: "prefill", Replicas: ptr.To(int32(100))},
 				{Name: "decode", Replicas: ptr.To(int32(100))},
 				{Name: "router", Replicas: ptr.To(int32(50))},
 			},
-			roleStatuses: []workloadsv1alpha1.RoleStatus{
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "prefill", Replicas: 5, ReadyReplicas: 5},
 				{Name: "decode", Replicas: 5, ReadyReplicas: 5},
 				{Name: "router", Replicas: 0, ReadyReplicas: 0},
 			},
 			pods: []*corev1.Pod{
 				// prefill pods - all scheduled
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-2", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-3", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-4", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-2", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-3", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-4", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
 				// decode pods - all scheduled
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-0", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-1", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-2", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-3", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-4", Labels: map[string]string{workloadsv1alpha1.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-0", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-1", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-2", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-3", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-4", Labels: map[string]string{workloadsv1alpha2.SetRoleLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
 			},
 			wantTargets: map[string]int32{
 				// All pods scheduled, can proceed to next batch
@@ -1575,19 +1578,19 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 			// Setup scheme
 			scheme := runtime.NewScheme()
 			_ = clientgoscheme.AddToScheme(scheme)
-			_ = workloadsv1alpha1.AddToScheme(scheme)
+			_ = workloadsv1alpha2.AddToScheme(scheme)
 
 			// Build RBG
-			rbg := &workloadsv1alpha1.RoleBasedGroup{
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 					Roles:                    tt.roles,
 					CoordinationRequirements: tt.coordinations,
 				},
-				Status: workloadsv1alpha1.RoleBasedGroupStatus{
+				Status: workloadsv1alpha2.RoleBasedGroupStatus{
 					RoleStatuses: tt.roleStatuses,
 				},
 			}
@@ -1599,7 +1602,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				if pod.Labels == nil {
 					pod.Labels = make(map[string]string)
 				}
-				pod.Labels[workloadsv1alpha1.SetNameLabelKey] = "test-rbg"
+				pod.Labels[workloadsv1alpha2.SetNameLabelKey] = "test-rbg"
 				objects = append(objects, pod)
 			}
 

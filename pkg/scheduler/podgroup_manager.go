@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
@@ -38,7 +38,7 @@ func NewPodGroupScheduler(client client.Client) *PodGroupScheduler {
 	return &PodGroupScheduler{client: client}
 }
 
-func (r *PodGroupScheduler) Reconcile(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, runtimeController *builder.TypedBuilder[reconcile.Request], watchedWorkload *sync.Map, apiReader client.Reader) error {
+func (r *PodGroupScheduler) Reconcile(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, runtimeController *builder.TypedBuilder[reconcile.Request], watchedWorkload *sync.Map, apiReader client.Reader) error {
 	// not support change podGroup scheduler
 	if rbg.IsKubeGangScheduling() {
 		// check and load kube podGroup CRD
@@ -69,7 +69,7 @@ func (r *PodGroupScheduler) Reconcile(ctx context.Context, rbg *workloadsv1alpha
 	}
 }
 
-func InjectPodGroupProtocol(rbg *workloadsv1alpha.RoleBasedGroup, pts *coreapplyv1.PodTemplateSpecApplyConfiguration) {
+func InjectPodGroupProtocol(rbg *workloadsv1alpha2.RoleBasedGroup, pts *coreapplyv1.PodTemplateSpecApplyConfiguration) {
 	if rbg.IsKubeGangScheduling() {
 		pts.WithLabels(map[string]string{KubePodGroupLabelKey: rbg.Name})
 	} else if rbg.IsVolcanoGangScheduling() {
@@ -77,7 +77,7 @@ func InjectPodGroupProtocol(rbg *workloadsv1alpha.RoleBasedGroup, pts *coreapply
 	}
 }
 
-func (r *PodGroupScheduler) createOrUpdateVolcanoPodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) error {
+func (r *PodGroupScheduler) createOrUpdateVolcanoPodGroup(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
 	podGroup := &volcanoschedulingv1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -129,7 +129,7 @@ func (r *PodGroupScheduler) createOrUpdateVolcanoPodGroup(ctx context.Context, r
 	return nil
 }
 
-func (r *PodGroupScheduler) createOrUpdateKubePodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup) error {
+func (r *PodGroupScheduler) createOrUpdateKubePodGroup(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
 	gvk := utils.GetRbgGVK()
 	podGroup := &schedv1alpha1.PodGroup{
@@ -185,7 +185,7 @@ func (r *PodGroupScheduler) createOrUpdateKubePodGroup(ctx context.Context, rbg 
 	return nil
 }
 
-func (r *PodGroupScheduler) deletePodGroup(ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, watchedWorkload *sync.Map) error {
+func (r *PodGroupScheduler) deletePodGroup(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, watchedWorkload *sync.Map) error {
 	if _, podGroupExist := watchedWorkload.Load(KubePodGroupCrdName); podGroupExist {
 		kubePodGroup := &schedv1alpha1.PodGroup{}
 		if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, kubePodGroup); err == nil {

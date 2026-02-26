@@ -37,6 +37,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -50,6 +51,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
@@ -99,7 +102,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	logger := log.FromContext(ctx)
 
 	// Fetch the RoleBasedGroup instance
-	rbg := &workloadsv1alpha1.RoleBasedGroup{}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
 	if err := r.client.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbg); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Object not found, might be deleted after reconcile request.
@@ -172,7 +175,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (map[string]string, error) {
+func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) (map[string]string, error) {
 	logger := log.FromContext(ctx)
 
 	currentRevision, err := r.getCurrentRevision(ctx, rbg)
@@ -207,16 +210,16 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 	return expectedRolesRevisionHash, nil
 }
 
-func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
 	// Validate RoleTemplates
-	if err := workloadsv1alpha1.ValidateRoleTemplates(rbg); err != nil {
+	if err := workloadsv1alpha2.ValidateRoleTemplates(rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
 		return errors.Wrap(err, "invalid role templates")
 	}
 
 	// Validate template references in roles
-	if err := workloadsv1alpha1.ValidateRoleTemplateReferences(rbg); err != nil {
+	if err := workloadsv1alpha2.ValidateRoleTemplateReferences(rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidTemplateRef, err.Error())
 		return errors.Wrap(err, "invalid template references")
 	}
@@ -251,10 +254,10 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 
 func (r *RoleBasedGroupReconciler) reconcileRoles(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
 	expectedRolesRevisionHash map[string]string,
 	scalingTargets map[string]int32,
-	rollingUpdateStrategies map[string]workloadsv1alpha1.RollingUpdate,
+	rollingUpdateStrategies map[string]workloadsv1alpha2.RollingUpdate,
 ) error {
 	// Process roles in dependency order
 	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
@@ -300,11 +303,11 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 
 func (r *RoleBasedGroupReconciler) reconcileSingleRole(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	expectedRolesRevisionHash map[string]string,
 	scalingTargets map[string]int32,
-	rollingUpdateStrategies map[string]workloadsv1alpha1.RollingUpdate,
+	rollingUpdateStrategies map[string]workloadsv1alpha2.RollingUpdate,
 ) error {
 	logger := log.FromContext(ctx)
 
@@ -320,7 +323,7 @@ func (r *RoleBasedGroupReconciler) reconcileSingleRole(
 	}
 
 	// Get rolling update strategy
-	var rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate
+	var rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate
 	if rollout, ok := rollingUpdateStrategies[role.Name]; ok {
 		rollingUpdateStrategy = &rollout
 	}
@@ -360,7 +363,7 @@ func (r *RoleBasedGroupReconciler) reconcileSingleRole(
 	return nil
 }
 
-func (r *RoleBasedGroupReconciler) cleanup(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *RoleBasedGroupReconciler) cleanup(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	// Delete orphan roles
 	if err := r.deleteOrphanRoles(ctx, rbg); err != nil {
 		r.recorder.Eventf(
@@ -384,7 +387,7 @@ func (r *RoleBasedGroupReconciler) cleanup(ctx context.Context, rbg *workloadsv1
 
 func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 	ctx context.Context,
-	workloadSpec workloadsv1alpha1.WorkloadSpec,
+	workloadSpec workloadsv1alpha2.WorkloadSpec,
 ) (reconciler.WorkloadReconciler, error) {
 	workloadType := workloadSpec.String()
 
@@ -421,10 +424,10 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 
 func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-) ([]workloadsv1alpha1.RoleStatus, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) ([]workloadsv1alpha2.RoleStatus, error) {
 	var updateStatus bool
-	roleStatuses := make([]workloadsv1alpha1.RoleStatus, 0, len(rbg.Spec.Roles))
+	roleStatuses := make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
 
 	for _, role := range rbg.Spec.Roles {
 		logger := log.FromContext(ctx)
@@ -468,7 +471,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	return roleStatuses, nil
 }
 
-func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	errs := make([]error, 0)
 	deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
 	if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
@@ -498,11 +501,11 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 }
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleStatuses []workloadsv1alpha1.RoleStatus,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus,
 ) error {
 	// update ready condition
 	var rbgReady = true
-	statusMap := make(map[string]workloadsv1alpha1.RoleStatus, len(roleStatuses))
+	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(roleStatuses))
 	for _, rs := range roleStatuses {
 		statusMap[rs.Name] = rs
 	}
@@ -519,7 +522,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	var readyCondition metav1.Condition
 	if rbgReady {
 		readyCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha1.RoleBasedGroupReady),
+			Type:               string(workloadsv1alpha2.RoleBasedGroupReady),
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "AllRolesReady",
@@ -527,7 +530,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	} else {
 		readyCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha1.RoleBasedGroupReady),
+			Type:               string(workloadsv1alpha2.RoleBasedGroupReady),
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "RoleNotReady",
@@ -535,7 +538,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
-	setCondition(rbg, readyCondition)
+	setConditionV2(rbg, readyCondition)
 	rbg.Status.ObservedGeneration = rbg.Generation
 
 	// update role status
@@ -557,14 +560,14 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	// update rbg status
-	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
+	rbgApplyConfig := ToRBGApplyConfigurationForStatusV2(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 
 }
 
 func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, roleSpec *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleSpec *workloadsv1alpha2.RoleSpec,
 ) error {
 	logger := log.FromContext(ctx)
 	roleName := roleSpec.Name
@@ -618,10 +621,10 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 
 	return r.client.Create(ctx, rbgScalingAdapter)
 }
-func (r *RoleBasedGroupReconciler) getCurrentRevision(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) (*appsv1.ControllerRevision, error) {
+func (r *RoleBasedGroupReconciler) getCurrentRevision(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) (*appsv1.ControllerRevision, error) {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			workloadsv1alpha2.SetNameLabelKey: rbg.Name,
 		},
 	})
 	if err != nil {
@@ -636,7 +639,7 @@ func (r *RoleBasedGroupReconciler) getCurrentRevision(ctx context.Context, rbg *
 }
 
 func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	// list scalingAdapter managed by rbg
@@ -645,7 +648,7 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 		context.Background(), scalingAdapterList, client.InNamespace(rbg.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				workloadsv1alpha2.SetNameLabelKey: rbg.Name,
 			},
 		),
 	); err != nil {
@@ -682,7 +685,7 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	runtimeController = ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
-		For(&workloadsv1alpha1.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
+		For(&workloadsv1alpha2.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
 		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&workloadsv1alpha1.InstanceSet{}, builder.WithPredicates(WorkloadPredicate())).
@@ -726,9 +729,9 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 // handleCoordinationStrategies calculates coordination scaling targets and rolling update strategies.
 func (r *RoleBasedGroupReconciler) handleCoordinationStrategies(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	roleStatuses []workloadsv1alpha1.RoleStatus,
-) (map[string]int32, map[string]workloadsv1alpha1.RollingUpdate, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
+) (map[string]int32, map[string]workloadsv1alpha2.RollingUpdate, error) {
 	// Calculate target replicas for coordination scaling
 	scalingTargets, err := r.CalculateScalingForAllCoordination(ctx, rbg, roleStatuses)
 	if err != nil {
@@ -755,8 +758,8 @@ func (r *RoleBasedGroupReconciler) handleCoordinationStrategies(
 // CalculateScalingForAllCoordination calculates target replicas for each role based on coordination scaling strategies.
 func (r *RoleBasedGroupReconciler) CalculateScalingForAllCoordination(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	roleStatuses []workloadsv1alpha1.RoleStatus,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
 ) (map[string]int32, error) {
 	logger := log.FromContext(ctx)
 	if rbg == nil {
@@ -843,13 +846,13 @@ func (r *RoleBasedGroupReconciler) CalculateScalingForAllCoordination(
 // getScheduledReplicas queries the number of scheduled pods (with nodeName) for a given role.
 func (r *RoleBasedGroupReconciler) getScheduledReplicas(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
 	roleName string,
 ) (int32, error) {
 	podList := &corev1.PodList{}
 	labelSelector := client.MatchingLabels{
-		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		workloadsv1alpha1.SetRoleLabelKey: roleName,
+		workloadsv1alpha2.SetNameLabelKey: rbg.Name,
+		workloadsv1alpha2.SetRoleLabelKey: roleName,
 	}
 
 	if err := r.client.List(ctx, podList, client.InNamespace(rbg.Namespace), labelSelector); err != nil {
@@ -867,10 +870,10 @@ func (r *RoleBasedGroupReconciler) getScheduledReplicas(
 }
 
 func (r *RoleBasedGroupReconciler) CalculateRollingUpdateForAllCoordination(
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	roleStatuses []workloadsv1alpha1.RoleStatus,
-) (map[string]workloadsv1alpha1.RollingUpdate, error) {
-	var strategyRollingUpdate map[string]workloadsv1alpha1.RollingUpdate
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
+) (map[string]workloadsv1alpha2.RollingUpdate, error) {
+	var strategyRollingUpdate map[string]workloadsv1alpha2.RollingUpdate
 	for _, coordination := range rbg.Spec.CoordinationRequirements {
 		strategyByCoord, err := r.calculateRollingUpdateForCoordination(rbg, &coordination, roleStatuses)
 		if err != nil {
@@ -882,10 +885,10 @@ func (r *RoleBasedGroupReconciler) CalculateRollingUpdateForAllCoordination(
 }
 
 func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	coordination *workloadsv1alpha1.Coordination,
-	roleStatuses []workloadsv1alpha1.RoleStatus,
-) (map[string]workloadsv1alpha1.RollingUpdate, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	coordination *workloadsv1alpha2.Coordination,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
+) (map[string]workloadsv1alpha2.RollingUpdate, error) {
 	if coordination == nil ||
 		coordination.Strategy == nil ||
 		coordination.Strategy.RollingUpdate == nil ||
@@ -902,12 +905,12 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 	}
 
 	// Initialize the maxUnavailable and partition.
-	strategyRollingUpdate := make(map[string]workloadsv1alpha1.RollingUpdate, len(rbg.Spec.Roles))
+	strategyRollingUpdate := make(map[string]workloadsv1alpha2.RollingUpdate, len(rbg.Spec.Roles))
 	for _, role := range rbg.Spec.Roles {
 		if !coordinationRoles.Has(role.Name) {
 			continue
 		}
-		strategy := workloadsv1alpha1.RollingUpdate{}
+		strategy := workloadsv1alpha2.RollingUpdate{}
 		if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
 			strategy = *(role.RolloutStrategy.RollingUpdate.DeepCopy())
 		}
@@ -967,9 +970,9 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForCoordination(
 	return strategyRollingUpdate, nil
 }
 
-func CalculateNextRollingTarget(rbg *workloadsv1alpha1.RoleBasedGroup,
-	coordination *workloadsv1alpha1.Coordination,
-	roleStatuses []workloadsv1alpha1.RoleStatus,
+func CalculateNextRollingTarget(rbg *workloadsv1alpha2.RoleBasedGroup,
+	coordination *workloadsv1alpha2.Coordination,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
 	coordinationRoles sets.Set[string],
 ) map[string]int32 {
 
@@ -1062,8 +1065,8 @@ func getFastestAndSlowestRole(coordinationRoles sets.Set[string], desiredReplica
 	return roles[coordinationRoles.Len()-1], roles[0]
 }
 
-func mergeStrategyRollingUpdate(strategiesA, strategiesB map[string]workloadsv1alpha1.RollingUpdate) map[string]workloadsv1alpha1.RollingUpdate {
-	merged := make(map[string]workloadsv1alpha1.RollingUpdate, len(strategiesA))
+func mergeStrategyRollingUpdate(strategiesA, strategiesB map[string]workloadsv1alpha2.RollingUpdate) map[string]workloadsv1alpha2.RollingUpdate {
+	merged := make(map[string]workloadsv1alpha2.RollingUpdate, len(strategiesA))
 	for role, strategyA := range strategiesA {
 		merged[role] = strategyA
 	}
@@ -1128,7 +1131,7 @@ func calculateCoordinationUpdatedReplicasBound(maxSkew intstr.IntOrString, refUp
 func RBGPredicate() predicate.Funcs {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			_, ok := e.Object.(*workloadsv1alpha1.RoleBasedGroup)
+			_, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok {
 				ctrl.Log.Info("enqueue: rbg create event", "rbg", klog.KObj(e.Object))
 				return true
@@ -1136,8 +1139,8 @@ func RBGPredicate() predicate.Funcs {
 			return false
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha1.RoleBasedGroup)
-			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha1.RoleBasedGroup)
+			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
+			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok1 && ok2 {
 				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
 					ctrl.Log.Info("enqueue: rbg update event", "rbg", klog.KObj(e.ObjectOld))
@@ -1147,7 +1150,7 @@ func RBGPredicate() predicate.Funcs {
 			return false
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			_, ok := e.Object.(*workloadsv1alpha1.RoleBasedGroup)
+			_, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok {
 				ctrl.Log.Info("enqueue: rbg delete event", "rbg", klog.KObj(e.Object))
 				return true
@@ -1240,4 +1243,60 @@ func dynamicWatchCustomCRD(ctx context.Context, kind string) {
 			logger.Info("rbgs controller watch InstanceSet CRD")
 		}
 	}
+}
+
+// setConditionV2 sets or updates a condition on the RoleBasedGroup status (v1alpha2 version)
+func setConditionV2(rbg *workloadsv1alpha2.RoleBasedGroup, newCondition metav1.Condition) {
+	found := false
+	for i, curCondition := range rbg.Status.Conditions {
+		if newCondition.Type == curCondition.Type {
+			found = true
+			if newCondition.Status != curCondition.Status {
+				rbg.Status.Conditions[i] = newCondition
+			}
+		}
+	}
+	if !found {
+		rbg.Status.Conditions = append(rbg.Status.Conditions, newCondition)
+	}
+}
+
+// ToRBGApplyConfigurationForStatusV2 creates an apply configuration for updating RBG status (v1alpha2 version)
+func ToRBGApplyConfigurationForStatusV2(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+	if rbg == nil {
+		return nil
+	}
+	gkv := utils.GetRbgGVK()
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gkv.Kind).
+		WithAPIVersion(gkv.GroupVersion().String()).
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithRoleStatuses(toRoleStatusApplyConfigurationV2(rbg.Status.RoleStatuses)...).
+			WithConditions(toConditionApplyConfigurations(rbg.Status.Conditions)...))
+	return rbgApplyConfig
+}
+
+func toRoleStatusApplyConfigurationV2(roleStatus []workloadsv1alpha2.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
+	out := make([]*applyconfiguration.RoleStatusApplyConfiguration, 0, len(roleStatus))
+	for _, rs := range roleStatus {
+		out = append(out, applyconfiguration.RoleStatus().
+			WithName(rs.Name).
+			WithReplicas(rs.Replicas).
+			WithReadyReplicas(rs.ReadyReplicas).
+			WithUpdatedReplicas(rs.UpdatedReplicas))
+	}
+	return out
+}
+
+func toConditionApplyConfigurations(conds []metav1.Condition) []*metav1ac.ConditionApplyConfiguration {
+	out := make([]*metav1ac.ConditionApplyConfiguration, 0, len(conds))
+	for _, c := range conds {
+		out = append(out, metav1ac.Condition().
+			WithType(c.Type).
+			WithStatus(c.Status).
+			WithReason(c.Reason).
+			WithMessage(c.Message).
+			WithLastTransitionTime(c.LastTransitionTime))
+	}
+	return out
 }

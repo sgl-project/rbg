@@ -15,7 +15,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const (
@@ -112,7 +112,7 @@ func CalculatePartitionReplicas(partition *intstrutil.IntOrString, replicasPoint
 	return pValue, nil
 }
 
-func GetRoleReplicas(rbg *v1alpha1.RoleBasedGroup, roleName string) int32 {
+func GetRoleReplicas(rbg *v1alpha2.RoleBasedGroup, roleName string) int32 {
 	for _, role := range rbg.Spec.Roles {
 		if role.Name == roleName {
 			return *role.Replicas
@@ -131,7 +131,7 @@ func ParseIntStrAsNonZero(p intstrutil.IntOrString, replicas int32) (int32, erro
 	return int32(value), nil
 }
 
-func RoleInMaxSkewCoordination(rbg *v1alpha1.RoleBasedGroup, role string) bool {
+func RoleInMaxSkewCoordination(rbg *v1alpha2.RoleBasedGroup, role string) bool {
 	for _, coordination := range rbg.Spec.CoordinationRequirements {
 		if !slices.Contains(coordination.Roles, role) {
 			continue

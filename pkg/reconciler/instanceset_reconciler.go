@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	workloadsv1alpha1client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -33,19 +34,19 @@ func NewInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) *Ins
 }
 
 func (r *InstanceSetReconciler) Validate(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	ctx context.Context, role *workloadsv1alpha2.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
 	if len(role.Components) > 0 {
-		if role.TemplateSource.Template != nil || role.LeaderWorkerSet != nil {
-			return fmt.Errorf("when 'components' field is set, 'template' and 'leaderWorkerSet' fields must not be set")
+		if role.GetTemplate() != nil || role.IsLeaderWorkerPattern() {
+			return fmt.Errorf("when 'components' field is set, 'template' and 'leaderWorkerPattern' fields must not be set")
 		}
-	} else if role.TemplateSource.Template == nil {
-		if role.LeaderWorkerSet == nil {
-			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
+	} else if role.GetTemplate() == nil {
+		if !role.IsLeaderWorkerPattern() {
+			return fmt.Errorf("either 'template' or 'leaderWorkerPattern' field must be provided")
 		}
-		if role.LeaderWorkerSet.PatchLeaderTemplate == nil || role.LeaderWorkerSet.PatchWorkerTemplate == nil {
-			return fmt.Errorf("both 'patchLeaderTemplate' and 'patchWorkerTemplate' fields must be provided when 'template' field not set")
+		if role.GetLeaderTemplatePatch() == nil || role.GetWorkerTemplatePatch() == nil {
+			return fmt.Errorf("both 'leaderTemplatePatch' and 'workerTemplatePatch' fields must be provided when 'template' field not set")
 		}
 	}
 
@@ -53,8 +54,8 @@ func (r *InstanceSetReconciler) Validate(
 }
 
 func (r *InstanceSetReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string,
 ) error {
 	if err := r.reconcileInstanceSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey); err != nil {
 		return err
@@ -64,8 +65,8 @@ func (r *InstanceSetReconciler) Reconciler(
 
 func (r *InstanceSetReconciler) reconcileInstanceSet(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string,
+	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling instanceset workload")
@@ -120,9 +121,9 @@ func (r *InstanceSetReconciler) reconcileInstanceSet(
 
 func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate,
 	revisionKey string,
 ) (*workloadsv1alpha1client.InstanceSetApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
@@ -155,10 +156,10 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	case len(role.Components) > 0:
 		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.ComponentsTemplateType)
 		constructErr = r.constructInstanceTemplateByComponents(ctx, rbg, role, matchLabels, instanceTemplateConfig)
-	case role.LeaderWorkerSet != nil:
+	case role.IsLeaderWorkerPattern():
 		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.LeaderWorkerSetTemplateType)
 		constructErr = r.constructInstanceTemplateByLWS(ctx, rbg, role, matchLabels, instanceTemplateConfig)
-	case role.TemplateSource.Template != nil:
+	case role.GetTemplate() != nil:
 		instanceSetLabel[workloadsv1alpha1.RBGRoleTemplateTypeLabelKey] = string(workloadsv1alpha1.PodTemplateTemplateType)
 		constructErr = r.constructInstanceTemplateByTemplate(ctx, rbg, role, matchLabels, instanceTemplateConfig)
 	default:
@@ -192,11 +193,12 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
 		rollingUpdate := role.RolloutStrategy.RollingUpdate
+		updateType := workloadsv1alpha1.UpdateStrategyType(rollingUpdate.Type)
 		if rollingUpdate.Type == "" {
-			rollingUpdate.Type = workloadsv1alpha1.InPlaceIfPossibleUpdateStrategyType
+			updateType = workloadsv1alpha1.InPlaceIfPossibleUpdateStrategyType
 		}
 		updateStrategyConfig := workloadsv1alpha1client.InstanceSetUpdateStrategy().
-			WithType(rollingUpdate.Type).
+			WithType(updateType).
 			WithPaused(rollingUpdate.Paused)
 		if rollingUpdate.Partition != nil {
 			updateStrategyConfig = updateStrategyConfig.WithPartition(*rollingUpdate.Partition)
@@ -244,8 +246,8 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 
 func (r *InstanceSetReconciler) constructInstanceTemplateByComponents(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	matchLabels map[string]string,
 	instanceTemplateConfig *workloadsv1alpha1client.InstanceTemplateApplyConfiguration,
 ) error {
@@ -277,14 +279,14 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByComponents(
 
 func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	matchLabels map[string]string,
 	instanceTemplateConfig *workloadsv1alpha1client.InstanceTemplateApplyConfiguration,
 ) error {
 	logger := log.FromContext(ctx)
-	leaderWorkerSet := role.LeaderWorkerSet
-	leaderTemp, err := patchPodTemplate(role.TemplateSource.Template, leaderWorkerSet.PatchLeaderTemplate)
+	leaderWorkerPattern := role.GetLeaderWorkerPattern()
+	leaderTemp, err := patchPodTemplate(role.GetTemplate(), leaderWorkerPattern.LeaderTemplatePatch)
 	if err != nil {
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
 		return err
@@ -301,7 +303,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 	}
 
 	// workerTemplate
-	workerTemp, err := patchPodTemplate(role.TemplateSource.Template, leaderWorkerSet.PatchWorkerTemplate)
+	workerTemp, err := patchPodTemplate(role.GetTemplate(), leaderWorkerPattern.WorkerTemplatePatch)
 	if err != nil {
 		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
 		return err
@@ -323,7 +325,7 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 		return err
 	}
 
-	workerSize := utils.NonZeroValue(*leaderWorkerSet.Size - 1)
+	workerSize := utils.NonZeroValue(*leaderWorkerPattern.Size - 1)
 	instanceTemplateConfig.WithComponents(
 		workloadsv1alpha1client.InstanceComponent().
 			WithName("leader").
@@ -331,22 +333,22 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByLWS(
 			WithSize(1).
 			WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
 				workloadsv1alpha1.RBGComponentNameLabelKey: "leader",
-				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *leaderWorkerSet.Size),
+				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *leaderWorkerPattern.Size),
 			})),
 		workloadsv1alpha1client.InstanceComponent().
 			WithName("worker").
 			WithSize(workerSize).
 			WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
 				workloadsv1alpha1.RBGComponentNameLabelKey: "worker",
-				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *leaderWorkerSet.Size),
+				workloadsv1alpha1.RBGComponentSizeLabelKey: fmt.Sprintf("%d", *leaderWorkerPattern.Size),
 			})))
 	return nil
 }
 
 func (r *InstanceSetReconciler) constructInstanceTemplateByTemplate(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	matchLabels map[string]string,
 	instanceTemplateConfig *workloadsv1alpha1client.InstanceTemplateApplyConfiguration,
 ) error {
@@ -375,19 +377,19 @@ func (r *InstanceSetReconciler) constructInstanceTemplateByTemplate(
 
 func (r *InstanceSetReconciler) ConstructRoleStatus(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-) (workloadsv1alpha1.RoleStatus, bool, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+) (workloadsv1alpha2.RoleStatus, bool, error) {
 	instanceSet := &workloadsv1alpha1.InstanceSet{}
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, instanceSet,
 	); err != nil {
-		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, err
 	}
 
 	if instanceSet.Status.ObservedGeneration < instanceSet.Generation {
 		err := fmt.Errorf("instanceSet generation not equal to observed generation")
-		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, err
 	}
 
 	status, updateStatus := ConstructRoleStatue(rbg, role,
@@ -398,7 +400,7 @@ func (r *InstanceSetReconciler) ConstructRoleStatus(
 }
 
 func (r *InstanceSetReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (bool, error) {
 	instanceSet := &workloadsv1alpha1.InstanceSet{}
 	if err := r.client.Get(
@@ -416,7 +418,7 @@ func (r *InstanceSetReconciler) CheckWorkloadReady(
 }
 
 func (r *InstanceSetReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	return CleanupOrphanedObjs(ctx, r.client, rbg, schema.GroupVersionKind{
 		Group:   "workloads.x-k8s.io",
@@ -425,7 +427,7 @@ func (r *InstanceSetReconciler) CleanupOrphanedWorkloads(
 }
 
 func (r *InstanceSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) error {
 	return RecreateObj(ctx, r.client, rbg, role, schema.GroupVersionKind{
 		Group:   "workloads.x-k8s.io",
