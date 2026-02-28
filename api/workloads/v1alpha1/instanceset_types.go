@@ -34,6 +34,12 @@ type InstanceSetSpec struct {
 	// If unspecified, defaults to 1.
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Selector is a label query over instances that should match the replica count.
+	// It must match the instance template's labels.
+	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
 	// InstanceTemplate describes the data an instance should have when created from a template
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
@@ -164,6 +170,10 @@ type InstanceSetStatus struct {
 
 	// AvailableReplicas is the number of Instances created by the InstanceSet controller that have a Ready Condition for at least minReadySeconds.
 	AvailableReplicas int32 `json:"availableReplicas"`
+
+	// CurrentReplicas is the number of Instances created by the InstanceSet controller from the InstanceSet version
+	// indicated by currentRevision.
+	CurrentReplicas int32 `json:"currentReplicas"`
 
 	// UpdatedReplicas is the number of Instances created by the InstanceSet controller from the InstanceSet version
 	// indicated by updateRevision.

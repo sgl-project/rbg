@@ -22,9 +22,8 @@ const (
 
 // PVCComponents holds the parsed components of a PVC storage URI.
 type PVCComponents struct {
-	Namespace string
-	PVCName   string
-	SubPath   string
+	PVCName string
+	SubPath string
 }
 
 // isPVCStorageURI checks if the given URI is a PVC storage URI.
@@ -36,8 +35,9 @@ func isPVCStorageURI(uri string) bool {
 // Supported formats:
 //   - pvc://{pvc-name}/{sub-path}
 //   - pvc://{pvc-name}/
-//   - pvc://{namespace}:{pvc-name}/{sub-path}
-//   - pvc://{namespace}:{pvc-name}/
+//
+// The namespace for the PVC is determined by the current kubeconfig context,
+// not specified in the URI.
 func parsePVCStorageURI(uri string) (*PVCComponents, error) {
 	if !strings.HasPrefix(uri, pvcStoragePrefix) {
 		return nil, fmt.Errorf("invalid PVC storage URI format: missing %s prefix", pvcStoragePrefix)
@@ -49,41 +49,22 @@ func parsePVCStorageURI(uri string) (*PVCComponents, error) {
 		return nil, fmt.Errorf("invalid PVC storage URI format: missing content after prefix")
 	}
 
-	// Check if namespace is specified with colon separator
-	var namespace, pvcName, subPath string
-
-	// First, find the first slash to separate pvc-name (with optional namespace) from sub-path
+	// Find the first slash to separate pvc-name from sub-path
 	firstSlashIdx := strings.Index(path, "/")
 	if firstSlashIdx == -1 {
 		return nil, fmt.Errorf("invalid PVC storage URI format: missing trailing slash")
 	}
 
-	firstPart := path[:firstSlashIdx]
-	subPath = path[firstSlashIdx+1:]
+	pvcName := path[:firstSlashIdx]
+	subPath := path[firstSlashIdx+1:]
 
-	if colonIdx := strings.Index(firstPart, ":"); colonIdx != -1 {
-		// Format: namespace:pvc-name/sub-path
-		namespace = firstPart[:colonIdx]
-		pvcName = firstPart[colonIdx+1:]
-
-		if namespace == "" {
-			return nil, fmt.Errorf("invalid PVC storage URI format: empty namespace before colon")
-		}
-		if pvcName == "" {
-			return nil, fmt.Errorf("invalid PVC storage URI format: empty PVC name after colon")
-		}
-	} else {
-		// Format: pvc-name/sub-path
-		pvcName = firstPart
-		if pvcName == "" {
-			return nil, fmt.Errorf("invalid PVC storage URI format: missing PVC name")
-		}
+	if pvcName == "" {
+		return nil, fmt.Errorf("invalid PVC storage URI format: missing PVC name")
 	}
 
 	return &PVCComponents{
-		Namespace: namespace,
-		PVCName:   pvcName,
-		SubPath:   subPath,
+		PVCName: pvcName,
+		SubPath: subPath,
 	}, nil
 }
 

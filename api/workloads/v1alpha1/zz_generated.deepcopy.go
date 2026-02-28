@@ -533,6 +533,11 @@ func (in *InstanceSetSpec) DeepCopyInto(out *InstanceSetSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.Selector != nil {
+		in, out := &in.Selector, &out.Selector
+		*out = new(metav1.LabelSelector)
+		(*in).DeepCopyInto(*out)
+	}
 	in.InstanceTemplate.DeepCopyInto(&out.InstanceTemplate)
 	in.ScaleStrategy.DeepCopyInto(&out.ScaleStrategy)
 	in.UpdateStrategy.DeepCopyInto(&out.UpdateStrategy)

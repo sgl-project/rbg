@@ -49,15 +49,6 @@ func (r *InstanceSetReconciler) Validate(
 		}
 	}
 
-	if len(role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey]) == 0 {
-		return fmt.Errorf("currently role.labels[instance.rolebasedgroup.workloads.x-k8s.io/pattern] is required")
-	}
-
-	if role.Labels[workloadsv1alpha1.RBGInstancePatternLabelKey] !=
-		string(workloadsv1alpha1.DeploymentInstancePattern) {
-		return fmt.Errorf("currently only 'Deployment' pattern is supported")
-	}
-
 	return nil
 }
 
@@ -139,6 +130,12 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	instanceSetLabel := maps.Clone(matchLabels)
 	instanceSetLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
+	// set default instance pattern annotation to Stateful only if not explicitly set in role.Annotations
+	instanceSetAnnotation := maps.Clone(rbg.GetCommonAnnotationsFromRole(role))
+	if role.Annotations[workloadsv1alpha1.RBGInstancePatternAnnotationKey] == "" {
+		instanceSetAnnotation[workloadsv1alpha1.RBGInstancePatternAnnotationKey] = string(workloadsv1alpha1.StatefulInstancePattern)
+	}
+
 	// 1. construct instance configuration
 	var restartPolicy workloadsv1alpha1.InstanceRestartPolicyType
 	if role.RestartPolicy == "None" {
@@ -176,11 +173,12 @@ func (r *InstanceSetReconciler) constructInstanceSetApplyConfiguration(
 	instanceSetConfig := workloadsv1alpha1client.InstanceSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(
 			workloadsv1alpha1client.InstanceSetSpec().
+				WithSelector(metaapplyv1.LabelSelector().WithMatchLabels(maps.Clone(matchLabels))).
 				WithReplicas(*role.Replicas).
 				WithInstanceTemplate(instanceTemplateConfig).
 				WithMinReadySeconds(role.MinReadySeconds),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), instanceSetAnnotation)).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), instanceSetLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

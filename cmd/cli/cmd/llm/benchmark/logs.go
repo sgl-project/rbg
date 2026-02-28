@@ -86,8 +86,8 @@ func waitForJobPod(ctx context.Context, clientset *kubernetes.Clientset, namespa
 
 // streamPodLogs streams the logs from a pod to stdout.
 func streamPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) error {
-	// Wait for pod to be running or terminated
-	if err := waitForPodReady(ctx, clientset, namespace, podName); err != nil {
+	// Wait for pod to be running or terminated (both are fine for log streaming)
+	if err := waitForPodReady(ctx, clientset, namespace, podName, false); err != nil {
 		return err
 	}
 
@@ -116,8 +116,10 @@ func streamPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespa
 	}
 }
 
-// waitForPodReady waits for a pod to be in a state where logs can be read.
-func waitForPodReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string) error {
+// waitForPodReady waits for a pod to be in a state where it can be used.
+// If requireRunning is true, the pod must reach Running state (used by dashboard).
+// If requireRunning is false, terminated pods (Succeeded/Failed) are also acceptable (used by logs).
+func waitForPodReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string, requireRunning bool) error {
 	deadline := time.Now().Add(5 * time.Minute)
 
 	for {
@@ -130,9 +132,13 @@ func waitForPodReady(ctx context.Context, clientset *kubernetes.Clientset, names
 			return fmt.Errorf("failed to get pod %s: %w", podName, err)
 		}
 
-		// Pod is terminated, can read logs
+		// Pod is terminated
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			return fmt.Errorf("pod success or failed")
+			if requireRunning {
+				return fmt.Errorf("pod %s is in %s phase, not running", podName, pod.Status.Phase)
+			}
+			// For log streaming, terminated pods are fine
+			return nil
 		}
 
 		if pod.Status.Phase == corev1.PodRunning {

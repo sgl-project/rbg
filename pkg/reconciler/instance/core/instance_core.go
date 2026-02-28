@@ -112,7 +112,7 @@ func (c *commonControl) NewUpdatePods(updateVersion string, componentName string
 
 		// 1. init pod's object key
 		pod.Name = instanceutil.FormatComponentPodName(instance.Name, componentName, id,
-			instance.GetInstancePattern(), instance.GetRoleTemplateType())
+			instance.GetRoleTemplateType())
 		pod.Namespace = instance.Namespace
 
 		// 2. init pod revision hash

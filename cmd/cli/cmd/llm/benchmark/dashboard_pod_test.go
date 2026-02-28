@@ -82,18 +82,4 @@ func TestBuildDashboardPod(t *testing.T) {
 		assert.Equal(t, "experiments/run1", pod.Spec.Containers[0].VolumeMounts[0].SubPath)
 	})
 
-	t.Run("pod with namespace in PVC (namespace not used in pod)", func(t *testing.T) {
-		pvc := &PVCComponents{
-			Namespace: "other-ns",
-			PVCName:   "benchmark-pvc",
-			SubPath:   "data",
-		}
-
-		pod := buildDashboardPod("my-ns", pvc)
-
-		// Pod namespace is the one passed to the function, not from PVC
-		assert.Equal(t, "my-ns", pod.Namespace)
-		assert.Equal(t, "benchmark-pvc", pod.Spec.Volumes[0].VolumeSource.PersistentVolumeClaim.ClaimName)
-		assert.Equal(t, "data", pod.Spec.Containers[0].VolumeMounts[0].SubPath)
-	})
 }

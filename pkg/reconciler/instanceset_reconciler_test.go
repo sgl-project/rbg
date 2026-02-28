@@ -34,8 +34,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "valid components without template or leaderWorkerSet",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				Components: []workloadsv1alpha1.InstanceComponent{
 					{
@@ -59,8 +59,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid components with template",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				Components: []workloadsv1alpha1.InstanceComponent{
 					{
@@ -77,8 +77,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid components with leaderWorkerSet",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				Components: []workloadsv1alpha1.InstanceComponent{
 					{
@@ -93,8 +93,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "valid template with Deployment pattern",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				TemplateSource: workloadsv1alpha1.TemplateSource{
 					Template: &corev1.PodTemplateSpec{},
@@ -109,25 +109,25 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 					Template: &corev1.PodTemplateSpec{},
 				},
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
-			name: "valid template with invalid pattern",
+			name: "valid template with Stateful pattern",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.StatefulSetInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatefulInstancePattern),
 				},
 				TemplateSource: workloadsv1alpha1.TemplateSource{
 					Template: &corev1.PodTemplateSpec{},
 				},
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "valid leaderWorkerSet without components or template",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 					PatchLeaderTemplate: &runtime.RawExtension{},
@@ -144,8 +144,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid leaderWorkerSet without patchLeaderTemplate",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 					PatchWorkerTemplate: &runtime.RawExtension{},
@@ -156,8 +156,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid leaderWorkerSet without patchWorkerTemplate",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
 					PatchLeaderTemplate: &runtime.RawExtension{},
@@ -168,8 +168,8 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		{
 			name: "invalid leaderWorkerSet with neither patch templates",
 			role: &workloadsv1alpha1.RoleSpec{
-				Labels: map[string]string{
-					workloadsv1alpha1.RBGInstancePatternLabelKey: string(workloadsv1alpha1.DeploymentInstancePattern),
+				Annotations: map[string]string{
+					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
 				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{},
 			},

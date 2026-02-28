@@ -72,6 +72,15 @@ jobs:
           make docker-build-patio
           make docker-push-patio
 
+      - name: Build and push Benchmark Dashboard image
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          echo "Building and pushing Benchmark Dashboard image with tag: $TAG"
+          make docker-build-benchmark-dashboard
+          make docker-push-benchmark-dashboard
+
       - name: Summary
         run: |
           echo "## Docker Images Build and Push Summary" >> $GITHUB_STEP_SUMMARY
@@ -85,3 +94,4 @@ jobs:
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-controller:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-upgrade-crd:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-patio-runtime:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-benchmark-dashboard:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY

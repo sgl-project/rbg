@@ -24,11 +24,6 @@ func TestIsPVCStorageURI(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "valid pvc URI with namespace",
-			uri:      "pvc://my-ns:my-pvc/",
-			expected: true,
-		},
-		{
 			name:     "not a pvc URI - http",
 			uri:      "http://example.com",
 			expected: false,
@@ -83,24 +78,6 @@ func TestParsePVCStorageURI(t *testing.T) {
 			},
 		},
 		{
-			name: "pvc with namespace",
-			uri:  "pvc://my-ns:my-pvc/",
-			expected: &PVCComponents{
-				Namespace: "my-ns",
-				PVCName:   "my-pvc",
-				SubPath:   "",
-			},
-		},
-		{
-			name: "pvc with namespace and sub-path",
-			uri:  "pvc://my-ns:my-pvc/data/output",
-			expected: &PVCComponents{
-				Namespace: "my-ns",
-				PVCName:   "my-pvc",
-				SubPath:   "data/output",
-			},
-		},
-		{
 			name: "pvc with simple sub-path",
 			uri:  "pvc://my-pvc/sub",
 			expected: &PVCComponents{
@@ -127,18 +104,6 @@ func TestParsePVCStorageURI(t *testing.T) {
 			errContains: "missing trailing slash",
 		},
 		{
-			name:        "empty namespace before colon",
-			uri:         "pvc://:my-pvc/",
-			expectError: true,
-			errContains: "empty namespace before colon",
-		},
-		{
-			name:        "empty pvc name after colon",
-			uri:         "pvc://my-ns:/",
-			expectError: true,
-			errContains: "empty PVC name after colon",
-		},
-		{
 			name:        "empty pvc name without namespace",
 			uri:         "pvc:///sub-path",
 			expectError: true,
@@ -163,7 +128,6 @@ func TestParsePVCStorageURI(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, result)
-				assert.Equal(t, tt.expected.Namespace, result.Namespace)
 				assert.Equal(t, tt.expected.PVCName, result.PVCName)
 				assert.Equal(t, tt.expected.SubPath, result.SubPath)
 			}
@@ -206,15 +170,6 @@ func TestBuildTokenizerConfig(t *testing.T) {
 			expectedVolumes:   1,
 			expectedMounts:    1,
 			expectedSubPath:   "models/qwen",
-			expectedClaimName: "tokenizer-pvc",
-		},
-		{
-			name:              "pvc URI with namespace",
-			tokenizer:         "pvc://my-ns:tokenizer-pvc/data",
-			expectedValue:     tokenizerMountPath,
-			expectedVolumes:   1,
-			expectedMounts:    1,
-			expectedSubPath:   "data",
 			expectedClaimName: "tokenizer-pvc",
 		},
 		{
@@ -275,12 +230,6 @@ func TestBuildOutputConfig(t *testing.T) {
 			outputDir:         "pvc://output-pvc/results/exp1",
 			expectedClaimName: "output-pvc",
 			expectedSubPath:   "results/exp1",
-		},
-		{
-			name:              "pvc URI with namespace",
-			outputDir:         "pvc://my-ns:output-pvc/data",
-			expectedClaimName: "output-pvc",
-			expectedSubPath:   "data",
 		},
 		{
 			name:        "invalid pvc URI",

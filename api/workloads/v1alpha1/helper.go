@@ -156,7 +156,7 @@ func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
 }
 
 func (instance *Instance) GetInstancePattern() InstancePatternType {
-	return InstancePatternType(instance.Labels[RBGInstancePatternLabelKey])
+	return InstancePatternType(instance.Annotations[RBGInstancePatternAnnotationKey])
 }
 
 func (instance *Instance) GetRoleTemplateType() RBGRoleTemplateType {
@@ -176,6 +176,10 @@ func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) 
 		}
 	}
 	return nil, fmt.Errorf("roleTemplate %q not found in spec.roleTemplates", name)
+}
+
+func (rbg *RoleBasedGroup) GetKey() string {
+	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
 }
 
 // UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
