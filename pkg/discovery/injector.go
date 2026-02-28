@@ -2,14 +2,7 @@ package discovery
 
 import (
 	"context"
-	"fmt"
 	"sort"
-
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
-	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -51,66 +44,23 @@ func (i *DefaultInjector) InjectConfig(
 	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
 	role *workloadsv1alpha1.RoleSpec,
 ) error {
-	logger := log.FromContext(ctx)
-
-	builder := &ConfigBuilder{
-		client: i.client,
-		rbg:    rbg,
-		role:   role,
-	}
-
 	const (
 		volumeName = "rbg-cluster-config"
 		mountPath  = "/etc/rbg"
 		configKey  = "config.yaml"
 	)
 
-	configData, err := builder.Build()
-	if err != nil {
-		return err
-	}
-	cmApplyConfig := coreapplyv1.ConfigMap(rbg.GetWorkloadName(role), rbg.Namespace).
-		WithData(
-			map[string]string{
-				configKey: string(configData),
-			},
-		).
-		WithOwnerReferences(
-			metaapplyv1.OwnerReference().
-				WithAPIVersion(rbg.APIVersion).
-				WithKind(rbg.Kind).
-				WithName(rbg.Name).
-				WithUID(rbg.GetUID()).
-				WithBlockOwnerDeletion(true).
-				WithController(true),
-		)
-
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cmApplyConfig)
-	if err != nil {
-		logger.Error(err, "Converting obj apply configuration to json.")
-		return err
-	}
-	newConfigmap := &corev1.ConfigMap{}
-	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newConfigmap); err != nil {
-		return fmt.Errorf("convert ConfigmapApplyConfig to deploy error: %s", err.Error())
-	}
-
-	oldConfigmap := &corev1.ConfigMap{}
-	err = i.client.Get(
-		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldConfigmap,
-	)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	equal, diff := semanticallyEqualConfigmap(oldConfigmap, newConfigmap)
-	if equal {
-		logger.V(1).Info("configmap equal, skip reconcile")
-	} else {
-		logger.V(1).Info(fmt.Sprintf("confgmap not equal, diff: %s", diff))
-		if err := utils.PatchObjectApplyConfiguration(ctx, i.client, cmApplyConfig, utils.PatchSpec); err != nil {
-			logger.Error(err, "Failed to patch ConfigMap")
-			return err
+	var configMapName string
+	mode := rbg.GetDiscoveryConfigMode()
+	switch mode {
+	case workloadsv1alpha1.RefineDiscoveryConfigMode:
+		if !workloadsv1alpha1.IsStatefulRole(role) {
+			return nil
 		}
+		configMapName = rbg.Name
+	default:
+		// legacy and unknown modes keep role-level mount for backward compatibility.
+		configMapName = rbg.GetWorkloadName(role)
 	}
 
 	volumeExists := false
@@ -127,7 +77,7 @@ func (i *DefaultInjector) InjectConfig(
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
 						LocalObjectReference: corev1.LocalObjectReference{
-							Name: rbg.GetWorkloadName(role),
+							Name: configMapName,
 						},
 						Items: []corev1.KeyToPath{
 							{Key: configKey, Path: configKey},

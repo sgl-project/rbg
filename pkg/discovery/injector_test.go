@@ -339,6 +339,73 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "Refine mode mounts shared configmap for stateful role",
+			rbg: func() *workloadsv1alpha1.RoleBasedGroup {
+				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg.SetDiscoveryConfigMode(workloadsv1alpha1.RefineDiscoveryConfigMode)
+				return rbg
+			}(),
+			initialPodSpec: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main",
+							Image: "test-image",
+						},
+					},
+				},
+			},
+			expectedVolumes: []corev1.Volume{
+				{
+					Name: "rbg-cluster-config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-rbg",
+							},
+							Items: []corev1.KeyToPath{
+								{
+									Key:  "config.yaml",
+									Path: "config.yaml",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedMounts: []corev1.VolumeMount{
+				{
+					Name:      "rbg-cluster-config",
+					MountPath: "/etc/rbg",
+					ReadOnly:  true,
+				},
+			},
+		},
+		{
+			name: "Refine mode skips config injection for stateless role",
+			rbg: func() *workloadsv1alpha1.RoleBasedGroup {
+				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg.SetDiscoveryConfigMode(workloadsv1alpha1.RefineDiscoveryConfigMode)
+				rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+				}
+				return rbg
+			}(),
+			initialPodSpec: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main",
+							Image: "test-image",
+						},
+					},
+				},
+			},
+			expectedVolumes: nil,
+			expectedMounts:  nil,
+		},
 	}
 
 	for _, tt := range tests {
