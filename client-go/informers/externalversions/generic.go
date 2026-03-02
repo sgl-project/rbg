@@ -23,6 +23,7 @@ import (
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 	v1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	v1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // GenericInformer is type of SharedIndexInformer which will locate and delegate to other
@@ -64,6 +65,10 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupScalingAdapters().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroupsets"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupSets().Informer()}, nil
+
+		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroups"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroups().Informer()}, nil
 
 	}
 
