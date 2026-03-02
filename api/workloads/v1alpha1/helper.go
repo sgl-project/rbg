@@ -182,6 +182,53 @@ func (rbg *RoleBasedGroup) GetKey() string {
 	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
 }
 
+func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() DiscoveryConfigMode {
+	if rbg == nil || rbg.Annotations == nil {
+		return ""
+	}
+	return DiscoveryConfigMode(rbg.Annotations[DiscoveryConfigModeAnnotationKey])
+}
+
+func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode DiscoveryConfigMode) {
+	if rbg == nil {
+		return
+	}
+	if rbg.Annotations == nil {
+		rbg.Annotations = map[string]string{}
+	}
+	rbg.Annotations[DiscoveryConfigModeAnnotationKey] = string(mode)
+}
+
+func (rbg *RoleBasedGroup) HasStatefulRole() bool {
+	if rbg == nil {
+		return false
+	}
+	for i := range rbg.Spec.Roles {
+		if IsStatefulRole(&rbg.Spec.Roles[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsStatefulRole(role *RoleSpec) bool {
+	if role == nil {
+		return false
+	}
+	switch role.Workload.String() {
+	case DeploymentWorkloadType:
+		return false
+	case StatefulSetWorkloadType, LeaderWorkerSetWorkloadType, "":
+		return true
+	case InstanceSetWorkloadType:
+		pattern := InstancePatternType(role.Annotations[RBGInstancePatternAnnotationKey])
+		return pattern != StatelessInstancePattern
+	default:
+		// Keep unknown kinds conservative and stateful by default.
+		return true
+	}
+}
+
 // UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
 func (r *RoleSpec) UsesRoleTemplate() bool {
 	return r.TemplateSource.TemplateRef != nil
