@@ -28,6 +28,8 @@ import (
 	clientset "sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/client-go/clientset/versioned/typed/workloads/v1alpha1"
 	fakeworkloadsv1alpha1 "sigs.k8s.io/rbgs/client-go/clientset/versioned/typed/workloads/v1alpha1/fake"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/client-go/clientset/versioned/typed/workloads/v1alpha2"
+	fakeworkloadsv1alpha2 "sigs.k8s.io/rbgs/client-go/clientset/versioned/typed/workloads/v1alpha2/fake"
 )
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.
@@ -127,4 +129,9 @@ var (
 // WorkloadsV1alpha1 retrieves the WorkloadsV1alpha1Client
 func (c *Clientset) WorkloadsV1alpha1() workloadsv1alpha1.WorkloadsV1alpha1Interface {
 	return &fakeworkloadsv1alpha1.FakeWorkloadsV1alpha1{Fake: &c.Fake}
+}
+
+// WorkloadsV1alpha2 retrieves the WorkloadsV1alpha2Client
+func (c *Clientset) WorkloadsV1alpha2() workloadsv1alpha2.WorkloadsV1alpha2Interface {
+	return &fakeworkloadsv1alpha2.FakeWorkloadsV1alpha2{Fake: &c.Fake}
 }
