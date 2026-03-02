@@ -215,12 +215,12 @@ func IsStatefulRole(role *RoleSpec) bool {
 	if role == nil {
 		return false
 	}
-	switch role.Workload.Kind {
-	case "Deployment":
+	switch role.Workload.String() {
+	case DeploymentWorkloadType:
 		return false
-	case "StatefulSet", "LeaderWorkerSet", "":
+	case StatefulSetWorkloadType, LeaderWorkerSetWorkloadType, "":
 		return true
-	case "InstanceSet":
+	case InstanceSetWorkloadType:
 		pattern := InstancePatternType(role.Annotations[RBGInstancePatternAnnotationKey])
 		return pattern != StatelessInstancePattern
 	default:
