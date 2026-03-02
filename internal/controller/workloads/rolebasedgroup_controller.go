@@ -162,8 +162,8 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Step 5: Initialize discovery config mode.
-	if err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil {
-		return ctrl.Result{}, err
+	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil || needRequeue {
+		return ctrl.Result{Requeue: true}, err
 	}
 
 	// Step 6: Reconcile refined discovery ConfigMap.
@@ -266,15 +266,17 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 	ctx context.Context,
 	rbg *workloadsv1alpha1.RoleBasedGroup,
-) error {
+) (bool, error) {
+	// If Mode is already set, skip requeue and return
 	mode := rbg.GetDiscoveryConfigMode()
 	if mode == workloadsv1alpha1.LegacyDiscoveryConfigMode || mode == workloadsv1alpha1.RefineDiscoveryConfigMode {
-		return nil
+		return false, nil
 	}
 
+	// determine mode, update annotation and then requeue
 	legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
 	if err != nil {
-		return err
+		return true, err
 	}
 	if legacy {
 		mode = workloadsv1alpha1.LegacyDiscoveryConfigMode
@@ -285,11 +287,11 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 	old := rbg.DeepCopy()
 	rbg.SetDiscoveryConfigMode(mode)
 	if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
-		return err
+		return true, err
 	}
 
 	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
-	return nil
+	return true, nil
 }
 
 func (r *RoleBasedGroupReconciler) shouldUseLegacyDiscoveryConfig(

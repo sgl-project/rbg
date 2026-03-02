@@ -19,63 +19,105 @@ import (
 )
 
 func TestEnsureDiscoveryConfigMode(t *testing.T) {
-	t.Run("existing workload uses legacy mode", func(t *testing.T) {
-		scheme := runtime.NewScheme()
-		_ = workloadsv1alpha1.AddToScheme(scheme)
-		_ = appsv1.AddToScheme(scheme)
-		_ = corev1.AddToScheme(scheme)
+	type testCase struct {
+		name               string
+		mutateRBG          func(*workloadsv1alpha1.RoleBasedGroup)
+		buildExtraObjects  func(*workloadsv1alpha1.RoleBasedGroup) []runtime.Object
+		wantRequeue        bool
+		wantMode           workloadsv1alpha1.DiscoveryConfigMode
+		wantModeAnnotation bool
+	}
 
-		rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-		sts := &appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
-				Namespace: rbg.Namespace,
+	tests := []testCase{
+		{
+			name: "missing annotation with legacy role configmap should set legacy mode and requeue",
+			buildExtraObjects: func(rbg *workloadsv1alpha1.RoleBasedGroup) []runtime.Object {
+				return []runtime.Object{
+					&corev1.ConfigMap{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+							Namespace: rbg.Namespace,
+						},
+					},
+				}
 			},
-		}
-		legacyRoleCM := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
-				Namespace: rbg.Namespace,
+			wantRequeue:        true,
+			wantMode:           workloadsv1alpha1.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name:               "missing annotation without legacy signal should set refine mode and requeue",
+			wantRequeue:        true,
+			wantMode:           workloadsv1alpha1.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "existing legacy annotation should not requeue",
+			mutateRBG: func(rbg *workloadsv1alpha1.RoleBasedGroup) {
+				rbg.SetDiscoveryConfigMode(workloadsv1alpha1.LegacyDiscoveryConfigMode)
 			},
-		}
-		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg, sts, legacyRoleCM).Build()
-		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
+			wantRequeue:        false,
+			wantMode:           workloadsv1alpha1.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "existing refine annotation should not requeue",
+			mutateRBG: func(rbg *workloadsv1alpha1.RoleBasedGroup) {
+				rbg.SetDiscoveryConfigMode(workloadsv1alpha1.RefineDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           workloadsv1alpha1.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+	}
 
-		current := &workloadsv1alpha1.RoleBasedGroup{}
-		if err := client.Get(context.Background(), types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, current); err != nil {
-			t.Fatalf("get rbg error: %v", err)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = workloadsv1alpha1.AddToScheme(scheme)
+			_ = appsv1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
 
-		if err := reconciler.ensureDiscoveryConfigMode(context.Background(), current); err != nil {
-			t.Fatalf("ensureDiscoveryConfigMode() error = %v", err)
-		}
-		if got := current.GetDiscoveryConfigMode(); got != workloadsv1alpha1.LegacyDiscoveryConfigMode {
-			t.Fatalf("mode = %s, want %s", got, workloadsv1alpha1.LegacyDiscoveryConfigMode)
-		}
-	})
+			rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+			if tt.mutateRBG != nil {
+				tt.mutateRBG(rbg)
+			}
 
-	t.Run("new workload uses refine mode", func(t *testing.T) {
-		scheme := runtime.NewScheme()
-		_ = workloadsv1alpha1.AddToScheme(scheme)
-		_ = appsv1.AddToScheme(scheme)
-		_ = corev1.AddToScheme(scheme)
+			objs := []runtime.Object{rbg}
+			if tt.buildExtraObjects != nil {
+				objs = append(objs, tt.buildExtraObjects(rbg)...)
+			}
 
-		rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
-		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
+			client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
+			reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
 
-		current := &workloadsv1alpha1.RoleBasedGroup{}
-		if err := client.Get(context.Background(), types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, current); err != nil {
-			t.Fatalf("get rbg error: %v", err)
-		}
+			current := &workloadsv1alpha1.RoleBasedGroup{}
+			key := types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}
+			if err := client.Get(context.Background(), key, current); err != nil {
+				t.Fatalf("get rbg error: %v", err)
+			}
 
-		if err := reconciler.ensureDiscoveryConfigMode(context.Background(), current); err != nil {
-			t.Fatalf("ensureDiscoveryConfigMode() error = %v", err)
-		}
-		if got := current.GetDiscoveryConfigMode(); got != workloadsv1alpha1.RefineDiscoveryConfigMode {
-			t.Fatalf("mode = %s, want %s", got, workloadsv1alpha1.RefineDiscoveryConfigMode)
-		}
-	})
+			requeue, err := reconciler.ensureDiscoveryConfigMode(context.Background(), current)
+			if err != nil {
+				t.Fatalf("ensureDiscoveryConfigMode() error = %v", err)
+			}
+			if requeue != tt.wantRequeue {
+				t.Fatalf("requeue = %v, want %v", requeue, tt.wantRequeue)
+			}
+
+			persisted := &workloadsv1alpha1.RoleBasedGroup{}
+			if err := client.Get(context.Background(), key, persisted); err != nil {
+				t.Fatalf("get persisted rbg error: %v", err)
+			}
+			if got := persisted.GetDiscoveryConfigMode(); got != tt.wantMode {
+				t.Fatalf("mode = %s, want %s", got, tt.wantMode)
+			}
+			_, hasModeAnnotation := persisted.Annotations[workloadsv1alpha1.DiscoveryConfigModeAnnotationKey]
+			if hasModeAnnotation != tt.wantModeAnnotation {
+				t.Fatalf("has discovery-config-mode annotation = %v, want %v", hasModeAnnotation, tt.wantModeAnnotation)
+			}
+		})
+	}
 }
 
 func TestReconcileRefinedDiscoveryConfigMap(t *testing.T) {
