@@ -687,7 +687,7 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 		return false, nil
 	}
 
-	if monotonic && condemned[i] != firstUnhealthyInstance && isHealthy(condemned[i]) {
+	if monotonic && condemned[i] != firstUnhealthyInstance && !isHealthy(condemned[i]) {
 		return true, nil
 	}
 
