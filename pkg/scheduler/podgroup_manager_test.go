@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
@@ -62,7 +63,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	tests := []struct {
 		name        string
 		client      client.Client
-		rbg         *workloadsv1alpha.RoleBasedGroup
+		rbg         *workloadsv1alpha2.RoleBasedGroup
 		apiReader   client.Reader
 		preFunc     func()
 		expectPG    bool
@@ -71,7 +72,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "create pod group when gang scheduling enabled and pod group not exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+			rbg: wrappers.BuildBasicRoleBasedGroupV2(rbgName, rbgNamespace).
 				WithKubeGangScheduling(true).Obj(),
 			apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&apiextensionsv1.CustomResourceDefinition{
@@ -92,7 +93,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "create pod group when volcano gang scheduling enabled and pod group not exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+			rbg: wrappers.BuildBasicRoleBasedGroupV2(rbgName, rbgNamespace).
 				WithVolcanoGangScheduling("high-priority", "gpu-queue").Obj(),
 			apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&apiextensionsv1.CustomResourceDefinition{
@@ -113,14 +114,14 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "rbg with nil PodGroupPolicy",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      rbgName,
 					Namespace: rbgNamespace,
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 					PodGroupPolicy: nil,
-					Roles: []workloadsv1alpha.RoleSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "role1",
 							Replicas: ptr.To[int32](5), // Updated replica count
@@ -138,18 +139,18 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "rbg with nil KubeScheduling",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      rbgName,
 					Namespace: rbgNamespace,
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					PodGroupPolicy: &workloadsv1alpha.PodGroupPolicy{
-						PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					PodGroupPolicy: &workloadsv1alpha2.PodGroupPolicy{
+						PodGroupPolicySource: workloadsv1alpha2.PodGroupPolicySource{
 							KubeScheduling: nil,
 						},
 					},
-					Roles: []workloadsv1alpha.RoleSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "role1",
 							Replicas: ptr.To[int32](5), // Updated replica count
@@ -163,20 +164,20 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "update pod group when gang scheduling enabled and pod group exists with different min member",
 			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      rbgName,
 					Namespace: rbgNamespace,
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					PodGroupPolicy: &workloadsv1alpha.PodGroupPolicy{
-						PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
-							KubeScheduling: &workloadsv1alpha.KubeSchedulingPodGroupPolicySource{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					PodGroupPolicy: &workloadsv1alpha2.PodGroupPolicy{
+						PodGroupPolicySource: workloadsv1alpha2.PodGroupPolicySource{
+							KubeScheduling: &workloadsv1alpha2.KubeSchedulingPodGroupPolicySource{
 								ScheduleTimeoutSeconds: ptr.To(int32(30)),
 							},
 						},
 					},
-					Roles: []workloadsv1alpha.RoleSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "role1",
 							Replicas: ptr.To[int32](5), // Updated replica count
@@ -203,7 +204,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "delete pod group when gang scheduling disabled and pod group exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+			rbg: wrappers.BuildBasicRoleBasedGroupV2(rbgName, rbgNamespace).
 				WithKubeGangScheduling(false).Obj(),
 			preFunc: func() {
 				watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
@@ -215,7 +216,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		{
 			name:   "do nothing when gang scheduling disabled and pod group not exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+			rbg: wrappers.BuildBasicRoleBasedGroupV2(rbgName, rbgNamespace).
 				WithKubeGangScheduling(false).Obj(),
 			preFunc: func() {
 				watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})

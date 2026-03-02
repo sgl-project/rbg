@@ -9,11 +9,10 @@ resources:
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
-# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
-# patches here are for enabling the conversion webhook for each CRD
+# [WEBHOOK] Enable conversion webhook for RoleBasedGroup CRD
+- path: patches/webhook_in_rolebasedgroups.yaml
 # +kubebuilder:scaffold:crdkustomizewebhookpatch
 
-# [WEBHOOK] To enable webhook, uncomment the following section
-# the following config is for teaching kustomize how to do kustomization for CRDs.
-#configurations:
-#- kustomizeconfig.yaml
+# [WEBHOOK] The following config is for teaching kustomize how to do kustomization for CRDs.
+configurations:
+- kustomizeconfig.yaml

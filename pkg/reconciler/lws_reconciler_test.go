@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/wrappers"
 )
 
@@ -31,11 +32,12 @@ func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = lwsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	// Create test objects
-	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-		WithRoles([]workloadsv1alpha1.RoleSpec{wrappers.BuildLwsRole("test-role").Obj()}).Obj()
+	lwsRole := wrappers.BuildLwsRoleV2("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{wrappers.BuildLwsRoleV2("test-role").Obj()}).Obj()
 
 	// Create a fake client with initial objects
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -70,11 +72,12 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = lwsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	// Create test objects
-	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-		WithRoles([]workloadsv1alpha1.RoleSpec{lwsRole}).Obj()
+	lwsRole := wrappers.BuildLwsRoleV2("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{lwsRole}).Obj()
 
 	// Create LWS with status
 	lws := &lwsv1.LeaderWorkerSet{
@@ -104,8 +107,8 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 	assert.Equal(t, int32(3), status.ReadyReplicas)
 
 	// Add status to RBG and test again
-	rbg.Status = workloadsv1alpha1.RoleBasedGroupStatus{
-		RoleStatuses: []workloadsv1alpha1.RoleStatus{status},
+	rbg.Status = workloadsv1alpha2.RoleBasedGroupStatus{
+		RoleStatuses: []workloadsv1alpha2.RoleStatus{status},
 	}
 
 	// Test when status is the same (should not need update)
@@ -122,11 +125,12 @@ func TestLeaderWorkerSetReconciler_CheckWorkloadReady(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = lwsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	// Create test objects
-	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-		WithRoles([]workloadsv1alpha1.RoleSpec{lwsRole}).Obj()
+	lwsRole := wrappers.BuildLwsRoleV2("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{lwsRole}).Obj()
 
 	tests := []struct {
 		name        string
@@ -205,38 +209,41 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = lwsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = apiextensionsv1.AddToScheme(scheme)
 
 	// Create test RBG
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "rbg-uid-1",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:     "role1",
 					Replicas: ptr.To(int32(2)),
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "leaderworkerset.x-k8s.io/v1",
 						Kind:       "LeaderWorkerSet",
 					},
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						Template: &corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								Containers: []corev1.Container{
-									{
-										Name:  "test-container",
-										Image: "nginx:latest",
+					Pattern: &workloadsv1alpha2.Pattern{
+						LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+							Size: ptr.To(int32(3)),
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &corev1.PodTemplateSpec{
+									Spec: corev1.PodSpec{
+										Containers: []corev1.Container{
+											{
+												Name:  "test-container",
+												Image: "nginx:latest",
+											},
+										},
 									},
 								},
 							},
 						},
-					},
-					LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
-						Size: ptr.To(int32(3)),
 					},
 				},
 			},
@@ -354,10 +361,11 @@ func TestLeaderWorkerSetReconciler_RecreateWorkload(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = lwsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	lwsRole := wrappers.BuildLwsRole("test-role").Obj()
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
-		WithRoles([]workloadsv1alpha1.RoleSpec{lwsRole}).Obj()
+	lwsRole := wrappers.BuildLwsRoleV2("test-role").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{lwsRole}).Obj()
 
 	lws := &lwsv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -369,8 +377,8 @@ func TestLeaderWorkerSetReconciler_RecreateWorkload(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		rbg           *workloadsv1alpha1.RoleBasedGroup
-		role          *workloadsv1alpha1.RoleSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
 		lws           *lwsv1.LeaderWorkerSet
 		mockReconcile bool
 		wantErr       bool
@@ -498,27 +506,28 @@ func TestConstructLWSApplyConfiguration_CoordinationRollingUpdate(t *testing.T) 
 	_ = appsv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
 
-	role := &workloadsv1alpha1.RoleSpec{
+	role := &workloadsv1alpha2.RoleSpec{
 		Name:            "test-role",
 		Replicas:        ptr.To(int32(3)),
 		RolloutStrategy: nil, // no role-level rolling update
 	}
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{*role},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{*role},
 		},
 	}
 
-	coordinationRollingUpdate := &workloadsv1alpha1.RollingUpdate{
+	coordinationRollingUpdate := &workloadsv1alpha2.RollingUpdate{
 		Partition: ptr.To(intstr.FromInt32(2)),
 	}
 
@@ -537,18 +546,18 @@ func TestConstructLWSApplyConfiguration_CoordinationRollingUpdate(t *testing.T) 
 }
 
 func TestConstructLWSApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
-	role := &workloadsv1alpha1.RoleSpec{
+	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
 	}
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{*role},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{*role},
 		},
 	}
 

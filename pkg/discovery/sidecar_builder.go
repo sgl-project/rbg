@@ -8,18 +8,19 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type SidecarBuilder struct {
-	rbg    *workloadsv1alpha.RoleBasedGroup
-	role   *workloadsv1alpha.RoleSpec
+	rbg    *workloadsv1alpha2.RoleBasedGroup
+	role   *workloadsv1alpha2.RoleSpec
 	client client.Client
 }
 
 func NewSidecarBuilder(
-	k8sClient client.Client, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+	k8sClient client.Client, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) *SidecarBuilder {
 	return &SidecarBuilder{
 		rbg:    rbg,
@@ -52,11 +53,11 @@ func (b *SidecarBuilder) Build(ctx context.Context, podSpec *v1.PodTemplateSpec)
 
 func (b *SidecarBuilder) injectRuntime(
 	ctx context.Context, podSpec *v1.PodTemplateSpec,
-	runtime workloadsv1alpha.EngineRuntime,
+	runtime workloadsv1alpha2.EngineRuntime,
 ) error {
 	logger := log.FromContext(ctx)
 
-	engineRuntime := &workloadsv1alpha.ClusterEngineRuntimeProfile{}
+	engineRuntime := &workloadsv1alpha1.ClusterEngineRuntimeProfile{}
 	if err := b.client.Get(
 		ctx, types.NamespacedName{
 			Name: runtime.ProfileName,

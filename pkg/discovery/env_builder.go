@@ -6,11 +6,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 type EnvBuilder struct {
-	rbg  *workloadsv1alpha1.RoleBasedGroup
-	role *workloadsv1alpha1.RoleSpec
+	rbg  *workloadsv1alpha2.RoleBasedGroup
+	role *workloadsv1alpha2.RoleSpec
 }
 
 func (g *EnvBuilder) Build() []corev1.EnvVar {

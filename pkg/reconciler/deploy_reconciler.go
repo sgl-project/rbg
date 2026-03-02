@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -36,10 +37,10 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 }
 
 func (r *DeploymentReconciler) Validate(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	ctx context.Context, role *workloadsv1alpha2.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
-	if role.TemplateSource.Template == nil && !role.UsesRoleTemplate() {
+	if role.GetTemplate() == nil && !role.UsesRoleTemplate() {
 		return fmt.Errorf("either 'template' or 'templateRef' is required when use %s as workload", role.Workload.String())
 	}
 
@@ -47,8 +48,8 @@ func (r *DeploymentReconciler) Validate(
 }
 
 func (r *DeploymentReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error {
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling deployment workload")
 
@@ -101,10 +102,10 @@ func (r *DeploymentReconciler) Reconciler(
 
 func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	oldDeploy *appsv1.Deployment,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate,
 	revisionKey string,
 ) (*appsapplyv1.DeploymentApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
@@ -197,20 +198,20 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 
 func (r *DeploymentReconciler) ConstructRoleStatus(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-) (workloadsv1alpha1.RoleStatus, bool, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+) (workloadsv1alpha2.RoleStatus, bool, error) {
 	updateStatus := false
 	deploy := &appsv1.Deployment{}
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
 	); err != nil {
-		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, err
 	}
 
 	if deploy.Status.ObservedGeneration < deploy.Generation {
 		err := fmt.Errorf("role(%s) workload generation not equal to observed generation", role.Name)
-		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, err
 	}
 
 	currentReplicas := *deploy.Spec.Replicas
@@ -220,7 +221,7 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 	if !found || status.Replicas != currentReplicas ||
 		status.ReadyReplicas != currentReady ||
 		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
+		status = workloadsv1alpha2.RoleStatus{
 			Name:            role.Name,
 			Replicas:        currentReplicas,
 			ReadyReplicas:   currentReady,
@@ -233,7 +234,7 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 }
 
 func (r *DeploymentReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (bool, error) {
 	deploy := &appsv1.Deployment{}
 	if err := r.client.Get(
@@ -251,7 +252,7 @@ func (r *DeploymentReconciler) CheckWorkloadReady(
 }
 
 func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	// list deploy managed by rbg
@@ -260,7 +261,7 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 		context.Background(), deployList, client.InNamespace(rbg.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				workloadsv1alpha2.SetNameLabelKey: rbg.Name,
 			},
 		),
 	); err != nil {
@@ -289,8 +290,8 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 }
 
 func (r *DeploymentReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 ) error {
 	logger := log.FromContext(ctx)
 	if rbg == nil || role == nil {

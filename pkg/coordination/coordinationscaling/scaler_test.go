@@ -20,22 +20,22 @@ import (
 	"testing"
 
 	"k8s.io/utils/ptr"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestNewCoordinationScaler(t *testing.T) {
 	tests := []struct {
 		name         string
-		coordination *workloadsv1alpha1.Coordination
+		coordination *workloadsv1alpha2.Coordination
 		wantErr      bool
 	}{
 		{
 			name: "valid coordination with 5% maxSkew",
-			coordination: &workloadsv1alpha1.Coordination{
+			coordination: &workloadsv1alpha2.Coordination{
 				Name:  "test-coordination",
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
+				Strategy: &workloadsv1alpha2.CoordinationStrategy{
+					Scaling: &workloadsv1alpha2.CoordinationScaling{
 						MaxSkew: ptr.To("5%"),
 					},
 				},
@@ -49,10 +49,10 @@ func TestNewCoordinationScaler(t *testing.T) {
 		},
 		{
 			name: "nil scaling strategy",
-			coordination: &workloadsv1alpha1.Coordination{
+			coordination: &workloadsv1alpha2.Coordination{
 				Name:  "test-coordination",
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
+				Strategy: &workloadsv1alpha2.CoordinationStrategy{
 					Scaling: nil,
 				},
 			},
@@ -60,11 +60,11 @@ func TestNewCoordinationScaler(t *testing.T) {
 		},
 		{
 			name: "nil maxSkew uses default 100% (no limit)",
-			coordination: &workloadsv1alpha1.Coordination{
+			coordination: &workloadsv1alpha2.Coordination{
 				Name:  "test-coordination",
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
+				Strategy: &workloadsv1alpha2.CoordinationStrategy{
+					Scaling: &workloadsv1alpha2.CoordinationScaling{
 						MaxSkew: nil,
 					},
 				},
@@ -73,11 +73,11 @@ func TestNewCoordinationScaler(t *testing.T) {
 		},
 		{
 			name: "invalid maxSkew format",
-			coordination: &workloadsv1alpha1.Coordination{
+			coordination: &workloadsv1alpha2.Coordination{
 				Name:  "test-coordination",
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
+				Strategy: &workloadsv1alpha2.CoordinationStrategy{
+					Scaling: &workloadsv1alpha2.CoordinationScaling{
 						MaxSkew: ptr.To("5"),
 					},
 				},
@@ -482,11 +482,11 @@ func TestCalculateTargetReplicas(t *testing.T) {
 				roles = append(roles, roleName)
 			}
 
-			coordination := &workloadsv1alpha1.Coordination{
+			coordination := &workloadsv1alpha2.Coordination{
 				Name:  "test-coordination",
 				Roles: roles,
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
+				Strategy: &workloadsv1alpha2.CoordinationStrategy{
+					Scaling: &workloadsv1alpha2.CoordinationScaling{
 						MaxSkew: ptr.To(tt.maxSkew),
 					},
 				},
@@ -604,7 +604,7 @@ func TestProgressionStrategy(t *testing.T) {
 	tests := []struct {
 		name        string
 		maxSkew     string
-		progression *workloadsv1alpha1.ProgressionType
+		progression *workloadsv1alpha2.ProgressionType
 		roleStates  map[string]RoleScalingState
 		wantTargets map[string]int32
 		wantErr     bool
@@ -612,7 +612,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderScheduled - wait for scheduling",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+			progression: ptr.To(workloadsv1alpha2.OrderScheduled),
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -638,7 +638,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderScheduled - all scheduled, proceed",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+			progression: ptr.To(workloadsv1alpha2.OrderScheduled),
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -664,7 +664,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderReady - wait for ready",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderReady),
+			progression: ptr.To(workloadsv1alpha2.OrderReady),
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -690,7 +690,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderReady - all ready, proceed",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderReady),
+			progression: ptr.To(workloadsv1alpha2.OrderReady),
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -723,11 +723,11 @@ func TestProgressionStrategy(t *testing.T) {
 				roles = append(roles, roleName)
 			}
 
-			coordination := &workloadsv1alpha1.Coordination{
+			coordination := &workloadsv1alpha2.Coordination{
 				Name:  "test-coordination",
 				Roles: roles,
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
+				Strategy: &workloadsv1alpha2.CoordinationStrategy{
+					Scaling: &workloadsv1alpha2.CoordinationScaling{
 						MaxSkew:     ptr.To(tt.maxSkew),
 						Progression: tt.progression,
 					},

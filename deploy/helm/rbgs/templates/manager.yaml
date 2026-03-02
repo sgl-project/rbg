@@ -32,14 +32,36 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            {{- if .Values.webhook.enabled }}
+            - --webhook-cert-path={{ .Values.webhook.certPath }}
+            {{- end }}
           command:
             - /manager
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.webhook.enabled }}
+          ports:
+            - containerPort: {{ .Values.webhook.port }}
+              name: webhook-server
+              protocol: TCP
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.webhook.enabled }}
+          volumeMounts:
+            - mountPath: {{ .Values.webhook.certPath }}
+              name: cert
+              readOnly: true
+          {{- end }}
+      {{- if .Values.webhook.enabled }}
+      volumes:
+        - name: cert
+          secret:
+            defaultMode: 420
+            secretName: {{ .Values.webhook.certSecretName }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

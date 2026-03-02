@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
 )
@@ -22,13 +23,14 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	// Setup test environment
 	s := scheme.Scheme
 	require.NoError(t, workloadsv1alpha1.AddToScheme(s))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
 	require.NoError(t, appsv1.AddToScheme(s))
 
 	// Create test objects
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
-		[]workloadsv1alpha1.RoleSpec{
-			wrappers.BuildBasicRole("test-role-statefulset").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
-			wrappers.BuildBasicRole("test-role-instanceset").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj(),
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").WithRoles(
+		[]workloadsv1alpha2.RoleSpec{
+			wrappers.BuildBasicRoleV2("test-role-statefulset").WithWorkload(workloadsv1alpha2.StatefulSetWorkloadType).Obj(),
+			wrappers.BuildBasicRoleV2("test-role-instanceset").WithWorkload(workloadsv1alpha2.InstanceSetWorkloadType).Obj(),
 		},
 	).Obj()
 

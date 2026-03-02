@@ -34,6 +34,19 @@ nodeSelector: {}
 
 tolerations: []
 
+# Webhook configuration for conversion webhook
+webhook:
+  enabled: true
+  port: 9443
+  # Certificate configuration
+  # When certManager.enabled is false, you need to provide your own certificates
+  certManager:
+    enabled: false
+  # Path to mount certificates (used when certManager is disabled)
+  certPath: /tmp/k8s-webhook-server/serving-certs
+  # Secret name containing TLS certificates
+  certSecretName: rbgs-webhook-server-cert
+
 crdUpgrade:
   enabled: true
   # This sets the time-to-live (TTL) for crd-upgrade jobs. Default is 259200 seconds (3 days).

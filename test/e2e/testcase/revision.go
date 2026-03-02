@@ -31,7 +31,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				).Obj()
 
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-			old, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+			old, err := pkgutils.NewRevisionForV1Alpha1(f.Ctx, f.Client, rbg, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			oldRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(old)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -54,7 +54,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				roleHashKey2: oldRoleRevisionHash[rbg.Spec.Roles[2].Name],
 			})
 			// update
-			new, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+			new, err := pkgutils.NewRevisionForV1Alpha1(f.Ctx, f.Client, rbg, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			newRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(new)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())

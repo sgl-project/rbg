@@ -23,12 +23,12 @@ import (
 	"strconv"
 	"strings"
 
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // CoordinationScaler calculates the target replicas for each role based on coordination scaling strategy.
 type CoordinationScaler struct {
-	coordination *workloadsv1alpha1.Coordination
+	coordination *workloadsv1alpha2.Coordination
 	maxSkew      float64
 }
 
@@ -42,7 +42,7 @@ type RoleScalingState struct {
 }
 
 // NewCoordinationScaler creates a new CoordinationScaler instance.
-func NewCoordinationScaler(coordination *workloadsv1alpha1.Coordination) (*CoordinationScaler, error) {
+func NewCoordinationScaler(coordination *workloadsv1alpha2.Coordination) (*CoordinationScaler, error) {
 	if coordination == nil || coordination.Strategy == nil || coordination.Strategy.Scaling == nil {
 		return nil, fmt.Errorf("invalid coordination configuration: scaling strategy is nil")
 	}
@@ -80,7 +80,7 @@ func (s *CoordinationScaler) CalculateTargetReplicas(roleStates map[string]RoleS
 	}
 
 	// Get progression strategy (default to OrderScheduled)
-	progression := workloadsv1alpha1.OrderScheduled
+	progression := workloadsv1alpha2.OrderScheduled
 	if s.coordination.Strategy.Scaling.Progression != nil {
 		progression = *s.coordination.Strategy.Scaling.Progression
 	}
@@ -182,7 +182,7 @@ func (s *CoordinationScaler) GetCoordinationRoles() []string {
 // It verifies that all roles in the coordination meet the progression requirement.
 func (s *CoordinationScaler) canProceedToNextBatch(
 	roleStates map[string]RoleScalingState,
-	progression workloadsv1alpha1.ProgressionType,
+	progression workloadsv1alpha2.ProgressionType,
 ) bool {
 	// If all roles are at desired replicas, we're done
 	allAtDesired := true
@@ -213,12 +213,12 @@ func (s *CoordinationScaler) canProceedToNextBatch(
 
 		// Check based on progression type
 		switch progression {
-		case workloadsv1alpha1.OrderScheduled:
+		case workloadsv1alpha2.OrderScheduled:
 			// All current replicas must be scheduled
 			if state.ScheduledReplicas < state.CurrentReplicas {
 				return false
 			}
-		case workloadsv1alpha1.OrderReady:
+		case workloadsv1alpha2.OrderReady:
 			// All current replicas must be ready
 			if state.ReadyReplicas < state.CurrentReplicas {
 				return false

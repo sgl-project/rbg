@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	workloadsv1alpha1client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/test/wrappers"
 )
@@ -28,16 +29,16 @@ import (
 func TestInstanceSetReconciler_Validate(t *testing.T) {
 	tests := []struct {
 		name        string
-		role        *workloadsv1alpha1.RoleSpec
+		role        *workloadsv1alpha2.RoleSpec
 		expectError bool
 	}{
 		{
-			name: "valid components without template or leaderWorkerSet",
-			role: &workloadsv1alpha1.RoleSpec{
+			name: "valid components without template or leaderWorkerPattern",
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				Components: []workloadsv1alpha1.InstanceComponent{
+				Components: []workloadsv1alpha2.InstanceComponent{
 					{
 						Name: "test-component",
 						Size: ptr.To(int32(1)),
@@ -58,120 +59,146 @@ func TestInstanceSetReconciler_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid components with template",
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				Components: []workloadsv1alpha1.InstanceComponent{
+				Components: []workloadsv1alpha2.InstanceComponent{
 					{
 						Name: "test-component",
 						Size: ptr.To(int32(1)),
 					},
 				},
-				TemplateSource: workloadsv1alpha1.TemplateSource{
-					Template: &corev1.PodTemplateSpec{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+						TemplateSource: workloadsv1alpha2.TemplateSource{
+							Template: &corev1.PodTemplateSpec{},
+						},
+					},
 				},
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid components with leaderWorkerSet",
-			role: &workloadsv1alpha1.RoleSpec{
+			name: "invalid components with leaderWorkerPattern",
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				Components: []workloadsv1alpha1.InstanceComponent{
+				Components: []workloadsv1alpha2.InstanceComponent{
 					{
 						Name: "test-component",
 						Size: ptr.To(int32(1)),
 					},
 				},
-				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{},
+				},
 			},
 			expectError: true,
 		},
 		{
 			name: "valid template with Deployment pattern",
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				TemplateSource: workloadsv1alpha1.TemplateSource{
-					Template: &corev1.PodTemplateSpec{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+						TemplateSource: workloadsv1alpha2.TemplateSource{
+							Template: &corev1.PodTemplateSpec{},
+						},
+					},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid template without instance pattern",
-			role: &workloadsv1alpha1.RoleSpec{
-				TemplateSource: workloadsv1alpha1.TemplateSource{
-					Template: &corev1.PodTemplateSpec{},
+			role: &workloadsv1alpha2.RoleSpec{
+				Pattern: &workloadsv1alpha2.Pattern{
+					StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+						TemplateSource: workloadsv1alpha2.TemplateSource{
+							Template: &corev1.PodTemplateSpec{},
+						},
+					},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid template with Stateful pattern",
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatefulInstancePattern),
 				},
-				TemplateSource: workloadsv1alpha1.TemplateSource{
-					Template: &corev1.PodTemplateSpec{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+						TemplateSource: workloadsv1alpha2.TemplateSource{
+							Template: &corev1.PodTemplateSpec{},
+						},
+					},
 				},
 			},
 			expectError: false,
 		},
 		{
-			name: "valid leaderWorkerSet without components or template",
-			role: &workloadsv1alpha1.RoleSpec{
+			name: "valid leaderWorkerPattern without components or template",
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
-					PatchLeaderTemplate: &runtime.RawExtension{},
-					PatchWorkerTemplate: &runtime.RawExtension{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+						LeaderTemplatePatch: &runtime.RawExtension{},
+						WorkerTemplatePatch: &runtime.RawExtension{},
+					},
 				},
 			},
 			expectError: false,
 		},
 		{
-			name:        "invalid neither template nor leaderWorkerSet",
-			role:        &workloadsv1alpha1.RoleSpec{},
+			name:        "invalid neither template nor leaderWorkerPattern",
+			role:        &workloadsv1alpha2.RoleSpec{},
 			expectError: true,
 		},
 		{
-			name: "invalid leaderWorkerSet without patchLeaderTemplate",
-			role: &workloadsv1alpha1.RoleSpec{
+			name: "invalid leaderWorkerPattern without patchLeaderTemplate",
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
-					PatchWorkerTemplate: &runtime.RawExtension{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+						WorkerTemplatePatch: &runtime.RawExtension{},
+					},
 				},
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid leaderWorkerSet without patchWorkerTemplate",
-			role: &workloadsv1alpha1.RoleSpec{
+			name: "invalid leaderWorkerPattern without patchWorkerTemplate",
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
-					PatchLeaderTemplate: &runtime.RawExtension{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+						LeaderTemplatePatch: &runtime.RawExtension{},
+					},
 				},
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid leaderWorkerSet with neither patch templates",
-			role: &workloadsv1alpha1.RoleSpec{
+			name: "invalid leaderWorkerPattern with neither patch templates",
+			role: &workloadsv1alpha2.RoleSpec{
 				Annotations: map[string]string{
 					workloadsv1alpha1.RBGInstancePatternAnnotationKey: string(workloadsv1alpha1.StatelessInstancePattern),
 				},
-				LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{},
+				Pattern: &workloadsv1alpha2.Pattern{
+					LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{},
+				},
 			},
 			expectError: true,
 		},
@@ -197,11 +224,12 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	// Setup test environment
 	s := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha1.AddToScheme(s))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
 	require.NoError(t, appsv1.AddToScheme(s))
 	require.NoError(t, corev1.AddToScheme(s))
 
 	// Create test objects
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj()
 
 	// Setup fake client
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg).Build()
@@ -213,11 +241,11 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	revisionKey := "test-revision-key"
 
 	t.Run("with components configuration", func(t *testing.T) {
-		role := &workloadsv1alpha1.RoleSpec{
+		role := &workloadsv1alpha2.RoleSpec{
 			Name:            "test-role",
 			Replicas:        ptr.To(int32(3)),
 			MinReadySeconds: int32(10),
-			Components: []workloadsv1alpha1.InstanceComponent{
+			Components: []workloadsv1alpha2.InstanceComponent{
 				{
 					Name: "component-1",
 					Size: ptr.To(int32(2)),
@@ -249,7 +277,7 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 			},
 		}
 
-		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
+		rbg.Spec.Roles = []workloadsv1alpha2.RoleSpec{*role}
 
 		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
 			ctx, rbg, role, nil, revisionKey)
@@ -284,24 +312,28 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	})
 
 	t.Run("with template configuration", func(t *testing.T) {
-		role := &workloadsv1alpha1.RoleSpec{
+		role := &workloadsv1alpha2.RoleSpec{
 			Name:            "test-role-template",
 			Replicas:        ptr.To(int32(2)),
 			MinReadySeconds: int32(5),
-			TemplateSource: workloadsv1alpha1.TemplateSource{
-				Template: &corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:  "main-container",
-								Image: "nginx:alpine",
+			Pattern: &workloadsv1alpha2.Pattern{
+				StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+					TemplateSource: workloadsv1alpha2.TemplateSource{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Name:  "main-container",
+										Image: "nginx:alpine",
+									},
+								},
 							},
 						},
 					},
 				},
 			},
 		}
-		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
+		rbg.Spec.Roles = []workloadsv1alpha2.RoleSpec{*role}
 
 		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
 			ctx, rbg, role, nil, revisionKey)
@@ -329,21 +361,23 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	})
 
 	t.Run("with leaderWorkerSet configuration", func(t *testing.T) {
-		role := &workloadsv1alpha1.RoleSpec{
+		role := &workloadsv1alpha2.RoleSpec{
 			Name:            "test-role-lws",
 			Replicas:        ptr.To(int32(1)),
 			MinReadySeconds: int32(15),
-			LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
-				Size: ptr.To(int32(3)),
-				PatchLeaderTemplate: &runtime.RawExtension{
-					Raw: []byte(`{"spec":{"containers":[{"name":"leader","image":"nginx:latest"}]}}`),
-				},
-				PatchWorkerTemplate: &runtime.RawExtension{
-					Raw: []byte(`{"spec":{"containers":[{"name":"worker","image":"nginx:latest"}]}}`),
+			Pattern: &workloadsv1alpha2.Pattern{
+				LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+					Size: ptr.To(int32(3)),
+					LeaderTemplatePatch: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"containers":[{"name":"leader","image":"nginx:latest"}]}}`),
+					},
+					WorkerTemplatePatch: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"containers":[{"name":"worker","image":"nginx:latest"}]}}`),
+					},
 				},
 			},
 		}
-		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
+		rbg.Spec.Roles = []workloadsv1alpha2.RoleSpec{*role}
 
 		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
 			ctx, rbg, role, nil, revisionKey)
@@ -388,35 +422,39 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	})
 
 	t.Run("with rollout strategy", func(t *testing.T) {
-		rollingUpdateStrategy := &workloadsv1alpha1.RollingUpdate{
+		rollingUpdateStrategy := &workloadsv1alpha2.RollingUpdate{
 			Partition:      ptr.To(intstr.FromInt32(1)),
 			MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 		}
 
-		role := &workloadsv1alpha1.RoleSpec{
+		role := &workloadsv1alpha2.RoleSpec{
 			Name:     "test-role-strategy",
 			Replicas: ptr.To(int32(3)),
-			TemplateSource: workloadsv1alpha1.TemplateSource{
-				Template: &corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:  "test-container",
-								Image: "nginx:latest",
+			Pattern: &workloadsv1alpha2.Pattern{
+				StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+					TemplateSource: workloadsv1alpha2.TemplateSource{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Name:  "test-container",
+										Image: "nginx:latest",
+									},
+								},
 							},
 						},
 					},
 				},
 			},
-			RolloutStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+			RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
 					Partition:      ptr.To(intstr.FromInt32(2)),
 					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 				},
 			},
 		}
-		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
+		rbg.Spec.Roles = []workloadsv1alpha2.RoleSpec{*role}
 
 		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
 			ctx, rbg, role, rollingUpdateStrategy, revisionKey)
@@ -431,20 +469,22 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	})
 
 	t.Run("with invalid patch template", func(t *testing.T) {
-		role := &workloadsv1alpha1.RoleSpec{
+		role := &workloadsv1alpha2.RoleSpec{
 			Name:     "test-role-invalid",
 			Replicas: ptr.To(int32(1)),
-			LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{
-				Size: ptr.To(int32(1)),
-				PatchLeaderTemplate: &runtime.RawExtension{
-					Raw: []byte(`{invalid-json}`),
-				},
-				PatchWorkerTemplate: &runtime.RawExtension{
-					Raw: []byte(`{"spec":{"containers":[{"name":"worker","image":"nginx:latest"}]}}`),
+			Pattern: &workloadsv1alpha2.Pattern{
+				LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+					Size: ptr.To(int32(1)),
+					LeaderTemplatePatch: &runtime.RawExtension{
+						Raw: []byte(`{invalid-json}`),
+					},
+					WorkerTemplatePatch: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"containers":[{"name":"worker","image":"nginx:latest"}]}}`),
+					},
 				},
 			},
 		}
-		rbg.Spec.Roles = []workloadsv1alpha1.RoleSpec{*role}
+		rbg.Spec.Roles = []workloadsv1alpha2.RoleSpec{*role}
 
 		config, err := instanceSetReconciler.constructInstanceSetApplyConfiguration(
 			ctx, rbg, role, nil, revisionKey)
@@ -460,13 +500,14 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 	_ = appsv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
-	rollingRole := wrappers.BuildBasicRole("test-role").WithReplicas(4).
-		WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj()
+	role := wrappers.BuildBasicRoleV2("test-role").WithWorkload(workloadsv1alpha2.InstanceSetWorkloadType).Obj()
+	rollingRole := wrappers.BuildBasicRoleV2("test-role").WithReplicas(4).
+		WithWorkload(workloadsv1alpha2.InstanceSetWorkloadType).
 		WithRollingUpdate(
-			workloadsv1alpha1.RollingUpdate{
+			workloadsv1alpha2.RollingUpdate{
 				MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 				MaxSurge:       ptr.To(intstr.FromInt32(2)),
 				Partition:      ptr.To(intstr.FromInt32(1)),
@@ -475,8 +516,8 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		rbg       *workloadsv1alpha1.RoleBasedGroup
-		role      *workloadsv1alpha1.RoleSpec
+		rbg       *workloadsv1alpha2.RoleBasedGroup
+		role      *workloadsv1alpha2.RoleSpec
 		expectErr bool
 	}{
 		{
@@ -493,7 +534,7 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 		},
 		{
 			name:      "rbg name start with numeric",
-			rbg:       wrappers.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
+			rbg:       wrappers.BuildBasicRoleBasedGroupV2("123-rbg", "default").Obj(),
 			role:      &role,
 			expectErr: false,
 		},
@@ -546,14 +587,15 @@ func TestInstanceSetReconciler_CheckWorkloadReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj()
+	role := wrappers.BuildBasicRoleV2("test-role").WithWorkload(workloadsv1alpha2.InstanceSetWorkloadType).Obj()
 
 	tests := []struct {
 		name        string
-		rbg         *workloadsv1alpha1.RoleBasedGroup
-		role        *workloadsv1alpha1.RoleSpec
+		rbg         *workloadsv1alpha2.RoleBasedGroup
+		role        *workloadsv1alpha2.RoleSpec
 		instanceSet *workloadsv1alpha1.InstanceSet
 		expectReady bool
 		expectErr   bool
@@ -637,8 +679,9 @@ func TestInstanceSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj()
 
 	instanceSetOwned := &workloadsv1alpha1.InstanceSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -699,7 +742,7 @@ func TestInstanceSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		rbg           *workloadsv1alpha1.RoleBasedGroup
+		rbg           *workloadsv1alpha2.RoleBasedGroup
 		existingObjs  []runtime.Object
 		expectDeleted []string
 		expectErr     bool
@@ -757,9 +800,10 @@ func TestInstanceSetReconciler_RecreateWorkload(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
+	rbg := wrappers.BuildBasicRoleBasedGroupV2("test-rbg", "default").Obj()
+	role := wrappers.BuildBasicRoleV2("test-role").WithWorkload(workloadsv1alpha2.InstanceSetWorkloadType).Obj()
 	instanceSet := &workloadsv1alpha1.InstanceSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg-test-role",
@@ -771,8 +815,8 @@ func TestInstanceSetReconciler_RecreateWorkload(t *testing.T) {
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha1.RoleBasedGroup
-		role          *workloadsv1alpha1.RoleSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
 		mockReconcile bool
 		expectErr     bool
 	}{

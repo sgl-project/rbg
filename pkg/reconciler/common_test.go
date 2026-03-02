@@ -14,16 +14,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestConstructRoleStatue(t *testing.T) {
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 		},
-		Status: workloadsv1alpha1.RoleBasedGroupStatus{
-			RoleStatuses: []workloadsv1alpha1.RoleStatus{
+		Status: workloadsv1alpha2.RoleBasedGroupStatus{
+			RoleStatuses: []workloadsv1alpha2.RoleStatus{
 				{
 					Name:            "test-role",
 					Replicas:        3,
@@ -34,7 +35,7 @@ func TestConstructRoleStatue(t *testing.T) {
 		},
 	}
 
-	role := &workloadsv1alpha1.RoleSpec{
+	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
 	}
@@ -85,17 +86,17 @@ func TestConstructRoleStatue(t *testing.T) {
 }
 
 func TestCleanupOrphanedObjs(t *testing.T) {
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "rbg-uid",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name: "valid-role",
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "workloads.x-k8s.io/v1alpha1",
 						Kind:       "InstanceSet",
 					},

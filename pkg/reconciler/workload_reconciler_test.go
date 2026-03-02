@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // TestNewWorkloadReconciler tests the NewWorkloadReconciler function
@@ -20,18 +21,19 @@ func TestNewWorkloadReconciler(t *testing.T) {
 	_ = appsv1.AddToScheme(scheme)
 	_ = lwsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	tests := []struct {
 		name         string
-		workloadType workloadsv1alpha1.WorkloadSpec
+		workloadType workloadsv1alpha2.WorkloadSpec
 		expectError  bool
 		expectedType string
 	}{
 		{
 			name: "Deployment workload type",
-			workloadType: workloadsv1alpha1.WorkloadSpec{
+			workloadType: workloadsv1alpha2.WorkloadSpec{
 				APIVersion: "apps/v1",
 				Kind:       "Deployment",
 			},
@@ -40,7 +42,7 @@ func TestNewWorkloadReconciler(t *testing.T) {
 		},
 		{
 			name: "StatefulSet workload type",
-			workloadType: workloadsv1alpha1.WorkloadSpec{
+			workloadType: workloadsv1alpha2.WorkloadSpec{
 				APIVersion: "apps/v1",
 				Kind:       "StatefulSet",
 			},
@@ -49,7 +51,7 @@ func TestNewWorkloadReconciler(t *testing.T) {
 		},
 		{
 			name: "LeaderWorkerSet workload type",
-			workloadType: workloadsv1alpha1.WorkloadSpec{
+			workloadType: workloadsv1alpha2.WorkloadSpec{
 				APIVersion: "leaderworkerset.x-k8s.io/v1",
 				Kind:       "LeaderWorkerSet",
 			},
@@ -58,7 +60,7 @@ func TestNewWorkloadReconciler(t *testing.T) {
 		},
 		{
 			name: "Unsupported workload type",
-			workloadType: workloadsv1alpha1.WorkloadSpec{
+			workloadType: workloadsv1alpha2.WorkloadSpec{
 				APIVersion: "apps/v1",
 				Kind:       "UnsupportedWorkload",
 			},

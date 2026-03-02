@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
@@ -14,63 +14,65 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestSidecarBuilder_Build(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha.AddToScheme(scheme)
-	_ = v1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha.RoleBasedGroup
-		role          *workloadsv1alpha.RoleSpec
-		podSpec       *v1.PodTemplateSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
+		podSpec       *corev1.PodTemplateSpec
 		expectedError bool
 	}{
 		{
 			name:   "role not found",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name: "existing-role",
 						},
 					},
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "non-existent-role",
 			},
-			podSpec:       &v1.PodTemplateSpec{},
+			podSpec:       &corev1.PodTemplateSpec{},
 			expectedError: true,
 		},
 		{
 			name:   "no engine runtimes",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:           "test-role",
-							EngineRuntimes: []workloadsv1alpha.EngineRuntime{},
+							EngineRuntimes: []workloadsv1alpha2.EngineRuntime{},
 						},
 					},
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
-			podSpec:       &v1.PodTemplateSpec{},
+			podSpec:       &corev1.PodTemplateSpec{},
 			expectedError: false,
 		},
 	}
@@ -98,7 +100,8 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha.AddToScheme(scheme)
-	_ = v1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 
 	// Create test ClusterEngineRuntimeProfile
 	engineRuntime := &workloadsv1alpha.ClusterEngineRuntimeProfile{
@@ -106,23 +109,23 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 			Name: "test-engine",
 		},
 		Spec: workloadsv1alpha.ClusterEngineRuntimeProfileSpec{
-			InitContainers: []v1.Container{
+			InitContainers: []corev1.Container{
 				{
 					Name:  "init-container",
 					Image: "init-image:latest",
 				},
 			},
-			Containers: []v1.Container{
+			Containers: []corev1.Container{
 				{
 					Name:  "sidecar-container",
 					Image: "sidecar-image:latest",
 				},
 			},
-			Volumes: []v1.Volume{
+			Volumes: []corev1.Volume{
 				{
 					Name: "test-volume",
-					VolumeSource: v1.VolumeSource{
-						EmptyDir: &v1.EmptyDirVolumeSource{},
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},
@@ -137,42 +140,42 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha.RoleBasedGroup
-		role          *workloadsv1alpha.RoleSpec
-		podSpec       *v1.PodTemplateSpec
-		runtime       workloadsv1alpha.EngineRuntime
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
+		podSpec       *corev1.PodTemplateSpec
+		runtime       workloadsv1alpha2.EngineRuntime
 		expectedError bool
-		verifyFunc    func(*testing.T, *v1.PodTemplateSpec)
+		verifyFunc    func(*testing.T, *corev1.PodTemplateSpec)
 	}{
 		{
 			name:   "inject runtime successfully",
 			client: fakeClient,
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
-			podSpec: &v1.PodTemplateSpec{
-				Spec: v1.PodSpec{
-					InitContainers: []v1.Container{},
-					Containers: []v1.Container{
+			podSpec: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{},
+					Containers: []corev1.Container{
 						{
 							Name:  "main-container",
 							Image: "main-image:latest",
 						},
 					},
-					Volumes: []v1.Volume{},
+					Volumes: []corev1.Volume{},
 				},
 			},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "test-engine",
-				Containers:  []v1.Container{},
+				Containers:  []corev1.Container{},
 			},
 			expectedError: false,
-			verifyFunc: func(t *testing.T, podSpec *v1.PodTemplateSpec) {
+			verifyFunc: func(t *testing.T, podSpec *corev1.PodTemplateSpec) {
 				// Check init container was added
 				if len(podSpec.Spec.InitContainers) != 1 {
 					t.Errorf("Expected 1 init container, got %d", len(podSpec.Spec.InitContainers))
@@ -192,16 +195,16 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 		{
 			name:   "runtime not found",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
-			podSpec: &v1.PodTemplateSpec{},
-			runtime: workloadsv1alpha.EngineRuntime{
+			podSpec: &corev1.PodTemplateSpec{},
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "non-existent-engine",
 			},
 			expectedError: true,
@@ -210,17 +213,17 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 		{
 			name:   "override container env and args",
 			client: fakeClient,
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
-			podSpec: &v1.PodTemplateSpec{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
+			podSpec: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
 						{
 							Name:  "sidecar-container",
 							Image: "sidecar-image:latest",
@@ -228,12 +231,12 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 					},
 				},
 			},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "test-engine",
-				Containers: []v1.Container{
+				Containers: []corev1.Container{
 					{
 						Name: "sidecar-container",
-						Env: []v1.EnvVar{
+						Env: []corev1.EnvVar{
 							{
 								Name:  "TEST_ENV",
 								Value: "test-value",
@@ -244,7 +247,7 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 				},
 			},
 			expectedError: false,
-			verifyFunc: func(t *testing.T, podSpec *v1.PodTemplateSpec) {
+			verifyFunc: func(t *testing.T, podSpec *corev1.PodTemplateSpec) {
 				// Check container was updated with env and args
 				found := false
 				for _, container := range podSpec.Spec.Containers {
@@ -269,17 +272,17 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 		{
 			name:   "override non-existent container",
 			client: fakeClient,
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
-			podSpec: &v1.PodTemplateSpec{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
+			podSpec: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
 						{
 							Name:  "main-container",
 							Image: "main-image:latest",
@@ -287,12 +290,12 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 					},
 				},
 			},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "test-engine",
-				Containers: []v1.Container{
+				Containers: []corev1.Container{
 					{
 						Name: "non-existent-container",
-						Env: []v1.EnvVar{
+						Env: []corev1.EnvVar{
 							{
 								Name:  "TEST_ENV",
 								Value: "test-value",
@@ -302,7 +305,7 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 				},
 			},
 			expectedError: false,
-			verifyFunc: func(t *testing.T, podSpec *v1.PodTemplateSpec) {
+			verifyFunc: func(t *testing.T, podSpec *corev1.PodTemplateSpec) {
 				// Should not have added the env to any container
 				for _, container := range podSpec.Spec.Containers {
 					if container.Name == "non-existent-container" {
@@ -341,11 +344,12 @@ func TestNewSidecarBuilder(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha.AddToScheme(scheme)
-	_ = v1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	rbg := &workloadsv1alpha.RoleBasedGroup{}
-	role := &workloadsv1alpha.RoleSpec{}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	role := &workloadsv1alpha2.RoleSpec{}
 
 	builder := NewSidecarBuilder(client, rbg, role)
 	assert.NotEmpty(t, builder, "NewSidecarBuilder() should not return nil")
