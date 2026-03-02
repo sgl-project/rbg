@@ -142,36 +142,6 @@ func sha1Hash(s string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// EnableGangScheduling returns true if gang scheduling is enabled.
-func (rbg *RoleBasedGroup) EnableGangScheduling() bool {
-	return rbg.IsKubeGangScheduling() || rbg.IsVolcanoGangScheduling()
-}
-
-// IsVolcanoGangScheduling returns true if volcano gang scheduling is enabled.
-func (rbg *RoleBasedGroup) IsVolcanoGangScheduling() bool {
-	return rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.VolcanoScheduling != nil
-}
-
-// IsKubeGangScheduling returns true if kube gang scheduling is enabled.
-func (rbg *RoleBasedGroup) IsKubeGangScheduling() bool {
-	return rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.KubeScheduling != nil
-}
-
-// EnableGangScheduling returns true if gang scheduling is enabled.
-func (p *PodGroupPolicy) EnableGangScheduling() bool {
-	return p.IsKubeGangScheduling() || p.IsVolcanoGangScheduling()
-}
-
-// IsVolcanoGangScheduling returns true if volcano gang scheduling is enabled.
-func (p *PodGroupPolicy) IsVolcanoGangScheduling() bool {
-	return p != nil && p.PodGroupPolicySource.VolcanoScheduling != nil
-}
-
-// IsKubeGangScheduling returns true if kube gang scheduling is enabled.
-func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
-	return p != nil && p.PodGroupPolicySource.KubeScheduling != nil
-}
-
 // FindRoleTemplate finds a RoleTemplate by name in the RoleBasedGroup's spec.
 // Returns a deep copy of the template if found, or an error if not found.
 func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) {

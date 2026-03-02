@@ -133,12 +133,12 @@ func validateRoleTemplateFields(
 
 	// Defense-in-depth: reconcilers also validate template presence for supported workloads.
 	// Note: Empty Kind is treated as non-InstanceSet (defaults to StatefulSet), which requires template.
-	//if !hasTemplate && role.Workload.Kind != "InstanceSet" && len(role.Components) == 0 {
-	//	return fmt.Errorf(
-	//		"spec.roles[%d].template: required when templateRef is not set",
-	//		index,
-	//	)
-	//}
+	// if !hasTemplate && role.Workload.Kind != "InstanceSet" && len(role.Components) == 0 {
+	// 	return fmt.Errorf(
+	// 		"spec.roles[%d].template: required when templateRef is not set",
+	// 		index,
+	// 	)
+	// }
 
 	return nil
 }

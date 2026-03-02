@@ -131,30 +131,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.WorkloadSpecApplyConfiguration{}
 
 		// Group=workloads.x-k8s.io, Version=v1alpha2
-	case v1alpha2.SchemeGroupVersion.WithKind("Coordination"):
-		return &workloadsv1alpha2.CoordinationApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("CoordinationRollingUpdate"):
-		return &workloadsv1alpha2.CoordinationRollingUpdateApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("CoordinationScaling"):
-		return &workloadsv1alpha2.CoordinationScalingApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("CoordinationStrategy"):
-		return &workloadsv1alpha2.CoordinationStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha2.EngineRuntimeApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
 		return &workloadsv1alpha2.InPlaceUpdateStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InstanceComponent"):
 		return &workloadsv1alpha2.InstanceComponentApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("KubeSchedulingPodGroupPolicySource"):
-		return &workloadsv1alpha2.KubeSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("LeaderWorkerPattern"):
 		return &workloadsv1alpha2.LeaderWorkerPatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("Pattern"):
 		return &workloadsv1alpha2.PatternApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("PodGroupPolicy"):
-		return &workloadsv1alpha2.PodGroupPolicyApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("PodGroupPolicySource"):
-		return &workloadsv1alpha2.PodGroupPolicySourceApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroup"):
 		return &workloadsv1alpha2.RoleBasedGroupApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSpec"):
@@ -179,8 +165,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.TemplateRefApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("TemplateSource"):
 		return &workloadsv1alpha2.TemplateSourceApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("VolcanoSchedulingPodGroupPolicySource"):
-		return &workloadsv1alpha2.VolcanoSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("WorkloadSpec"):
 		return &workloadsv1alpha2.WorkloadSpecApplyConfiguration{}
 

@@ -16422,6 +16422,16 @@ spec:
                   - replicas
                   type: object
                   x-kubernetes-validations:
+                  - message: templateRef is not supported for InstanceSet workloads
+                    rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
+                      != ''InstanceSet'''
+                  - message: templateRef is not supported for LeaderWorkerSet workloads
+                    rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
+                      != ''LeaderWorkerSet'''
+                  - message: template or templateRef must be set for non-InstanceSet
+                      workloads
+                    rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
+                      && self.workload.kind == 'InstanceSet')
                   - message: template and templateRef are mutually exclusive
                     rule: '!(has(self.template) && has(self.templateRef))'
                 minItems: 1
@@ -16557,96 +16567,6 @@ spec:
           spec:
             description: RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
             properties:
-              coordination:
-                description: CoordinationRequirements describes the requirements of
-                  coordination strategies for some specified roles.
-                items:
-                  description: Coordination describes the requirements of coordination
-                    strategies for roles.
-                  properties:
-                    name:
-                      description: Name of the coordination.
-                      type: string
-                    roles:
-                      description: Roles that should be constrained by this coordination.
-                      items:
-                        type: string
-                      type: array
-                    strategy:
-                      description: RolloutStrategy describes the coordination strategies.
-                      properties:
-                        rollingUpdate:
-                          description: RollingUpdate defines the coordination strategies
-                            about rolling update.
-                          properties:
-                            maxSkew:
-                              description: MaxSkew defines the max skew requirement
-                                about updated replicas between the roles when rolling
-                                update.
-                              pattern: ^([0-9]|[1-9][0-9]|100)%$
-                              type: string
-                            maxUnavailable:
-                              description: MaxUnavailable defines the updating step
-                                during rolling.
-                              pattern: ^([0-9]|[1-9][0-9]|100)%$
-                              type: string
-                            partition:
-                              description: Partition indicates the replicas at which
-                                the role should be partitioned for rolling update.
-                              pattern: ^([0-9]|[1-9][0-9]|100)%$
-                              type: string
-                          type: object
-                        scaling:
-                          description: CoordinationScaling defines the scaling coordination
-                            strategy for progressive deployment.
-                          properties:
-                            maxSkew:
-                              description: MaxSkew defines the maximum allowed difference
-                                in deployment progress between roles.
-                              pattern: ^([0-9]|[1-9][0-9]|100)%$
-                              type: string
-                            progression:
-                              default: OrderScheduled
-                              description: Progression defines the progression strategy
-                                for scaling.
-                              enum:
-                              - OrderScheduled
-                              - OrderReady
-                              type: string
-                          type: object
-                      type: object
-                  required:
-                  - name
-                  - roles
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - name
-                x-kubernetes-list-type: map
-              podGroupPolicy:
-                description: Configuration for the PodGroup to enable gang-scheduling
-                  via supported plugins.
-                properties:
-                  kubeScheduling:
-                    description: KubeScheduling plugin from the Kubernetes scheduler-plugins
-                      for gang-scheduling.
-                    properties:
-                      scheduleTimeoutSeconds:
-                        default: 60
-                        description: Time threshold to schedule PodGroup for gang-scheduling.
-                        format: int32
-                        type: integer
-                    type: object
-                  volcanoScheduling:
-                    description: VolcanoSchedulingPodGroupPolicySource represents
-                      configuration for volcano podgroup scheduling plugin
-                    properties:
-                      priorityClassName:
-                        type: string
-                      queue:
-                        type: string
-                    type: object
-                type: object
               roleTemplates:
                 description: RoleTemplates defines reusable Pod templates that can
                   be referenced by roles.

@@ -18,11 +18,7 @@ package v1alpha2
 
 import (
 	ctrl "sigs.k8s.io/controller-runtime"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
-
-// log is for logging in this package.
-var rolebasedgrouplog = logf.Log.WithName("rolebasedgroup-resource")
 
 // SetupWebhookWithManager sets up the conversion webhook with the Manager.
 func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager) error {
