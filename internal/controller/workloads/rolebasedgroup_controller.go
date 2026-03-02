@@ -168,7 +168,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Step 6: Reconcile refined discovery ConfigMap.
 	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfig, err.Error())
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
 		return ctrl.Result{}, err
 	}
 
