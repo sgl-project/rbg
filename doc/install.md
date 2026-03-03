@@ -22,24 +22,78 @@ To wait for RoleBasedGroup controller to be fully available, run:
 kubectl wait deploy/rbgs-controller-manager -n rbgs-system --for=condition=available --timeout=5m
 ```
 
-### Install by helm
+### Install by Helm
 
-To install a released version of rbg in your cluster by [Helm](https://helm.sh/), run the following command:
+Due to the large size of CRD files (exceeding Helm's 1MB Secret limit), there are two installation methods:
+
+#### Method 1: Manual CRD Installation (Recommended for first install)
+
+**Step 1: Install CRDs**
 
 ```bash
-helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace
+kubectl apply --server-side -f deploy/helm/rbgs/crds/
 ```
+
+**Step 2: Install Controller via Helm**
+
+```bash
+helm upgrade --install rbgs deploy/helm/rbgs \
+    --create-namespace \
+    --namespace rbgs-system \
+    --skip-crds \
+    --wait
+```
+
+Or use the Makefile shortcut:
+
+```bash
+make helm-deploy
+```
+
+#### Method 2: Automatic CRD Upgrade (For upgrades)
+
+The Helm chart includes a CRD Upgrader Job that automatically installs/upgrades CRDs during `helm upgrade`. This is enabled by default.
+
+```bash
+helm upgrade --install rbgs deploy/helm/rbgs \
+    --create-namespace \
+    --namespace rbgs-system \
+    --set crdUpgrade.enabled=true \
+    --wait
+```
+
+**CRD Upgrader Configuration:**
+
+| Parameter | Description | Default |
+|-----------|-------------|------|
+| `crdUpgrade.enabled` | Enable CRD Upgrader Job | `true` |
+| `crdUpgrade.repository` | CRD Upgrader image repository | `rolebasedgroup/rbgs-upgrade-crd` |
+| `crdUpgrade.tag` | CRD Upgrader image tag | Chart appVersion |
+| `crdUpgrade.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
+| `crdUpgrade.tolerations` | Pod tolerations | `[{operator: Exists}]` |
+| `crdUpgrade.nodeSelector` | Pod node selector | `{}` |
 
 ### Uninstall
 
-To uninstall a released version of RoleBasedGroup from your cluster, run the following command:
+To uninstall RoleBasedGroup installed via kubectl:
 
 ```bash
 kubectl delete -f ./deploy/kubectl/manifests.yaml
 ```
 
-To uninstall a released version of RoleBasedGroup from your cluster by Helm, run the following command:
+To uninstall RoleBasedGroup installed via Helm:
 
 ```bash
-helm uninstall rbgs --namespace rbgs-system 
+# Uninstall controller (CRDs are preserved)
+helm uninstall rbgs --namespace rbgs-system
+
+# Optional: Delete CRDs (WARNING: this will delete all RoleBasedGroup/InstanceSet resources)
+kubectl delete -f deploy/helm/rbgs/crds/
+```
+
+Or use the Makefile shortcuts:
+
+```bash
+make helm-undeploy    # Uninstall controller only
+make uninstall-crds   # Delete CRDs (use with caution)
 ```

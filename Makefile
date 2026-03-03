@@ -259,6 +259,13 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm rbgs-builder
 	rm Dockerfile.cross
 
+.PHONY: docker-buildx-push-crd-upgrader
+docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-platform support
+	- $(CONTAINER_TOOL) buildx create --name rbgs-crd-builder
+	$(CONTAINER_TOOL) buildx use rbgs-crd-builder
+	- $(CONTAINER_TOOL) buildx build --push --platform=linux/amd64,linux/arm64 --tag ${CRD_UPGRADER_IMG}:${TAG} -f ${CRD_UPGRADER_DOCKERFILE} .
+	- $(CONTAINER_TOOL) buildx rm rbgs-crd-builder
+
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p deploy/kubectl
@@ -290,16 +297,28 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: helm-deploy
-helm-deploy: manifests ## Deploy controller via Helm to the K8s cluster specified in ~/.kube/config.
+helm-deploy: manifests install-crds ## Deploy controller via Helm to the K8s cluster specified in ~/.kube/config.
 	$(HELM) upgrade --install rbgs deploy/helm/rbgs \
 		--create-namespace \
 		--namespace rbgs-system \
 		--set image.tag=$(TAG) \
+		--skip-crds \
 		--wait
+
+.PHONY: install-crds
+install-crds: manifests ## Install CRDs into the K8s cluster (separate from Helm due to size limits).
+	@echo "Installing CRDs..."
+	$(KUBECTL) apply --server-side -f deploy/helm/rbgs/crds/
+
+.PHONY: uninstall-crds
+uninstall-crds: ## Uninstall CRDs from the K8s cluster (WARNING: deletes all CR instances).
+	@echo "WARNING: This will delete all RoleBasedGroup/InstanceSet resources!"
+	$(KUBECTL) delete -f deploy/helm/rbgs/crds/ --ignore-not-found
 
 .PHONY: helm-undeploy
 helm-undeploy: ## Undeploy controller installed via Helm from the K8s cluster.
 	$(HELM) uninstall rbgs --namespace rbgs-system --ignore-not-found || true
+	@echo "Note: CRDs are preserved. Run 'make uninstall-crds' to remove them."
 
 ##@ Dependencies
 

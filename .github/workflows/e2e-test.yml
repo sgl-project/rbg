@@ -95,11 +95,6 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
-      - name: Install CRDs
-        run: |
-          make manifests
-          kubectl apply --server-side -f config/crd/bases/
-
       - name: Install LeaderWorkerSet CRDs
         run: |
           kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
@@ -133,9 +128,21 @@ jobs:
           docker images | grep rbgs-controller || true
           kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-e2e
 
+      - name: Build and load CRD Upgrader image
+        run: |
+          make docker-build-crd-upgrader TAG=e2e-test
+          docker images | grep rbgs-upgrade-crd || true
+          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-test --name rbgs-e2e
+
       - name: Deploy controller
         run: |
-          make helm-deploy TAG=e2e-test
+          helm upgrade --install rbgs deploy/helm/rbgs \
+            --create-namespace \
+            --namespace rbgs-system \
+            --set image.tag=e2e-test \
+            --set crdUpgrade.enabled=true \
+            --set crdUpgrade.tag=e2e-test \
+            --wait
           kubectl get deploy -n rbgs-system
 
       - name: Wait for controller to be ready
