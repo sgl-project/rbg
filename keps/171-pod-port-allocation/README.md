@@ -67,7 +67,7 @@ rolebasedgroup.workloads.x-k8s.io/port.allocator-config: '[
         "portRef": ""
     },
     {
-        "shareName": "discorvery",
+        "shareName": "discovery",
         "startPort": 30000,
         "portRange": 10000,
         "annotationKey": "sglang.ai/service-discovery-port",
