@@ -117,7 +117,7 @@ For example, when using the following configuration:
   - Port 1: Injected into the container as the `LEADER_PORT` environment variable.
 - Each worker Pod will be allocated three ports, where Port 1 has different values across the two Pods, Port 2 has the same value across the two Pods, and Port 3 is the same as the leader Pod's Port 1
   - Port 1: Injected into the container as the `WORKER_PORT1` environment variable, and the corresponding Pod is annotated with `test/worker-port1`.
-  - Port 2: Injected into the container as the `WORKER_PORT2` environment variable, and the corresponding Pod is annotated with `test/worker-port1`.
+  - Port 2: Injected into the container as the `WORKER_PORT2` environment variable, and the corresponding Pod is annotated with `test/worker-port2`.
   - Port 3: Injected into the container as the `LEADER_PORT_REF` environment variable.
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha1
