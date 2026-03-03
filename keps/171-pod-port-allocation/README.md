@@ -185,7 +185,7 @@ type PortAllocator struct {
 }
 
 type PortAllocatorInterface interface {
-	// Start use to initialize the port allocator when the program starts
+	// Start is used to initialize the port allocator when the program starts
 	Start(client client.Client) error
 	// Allocate is used to inject requested ports into the pod
 	Allocate(instance *v1alpha1.Instance, pod *v1.Pod) error
