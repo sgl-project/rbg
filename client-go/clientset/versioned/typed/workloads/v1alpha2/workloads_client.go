@@ -28,6 +28,7 @@ import (
 type WorkloadsV1alpha2Interface interface {
 	RESTClient() rest.Interface
 	RoleBasedGroupsGetter
+	RoleBasedGroupSetsGetter
 }
 
 // WorkloadsV1alpha2Client is used to interact with features provided by the workloads.x-k8s.io group.
@@ -37,6 +38,10 @@ type WorkloadsV1alpha2Client struct {
 
 func (c *WorkloadsV1alpha2Client) RoleBasedGroups(namespace string) RoleBasedGroupInterface {
 	return newRoleBasedGroups(c, namespace)
+}
+
+func (c *WorkloadsV1alpha2Client) RoleBasedGroupSets(namespace string) RoleBasedGroupSetInterface {
+	return newRoleBasedGroupSets(c, namespace)
 }
 
 // NewForConfig creates a new WorkloadsV1alpha2Client for the given config.

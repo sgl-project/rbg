@@ -25,6 +25,8 @@ import (
 type Interface interface {
 	// RoleBasedGroups returns a RoleBasedGroupInformer.
 	RoleBasedGroups() RoleBasedGroupInformer
+	// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
+	RoleBasedGroupSets() RoleBasedGroupSetInformer
 }
 
 type version struct {
@@ -41,4 +43,9 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // RoleBasedGroups returns a RoleBasedGroupInformer.
 func (v *version) RoleBasedGroups() RoleBasedGroupInformer {
 	return &roleBasedGroupInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
+func (v *version) RoleBasedGroupSets() RoleBasedGroupSetInformer {
+	return &roleBasedGroupSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
