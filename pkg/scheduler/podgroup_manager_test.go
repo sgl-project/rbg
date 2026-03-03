@@ -90,6 +90,37 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:   "create kube pod group with instanceset lws role should use lws size",
+			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+			rbg: func() *workloadsv1alpha.RoleBasedGroup {
+				role := wrappers.BuildBasicRole("instance-lws-role").
+					WithWorkload(workloadsv1alpha.InstanceSetWorkloadType).
+					WithReplicas(2).Obj()
+				role.LeaderWorkerSet = &workloadsv1alpha.LeaderWorkerTemplate{
+					Size: ptr.To(int32(3)),
+				}
+
+				return wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+					WithRoles([]workloadsv1alpha.RoleSpec{role}).
+					WithKubeGangScheduling(true).Obj()
+			}(),
+			apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+				&apiextensionsv1.CustomResourceDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: KubePodGroupCrdName},
+					Status: apiextensionsv1.CustomResourceDefinitionStatus{
+						Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+							{
+								Type:   apiextensionsv1.Established,
+								Status: apiextensionsv1.ConditionTrue,
+							},
+						},
+					},
+				},
+			).Build(),
+			expectPG:    true,
+			expectError: false,
+		},
+		{
 			name:   "create pod group when volcano gang scheduling enabled and pod group not exists",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
 			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
