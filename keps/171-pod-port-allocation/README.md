@@ -102,7 +102,7 @@ type PortAllocatorConfig struct {
 	// Port allocation range
 	PortRange int32 `json:"portRange"`
 	// The annotation key for port injection into the Pod
-	Annotation string `json:"annotationKey"`
+	AnnotationKey string `json:"annotationKey"`
 	// Not empty
 	// The environment variable name for port injection into the Pod
 	Env string `json:"env"`
