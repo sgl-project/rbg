@@ -59,8 +59,6 @@ def get_health_check_endpoint(worker_info: dict) -> Optional[str]:
 
     return f"{local_url}:{port}"
 
-def translate_http_response_parameters(raw: str) -> str:
-    return raw.replace("/", "%2F")
 
 class SGLangGroupTopoClient(GroupTopoClient):
     _instance = None
@@ -77,6 +75,7 @@ class SGLangGroupTopoClient(GroupTopoClient):
             self.health_check_endpoint = get_health_check_endpoint(worker_info)
             self.worker_endpoint = get_worker_endpoint(worker_info)
             self.sgl_router_endpoint = get_sgl_router_endpoint(worker_info)
+            self.worker_id = None
             self.__initialized = True
 
     def wait_engine_ready(self, worker_info: dict) -> bool:
@@ -117,7 +116,8 @@ class SGLangGroupTopoClient(GroupTopoClient):
             resp = requests.post(worker_registration_url, json=worker_info, headers={"Content-Type": "application/json"})
             if resp.status_code == 202:
                 # Status Code 202 Accepted
-                logger.info(f"registered worker successfully.")
+                self.worker_id = resp.json().get("worker_id")
+                logger.info(f"registered worker successfully. worker_id: {self.worker_id}")
             else:
                 raise Exception(f"register failed, url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}")
 
@@ -132,12 +132,13 @@ class SGLangGroupTopoClient(GroupTopoClient):
 
     def unregister(self):
         def f():
-            url = f"http://{self.worker_endpoint}"
-            worker_registration_url = f"http://{self.sgl_router_endpoint}/workers/{translate_http_response_parameters(url)}"
+            if self.worker_id is None:
+                raise Exception("worker_id is not set, cannot unregister (registration may have failed)")
+            worker_registration_url = f"http://{self.sgl_router_endpoint}/workers/{self.worker_id}"
             resp = requests.delete(worker_registration_url)
             if resp.status_code == 202:
                 # Status Code 202 Accepted
-                logger.info(f"unregistered worker successfully.")
+                logger.info(f"unregistered worker successfully. worker_id: {self.worker_id}")
             else:
                 raise Exception(
                     f"unregister failed, url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}")
