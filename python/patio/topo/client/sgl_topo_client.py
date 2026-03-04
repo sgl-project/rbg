@@ -136,9 +136,11 @@ class SGLangGroupTopoClient(GroupTopoClient):
 
 
     def unregister(self):
+        if self.worker_id is None:
+            logger.warning("worker_id is not set, skipping unregister (registration may have failed)")
+            return False
+
         def f():
-            if self.worker_id is None:
-                raise Exception("worker_id is not set, cannot unregister (registration may have failed)")
             worker_registration_url = f"http://{self.sgl_router_endpoint}/workers/{self.worker_id}"
             resp = requests.delete(worker_registration_url)
             if resp.status_code == 202:
