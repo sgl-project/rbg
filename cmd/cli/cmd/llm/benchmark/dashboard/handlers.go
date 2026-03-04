@@ -389,6 +389,12 @@ func (s *Server) getExperiment(name string) (*Experiment, error) {
 // getResultSummaries returns summaries of all result files in an experiment.
 func (s *Server) getResultSummaries(experimentName string) ([]ResultSummary, error) {
 	expDir := filepath.Join(s.dataDir, experimentName)
+
+	// Security check: ensure the path is within dataDir to prevent path traversal
+	if !s.isPathSafe(expDir) {
+		return nil, fmt.Errorf("invalid experiment name: path traversal detected")
+	}
+
 	entries, err := os.ReadDir(expDir)
 	if err != nil {
 		return nil, err
