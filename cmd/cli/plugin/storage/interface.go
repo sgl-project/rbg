@@ -89,3 +89,12 @@ func RegisteredNames() []string {
 	}
 	return names
 }
+
+// GetFields returns the config fields for a plugin type without initializing it.
+func GetFields(pluginType string) []util.ConfigField {
+	factory, ok := registry[pluginType]
+	if !ok {
+		return nil
+	}
+	return factory().ConfigFields()
+}
