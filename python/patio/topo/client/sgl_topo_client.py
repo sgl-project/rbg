@@ -117,6 +117,11 @@ class SGLangGroupTopoClient(GroupTopoClient):
             if resp.status_code == 202:
                 # Status Code 202 Accepted
                 self.worker_id = resp.json().get("worker_id")
+                if self.worker_id is None:
+                    raise Exception(
+                        f"register failed: missing worker_id in response body, "
+                        f"url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}"
+                    )
                 logger.info(f"registered worker successfully. worker_id: {self.worker_id}")
             else:
                 raise Exception(f"register failed, url: {worker_registration_url}, status_code: {resp.status_code}, content: {resp.text}")
