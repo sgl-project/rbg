@@ -1,5 +1,7 @@
 # Migrating from v1alpha1 to v1alpha2
 
+> **Note** *(2026-03-05)*: This is a design document. The implementation is not yet complete.
+
 ## Motivation
 
 1. **Remove dependencies on StatefulSet, Deployment, and LeaderWorkerSet**
@@ -26,7 +28,7 @@ apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroup
 metadata: {}
 spec:
-  podGroup:
+  podGroupPolicy:
     volcanoScheduling:
       queue: default
   roles:
@@ -75,7 +77,7 @@ spec:
 ```
 
 ```bash
-/manager --gang-vendor kubeScheduling
+/manager --gang-scheduler-name kubeScheduling
 ```
 
 </td>
