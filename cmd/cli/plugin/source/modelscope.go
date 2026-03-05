@@ -52,8 +52,8 @@ func (m *ModelScopeSource) Init(config map[string]interface{}) error {
 	return nil
 }
 
-// GenerateTemplate generates a pod template for downloading models from ModelScope
-func (m *ModelScopeSource) GenerateTemplate(modelID string, modelPath string) (*corev1.PodTemplateSpec, error) {
+// GenerateTemplateWithRevision generates a pod template with revision support
+func (m *ModelScopeSource) GenerateTemplateWithRevision(modelID string, modelPath string, revision string) (*corev1.PodTemplateSpec, error) {
 	var env []corev1.EnvVar
 
 	if m.Token != "" {
@@ -63,21 +63,21 @@ func (m *ModelScopeSource) GenerateTemplate(modelID string, modelPath string) (*
 		})
 	}
 
+	// Build download command
+	downloadCmd := "pip install modelscope -q && modelscope download --model " + modelID + " --local_dir " + modelPath
+	if revision != "" && revision != "main" {
+		downloadCmd += " --revision " + revision
+	}
+
 	return &corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
 					Name:    "download",
-					Image:   "modelscope/modelscope:latest",
-					Command: []string{"modelscope"},
-					Args: []string{
-						"download",
-						"--model",
-						modelID,
-						"--local_dir",
-						modelPath,
-					},
-					Env: env,
+					Image:   "python:3.11-slim",
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{downloadCmd},
+					Env:     env,
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyNever,
