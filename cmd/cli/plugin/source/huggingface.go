@@ -57,8 +57,8 @@ func (h *HuggingFaceSource) Init(config map[string]interface{}) error {
 	return nil
 }
 
-// GenerateTemplate generates a pod template for downloading models from HuggingFace
-func (h *HuggingFaceSource) GenerateTemplate(modelID string, modelPath string) (*corev1.PodTemplateSpec, error) {
+// GenerateTemplateWithRevision generates a pod template with revision support
+func (h *HuggingFaceSource) GenerateTemplateWithRevision(modelID string, modelPath string, revision string) (*corev1.PodTemplateSpec, error) {
 	var env []corev1.EnvVar
 
 	if h.Token != "" {
@@ -75,20 +75,23 @@ func (h *HuggingFaceSource) GenerateTemplate(modelID string, modelPath string) (
 		})
 	}
 
+	// Build download command using Python API directly to avoid PATH issues with huggingface-cli
+	pythonScript := "from huggingface_hub import snapshot_download; snapshot_download('" + modelID + "', local_dir='" + modelPath + "'"
+	if revision != "" && revision != "main" {
+		pythonScript += ", revision='" + revision + "'"
+	}
+	pythonScript += ")"
+	downloadCmd := "pip install huggingface_hub -q && python -c \"" + pythonScript + "\""
+
 	return &corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
 					Name:    "download",
-					Image:   "huggingface/transformers:latest",
-					Command: []string{"huggingface-cli"},
-					Args: []string{
-						"download",
-						modelID,
-						"--local-dir",
-						modelPath,
-					},
-					Env: env,
+					Image:   "python:3.11-slim",
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{downloadCmd},
+					Env:     env,
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyNever,

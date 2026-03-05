@@ -33,8 +33,9 @@ type Plugin interface {
 	// Init initializes the source with credentials/config.
 	Init(config map[string]interface{}) error
 
-	// GenerateTemplate generates a PodTemplateSpec used to download the model.
-	GenerateTemplate(modelID string, modelPath string) (*corev1.PodTemplateSpec, error)
+	// GenerateTemplateWithRevision generates a PodTemplateSpec used to download the model with a specific revision.
+	// If revision is empty or "main", the default revision is used.
+	GenerateTemplateWithRevision(modelID string, modelPath string, revision string) (*corev1.PodTemplateSpec, error)
 }
 
 // Factory is a constructor for a source plugin.
