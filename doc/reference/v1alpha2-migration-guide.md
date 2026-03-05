@@ -1,15 +1,17 @@
 # Migrating from v1alpha1 to v1alpha2
 
-## 更新目的
+## Motivation
 
-1. 移除对 StatefuleSet、Deployment、LeaderWorkerSet 的依赖
-   1. RoleBasedGroup 选择三种资源作为子资源，这为用户带来额外的理解成本
-   2. 对 LeaderWorkerSet 的版本依赖，也导致了对 K8s 版本的依赖
-   3. 在 StatefuleSet、Deployment、LeaderWorkerSet 上难以支持原地升级等特性
-   4. Instance 和 InstanceSet 可以实现上述三种资源的全部能力
-2. 梳理 Label、Annotation 和 Envs，规范化的同时降低与其他产品冲突的可能
+1. **Remove dependencies on StatefulSet, Deployment, and LeaderWorkerSet**
+   - Using these three resources as child resources introduced additional cognitive overhead for users
+   - The version dependency on LeaderWorkerSet also imposed Kubernetes version constraints
+   - Features like in-place upgrades were difficult to implement on top of StatefulSet, Deployment, and LeaderWorkerSet
+   - Instance and InstanceSet can provide full parity with the capabilities of all three resources
 
-## Schema
+2. **Streamline Labels, Annotations, and Environment Variables**
+   - Standardize metadata conventions while reducing potential conflicts with other products
+
+## Schema Changes
 
 <table>
 <tr>
@@ -53,7 +55,7 @@ apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
   annotations:
-    group.rbg.workload.x-k8s.io/enable-gang: "true"
+    rbg.workloads.x-k8s.io/enable-gang: "true"
 spec:
   roles:
   - name: #roleName
@@ -80,39 +82,46 @@ spec:
 </tr>
 </table>
 
-修改内容：
+### Summary of Changes
 
-1. 逐步停用 `spec.roles[*].workload` 字段
-   1. 暂时保留该字段，默认值改为 InstanceSet
-   2. 若设置为 StatefulSet/Deployment/LeaderWorkerSet，提供 Warning Event 提醒 Deprecated
-2. 将组调度从 `spec` 中移除，改为通过控制器参数选择全局调度器，使用 `annotations` 设置是否使用组调度
-3. 使用 `spec.roles[*].standalonePattern` 实现 Deployment、StatefuleSet 的功能
-4. 使用 `spec.roles[*].leaderWorkerPattern` 实现 LeaderWorkerSet 的功能
-   1. 字段名称调整：`patchLeaderTemplate` -> `leaderPatch`，`patchWorkerTemplate` -> `workerPatch`
+1. **Gradual deprecation of `spec.roles[*].workload` field**
+   - The field is retained temporarily with InstanceSet as the new default
+   - Setting it to StatefulSet/Deployment/LeaderWorkerSet triggers a deprecation warning event
 
-使用 conversion 进行多版本 CRD 支持。
+2. **Gang scheduling configuration moved from spec to annotations**
+   - The scheduler is now selected globally via controller flags
+   - Gang scheduling is enabled per-resource through annotations
+
+3. **New `spec.roles[*].standalonePattern` field**
+   - Provides equivalent functionality to Deployment and StatefulSet
+
+4. **New `spec.roles[*].leaderWorkerPattern` field**
+   - Provides equivalent functionality to LeaderWorkerSet
+   - Field names updated: `patchLeaderTemplate` → `leaderPatch`, `patchWorkerTemplate` → `workerPatch`
+
+Multi-version CRD support is implemented through conversion webhooks.
 
 ## Labels & Annotations
 
-### 现状
+### Current State
 
-**前缀过多且混乱**
+**Excessive and Inconsistent Prefixes**
 
-| 前缀                                           | 位置                     |
-| ---------------------------------------------- | ------------------------ |
-| `rolebasedgroup.workloads.x-k8s.io/`           | RBG 层级                 |
-| `rolebasedgroupset.workloads.x-k8s.io/`        | RBGSet 层级              |
-| `component.rolebasedgroup.workloads.x-k8s.io/` | Component 层级           |
-| `instance.rolebasedgroup.workloads.x-k8s.io/`  | Instance 层级 (RBG 内嵌) |
-| `role.rolebasedgroup.workloads.x-k8s.io/`      | Role 层级                |
-| `instanceset.workloads.x-k8s.io/`              | InstanceSet 层级         |
-| `instance.workloads.x-k8s.io/`                 | Instance 层级 (独立)     |
-| `lifecycle.workloads.x-k8s.io/`                | 生命周期                 |
-| `workloads.x-k8s.io/`                          | 通用                     |
+| Prefix | Scope |
+| ------ | ----- |
+| `rolebasedgroup.workloads.x-k8s.io/` | RBG level |
+| `rolebasedgroupset.workloads.x-k8s.io/` | RBGSet level |
+| `component.rolebasedgroup.workloads.x-k8s.io/` | Component level |
+| `instance.rolebasedgroup.workloads.x-k8s.io/` | Instance level (embedded in RBG) |
+| `role.rolebasedgroup.workloads.x-k8s.io/` | Role level |
+| `instanceset.workloads.x-k8s.io/` | InstanceSet level |
+| `instance.workloads.x-k8s.io/` | Instance level (standalone) |
+| `lifecycle.workloads.x-k8s.io/` | Lifecycle |
+| `workloads.x-k8s.io/` | General purpose |
 
-**层级关系不清晰**
-  
-当前 label/annotation 没有清晰反映以下层级：
+**Unclear Hierarchy**
+
+The current labels and annotations do not clearly reflect the following hierarchy:
 
 ```
 RBGSet (GroupSet)
@@ -122,19 +131,19 @@ RBGSet (GroupSet)
                     └── Component (Pod)
 ```
 
-**命名风格不统一**
+**Inconsistent Naming Conventions**
 
-* 有的用 -id，有的用 -name
-* 后缀风格不一致（LabelKey vs 无后缀
+- Mix of `-id` and `-name` suffixes
+- Inconsistent use of suffixes (LabelKey vs none)
 
-### K8s 社区实践参考
+### Kubernetes Community Best Practices
 
-| 方式               | 格式                       | 示例                                 |
-| ------------------ | -------------------------- | ------------------------------------ |
-| 方式 A（RBG 采用） | {domain}/{key}             | rbg.workloads.x-k8s.io/groupset-name |
-| 方式 B             | {subdomain}.{domain}/{key} | groupset.rbg.workloads.x-k8s.io/name |
+| Approach | Format | Example |
+| -------- | ------ | ------- |
+| Approach A (RBG adopted) | `{domain}/{key}` | `rbg.workloads.x-k8s.io/groupset-name` |
+| Approach B | `{subdomain}.{domain}/{key}` | `groupset.rbg.workloads.x-k8s.io/name` |
 
-**Kubernetes 官方推荐 — 方式 A**
+**Kubernetes Official Recommendation — Approach A**
 
 ```yaml
 app.kubernetes.io/name: mysql
@@ -142,21 +151,21 @@ app.kubernetes.io/component: database
 app.kubernetes.io/version: "5.7.21"
 ```
 
-**LeaderWorkerSet — 方式 A**
+**LeaderWorkerSet — Approach A**
 
 ```yaml
 leaderworkerset.sigs.k8s.io/name: my-lws
 leaderworkerset.sigs.k8s.io/worker-index: "0"
 ```
 
-**Kueue — 方式 A**
+**Kueue — Approach A**
 
 ```yaml
 kueue.x-k8s.io/queue-name: default
 kueue.x-k8s.io/job-uid: abc123
 ```
 
-**Istio — 方式 B（例外）**
+**Istio — Approach B (Exception)**
 
 ```yaml
 service.istio.io/canonical-name: myservice
@@ -164,60 +173,60 @@ topology.istio.io/cluster: cluster-1
 gateway.istio.io/managed: istio
 ```
 
-### 设计目标
+### Design Goals
 
-1. 统一前缀域：所有元数据统一使用 rbg.workloads.x-k8s.io/ 前缀
-2. 层级通过 key 名称区分：使用 {层级}-{属性} 格式（kebab-case）
-3. 遵循 K8s 命名规范：与 LWS、Kueue 等 sigs.k8s.io 项目保持一致
-4. 职责分离：Label 用于选择器，Annotation 用于配置，Env 用于运行时
+1. **Unified prefix domain**: All metadata uses the `rbg.workloads.x-k8s.io/` prefix
+2. **Hierarchy expressed through key names**: Uses `{level}-{attribute}` format (kebab-case)
+3. **Align with Kubernetes conventions**: Consistent with sigs.k8s.io projects like LWS and Kueue
+4. **Separation of concerns**: Labels for selectors, annotations for configuration, environment variables for runtime
 
-### Labels 对照表
+### Labels Reference
 
-| 层级         | v1alpha1                                                     | v1alpha2                                      | 说明                                     |
-| ------------ | ------------------------------------------------------------ | --------------------------------------------- | ---------------------------------------- |
-| GroupSet     | `rolebasedgroupset.workloads.x-k8s.io/name`                  | `rbg.workloads.x-k8s.io/groupset-name`        | 标识资源所属的 RBGSet                    |
-| GroupSet     | `rolebasedgroupset.workloads.x-k8s.io/rbg-index`             | `rbg.workloads.x-k8s.io/groupset-index`       | 标识 RBG 在 RBGSet 中的索引              |
-| Group        | `rolebasedgroup.workloads.x-k8s.io/name`                     | `rbg.workloads.x-k8s.io/group-name`           | 标识资源所属的 RBG                       |
-| Group        | `rolebasedgroup.workloads.x-k8s.io/group-unique-key`         | `rbg.workloads.x-k8s.io/group-uid`            | RBG 的唯一 UID（用于 topology affinity） |
-| Group        | `rolebasedgroup.workloads.x-k8s.io/controller-revision-hash` | `rbg.workloads.x-k8s.io/group-revision`       | RBG 整体的 controller revision hash      |
-| Role         | `rolebasedgroup.workloads.x-k8s.io/role`                     | `rbg.workloads.x-k8s.io/role-name`            | 标识资源所属的 Role                      |
-| Role         | `role.rolebasedgroup.workloads.x-k8s.io/template-type`       | `rbg.workloads.x-k8s.io/role-type`            | Role 的模板类型                          |
-| Role         | `rolebasedgroup.workloads.x-k8s.io/role-revision-hash-%s`    | `rbg.workloads.x-k8s.io/role-revision-%s`     | Role 级别的 revision hash                |
-| RoleInstance | `instanceset.workloads.x-k8s.io/owner-uid`                   | `rbg.workloads.x-k8s.io/role-instance-owner`  | RoleInstance 所属的控制器 UID            |
-| RoleInstance | `instanceset.workloads.x-k8s.io/instance-id`                 | `rbg.workloads.x-k8s.io/role-instance-id`     | RoleInstance 的唯一标识                  |
-| RoleInstance | `instanceset.workloads.x-k8s.io/instance-name`               | `rbg.workloads.x-k8s.io/role-instance-name`   | RoleInstance 的名称                      |
-| RoleInstance | `instance.workloads.x-k8s.io/instance-name`                  | `rbg.workloads.x-k8s.io/role-instance-name`   | RoleInstance 的名称                      |
-| RoleInstance | `instanceset.workloads.x-k8s.io/specified-delete`            | `rbg.workloads.x-k8s.io/role-instance-delete` | 标记 RoleInstance 应被删除               |
-| Component    | `instanceset.workloads.x-k8s.io/instance-component-id`       | `rbg.workloads.x-k8s.io/component-id`         | 组件在 Instance 内的唯一 ID              |
-| Component    | `instanceset.workloads.x-k8s.io/instance-component-name`     | `rbg.workloads.x-k8s.io/component-name`       | 组件名称                                 |
-| Component    | `instance.workloads.x-k8s.io/component-name`                 | `rbg.workloads.x-k8s.io/component-name`       | 组件名称                                 |
-| Component    | `instance.workloads.x-k8s.io/component-id`                   | `rbg.workloads.x-k8s.io/component-id`         | 组件在 Instance 内的唯一 ID              |
-| Component    | `component.rolebasedgroup.workloads.x-k8s.io/name`           | `rbg.workloads.x-k8s.io/component-name`       | 组件名称                                 |
-| Component    | `component.rolebasedgroup.workloads.x-k8s.io/index`          | `rbg.workloads.x-k8s.io/component-id`         | 组件在 Instance 内的唯一 ID              |
-| Component    | `component.rolebasedgroup.workloads.x-k8s.io/size`           | `rbg.workloads.x-k8s.io/component-size`       | 组件的副本数量                           |
+| Level | v1alpha1 | v1alpha2 | Description |
+| ----- | -------- | -------- | ----------- |
+| GroupSet | `rolebasedgroupset.workloads.x-k8s.io/name` | `rbg.workloads.x-k8s.io/groupset-name` | Identifies the parent RBGSet |
+| GroupSet | `rolebasedgroupset.workloads.x-k8s.io/rbg-index` | `rbg.workloads.x-k8s.io/groupset-index` | Index of RBG within RBGSet |
+| Group | `rolebasedgroup.workloads.x-k8s.io/name` | `rbg.workloads.x-k8s.io/group-name` | Identifies the parent RBG |
+| Group | `rolebasedgroup.workloads.x-k8s.io/group-unique-key` | `rbg.workloads.x-k8s.io/group-uid` | Unique UID for topology affinity |
+| Group | `rolebasedgroup.workloads.x-k8s.io/controller-revision-hash` | `rbg.workloads.x-k8s.io/group-revision` | Controller revision hash for RBG |
+| Role | `rolebasedgroup.workloads.x-k8s.io/role` | `rbg.workloads.x-k8s.io/role-name` | Identifies the parent Role |
+| Role | `role.rolebasedgroup.workloads.x-k8s.io/template-type` | `rbg.workloads.x-k8s.io/role-type` | Template type of the Role |
+| Role | `rolebasedgroup.workloads.x-k8s.io/role-revision-hash-%s` | `rbg.workloads.x-k8s.io/role-revision-%s` | Role-level revision hash |
+| RoleInstance | `instanceset.workloads.x-k8s.io/owner-uid` | `rbg.workloads.x-k8s.io/role-instance-owner` | Controller UID of RoleInstance |
+| RoleInstance | `instanceset.workloads.x-k8s.io/instance-id` | `rbg.workloads.x-k8s.io/role-instance-id` | Unique identifier of RoleInstance |
+| RoleInstance | `instanceset.workloads.x-k8s.io/instance-name` | `rbg.workloads.x-k8s.io/role-instance-name` | Name of RoleInstance |
+| RoleInstance | `instance.workloads.x-k8s.io/instance-name` | `rbg.workloads.x-k8s.io/role-instance-name` | Name of RoleInstance |
+| RoleInstance | `instanceset.workloads.x-k8s.io/specified-delete` | `rbg.workloads.x-k8s.io/role-instance-delete` | Marks RoleInstance for deletion |
+| Component | `instanceset.workloads.x-k8s.io/instance-component-id` | `rbg.workloads.x-k8s.io/component-id` | Unique ID of component within Instance |
+| Component | `instanceset.workloads.x-k8s.io/instance-component-name` | `rbg.workloads.x-k8s.io/component-name` | Name of component |
+| Component | `instance.workloads.x-k8s.io/component-name` | `rbg.workloads.x-k8s.io/component-name` | Name of component |
+| Component | `instance.workloads.x-k8s.io/component-id` | `rbg.workloads.x-k8s.io/component-id` | Unique ID of component within Instance |
+| Component | `component.rolebasedgroup.workloads.x-k8s.io/name` | `rbg.workloads.x-k8s.io/component-name` | Name of component |
+| Component | `component.rolebasedgroup.workloads.x-k8s.io/index` | `rbg.workloads.x-k8s.io/component-id` | Unique ID of component within Instance |
+| Component | `component.rolebasedgroup.workloads.x-k8s.io/size` | `rbg.workloads.x-k8s.io/component-size` | Replica count of component |
 
-### Annotations 对照表
+### Annotations Reference
 
-| 层级         | v1alpha1                                                       | v1alpha2                                          | 说明                       |
-| ------------ | -------------------------------------------------------------- | ------------------------------------------------- | -------------------------- |
-| Group        | `rolebasedgroup.workloads.x-k8s.io/exclusive-topology`         | `rbg.workloads.x-k8s.io/group-exclusive-topology` | 声明独占调度的拓扑域       |
-| Role         | `rolebasedgroup.workloads.x-k8s.io/role-size`                  | `rbg.workloads.x-k8s.io/role-size`                | Role 的副本规模            |
-| Role         | `rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology` | `rbg.workloads.x-k8s.io/role-disable-exclusive`   | 禁用该 Role 的独占拓扑调度 |
-| RoleInstance | `instance.rolebasedgroup.workloads.x-k8s.io/pattern`           | `rbg.workloads.x-k8s.io/role-instance-pattern`    | RoleInstance 的组织模式    |
-| Lifecycle    | `lifecycle.workloads.x-k8s.io/state`                           | `rbg.workloads.x-k8s.io/lifecycle-state`          | 生命周期状态               |
-| Lifecycle    | `lifecycle.workloads.x-k8s.io/timestamp`                       | `rbg.workloads.x-k8s.io/lifecycle-timestamp`      | 生命周期状态变更时间戳     |
-| InPlace      | `workloads.x-k8s.io/inplace-update-state`                      | `rbg.workloads.x-k8s.io/inplace-state`            | 原地更新状态               |
-| InPlace      | `workloads.x-k8s.io/inplace-update-grace`                      | `rbg.workloads.x-k8s.io/inplace-grace`            | 原地更新 grace period 配置 |
+| Level | v1alpha1 | v1alpha2 | Description |
+| ----- | -------- | -------- | ----------- |
+| Group | `rolebasedgroup.workloads.x-k8s.io/exclusive-topology` | `rbg.workloads.x-k8s.io/group-exclusive-topology` | Declares exclusive scheduling topology domain |
+| Role | `rolebasedgroup.workloads.x-k8s.io/role-size` | `rbg.workloads.x-k8s.io/role-size` | Replica count of Role |
+| Role | `rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology` | `rbg.workloads.x-k8s.io/role-disable-exclusive` | Disables exclusive topology scheduling for Role |
+| RoleInstance | `instance.rolebasedgroup.workloads.x-k8s.io/pattern` | `rbg.workloads.x-k8s.io/role-instance-pattern` | Organization pattern of RoleInstance |
+| Lifecycle | `lifecycle.workloads.x-k8s.io/state` | `rbg.workloads.x-k8s.io/lifecycle-state` | Lifecycle state |
+| Lifecycle | `lifecycle.workloads.x-k8s.io/timestamp` | `rbg.workloads.x-k8s.io/lifecycle-timestamp` | Timestamp of lifecycle state change |
+| InPlace | `workloads.x-k8s.io/inplace-update-state` | `rbg.workloads.x-k8s.io/inplace-state` | In-place update state |
+| InPlace | `workloads.x-k8s.io/inplace-update-grace` | `rbg.workloads.x-k8s.io/inplace-grace` | In-place update grace period configuration |
 
-## Envs
+## Environment Variables
 
-| v1alpha1           | v1alpha2                     | 说明                         | 来源                                                                    | 说明                            |
-| ------------------ | ---------------------------- | ---------------------------- | ----------------------------------------------------------------------- | ------------------------------- |
-| GROUP_NAME         | RGB_GROUP_NAME               | RBG 的名称                   | 直接注入 rbg.Name                                                       |                                 |
-| ROLE_NAME          | RGB_ROLE_NAME                | Role 的名称                  | 直接注入 role.Name                                                      |                                 |
-| ROLE_INDEX         | -                            | Pod 在 Role 中的有序索引     | 下行 API: metadata.labels['apps.kubernetes.io/pod-index']               |
-| INSTANCE_NAME      | RGB_INSTANCE_NAME            | RoleInstance 的名称          | 下行 API: metadata.labels['instance.workloads.x-k8s.io/instance-name']  |                                 |
-| COMPONENT_NAME     | RGB_COMPONENT_NAME           | 组件名称                     | 下行 API: metadata.labels['instance.workloads.x-k8s.io/component-name'] |                                 |
-| LWS_LEADER_ADDRESS | RGB_COMPONENT_LEADER_ADDRESS | Leader component 的 DNS 地址 | 计算: $(INSTANCE_NAME)-0.{svcName}.{namespace}                          | 仅用于多节点分布式推理/训练场景 |
-| LWS_WORKER_INDEX   | RGB_COMPONENT_INDEX          | 组件在 Instance 内的索引     | 下行 API: metadata.labels['instance.workloads.x-k8s.io/component-id']   | 仅用于多节点分布式推理/训练场景 |
-| LWS_GROUP_SIZE     | RGB_COMPONENT_SIZE           | Instance 内 Component 总数   | 下行 API: label rbg.workloads.x-k8s.io/component-size                   | 仅用于多节点分布式推理/训练场景 |
+| v1alpha1 | v1alpha2 | Description | Source | Notes |
+| -------- | -------- | ----------- | ------ | ----- |
+| GROUP_NAME | RBG_GROUP_NAME | Name of RBG | Direct injection: rbg.Name | |
+| ROLE_NAME | RBG_ROLE_NAME | Name of Role | Direct injection: role.Name | |
+| ROLE_INDEX | — | Ordinal index of Pod within Role | Downward API: metadata.labels['apps.kubernetes.io/pod-index'] | |
+| INSTANCE_NAME | RBG_INSTANCE_NAME | Name of RoleInstance | Downward API: metadata.labels['instance.workloads.x-k8s.io/instance-name'] | |
+| COMPONENT_NAME | RBG_COMPONENT_NAME | Name of component | Downward API: metadata.labels['instance.workloads.x-k8s.io/component-name'] | |
+| LWS_LEADER_ADDRESS | RBG_COMPONENT_LEADER_ADDRESS | DNS address of leader component | Computed: $(RBG_INSTANCE_NAME)-0.{svcName}.{namespace} | For multi-node distributed inference/training only |
+| LWS_WORKER_INDEX | RBG_COMPONENT_INDEX | Index of component within Instance | Downward API: metadata.labels['rbg.workloads.x-k8s.io/component-id'] | For multi-node distributed inference/training only |
+| LWS_GROUP_SIZE | RBG_COMPONENT_SIZE | Total number of components in Instance | Downward API: label rbg.workloads.x-k8s.io/component-size | For multi-node distributed inference/training only |
