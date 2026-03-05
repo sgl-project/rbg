@@ -3,6 +3,7 @@ package testcase
 import (
 	"fmt"
 
+	"github.com/onsi/ginkgo/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -11,10 +12,14 @@ import (
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 )
 
-// dumpDebugInfo collects diagnostic information when test fails
+// dumpDebugInfo collects diagnostic information only when test fails
 // It prints workload status, pod status, and events for all roles in the RBG
 func dumpDebugInfo(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup) {
 	if rbg == nil {
+		return
+	}
+	// Only dump debug info when test fails
+	if !ginkgo.CurrentSpecReport().Failed() {
 		return
 	}
 	fmt.Println("\n========== Debug Info ==========")
@@ -57,9 +62,13 @@ func dumpDebugInfo(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup
 	fmt.Println("\n========== End Debug Info ==========")
 }
 
-// dumpDebugInfoForRBGSet collects diagnostic information for RoleBasedGroupSet
+// dumpDebugInfoForRBGSet collects diagnostic information for RoleBasedGroupSet only when test fails
 func dumpDebugInfoForRBGSet(f *framework.Framework, rbgset *workloadsv1alpha1.RoleBasedGroupSet) {
 	if rbgset == nil {
+		return
+	}
+	// Only dump debug info when test fails
+	if !ginkgo.CurrentSpecReport().Failed() {
 		return
 	}
 	fmt.Println("\n========== RBGSet Debug Info ==========")
