@@ -60,7 +60,7 @@ If you prefer to manage CRDs manually:
 kubectl apply --server-side -f config/crd/bases/
 ```
 
-2. Install Controller via Helm with CRD Upgrader disabled:
+1. Install Controller via Helm with CRD Upgrader disabled:
 
 ```bash
 helm upgrade --install rbgs deploy/helm/rbgs \
