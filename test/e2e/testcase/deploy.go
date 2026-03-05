@@ -17,6 +17,9 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
 			wrappers.BuildBasicRole("role-1").WithWorkload(workloadsv1alpha1.DeploymentWorkloadType).Obj(),
 		}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 
@@ -42,6 +45,9 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 						MaxSurge:       ptr.To(intstr.FromInt32(1)),
 					}).Obj(),
 			}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 
@@ -64,6 +70,9 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 					WithRestartPolicy(workloadsv1alpha1.RecreateRBGOnPodRestart).
 					Obj(),
 			}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 

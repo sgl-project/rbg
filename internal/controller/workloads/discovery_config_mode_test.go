@@ -30,7 +30,7 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 
 	tests := []testCase{
 		{
-			name: "missing annotation with legacy role configmap should set legacy mode and requeue",
+			name: "missing annotation with legacy role configmap should set legacy mode without requeue",
 			buildExtraObjects: func(rbg *workloadsv1alpha1.RoleBasedGroup) []runtime.Object {
 				return []runtime.Object{
 					&corev1.ConfigMap{
@@ -41,13 +41,13 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 					},
 				}
 			},
-			wantRequeue:        true,
+			wantRequeue:        false,
 			wantMode:           workloadsv1alpha1.LegacyDiscoveryConfigMode,
 			wantModeAnnotation: true,
 		},
 		{
-			name:               "missing annotation without legacy signal should set refine mode and requeue",
-			wantRequeue:        true,
+			name:               "missing annotation without legacy signal should set refine mode without requeue",
+			wantRequeue:        false,
 			wantMode:           workloadsv1alpha1.RefineDiscoveryConfigMode,
 			wantModeAnnotation: true,
 		},

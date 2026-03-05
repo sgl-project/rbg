@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -94,6 +95,9 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 }
 
 func (f *Framework) ExpectRbgDeleted(rbg *v1alpha1.RoleBasedGroup) {
+	logger := log.FromContext(f.Ctx).WithValues("rbg", rbg.Name)
+
+	// Check RBG is deleted
 	newRbg := &v1alpha1.RoleBasedGroup{}
 	gomega.Eventually(
 		func() bool {
@@ -106,6 +110,27 @@ func (f *Framework) ExpectRbgDeleted(rbg *v1alpha1.RoleBasedGroup) {
 
 			return apierrors.IsNotFound(err)
 
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue())
+
+	// Check all Pods managed by this RBG are deleted
+	gomega.Eventually(
+		func() bool {
+			podList := &corev1.PodList{}
+			err := f.Client.List(
+				f.Ctx, podList,
+				client.InNamespace(rbg.Namespace),
+				client.MatchingLabels{v1alpha1.SetNameLabelKey: rbg.Name},
+			)
+			if err != nil {
+				logger.Error(err, "failed to list pods")
+				return false
+			}
+			if len(podList.Items) > 0 {
+				logger.V(1).Info("waiting for pods to be deleted", "remainingPods", len(podList.Items))
+				return false
+			}
+			return true
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
 }

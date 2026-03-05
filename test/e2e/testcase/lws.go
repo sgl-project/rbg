@@ -22,6 +22,8 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 				Obj(),
 		}).Obj()
 
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(testutils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
@@ -31,6 +33,9 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
 			wrappers.BuildLwsRole("role-1").Obj(),
 		}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 
@@ -49,6 +54,9 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
 			wrappers.BuildLwsRole("role-1").Obj(),
 		}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 
@@ -73,6 +81,9 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 						MaxSurge:       ptr.To(intstr.FromInt32(1)),
 					}).Obj(),
 			}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 
@@ -92,6 +103,9 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 					WithRestartPolicy(workloadsv1alpha1.RecreateRBGOnPodRestart).
 					Obj(),
 			}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgEqual(rbg)
 

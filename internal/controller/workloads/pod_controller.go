@@ -128,7 +128,9 @@ func (r *PodReconciler) setRestartCondition(
 
 	setCondition(rbg, restartCondition)
 
-	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
+	// Only patch the conditions, not the RoleStatuses.
+	// RoleStatuses should be managed by RBG controller only.
+	rbgApplyConfig := toRBGApplyConfigurationForConditionsOnly(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 }
@@ -166,6 +168,21 @@ func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha1.RoleBasedGroup) *ap
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).WithConditions(ToConditionApplyConfigurations(rbg.Status.Conditions)...))
+	return rbgApplyConfig
+}
+
+// toRBGApplyConfigurationForConditionsOnly creates an apply configuration that only updates conditions.
+// This is used by pod_controller to avoid overwriting RoleStatuses managed by RBG controller.
+func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha1.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+	if rbg == nil {
+		return nil
+	}
+	gkv := utils.GetRbgGVK()
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gkv.Kind).
+		WithAPIVersion(gkv.GroupVersion().String()).
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithConditions(ToConditionApplyConfigurations(rbg.Status.Conditions)...))
 	return rbgApplyConfig
 }
 

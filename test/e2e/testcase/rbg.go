@@ -26,6 +26,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
 
@@ -45,6 +47,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 									WithDependencies([]string{"role-1"}).Obj(),
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
@@ -66,6 +70,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(utils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -82,6 +88,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							wrappers.BuildBasicRole("role-2").Obj(),
 						},
 					).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
 
@@ -140,6 +149,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 					podGroupLabel := map[string]string{
@@ -188,6 +199,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 								},
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
@@ -251,6 +264,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 								},
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectWorkloadExclusiveTopology(rbg, rbg.Spec.Roles[0], topologyKey)

@@ -142,6 +142,21 @@ jobs:
         run: |
           kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
 
+      - name: Pre-load e2e test images
+        run: |
+          # Pull and load e2e test images to avoid image pull timeout during tests
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-e2e
+          done
+          echo "All e2e test images loaded successfully"
+
       - name: Run E2E tests
         run: |
           make test-e2e
