@@ -147,28 +147,33 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 3: Construct role statuses
+	// Step 3: Initialize discovery config mode.
+	// IMPORTANT: This must be done BEFORE constructAndUpdateRoleStatuses, because
+	// shouldUseLegacyDiscoveryConfig checks rbg.Status.RoleStatuses to determine if
+	// this is a new RBG. If roleStatuses is populated first, it will incorrectly
+	// use legacy mode for new RBGs.
+	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil || needRequeue {
+		return ctrl.Result{Requeue: true}, err
+	}
+
+	// Step 4: Reconcile refined discovery ConfigMap.
+	// This must happen before reconcileRoles to ensure ConfigMap exists before workloads are created.
+	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
+		return ctrl.Result{}, err
+	}
+
+	// Step 5: Construct role statuses
 	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 4: Calculate coordination strategies for scaling and rolling update
+	// Step 6: Calculate coordination strategies for scaling and rolling update
 	// TODO: This is a simple method consolidation for now.
 	// The coordination logic will be refactored later to improve extensibility and readability.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Step 5: Initialize discovery config mode.
-	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil || needRequeue {
-		return ctrl.Result{Requeue: true}, err
-	}
-
-	// Step 6: Reconcile refined discovery ConfigMap.
-	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
 		return ctrl.Result{}, err
 	}
 
@@ -273,7 +278,7 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 		return false, nil
 	}
 
-	// determine mode, update annotation and then requeue
+	// determine mode, update annotation
 	legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
 	if err != nil {
 		return true, err
@@ -291,7 +296,9 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 	}
 
 	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
-	return true, nil
+	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
+	// to avoid race condition where workload is created before ConfigMap exists
+	return false, nil
 }
 
 func (r *RoleBasedGroupReconciler) shouldUseLegacyDiscoveryConfig(
