@@ -39,6 +39,7 @@ func newRunCmd() *cobra.Command {
 		argsList []string
 		storage  string
 		engine   string
+		revision string
 	)
 
 	cmd := &cobra.Command{
@@ -101,11 +102,11 @@ func newRunCmd() *cobra.Command {
 
 			// Get mount path and construct model path
 			mountPath := storagePlugin.MountPath()
-			modelPath := mountPath + "/" + sanitizeModelID(modelID)
+			modelPath := mountPath + "/" + sanitizeModelID(modelID) + "/" + sanitizeModelID(revision)
 
 			// Generate deployment name
 			if name == "" {
-				name = sanitizeModelID(modelID)
+				name = sanitizeModelID(modelID) + "-" + sanitizeModelID(revision)
 			}
 
 			// Generate engine template
@@ -167,6 +168,7 @@ func newRunCmd() *cobra.Command {
 			// Print the generated template
 			fmt.Println("# Generated Pod Template for Model Serving")
 			fmt.Printf("# Model: %s\n", modelID)
+			fmt.Printf("# Revision: %s\n", revision)
 			fmt.Printf("# Name: %s\n", name)
 			fmt.Printf("# Engine: %s\n", engineName)
 			fmt.Printf("# Storage: %s\n", storageName)
@@ -188,6 +190,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&argsList, "arg", nil, "Additional arguments for the engine")
 	cmd.Flags().StringVar(&storage, "storage", "", "Storage to use (overrides default)")
 	cmd.Flags().StringVar(&engine, "engine", "", "Engine to use (overrides default)")
+	cmd.Flags().StringVar(&revision, "revision", "main", "Model revision to deploy")
 
 	return cmd
 }
