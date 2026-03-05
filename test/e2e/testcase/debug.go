@@ -188,7 +188,7 @@ func dumpInstanceSetWorkload(f *framework.Framework, namespace, instanceSetName,
 	// Get InstanceSet status
 	instanceSet := &workloadsv1alpha1.InstanceSet{}
 	if err := f.Client.Get(f.Ctx, client.ObjectKey{Name: instanceSetName, Namespace: namespace}, instanceSet); err != nil {
-		fmt.Printf("[InstanceSet] Failed to get InstanceSet: %v\n", err)
+		fmt.Printf("[InstanceSet] Failed to get InstanceSet for role %s: %v\n", roleName, err)
 	} else {
 		fmt.Printf("[InstanceSet] Status: Replicas=%d, ReadyReplicas=%d, AvailableReplicas=%d, UpdatedReplicas=%d\n",
 			instanceSet.Status.Replicas, instanceSet.Status.ReadyReplicas, instanceSet.Status.AvailableReplicas, instanceSet.Status.UpdatedReplicas)
