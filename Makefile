@@ -66,7 +66,6 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	cp config/crd/bases/* deploy/helm/rbgs/crds/
 
 .PHONY: generate
 generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -297,23 +296,22 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: helm-deploy
-helm-deploy: manifests install-crds ## Deploy controller via Helm to the K8s cluster specified in ~/.kube/config.
+helm-deploy: manifests ## Deploy controller via Helm to the K8s cluster specified in ~/.kube/config.
 	$(HELM) upgrade --install rbgs deploy/helm/rbgs \
 		--create-namespace \
 		--namespace rbgs-system \
 		--set image.tag=$(TAG) \
-		--skip-crds \
 		--wait
 
 .PHONY: install-crds
-install-crds: manifests ## Install CRDs into the K8s cluster (separate from Helm due to size limits).
+install-crds: manifests ## Install CRDs into the K8s cluster.
 	@echo "Installing CRDs..."
-	$(KUBECTL) apply --server-side -f deploy/helm/rbgs/crds/
+	$(KUBECTL) apply --server-side -f config/crd/bases/
 
 .PHONY: uninstall-crds
 uninstall-crds: ## Uninstall CRDs from the K8s cluster (WARNING: deletes all CR instances).
 	@echo "WARNING: This will delete all RoleBasedGroup/InstanceSet resources!"
-	$(KUBECTL) delete -f deploy/helm/rbgs/crds/ --ignore-not-found
+	$(KUBECTL) delete -f config/crd/bases/ --ignore-not-found
 
 .PHONY: helm-undeploy
 helm-undeploy: ## Undeploy controller installed via Helm from the K8s cluster.

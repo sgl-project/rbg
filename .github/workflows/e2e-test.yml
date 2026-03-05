@@ -124,6 +124,7 @@ jobs:
 
       - name: Build and load controller image
         run: |
+          make manifests
           make docker-build-controller TAG=e2e-test
           docker images | grep rbgs-controller || true
           kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-e2e
@@ -140,7 +141,6 @@ jobs:
             --create-namespace \
             --namespace rbgs-system \
             --set image.tag=e2e-test \
-            --set crdUpgrade.enabled=true \
             --set crdUpgrade.tag=e2e-test \
             --wait
           kubectl get deploy -n rbgs-system

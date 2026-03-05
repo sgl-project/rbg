@@ -24,23 +24,12 @@ kubectl wait deploy/rbgs-controller-manager -n rbgs-system --for=condition=avail
 
 ### Install by Helm
 
-Due to the large size of CRD files (exceeding Helm's 1MB Secret limit), there are two installation methods:
-
-#### Method 1: Manual CRD Installation (Recommended for first install)
-
-**Step 1: Install CRDs**
-
-```bash
-kubectl apply --server-side -f deploy/helm/rbgs/crds/
-```
-
-**Step 2: Install Controller via Helm**
+The Helm chart includes a CRD Upgrader Job that automatically installs/upgrades CRDs during installation and upgrade. This is enabled by default.
 
 ```bash
 helm upgrade --install rbgs deploy/helm/rbgs \
     --create-namespace \
     --namespace rbgs-system \
-    --skip-crds \
     --wait
 ```
 
@@ -50,19 +39,7 @@ Or use the Makefile shortcut:
 make helm-deploy
 ```
 
-#### Method 2: Automatic CRD Upgrade (For upgrades)
-
-The Helm chart includes a CRD Upgrader Job that automatically installs/upgrades CRDs during `helm upgrade`. This is enabled by default.
-
-```bash
-helm upgrade --install rbgs deploy/helm/rbgs \
-    --create-namespace \
-    --namespace rbgs-system \
-    --set crdUpgrade.enabled=true \
-    --wait
-```
-
-**CRD Upgrader Configuration:**
+#### CRD Upgrader Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|------|
@@ -72,6 +49,26 @@ helm upgrade --install rbgs deploy/helm/rbgs \
 | `crdUpgrade.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
 | `crdUpgrade.tolerations` | Pod tolerations | `[{operator: Exists}]` |
 | `crdUpgrade.nodeSelector` | Pod node selector | `{}` |
+
+#### Manual CRD Installation (Alternative)
+
+If you prefer to manage CRDs manually:
+
+1. Install CRDs:
+
+```bash
+kubectl apply --server-side -f config/crd/bases/
+```
+
+2. Install Controller via Helm with CRD Upgrader disabled:
+
+```bash
+helm upgrade --install rbgs deploy/helm/rbgs \
+    --create-namespace \
+    --namespace rbgs-system \
+    --set crdUpgrade.enabled=false \
+    --wait
+```
 
 ### Uninstall
 
@@ -88,7 +85,7 @@ To uninstall RoleBasedGroup installed via Helm:
 helm uninstall rbgs --namespace rbgs-system
 
 # Optional: Delete CRDs (WARNING: this will delete all RoleBasedGroup/InstanceSet resources)
-kubectl delete -f deploy/helm/rbgs/crds/
+kubectl delete -f config/crd/bases/
 ```
 
 Or use the Makefile shortcuts:

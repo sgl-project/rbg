@@ -3,7 +3,7 @@
 FROM alpine:3.20
 
 # Copy CRD files and upgrade script
-COPY ./deploy/helm/rbgs/crds /rbgs/crds
+COPY ./config/crd/bases /rbgs/crds
 COPY ./tools/crd-upgrade/upgrade-crds.sh /rbgs/upgrade-crds.sh
 
 # Install necessary tools
