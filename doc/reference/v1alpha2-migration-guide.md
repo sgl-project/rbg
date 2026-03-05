@@ -225,8 +225,8 @@ gateway.istio.io/managed: istio
 | GROUP_NAME | RBG_GROUP_NAME | Name of RBG | Direct injection: rbg.Name | |
 | ROLE_NAME | RBG_ROLE_NAME | Name of Role | Direct injection: role.Name | |
 | ROLE_INDEX | — | Ordinal index of Pod within Role | Downward API: metadata.labels['apps.kubernetes.io/pod-index'] | |
-| INSTANCE_NAME | RBG_INSTANCE_NAME | Name of RoleInstance | Downward API: metadata.labels['instance.workloads.x-k8s.io/instance-name'] | |
-| COMPONENT_NAME | RBG_COMPONENT_NAME | Name of component | Downward API: metadata.labels['instance.workloads.x-k8s.io/component-name'] | |
+| INSTANCE_NAME | RBG_INSTANCE_NAME | Name of RoleInstance | Downward API: metadata.labels['rbg.workloads.x-k8s.io/role-instance-name'] | |
+| COMPONENT_NAME | RBG_COMPONENT_NAME | Name of component | Downward API: metadata.labels['rbg.workloads.x-k8s.io/component-name'] | |
 | LWS_LEADER_ADDRESS | RBG_COMPONENT_LEADER_ADDRESS | DNS address of leader component | Computed: $(RBG_INSTANCE_NAME)-0.{svcName}.{namespace} | For multi-node distributed inference/training only |
 | LWS_WORKER_INDEX | RBG_COMPONENT_INDEX | Index of component within Instance | Downward API: metadata.labels['rbg.workloads.x-k8s.io/component-id'] | For multi-node distributed inference/training only |
 | LWS_GROUP_SIZE | RBG_COMPONENT_SIZE | Total number of components in Instance | Downward API: label rbg.workloads.x-k8s.io/component-size | For multi-node distributed inference/training only |
