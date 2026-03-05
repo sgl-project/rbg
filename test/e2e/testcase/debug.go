@@ -245,8 +245,9 @@ func dumpRolePods(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup,
 
 	fmt.Printf("[POD] Found %d Pods\n", len(foundPods))
 	for _, pod := range foundPods {
+		ready := isPodReady(&pod)
 		fmt.Printf("  - Name=%s, Phase=%s, Ready=%v\n",
-			pod.Name, pod.Status.Phase, isPodReady(&pod))
+			pod.Name, pod.Status.Phase, ready)
 		// Print container statuses
 		for _, cs := range pod.Status.ContainerStatuses {
 			fmt.Printf("    Container: %s, Ready=%v, RestartCount=%d\n",
@@ -266,6 +267,42 @@ func dumpRolePods(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup,
 			fmt.Printf("      - Type=%s, Status=%s, Reason=%s, Message=%s\n",
 				cond.Type, cond.Status, cond.Reason, cond.Message)
 		}
+		// Print events for not ready pods to help diagnose issues
+		if !ready {
+			dumpPodEvents(f, rbg.Namespace, pod.Name)
+		}
+	}
+}
+
+// dumpPodEvents prints recent events for a pod
+func dumpPodEvents(f *framework.Framework, namespace, podName string) {
+	eventList := &corev1.EventList{}
+	if err := f.Client.List(f.Ctx, eventList, client.InNamespace(namespace),
+		client.MatchingFields{"involvedObject.name": podName}); err != nil {
+		// Fallback: list all events and filter manually
+		if err := f.Client.List(f.Ctx, eventList, client.InNamespace(namespace)); err != nil {
+			fmt.Printf("    [Events] Failed to list events: %v\n", err)
+			return
+		}
+	}
+
+	// Filter events for this pod
+	var podEvents []corev1.Event
+	for _, event := range eventList.Items {
+		if event.InvolvedObject.Name == podName && event.InvolvedObject.Kind == "Pod" {
+			podEvents = append(podEvents, event)
+		}
+	}
+
+	if len(podEvents) == 0 {
+		fmt.Printf("    [Events] No events found for pod\n")
+		return
+	}
+
+	fmt.Printf("    [Events] Found %d events:\n", len(podEvents))
+	for _, event := range podEvents {
+		fmt.Printf("      - Type=%s, Reason=%s, Message=%s, Count=%d, LastTime=%s\n",
+			event.Type, event.Reason, event.Message, event.Count, event.LastTimestamp.Format("15:04:05"))
 	}
 }
 
