@@ -18,7 +18,6 @@ package storage
 
 import (
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -116,12 +115,11 @@ func (p *PVCStorage) MountPath() string {
 	return "/models"
 }
 
-// sanitizeModelID sanitizes the model ID for use in resource names
-func sanitizeModelID(modelID string) string {
-	// Replace characters that are not valid in Kubernetes resource names
-	result := strings.ReplaceAll(modelID, "/", "-")
-	result = strings.ReplaceAll(result, ":", "-")
-	result = strings.ReplaceAll(result, "_", "-")
-	result = strings.ToLower(result)
-	return result
+// ListModels scans the storage and returns a list of models with their metadata.
+// For PVC storage, this reads the .rbg-metadata.json files from each model directory.
+func (p *PVCStorage) ListModels() ([]ModelInfo, error) {
+	// Note: Since PVC is in-cluster storage, we can't directly list files.
+	// The caller should create a job to scan the storage.
+	// This method returns an error to indicate that direct listing is not supported.
+	return nil, fmt.Errorf("direct listing is not supported for PVC storage, use 'kubectl rbg llm pull list' command instead")
 }

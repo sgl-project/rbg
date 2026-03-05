@@ -24,6 +24,16 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
+// ModelInfo contains information about a downloaded model.
+type ModelInfo struct {
+	// ModelID is the original model identifier (e.g., "organization/model-name")
+	ModelID string `json:"modelID"`
+	// Revision is the model revision (e.g., "main", "v1.0")
+	Revision string `json:"revision"`
+	// DownloadedAt is the timestamp when the model was downloaded (optional)
+	DownloadedAt string `json:"downloadedAt,omitempty"`
+}
+
 // Plugin defines the interface for storage backends.
 type Plugin interface {
 	Name() string
@@ -47,6 +57,10 @@ type Plugin interface {
 	// MountPath returns the base path where storage is mounted in the container.
 	// The full model path is constructed by the caller as: MountPath() + "/" + sanitized(modelID)
 	MountPath() string
+
+	// ListModels returns a list of models stored in this storage.
+	// For PVC storage, this creates a job to scan the storage directory.
+	ListModels() ([]ModelInfo, error)
 }
 
 // Factory is a constructor for a storage plugin.
