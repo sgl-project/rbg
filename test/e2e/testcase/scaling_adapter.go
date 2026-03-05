@@ -27,6 +27,9 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 								wrappers.BuildBasicRole("role-3").Obj(),
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
 
@@ -50,6 +53,9 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 								wrappers.BuildBasicRole("role-3").Obj(),
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 					f.ExpectRbgEqual(rbg)
@@ -85,6 +91,9 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 								wrappers.BuildBasicRole("role-1").Obj(),
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 					f.ExpectRbgEqual(rbg)
@@ -128,6 +137,9 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 								wrappers.BuildBasicRole("role-3").Obj(),
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
 
@@ -181,6 +193,9 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 									WithScalingAdapter(true).Obj(),
 							},
 						).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 					f.ExpectRbgEqual(rbg)
