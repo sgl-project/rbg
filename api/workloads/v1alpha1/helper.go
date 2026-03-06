@@ -27,15 +27,21 @@ func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[stri
 func (rbg *RoleBasedGroup) GetGroupSize() int {
 	ret := 0
 	for _, role := range rbg.Spec.Roles {
-		if role.Workload.String() == LeaderWorkerSetWorkloadType {
-			if role.LeaderWorkerSet == nil {
-				ret += 1 * int(*role.Replicas)
-				continue
-			}
-			ret += int(*role.LeaderWorkerSet.Size) * int(*role.Replicas)
-		} else {
-			ret += int(*role.Replicas)
+		if role.Replicas == nil {
+			continue
 		}
+
+		if role.Workload.String() == LeaderWorkerSetWorkloadType ||
+			(role.Workload.String() == InstanceSetWorkloadType && role.LeaderWorkerSet != nil) {
+			sizePerReplica := int32(1)
+			if role.LeaderWorkerSet != nil && role.LeaderWorkerSet.Size != nil && *role.LeaderWorkerSet.Size > 0 {
+				sizePerReplica = *role.LeaderWorkerSet.Size
+			}
+			ret += int(sizePerReplica * *role.Replicas)
+			continue
+		}
+
+		ret += int(*role.Replicas)
 	}
 	return ret
 }
