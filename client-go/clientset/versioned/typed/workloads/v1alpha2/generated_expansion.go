@@ -18,3 +18,5 @@ limitations under the License.
 package v1alpha2
 
 type RoleBasedGroupExpansion interface{}
+
+type RoleBasedGroupSetExpansion interface{}
