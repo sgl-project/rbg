@@ -45,7 +45,7 @@ make helm-deploy
 |-----------|-------------|------|
 | `crdUpgrade.enabled` | Enable CRD Upgrader Job | `true` |
 | `crdUpgrade.repository` | CRD Upgrader image repository | `rolebasedgroup/rbgs-upgrade-crd` |
-| `crdUpgrade.tag` | CRD Upgrader image tag | Chart appVersion |
+| `crdUpgrade.tag` | CRD Upgrader image tag | Same as `image.tag` |
 | `crdUpgrade.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
 | `crdUpgrade.tolerations` | Pod tolerations | `[{operator: Exists}]` |
 | `crdUpgrade.nodeSelector` | Pod node selector | `{}` |

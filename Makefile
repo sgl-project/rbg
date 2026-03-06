@@ -262,7 +262,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-platform support
 	- $(CONTAINER_TOOL) buildx create --name rbgs-crd-builder
 	$(CONTAINER_TOOL) buildx use rbgs-crd-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=linux/amd64,linux/arm64 --tag ${CRD_UPGRADER_IMG}:${TAG} -f ${CRD_UPGRADER_DOCKERFILE} .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${CRD_UPGRADER_IMG}:${TAG} -f ${CRD_UPGRADER_DOCKERFILE} .
 	- $(CONTAINER_TOOL) buildx rm rbgs-crd-builder
 
 .PHONY: build-installer
@@ -315,7 +315,7 @@ uninstall-crds: ## Uninstall CRDs from the K8s cluster (WARNING: deletes all CR 
 
 .PHONY: helm-undeploy
 helm-undeploy: ## Undeploy controller installed via Helm from the K8s cluster.
-	$(HELM) uninstall rbgs --namespace rbgs-system --ignore-not-found || true
+	$(HELM) uninstall rbgs --namespace rbgs-system || true
 	@echo "Note: CRDs are preserved. Run 'make uninstall-crds' to remove them."
 
 ##@ Dependencies
