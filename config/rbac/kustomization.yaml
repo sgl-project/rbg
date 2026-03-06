@@ -5,3 +5,10 @@ resources:
 
 
 
+# For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
+# default, aiding admins in cluster management. Those roles are
+# not used by the rbgs itself. You can comment the following lines
+# if you do not want those helpers be installed with your Project.
+- workloads.x-k8s.io_rolebasedgroupwarmup_admin_role.yaml
+- workloads.x-k8s.io_rolebasedgroupwarmup_editor_role.yaml
+- workloads.x-k8s.io_rolebasedgroupwarmup_viewer_role.yaml
