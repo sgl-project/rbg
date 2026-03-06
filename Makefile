@@ -66,7 +66,6 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	cp config/crd/bases/* deploy/helm/rbgs/crds/
 
 .PHONY: generate
 generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -259,6 +258,13 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm rbgs-builder
 	rm Dockerfile.cross
 
+.PHONY: docker-buildx-push-crd-upgrader
+docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-platform support
+	- $(CONTAINER_TOOL) buildx create --name rbgs-crd-builder
+	$(CONTAINER_TOOL) buildx use rbgs-crd-builder
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${CRD_UPGRADER_IMG}:${TAG} -f ${CRD_UPGRADER_DOCKERFILE} .
+	- $(CONTAINER_TOOL) buildx rm rbgs-crd-builder
+
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p deploy/kubectl
@@ -297,9 +303,20 @@ helm-deploy: manifests ## Deploy controller via Helm to the K8s cluster specifie
 		--set image.tag=$(TAG) \
 		--wait
 
+.PHONY: install-crds
+install-crds: manifests ## Install CRDs into the K8s cluster.
+	@echo "Installing CRDs..."
+	$(KUBECTL) apply --server-side -f config/crd/bases/
+
+.PHONY: uninstall-crds
+uninstall-crds: ## Uninstall CRDs from the K8s cluster (WARNING: deletes all CR instances).
+	@echo "WARNING: This will delete all RoleBasedGroup/InstanceSet resources!"
+	$(KUBECTL) delete -f config/crd/bases/ --ignore-not-found
+
 .PHONY: helm-undeploy
 helm-undeploy: ## Undeploy controller installed via Helm from the K8s cluster.
-	$(HELM) uninstall rbgs --namespace rbgs-system --ignore-not-found || true
+	$(HELM) uninstall rbgs --namespace rbgs-system || true
+	@echo "Note: CRDs are preserved. Run 'make uninstall-crds' to remove them."
 
 ##@ Dependencies
 
