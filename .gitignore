@@ -32,6 +32,7 @@ main
 .devcontainer
 **/*.tgz
 **/.DS_Store
+.claude/
 
 
 # python
