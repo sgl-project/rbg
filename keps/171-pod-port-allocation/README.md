@@ -202,10 +202,10 @@ type PortAllocator struct {
 type PortAllocatorInterface interface {
 	// Start is used to initialize the port allocator when the program starts
 	Start(client client.Client) error
-	// Allocate is used to inject requested ports into the pod
-	Allocate(instance *v1alpha1.Instance, pod *v1.Pod) error
-	// Release is used to release allocated ports
-	Release(instance *v1alpha1.Instance, pod *v1.Pod) error
+	// Release releases a port, input the port to release
+	Release(port int32) error
+	// AllocateBatch allocates multiple ports, input the number of ports to allocate, output the list of allocated port numbers
+	AllocateBatch(num int32) ([]int32, error)
 }
 
 // Singleton pattern, created at program startup based on the port allocation strategy
@@ -217,20 +217,69 @@ func GetPortAllocator() PortAllocatorInterface {
 }
 ```
 ### Implementation
-- At controller startup, add the following steps:
-  - Parse and validate port allocator flags, such as `AllocateStrategy`, `StartPort`, and `PortRange`.
-  - Create the corresponding port allocation strategy instance based on the configured port allocation strategy.
 
-- When creating pods managed by Instance, add the following steps:
-  - Call the port allocator's `Allocate` method to inject the required ports into the pod.
+#### Controller Startup Modifications
 
-- When updating pods managed by Instance, add the following steps:
-  - Call the port allocator's `Allocate` method to inject the required ports into the pod.
-  - Call the port allocator's `Release` method to release ports that are no longer needed by the pod.
+- **Controller Initialization**:
+  - Parse and validate port allocator configuration flags, including `AllocateStrategy`, `StartPort`, and `PortRange`
+  - Instantiate the corresponding port allocator implementation based on the configured `AllocateStrategy`
+  - Initialize the port allocator by calling its `Start` method with the Kubernetes client
 
-- When deleting pods managed by Instance, add the following steps:
-  - Call the port allocator's `Release` method to release ports occupied by the pod.
+#### Instance Reconciler Modifications for `Dynamic` Policy Ports
 
+For ports with `Dynamic` policy, the Instance reconciler manages port allocation on a per-Pod basis:
+
+- **Pod Creation**:
+  1. Parse the port allocator annotation to extract `Dynamic` policy port configurations
+  2. Call the port allocator's `AllocateBatch` method to obtain the required number of ports
+  3. Create or update a ConfigMap named `instace-<instance-name>-ports` to store allocated ports:
+     - Data keys follow the format: `<pod-name>.<port-name>` (e.g., `worker-0.grpc-port: "30001"`)
+     - The ConfigMap is owned by the Instance resource for automatic cleanup
+  4. Inject allocated ports into the Pod specification:
+     - Add environment variables to containers using `valueFrom.configMapKeyRef` to reference the ConfigMap as specified by the `env` field
+     - Add Pod annotations as specified by the `annotationKey` field with the port value from ConfigMap
+     - Mount the ConfigMap for cross-pod service discovery if references are configured
+
+- **Pod Update**:
+  1. Detect changes in port allocation requirements by comparing current and updated pod templates
+  2. Allocate new ports via `AllocateBatch` for additional or modified port requirements
+  3. Update the ConfigMap with new port allocations
+  4. Update the Pod spec to reflect the new ConfigMap references:
+     - Update environment variable references (`valueFrom.configMapKeyRef`) to point to the new keys in ConfigMap
+     - Update Pod annotations with new port values from ConfigMap
+  5. Release obsolete ports via the `Release` method after the updated Pod becomes ready
+  6. Clean up removed port entries from the ConfigMap
+
+- **Pod Deletion**:
+  1. Retrieve allocated port information from the ConfigMap for the deleted Pod
+  2. Release all ports associated with the deleted Pod via the `Release` method
+  3. Remove corresponding entries from the ConfigMap
+  4. Delete the ConfigMap if no ports remain (optional cleanup policy)
+
+#### InstanceSet Reconciler Modifications for `Static` Policy Ports
+
+For ports with `Static` policy, the InstanceSet reconciler manages port allocation at the Role level:
+
+- **Instance Creation**:
+  1. Parse the port allocator annotation to extract `Static` policy port configurations
+  2. Call the port allocator's `AllocateBatch` method to obtain one port per port definition (shared across all replicas)
+  3. Create or update a ConfigMap named `instanceset-<instanceset-name>-ports` to store static port allocations:
+     - Data keys follow the format: `<instance-name>.<port-name>` (e.g., `test.worker-port2: "30002"`)
+     - The ConfigMap is owned by the InstanceSet resource for automatic cleanup
+  4. Inject the ConfigMap reference into the Pod template:
+     - Add volume referencing the ConfigMap to the Pod spec
+
+- **Instance Update**:
+  1. Detect changes in static port requirements between old and new pod templates
+  2. Allocate new ports via `AllocateBatch` for new or modified port requirements
+  3. Update the ConfigMap with new static port allocations
+  4. Update the Pod template volume references to the ConfigMap
+  5. Release obsolete ports via the `Release` method once all Pods using the old template are terminated
+
+- **InstanceSet Deletion** (when all instances are deleted):
+  1. When the InstanceSet is being deleted or scaled to zero replicas, retrieve all static port allocations from the ConfigMap
+  2. Release all ports occupied by the InstanceSet via the `Release` method
+  3. Delete the ConfigMap containing static port allocations
 ### Test Plan
 
 #### Unit Tests
