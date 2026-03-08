@@ -276,10 +276,9 @@ For ports with `Static` policy, the InstanceSet reconciler manages port allocati
   4. Update the Pod template volume references to the ConfigMap
   5. Release obsolete ports via the `Release` method once all Pods using the old template are terminated
 
-- **InstanceSet Deletion** (when all instances are deleted):
-  1. When the InstanceSet is being deleted or scaled to zero replicas, retrieve all static port allocations from the ConfigMap
-  2. Release all ports occupied by the InstanceSet via the `Release` method
-  3. Delete the ConfigMap containing static port allocations
+- **Instance Deletion**:
+  1. Remove the corresponding key from the ConfigMap for the deleted instance
+  2. If all instances in the InstanceSet are deleted, release all ports occupied by the InstanceSet via the `Release` method and delete the ConfigMap
 ### Test Plan
 
 #### Unit Tests
