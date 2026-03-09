@@ -12,6 +12,27 @@ import (
 	storageplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/storage"
 )
 
+// resolveEngine resolves the engine configuration.
+// First tries to get from user config, then falls back to registered plugin with defaults.
+func resolveEngine(engineType string, cfg *config.Config) (*config.EngineConfig, error) {
+	// 1. Try to get from user config
+	if engineCfg, err := cfg.GetEngine(engineType); err == nil {
+		return engineCfg, nil
+	}
+
+	// 2. Check if it's a registered plugin type
+	if !engineplugin.IsRegistered(engineType) {
+		return nil, fmt.Errorf("unknown engine type '%s'", engineType)
+	}
+
+	// 3. Use default (empty config) - plugin will use its built-in defaults
+	fmt.Printf("INFO: Using default configuration for engine '%s'. Run 'kubectl rbg llm config add-engine %s' to customize.\n", engineType, engineType)
+	return &config.EngineConfig{
+		Type:   engineType,
+		Config: map[string]interface{}{},
+	}, nil
+}
+
 func newRunCmd() *cobra.Command {
 	var (
 		name     string
@@ -43,9 +64,10 @@ func newRunCmd() *cobra.Command {
 			if engine == "" {
 				return fmt.Errorf("--engine flag is required")
 			}
-			engineName := engine
+			engineType := engine
 
-			engineCfg, err := cfg.GetEngine(engineName)
+			// Resolve engine configuration with fallback to defaults
+			engineCfg, err := resolveEngine(engineType, cfg)
 			if err != nil {
 				return err
 			}
@@ -153,7 +175,7 @@ func newRunCmd() *cobra.Command {
 			fmt.Printf("# Model: %s\n", modelID)
 			fmt.Printf("# Revision: %s\n", revision)
 			fmt.Printf("# Name: %s\n", name)
-			fmt.Printf("# Engine: %s\n", engineName)
+			fmt.Printf("# Engine: %s\n", engineType)
 			fmt.Printf("# Storage: %s\n", storageName)
 			fmt.Printf("# Replicas: %d\n", replicas)
 			fmt.Println("#")

@@ -73,3 +73,9 @@ func GetFields(pluginType string) []util.ConfigField {
 	}
 	return factory().ConfigFields()
 }
+
+// IsRegistered checks if a plugin type is registered.
+func IsRegistered(pluginType string) bool {
+	_, ok := registry[pluginType]
+	return ok
+}

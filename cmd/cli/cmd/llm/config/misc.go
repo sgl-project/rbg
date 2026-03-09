@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/rbgs/cmd/cli/config"
-	engineplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/engine"
 	sourceplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/source"
 	storageplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/storage"
 )
@@ -223,54 +222,6 @@ func configureSource(reader *bufio.Reader) (string, map[string]interface{}, erro
 	return sourceType, config, nil
 }
 
-// configureEngine interactively configures engine
-func configureEngine(reader *bufio.Reader) (string, map[string]interface{}, error) {
-	fmt.Println("\n=== Configure Inference Engine ===")
-
-	// Select engine type
-	engineTypes := engineplugin.RegisteredNames()
-	if len(engineTypes) == 0 {
-		return "", nil, fmt.Errorf("no engine types available")
-	}
-	engineType := selectPlugin(reader, "engine", engineTypes)
-
-	// Get config fields for selected type (without initializing, just to get fields)
-	fields := engineplugin.GetFields(engineType)
-	if fields == nil {
-		return "", nil, fmt.Errorf("failed to get engine plugin fields for type: %s", engineType)
-	}
-
-	config := make(map[string]interface{})
-	fmt.Printf("\nConfiguring %s engine:\n", engineType)
-	for _, field := range fields {
-		prompt := fmt.Sprintf("  %s", field.Key)
-		if !field.Required {
-			prompt += " [optional]"
-		}
-		prompt += fmt.Sprintf(" (%s)", field.Description)
-		value := readLine(reader, prompt, "")
-		for value == "" && field.Required {
-			fmt.Println("  This field is required, please enter a value")
-			value = readLine(reader, prompt, "")
-		}
-		if value != "" {
-			// Convert port to int
-			if field.Key == "port" {
-				if port, err := strconv.Atoi(value); err == nil {
-					config[field.Key] = port
-				} else {
-					fmt.Printf("  Invalid port value '%s'. Defaulting to 8000.\n", value)
-					config[field.Key] = 8000
-				}
-			} else {
-				config[field.Key] = value
-			}
-		}
-	}
-
-	return engineType, config, nil
-}
-
 func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -306,12 +257,6 @@ func newInitCmd() *cobra.Command {
 				return fmt.Errorf("failed to configure source: %w", err)
 			}
 
-			// Configure Engine
-			engineType, engineConfig, err := configureEngine(reader)
-			if err != nil {
-				return fmt.Errorf("failed to configure engine: %w", err)
-			}
-
 			// Set namespace
 			namespace := readLine(reader, "\nEnter default namespace", "default")
 			if namespace == "" {
@@ -329,7 +274,6 @@ func newInitCmd() *cobra.Command {
 
 			cfg.AddStorage(storageType, storageType, storageConfig)
 			cfg.AddSource(sourceType, sourceType, sourceConfig)
-			cfg.AddEngine(engineType, engineType, engineConfig)
 
 			if err := cfg.Save(); err != nil {
 				return fmt.Errorf("failed to save configuration: %w", err)
@@ -338,9 +282,9 @@ func newInitCmd() *cobra.Command {
 			fmt.Println("\n=== Configuration Initialized Successfully ===")
 			fmt.Printf("  Storage: %s\n", storageType)
 			fmt.Printf("  Source:  %s\n", sourceType)
-			fmt.Printf("  Engine:  %s\n", engineType)
 			fmt.Printf("  Namespace: %s\n", namespace)
-			fmt.Println("\nUse 'kubectl rbg llm config view' to see the full configuration.")
+			fmt.Println("\nEngines work with defaults. Use 'kubectl rbg llm config set-engine' to customize.")
+			fmt.Println("Use 'kubectl rbg llm config view' to see the full configuration.")
 
 			return nil
 		},

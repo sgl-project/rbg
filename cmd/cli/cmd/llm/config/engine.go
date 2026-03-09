@@ -10,19 +10,22 @@ import (
 	engineplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/engine"
 )
 
-func newAddEngineCmd() *cobra.Command {
-	var engineType string
+func newSetEngineCmd() *cobra.Command {
 	var configFlags map[string]string
 
 	cmd := &cobra.Command{
-		Use:   "add-engine NAME",
-		Short: "Add an engine configuration",
+		Use:   "set-engine ENGINE_TYPE",
+		Short: "Customize engine configuration (optional — engines work with defaults without this)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+			engineType := args[0]
 			cfg, err := config.Load()
 			if err != nil {
 				return err
+			}
+
+			if !engineplugin.IsRegistered(engineType) {
+				return fmt.Errorf("unknown engine type '%s'", engineType)
 			}
 
 			configMap := make(map[string]interface{})
@@ -34,20 +37,17 @@ func newAddEngineCmd() *cobra.Command {
 				return err
 			}
 
-			if err := cfg.AddEngine(name, engineType, configMap); err != nil {
-				return err
-			}
+			cfg.SetEngine(engineType, configMap)
 
 			if err := cfg.Save(); err != nil {
 				return err
 			}
 
-			fmt.Printf("Engine '%s' added successfully\n", name)
+			fmt.Printf("Engine '%s' configured successfully\n", engineType)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&engineType, "type", "vllm", "Engine type (vllm, sglang)")
 	configFlags = make(map[string]string)
 	cmd.Flags().StringToStringVar(&configFlags, "config", nil, "Engine configuration key=value pairs")
 
@@ -57,7 +57,7 @@ func newAddEngineCmd() *cobra.Command {
 func newGetEnginesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get-engines",
-		Short: "List all engine configurations",
+		Short: "List customized engine configurations",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -65,66 +65,28 @@ func newGetEnginesCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tTYPE")
+			fmt.Fprintln(w, "TYPE")
 			for _, e := range cfg.Engines {
-				fmt.Fprintf(w, "%s\t%s\n", e.Name, e.Type)
+				fmt.Fprintf(w, "%s\n", e.Type)
 			}
 			return w.Flush()
 		},
 	}
 }
 
-func newSetEngineCmd() *cobra.Command {
-	var configFlags map[string]string
-
-	cmd := &cobra.Command{
-		Use:   "set-engine NAME",
-		Short: "Update an engine configuration",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-
-			configMap := make(map[string]interface{})
-			for k, v := range configFlags {
-				configMap[k] = v
-			}
-
-			if err := cfg.UpdateEngine(name, configMap); err != nil {
-				return err
-			}
-
-			if err := cfg.Save(); err != nil {
-				return err
-			}
-
-			fmt.Printf("Engine '%s' updated successfully\n", name)
-			return nil
-		},
-	}
-
-	configFlags = make(map[string]string)
-	cmd.Flags().StringToStringVar(&configFlags, "config", nil, "Engine configuration key=value pairs")
-
-	return cmd
-}
-
-func newDeleteEngineCmd() *cobra.Command {
+func newResetEngineCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete-engine NAME",
-		Short: "Delete an engine configuration",
+		Use:   "reset-engine ENGINE_TYPE",
+		Short: "Remove custom engine configuration, reverting to defaults",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+			engineType := args[0]
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 
-			if err := cfg.DeleteEngine(name); err != nil {
+			if err := cfg.DeleteEngine(engineType); err != nil {
 				return err
 			}
 
@@ -132,7 +94,7 @@ func newDeleteEngineCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Printf("Engine '%s' deleted successfully\n", name)
+			fmt.Printf("Engine '%s' reset to defaults\n", engineType)
 			return nil
 		},
 	}
