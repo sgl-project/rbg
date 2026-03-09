@@ -49,6 +49,21 @@ const (
 
 	// SetRBGIndexLabelKey SetRBGIndex identifies the index of the rbg within the rbgset
 	SetRBGIndexLabelKey = RBGSetPrefix + "rbg-index"
+
+	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
+	// Supported values: legacy, refine.
+	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
+)
+
+// DiscoveryConfigMode defines discovery config handling mode.
+type DiscoveryConfigMode string
+
+const (
+	// LegacyDiscoveryConfigMode keeps legacy role-level ConfigMap behavior.
+	LegacyDiscoveryConfigMode DiscoveryConfigMode = "legacy"
+
+	// RefineDiscoveryConfigMode enables refined shared ConfigMap behavior.
+	RefineDiscoveryConfigMode DiscoveryConfigMode = "refine"
 )
 
 const ComponentLabelPrefix = "component." + RBGPrefix

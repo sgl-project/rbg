@@ -22,8 +22,10 @@ import (
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
 	v1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	v1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	internal "sigs.k8s.io/rbgs/client-go/applyconfiguration/internal"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 )
 
 // ForKind returns an apply configuration type for the given GroupVersionKind, or nil if no
@@ -127,6 +129,64 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.VolcanoSchedulingPodGroupPolicySourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("WorkloadSpec"):
 		return &workloadsv1alpha1.WorkloadSpecApplyConfiguration{}
+
+		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
+		return &workloadsv1alpha2.CoordinatedPolicyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyRule"):
+		return &workloadsv1alpha2.CoordinatedPolicyRuleApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicySpec"):
+		return &workloadsv1alpha2.CoordinatedPolicySpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStatus"):
+		return &workloadsv1alpha2.CoordinatedPolicyStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStrategies"):
+		return &workloadsv1alpha2.CoordinatedPolicyStrategiesApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntime"):
+		return &workloadsv1alpha2.EngineRuntimeApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
+		return &workloadsv1alpha2.InPlaceUpdateStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("InstanceComponent"):
+		return &workloadsv1alpha2.InstanceComponentApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("LeaderWorkerPattern"):
+		return &workloadsv1alpha2.LeaderWorkerPatternApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("Pattern"):
+		return &workloadsv1alpha2.PatternApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroup"):
+		return &workloadsv1alpha2.RoleBasedGroupApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSet"):
+		return &workloadsv1alpha2.RoleBasedGroupSetApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSetSpec"):
+		return &workloadsv1alpha2.RoleBasedGroupSetSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSetStatus"):
+		return &workloadsv1alpha2.RoleBasedGroupSetStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSpec"):
+		return &workloadsv1alpha2.RoleBasedGroupSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupStatus"):
+		return &workloadsv1alpha2.RoleBasedGroupStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleSpec"):
+		return &workloadsv1alpha2.RoleSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleStatus"):
+		return &workloadsv1alpha2.RoleStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleTemplate"):
+		return &workloadsv1alpha2.RoleTemplateApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RollingUpdate"):
+		return &workloadsv1alpha2.RollingUpdateApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RollingUpdateCoordinationStrategy"):
+		return &workloadsv1alpha2.RollingUpdateCoordinationStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RolloutStrategy"):
+		return &workloadsv1alpha2.RolloutStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ScalingAdapter"):
+		return &workloadsv1alpha2.ScalingAdapterApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ScalingCoordinationStrategy"):
+		return &workloadsv1alpha2.ScalingCoordinationStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("StandalonePattern"):
+		return &workloadsv1alpha2.StandalonePatternApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("TemplateRef"):
+		return &workloadsv1alpha2.TemplateRefApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("TemplateSource"):
+		return &workloadsv1alpha2.TemplateSourceApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("WorkloadSpec"):
+		return &workloadsv1alpha2.WorkloadSpecApplyConfiguration{}
 
 	}
 	return nil

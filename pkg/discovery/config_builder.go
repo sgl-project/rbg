@@ -23,6 +23,18 @@ type ConfigBuilder struct {
 	role   *workloadsv1alpha1.RoleSpec
 }
 
+func NewConfigBuilder(
+	client client.Client,
+	rbg *workloadsv1alpha1.RoleBasedGroup,
+	role *workloadsv1alpha1.RoleSpec,
+) *ConfigBuilder {
+	return &ConfigBuilder{
+		client: client,
+		rbg:    rbg,
+		role:   role,
+	}
+}
+
 type ClusterConfig struct {
 	Group GroupInfo `json:"group"`
 	Roles RolesInfo `json:"roles"`

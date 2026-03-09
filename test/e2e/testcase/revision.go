@@ -30,6 +30,8 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					},
 				).Obj()
 
+			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			old, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -84,6 +86,8 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 						},
 					).Obj()
 
+				ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 				gomega.Expect(utils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 
 				gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -120,6 +124,9 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]v1alpha1.RoleSpec{
 				wrappers.BuildLwsRole("role-1").Obj(),
 			}).Obj()
+
+			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgEqual(rbg)
 

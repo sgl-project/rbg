@@ -1,13 +1,23 @@
-FROM registry-cn-hangzhou.ack.aliyuncs.com/dev/alpine:3.18-update
+# CRD Upgrader image for rbgs
+# This image contains all CRD files and kubectl to upgrade CRDs during Helm upgrade
+FROM alpine:3.20
 
-COPY ./deploy/helm/rbgs/crds /rbgs/crds
-COPY ./tools/crd-upgrade/upgrade-crds.sh /rbgs/upgrade-crds.sh
+# Copy CRD files and upgrade script
+COPY ./config/crd/bases /rbgs/crds
+COPY ./tools/crd-upgrade/ensure-crds-up-to-date.sh /rbgs/ensure-crds-up-to-date.sh
 
-RUN apk add --update bash curl iproute2 libc6-compat tzdata vim &&  \
- 	rm -rf /var/cache/apk/*
+# Install necessary tools
+RUN apk add --update --no-cache bash curl && \
+    chmod +x /rbgs/ensure-crds-up-to-date.sh
 
-# need kubectl as upgrade-crds.sh uses it.
-ARG TARGETARCH
-RUN curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && chmod +x /usr/local/bin/kubectl
+# Install kubectl with checksum verification (supports multi-arch via TARGETARCH)
+ARG KUBECTL_VERSION=v1.31.0
+ARG TARGETARCH=amd64
+RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" && \
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c && \
+    mv kubectl /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl && \
+    rm kubectl.sha256
 
-ENTRYPOINT ["bash","/rbgs/upgrade-crds.sh"]
+ENTRYPOINT ["bash", "/rbgs/ensure-crds-up-to-date.sh"]

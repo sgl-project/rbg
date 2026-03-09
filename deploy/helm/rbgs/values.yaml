@@ -35,8 +35,16 @@ nodeSelector: {}
 tolerations: []
 
 crdUpgrade:
+  # Whether to enable CRD Upgrader Job (runs before install/upgrade)
   enabled: true
-  # This sets the time-to-live (TTL) for crd-upgrade jobs. Default is 259200 seconds (3 days).
+  # Time-to-live (TTL) for crd-upgrade jobs after completion. Default is 259200 seconds (3 days).
   ttlSecondsAfterFinished: 259200
+  # CRD Upgrader image configuration
   repository: rolebasedgroup/rbgs-upgrade-crd
   tag: v0.6.0-5390c07
+  imagePullPolicy: IfNotPresent
+  # Tolerations for CRD Upgrader Job pod
+  tolerations:
+    - operator: Exists
+  # Node selector for CRD Upgrader Job pod
+  nodeSelector: {}

@@ -27,15 +27,21 @@ func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[stri
 func (rbg *RoleBasedGroup) GetGroupSize() int {
 	ret := 0
 	for _, role := range rbg.Spec.Roles {
-		if role.Workload.String() == LeaderWorkerSetWorkloadType {
-			if role.LeaderWorkerSet == nil {
-				ret += 1 * int(*role.Replicas)
-				continue
-			}
-			ret += int(*role.LeaderWorkerSet.Size) * int(*role.Replicas)
-		} else {
-			ret += int(*role.Replicas)
+		if role.Replicas == nil {
+			continue
 		}
+
+		if role.Workload.String() == LeaderWorkerSetWorkloadType ||
+			(role.Workload.String() == InstanceSetWorkloadType && role.LeaderWorkerSet != nil) {
+			sizePerReplica := int32(1)
+			if role.LeaderWorkerSet != nil && role.LeaderWorkerSet.Size != nil && *role.LeaderWorkerSet.Size > 0 {
+				sizePerReplica = *role.LeaderWorkerSet.Size
+			}
+			ret += int(sizePerReplica * *role.Replicas)
+			continue
+		}
+
+		ret += int(*role.Replicas)
 	}
 	return ret
 }
@@ -180,6 +186,53 @@ func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) 
 
 func (rbg *RoleBasedGroup) GetKey() string {
 	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
+}
+
+func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() DiscoveryConfigMode {
+	if rbg == nil || rbg.Annotations == nil {
+		return ""
+	}
+	return DiscoveryConfigMode(rbg.Annotations[DiscoveryConfigModeAnnotationKey])
+}
+
+func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode DiscoveryConfigMode) {
+	if rbg == nil {
+		return
+	}
+	if rbg.Annotations == nil {
+		rbg.Annotations = map[string]string{}
+	}
+	rbg.Annotations[DiscoveryConfigModeAnnotationKey] = string(mode)
+}
+
+func (rbg *RoleBasedGroup) HasStatefulRole() bool {
+	if rbg == nil {
+		return false
+	}
+	for i := range rbg.Spec.Roles {
+		if IsStatefulRole(&rbg.Spec.Roles[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsStatefulRole(role *RoleSpec) bool {
+	if role == nil {
+		return false
+	}
+	switch role.Workload.String() {
+	case DeploymentWorkloadType:
+		return false
+	case StatefulSetWorkloadType, LeaderWorkerSetWorkloadType, "":
+		return true
+	case InstanceSetWorkloadType:
+		pattern := InstancePatternType(role.Annotations[RBGInstancePatternAnnotationKey])
+		return pattern != StatelessInstancePattern
+	default:
+		// Keep unknown kinds conservative and stateful by default.
+		return true
+	}
 }
 
 // UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).

@@ -80,6 +80,8 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 								Obj(),
 						}).Obj()
 
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
 
@@ -144,6 +146,8 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 								Obj(),
 						}).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
@@ -284,6 +288,8 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 								Obj(),
 						}).Obj()
 
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)
 
@@ -344,6 +350,8 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 								Obj(),
 						}).Obj()
+
+					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgEqual(rbg)

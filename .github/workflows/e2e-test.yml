@@ -95,11 +95,6 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
-      - name: Install CRDs
-        run: |
-          make manifests
-          kubectl apply --server-side -f config/crd/bases/
-
       - name: Install LeaderWorkerSet CRDs
         run: |
           kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
@@ -129,18 +124,45 @@ jobs:
 
       - name: Build and load controller image
         run: |
+          make manifests
           make docker-build-controller TAG=e2e-test
           docker images | grep rbgs-controller || true
           kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-e2e
 
+      - name: Build and load CRD Upgrader image
+        run: |
+          make docker-build-crd-upgrader TAG=e2e-test
+          docker images | grep rbgs-upgrade-crd || true
+          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-test --name rbgs-e2e
+
       - name: Deploy controller
         run: |
-          make helm-deploy TAG=e2e-test
+          helm upgrade --install rbgs deploy/helm/rbgs \
+            --create-namespace \
+            --namespace rbgs-system \
+            --set image.tag=e2e-test \
+            --set crdUpgrade.tag=e2e-test \
+            --wait
           kubectl get deploy -n rbgs-system
 
       - name: Wait for controller to be ready
         run: |
           kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+
+      - name: Pre-load e2e test images
+        run: |
+          # Pull and load e2e test images to avoid image pull timeout during tests
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-e2e
+          done
+          echo "All e2e test images loaded successfully"
 
       - name: Run E2E tests
         run: |
