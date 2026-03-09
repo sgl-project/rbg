@@ -26,6 +26,7 @@ main
 .idea
 .vscode
 .qoder
+.claude
 *.swp
 *.swo
 *~

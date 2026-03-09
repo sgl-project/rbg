@@ -65,41 +65,11 @@ func newGetEnginesCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tTYPE\tCURRENT")
+			fmt.Fprintln(w, "NAME\tTYPE")
 			for _, e := range cfg.Engines {
-				current := ""
-				if e.Name == cfg.CurrentEngine {
-					current = "*"
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", e.Name, e.Type, current)
+				fmt.Fprintf(w, "%s\t%s\n", e.Name, e.Type)
 			}
 			return w.Flush()
-		},
-	}
-}
-
-func newUseEngineCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "use-engine NAME",
-		Short: "Set the current engine",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-
-			if err := cfg.UseEngine(name); err != nil {
-				return err
-			}
-
-			if err := cfg.Save(); err != nil {
-				return err
-			}
-
-			fmt.Printf("Now using engine '%s'\n", name)
-			return nil
 		},
 	}
 }

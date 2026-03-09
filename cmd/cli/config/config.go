@@ -24,7 +24,6 @@ type Config struct {
 	Engines        []EngineConfig  `yaml:"engines,omitempty"`
 	CurrentStorage string          `yaml:"current-storage,omitempty"`
 	CurrentSource  string          `yaml:"current-source,omitempty"`
-	CurrentEngine  string          `yaml:"current-engine,omitempty"`
 	Namespace      string          `yaml:"namespace,omitempty"`
 }
 
@@ -51,7 +50,7 @@ type EngineConfig struct {
 
 var (
 	instance *Config
-	once     sync.Once
+	mu       sync.Mutex
 )
 
 // GetConfigPath returns the path to the config file
@@ -68,27 +67,36 @@ func GetConfigPath() string {
 
 // Load loads the configuration from file
 func Load() (*Config, error) {
-	var err error
-	once.Do(func() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if instance == nil {
 		instance = &Config{
 			APIVersion: "rbg/v1alpha1",
 			Kind:       "Config",
 			Namespace:  "default",
 		}
-		err = instance.loadFromFile()
-	})
-	return instance, err
+		if err := instance.loadFromFile(); err != nil {
+			return nil, err
+		}
+	}
+	return instance, nil
 }
 
 // Reload forces a reload of the configuration from file
 func Reload() (*Config, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
 	instance = &Config{
 		APIVersion: "rbg/v1alpha1",
 		Kind:       "Config",
 		Namespace:  "default",
 	}
-	err := instance.loadFromFile()
-	return instance, err
+	if err := instance.loadFromFile(); err != nil {
+		return nil, err
+	}
+	return instance, nil
 }
 
 func (c *Config) loadFromFile() error {
@@ -270,7 +278,6 @@ func (c *Config) UseSource(name string) error {
 }
 
 // AddEngine adds a new engine configuration.
-// If this is the only engine after adding, it is automatically set as current.
 func (c *Config) AddEngine(name, engineType string, cfg map[string]interface{}) error {
 	for _, e := range c.Engines {
 		if e.Name == name {
@@ -282,9 +289,6 @@ func (c *Config) AddEngine(name, engineType string, cfg map[string]interface{}) 
 		Type:   engineType,
 		Config: cfg,
 	})
-	if len(c.Engines) == 1 {
-		c.CurrentEngine = name
-	}
 	return nil
 }
 
@@ -313,9 +317,6 @@ func (c *Config) UpdateEngine(name string, cfg map[string]interface{}) error {
 
 // DeleteEngine deletes an engine configuration
 func (c *Config) DeleteEngine(name string) error {
-	if c.CurrentEngine == name {
-		return fmt.Errorf("cannot delete current engine '%s', switch to another engine first", name)
-	}
 	for i, e := range c.Engines {
 		if e.Name == name {
 			c.Engines = append(c.Engines[:i], c.Engines[i+1:]...)
@@ -323,16 +324,6 @@ func (c *Config) DeleteEngine(name string) error {
 		}
 	}
 	return fmt.Errorf("engine '%s' not found", name)
-}
-
-// UseEngine sets the current engine
-func (c *Config) UseEngine(name string) error {
-	_, err := c.GetEngine(name)
-	if err != nil {
-		return err
-	}
-	c.CurrentEngine = name
-	return nil
 }
 
 // GetCurrentStorageConfig returns the current storage configuration
@@ -357,16 +348,4 @@ func (c *Config) GetCurrentSourceConfig() (map[string]interface{}, error) {
 		return nil, err
 	}
 	return s.Config, nil
-}
-
-// GetCurrentEngineConfig returns the current engine configuration
-func (c *Config) GetCurrentEngineConfig() (map[string]interface{}, error) {
-	if c.CurrentEngine == "" {
-		return nil, fmt.Errorf("no engine configured")
-	}
-	e, err := c.GetEngine(c.CurrentEngine)
-	if err != nil {
-		return nil, err
-	}
-	return e.Config, nil
 }

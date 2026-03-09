@@ -34,15 +34,6 @@ func TestNewGetEnginesCmd(t *testing.T) {
 	assert.Equal(t, "List all engine configurations", cmd.Short)
 }
 
-func TestNewUseEngineCmd(t *testing.T) {
-	cmd := newUseEngineCmd()
-
-	assert.NotNil(t, cmd)
-	assert.Equal(t, "use-engine NAME", cmd.Use)
-	assert.Equal(t, "Set the current engine", cmd.Short)
-	assert.NotNil(t, cmd.Args)
-}
-
 func TestNewSetEngineCmd(t *testing.T) {
 	cmd := newSetEngineCmd()
 
@@ -70,7 +61,6 @@ func TestEngineCommands_ReturnCobraCommand(t *testing.T) {
 	commands := []func() *cobra.Command{
 		newAddEngineCmd,
 		newGetEnginesCmd,
-		newUseEngineCmd,
 		newSetEngineCmd,
 		newDeleteEngineCmd,
 	}
