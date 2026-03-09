@@ -67,6 +67,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupSets().Informer()}, nil
 
 		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithResource("coordinatedpolicies"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().CoordinatedPolicies().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroups"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroups().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroupsets"):

@@ -27,6 +27,10 @@ type FakeWorkloadsV1alpha2 struct {
 	*testing.Fake
 }
 
+func (c *FakeWorkloadsV1alpha2) CoordinatedPolicies(namespace string) v1alpha2.CoordinatedPolicyInterface {
+	return newFakeCoordinatedPolicies(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha2) RoleBasedGroups(namespace string) v1alpha2.RoleBasedGroupInterface {
 	return newFakeRoleBasedGroups(c, namespace)
 }
