@@ -58,31 +58,6 @@ func newViewCmd() *cobra.Command {
 			}
 			fmt.Println()
 
-			fmt.Printf("Default Namespace: %s\n", cfg.Namespace)
-			return nil
-		},
-	}
-}
-
-func newSetNamespaceCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "set-namespace NAMESPACE",
-		Short: "Set the default namespace",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			namespace := args[0]
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-
-			cfg.Namespace = namespace
-
-			if err := cfg.Save(); err != nil {
-				return err
-			}
-
-			fmt.Printf("Default namespace set to '%s'\n", namespace)
 			return nil
 		},
 	}
@@ -257,17 +232,10 @@ func newInitCmd() *cobra.Command {
 				return fmt.Errorf("failed to configure source: %w", err)
 			}
 
-			// Set namespace
-			namespace := readLine(reader, "\nEnter default namespace", "default")
-			if namespace == "" {
-				namespace = "default"
-			}
-
 			// Create and save configuration
 			cfg := &config.Config{
 				APIVersion:     "rbg/v1alpha1",
 				Kind:           "Config",
-				Namespace:      namespace,
 				CurrentStorage: storageType,
 				CurrentSource:  sourceType,
 			}
@@ -282,7 +250,6 @@ func newInitCmd() *cobra.Command {
 			fmt.Println("\n=== Configuration Initialized Successfully ===")
 			fmt.Printf("  Storage: %s\n", storageType)
 			fmt.Printf("  Source:  %s\n", sourceType)
-			fmt.Printf("  Namespace: %s\n", namespace)
 			fmt.Println("\nEngines work with defaults. Use 'kubectl rbg llm config set-engine' to customize.")
 			fmt.Println("Use 'kubectl rbg llm config view' to see the full configuration.")
 

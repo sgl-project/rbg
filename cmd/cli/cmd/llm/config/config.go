@@ -27,7 +27,6 @@ func NewConfigCmd() *cobra.Command {
 	cmd.AddCommand(newDeleteSourceCmd())
 	cmd.AddCommand(newResetEngineCmd())
 	cmd.AddCommand(newViewCmd())
-	cmd.AddCommand(newSetNamespaceCmd())
 	cmd.AddCommand(newInitCmd())
 
 	return cmd

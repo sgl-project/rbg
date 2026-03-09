@@ -31,7 +31,6 @@ func TestNewConfigCmd(t *testing.T) {
 		"delete-source",
 		"reset-engine",
 		"view",
-		"set-namespace",
 		"init",
 	}
 
@@ -64,7 +63,6 @@ func TestNewConfigCmd_SubcommandProperties(t *testing.T) {
 		{"delete-storage", "delete-storage NAME", "Delete a storage configuration"},
 		{"delete-source", "delete-source NAME", "Delete a source configuration"},
 		{"view", "view", "View current configuration"},
-		{"set-namespace", "set-namespace NAMESPACE", "Set the default namespace"},
 		{"init", "init", "Initialize LLM configuration"},
 	}
 

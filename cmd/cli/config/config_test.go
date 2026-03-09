@@ -51,7 +51,6 @@ func TestLoadFromFile_ValidYAML(t *testing.T) {
 	p := filepath.Join(dir, "config")
 	yaml := `apiVersion: rbg/v1alpha1
 kind: Config
-namespace: test-ns
 current-storage: my-storage
 storages:
   - name: my-storage
@@ -66,7 +65,6 @@ storages:
 	require.NoError(t, c.loadFromFile())
 	assert.Equal(t, "rbg/v1alpha1", c.APIVersion)
 	assert.Equal(t, "Config", c.Kind)
-	assert.Equal(t, "test-ns", c.Namespace)
 	assert.Equal(t, "my-storage", c.CurrentStorage)
 	require.Len(t, c.Storages, 1)
 	assert.Equal(t, "pvc", c.Storages[0].Type)
@@ -83,7 +81,6 @@ func TestSave_WritesFile(t *testing.T) {
 	c := &Config{
 		APIVersion: "rbg/v1alpha1",
 		Kind:       "Config",
-		Namespace:  "default",
 	}
 	require.NoError(t, c.AddStorage("s1", "pvc", map[string]interface{}{"pvcName": "vol"}))
 	require.NoError(t, c.Save())
@@ -123,19 +120,21 @@ func TestSave_EmptyPath(t *testing.T) {
 func TestReload_ReadsUpdatedFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config")
-	yaml1 := `namespace: ns1`
+	yaml1 := `apiVersion: rbg/v1alpha1
+kind: Config`
 	require.NoError(t, os.WriteFile(p, []byte(yaml1), 0600))
 	t.Setenv(EnvConfigPath, p)
 
 	c, err := Reload()
 	require.NoError(t, err)
-	assert.Equal(t, "ns1", c.Namespace)
+	assert.Equal(t, "rbg/v1alpha1", c.APIVersion)
 
-	yaml2 := `namespace: ns2`
+	yaml2 := `apiVersion: rbg/v1alpha2
+kind: Config`
 	require.NoError(t, os.WriteFile(p, []byte(yaml2), 0600))
 	c, err = Reload()
 	require.NoError(t, err)
-	assert.Equal(t, "ns2", c.Namespace)
+	assert.Equal(t, "rbg/v1alpha2", c.APIVersion)
 }
 
 // --- Storage CRUD ---
@@ -404,7 +403,6 @@ func TestSaveAndReload(t *testing.T) {
 	c := &Config{
 		APIVersion: "rbg/v1alpha1",
 		Kind:       "Config",
-		Namespace:  "prod",
 	}
 	require.NoError(t, c.AddStorage("s1", "pvc", map[string]interface{}{"pvcName": "v1"}))
 	require.NoError(t, c.AddSource("src1", "huggingface", map[string]interface{}{"token": "tk"}))
@@ -413,7 +411,6 @@ func TestSaveAndReload(t *testing.T) {
 
 	loaded, err := Reload()
 	require.NoError(t, err)
-	assert.Equal(t, "prod", loaded.Namespace)
 	assert.Equal(t, "s1", loaded.CurrentStorage)
 	assert.Equal(t, "src1", loaded.CurrentSource)
 	require.Len(t, loaded.Storages, 1)

@@ -24,7 +24,6 @@ type Config struct {
 	Engines        []EngineConfig  `yaml:"engines,omitempty"`
 	CurrentStorage string          `yaml:"current-storage,omitempty"`
 	CurrentSource  string          `yaml:"current-source,omitempty"`
-	Namespace      string          `yaml:"namespace,omitempty"`
 }
 
 // StorageConfig represents a storage configuration
@@ -73,7 +72,6 @@ func Load() (*Config, error) {
 		instance = &Config{
 			APIVersion: "rbg/v1alpha1",
 			Kind:       "Config",
-			Namespace:  "default",
 		}
 		if err := instance.loadFromFile(); err != nil {
 			return nil, err
@@ -90,7 +88,6 @@ func Reload() (*Config, error) {
 	instance = &Config{
 		APIVersion: "rbg/v1alpha1",
 		Kind:       "Config",
-		Namespace:  "default",
 	}
 	if err := instance.loadFromFile(); err != nil {
 		return nil, err
