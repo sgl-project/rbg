@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // GetCommonLabelsFromRole returns common labels for a role.
@@ -32,16 +33,16 @@ func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]st
 	// Be careful to change these labels.
 	// They are used as sts.spec.selector which can not be updated. If changed, may cause all exist rbgs failed.
 	return map[string]string{
-		SetNameLabelKey:            rbg.Name,
-		SetRoleLabelKey:            role.Name,
-		SetGroupUniqueHashLabelKey: rbg.GenGroupUniqueKey(),
+		constants.GroupNameLabelKey: rbg.Name,
+		constants.RoleNameLabelKey:  role.Name,
+		constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
 	}
 }
 
 // GetCommonAnnotationsFromRole returns common annotations for a role.
 func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[string]string {
 	return map[string]string{
-		RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
+		constants.RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
 	}
 }
 
@@ -126,7 +127,7 @@ func (rbg *RoleBasedGroup) GetRoleStatus(roleName string) (status RoleStatus, fo
 
 // GetExclusiveKey returns the exclusive key from annotations.
 func (rbg *RoleBasedGroup) GetExclusiveKey() (topologyKey string, found bool) {
-	topologyKey, found = rbg.Annotations[ExclusiveKeyAnnotationKey]
+	topologyKey, found = rbg.Annotations[constants.GroupExclusiveTopologyKey]
 	return
 }
 
