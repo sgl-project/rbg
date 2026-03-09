@@ -22,3 +22,7 @@ type CoordinatedPolicyExpansion interface{}
 type RoleBasedGroupExpansion interface{}
 
 type RoleBasedGroupSetExpansion interface{}
+
+type RoleInstanceExpansion interface{}
+
+type RoleInstanceSetExpansion interface{}

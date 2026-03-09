@@ -29,6 +29,10 @@ type Interface interface {
 	RoleBasedGroups() RoleBasedGroupInformer
 	// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 	RoleBasedGroupSets() RoleBasedGroupSetInformer
+	// RoleInstances returns a RoleInstanceInformer.
+	RoleInstances() RoleInstanceInformer
+	// RoleInstanceSets returns a RoleInstanceSetInformer.
+	RoleInstanceSets() RoleInstanceSetInformer
 }
 
 type version struct {
@@ -55,4 +59,14 @@ func (v *version) RoleBasedGroups() RoleBasedGroupInformer {
 // RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 func (v *version) RoleBasedGroupSets() RoleBasedGroupSetInformer {
 	return &roleBasedGroupSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleInstances returns a RoleInstanceInformer.
+func (v *version) RoleInstances() RoleInstanceInformer {
+	return &roleInstanceInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleInstanceSets returns a RoleInstanceSetInformer.
+func (v *version) RoleInstanceSets() RoleInstanceSetInformer {
+	return &roleInstanceSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

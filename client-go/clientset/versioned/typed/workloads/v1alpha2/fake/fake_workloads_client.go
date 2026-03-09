@@ -39,6 +39,14 @@ func (c *FakeWorkloadsV1alpha2) RoleBasedGroupSets(namespace string) v1alpha2.Ro
 	return newFakeRoleBasedGroupSets(c, namespace)
 }
 
+func (c *FakeWorkloadsV1alpha2) RoleInstances(namespace string) v1alpha2.RoleInstanceInterface {
+	return newFakeRoleInstances(c, namespace)
+}
+
+func (c *FakeWorkloadsV1alpha2) RoleInstanceSets(namespace string) v1alpha2.RoleInstanceSetInterface {
+	return newFakeRoleInstanceSets(c, namespace)
+}
+
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeWorkloadsV1alpha2) RESTClient() rest.Interface {
