@@ -200,10 +200,20 @@ func shouldRecreateInstance(instance *v1alpha1.Instance, pods []*v1.Pod) bool {
 
 	// Check if any pod has been deleted:
 	// Only trigger recreate if Instance was previously Ready (stable state)
-	// This avoids triggering recreate during initial creation or scaling
-	if wasInstanceReady(instance) {
+	// and spec is not being changed (Generation == ObservedGeneration).
+	// This avoids triggering recreate during initial creation or scaling up.
+	if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
 		expectedPodCount := getExpectedPodCount(instance)
-		if len(pods) < expectedPodCount {
+		// Calculate active pods (exclude those being deleted).
+		// Pods with DeletionTimestamp != nil are in Terminating state and should not
+		// be counted as active, otherwise the controller may fail to detect pod deletion.
+		activeCount := 0
+		for _, p := range pods {
+			if p.DeletionTimestamp == nil {
+				activeCount++
+			}
+		}
+		if activeCount < expectedPodCount {
 			return true
 		}
 	}
