@@ -17,6 +17,14 @@ limitations under the License.
 
 package v1alpha2
 
+// CoordinatedPolicyListerExpansion allows custom methods to be added to
+// CoordinatedPolicyLister.
+type CoordinatedPolicyListerExpansion interface{}
+
+// CoordinatedPolicyNamespaceListerExpansion allows custom methods to be added to
+// CoordinatedPolicyNamespaceLister.
+type CoordinatedPolicyNamespaceListerExpansion interface{}
+
 // RoleBasedGroupListerExpansion allows custom methods to be added to
 // RoleBasedGroupLister.
 type RoleBasedGroupListerExpansion interface{}

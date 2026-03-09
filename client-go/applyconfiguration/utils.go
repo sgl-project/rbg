@@ -131,6 +131,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.WorkloadSpecApplyConfiguration{}
 
 		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
+		return &workloadsv1alpha2.CoordinatedPolicyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyRule"):
+		return &workloadsv1alpha2.CoordinatedPolicyRuleApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicySpec"):
+		return &workloadsv1alpha2.CoordinatedPolicySpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStatus"):
+		return &workloadsv1alpha2.CoordinatedPolicyStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStrategies"):
+		return &workloadsv1alpha2.CoordinatedPolicyStrategiesApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha2.EngineRuntimeApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
@@ -161,10 +171,14 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.RoleTemplateApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RollingUpdate"):
 		return &workloadsv1alpha2.RollingUpdateApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RollingUpdateCoordinationStrategy"):
+		return &workloadsv1alpha2.RollingUpdateCoordinationStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RolloutStrategy"):
 		return &workloadsv1alpha2.RolloutStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("ScalingAdapter"):
 		return &workloadsv1alpha2.ScalingAdapterApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ScalingCoordinationStrategy"):
+		return &workloadsv1alpha2.ScalingCoordinationStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("StandalonePattern"):
 		return &workloadsv1alpha2.StandalonePatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("TemplateRef"):
