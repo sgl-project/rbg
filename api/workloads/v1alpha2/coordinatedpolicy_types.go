@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ type CoordinatedPolicySpec struct {
 // CoordinatedPolicyRule defines the coordination policy rule for a set of roles.
 type CoordinatedPolicyRule struct {
 	// Roles specifies the names of the roles that this policy applies to.
+	// TODO: Add validation to detect conflicts when the same role appears in multiple policies.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:Required
 	Roles []string `json:"roles"`
