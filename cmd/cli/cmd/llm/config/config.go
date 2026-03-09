@@ -15,7 +15,6 @@ func NewConfigCmd() *cobra.Command {
 	// Add subcommands
 	cmd.AddCommand(newAddStorageCmd())
 	cmd.AddCommand(newAddSourceCmd())
-	cmd.AddCommand(newAddEngineCmd())
 	cmd.AddCommand(newGetStoragesCmd())
 	cmd.AddCommand(newGetSourcesCmd())
 	cmd.AddCommand(newGetEnginesCmd())
@@ -26,7 +25,7 @@ func NewConfigCmd() *cobra.Command {
 	cmd.AddCommand(newSetEngineCmd())
 	cmd.AddCommand(newDeleteStorageCmd())
 	cmd.AddCommand(newDeleteSourceCmd())
-	cmd.AddCommand(newDeleteEngineCmd())
+	cmd.AddCommand(newResetEngineCmd())
 	cmd.AddCommand(newViewCmd())
 	cmd.AddCommand(newSetNamespaceCmd())
 	cmd.AddCommand(newInitCmd())

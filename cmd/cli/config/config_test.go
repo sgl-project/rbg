@@ -349,59 +349,48 @@ func TestGetCurrentSourceConfig_NoCurrent(t *testing.T) {
 
 // --- Engine CRUD ---
 
-func TestAddEngine_OK(t *testing.T) {
+func TestSetEngine_Create(t *testing.T) {
 	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", nil))
+	c.SetEngine("vllm", nil)
 	assert.Len(t, c.Engines, 1)
 }
 
-func TestAddEngine_Duplicate(t *testing.T) {
+func TestSetEngine_Upsert(t *testing.T) {
 	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", nil))
-	err := c.AddEngine("e1", "vllm", nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	c.SetEngine("vllm", map[string]interface{}{"image": "old"})
+	c.SetEngine("vllm", map[string]interface{}{"image": "new"})
+	// should still be one entry, not two
+	assert.Len(t, c.Engines, 1)
+	e, err := c.GetEngine("vllm")
+	require.NoError(t, err)
+	assert.Equal(t, "new", e.Config["image"])
 }
 
 func TestGetEngine_OK(t *testing.T) {
 	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", map[string]interface{}{"image": "v"}))
-	e, err := c.GetEngine("e1")
+	c.SetEngine("vllm", map[string]interface{}{"image": "v"})
+	e, err := c.GetEngine("vllm")
 	require.NoError(t, err)
 	assert.Equal(t, "vllm", e.Type)
 }
 
 func TestGetEngine_NotFound(t *testing.T) {
 	c := &Config{}
-	_, err := c.GetEngine("nope")
-	assert.Error(t, err)
-}
-
-func TestUpdateEngine_OK(t *testing.T) {
-	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", map[string]interface{}{"image": "old"}))
-	require.NoError(t, c.UpdateEngine("e1", map[string]interface{}{"image": "new"}))
-	e, _ := c.GetEngine("e1")
-	assert.Equal(t, "new", e.Config["image"])
-}
-
-func TestUpdateEngine_NotFound(t *testing.T) {
-	c := &Config{}
-	err := c.UpdateEngine("nope", nil)
+	_, err := c.GetEngine("nonexistent")
 	assert.Error(t, err)
 }
 
 func TestDeleteEngine_OK(t *testing.T) {
 	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", nil))
-	require.NoError(t, c.AddEngine("e2", "sglang", nil))
-	require.NoError(t, c.DeleteEngine("e2"))
+	c.SetEngine("vllm", nil)
+	c.SetEngine("sglang", nil)
+	require.NoError(t, c.DeleteEngine("sglang"))
 	assert.Len(t, c.Engines, 1)
 }
 
 func TestDeleteEngine_NotFound(t *testing.T) {
 	c := &Config{}
-	err := c.DeleteEngine("nope")
+	err := c.DeleteEngine("nonexistent")
 	assert.Error(t, err)
 }
 
@@ -419,7 +408,7 @@ func TestSaveAndReload(t *testing.T) {
 	}
 	require.NoError(t, c.AddStorage("s1", "pvc", map[string]interface{}{"pvcName": "v1"}))
 	require.NoError(t, c.AddSource("src1", "huggingface", map[string]interface{}{"token": "tk"}))
-	require.NoError(t, c.AddEngine("e1", "vllm", map[string]interface{}{"image": "img"}))
+	c.SetEngine("vllm", map[string]interface{}{"image": "img"})
 	require.NoError(t, c.Save())
 
 	loaded, err := Reload()
@@ -432,5 +421,7 @@ func TestSaveAndReload(t *testing.T) {
 	require.Len(t, loaded.Engines, 1)
 	assert.Equal(t, "v1", loaded.Storages[0].Config["pvcName"])
 	assert.Equal(t, "tk", loaded.Sources[0].Config["token"])
+	require.Len(t, loaded.Engines, 1)
+	assert.Equal(t, "vllm", loaded.Engines[0].Type)
 	assert.Equal(t, "img", loaded.Engines[0].Config["image"])
 }
