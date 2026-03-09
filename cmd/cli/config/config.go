@@ -43,7 +43,6 @@ type SourceConfig struct {
 
 // EngineConfig represents an engine configuration
 type EngineConfig struct {
-	Name   string                 `yaml:"name"`
 	Type   string                 `yaml:"type"`
 	Config map[string]interface{} `yaml:"config,omitempty"`
 }
@@ -277,53 +276,41 @@ func (c *Config) UseSource(name string) error {
 	return nil
 }
 
-// AddEngine adds a new engine configuration.
-func (c *Config) AddEngine(name, engineType string, cfg map[string]interface{}) error {
-	for _, e := range c.Engines {
-		if e.Name == name {
-			return fmt.Errorf("engine '%s' already exists", name)
+// SetEngine sets the engine configuration for the given type (create or update).
+// Each engine type can only be configured once; calling SetEngine on an existing
+// type replaces its configuration.
+func (c *Config) SetEngine(engineType string, cfg map[string]interface{}) {
+	for i := range c.Engines {
+		if c.Engines[i].Type == engineType {
+			c.Engines[i].Config = cfg
+			return
 		}
 	}
 	c.Engines = append(c.Engines, EngineConfig{
-		Name:   name,
 		Type:   engineType,
 		Config: cfg,
 	})
-	return nil
 }
 
-// GetEngine returns an engine configuration by name
-func (c *Config) GetEngine(name string) (*EngineConfig, error) {
+// GetEngine returns an engine configuration by type
+func (c *Config) GetEngine(engineType string) (*EngineConfig, error) {
 	for i := range c.Engines {
-		if c.Engines[i].Name == name {
+		if c.Engines[i].Type == engineType {
 			return &c.Engines[i], nil
 		}
 	}
-	return nil, fmt.Errorf("engine '%s' not found", name)
-}
-
-// UpdateEngine updates an existing engine configuration
-func (c *Config) UpdateEngine(name string, cfg map[string]interface{}) error {
-	for i := range c.Engines {
-		if c.Engines[i].Name == name {
-			for k, v := range cfg {
-				c.Engines[i].Config[k] = v
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("engine '%s' not found", name)
+	return nil, fmt.Errorf("engine type '%s' not found", engineType)
 }
 
 // DeleteEngine deletes an engine configuration
-func (c *Config) DeleteEngine(name string) error {
+func (c *Config) DeleteEngine(engineType string) error {
 	for i, e := range c.Engines {
-		if e.Name == name {
+		if e.Type == engineType {
 			c.Engines = append(c.Engines[:i], c.Engines[i+1:]...)
 			return nil
 		}
 	}
-	return fmt.Errorf("engine '%s' not found", name)
+	return fmt.Errorf("engine type '%s' not found", engineType)
 }
 
 // GetCurrentStorageConfig returns the current storage configuration

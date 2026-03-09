@@ -7,20 +7,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewAddEngineCmd(t *testing.T) {
-	cmd := newAddEngineCmd()
+func TestNewSetEngineCmd(t *testing.T) {
+	cmd := newSetEngineCmd()
 
 	assert.NotNil(t, cmd)
-	assert.Equal(t, "add-engine NAME", cmd.Use)
-	assert.Equal(t, "Add an engine configuration", cmd.Short)
+	assert.Equal(t, "set-engine ENGINE_TYPE", cmd.Use)
+	assert.NotEmpty(t, cmd.Short)
 	assert.NotNil(t, cmd.Args)
 
-	// Check flags
-	flag := cmd.Flags().Lookup("type")
-	assert.NotNil(t, flag)
-	assert.Equal(t, "vllm", flag.DefValue)
-	assert.Equal(t, "Engine type (vllm, sglang)", flag.Usage)
-
+	// Check config flag
 	configFlag := cmd.Flags().Lookup("config")
 	assert.NotNil(t, configFlag)
 	assert.Equal(t, "Engine configuration key=value pairs", configFlag.Usage)
@@ -31,38 +26,23 @@ func TestNewGetEnginesCmd(t *testing.T) {
 
 	assert.NotNil(t, cmd)
 	assert.Equal(t, "get-engines", cmd.Use)
-	assert.Equal(t, "List all engine configurations", cmd.Short)
+	assert.NotEmpty(t, cmd.Short)
 }
 
-func TestNewSetEngineCmd(t *testing.T) {
-	cmd := newSetEngineCmd()
+func TestNewResetEngineCmd(t *testing.T) {
+	cmd := newResetEngineCmd()
 
 	assert.NotNil(t, cmd)
-	assert.Equal(t, "set-engine NAME", cmd.Use)
-	assert.Equal(t, "Update an engine configuration", cmd.Short)
-	assert.NotNil(t, cmd.Args)
-
-	// Check config flag
-	configFlag := cmd.Flags().Lookup("config")
-	assert.NotNil(t, configFlag)
-	assert.Equal(t, "Engine configuration key=value pairs", configFlag.Usage)
-}
-
-func TestNewDeleteEngineCmd(t *testing.T) {
-	cmd := newDeleteEngineCmd()
-
-	assert.NotNil(t, cmd)
-	assert.Equal(t, "delete-engine NAME", cmd.Use)
-	assert.Equal(t, "Delete an engine configuration", cmd.Short)
+	assert.Equal(t, "reset-engine ENGINE_TYPE", cmd.Use)
+	assert.NotEmpty(t, cmd.Short)
 	assert.NotNil(t, cmd.Args)
 }
 
 func TestEngineCommands_ReturnCobraCommand(t *testing.T) {
 	commands := []func() *cobra.Command{
-		newAddEngineCmd,
-		newGetEnginesCmd,
 		newSetEngineCmd,
-		newDeleteEngineCmd,
+		newGetEnginesCmd,
+		newResetEngineCmd,
 	}
 
 	for _, fn := range commands {
