@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/pkg/utils"
 
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
@@ -50,6 +51,14 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	revisions []*apps.ControllerRevision, pods []*v1.Pod) (*expectationDiff, error) {
 
 	coreControl := instancecore.New(updateInstance)
+
+	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod is deleted or restarted,
+	// recreate all pods of the instance
+	if shouldRecreateInstance(updateInstance, pods) {
+		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
+			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))
+		return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
+	}
 
 	if updateInstance.Spec.PodGroupPolicy.EnableGangScheduling() {
 		for i := range pods {
@@ -162,4 +171,63 @@ func (c *realControl) createOnePod(ctx context.Context, instance *v1alpha1.Insta
 	}
 	c.recorder.Eventf(instance, v1.EventTypeNormal, "SuccessfulCreate", "succeed to create pod %s", pod.Name)
 	return nil
+}
+
+// shouldRecreateInstance checks if the instance should be recreated based on RestartPolicy.
+// When RestartPolicy is RecreateInstanceOnPodRestart, the instance should be recreated if:
+// 1. Any container has restarted (RestartCount > 0)
+// 2. Any pod has been deleted (only when Instance was previously Ready)
+//
+// Note: We use Instance's Ready condition to distinguish between initial creation/scaling
+// and pod deletion. This avoids infinite recreation loops.
+func shouldRecreateInstance(instance *v1alpha1.Instance, pods []*v1.Pod) bool {
+	// Only check when RestartPolicy is RecreateInstanceOnPodRestart
+	if instance.Spec.RestartPolicy != v1alpha1.RecreateInstanceOnPodRestart {
+		return false
+	}
+
+	// If no pods exist yet (initial creation), don't trigger recreate
+	if len(pods) == 0 {
+		return false
+	}
+
+	// Check each pod for container restart
+	for _, pod := range pods {
+		if utils.ContainerRestarted(pod) {
+			return true
+		}
+	}
+
+	// Check if any pod has been deleted:
+	// Only trigger recreate if Instance was previously Ready (stable state)
+	// This avoids triggering recreate during initial creation or scaling
+	if wasInstanceReady(instance) {
+		expectedPodCount := getExpectedPodCount(instance)
+		if len(pods) < expectedPodCount {
+			return true
+		}
+	}
+
+	return false
+}
+
+// wasInstanceReady checks if the Instance was previously in Ready state
+func wasInstanceReady(instance *v1alpha1.Instance) bool {
+	for _, cond := range instance.Status.Conditions {
+		if cond.Type == v1alpha1.InstanceReady && cond.Status == v1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// getExpectedPodCount calculates the expected total pod count from instance spec
+func getExpectedPodCount(instance *v1alpha1.Instance) int {
+	expectedPodCount := 0
+	for _, component := range instance.Spec.Components {
+		if component.Size != nil {
+			expectedPodCount += int(*component.Size)
+		}
+	}
+	return expectedPodCount
 }
