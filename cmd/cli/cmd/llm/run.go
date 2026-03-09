@@ -40,13 +40,10 @@ func newRunCmd() *cobra.Command {
 			}
 
 			// Determine engine
-			engineName := cfg.CurrentEngine
-			if engine != "" {
-				engineName = engine
+			if engine == "" {
+				return fmt.Errorf("--engine flag is required")
 			}
-			if engineName == "" {
-				return fmt.Errorf("no engine configured, please run 'kubectl rbg llm config add-engine' first")
-			}
+			engineName := engine
 
 			engineCfg, err := cfg.GetEngine(engineName)
 			if err != nil {
@@ -140,6 +137,8 @@ func newRunCmd() *cobra.Command {
 							Name:  parts[0],
 							Value: parts[1],
 						})
+					} else {
+						return fmt.Errorf("invalid environment variable format: %q, expected KEY=VALUE", env)
 					}
 				}
 

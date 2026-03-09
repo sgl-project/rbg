@@ -41,7 +41,9 @@ func (h *HuggingFaceSource) Init(config map[string]interface{}) error {
 	return nil
 }
 
-// GenerateTemplateWithRevision generates a pod template with revision support
+// GenerateTemplateWithRevision generates a pod template with revision support.
+// Uses environment variables to pass modelID, modelPath, and revision to avoid
+// command injection vulnerabilities from string concatenation.
 func (h *HuggingFaceSource) GenerateTemplateWithRevision(modelID string, modelPath string, revision string) (*corev1.PodTemplateSpec, error) {
 	var env []corev1.EnvVar
 
@@ -59,12 +61,32 @@ func (h *HuggingFaceSource) GenerateTemplateWithRevision(modelID string, modelPa
 		})
 	}
 
-	// Build download command using Python API directly to avoid PATH issues with huggingface-cli
-	pythonScript := "from huggingface_hub import snapshot_download; snapshot_download('" + modelID + "', local_dir='" + modelPath + "'"
-	if revision != "" && revision != "main" {
-		pythonScript += ", revision='" + revision + "'"
-	}
-	pythonScript += ")"
+	// Add model parameters as environment variables to prevent command injection
+	env = append(env,
+		corev1.EnvVar{
+			Name:  "MODEL_ID",
+			Value: modelID,
+		},
+		corev1.EnvVar{
+			Name:  "MODEL_PATH",
+			Value: modelPath,
+		},
+		corev1.EnvVar{
+			Name:  "MODEL_REVISION",
+			Value: revision,
+		},
+	)
+
+	// Python script reads from environment variables to avoid string injection
+	pythonScript := `import os
+from huggingface_hub import snapshot_download
+
+model_id = os.environ['MODEL_ID']
+local_dir = os.environ['MODEL_PATH']
+revision = os.environ.get('MODEL_REVISION', 'main')
+
+snapshot_download(repo_id=model_id, local_dir=local_dir, revision=revision)`
+
 	downloadCmd := "pip install huggingface_hub -q && python -c \"" + pythonScript + "\""
 
 	return &corev1.PodTemplateSpec{

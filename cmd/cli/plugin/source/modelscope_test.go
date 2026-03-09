@@ -1,7 +1,6 @@
 package source
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -45,9 +44,14 @@ func TestModelScopeSource_GenerateTemplate_NoToken(t *testing.T) {
 	c := tpl.Spec.Containers[0]
 	assert.Equal(t, "download", c.Name)
 	assert.Equal(t, "python:3.11-slim", c.Image)
-	assert.Empty(t, c.Env)
-	assert.Contains(t, c.Args[0], "org/model")
-	assert.Contains(t, c.Args[0], "/models/model")
+	// Check that model parameters are passed via environment variables (not string concatenation)
+	require.Len(t, c.Env, 2)
+	envMap := msEnvToMap(c.Env)
+	assert.Equal(t, "org/model", envMap["MODEL_ID"])
+	assert.Equal(t, "/models/model", envMap["MODEL_PATH"])
+	// Command should use environment variable references, not direct values
+	assert.Contains(t, c.Args[0], "$MODEL_ID")
+	assert.Contains(t, c.Args[0], "$MODEL_PATH")
 }
 
 func TestModelScopeSource_GenerateTemplate_WithToken(t *testing.T) {
@@ -66,8 +70,13 @@ func TestModelScopeSource_GenerateTemplate_WithRevision(t *testing.T) {
 
 	tpl, err := m.GenerateTemplateWithRevision("org/model", "/models/model", "v2.0")
 	require.NoError(t, err)
-	cmd := tpl.Spec.Containers[0].Args[0]
-	assert.True(t, strings.Contains(cmd, "--revision v2.0"), "expected --revision in cmd: %s", cmd)
+	c := tpl.Spec.Containers[0]
+	cmd := c.Args[0]
+	// Check that revision is passed via environment variable
+	envMap := msEnvToMap(c.Env)
+	assert.Equal(t, "v2.0", envMap["REVISION"])
+	// Command should use environment variable reference
+	assert.Contains(t, cmd, "$REVISION")
 }
 
 func TestModelScopeSource_GenerateTemplate_MainRevisionIgnored(t *testing.T) {

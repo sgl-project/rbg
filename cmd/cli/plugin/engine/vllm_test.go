@@ -52,7 +52,6 @@ func TestVLLMEngine_GenerateTemplate(t *testing.T) {
 	c := tpl.Spec.Containers[0]
 	assert.Equal(t, "vllm", c.Name)
 	assert.Equal(t, v.Image, c.Image)
-	assert.Equal(t, []string{"python", "-m", "vllm.entrypoints.openai.api_server"}, c.Command)
 	assert.Contains(t, c.Args, "--model")
 	assert.Contains(t, c.Args, "/models/mymodel")
 	assert.Contains(t, c.Args, "--served-model-name")

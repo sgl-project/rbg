@@ -21,7 +21,6 @@ func NewConfigCmd() *cobra.Command {
 	cmd.AddCommand(newGetEnginesCmd())
 	cmd.AddCommand(newUseStorageCmd())
 	cmd.AddCommand(newUseSourceCmd())
-	cmd.AddCommand(newUseEngineCmd())
 	cmd.AddCommand(newSetStorageCmd())
 	cmd.AddCommand(newSetSourceCmd())
 	cmd.AddCommand(newSetEngineCmd())

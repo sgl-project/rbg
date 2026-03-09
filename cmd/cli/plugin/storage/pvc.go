@@ -98,12 +98,3 @@ func (p *PVCStorage) MountStorage(podTemplate *corev1.PodTemplateSpec) error {
 func (p *PVCStorage) MountPath() string {
 	return "/models"
 }
-
-// ListModels scans the storage and returns a list of models with their metadata.
-// For PVC storage, this reads the .rbg-metadata.json files from each model directory.
-func (p *PVCStorage) ListModels() ([]ModelInfo, error) {
-	// Note: Since PVC is in-cluster storage, we can't directly list files.
-	// The caller should create a job to scan the storage.
-	// This method returns an error to indicate that direct listing is not supported.
-	return nil, fmt.Errorf("direct listing is not supported for PVC storage, use 'kubectl rbg llm pull list' command instead")
-}
