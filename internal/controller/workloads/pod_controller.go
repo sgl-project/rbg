@@ -20,8 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -41,7 +42,7 @@ func NewPodReconciler(mgr ctrl.Manager) *PodReconciler {
 }
 
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var rbg workloadsv1alpha1.RoleBasedGroup
+	var rbg workloadsv1alpha2.RoleBasedGroup
 	if err := r.client.Get(
 		ctx, types.NamespacedName{
 			Name:      req.Name,
@@ -60,7 +61,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error {
+func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Recreating RoleBasedGroup")
 
@@ -105,12 +106,12 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha1.R
 }
 
 func (r *PodReconciler) setRestartCondition(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, restartCompleted bool,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, restartCompleted bool,
 ) error {
 	var restartCondition metav1.Condition
 	if restartCompleted {
 		restartCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+			Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 			Status:             metav1.ConditionStatus(corev1.ConditionFalse),
 			LastTransitionTime: metav1.Now(),
 			Reason:             "RBGRestartCompleted",
@@ -118,7 +119,7 @@ func (r *PodReconciler) setRestartCondition(
 		}
 	} else {
 		restartCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+			Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 			Status:             metav1.ConditionStatus(corev1.ConditionTrue),
 			LastTransitionTime: metav1.Now(),
 			Reason:             "RBGRestart",
@@ -135,16 +136,16 @@ func (r *PodReconciler) setRestartCondition(
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 }
 
-func restartConditionTrue(status workloadsv1alpha1.RoleBasedGroupStatus) bool {
+func restartConditionTrue(status workloadsv1alpha2.RoleBasedGroupStatus) bool {
 	for _, cond := range status.Conditions {
-		if cond.Type == string(workloadsv1alpha1.RoleBasedGroupRestartInProgress) {
+		if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
 			return cond.Status == metav1.ConditionStatus(corev1.ConditionTrue)
 		}
 	}
 	return false
 }
 
-func setCondition(rbg *workloadsv1alpha1.RoleBasedGroup, newCondition metav1.Condition) {
+func setCondition(rbg *workloadsv1alpha2.RoleBasedGroup, newCondition metav1.Condition) {
 	found := false
 	for i, curCondition := range rbg.Status.Conditions {
 		if newCondition.Type == curCondition.Type {
@@ -159,7 +160,7 @@ func setCondition(rbg *workloadsv1alpha1.RoleBasedGroup, newCondition metav1.Con
 	}
 }
 
-func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha1.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
 	if rbg == nil {
 		return nil
 	}
@@ -173,7 +174,7 @@ func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha1.RoleBasedGroup) *ap
 
 // toRBGApplyConfigurationForConditionsOnly creates an apply configuration that only updates conditions.
 // This is used by pod_controller to avoid overwriting RoleStatuses managed by RBG controller.
-func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha1.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
 	if rbg == nil {
 		return nil
 	}
@@ -186,7 +187,7 @@ func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha1.RoleBasedGr
 	return rbgApplyConfig
 }
 
-func ToRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha1.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
+func ToRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha2.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
 	out := make([]*applyconfiguration.RoleStatusApplyConfiguration, 0, len(roleStatus))
 	for _, rs := range roleStatus {
 		out = append(out, applyconfiguration.RoleStatus().
@@ -217,7 +218,7 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 		return []reconcile.Request{}
 	}
 
-	rbgName := pod.Labels[workloadsv1alpha1.SetNameLabelKey]
+	rbgName := pod.Labels[constants.GroupNameLabelKey]
 	if rbgName == "" {
 		return []reconcile.Request{}
 	}
@@ -229,7 +230,7 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 	logger := log.FromContext(ctx).WithValues("Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
 	logger.V(1).Info("Processing Pod event for reconciliation")
 
-	var rbg workloadsv1alpha1.RoleBasedGroup
+	var rbg workloadsv1alpha2.RoleBasedGroup
 	err := r.client.Get(ctx, types.NamespacedName{Name: rbgName, Namespace: pod.Namespace}, &rbg)
 	if err != nil || rbg.DeletionTimestamp != nil {
 		return []reconcile.Request{}
@@ -242,7 +243,7 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 		return []reconcile.Request{}
 	}
 
-	roleName := pod.Labels[workloadsv1alpha1.SetRoleLabelKey]
+	roleName := pod.Labels[constants.RoleNameLabelKey]
 	if roleName == "" {
 		return []reconcile.Request{}
 	}
@@ -254,7 +255,7 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 
 	// 1. if RestartPolicy is None, do nothing
 	// 2. if RestartPolicy is RecreateRoleInstanceOnPodRestart, the lws controller will recreate lws. RBG controller does nothing.
-	if curRole.RestartPolicy != workloadsv1alpha1.RecreateRBGOnPodRestart {
+	if curRole.RestartPolicy != workloadsv1alpha2.RecreateRBGOnPodRestart {
 		return []reconcile.Request{}
 	}
 
@@ -278,8 +279,8 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Op
 			oldPod, ok1 := e.ObjectOld.(*corev1.Pod)
 			newPod, ok2 := e.ObjectNew.(*corev1.Pod)
 			if ok1 && ok2 {
-				_, oldExist := oldPod.Labels[workloadsv1alpha1.SetNameLabelKey]
-				_, newExist := newPod.Labels[workloadsv1alpha1.SetNameLabelKey]
+				_, oldExist := oldPod.Labels[constants.GroupNameLabelKey]
+				_, newExist := newPod.Labels[constants.GroupNameLabelKey]
 				return oldExist && newExist
 
 			}
@@ -287,7 +288,7 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Op
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			if pod, ok := e.Object.(*corev1.Pod); ok {
-				_, exist := pod.Labels[workloadsv1alpha1.SetNameLabelKey]
+				_, exist := pod.Labels[constants.GroupNameLabelKey]
 				return exist
 			}
 			return false

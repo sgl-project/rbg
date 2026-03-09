@@ -16,6 +16,10 @@ limitations under the License.
 
 package constants
 
+import (
+	"strings"
+)
+
 // Unified prefix
 const (
 	ControllerName = "rbg-controller"
@@ -39,14 +43,14 @@ const (
 type RoleTemplateType string
 
 const (
-	// ComponentsTemplate represents template is constructed from role.components field
-	ComponentsTemplate RoleTemplateType = "Components"
+	// ComponentsTemplateType represents template is constructed from role.components field
+	ComponentsTemplateType RoleTemplateType = "Components"
 
-	// LeaderWorkerTemplate represents template is constructed from role.leaderWorkerSet field
-	LeaderWorkerTemplate RoleTemplateType = "LeaderWorkerSet"
+	// LeaderWorkerSetTemplateType represents template is constructed from role.leaderWorkerSet field
+	LeaderWorkerSetTemplateType RoleTemplateType = "LeaderWorkerSet"
 
-	// PodTemplateTemplate represents template is constructed from role.template field
-	PodTemplateTemplate RoleTemplateType = "PodTemplate"
+	// PodTemplateTemplateType represents template is constructed from role.template field
+	PodTemplateTemplateType RoleTemplateType = "PodTemplate"
 )
 
 // LifecycleState defines lifecycle states
@@ -58,14 +62,6 @@ const (
 	LifecycleUpdating        LifecycleState = "Updating"
 	LifecycleUpdated         LifecycleState = "Updated"
 	LifecyclePreparingDelete LifecycleState = "PreparingDelete"
-)
-
-type AdapterPhase string
-
-const (
-	AdapterPhaseNone     AdapterPhase = ""
-	AdapterPhaseNotBound AdapterPhase = "NotBound"
-	AdapterPhaseBound    AdapterPhase = "Bound"
 )
 
 type ComponentType string
@@ -91,4 +87,23 @@ func GetAnnotationValue(annotations map[string]string, newKey, oldKey string) st
 		return v
 	}
 	return annotations[oldKey]
+}
+
+// ========== Discovery Config Mode ==========
+
+// DiscoveryConfigMode defines the mode for discovery config
+type DiscoveryConfigMode string
+
+const (
+	// LegacyDiscoveryConfigMode uses legacy shared ConfigMap behavior
+	LegacyDiscoveryConfigMode DiscoveryConfigMode = "legacy"
+
+	// RefineDiscoveryConfigMode enables refined shared ConfigMap behavior
+	RefineDiscoveryConfigMode DiscoveryConfigMode = "refine"
+)
+
+// IsStatefulRole checks if a role is stateful (uses InstanceSet/RoleInstanceSet or StatefulSet workload)
+func IsStatefulRole(workloadKind string) bool {
+	kind := strings.ToLower(workloadKind)
+	return kind == "instanceset" || kind == "roleinstanceset" || kind == "statefulset"
 }

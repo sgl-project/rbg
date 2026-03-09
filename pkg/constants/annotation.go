@@ -23,6 +23,10 @@ const (
 	// GroupExclusiveTopologyKey declares the topology domain (e.g. kubernetes.io/hostname)
 	// for 1:1 exclusive scheduling.
 	GroupExclusiveTopologyKey = RBGPrefix + "group-exclusive-topology"
+
+	// DisableExclusiveKeyAnnotationKey can be set to "true" on a Pod template
+	// to skip exclusive-topology affinity injection for that pod.
+	DisableExclusiveKeyAnnotationKey = RBGPrefix + "role-disable-exclusive"
 )
 
 // Role level annotations
@@ -39,6 +43,9 @@ const (
 const (
 	// RoleInstancePatternKey identifies the RoleInstance organization pattern (Stateful/Stateless)
 	RoleInstancePatternKey = RBGPrefix + "role-instance-pattern"
+
+	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
+	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
 )
 
 // Lifecycle management annotations

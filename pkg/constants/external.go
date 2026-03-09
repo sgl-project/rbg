@@ -36,6 +36,6 @@ const (
 const (
 	DeploymentWorkloadType      string = "apps/v1/Deployment"
 	StatefulSetWorkloadType     string = "apps/v1/StatefulSet"
-	InstanceSetWorkloadType     string = "workloads.x-k8s.io/v1alpha1/InstanceSet"
+	RoleInstanceSetWorkloadType string = "workloads.x-k8s.io/v1alpha2/RoleInstanceSet"
 	LeaderWorkerSetWorkloadType string = "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"
 )

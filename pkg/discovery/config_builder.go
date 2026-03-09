@@ -14,19 +14,19 @@ import (
 	"sigs.k8s.io/yaml"
 
 	corev1 "k8s.io/api/core/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 type ConfigBuilder struct {
 	client client.Client
-	rbg    *workloadsv1alpha1.RoleBasedGroup
-	role   *workloadsv1alpha1.RoleSpec
+	rbg    *workloadsv1alpha2.RoleBasedGroup
+	role   *workloadsv1alpha2.RoleSpec
 }
 
 func NewConfigBuilder(
 	client client.Client,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 ) *ConfigBuilder {
 	return &ConfigBuilder{
 		client: client,
@@ -98,11 +98,11 @@ func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 	return roles, nil
 }
 
-func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Instance, error) {
+func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
 	instances := make([]Instance, 0, *role.Replicas)
-	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
+	serviceName, err := utils.GetCompatibleHeadlessServiceNameV2(context.TODO(), b.client, b.rbg, role)
 	if err != nil {
-		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
+		return nil, fmt.Errorf("GetCompatibleHeadlessServiceNameV2 error: %s", err.Error())
 	}
 
 	for i := 0; i < int(*role.Replicas); i++ {

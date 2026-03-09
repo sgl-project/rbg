@@ -25,7 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	lwsapplyv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -41,17 +42,18 @@ func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) 
 }
 
 func (r *LeaderWorkerSetReconciler) Validate(
-	ctx context.Context, role *workloadsv1alpha1.RoleSpec) error {
+	ctx context.Context, role *workloadsv1alpha2.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
 
 	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
-	if role.TemplateSource.Template == nil {
-		if role.LeaderWorkerSet == nil {
-			return fmt.Errorf("either 'template' or 'leaderWorkerSet' field must be provided")
+	if role.GetTemplate() == nil {
+		lwp := role.GetLeaderWorkerPattern()
+		if lwp == nil {
+			return fmt.Errorf("either 'template' or 'leaderWorkerPattern' field must be provided")
 		}
-		if role.LeaderWorkerSet.PatchLeaderTemplate == nil || role.LeaderWorkerSet.PatchWorkerTemplate == nil {
-			return fmt.Errorf("both 'patchLeaderTemplate' and 'patchWorkerTemplate' fields must be provided when 'template' field not set")
+		if lwp.LeaderTemplatePatch == nil || lwp.WorkerTemplatePatch == nil {
+			return fmt.Errorf("both 'leaderTemplatePatch' and 'workerTemplatePatch' fields must be provided when 'template' field not set")
 		}
 	}
 
@@ -59,8 +61,8 @@ func (r *LeaderWorkerSetReconciler) Validate(
 }
 
 func (r *LeaderWorkerSetReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error {
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling lws workload")
 
@@ -92,7 +94,7 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 	if err != nil {
 		logger.Info(fmt.Sprintf("lws not equal, diff: %s", err.Error()))
 	}
-	roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+	roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
 	revisionHashEqual := newLWS.Labels[roleHashKey] == oldLWS.Labels[roleHashKey]
 	if !revisionHashEqual {
 		logger.Info(fmt.Sprintf("lws hash not equal, old: %s, new: %s",
@@ -111,14 +113,14 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 }
 
 func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-) (workloadsv1alpha1.RoleStatus, bool, error) {
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+) (workloadsv1alpha2.RoleStatus, bool, error) {
 	updateStatus := false
 	lws := &lwsv1.LeaderWorkerSet{}
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws,
 	); err != nil {
-		return workloadsv1alpha1.RoleStatus{Name: role.Name}, false, err
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, err
 	}
 
 	currentReplicas := lws.Status.Replicas
@@ -128,7 +130,7 @@ func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
 	if !found || status.Replicas != currentReplicas ||
 		status.ReadyReplicas != currentReady ||
 		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
+		status = workloadsv1alpha2.RoleStatus{
 			Name:            role.Name,
 			Replicas:        currentReplicas,
 			ReadyReplicas:   currentReady,
@@ -141,7 +143,7 @@ func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
 }
 
 func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (bool, error) {
 	lws := &lwsv1.LeaderWorkerSet{}
 	if err := r.client.Get(
@@ -153,7 +155,7 @@ func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
 }
 
 func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	err := utils.CheckCrdExists(r.client, utils.LwsCrdName)
@@ -171,7 +173,7 @@ func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
 		ctx, lwsList, client.InNamespace(rbg.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				constants.GroupNameLabelKey: rbg.Name,
 			},
 		),
 	); err != nil {
@@ -201,35 +203,36 @@ func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(
 
 func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-	rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate,
 	revisionKey string,
 ) (*lwsapplyv1.LeaderWorkerSetApplyConfiguration, error) {
 	logger := log.FromContext(ctx)
 
-	// v0.5.0: LeaderWorkerSet nil check (pointer type)
-	leaderWorkerSet := role.LeaderWorkerSet
-	if leaderWorkerSet == nil {
-		leaderWorkerSet = &workloadsv1alpha1.LeaderWorkerTemplate{
-			Size: ptr.To(int32(1)),
-		}
+	// v0.5.0: LeaderWorkerPattern nil check (pointer type)
+	leaderWorkerPattern := role.GetLeaderWorkerPattern()
+	lwSize := int32(1)
+	if leaderWorkerPattern != nil && leaderWorkerPattern.Size != nil {
+		lwSize = *leaderWorkerPattern.Size
 	}
 
 	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
 	// baseTemplate uses value type (consistent with applyStrategicMergePatch return type)
 	var baseTemplate corev1.PodTemplateSpec
-	if role.TemplateSource.Template != nil {
-		baseTemplate = *role.TemplateSource.Template
+	if role.GetTemplate() != nil {
+		baseTemplate = *role.GetTemplate()
 	}
 
 	// Adapt to v0.5.0 pointer type: dereference *runtime.RawExtension
 	var leaderPatch, workerPatch runtime.RawExtension
-	if leaderWorkerSet.PatchLeaderTemplate != nil {
-		leaderPatch = *leaderWorkerSet.PatchLeaderTemplate
-	}
-	if leaderWorkerSet.PatchWorkerTemplate != nil {
-		workerPatch = *leaderWorkerSet.PatchWorkerTemplate
+	if leaderWorkerPattern != nil {
+		if leaderWorkerPattern.LeaderTemplatePatch != nil {
+			leaderPatch = *leaderWorkerPattern.LeaderTemplatePatch
+		}
+		if leaderWorkerPattern.WorkerTemplatePatch != nil {
+			workerPatch = *leaderWorkerPattern.WorkerTemplatePatch
+		}
 	}
 
 	// leaderTemplate
@@ -287,7 +290,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 			lwsapplyv1.LeaderWorkerTemplate().
 				WithLeaderTemplate(leaderTemplateApplyCfg).
 				WithWorkerTemplate(workerTemplateApplyCfg).
-				WithSize(*leaderWorkerSet.Size).
+				WithSize(lwSize).
 				WithRestartPolicy(restartPolicy),
 		)
 
@@ -329,7 +332,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	}
 
 	lwsLabel := rbg.GetCommonLabelsFromRole(role)
-	lwsLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
+	lwsLabel[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct lws apply configuration
 	lwsConfig := lwsapplyv1.LeaderWorkerSet(rbg.GetWorkloadName(role), rbg.Namespace).
@@ -350,7 +353,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 }
 
 func (r *LeaderWorkerSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) error {
 	logger := log.FromContext(ctx)
 	if rbg == nil || role == nil {
@@ -515,6 +518,6 @@ func patchPodTemplate(template *corev1.PodTemplateSpec, patch *runtime.RawExtens
 	return newTemp, nil
 }
 
-func keyOfRbg(rbg *workloadsv1alpha1.RoleBasedGroup) string {
+func keyOfRbg(rbg *workloadsv1alpha2.RoleBasedGroup) string {
 	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
 }

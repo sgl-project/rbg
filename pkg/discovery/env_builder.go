@@ -5,12 +5,13 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 type EnvBuilder struct {
-	rbg  *workloadsv1alpha1.RoleBasedGroup
-	role *workloadsv1alpha1.RoleSpec
+	rbg  *workloadsv1alpha2.RoleBasedGroup
+	role *workloadsv1alpha2.RoleSpec
 }
 
 func (g *EnvBuilder) Build() []corev1.EnvVar {
@@ -33,22 +34,22 @@ func (g *EnvBuilder) Build() []corev1.EnvVar {
 func (b *EnvBuilder) BuildLwsEnv(svcName string) []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "LWS_LEADER_ADDRESS",
-			Value: fmt.Sprintf("$(INSTANCE_NAME)-0.%s.%s", svcName, b.rbg.Namespace),
+			Name:  constants.EnvRBGLeaderAddress,
+			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, svcName, b.rbg.Namespace),
 		},
 		{
-			Name: "LWS_WORKER_INDEX",
+			Name: constants.EnvRBGIndex,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.RBGComponentIndexLabelKey),
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RBGComponentIndexLabelKey),
 				},
 			},
 		},
 		{
-			Name: "LWS_GROUP_SIZE",
+			Name: constants.EnvRBGSize,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.RBGComponentSizeLabelKey),
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RBGComponentSizeLabelKey),
 				},
 			},
 		},
@@ -62,11 +63,11 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 	// MUST NOT inject size envs to avoid pod recreated when scale up/down
 	envVars := []corev1.EnvVar{
 		{
-			Name:  "GROUP_NAME",
+			Name:  constants.EnvRBGGroupName,
 			Value: g.rbg.Name,
 		},
 		{
-			Name:  "ROLE_NAME",
+			Name:  constants.EnvRBGRoleName,
 			Value: g.role.Name,
 		},
 	}
@@ -74,7 +75,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 	if g.role.Workload.Kind == "StatefulSet" || g.role.Workload.Kind == "LeaderWorkerSet" {
 		envVars = append(envVars,
 			corev1.EnvVar{
-				Name: "ROLE_INDEX",
+				Name: constants.EnvRBGRoleIndex,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
 						FieldPath: "metadata.labels['apps.kubernetes.io/pod-index']",
@@ -83,29 +84,29 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 			})
 	}
 
-	if g.role.Workload.Kind == "InstanceSet" {
+	if g.role.Workload.Kind == "RoleInstanceSet" {
 		envVars = append(envVars,
 			corev1.EnvVar{
-				Name: "INSTANCE_NAME",
+				Name: constants.EnvRBGRoleInstanceName,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
-						FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.InstanceNameLabelKey),
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceNameLabelKey),
 					},
 				},
 			},
 			corev1.EnvVar{
-				Name: "COMPONENT_NAME",
+				Name: constants.EnvRBGComponentName,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
-						FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.InstanceComponentNameKey),
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceComponentNameKey),
 					},
 				},
 			},
 			corev1.EnvVar{
-				Name: "COMPONENT_INDEX",
+				Name: constants.EnvRBGComponentIndex,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
-						FieldPath: fmt.Sprintf("metadata.labels['%s']", workloadsv1alpha1.InstanceComponentIDKey),
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceComponentIDKey),
 					},
 				},
 			},

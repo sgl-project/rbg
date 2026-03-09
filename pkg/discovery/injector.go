@@ -7,22 +7,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type GroupInfoInjector interface {
 	InjectConfig(
-		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
-		role *workloadsv1alpha1.RoleSpec,
+		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
+		role *workloadsv1alpha2.RoleSpec,
 	) error
 	InjectEnv(
-		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
-		role *workloadsv1alpha1.RoleSpec,
+		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
+		role *workloadsv1alpha2.RoleSpec,
 	) error
 	InjectSidecar(
-		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
-		role *workloadsv1alpha1.RoleSpec,
+		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
+		role *workloadsv1alpha2.RoleSpec,
 	) error
 }
 
@@ -41,8 +42,8 @@ func NewDefaultInjector(scheme *runtime.Scheme, client client.Client) *DefaultIn
 }
 
 func (i *DefaultInjector) InjectConfig(
-	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 ) error {
 	const (
 		volumeName = "rbg-cluster-config"
@@ -53,8 +54,8 @@ func (i *DefaultInjector) InjectConfig(
 	var configMapName string
 	mode := rbg.GetDiscoveryConfigMode()
 	switch mode {
-	case workloadsv1alpha1.RefineDiscoveryConfigMode:
-		if !workloadsv1alpha1.IsStatefulRole(role) {
+	case constants.RefineDiscoveryConfigMode:
+		if !workloadsv1alpha2.IsStatefulRole(role) {
 			return nil
 		}
 		configMapName = rbg.Name
@@ -111,8 +112,8 @@ func (i *DefaultInjector) InjectConfig(
 }
 
 func (i *DefaultInjector) InjectEnv(
-	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 ) error {
 	builder := &EnvBuilder{
 		rbg:  rbg,
@@ -149,13 +150,13 @@ func (i *DefaultInjector) InjectEnv(
 
 func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
 	podSpec *corev1.PodTemplateSpec,
-	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error {
+	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) error {
 
 	builder := &EnvBuilder{
 		rbg:  rbg,
 		role: role,
 	}
-	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, i.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, i.client, rbg, role)
 	if err != nil {
 		return err
 	}
@@ -190,7 +191,7 @@ func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
 
 func (i *DefaultInjector) InjectSidecar(
 	ctx context.Context, podSpec *corev1.PodTemplateSpec,
-	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) error {
 	builder := NewSidecarBuilder(i.client, rbg, role)
 	return builder.Build(ctx, podSpec)

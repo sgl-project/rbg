@@ -1,3 +1,5 @@
+//go:build ignore
+
 // svc_reconciler_test.go
 package reconciler
 

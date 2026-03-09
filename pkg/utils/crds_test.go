@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestCheckOwnerReference(t *testing.T) {
@@ -344,8 +344,8 @@ func TestGVKConstants(t *testing.T) {
 			name:   "RoleBasedGroup GVK",
 			actual: GetRbgGVK(),
 			expected: schema.GroupVersionKind{
-				Group:   workloadsv1alpha1.GroupVersion.Group,
-				Version: workloadsv1alpha1.GroupVersion.Version,
+				Group:   workloadsv1alpha2.GroupVersion.Group,
+				Version: workloadsv1alpha2.GroupVersion.Version,
 				Kind:    "RoleBasedGroup",
 			},
 		},
@@ -353,8 +353,8 @@ func TestGVKConstants(t *testing.T) {
 			name:   "RoleBasedGroupScalingAdapter GVK",
 			actual: GetRbgScalingAdapterGVK(),
 			expected: schema.GroupVersionKind{
-				Group:   workloadsv1alpha1.GroupVersion.Group,
-				Version: workloadsv1alpha1.GroupVersion.Version,
+				Group:   workloadsv1alpha2.GroupVersion.Group,
+				Version: workloadsv1alpha2.GroupVersion.Version,
 				Kind:    "RoleBasedGroupScalingAdapter",
 			},
 		},

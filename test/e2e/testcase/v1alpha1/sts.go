@@ -1,4 +1,4 @@
-package testcase
+package v1alpha1
 
 import (
 	"github.com/onsi/ginkgo/v2"

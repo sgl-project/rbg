@@ -264,3 +264,78 @@ func (r *RoleSpec) GetLeaderWorkerSize() *int32 {
 func (r *RoleSpec) HasTemplate() bool {
 	return r.GetTemplate() != nil || r.GetTemplateRef() != nil
 }
+
+// GetDiscoveryConfigMode returns the discovery config mode from annotations.
+func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() constants.DiscoveryConfigMode {
+	if rbg == nil || rbg.Annotations == nil {
+		return ""
+	}
+	return constants.DiscoveryConfigMode(rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey])
+}
+
+// SetDiscoveryConfigMode sets the discovery config mode in annotations.
+func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode constants.DiscoveryConfigMode) {
+	if rbg == nil {
+		return
+	}
+	if rbg.Annotations == nil {
+		rbg.Annotations = make(map[string]string)
+	}
+	rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey] = string(mode)
+}
+
+// IsVolcanoGangSchedulingV2 checks if volcano gang scheduling is enabled (v1alpha2).
+func (rbg *RoleBasedGroup) IsVolcanoGangSchedulingV2() bool {
+	// In v1alpha2, PodGroupPolicy is not yet implemented
+	// This is a placeholder for future implementation
+	return false
+}
+
+// IsKubeGangSchedulingV2 checks if kube gang scheduling is enabled (v1alpha2).
+func (rbg *RoleBasedGroup) IsKubeGangSchedulingV2() bool {
+	// In v1alpha2, PodGroupPolicy is not yet implemented
+	// This is a placeholder for future implementation
+	return false
+}
+
+// ContainsRBGOwner checks if the RoleBasedGroupScalingAdapter has the given RBG as owner.
+func (rbgsa *RoleBasedGroupScalingAdapter) ContainsRBGOwner(rbg *RoleBasedGroup) bool {
+	for _, owner := range rbgsa.OwnerReferences {
+		if owner.UID == rbg.UID {
+			return true
+		}
+	}
+	return false
+}
+
+// HasStatefulRole returns true if the RBG has at least one stateful role.
+func (rbg *RoleBasedGroup) HasStatefulRole() bool {
+	if rbg == nil {
+		return false
+	}
+	for i := range rbg.Spec.Roles {
+		if IsStatefulRole(&rbg.Spec.Roles[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsStatefulRole checks if a role is stateful.
+func IsStatefulRole(role *RoleSpec) bool {
+	if role == nil {
+		return false
+	}
+	switch role.Workload.String() {
+	case constants.DeploymentWorkloadType:
+		return false
+	case constants.StatefulSetWorkloadType, constants.LeaderWorkerSetWorkloadType, "":
+		return true
+	case constants.RoleInstanceSetWorkloadType:
+		pattern := constants.InstancePatternType(role.Annotations[constants.RoleInstancePatternKey])
+		return pattern != constants.StatelessPattern
+	default:
+		// Keep unknown kinds conservative and stateful by default.
+		return true
+	}
+}

@@ -108,6 +108,41 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 	return err
 }
 
+// DeletePodV2 deletes one pod belonging to a v1alpha2 RoleBasedGroup identified by rbgName.
+// It uses the v1alpha2 SetNameLabelKey ("rbg.workloads.x-k8s.io/name") to find the pod.
+func DeletePodV2(ctx context.Context, rclient client.Client, namespace string, rbgName string) error {
+	const setNameLabelKeyV2 = "rbg.workloads.x-k8s.io/name"
+	logger := log.FromContext(ctx)
+	podList := &v1.PodList{}
+	if err := rclient.List(
+		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
+			setNameLabelKeyV2: rbgName,
+		},
+	); err != nil {
+		logger.V(1).Error(err, "list pod error")
+		return err
+	}
+
+	if len(podList.Items) == 0 {
+		err := fmt.Errorf("no pod belongs to v1alpha2 rbg %s, can not delete pod", rbgName)
+		logger.V(1).Error(err, "pod is empty")
+		return err
+	}
+
+	err := rclient.Delete(
+		ctx, &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podList.Items[0].Name,
+				Namespace: namespace,
+			},
+		},
+	)
+	if err != nil {
+		logger.V(1).Error(err, "delete pod error")
+	}
+	return err
+}
+
 func UpdateRbg(
 	ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup,
 	updateFunc func(rbg *workloadsv1alpha1.RoleBasedGroup),

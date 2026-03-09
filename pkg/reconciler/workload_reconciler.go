@@ -10,36 +10,37 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 type WorkloadReconciler interface {
-	Validate(ctx context.Context, role *workloadsv1alpha1.RoleSpec) error
+	Validate(ctx context.Context, role *workloadsv1alpha2.RoleSpec) error
 	Reconciler(
-		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-		rollingUpdateStrategy *workloadsv1alpha1.RollingUpdate, revisionKey string) error
+		ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+		rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string) error
 	ConstructRoleStatus(
-		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	) (workloadsv1alpha1.RoleStatus, bool, error)
+		ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	) (workloadsv1alpha2.RoleStatus, bool, error)
 	CheckWorkloadReady(
-		ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+		ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	) (bool, error)
-	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup) error
-	RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec) error
+	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error
+	RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) error
 }
 
 func NewWorkloadReconciler(
-	workload workloadsv1alpha1.WorkloadSpec, scheme *runtime.Scheme, client client.Client,
+	workload workloadsv1alpha2.WorkloadSpec, scheme *runtime.Scheme, client client.Client,
 ) (WorkloadReconciler, error) {
 	switch {
-	case workload.String() == workloadsv1alpha1.DeploymentWorkloadType:
+	case workload.String() == constants.DeploymentWorkloadType:
 		return NewDeploymentReconciler(scheme, client), nil
-	case workload.String() == workloadsv1alpha1.StatefulSetWorkloadType:
+	case workload.String() == constants.StatefulSetWorkloadType:
 		return NewStatefulSetReconciler(scheme, client), nil
-	case workload.String() == workloadsv1alpha1.LeaderWorkerSetWorkloadType:
+	case workload.String() == constants.LeaderWorkerSetWorkloadType:
 		return NewLeaderWorkerSetReconciler(scheme, client), nil
-	case workload.String() == workloadsv1alpha1.InstanceSetWorkloadType:
-		return NewInstanceSetReconciler(scheme, client), nil
+	case workload.String() == constants.RoleInstanceSetWorkloadType:
+		return NewRoleInstanceSetReconciler(scheme, client), nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type: %s", workload.String())
 	}
@@ -65,12 +66,12 @@ func WorkloadEqual(obj1, obj2 interface{}) (bool, error) {
 			}
 			return true, nil
 		}
-	case *workloadsv1alpha1.InstanceSet:
-		if o2, ok := obj2.(*workloadsv1alpha1.InstanceSet); ok {
+	case *workloadsv1alpha2.RoleInstanceSet:
+		if o2, ok := obj2.(*workloadsv1alpha2.RoleInstanceSet); ok {
 			if o1.Generation == o2.Generation && reflect.DeepEqual(o1.Status, o2.Status) {
 				return true, nil
 			}
-			return false, fmt.Errorf("instanceSet generation or status not equal")
+			return false, fmt.Errorf("roleInstanceSet generation or status not equal")
 		}
 	case *lwsv1.LeaderWorkerSet:
 		if o2, ok := obj2.(*lwsv1.LeaderWorkerSet); ok {

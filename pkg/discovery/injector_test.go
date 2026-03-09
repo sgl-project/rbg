@@ -10,8 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,14 +21,14 @@ import (
 func TestDefaultInjector_InjectSidecar(t *testing.T) {
 	// Initialize test scheme with required types
 	testScheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithRuntimeObjects(
-			&workloadsv1alpha1.ClusterEngineRuntimeProfile{
+			&workloadsv1alpha2.ClusterEngineRuntimeProfile{
 				ObjectMeta: metav1.ObjectMeta{Name: "patio-runtime"},
-				Spec: workloadsv1alpha1.ClusterEngineRuntimeProfileSpec{
+				Spec: workloadsv1alpha2.ClusterEngineRuntimeProfileSpec{
 					InitContainers: []corev1.Container{
 						{
 							Name:  "init-patio-runtime",
@@ -52,12 +53,12 @@ func TestDefaultInjector_InjectSidecar(t *testing.T) {
 			},
 		).Build()
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name: "test",
-					EngineRuntimes: []workloadsv1alpha1.EngineRuntime{
+					EngineRuntimes: []workloadsv1alpha2.EngineRuntime{
 						{
 							ProfileName: "patio-runtime",
 							Containers: []corev1.Container{
@@ -220,19 +221,19 @@ func TestDefaultInjector_InjectSidecar(t *testing.T) {
 
 func TestDefaultInjector_InjectConfig(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
 		name            string
-		rbg             *workloadsv1alpha1.RoleBasedGroup
+		rbg             *workloadsv1alpha2.RoleBasedGroup
 		initialPodSpec  *corev1.PodTemplateSpec
 		expectedVolumes []corev1.Volume
 		expectedMounts  []corev1.VolumeMount
 	}{
 		{
 			name: "Inject config volume and mount when they don't exist",
-			rbg:  wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			rbg:  wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
 			// Pod spec without config volume or mount
 			initialPodSpec: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -274,7 +275,7 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 		},
 		{
 			name: "Skip injection when volume and mount already exist",
-			rbg:  wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			rbg:  wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
 			// Pod spec that already has the config volume and mount
 			initialPodSpec: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -341,9 +342,9 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 		},
 		{
 			name: "Refine mode mounts shared configmap for stateful role",
-			rbg: func() *workloadsv1alpha1.RoleBasedGroup {
-				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-				rbg.SetDiscoveryConfigMode(workloadsv1alpha1.RefineDiscoveryConfigMode)
+			rbg: func() *workloadsv1alpha2.RoleBasedGroup {
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 				return rbg
 			}(),
 			initialPodSpec: &corev1.PodTemplateSpec{
@@ -384,10 +385,10 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 		},
 		{
 			name: "Refine mode skips config injection for stateless role",
-			rbg: func() *workloadsv1alpha1.RoleBasedGroup {
-				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-				rbg.SetDiscoveryConfigMode(workloadsv1alpha1.RefineDiscoveryConfigMode)
-				rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
+			rbg: func() *workloadsv1alpha2.RoleBasedGroup {
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
+				rbg.Spec.Roles[0].Workload = workloadsv1alpha2.WorkloadSpec{
 					APIVersion: "apps/v1",
 					Kind:       "Deployment",
 				}
@@ -443,26 +444,26 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 
 func TestDefaultInjector_InjectEnv(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
 		name            string
-		rbg             *workloadsv1alpha1.RoleBasedGroup
-		role            *workloadsv1alpha1.RoleSpec
+		rbg             *workloadsv1alpha2.RoleBasedGroup
+		role            *workloadsv1alpha2.RoleSpec
 		initialPodSpec  *corev1.PodTemplateSpec
 		expectedEnvVars []corev1.EnvVar
 	}{
 		{
 			name: "Inject environment variables when they don't exist",
 			// RBG with role that will generate some environment variables
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(3)),
@@ -470,7 +471,7 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: ptr.To(int32(3)),
 			},
@@ -488,11 +489,11 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 			// Expected environment variables to be added (sorted by name)
 			expectedEnvVars: []corev1.EnvVar{
 				{
-					Name:  "GROUP_NAME",
+					Name:  "RBG_GROUP_NAME",
 					Value: "test-rbg",
 				},
 				{
-					Name:  "ROLE_NAME",
+					Name:  "RBG_ROLE_NAME",
 					Value: "worker",
 				},
 			},
@@ -500,13 +501,13 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 		{
 			name: "Merge environment variables preserving existing ones",
 			// RBG with role that will generate some environment variables
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(3)),
@@ -514,7 +515,7 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: ptr.To(int32(3)),
 			},
@@ -532,7 +533,7 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 								},
 								// This variable should be overwritten
 								{
-									Name:  "ROLE_NAME",
+									Name:  "RBG_ROLE_NAME",
 									Value: "old-value",
 								},
 							},
@@ -547,11 +548,11 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 					Value: "existing-value",
 				},
 				{
-					Name:  "GROUP_NAME",
+					Name:  "RBG_GROUP_NAME",
 					Value: "test-rbg",
 				},
 				{
-					Name:  "ROLE_NAME",
+					Name:  "RBG_ROLE_NAME",
 					Value: "worker",
 				},
 			},

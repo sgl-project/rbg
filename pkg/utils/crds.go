@@ -7,7 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,11 +51,11 @@ func CheckOwnerReference(ownerReferences []metav1.OwnerReference, targetGVK sche
 }
 
 func GetRbgGVK() schema.GroupVersionKind {
-	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "RoleBasedGroup")
+	return schema.FromAPIVersionAndKind(workloadsv1alpha2.GroupVersion.String(), "RoleBasedGroup")
 }
 
 func GetRbgScalingAdapterGVK() schema.GroupVersionKind {
-	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "RoleBasedGroupScalingAdapter")
+	return schema.FromAPIVersionAndKind(workloadsv1alpha2.GroupVersion.String(), "RoleBasedGroupScalingAdapter")
 }
 
 func GetLwsGVK() schema.GroupVersionKind {
@@ -63,5 +63,10 @@ func GetLwsGVK() schema.GroupVersionKind {
 }
 
 func GetInstanceSetGVK() schema.GroupVersionKind {
-	return schema.FromAPIVersionAndKind(workloadsv1alpha1.GroupVersion.String(), "InstanceSet")
+	return schema.FromAPIVersionAndKind(workloadsv1alpha2.GroupVersion.String(), "InstanceSet")
+}
+
+// GetRoleInstanceSetGVK returns the GVK for RoleInstanceSet (v1alpha2)
+func GetRoleInstanceSetGVK() schema.GroupVersionKind {
+	return schema.FromAPIVersionAndKind(workloadsv1alpha2.GroupVersion.String(), "RoleInstanceSet")
 }

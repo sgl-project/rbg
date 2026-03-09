@@ -245,6 +245,37 @@ const (
 	LeaderWorkerSetWorkloadType string = "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"
 )
 
+// Deprecated environment variable names (replaced by pkg/constants/env.go with RBG_ prefix).
+// Kept here for reference and backward compatibility documentation.
+const (
+	// DeprecatedEnvGroupName was replaced by constants.EnvRBGGroupName ("RBG_GROUP_NAME")
+	DeprecatedEnvGroupName = "GROUP_NAME"
+
+	// DeprecatedEnvRoleName was replaced by constants.EnvRBGRoleName ("RBG_ROLE_NAME")
+	DeprecatedEnvRoleName = "ROLE_NAME"
+
+	// DeprecatedEnvRoleIndex was replaced by constants.EnvRBGRoleIndex ("RBG_ROLE_INDEX")
+	DeprecatedEnvRoleIndex = "ROLE_INDEX"
+
+	// DeprecatedEnvInstanceName was replaced by constants.EnvRBGRoleInstanceName ("RBG_ROLE_INSTANCE_NAME")
+	DeprecatedEnvInstanceName = "INSTANCE_NAME"
+
+	// DeprecatedEnvComponentName was replaced by constants.EnvRBGComponentName ("RBG_COMPONENT_NAME")
+	DeprecatedEnvComponentName = "COMPONENT_NAME"
+
+	// DeprecatedEnvComponentIndex was replaced by constants.EnvRBGComponentIndex ("RBG_COMPONENT_INDEX")
+	DeprecatedEnvComponentIndex = "COMPONENT_INDEX"
+
+	// DeprecatedEnvLwsLeaderAddress was replaced by constants.EnvRBGLeaderAddress ("RBG_LEADER_ADDRESS")
+	DeprecatedEnvLwsLeaderAddress = "LWS_LEADER_ADDRESS"
+
+	// DeprecatedEnvLwsWorkerIndex was replaced by constants.EnvRBGIndex ("RBG_INDEX")
+	DeprecatedEnvLwsWorkerIndex = "LWS_WORKER_INDEX"
+
+	// DeprecatedEnvLwsGroupSize was replaced by constants.EnvRBGSize ("RBG_SIZE")
+	DeprecatedEnvLwsGroupSize = "LWS_GROUP_SIZE"
+)
+
 type AdapterPhase string
 
 const (

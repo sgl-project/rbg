@@ -1,4 +1,4 @@
-package testcase
+package v1alpha1
 
 import (
 	"fmt"
@@ -11,6 +11,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
@@ -33,7 +34,9 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
 
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-			old, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+			rbgV2Old := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, rbgV2Old)).Should(gomega.Succeed())
+			old, err := pkgutils.NewRevision(f.Ctx, f.Client, rbgV2Old, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			oldRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(old)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -56,7 +59,9 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				roleHashKey2: oldRoleRevisionHash[rbg.Spec.Roles[2].Name],
 			})
 			// update
-			new, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+			rbgV2New := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, rbgV2New)).Should(gomega.Succeed())
+			new, err := pkgutils.NewRevision(f.Ctx, f.Client, rbgV2New, nil)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			newRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(new)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())

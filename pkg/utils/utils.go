@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const (
@@ -121,6 +122,19 @@ func GetRoleReplicas(rbg *v1alpha1.RoleBasedGroup, roleName string) int32 {
 	return 0
 }
 
+// GetRoleReplicasV2 returns the replicas for a role from a v1alpha2 RoleBasedGroup.
+func GetRoleReplicasV2(rbg *v1alpha2.RoleBasedGroup, roleName string) int32 {
+	for _, role := range rbg.Spec.Roles {
+		if role.Name == roleName {
+			if role.Replicas != nil {
+				return *role.Replicas
+			}
+			return 1 // default replicas
+		}
+	}
+	return 0
+}
+
 func ParseIntStrAsNonZero(p intstrutil.IntOrString, replicas int32) (int32, error) {
 	value, err := intstrutil.GetScaledValueFromIntOrPercent(&p, int(replicas), true)
 	if err != nil {
@@ -142,6 +156,16 @@ func RoleInMaxSkewCoordination(rbg *v1alpha1.RoleBasedGroup, role string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+// RoleInMaxSkewCoordinationV2 checks if a role is part of a coordination with maxSkew (v1alpha2).
+// Note: In v1alpha2, coordination is handled via CoordinatedPolicy CR, this function
+// is kept for compatibility but should be updated when CoordinatedPolicy lookup is available.
+func RoleInMaxSkewCoordinationV2(rbg *v1alpha2.RoleBasedGroup, role string) bool {
+	// In v1alpha2, coordination is handled via CoordinatedPolicy CR
+	// This requires a client to look up the policy, so for now we return false
+	// The coordination logic should be handled in the controller level
 	return false
 }
 

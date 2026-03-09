@@ -28,7 +28,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	rbgclient "sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	fakerbgclient "sigs.k8s.io/rbgs/client-go/clientset/versioned/fake"
 )
@@ -86,7 +86,7 @@ func TestSortRevisionsStable(t *testing.T) {
 	}
 }
 
-func getFakeRgbClient(rbgs []*workloadsv1alpha1.RoleBasedGroup) rbgclient.Interface {
+func getFakeRgbClient(rbgs []*workloadsv1alpha2.RoleBasedGroup) rbgclient.Interface {
 	objs := []runtime.Object{}
 	for _, rbg := range rbgs {
 		objs = append(objs, rbg)

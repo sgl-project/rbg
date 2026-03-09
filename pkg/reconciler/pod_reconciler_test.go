@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func Test_podSpecEqual(t *testing.T) {
@@ -473,13 +473,13 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 	// Setup
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewPodReconciler(scheme, client)
 
 	// Test data
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "test-ns").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "test-ns").Obj()
 	role := &rbg.Spec.Roles[0]
 
 	tests := []struct {
@@ -493,21 +493,6 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 			name:        "basic pod template construction",
 			podLabels:   map[string]string{"role": "worker"},
 			expectError: false,
-		},
-		{
-			name: "with gang scheduling enabled",
-			podLabels: map[string]string{
-				"custom-label": "custom-value",
-			},
-			expectError: false,
-			setupFunc: func(pr *PodReconciler) {
-				// Enable gang scheduling by adding the annotation
-				rbg.Spec.PodGroupPolicy = &workloadsv1alpha1.PodGroupPolicy{
-					PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
-						KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{},
-					},
-				}
-			},
 		},
 		{
 			name: "with custom pod template",
@@ -571,11 +556,6 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 							assert.Equal(t, v, result.Labels[k])
 						}
 					}
-
-					// If gang scheduling is enabled, check for pod group label
-					if rbg.EnableGangScheduling() {
-						assert.Equal(t, rbg.Name, result.Labels[scheduler.KubePodGroupLabelKey])
-					}
 				}
 			},
 		)
@@ -585,12 +565,12 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewPodReconciler(scheme, client)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	role := &rbg.Spec.Roles[0]
 
 	t.Run(
