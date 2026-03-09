@@ -60,14 +60,6 @@ func TestPVCStorage_PreMount(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestPVCStorage_ListModels_Unsupported(t *testing.T) {
-	p := &PVCStorage{pvcName: "my-pvc"}
-	models, err := p.ListModels()
-	require.Error(t, err)
-	assert.Nil(t, models)
-	assert.Contains(t, err.Error(), "not supported")
-}
-
 func TestPVCStorage_MountStorage_AddsVolumeAndMount(t *testing.T) {
 	p := &PVCStorage{pvcName: "my-pvc"}
 

@@ -353,14 +353,6 @@ func TestAddEngine_OK(t *testing.T) {
 	c := &Config{}
 	require.NoError(t, c.AddEngine("e1", "vllm", nil))
 	assert.Len(t, c.Engines, 1)
-	assert.Equal(t, "e1", c.CurrentEngine)
-}
-
-func TestAddEngine_AutoCurrent(t *testing.T) {
-	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", nil))
-	require.NoError(t, c.AddEngine("e2", "sglang", nil))
-	assert.Equal(t, "e1", c.CurrentEngine)
 }
 
 func TestAddEngine_Duplicate(t *testing.T) {
@@ -407,47 +399,10 @@ func TestDeleteEngine_OK(t *testing.T) {
 	assert.Len(t, c.Engines, 1)
 }
 
-func TestDeleteEngine_Current(t *testing.T) {
-	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", nil))
-	err := c.DeleteEngine("e1")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot delete current")
-}
-
 func TestDeleteEngine_NotFound(t *testing.T) {
 	c := &Config{}
 	err := c.DeleteEngine("nope")
 	assert.Error(t, err)
-}
-
-func TestUseEngine_OK(t *testing.T) {
-	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", nil))
-	require.NoError(t, c.AddEngine("e2", "sglang", nil))
-	require.NoError(t, c.UseEngine("e2"))
-	assert.Equal(t, "e2", c.CurrentEngine)
-}
-
-func TestUseEngine_NotFound(t *testing.T) {
-	c := &Config{}
-	err := c.UseEngine("nope")
-	assert.Error(t, err)
-}
-
-func TestGetCurrentEngineConfig_OK(t *testing.T) {
-	c := &Config{}
-	require.NoError(t, c.AddEngine("e1", "vllm", map[string]interface{}{"image": "img"}))
-	cfg, err := c.GetCurrentEngineConfig()
-	require.NoError(t, err)
-	assert.Equal(t, "img", cfg["image"])
-}
-
-func TestGetCurrentEngineConfig_NoCurrent(t *testing.T) {
-	c := &Config{}
-	_, err := c.GetCurrentEngineConfig()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no engine configured")
 }
 
 // --- Round-trip: Save then Reload ---
@@ -472,7 +427,6 @@ func TestSaveAndReload(t *testing.T) {
 	assert.Equal(t, "prod", loaded.Namespace)
 	assert.Equal(t, "s1", loaded.CurrentStorage)
 	assert.Equal(t, "src1", loaded.CurrentSource)
-	assert.Equal(t, "e1", loaded.CurrentEngine)
 	require.Len(t, loaded.Storages, 1)
 	require.Len(t, loaded.Sources, 1)
 	require.Len(t, loaded.Engines, 1)

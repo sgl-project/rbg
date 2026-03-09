@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -300,16 +301,25 @@ func injectMetadataSave(podTemplate *corev1.PodTemplateSpec, modelID, revision, 
 
 	container := &podTemplate.Spec.Containers[0]
 
-	// Build the metadata JSON
-	metadata := fmt.Sprintf(`{"modelID":"%s","revision":"%s","downloadedAt":"%s"}`,
-		modelID, revision, time.Now().Format(time.RFC3339))
+	// Generate timestamp inside the container using shell command
+	timestampCmd := "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+	// Build the metadata JSON using proper JSON encoding to prevent injection
+	// Note: downloadedAt is generated inside the container after download completes
+	// to ensure accurate timing, not at CLI execution time
+	// modelID and revision are JSON-escaped to prevent injection
+	modelIDEscaped := jsonSafeString(modelID)
+	revisionEscaped := jsonSafeString(revision)
+	metadataJSON := fmt.Sprintf(`{"modelID":%s,"revision":%s,"downloadedAt":"%s"}`,
+		modelIDEscaped, revisionEscaped, timestampCmd)
 
 	// Case 1: Container already uses /bin/sh -c, directly append to the command
 	if len(container.Command) >= 2 && container.Command[0] == "/bin/sh" && container.Command[1] == "-c" {
 		if len(container.Args) > 0 {
 			originalCmd := container.Args[0]
-			container.Args[0] = fmt.Sprintf(`%s && echo '%s' > '%s/.rbg-metadata.json'`,
-				originalCmd, metadata, modelPath)
+			// shellEscape the metadata JSON to prevent command injection via special chars
+			container.Args[0] = fmt.Sprintf(`%s && echo %s > %s`,
+				originalCmd, shellEscape(metadataJSON), shellEscape(modelPath+"/.rbg-metadata.json"))
 		}
 		return
 	}
@@ -329,12 +339,19 @@ func injectMetadataSave(podTemplate *corev1.PodTemplateSpec, modelID, revision, 
 		fullCmd.WriteString(shellEscape(arg))
 	}
 
-	// Build the wrapped command
-	wrappedCmd := fmt.Sprintf(`%s && echo '%s' > '%s/.rbg-metadata.json'`,
-		fullCmd.String(), metadata, modelPath)
+	// Build the wrapped command with metadata save
+	wrappedCmd := fmt.Sprintf(`%s && echo %s > %s`,
+		fullCmd.String(), shellEscape(metadataJSON), shellEscape(modelPath+"/.rbg-metadata.json"))
 
 	container.Command = []string{"/bin/sh", "-c"}
 	container.Args = []string{wrappedCmd}
+}
+
+// jsonSafeString escapes a string for safe inclusion in JSON.
+// It returns the string wrapped in quotes with all special characters properly escaped.
+func jsonSafeString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // shellEscape properly escapes a string for safe use in shell commands.

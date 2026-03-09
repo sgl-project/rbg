@@ -41,10 +41,6 @@ type Plugin interface {
 	// MountPath returns the base path where storage is mounted in the container.
 	// The full model path is constructed by the caller as: MountPath() + "/" + sanitized(modelID)
 	MountPath() string
-
-	// ListModels returns a list of models stored in this storage.
-	// For PVC storage, this creates a job to scan the storage directory.
-	ListModels() ([]ModelInfo, error)
 }
 
 // Factory is a constructor for a storage plugin.

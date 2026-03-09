@@ -54,9 +54,8 @@ func (v *VLLMEngine) GenerateTemplate(name string, modelID string, modelPath str
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name:    "vllm",
-					Image:   v.Image,
-					Command: []string{"python", "-m", "vllm.entrypoints.openai.api_server"},
+					Name:  "vllm",
+					Image: v.Image,
 					Args: []string{
 						"--model",
 						modelPath,

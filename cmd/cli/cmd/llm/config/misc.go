@@ -59,22 +59,6 @@ func newViewCmd() *cobra.Command {
 			}
 			fmt.Println()
 
-			if cfg.CurrentEngine != "" {
-				if e, err := cfg.GetEngine(cfg.CurrentEngine); err == nil {
-					fmt.Printf("Engine: %s (active)\n", e.Name)
-					fmt.Printf("  Type: %s\n", e.Type)
-					if len(e.Config) > 0 {
-						fmt.Println("  Config:")
-						for k, v := range e.Config {
-							fmt.Printf("    %s: %v\n", k, v)
-						}
-					}
-				}
-			} else {
-				fmt.Println("Engine: (not configured)")
-			}
-			fmt.Println()
-
 			fmt.Printf("Default Namespace: %s\n", cfg.Namespace)
 			return nil
 		},
@@ -275,6 +259,7 @@ func configureEngine(reader *bufio.Reader) (string, map[string]interface{}, erro
 				if port, err := strconv.Atoi(value); err == nil {
 					config[field.Key] = port
 				} else {
+					fmt.Printf("  Invalid port value '%s'. Defaulting to 8000.\n", value)
 					config[field.Key] = 8000
 				}
 			} else {
@@ -340,7 +325,6 @@ func newInitCmd() *cobra.Command {
 				Namespace:      namespace,
 				CurrentStorage: storageType,
 				CurrentSource:  sourceType,
-				CurrentEngine:  engineType,
 			}
 
 			cfg.AddStorage(storageType, storageType, storageConfig)

@@ -200,6 +200,107 @@ func TestInjectMetadataSave_MetadataContainsModelIDAndRevision(t *testing.T) {
 	assert.Contains(t, arg, "v2")
 }
 
+// --- jsonSafeString ---
+
+func TestJsonSafeString_SimpleString(t *testing.T) {
+	result := jsonSafeString("hello")
+	assert.Equal(t, `"hello"`, result)
+}
+
+func TestJsonSafeString_SpecialCharsEscaped(t *testing.T) {
+	result := jsonSafeString(`hello "world"`)
+	assert.Contains(t, result, `\"`)
+}
+
+func TestJsonSafeString_NewlineEscaped(t *testing.T) {
+	result := jsonSafeString("hello\nworld")
+	assert.Contains(t, result, `\n`)
+}
+
+func TestJsonSafeString_TabEscaped(t *testing.T) {
+	result := jsonSafeString("hello\tworld")
+	assert.Contains(t, result, `\t`)
+}
+
+func TestJsonSafeString_BackslashEscaped(t *testing.T) {
+	result := jsonSafeString(`hello\world`)
+	assert.Contains(t, result, `\\`)
+}
+
+// --- Security tests for command injection prevention ---
+
+func TestInjectMetadataSave_MaliciousModelID_QuotedAndEscaped(t *testing.T) {
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{"download cmd"},
+				},
+			},
+		},
+	}
+	// Malicious modelID with single quotes and command injection attempt
+	injectMetadataSave(tpl, "org/model'; rm -rf /; '", "main", "/models/path")
+
+	arg := tpl.Spec.Containers[0].Args[0]
+	// The malicious input should be properly escaped, not executed
+	assert.Contains(t, arg, `.rbg-metadata.json`)
+	// Verify single quotes in modelID are escaped with shell escape pattern '\"'\"'
+	assert.Contains(t, arg, `'"'"'`)
+	// The entire echo argument should be shell-escaped (wrapped in single quotes)
+	assert.Contains(t, arg, `echo '`)
+	// Verify the malicious content appears as escaped string data, not executable
+	assert.Contains(t, arg, `rm -rf /`)
+}
+
+func TestInjectMetadataSave_MaliciousRevision_QuotedAndEscaped(t *testing.T) {
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Command: []string{"/bin/sh", "-c"},
+					Args:    []string{"download cmd"},
+				},
+			},
+		},
+	}
+	// Malicious revision with command substitution attempt
+	injectMetadataSave(tpl, "org/model", "$(rm -rf /)", "/models/path")
+
+	arg := tpl.Spec.Containers[0].Args[0]
+	// The malicious input should be properly shell-escaped
+	assert.Contains(t, arg, `.rbg-metadata.json`)
+	// Verify the $() is escaped by shellEscape (wrapped in single quotes)
+	assert.Contains(t, arg, `echo '`)
+	// The $( should appear inside the escaped string, not as executable
+	assert.Contains(t, arg, `$(rm -rf /)`)
+}
+
+func TestInjectMetadataSave_DirectBinary_MaliciousInput_Escaped(t *testing.T) {
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Command: []string{"huggingface-cli"},
+					Args:    []string{"download", "org/model"},
+				},
+			},
+		},
+	}
+	// Malicious modelID with backticks and pipe
+	injectMetadataSave(tpl, "org/`cat /etc/passwd`|malicious", "v1", "/models/path")
+
+	c := tpl.Spec.Containers[0]
+	assert.Equal(t, []string{"/bin/sh", "-c"}, c.Command)
+	require.Len(t, c.Args, 1)
+	// Verify the command is wrapped and malicious input is escaped
+	assert.Contains(t, c.Args[0], `.rbg-metadata.json`)
+	// The backticks should be inside single quotes, not executable
+	assert.Contains(t, c.Args[0], `echo '`)
+	assert.Contains(t, c.Args[0], "`cat /etc/passwd`")
+}
+
 // --- printJobSummary ---
 
 func TestPrintJobSummary_Succeeded_NoPanic(t *testing.T) {

@@ -38,7 +38,10 @@ func (m *ModelScopeSource) Init(config map[string]interface{}) error {
 
 // GenerateTemplateWithRevision generates a pod template with revision support
 func (m *ModelScopeSource) GenerateTemplateWithRevision(modelID string, modelPath string, revision string) (*corev1.PodTemplateSpec, error) {
-	var env []corev1.EnvVar
+	env := []corev1.EnvVar{
+		{Name: "MODEL_ID", Value: modelID},
+		{Name: "MODEL_PATH", Value: modelPath},
+	}
 
 	if m.Token != "" {
 		env = append(env, corev1.EnvVar{
@@ -47,10 +50,11 @@ func (m *ModelScopeSource) GenerateTemplateWithRevision(modelID string, modelPat
 		})
 	}
 
-	// Build download command
-	downloadCmd := "pip install modelscope -q && modelscope download --model " + modelID + " --local_dir " + modelPath
+	// Build download command using environment variables to prevent command injection
+	downloadCmd := "pip install modelscope -q && modelscope download --model \"$MODEL_ID\" --local_dir \"$MODEL_PATH\""
 	if revision != "" && revision != "main" {
-		downloadCmd += " --revision " + revision
+		env = append(env, corev1.EnvVar{Name: "REVISION", Value: revision})
+		downloadCmd += " --revision \"$REVISION\""
 	}
 
 	return &corev1.PodTemplateSpec{
