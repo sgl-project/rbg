@@ -6,40 +6,52 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 // --- newRunCmd: command metadata ---
 
 func TestNewRunCmd_UseAndShort(t *testing.T) {
-	cmd := newRunCmd()
-	assert.Equal(t, "run MODEL_ID", cmd.Use)
+	cf := genericclioptions.NewConfigFlags(true)
+	cmd := newRunCmd(cf)
+	assert.Equal(t, "run <name> <model-id> [flags]", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 }
 
-func TestNewRunCmd_ExactlyOneArg(t *testing.T) {
-	cmd := newRunCmd()
-	// cobra.ExactArgs(1) — no args should produce an error
+func TestNewRunCmd_ExactlyTwoArgs(t *testing.T) {
+	cf := genericclioptions.NewConfigFlags(true)
+	cmd := newRunCmd(cf)
+	// no args should produce an error
 	err := cmd.Args(cmd, []string{})
 	require.Error(t, err)
 
-	// two args should also error
-	err = cmd.Args(cmd, []string{"a", "b"})
+	// one arg should also error
+	err = cmd.Args(cmd, []string{"my-qwen"})
 	require.Error(t, err)
 
-	// exactly one arg is fine
-	err = cmd.Args(cmd, []string{"org/model"})
+	// three args should also error
+	err = cmd.Args(cmd, []string{"my-qwen", "Qwen/Qwen3.5-0.8B", "extra"})
+	require.Error(t, err)
+
+	// exactly two args is fine
+	err = cmd.Args(cmd, []string{"my-qwen", "Qwen/Qwen3.5-0.8B"})
 	require.NoError(t, err)
 }
 
 // --- newRunCmd: flags exist with expected defaults ---
 
 func TestNewRunCmd_FlagDefaults(t *testing.T) {
-	cmd := newRunCmd()
+	cf := genericclioptions.NewConfigFlags(true)
+	cmd := newRunCmd(cf)
 
-	// --name default is empty
+	// --name flag should not exist (now positional arg)
 	nameFlag := cmd.Flags().Lookup("name")
-	require.NotNil(t, nameFlag)
-	assert.Equal(t, "", nameFlag.DefValue)
+	assert.Nil(t, nameFlag)
+
+	// --mode default is empty (first mode in model config is used)
+	modeFlag := cmd.Flags().Lookup("mode")
+	require.NotNil(t, modeFlag)
+	assert.Equal(t, "", modeFlag.DefValue)
 
 	// --replicas default is 1
 	replicasFlag := cmd.Flags().Lookup("replicas")
@@ -75,6 +87,11 @@ func TestNewRunCmd_FlagDefaults(t *testing.T) {
 	engineFlag := cmd.Flags().Lookup("engine")
 	require.NotNil(t, engineFlag)
 	assert.Equal(t, "", engineFlag.DefValue)
+
+	// --dry-run default is false
+	dryRunFlag := cmd.Flags().Lookup("dry-run")
+	require.NotNil(t, dryRunFlag)
+	assert.Equal(t, "false", dryRunFlag.DefValue)
 
 	// --env and --arg are StringArray, default empty
 	envFlag := cmd.Flags().Lookup("env")

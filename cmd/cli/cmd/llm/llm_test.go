@@ -86,7 +86,8 @@ func TestNewLLMCmd_RunSubcommand_Flags(t *testing.T) {
 	}
 	require.NotNil(t, runCmd)
 
-	assert.NotNil(t, runCmd.Flags().Lookup("name"))
+	assert.Nil(t, runCmd.Flags().Lookup("name"))
+	assert.NotNil(t, runCmd.Flags().Lookup("mode"))
 	assert.NotNil(t, runCmd.Flags().Lookup("replicas"))
 	assert.NotNil(t, runCmd.Flags().Lookup("gpu"))
 	assert.NotNil(t, runCmd.Flags().Lookup("cpu"))

@@ -17,15 +17,6 @@ func TestNewViewCmd(t *testing.T) {
 	assert.Equal(t, "View current configuration", cmd.Short)
 }
 
-func TestNewSetNamespaceCmd(t *testing.T) {
-	cmd := newSetNamespaceCmd()
-
-	assert.NotNil(t, cmd)
-	assert.Equal(t, "set-namespace NAMESPACE", cmd.Use)
-	assert.Equal(t, "Set the default namespace", cmd.Short)
-	assert.NotNil(t, cmd.Args)
-}
-
 func TestNewInitCmd(t *testing.T) {
 	cmd := newInitCmd()
 
@@ -37,7 +28,6 @@ func TestNewInitCmd(t *testing.T) {
 func TestMiscCommands_ReturnCobraCommand(t *testing.T) {
 	commands := []func() *cobra.Command{
 		newViewCmd,
-		newSetNamespaceCmd,
 		newInitCmd,
 	}
 
