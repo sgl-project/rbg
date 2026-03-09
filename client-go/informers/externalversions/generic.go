@@ -73,6 +73,10 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroups().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroupsets"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroupSets().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("roleinstances"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleInstances().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("roleinstancesets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleInstanceSets().Informer()}, nil
 
 	}
 

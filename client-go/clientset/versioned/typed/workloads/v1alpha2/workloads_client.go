@@ -30,6 +30,8 @@ type WorkloadsV1alpha2Interface interface {
 	CoordinatedPoliciesGetter
 	RoleBasedGroupsGetter
 	RoleBasedGroupSetsGetter
+	RoleInstancesGetter
+	RoleInstanceSetsGetter
 }
 
 // WorkloadsV1alpha2Client is used to interact with features provided by the workloads.x-k8s.io group.
@@ -47,6 +49,14 @@ func (c *WorkloadsV1alpha2Client) RoleBasedGroups(namespace string) RoleBasedGro
 
 func (c *WorkloadsV1alpha2Client) RoleBasedGroupSets(namespace string) RoleBasedGroupSetInterface {
 	return newRoleBasedGroupSets(c, namespace)
+}
+
+func (c *WorkloadsV1alpha2Client) RoleInstances(namespace string) RoleInstanceInterface {
+	return newRoleInstances(c, namespace)
+}
+
+func (c *WorkloadsV1alpha2Client) RoleInstanceSets(namespace string) RoleInstanceSetInterface {
+	return newRoleInstanceSets(c, namespace)
 }
 
 // NewForConfig creates a new WorkloadsV1alpha2Client for the given config.
