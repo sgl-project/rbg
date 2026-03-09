@@ -1,0 +1,189 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: coordinatedpolicies.workloads.x-k8s.io
+spec:
+  group: workloads.x-k8s.io
+  names:
+    kind: CoordinatedPolicy
+    listKind: CoordinatedPolicyList
+    plural: coordinatedpolicies
+    shortNames:
+    - cpolicy
+    singular: coordinatedpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha2
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CoordinatedPolicy is the Schema for the coordinatedpolicies API.
+          It defines coordination policies for rolling updates and scaling across multiple roles.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CoordinatedPolicySpec defines the desired state of CoordinatedPolicy.
+            properties:
+              policies:
+                description: Policies define the coordination policies for roles.
+                items:
+                  description: CoordinatedPolicyRule defines the coordination policy
+                    rule for a set of roles.
+                  properties:
+                    roles:
+                      description: Roles specifies the names of the roles that this
+                        policy applies to.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                    strategies:
+                      description: Strategies defines the coordination strategies
+                        for the roles.
+                      properties:
+                        rollingUpdate:
+                          description: RollingUpdate defines the coordination strategy
+                            for rolling updates.
+                          properties:
+                            maxSkew:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                MaxSkew is the maximum allowed skew between the update progress of different roles.
+                                Can be an absolute number (e.g., 5) or a percentage (e.g., "10%").
+                              x-kubernetes-int-or-string: true
+                            maxUnavailable:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                MaxUnavailable is the maximum number of replicas that can be unavailable during the update.
+                                Can be an absolute number or a percentage.
+                              x-kubernetes-int-or-string: true
+                            partition:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                Partition indicates the ordinal at which the roles should be partitioned for updates.
+                                Can be an absolute number or a percentage.
+                              x-kubernetes-int-or-string: true
+                          type: object
+                        scaling:
+                          description: Scaling defines the coordination strategy for
+                            scaling operations.
+                          properties:
+                            maxSkew:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: |-
+                                MaxSkew is the maximum allowed skew between the scaling progress of different roles.
+                                Can be an absolute number (e.g., 5) or a percentage (e.g., "10%").
+                              x-kubernetes-int-or-string: true
+                            progression:
+                              description: Progression defines the order in which
+                                replicas are scheduled during scaling.
+                              enum:
+                              - OrderScheduled
+                              - Parallel
+                              type: string
+                          type: object
+                      type: object
+                  required:
+                  - roles
+                  - strategies
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - policies
+            type: object
+          status:
+            description: CoordinatedPolicyStatus defines the observed state of CoordinatedPolicy.
+            properties:
+              conditions:
+                description: Conditions track the condition of the CoordinatedPolicy.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: reason contains a programmatic identifier indicating
+                        the reason for the condition's last transition.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                description: ObservedGeneration is the generation observed by the
+                  controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

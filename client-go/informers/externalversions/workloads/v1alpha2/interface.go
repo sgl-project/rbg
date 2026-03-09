@@ -23,6 +23,8 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// CoordinatedPolicies returns a CoordinatedPolicyInformer.
+	CoordinatedPolicies() CoordinatedPolicyInformer
 	// RoleBasedGroups returns a RoleBasedGroupInformer.
 	RoleBasedGroups() RoleBasedGroupInformer
 	// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
@@ -38,6 +40,11 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
+}
+
+// CoordinatedPolicies returns a CoordinatedPolicyInformer.
+func (v *version) CoordinatedPolicies() CoordinatedPolicyInformer {
+	return &coordinatedPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // RoleBasedGroups returns a RoleBasedGroupInformer.
