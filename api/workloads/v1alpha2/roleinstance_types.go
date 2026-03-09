@@ -117,7 +117,7 @@ type RoleInstanceComponentStatus struct {
 	Name string `json:"name"`
 
 	// Size is the number of Pod for RoleInstance that match the component.
-	Replicas int32 `json:"replicas"`
+	Size int32 `json:"size"`
 
 	// ReadyReplicas is the number of ready Pod for RoleInstance that match the component.
 	ReadyReplicas int32 `json:"readyReplicas"`

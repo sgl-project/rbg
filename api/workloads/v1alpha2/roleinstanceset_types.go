@@ -118,7 +118,7 @@ type RoleInstanceSetScaleStrategy struct {
 // RoleInstanceSetUpdateStrategy defines strategies for RoleInstances update.
 type RoleInstanceSetUpdateStrategy struct {
 	// Type indicates the type of the RoleInstanceSetUpdateStrategy.
-	// Default is ReCreate.
+	// Default is InPlaceIfPossible.
 	Type UpdateStrategyType `json:"type,omitempty"`
 
 	// Partition is the desired number of RoleInstances in old revisions.
@@ -132,7 +132,7 @@ type RoleInstanceSetUpdateStrategy struct {
 	// Value can be an absolute number (ex: 5) or a percentage of desired RoleInstances (ex: 10%).
 	// Absolute number is calculated from percentage by rounding up by default.
 	// When maxSurge > 0, absolute number is calculated from percentage by rounding down.
-	// Defaults to 20%.
+	// Defaults to 10%.
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 
 	// The maximum number of RoleInstances that can be scheduled above the desired replicas during update or specified delete.
@@ -190,7 +190,7 @@ type RoleInstanceSetStatus struct {
 	// UpdateRevision, if not empty, indicates the latest revision of the RoleInstanceSet.
 	UpdateRevision string `json:"updateRevision,omitempty"`
 
-	// currentRevision, if not empty, indicates the current revision version of the RoleInstanceSet.
+	// CurrentRevision, if not empty, indicates the current revision version of the RoleInstanceSet.
 	CurrentRevision string `json:"currentRevision,omitempty"`
 
 	// CollisionCount is the count of hash collisions for the RoleInstanceSet. The RoleInstanceSet controller

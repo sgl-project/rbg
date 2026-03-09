@@ -815,7 +815,7 @@ func (in *RoleInstanceSetSpec) DeepCopyInto(out *RoleInstanceSetSpec) {
 	}
 	if in.Selector != nil {
 		in, out := &in.Selector, &out.Selector
-		*out = new(metav1.LabelSelector)
+		*out = new(v1.LabelSelector)
 		(*in).DeepCopyInto(*out)
 	}
 	in.RoleInstanceTemplate.DeepCopyInto(&out.RoleInstanceTemplate)

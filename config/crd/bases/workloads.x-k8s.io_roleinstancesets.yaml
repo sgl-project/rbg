@@ -248,7 +248,7 @@ spec:
                   type:
                     description: |-
                       Type indicates the type of the RoleInstanceSetUpdateStrategy.
-                      Default is ReCreate.
+                      Default is InPlaceIfPossible.
                     type: string
                 type: object
             required:
@@ -305,7 +305,7 @@ spec:
                 format: int32
                 type: integer
               currentRevision:
-                description: currentRevision, if not empty, indicates the current
+                description: CurrentRevision, if not empty, indicates the current
                   revision version of the RoleInstanceSet.
                 type: string
               expectedUpdatedReplicas:

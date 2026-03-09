@@ -21,7 +21,7 @@ package v1alpha2
 // with apply.
 type RoleInstanceComponentStatusApplyConfiguration struct {
 	Name                 *string `json:"name,omitempty"`
-	Replicas             *int32  `json:"replicas,omitempty"`
+	Size                 *int32  `json:"size,omitempty"`
 	ReadyReplicas        *int32  `json:"readyReplicas,omitempty"`
 	UpdatedReplicas      *int32  `json:"updatedReplicas,omitempty"`
 	ScheduledReplicas    *int32  `json:"scheduledReplicas,omitempty"`
@@ -43,11 +43,11 @@ func (b *RoleInstanceComponentStatusApplyConfiguration) WithName(value string) *
 	return b
 }
 
-// WithReplicas sets the Replicas field in the declarative configuration to the given value
+// WithSize sets the Size field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Replicas field is set to the value of the last call.
-func (b *RoleInstanceComponentStatusApplyConfiguration) WithReplicas(value int32) *RoleInstanceComponentStatusApplyConfiguration {
-	b.Replicas = &value
+// If called multiple times, the Size field is set to the value of the last call.
+func (b *RoleInstanceComponentStatusApplyConfiguration) WithSize(value int32) *RoleInstanceComponentStatusApplyConfiguration {
+	b.Size = &value
 	return b
 }
 

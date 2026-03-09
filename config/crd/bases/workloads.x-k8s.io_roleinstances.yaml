@@ -133,14 +133,14 @@ spec:
                         that match the component.
                       format: int32
                       type: integer
-                    replicas:
-                      description: Size is the number of Pod for RoleInstance that
-                        match the component.
-                      format: int32
-                      type: integer
                     scheduledReplicas:
                       description: ScheduledReplicas is the number of scheduled Pod
                         for RoleInstance that match the component.
+                      format: int32
+                      type: integer
+                    size:
+                      description: Size is the number of Pod for RoleInstance that
+                        match the component.
                       format: int32
                       type: integer
                     updatedReadyReplicas:
@@ -157,8 +157,8 @@ spec:
                   - availableReplicas
                   - name
                   - readyReplicas
-                  - replicas
                   - scheduledReplicas
+                  - size
                   - updatedReadyReplicas
                   - updatedReplicas
                   type: object
