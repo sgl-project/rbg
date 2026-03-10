@@ -107,10 +107,7 @@ def run_topo_client(worker_instance_info: str) -> GroupTopoClient:
         # ensuring workers automatically recover registration after a router restart.
         def _heartbeat_loop():
             interval = int(envs.HEARTBEAT_INTERVAL)
-            while not EXIT_EVENT.is_set():
-                EXIT_EVENT.wait(timeout=interval)
-                if EXIT_EVENT.is_set():
-                    break
+            while not EXIT_EVENT.wait(timeout=interval):
                 try:
                     topo_client.register("", worker_info)
                     logger.debug("heartbeat register ok")
