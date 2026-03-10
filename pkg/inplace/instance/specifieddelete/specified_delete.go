@@ -24,24 +24,25 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // IsSpecifiedDelete return true if this object has specific-delete label
 func IsSpecifiedDelete(obj metav1.Object) bool {
-	_, ok := obj.GetLabels()[appsv1alpha1.SpecifiedDeleteKey]
+	_, ok := obj.GetLabels()[constants.RoleInstanceDeleteLabelKey]
 	return ok
 }
 
-// PatchInstanceSpecifiedDelete patch specific-delete label for the given Instance.
-func PatchInstanceSpecifiedDelete(c client.Client, instance *appsv1alpha1.Instance, value string) (bool, error) {
-	if _, ok := instance.Labels[appsv1alpha1.SpecifiedDeleteKey]; ok {
+// PatchRoleInstanceSpecifiedDelete patch specific-delete label for the given RoleInstance.
+func PatchRoleInstanceSpecifiedDelete(c client.Client, instance *workloadsv1alpha2.RoleInstance, value string) (bool, error) {
+	if _, ok := instance.Labels[constants.RoleInstanceDeleteLabelKey]; ok {
 		return false, nil
 	}
 
 	body := fmt.Sprintf(
 		`{"metadata":{"labels":{"%s":"%s"}}}`,
-		appsv1alpha1.SpecifiedDeleteKey,
+		constants.RoleInstanceDeleteLabelKey,
 		value,
 	)
 	return true, c.Patch(context.TODO(), instance, client.RawPatch(types.MergePatchType, []byte(body)))

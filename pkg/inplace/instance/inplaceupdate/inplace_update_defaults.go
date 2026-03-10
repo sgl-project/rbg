@@ -24,7 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/instance"
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	util "sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -38,12 +38,12 @@ func SetOptionsDefaults(opts *UpdateOptions) *UpdateOptions {
 		opts.CalculateSpec = defaultCalculateInPlaceUpdateSpec
 	}
 
-	if opts.PatchSpecToInstance == nil {
-		opts.PatchSpecToInstance = defaultPatchUpdateSpecToInstance
+	if opts.PatchSpecToRoleInstance == nil {
+		opts.PatchSpecToRoleInstance = defaultPatchUpdateSpecToRoleInstance
 	}
 
-	if opts.CheckInstanceUpdateCompleted == nil {
-		opts.CheckInstanceUpdateCompleted = DefaultCheckInPlaceUpdateCompleted
+	if opts.CheckRoleInstanceUpdateCompleted == nil {
+		opts.CheckRoleInstanceUpdateCompleted = DefaultCheckInPlaceUpdateCompleted
 	}
 
 	if opts.CheckComponentUpdateCompleted == nil {
@@ -53,20 +53,20 @@ func SetOptionsDefaults(opts *UpdateOptions) *UpdateOptions {
 	return opts
 }
 
-// defaultPatchUpdateSpecToInstance returns new instance that merges spec into old instance
-func defaultPatchUpdateSpecToInstance(instance *appsv1alpha1.Instance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha1.Instance, error) {
-	klog.V(5).Infof("Begin to in-place update instance %s/%s with update spec %v, state %v", instance.Namespace, instance.Name, util.DumpJSON(spec), util.DumpJSON(state))
+// defaultPatchUpdateSpecToRoleInstance returns new role instance that merges spec into old role instance
+func defaultPatchUpdateSpecToRoleInstance(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
+	klog.V(5).Infof("Begin to in-place update role instance %s/%s with update spec %v, state %v", instance.Namespace, instance.Name, util.DumpJSON(spec), util.DumpJSON(state))
 
-	newInstanceSpec := &appsv1alpha1.InstanceSpec{}
+	newRoleInstanceSpec := &workloadsv1alpha2.RoleInstanceSpec{}
 	newBytes, _ := json.Marshal(spec.NewTemplate)
-	if err := json.Unmarshal(newBytes, newInstanceSpec); err != nil {
+	if err := json.Unmarshal(newBytes, newRoleInstanceSpec); err != nil {
 		return nil, err
 	}
 
-	instance.Spec = *newInstanceSpec
-	InjectVersionedInstanceSpec(instance)
+	instance.Spec = *newRoleInstanceSpec
+	InjectVersionedRoleInstanceSpec(instance)
 
-	klog.V(5).Infof("Decide to in-place update instance %s/%s with state %v", instance.Namespace, instance.Name, util.DumpJSON(state))
+	klog.V(5).Infof("Decide to in-place update role instance %s/%s with state %v", instance.Namespace, instance.Name, util.DumpJSON(state))
 
 	inPlaceUpdateStateJSON, _ := json.Marshal(state)
 	instance.Annotations[inplaceapi.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
@@ -107,16 +107,16 @@ func defaultCalculateInPlaceUpdateSpec(oldRevision, newRevision *apps.Controller
 	return updateSpec
 }
 
-// DefaultCheckInPlaceUpdateCompleted checks whether instance status has been changed since in-place update.
-// If all pods owned by this instance are updated to new version, we consider this update is completed.
-func DefaultCheckInPlaceUpdateCompleted(instance *appsv1alpha1.Instance) error {
+// DefaultCheckInPlaceUpdateCompleted checks whether role instance status has been changed since in-place update.
+// If all pods owned by this role instance are updated to new version, we consider this update is completed.
+func DefaultCheckInPlaceUpdateCompleted(instance *workloadsv1alpha2.RoleInstance) error {
 	if instance.Status.ObservedGeneration < instance.Generation {
-		return fmt.Errorf("waiting for instance %v generation consistent", klog.KObj(instance))
+		return fmt.Errorf("waiting for role instance %v generation consistent", klog.KObj(instance))
 	}
 	return defaultCheckInPlaceUpdateCompleted(instance)
 }
 
-func defaultCheckInPlaceUpdateCompleted(instance *appsv1alpha1.Instance) error {
+func defaultCheckInPlaceUpdateCompleted(instance *workloadsv1alpha2.RoleInstance) error {
 	if len(instance.Spec.Components) != len(instance.Status.ComponentStatuses) {
 		return fmt.Errorf("waiting for role status")
 	}
@@ -136,11 +136,11 @@ func defaultCheckInPlaceUpdateCompleted(instance *appsv1alpha1.Instance) error {
 	return nil
 }
 
-func canNotInPlaceUpdate(newTemplate, oldTemplate *appsv1alpha1.InstanceTemplate) bool {
+func canNotInPlaceUpdate(newTemplate, oldTemplate *workloadsv1alpha2.RoleInstanceTemplate) bool {
 	return componentSizeChanges(newTemplate.Components, oldTemplate.Components)
 }
 
-func componentSizeChanges(oldComponents, newComponents []appsv1alpha1.InstanceComponent) bool {
+func componentSizeChanges(oldComponents, newComponents []workloadsv1alpha2.RoleInstanceComponent) bool {
 	if len(oldComponents) != len(newComponents) {
 		return true
 	}

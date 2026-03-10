@@ -22,38 +22,38 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 type Adapter interface {
-	GetInstance(namespace, name string) (*appsv1alpha1.Instance, error)
-	UpdateInstance(instance *appsv1alpha1.Instance) (*appsv1alpha1.Instance, error)
-	UpdateInstanceStatus(instance *appsv1alpha1.Instance) error
+	GetRoleInstance(namespace, name string) (*workloadsv1alpha2.RoleInstance, error)
+	UpdateRoleInstance(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error)
+	UpdateRoleInstanceStatus(instance *workloadsv1alpha2.RoleInstance) error
 }
 
 type AdapterWithPatch interface {
 	Adapter
-	PatchInstance(instance *appsv1alpha1.Instance, patch client.Patch) (*appsv1alpha1.Instance, error)
+	PatchRoleInstance(instance *workloadsv1alpha2.RoleInstance, patch client.Patch) (*workloadsv1alpha2.RoleInstance, error)
 }
 
 type AdapterRuntimeClient struct {
 	client.Client
 }
 
-func (c *AdapterRuntimeClient) GetInstance(namespace, name string) (*appsv1alpha1.Instance, error) {
-	instance := &appsv1alpha1.Instance{}
+func (c *AdapterRuntimeClient) GetRoleInstance(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+	instance := &workloadsv1alpha2.RoleInstance{}
 	err := c.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: name}, instance)
 	return instance, err
 }
 
-func (c *AdapterRuntimeClient) UpdateInstance(instance *appsv1alpha1.Instance) (*appsv1alpha1.Instance, error) {
+func (c *AdapterRuntimeClient) UpdateRoleInstance(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 	return instance, c.Update(context.TODO(), instance)
 }
 
-func (c *AdapterRuntimeClient) UpdateInstanceStatus(instance *appsv1alpha1.Instance) error {
+func (c *AdapterRuntimeClient) UpdateRoleInstanceStatus(instance *workloadsv1alpha2.RoleInstance) error {
 	return c.Status().Update(context.TODO(), instance)
 }
 
-func (c *AdapterRuntimeClient) PatchInstance(instance *appsv1alpha1.Instance, patch client.Patch) (*appsv1alpha1.Instance, error) {
+func (c *AdapterRuntimeClient) PatchRoleInstance(instance *workloadsv1alpha2.RoleInstance, patch client.Patch) (*workloadsv1alpha2.RoleInstance, error) {
 	return instance, c.Patch(context.TODO(), instance, patch)
 }

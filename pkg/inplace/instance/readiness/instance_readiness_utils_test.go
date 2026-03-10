@@ -26,21 +26,21 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	appspub "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	appspub "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestReadiness(t *testing.T) {
-	instance0 := &appspub.Instance{
+	instance0 := &appspub.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: "instance-0"},
-		Spec: appspub.InstanceSpec{
-			ReadinessGates: []appspub.InstanceReadinessGate{{ConditionType: appspub.InstanceCustomReady}},
+		Spec: appspub.RoleInstanceSpec{
+			ReadinessGates: []appspub.RoleInstanceReadinessGate{{ConditionType: appspub.RoleInstanceCustomReady}},
 		},
 	}
 
-	instance1 := &appspub.Instance{
+	instance1 := &appspub.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: "instance-1"},
-		Spec: appspub.InstanceSpec{
-			ReadinessGates: []appspub.InstanceReadinessGate{},
+		Spec: appspub.RoleInstanceSpec{
+			ReadinessGates: []appspub.RoleInstanceReadinessGate{},
 		},
 	}
 
@@ -71,11 +71,11 @@ func TestReadiness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newInstance0 := &appspub.Instance{}
+	newInstance0 := &appspub.RoleInstance{}
 	if err := fakeClient.Get(context.TODO(), types.NamespacedName{Namespace: instance0.Namespace, Name: instance0.Name}, newInstance0); err != nil {
 		t.Fatal(err)
 	}
-	if !alreadyHasKey(newInstance0, msg0, appspub.InstanceCustomReady) || !alreadyHasKey(newInstance0, msg1, appspub.InstanceCustomReady) {
+	if !alreadyHasKey(newInstance0, msg0, appspub.RoleInstanceCustomReady) || !alreadyHasKey(newInstance0, msg1, appspub.RoleInstanceCustomReady) {
 		t.Fatalf("expect already has key, but not")
 	}
 	condition := GetReadinessCondition(newInstance0)
@@ -83,11 +83,11 @@ func TestReadiness(t *testing.T) {
 		t.Fatalf("expect condition false, but not")
 	}
 
-	newInstance1 := &appspub.Instance{}
+	newInstance1 := &appspub.RoleInstance{}
 	if err := fakeClient.Get(context.TODO(), types.NamespacedName{Namespace: instance1.Namespace, Name: instance1.Name}, newInstance1); err != nil {
 		t.Fatal(err)
 	}
-	if alreadyHasKey(newInstance1, msg0, appspub.InstanceCustomReady) || alreadyHasKey(newInstance1, msg1, appspub.InstanceCustomReady) {
+	if alreadyHasKey(newInstance1, msg0, appspub.RoleInstanceCustomReady) || alreadyHasKey(newInstance1, msg1, appspub.RoleInstanceCustomReady) {
 		t.Fatalf("expect not have key, but it does")
 	}
 	if condition = GetReadinessCondition(newInstance1); condition != nil {
@@ -97,14 +97,14 @@ func TestReadiness(t *testing.T) {
 	if err := RemoveNotReadyKey(newInstance0, msg0); err != nil {
 		t.Fatal(err)
 	}
-	newInstance0 = &appspub.Instance{}
+	newInstance0 = &appspub.RoleInstance{}
 	if err := fakeClient.Get(context.TODO(), types.NamespacedName{Namespace: instance0.Namespace, Name: instance0.Name}, newInstance0); err != nil {
 		t.Fatal(err)
 	}
-	if !alreadyHasKey(newInstance0, msg1, appspub.InstanceCustomReady) {
+	if !alreadyHasKey(newInstance0, msg1, appspub.RoleInstanceCustomReady) {
 		t.Fatalf("expect already has key, but not")
 	}
-	if alreadyHasKey(newInstance0, msg0, appspub.InstanceCustomReady) {
+	if alreadyHasKey(newInstance0, msg0, appspub.RoleInstanceCustomReady) {
 		t.Fatalf("expect not have key, but it does")
 	}
 	condition = GetReadinessCondition(newInstance0)
@@ -115,11 +115,11 @@ func TestReadiness(t *testing.T) {
 	if err := RemoveNotReadyKey(newInstance0, msg1); err != nil {
 		t.Fatal(err)
 	}
-	newInstance0 = &appspub.Instance{}
+	newInstance0 = &appspub.RoleInstance{}
 	if err := fakeClient.Get(context.TODO(), types.NamespacedName{Namespace: instance0.Namespace, Name: instance0.Name}, newInstance0); err != nil {
 		t.Fatal(err)
 	}
-	if alreadyHasKey(newInstance0, msg0, appspub.InstanceCustomReady) || alreadyHasKey(newInstance0, msg1, appspub.InstanceCustomReady) {
+	if alreadyHasKey(newInstance0, msg0, appspub.RoleInstanceCustomReady) || alreadyHasKey(newInstance0, msg1, appspub.RoleInstanceCustomReady) {
 		t.Fatalf("expect not have key, but it does")
 	}
 	condition = GetReadinessCondition(newInstance0)

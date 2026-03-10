@@ -319,25 +319,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	instanceReconciler := workloadscontroller.NewInstanceReconciler(mgr)
-	if err = instanceReconciler.CheckCrdExists(); err != nil {
-		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+	roleInstanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr)
+	if err = roleInstanceReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create roleinstance controller", "controller", "RoleInstance")
 		os.Exit(1)
 	}
 
-	if err = instanceReconciler.SetupWithManager(mgr, options); err != nil {
-		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+	if err = roleInstanceReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create roleinstance controller", "controller", "RoleInstance")
 		os.Exit(1)
 	}
 
-	instancesetReconciler := workloadscontroller.NewInstanceSetReconciler(mgr)
-	if err = instancesetReconciler.CheckCrdExists(); err != nil {
-		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
+	roleInstanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	if err = roleInstanceSetReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create roleinstanceset controller", "controller", "RoleInstanceSet")
 		os.Exit(1)
 	}
 
-	if err = instancesetReconciler.SetupWithManager(mgr, options); err != nil {
-		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
+	if err = roleInstanceSetReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create roleinstanceset controller", "controller", "RoleInstanceSet")
 		os.Exit(1)
 	}
 
