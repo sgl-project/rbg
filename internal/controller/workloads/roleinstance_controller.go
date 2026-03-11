@@ -3,7 +3,7 @@ package workloads
 import (
 	"context"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -51,6 +51,6 @@ func (r *RoleInstanceReconciler) SetupWithManager(mgr ctrl.Manager, options cont
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&v1alpha2.RoleInstance{}).
-		Watches(&v1.Pod{}, roleinstance.NewPodEventHandler()).
+		Watches(&corev1.Pod{}, roleinstance.NewPodEventHandler()).
 		Complete(r)
 }
