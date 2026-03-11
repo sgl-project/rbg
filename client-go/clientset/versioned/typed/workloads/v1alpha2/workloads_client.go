@@ -29,6 +29,7 @@ type WorkloadsV1alpha2Interface interface {
 	RESTClient() rest.Interface
 	CoordinatedPoliciesGetter
 	RoleBasedGroupsGetter
+	RoleBasedGroupScalingAdaptersGetter
 	RoleBasedGroupSetsGetter
 	RoleInstancesGetter
 	RoleInstanceSetsGetter
@@ -45,6 +46,10 @@ func (c *WorkloadsV1alpha2Client) CoordinatedPolicies(namespace string) Coordina
 
 func (c *WorkloadsV1alpha2Client) RoleBasedGroups(namespace string) RoleBasedGroupInterface {
 	return newRoleBasedGroups(c, namespace)
+}
+
+func (c *WorkloadsV1alpha2Client) RoleBasedGroupScalingAdapters(namespace string) RoleBasedGroupScalingAdapterInterface {
+	return newRoleBasedGroupScalingAdapters(c, namespace)
 }
 
 func (c *WorkloadsV1alpha2Client) RoleBasedGroupSets(namespace string) RoleBasedGroupSetInterface {

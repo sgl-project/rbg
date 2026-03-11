@@ -27,6 +27,8 @@ type Interface interface {
 	CoordinatedPolicies() CoordinatedPolicyInformer
 	// RoleBasedGroups returns a RoleBasedGroupInformer.
 	RoleBasedGroups() RoleBasedGroupInformer
+	// RoleBasedGroupScalingAdapters returns a RoleBasedGroupScalingAdapterInformer.
+	RoleBasedGroupScalingAdapters() RoleBasedGroupScalingAdapterInformer
 	// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 	RoleBasedGroupSets() RoleBasedGroupSetInformer
 	// RoleInstances returns a RoleInstanceInformer.
@@ -54,6 +56,11 @@ func (v *version) CoordinatedPolicies() CoordinatedPolicyInformer {
 // RoleBasedGroups returns a RoleBasedGroupInformer.
 func (v *version) RoleBasedGroups() RoleBasedGroupInformer {
 	return &roleBasedGroupInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleBasedGroupScalingAdapters returns a RoleBasedGroupScalingAdapterInformer.
+func (v *version) RoleBasedGroupScalingAdapters() RoleBasedGroupScalingAdapterInformer {
+	return &roleBasedGroupScalingAdapterInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // RoleBasedGroupSets returns a RoleBasedGroupSetInformer.

@@ -131,6 +131,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.WorkloadSpecApplyConfiguration{}
 
 		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithKind("AdapterScaleTargetRef"):
+		return &workloadsv1alpha2.AdapterScaleTargetRefApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
 		return &workloadsv1alpha2.CoordinatedPolicyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyRule"):
@@ -153,6 +155,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.PatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroup"):
 		return &workloadsv1alpha2.RoleBasedGroupApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapter"):
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapterApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapterSpec"):
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapterSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapterStatus"):
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapterStatusApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSet"):
 		return &workloadsv1alpha2.RoleBasedGroupSetApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSetSpec"):
