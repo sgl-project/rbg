@@ -183,10 +183,10 @@ func buildPullJob(modelID string, podTemplate *corev1.PodTemplateSpec) (*batchv1
 		"rbg-model-id": sanitizedID,
 	}
 
-	// Model download can take a long time, set appropriate limits
-	backoffLimit := int32(3)                // Retry up to 5 times on failure
-	activeDeadlineSeconds := int64(7200)    // 2 hours max runtime for large models
-	ttlSecondsAfterFinished := int32(86400) // Keep job for 24 hours after completion
+	// Model download can take a long time; set appropriate limits.
+	backoffLimit := DefaultPullBackoffLimit
+	activeDeadlineSeconds := DefaultPullActiveDeadlineSeconds
+	ttlSecondsAfterFinished := DefaultPullTTLSecondsAfterFinished
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -249,6 +249,11 @@ const (
 	JobStateRunning   JobState = "Running"
 	JobStateSucceeded JobState = "Succeeded"
 	JobStateFailed    JobState = "Failed"
+
+	// DefaultPull* constants control Job behavior for model download jobs.
+	DefaultPullBackoffLimit            = int32(3)     // retry up to 3 times on failure
+	DefaultPullActiveDeadlineSeconds   = int64(7200)  // 2 hours max runtime for large models
+	DefaultPullTTLSecondsAfterFinished = int32(86400) // keep job 24 hours after completion
 )
 
 // deriveJobState maps a Job status to a high-level JobState
@@ -317,8 +322,8 @@ func injectMetadataSave(podTemplate *corev1.PodTemplateSpec, modelID, revision, 
 	if len(container.Command) >= 2 && container.Command[0] == "/bin/sh" && container.Command[1] == "-c" {
 		if len(container.Args) > 0 {
 			originalCmd := container.Args[0]
-			// shellEscape the metadata JSON to prevent command injection via special chars
-			container.Args[0] = fmt.Sprintf(`%s && echo %s > %s`,
+			// Use printf instead of echo to prevent flag injection (e.g. echo -e, echo -n)
+			container.Args[0] = fmt.Sprintf(`%s && printf '%%s\n' %s > %s`,
 				originalCmd, shellEscape(metadataJSON), shellEscape(modelPath+"/.rbg-metadata.json"))
 		}
 		return
@@ -340,7 +345,8 @@ func injectMetadataSave(podTemplate *corev1.PodTemplateSpec, modelID, revision, 
 	}
 
 	// Build the wrapped command with metadata save
-	wrappedCmd := fmt.Sprintf(`%s && echo %s > %s`,
+	// Use printf instead of echo to prevent flag injection (e.g. echo -e, echo -n)
+	wrappedCmd := fmt.Sprintf(`%s && printf '%%s\n' %s > %s`,
 		fullCmd.String(), shellEscape(metadataJSON), shellEscape(modelPath+"/.rbg-metadata.json"))
 
 	container.Command = []string{"/bin/sh", "-c"}
