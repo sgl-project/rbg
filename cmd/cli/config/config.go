@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,10 +45,7 @@ type EngineConfig struct {
 	Config map[string]interface{} `yaml:"config,omitempty"`
 }
 
-var (
-	instance *Config
-	mu       sync.Mutex
-)
+var instance *Config
 
 // GetConfigPath returns the path to the config file
 func GetConfigPath() string {
@@ -65,9 +61,6 @@ func GetConfigPath() string {
 
 // Load loads the configuration from file
 func Load() (*Config, error) {
-	mu.Lock()
-	defer mu.Unlock()
-
 	if instance == nil {
 		instance = &Config{
 			APIVersion: "rbg/v1alpha1",
@@ -76,21 +69,6 @@ func Load() (*Config, error) {
 		if err := instance.loadFromFile(); err != nil {
 			return nil, err
 		}
-	}
-	return instance, nil
-}
-
-// Reload forces a reload of the configuration from file
-func Reload() (*Config, error) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	instance = &Config{
-		APIVersion: "rbg/v1alpha1",
-		Kind:       "Config",
-	}
-	if err := instance.loadFromFile(); err != nil {
-		return nil, err
 	}
 	return instance, nil
 }

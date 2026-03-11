@@ -16,9 +16,10 @@ func TestHuggingFaceSource_Name(t *testing.T) {
 func TestHuggingFaceSource_ConfigFields(t *testing.T) {
 	h := &HuggingFaceSource{}
 	fields := h.ConfigFields()
-	assert.Len(t, fields, 2)
-	keys := []string{fields[0].Key, fields[1].Key}
+	assert.Len(t, fields, 3)
+	keys := []string{fields[0].Key, fields[1].Key, fields[2].Key}
 	assert.Contains(t, keys, "token")
+	assert.Contains(t, keys, "tokenSecret")
 	assert.Contains(t, keys, "mirror")
 }
 
@@ -27,6 +28,7 @@ func TestHuggingFaceSource_Init_Empty(t *testing.T) {
 	err := h.Init(map[string]interface{}{})
 	require.NoError(t, err)
 	assert.Empty(t, h.Token)
+	assert.Empty(t, h.TokenSecret)
 	assert.Empty(t, h.Mirror)
 }
 
@@ -39,6 +41,16 @@ func TestHuggingFaceSource_Init_WithValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hf_abc123", h.Token)
 	assert.Equal(t, "https://hf-mirror.com", h.Mirror)
+}
+
+func TestHuggingFaceSource_Init_WithTokenSecret(t *testing.T) {
+	h := &HuggingFaceSource{}
+	err := h.Init(map[string]interface{}{
+		"tokenSecret": "my-hf-secret",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "my-hf-secret", h.TokenSecret)
+	assert.Empty(t, h.Token)
 }
 
 func TestHuggingFaceSource_GenerateTemplate_NoAuth(t *testing.T) {
@@ -77,6 +89,56 @@ func TestHuggingFaceSource_GenerateTemplate_WithToken(t *testing.T) {
 	// Verify model env vars are also set
 	assert.Equal(t, "org/model", envMap["MODEL_ID"])
 	assert.Equal(t, "/models/model", envMap["MODEL_PATH"])
+}
+
+func TestHuggingFaceSource_GenerateTemplate_WithTokenSecret(t *testing.T) {
+	h := &HuggingFaceSource{}
+	require.NoError(t, h.Init(map[string]interface{}{"tokenSecret": "my-hf-secret"}))
+
+	tpl, err := h.GenerateTemplateWithRevision("org/model", "/models/model", "")
+	require.NoError(t, err)
+
+	c := tpl.Spec.Containers[0]
+	// Find the HF_TOKEN env var
+	var hfTokenEnv *corev1.EnvVar
+	for i := range c.Env {
+		if c.Env[i].Name == "HF_TOKEN" {
+			hfTokenEnv = &c.Env[i]
+			break
+		}
+	}
+	require.NotNil(t, hfTokenEnv, "HF_TOKEN env var should be present")
+	// Must use ValueFrom/SecretKeyRef, NOT a plain Value
+	assert.Empty(t, hfTokenEnv.Value, "HF_TOKEN should not have a plain-text Value")
+	require.NotNil(t, hfTokenEnv.ValueFrom)
+	require.NotNil(t, hfTokenEnv.ValueFrom.SecretKeyRef)
+	assert.Equal(t, "my-hf-secret", hfTokenEnv.ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "HF_TOKEN", hfTokenEnv.ValueFrom.SecretKeyRef.Key)
+}
+
+func TestHuggingFaceSource_GenerateTemplate_TokenSecretTakesPrecedence(t *testing.T) {
+	h := &HuggingFaceSource{}
+	// Both token and tokenSecret provided: tokenSecret wins
+	require.NoError(t, h.Init(map[string]interface{}{
+		"token":       "hf_plain",
+		"tokenSecret": "my-hf-secret",
+	}))
+
+	tpl, err := h.GenerateTemplateWithRevision("org/model", "/models/model", "")
+	require.NoError(t, err)
+
+	c := tpl.Spec.Containers[0]
+	var hfTokenEnv *corev1.EnvVar
+	for i := range c.Env {
+		if c.Env[i].Name == "HF_TOKEN" {
+			hfTokenEnv = &c.Env[i]
+			break
+		}
+	}
+	require.NotNil(t, hfTokenEnv)
+	assert.Empty(t, hfTokenEnv.Value, "plain-text token must not appear when tokenSecret is set")
+	require.NotNil(t, hfTokenEnv.ValueFrom)
+	assert.Equal(t, "my-hf-secret", hfTokenEnv.ValueFrom.SecretKeyRef.Name)
 }
 
 func TestHuggingFaceSource_GenerateTemplate_WithMirror(t *testing.T) {
@@ -139,7 +201,7 @@ func TestValidateConfig_HuggingFace_UnknownField(t *testing.T) {
 func TestGetFields_HuggingFace(t *testing.T) {
 	fields := GetFields("huggingface")
 	require.NotNil(t, fields)
-	assert.Len(t, fields, 2)
+	assert.Len(t, fields, 3)
 }
 
 // --- Security tests for command injection prevention ---

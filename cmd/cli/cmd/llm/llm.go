@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/benchmark"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/config"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/generate"
+	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/list"
 
 	// Import plugins to register them
 	_ "sigs.k8s.io/rbgs/cmd/cli/plugin/engine"
@@ -44,6 +45,7 @@ func NewLLMCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	cmd.AddCommand(newPullCmd(cf))
 	cmd.AddCommand(newModelsCmd(cf))
 	cmd.AddCommand(newRunCmd(cf))
+	cmd.AddCommand(list.NewListCmd(cf))
 
 	return cmd
 }

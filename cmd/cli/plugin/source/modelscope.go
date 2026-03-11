@@ -13,7 +13,8 @@ func init() {
 
 // ModelScopeSource implements the SourcePlugin interface for ModelScope
 type ModelScopeSource struct {
-	Token string
+	Token       string
+	TokenSecret string // Name of a Kubernetes Secret containing the MODELSCOPE_TOKEN key
 }
 
 // Name returns the plugin name
@@ -25,6 +26,7 @@ func (m *ModelScopeSource) Name() string {
 func (m *ModelScopeSource) ConfigFields() []util.ConfigField {
 	return []util.ConfigField{
 		{Key: "token", Description: "ModelScope API token (required for private models)", Required: false},
+		{Key: "tokenSecret", Description: "Name of Kubernetes Secret containing MODELSCOPE_TOKEN (takes precedence over token)", Required: false},
 	}
 }
 
@@ -32,6 +34,9 @@ func (m *ModelScopeSource) ConfigFields() []util.ConfigField {
 func (m *ModelScopeSource) Init(config map[string]interface{}) error {
 	if token, ok := config["token"].(string); ok {
 		m.Token = token
+	}
+	if tokenSecret, ok := config["tokenSecret"].(string); ok {
+		m.TokenSecret = tokenSecret
 	}
 	return nil
 }
@@ -43,7 +48,18 @@ func (m *ModelScopeSource) GenerateTemplateWithRevision(modelID string, modelPat
 		{Name: "MODEL_PATH", Value: modelPath},
 	}
 
-	if m.Token != "" {
+	if m.TokenSecret != "" {
+		// Prefer secret reference over plain-text token to avoid exposing credentials
+		env = append(env, corev1.EnvVar{
+			Name: "MODELSCOPE_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: m.TokenSecret},
+					Key:                  "MODELSCOPE_TOKEN",
+				},
+			},
+		})
+	} else if m.Token != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  "MODELSCOPE_TOKEN",
 			Value: m.Token,

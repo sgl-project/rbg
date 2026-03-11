@@ -13,8 +13,9 @@ func init() {
 
 // HuggingFaceSource implements the SourcePlugin interface for HuggingFace
 type HuggingFaceSource struct {
-	Token  string
-	Mirror string
+	Token       string
+	TokenSecret string // Name of a Kubernetes Secret containing the HF_TOKEN key
+	Mirror      string
 }
 
 // Name returns the plugin name
@@ -26,6 +27,7 @@ func (h *HuggingFaceSource) Name() string {
 func (h *HuggingFaceSource) ConfigFields() []util.ConfigField {
 	return []util.ConfigField{
 		{Key: "token", Description: "HuggingFace API token (required for private models)", Required: false},
+		{Key: "tokenSecret", Description: "Name of Kubernetes Secret containing HF_TOKEN (takes precedence over token)", Required: false},
 		{Key: "mirror", Description: "mirror URL for HuggingFace (e.g. https://hf-mirror.com)", Required: false},
 	}
 }
@@ -34,6 +36,9 @@ func (h *HuggingFaceSource) ConfigFields() []util.ConfigField {
 func (h *HuggingFaceSource) Init(config map[string]interface{}) error {
 	if token, ok := config["token"].(string); ok {
 		h.Token = token
+	}
+	if tokenSecret, ok := config["tokenSecret"].(string); ok {
+		h.TokenSecret = tokenSecret
 	}
 	if mirror, ok := config["mirror"].(string); ok {
 		h.Mirror = mirror
@@ -47,7 +52,18 @@ func (h *HuggingFaceSource) Init(config map[string]interface{}) error {
 func (h *HuggingFaceSource) GenerateTemplateWithRevision(modelID string, modelPath string, revision string) (*corev1.PodTemplateSpec, error) {
 	var env []corev1.EnvVar
 
-	if h.Token != "" {
+	if h.TokenSecret != "" {
+		// Prefer secret reference over plain-text token to avoid exposing credentials
+		env = append(env, corev1.EnvVar{
+			Name: "HF_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: h.TokenSecret},
+					Key:                  "HF_TOKEN",
+				},
+			},
+		})
+	} else if h.Token != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  "HF_TOKEN",
 			Value: h.Token,

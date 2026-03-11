@@ -115,9 +115,9 @@ func TestSave_EmptyPath(t *testing.T) {
 	_ = err
 }
 
-// --- Reload ---
+// --- Load (fresh instance) ---
 
-func TestReload_ReadsUpdatedFile(t *testing.T) {
+func TestLoad_ReadsUpdatedFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config")
 	yaml1 := `apiVersion: rbg/v1alpha1
@@ -125,14 +125,16 @@ kind: Config`
 	require.NoError(t, os.WriteFile(p, []byte(yaml1), 0600))
 	t.Setenv(EnvConfigPath, p)
 
-	c, err := Reload()
+	instance = nil
+	c, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, "rbg/v1alpha1", c.APIVersion)
 
 	yaml2 := `apiVersion: rbg/v1alpha2
 kind: Config`
 	require.NoError(t, os.WriteFile(p, []byte(yaml2), 0600))
-	c, err = Reload()
+	instance = nil
+	c, err = Load()
 	require.NoError(t, err)
 	assert.Equal(t, "rbg/v1alpha2", c.APIVersion)
 }
@@ -393,7 +395,7 @@ func TestDeleteEngine_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- Round-trip: Save then Reload ---
+// --- Round-trip: Save then Load ---
 
 func TestSaveAndReload(t *testing.T) {
 	dir := t.TempDir()
@@ -409,7 +411,8 @@ func TestSaveAndReload(t *testing.T) {
 	c.SetEngine("vllm", map[string]interface{}{"image": "img"})
 	require.NoError(t, c.Save())
 
-	loaded, err := Reload()
+	instance = nil
+	loaded, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, "s1", loaded.CurrentStorage)
 	assert.Equal(t, "src1", loaded.CurrentSource)

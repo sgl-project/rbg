@@ -16,8 +16,10 @@ func TestModelScopeSource_Name(t *testing.T) {
 func TestModelScopeSource_ConfigFields(t *testing.T) {
 	m := &ModelScopeSource{}
 	fields := m.ConfigFields()
-	assert.Len(t, fields, 1)
-	assert.Equal(t, "token", fields[0].Key)
+	assert.Len(t, fields, 2)
+	keys := []string{fields[0].Key, fields[1].Key}
+	assert.Contains(t, keys, "token")
+	assert.Contains(t, keys, "tokenSecret")
 }
 
 func TestModelScopeSource_Init_Empty(t *testing.T) {
@@ -25,6 +27,7 @@ func TestModelScopeSource_Init_Empty(t *testing.T) {
 	err := m.Init(map[string]interface{}{})
 	require.NoError(t, err)
 	assert.Empty(t, m.Token)
+	assert.Empty(t, m.TokenSecret)
 }
 
 func TestModelScopeSource_Init_WithToken(t *testing.T) {
@@ -32,6 +35,14 @@ func TestModelScopeSource_Init_WithToken(t *testing.T) {
 	err := m.Init(map[string]interface{}{"token": "ms_secret"})
 	require.NoError(t, err)
 	assert.Equal(t, "ms_secret", m.Token)
+}
+
+func TestModelScopeSource_Init_WithTokenSecret(t *testing.T) {
+	m := &ModelScopeSource{}
+	err := m.Init(map[string]interface{}{"tokenSecret": "my-ms-secret"})
+	require.NoError(t, err)
+	assert.Equal(t, "my-ms-secret", m.TokenSecret)
+	assert.Empty(t, m.Token)
 }
 
 func TestModelScopeSource_GenerateTemplate_NoToken(t *testing.T) {
@@ -62,6 +73,53 @@ func TestModelScopeSource_GenerateTemplate_WithToken(t *testing.T) {
 	require.NoError(t, err)
 	envMap := msEnvToMap(tpl.Spec.Containers[0].Env)
 	assert.Equal(t, "ms_tok", envMap["MODELSCOPE_TOKEN"])
+}
+
+func TestModelScopeSource_GenerateTemplate_WithTokenSecret(t *testing.T) {
+	m := &ModelScopeSource{}
+	require.NoError(t, m.Init(map[string]interface{}{"tokenSecret": "my-ms-secret"}))
+
+	tpl, err := m.GenerateTemplateWithRevision("org/model", "/models/model", "")
+	require.NoError(t, err)
+
+	c := tpl.Spec.Containers[0]
+	var msTokenEnv *corev1.EnvVar
+	for i := range c.Env {
+		if c.Env[i].Name == "MODELSCOPE_TOKEN" {
+			msTokenEnv = &c.Env[i]
+			break
+		}
+	}
+	require.NotNil(t, msTokenEnv, "MODELSCOPE_TOKEN env var should be present")
+	assert.Empty(t, msTokenEnv.Value, "MODELSCOPE_TOKEN should not have a plain-text Value")
+	require.NotNil(t, msTokenEnv.ValueFrom)
+	require.NotNil(t, msTokenEnv.ValueFrom.SecretKeyRef)
+	assert.Equal(t, "my-ms-secret", msTokenEnv.ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "MODELSCOPE_TOKEN", msTokenEnv.ValueFrom.SecretKeyRef.Key)
+}
+
+func TestModelScopeSource_GenerateTemplate_TokenSecretTakesPrecedence(t *testing.T) {
+	m := &ModelScopeSource{}
+	require.NoError(t, m.Init(map[string]interface{}{
+		"token":       "ms_plain",
+		"tokenSecret": "my-ms-secret",
+	}))
+
+	tpl, err := m.GenerateTemplateWithRevision("org/model", "/models/model", "")
+	require.NoError(t, err)
+
+	c := tpl.Spec.Containers[0]
+	var msTokenEnv *corev1.EnvVar
+	for i := range c.Env {
+		if c.Env[i].Name == "MODELSCOPE_TOKEN" {
+			msTokenEnv = &c.Env[i]
+			break
+		}
+	}
+	require.NotNil(t, msTokenEnv)
+	assert.Empty(t, msTokenEnv.Value, "plain-text token must not appear when tokenSecret is set")
+	require.NotNil(t, msTokenEnv.ValueFrom)
+	assert.Equal(t, "my-ms-secret", msTokenEnv.ValueFrom.SecretKeyRef.Name)
 }
 
 func TestModelScopeSource_GenerateTemplate_WithRevision(t *testing.T) {
@@ -112,7 +170,7 @@ func TestValidateConfig_ModelScope_UnknownField(t *testing.T) {
 func TestGetFields_ModelScope(t *testing.T) {
 	fields := GetFields("modelscope")
 	require.NotNil(t, fields)
-	assert.Len(t, fields, 1)
+	assert.Len(t, fields, 2)
 }
 
 func msEnvToMap(envVars []corev1.EnvVar) map[string]string {

@@ -14,32 +14,13 @@ import (
 	"k8s.io/klog/v2"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	runpkg "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/run"
 	cliconfig "sigs.k8s.io/rbgs/cmd/cli/config"
 	engineplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/engine"
 	storageplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/storage"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
-
-// Label keys for resources created by the run command
-const (
-	// RunCommandSourceLabelKey identifies resources created by the run command
-	RunCommandSourceLabelKey = workloadsv1alpha2.RBGPrefix + "source"
-)
-
-// Annotation keys for resources created by the run command
-const (
-	// RunCommandMetadataAnnotationKey stores CLI metadata as JSON
-	RunCommandMetadataAnnotationKey = workloadsv1alpha2.RBGPrefix + "cli-metadata"
-)
-
-// RunMetadata stores CLI metadata for the run command
-type RunMetadata struct {
-	ModelID  string `json:"modelID"`
-	Engine   string `json:"engine"`
-	Mode     string `json:"mode"`
-	Revision string `json:"revision"`
-}
 
 // resolveEngine resolves the engine configuration.
 // First tries to get from user config, then falls back to registered plugin with defaults.
@@ -67,7 +48,7 @@ func resolveEngine(engineType string, cfg *cliconfig.Config) (*cliconfig.EngineC
 // generateRBG creates a RoleBasedGroup from the pod template and configuration
 func generateRBG(name, namespace, modelID, engineType, mode, revision string, replicas int32, podTemplate *corev1.PodTemplateSpec) *workloadsv1alpha2.RoleBasedGroup {
 	// Build metadata annotation as JSON
-	metadata := RunMetadata{
+	metadata := llmmeta.RunMetadata{
 		ModelID:  modelID,
 		Engine:   engineType,
 		Mode:     mode,
@@ -81,8 +62,7 @@ func generateRBG(name, namespace, modelID, engineType, mode, revision string, re
 	}
 
 	// Set standard labels on pod template
-	podTemplate.ObjectMeta.Labels[workloadsv1alpha2.SetNameLabelKey] = name
-	podTemplate.ObjectMeta.Labels[RunCommandSourceLabelKey] = "rbgcli"
+	podTemplate.ObjectMeta.Labels[llmmeta.RunCommandSourceLabelKey] = llmmeta.RunCommandSourceLabelValue
 
 	// Create the RoleBasedGroup
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -94,11 +74,10 @@ func generateRBG(name, namespace, modelID, engineType, mode, revision string, re
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				workloadsv1alpha2.SetNameLabelKey: name,
-				RunCommandSourceLabelKey:          "rbgcli",
+				llmmeta.RunCommandSourceLabelKey: llmmeta.RunCommandSourceLabelValue,
 			},
 			Annotations: map[string]string{
-				RunCommandMetadataAnnotationKey: string(metadataJSON),
+				llmmeta.RunCommandMetadataAnnotationKey: string(metadataJSON),
 			},
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
@@ -112,6 +91,10 @@ func generateRBG(name, namespace, modelID, engineType, mode, revision string, re
 								Template: podTemplate,
 							},
 						},
+					},
+					Workload: workloadsv1alpha2.WorkloadSpec{
+						APIVersion: "workloads.x-k8s.io/v1alpha1",
+						Kind:       "InstanceSet",
 					},
 				},
 			},
