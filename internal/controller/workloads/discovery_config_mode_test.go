@@ -38,7 +38,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
 
-		if err := reconciler.reconcileDiscoveryConfigMap(context.Background(), rbg); err != nil {
+		if err := reconciler.reconcileRefinedDiscoveryConfigMap(context.Background(), rbg); err != nil {
 			t.Fatalf("reconcileDiscoveryConfigMap() error = %v", err)
 		}
 
@@ -85,7 +85,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
 
-		if err := reconciler.reconcileDiscoveryConfigMap(context.Background(), rbg); err != nil {
+		if err := reconciler.reconcileRefinedDiscoveryConfigMap(context.Background(), rbg); err != nil {
 			t.Fatalf("reconcileDiscoveryConfigMap() error = %v", err)
 		}
 
@@ -112,7 +112,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
 
-		if err := reconciler.reconcileDiscoveryConfigMap(context.Background(), rbg); err != nil {
+		if err := reconciler.reconcileRefinedDiscoveryConfigMap(context.Background(), rbg); err != nil {
 			t.Fatalf("reconcileDiscoveryConfigMap() error = %v", err)
 		}
 
@@ -150,7 +150,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg, existingCM).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
 
-		if err := reconciler.reconcileDiscoveryConfigMap(context.Background(), rbg); err != nil {
+		if err := reconciler.reconcileRefinedDiscoveryConfigMap(context.Background(), rbg); err != nil {
 			t.Fatalf("reconcileDiscoveryConfigMap() error = %v", err)
 		}
 

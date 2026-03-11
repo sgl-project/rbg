@@ -141,32 +141,41 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 2: Reconcile discovery ConfigMap.
+	// Step 2: Initialize discovery config mode.
+	// IMPORTANT: This must be done BEFORE constructAndUpdateRoleStatuses, because
+	// shouldUseLegacyDiscoveryConfig checks rbg.Status.RoleStatuses to determine if
+	// this is a new RBG. If roleStatuses is populated first, it will incorrectly
+	// use legacy mode for new RBGs.
+	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil || needRequeue {
+		return ctrl.Result{Requeue: true}, err
+	}
+
+	// Step 3: Reconcile refined discovery ConfigMap.
 	// This must happen before reconcileRoles to ensure ConfigMap exists before workloads are created.
-	if err := r.reconcileDiscoveryConfigMap(ctx, rbg); err != nil {
+	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	// Step 3: Construct role statuses
+	// Step 4: Construct role statuses
 	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 4: Calculate coordination strategies for scaling and rolling update
+	// Step 5: Calculate coordination strategies for scaling and rolling update
 	// Coordination configuration is now fetched from CoordinatedPolicy CR with the same name/namespace.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 5: Reconcile roles, do create/update actions for roles.
+	// Step 6: Reconcile roles, do create/update actions for roles.
 	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Cleanup orphaned resources
+	// Step 7: Cleanup orphaned resources
 	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -252,10 +261,74 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 	return errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations")
 }
 
-func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
+func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) (bool, error) {
+	// If Mode is already set, skip requeue and return
+	mode := rbg.GetDiscoveryConfigMode()
+	if mode == constants.LegacyDiscoveryConfigMode || mode == constants.RefineDiscoveryConfigMode {
+		return false, nil
+	}
+
+	// determine mode, update annotation
+	legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
+	if err != nil {
+		return true, err
+	}
+	if legacy {
+		mode = constants.LegacyDiscoveryConfigMode
+	} else {
+		mode = constants.RefineDiscoveryConfigMode
+	}
+
+	old := rbg.DeepCopy()
+	rbg.SetDiscoveryConfigMode(mode)
+	if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
+		return true, err
+	}
+
+	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
+	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
+	// to avoid race condition where workload is created before ConfigMap exists
+	return false, nil
+}
+
+func (r *RoleBasedGroupReconciler) shouldUseLegacyDiscoveryConfig(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) (bool, error) {
+	// Existing observed status indicates it is an old object already reconciled before.
+	if rbg.Status.ObservedGeneration > 0 || len(rbg.Status.RoleStatuses) > 0 {
+		return true, nil
+	}
+
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		roleCm := &corev1.ConfigMap{}
+		err := r.client.Get(
+			ctx,
+			types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace},
+			roleCm,
+		)
+		if err == nil {
+			return true, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	}
+
+	return false, nil
+}
+
+func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
+	if rbg.GetDiscoveryConfigMode() != constants.RefineDiscoveryConfigMode {
+		return nil
+	}
 	if !rbg.HasStatefulRole() {
 		return nil
 	}
@@ -266,7 +339,7 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	statefulOnlyRBG.Spec.Roles = nil
 	for i := range rbg.Spec.Roles {
 		role := rbg.Spec.Roles[i]
-		if isStatefulRole(&role) {
+		if workloadsv1alpha2.IsStatefulRole(&role) {
 			statefulOnlyRBG.Spec.Roles = append(statefulOnlyRBG.Spec.Roles, role)
 		}
 	}
@@ -294,12 +367,6 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 		)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, cmApplyConfig, utils.PatchSpec)
-}
-
-// isStatefulRole checks if a role uses stateful pattern.
-// Delegates to the v1alpha2 helper which handles empty workload types correctly.
-func isStatefulRole(role *workloadsv1alpha2.RoleSpec) bool {
-	return workloadsv1alpha2.IsStatefulRole(role)
 }
 
 func (r *RoleBasedGroupReconciler) reconcileRoles(

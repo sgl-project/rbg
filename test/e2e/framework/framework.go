@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/utils"
 )
 
@@ -34,6 +35,7 @@ func NewFramework(development bool) *Framework {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(workloadsv1alpha2.AddToScheme(scheme))
 	utilruntime.Must(lwsv1.AddToScheme(scheme))
 
 	cfg := config.GetConfigOrDie()
