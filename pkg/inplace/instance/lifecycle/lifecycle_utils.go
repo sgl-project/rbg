@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/clientdapter"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/readiness"
 )
@@ -25,10 +25,10 @@ func newGroupReadinessControl(adp clientdapter.Adapter) readiness.Interface {
 	return readiness.NewForAdapter(adp)
 }
 
-// Interface for managing pods lifecycle.
+// Interface for managing role instances lifecycle.
 type Interface interface {
-	UpdateInstanceLifecycle(instance *appsv1alpha1.Instance, state appsv1alpha1.LifecycleStateType, markPodNotReady bool) (bool, *appsv1alpha1.Instance, error)
-	UpdateInstanceLifecycleWithHandler(instance *appsv1alpha1.Instance, state appsv1alpha1.LifecycleStateType, inPlaceUpdateHandler *appsv1alpha1.LifecycleHook) (bool, *appsv1alpha1.Instance, error)
+	UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state workloadsv1alpha2.RoleInstanceSetLifecycleStateType, markPodNotReady bool) (bool, *workloadsv1alpha2.RoleInstance, error)
+	UpdateRoleInstanceLifecycleWithHandler(instance *workloadsv1alpha2.RoleInstance, state workloadsv1alpha2.RoleInstanceSetLifecycleStateType, inPlaceUpdateHandler *workloadsv1alpha2.RoleInstanceSetLifecycleHook) (bool, *workloadsv1alpha2.RoleInstance, error)
 }
 
 type realControl struct {
@@ -44,61 +44,61 @@ func New(c client.Client) Interface {
 	}
 }
 
-func GetInstanceLifecycleState(group *appsv1alpha1.Instance) appsv1alpha1.LifecycleStateType {
-	return appsv1alpha1.LifecycleStateType(group.Labels[appsv1alpha1.LifecycleStateKey])
+func GetRoleInstanceLifecycleState(instance *workloadsv1alpha2.RoleInstance) workloadsv1alpha2.RoleInstanceSetLifecycleStateType {
+	return workloadsv1alpha2.RoleInstanceSetLifecycleStateType(instance.Labels[workloadsv1alpha2.RoleInstanceSetLifecycleStateKey])
 }
 
-func IsHookMarkGroupNotReady(lifecycleHook *appsv1alpha1.LifecycleHook) bool {
+func IsHookMarkGroupNotReady(lifecycleHook *workloadsv1alpha2.RoleInstanceSetLifecycleHook) bool {
 	if lifecycleHook == nil {
 		return false
 	}
 	return lifecycleHook.MarkNotReady
 }
 
-func IsLifecycleMarkInstanceNotReady(lifecycle *appsv1alpha1.Lifecycle) bool {
+func IsLifecycleMarkRoleInstanceNotReady(lifecycle *workloadsv1alpha2.RoleInstanceSetLifecycle) bool {
 	if lifecycle == nil {
 		return false
 	}
 	return IsHookMarkGroupNotReady(lifecycle.PreDelete) || IsHookMarkGroupNotReady(lifecycle.InPlaceUpdate)
 }
 
-func SetInstanceLifecycle(state appsv1alpha1.LifecycleStateType) func(instance *appsv1alpha1.Instance) {
-	return func(instance *appsv1alpha1.Instance) {
+func SetRoleInstanceLifecycle(state workloadsv1alpha2.RoleInstanceSetLifecycleStateType) func(instance *workloadsv1alpha2.RoleInstance) {
+	return func(instance *workloadsv1alpha2.RoleInstance) {
 		if instance.Labels == nil {
 			instance.Labels = make(map[string]string)
 		}
 		if instance.Annotations == nil {
 			instance.Annotations = make(map[string]string)
 		}
-		instance.Labels[appsv1alpha1.LifecycleStateKey] = string(state)
-		instance.Annotations[appsv1alpha1.LifecycleTimestampKey] = time.Now().Format(time.RFC3339)
+		instance.Labels[workloadsv1alpha2.RoleInstanceSetLifecycleStateKey] = string(state)
+		instance.Annotations[workloadsv1alpha2.RoleInstanceSetLifecycleTimestampKey] = time.Now().Format(time.RFC3339)
 	}
 }
 
-func (c *realControl) executeInstanceNotReadyPolicy(instance *appsv1alpha1.Instance, state appsv1alpha1.LifecycleStateType) (err error) {
+func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alpha2.RoleInstance, state workloadsv1alpha2.RoleInstanceSetLifecycleStateType) (err error) {
 	switch state {
-	case appsv1alpha1.LifecycleStatePreparingDelete:
+	case workloadsv1alpha2.RoleInstanceSetLifecycleStatePreparingDelete:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingDeleteHookKey))
-	case appsv1alpha1.LifecycleStatePreparingUpdate:
+	case workloadsv1alpha2.RoleInstanceSetLifecycleStatePreparingUpdate:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
-	case appsv1alpha1.LifecycleStateNormal:
+	case workloadsv1alpha2.RoleInstanceSetLifecycleStateNormal:
 		err = c.groupReadinessControl.RemoveNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
 	}
 
 	if err != nil {
-		klog.Errorf("Failed to set instance(%v) Ready/NotReady at %s lifecycle state, error: %v", klog.KObj(instance), state, err)
+		klog.Errorf("Failed to set role instance(%v) Ready/NotReady at %s lifecycle state, error: %v", klog.KObj(instance), state, err)
 	}
 	return
 }
 
-func (c *realControl) UpdateInstanceLifecycle(instance *appsv1alpha1.Instance, state appsv1alpha1.LifecycleStateType, markPodNotReady bool) (updated bool, gotPod *appsv1alpha1.Instance, err error) {
+func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state workloadsv1alpha2.RoleInstanceSetLifecycleStateType, markPodNotReady bool) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
 	if markPodNotReady {
-		if err = c.executeInstanceNotReadyPolicy(instance, state); err != nil {
+		if err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
 			return false, nil, err
 		}
 	}
 
-	if GetInstanceLifecycleState(instance) == state {
+	if GetRoleInstanceLifecycleState(instance) == state {
 		return false, instance, nil
 	}
 
@@ -106,32 +106,32 @@ func (c *realControl) UpdateInstanceLifecycle(instance *appsv1alpha1.Instance, s
 	if adp, ok := c.adp.(clientdapter.AdapterWithPatch); ok {
 		body := fmt.Sprintf(
 			`{"metadata":{"labels":{"%s":"%s"},"annotations":{"%s":"%s"}}}`,
-			appsv1alpha1.LifecycleStateKey,
+			workloadsv1alpha2.RoleInstanceSetLifecycleStateKey,
 			string(state),
-			appsv1alpha1.LifecycleTimestampKey,
+			workloadsv1alpha2.RoleInstanceSetLifecycleTimestampKey,
 			time.Now().Format(time.RFC3339),
 		)
-		gotPod, err = adp.PatchInstance(instance, client.RawPatch(types.MergePatchType, []byte(body)))
+		gotPod, err = adp.PatchRoleInstance(instance, client.RawPatch(types.MergePatchType, []byte(body)))
 	} else {
-		SetInstanceLifecycle(state)(instance)
-		gotPod, err = c.adp.UpdateInstance(instance)
+		SetRoleInstanceLifecycle(state)(instance)
+		gotPod, err = c.adp.UpdateRoleInstance(instance)
 	}
 
 	return true, gotPod, err
 }
 
-func (c *realControl) UpdateInstanceLifecycleWithHandler(instance *appsv1alpha1.Instance, state appsv1alpha1.LifecycleStateType, inPlaceUpdateHandler *appsv1alpha1.LifecycleHook) (updated bool, gotPod *appsv1alpha1.Instance, err error) {
+func (c *realControl) UpdateRoleInstanceLifecycleWithHandler(instance *workloadsv1alpha2.RoleInstance, state workloadsv1alpha2.RoleInstanceSetLifecycleStateType, inPlaceUpdateHandler *workloadsv1alpha2.RoleInstanceSetLifecycleHook) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
 	if inPlaceUpdateHandler == nil || instance == nil {
 		return false, instance, nil
 	}
 
 	if inPlaceUpdateHandler.MarkNotReady {
-		if err = c.executeInstanceNotReadyPolicy(instance, state); err != nil {
+		if err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
 			return false, nil, err
 		}
 	}
 
-	if GetInstanceLifecycleState(instance) == state {
+	if GetRoleInstanceLifecycleState(instance) == state {
 		return false, instance, nil
 	}
 
@@ -148,14 +148,14 @@ func (c *realControl) UpdateInstanceLifecycleWithHandler(instance *appsv1alpha1.
 
 		body := fmt.Sprintf(
 			`{"metadata":{"labels":{"%s":"%s"%s},"annotations":{"%s":"%s"},"finalizers":%s}}`,
-			appsv1alpha1.LifecycleStateKey,
+			workloadsv1alpha2.RoleInstanceSetLifecycleStateKey,
 			string(state),
 			labelsHandler,
-			appsv1alpha1.LifecycleTimestampKey,
+			workloadsv1alpha2.RoleInstanceSetLifecycleTimestampKey,
 			time.Now().Format(time.RFC3339),
 			finalizersHandler,
 		)
-		gotPod, err = adp.PatchInstance(instance, client.RawPatch(types.MergePatchType, []byte(body)))
+		gotPod, err = adp.PatchRoleInstance(instance, client.RawPatch(types.MergePatchType, []byte(body)))
 	} else {
 		if instance.Labels == nil {
 			instance.Labels = make(map[string]string)
@@ -165,14 +165,14 @@ func (c *realControl) UpdateInstanceLifecycleWithHandler(instance *appsv1alpha1.
 		}
 		instance.Finalizers = append(instance.Finalizers, inPlaceUpdateHandler.FinalizersHandler...)
 
-		SetInstanceLifecycle(state)(instance)
-		gotPod, err = c.adp.UpdateInstance(instance)
+		SetRoleInstanceLifecycle(state)(instance)
+		gotPod, err = c.adp.UpdateRoleInstance(instance)
 	}
 
 	return true, gotPod, err
 }
 
-func IsInstanceHooked(hook *appsv1alpha1.LifecycleHook, instance *appsv1alpha1.Instance) bool {
+func IsRoleInstanceHooked(hook *workloadsv1alpha2.RoleInstanceSetLifecycleHook, instance *workloadsv1alpha2.RoleInstance) bool {
 	if hook == nil || instance == nil {
 		return false
 	}
@@ -189,7 +189,7 @@ func IsInstanceHooked(hook *appsv1alpha1.LifecycleHook, instance *appsv1alpha1.I
 	return false
 }
 
-func IsInstanceAllHooked(hook *appsv1alpha1.LifecycleHook, instance *appsv1alpha1.Instance) bool {
+func IsRoleInstanceAllHooked(hook *workloadsv1alpha2.RoleInstanceSetLifecycleHook, instance *workloadsv1alpha2.RoleInstance) bool {
 	if hook == nil || instance == nil {
 		return false
 	}

@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/instance"
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/clientdapter"
 	"sigs.k8s.io/rbgs/pkg/utils/revisionadapter"
@@ -47,28 +47,28 @@ type UpdateResult struct {
 
 type UpdateOptions struct {
 	GracePeriodSeconds int32
-	AdditionalFuncs    []func(instance *appsv1alpha1.Instance)
+	AdditionalFuncs    []func(instance *workloadsv1alpha2.RoleInstance)
 
-	InjectInstanceIdentity        func(instance *appsv1alpha1.Instance)
-	CalculateSpec                 func(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) *UpdateSpec
-	PatchSpecToInstance           func(instance *appsv1alpha1.Instance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha1.Instance, error)
-	CheckInstanceUpdateCompleted  func(instance *appsv1alpha1.Instance) error
-	CheckComponentUpdateCompleted func(instance *appsv1alpha1.Instance) error
-	GetRevision                   func(rev *apps.ControllerRevision) string
+	InjectRoleInstanceIdentity       func(instance *workloadsv1alpha2.RoleInstance)
+	CalculateSpec                    func(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) *UpdateSpec
+	PatchSpecToRoleInstance          func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error)
+	CheckRoleInstanceUpdateCompleted func(instance *workloadsv1alpha2.RoleInstance) error
+	CheckComponentUpdateCompleted    func(instance *workloadsv1alpha2.RoleInstance) error
+	GetRevision                      func(rev *apps.ControllerRevision) string
 }
 
-// Interface for managing Instance in-place update.
+// Interface for managing RoleInstance in-place update.
 type Interface interface {
 	CanUpdateInPlace(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) bool
-	Update(instance *appsv1alpha1.Instance, oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) UpdateResult
-	Refresh(instance *appsv1alpha1.Instance, opts *UpdateOptions) RefreshResult
+	Update(instance *workloadsv1alpha2.RoleInstance, oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) UpdateResult
+	Refresh(instance *workloadsv1alpha2.RoleInstance, opts *UpdateOptions) RefreshResult
 }
 
 // UpdateSpec records the images of containers which need to in-place update.
 type UpdateSpec struct {
-	Revision    string                         `json:"revision"`
-	OldTemplate *appsv1alpha1.InstanceTemplate `json:"oldTemplate,omitempty"`
-	NewTemplate *appsv1alpha1.InstanceTemplate `json:"newTemplate,omitempty"`
+	Revision    string                                  `json:"revision"`
+	OldTemplate *workloadsv1alpha2.RoleInstanceTemplate `json:"oldTemplate,omitempty"`
+	NewTemplate *workloadsv1alpha2.RoleInstanceTemplate `json:"newTemplate,omitempty"`
 }
 
 type realControl struct {
@@ -80,9 +80,9 @@ func New(c client.Client, revisionAdapter revisionadapter.Interface) Interface {
 	return &realControl{clientAdapter: &clientdapter.AdapterRuntimeClient{Client: c}, revisionAdapter: revisionAdapter}
 }
 
-func (c *realControl) Refresh(instance *appsv1alpha1.Instance, opts *UpdateOptions) RefreshResult {
+func (c *realControl) Refresh(instance *workloadsv1alpha2.RoleInstance, opts *UpdateOptions) RefreshResult {
 	opts = SetOptionsDefaults(opts)
-	if err := opts.CheckInstanceUpdateCompleted(instance); err != nil {
+	if err := opts.CheckRoleInstanceUpdateCompleted(instance); err != nil {
 		return RefreshResult{}
 	}
 
@@ -90,8 +90,8 @@ func (c *realControl) Refresh(instance *appsv1alpha1.Instance, opts *UpdateOptio
 		return RefreshResult{}
 	}
 
-	newCondition := appsv1alpha1.InstanceCondition{
-		Type:               appsv1alpha1.InstanceInPlaceUpdateReady,
+	newCondition := workloadsv1alpha2.RoleInstanceCondition{
+		Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		Status:             v1.ConditionTrue,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
@@ -99,9 +99,9 @@ func (c *realControl) Refresh(instance *appsv1alpha1.Instance, opts *UpdateOptio
 	return RefreshResult{RefreshErr: err}
 }
 
-func (c *realControl) updateCondition(instance *appsv1alpha1.Instance, condition appsv1alpha1.InstanceCondition) error {
+func (c *realControl) updateCondition(instance *workloadsv1alpha2.RoleInstance, condition workloadsv1alpha2.RoleInstanceCondition) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		clone, err := c.clientAdapter.GetInstance(instance.Namespace, instance.Name)
+		clone, err := c.clientAdapter.GetRoleInstance(instance.Namespace, instance.Name)
 		if err != nil {
 			return err
 		}
@@ -110,12 +110,12 @@ func (c *realControl) updateCondition(instance *appsv1alpha1.Instance, condition
 			return nil
 		}
 
-		inplaceutil.SetInstanceCondition(clone, condition)
-		// We only update the ready condition to False, and let Instance controller update it to True
+		inplaceutil.SetRoleInstanceCondition(clone, condition)
+		// We only update the ready condition to False, and let RoleInstance controller update it to True
 		if condition.Status == v1.ConditionFalse {
-			inplaceutil.SetInstanceNotReadyCondition(clone)
+			inplaceutil.SetRoleInstanceNotReadyCondition(clone)
 		}
-		return c.clientAdapter.UpdateInstanceStatus(clone)
+		return c.clientAdapter.UpdateRoleInstanceStatus(clone)
 	})
 }
 
@@ -124,7 +124,7 @@ func (c *realControl) CanUpdateInPlace(oldRevision, newRevision *apps.Controller
 	return opts.CalculateSpec(oldRevision, newRevision, opts) != nil
 }
 
-func (c *realControl) Update(instance *appsv1alpha1.Instance, oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) UpdateResult {
+func (c *realControl) Update(instance *workloadsv1alpha2.RoleInstance, oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) UpdateResult {
 	opts = SetOptionsDefaults(opts)
 
 	// 1. calculate inplace update spec
@@ -133,10 +133,10 @@ func (c *realControl) Update(instance *appsv1alpha1.Instance, oldRevision, newRe
 		return UpdateResult{}
 	}
 
-	// 2. update condition for Instance with readiness-gate
+	// 2. update condition for RoleInstance with readiness-gate
 	if containsReadinessGate(instance) {
-		newCondition := appsv1alpha1.InstanceCondition{
-			Type:               appsv1alpha1.InstanceInPlaceUpdateReady,
+		newCondition := workloadsv1alpha2.RoleInstanceCondition{
+			Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 			LastTransitionTime: metav1.NewTime(time.Now()),
 			Status:             v1.ConditionFalse,
 			Reason:             "StartInPlaceUpdate",
@@ -146,18 +146,18 @@ func (c *realControl) Update(instance *appsv1alpha1.Instance, oldRevision, newRe
 		}
 	}
 
-	// 3. update instance
-	newResourceVersion, err := c.updateInstanceInPlace(instance, spec, opts)
+	// 3. update role instance
+	newResourceVersion, err := c.updateRoleInstanceInPlace(instance, spec, opts)
 	if err != nil {
 		return UpdateResult{InPlaceUpdate: true, UpdateErr: err}
 	}
 	return UpdateResult{InPlaceUpdate: true, NewResourceVersion: newResourceVersion}
 }
 
-func (c *realControl) updateInstanceInPlace(instance *appsv1alpha1.Instance, spec *UpdateSpec, opts *UpdateOptions) (string, error) {
+func (c *realControl) updateRoleInstanceInPlace(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, opts *UpdateOptions) (string, error) {
 	var newResourceVersion string
 	retryErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		clone, err := c.clientAdapter.GetInstance(instance.Namespace, instance.Name)
+		clone, err := c.clientAdapter.GetRoleInstance(instance.Namespace, instance.Name)
 		if err != nil {
 			return err
 		}
@@ -178,12 +178,12 @@ func (c *realControl) updateInstanceInPlace(instance *appsv1alpha1.Instance, spe
 		inPlaceUpdateStateJSON, _ := json.Marshal(inPlaceUpdateState)
 		clone.Annotations[inplaceapi.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
 
-		clone, err = opts.PatchSpecToInstance(clone, spec, &inPlaceUpdateState)
+		clone, err = opts.PatchSpecToRoleInstance(clone, spec, &inPlaceUpdateState)
 		if err != nil {
 			return err
 		}
 
-		newInstance, updateErr := c.clientAdapter.UpdateInstance(clone)
+		newInstance, updateErr := c.clientAdapter.UpdateRoleInstance(clone)
 		if updateErr == nil {
 			newResourceVersion = newInstance.ResourceVersion
 		}
@@ -192,11 +192,11 @@ func (c *realControl) updateInstanceInPlace(instance *appsv1alpha1.Instance, spe
 	return newResourceVersion, retryErr
 }
 
-// GetTemplateFromRevision returns the Instance template parsed from ControllerRevision.
-func GetTemplateFromRevision(revision *apps.ControllerRevision) (*appsv1alpha1.InstanceTemplate, error) {
+// GetTemplateFromRevision returns the RoleInstance template parsed from ControllerRevision.
+func GetTemplateFromRevision(revision *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstanceTemplate, error) {
 	var patchObj *struct {
 		Spec struct {
-			Template appsv1alpha1.InstanceTemplate `json:"instanceTemplate"`
+			Template workloadsv1alpha2.RoleInstanceTemplate `json:"roleInstanceTemplate"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(revision.Data.Raw, &patchObj); err != nil {
@@ -205,32 +205,32 @@ func GetTemplateFromRevision(revision *apps.ControllerRevision) (*appsv1alpha1.I
 	return &patchObj.Spec.Template, nil
 }
 
-// InjectVersionedInstanceSpec injects InstanceSpec for the newly-create or inplace-update Instance.
-func InjectVersionedInstanceSpec(instance *appsv1alpha1.Instance) {
-	InjectInstanceReadinessGate(instance)
+// InjectVersionedRoleInstanceSpec injects RoleInstanceSpec for the newly-create or inplace-update RoleInstance.
+func InjectVersionedRoleInstanceSpec(instance *workloadsv1alpha2.RoleInstance) {
+	InjectRoleInstanceReadinessGate(instance)
 }
 
-// InjectInstanceReadinessGate injects InPlaceUpdateReady into instance.spec.readinessGates
-func InjectInstanceReadinessGate(instance *appsv1alpha1.Instance) {
+// InjectRoleInstanceReadinessGate injects InPlaceUpdateReady into instance.spec.readinessGates
+func InjectRoleInstanceReadinessGate(instance *workloadsv1alpha2.RoleInstance) {
 	for _, r := range instance.Spec.ReadinessGates {
-		if r.ConditionType == appsv1alpha1.InstanceInPlaceUpdateReady {
+		if r.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
 			return
 		}
 	}
-	instance.Spec.ReadinessGates = append(instance.Spec.ReadinessGates, appsv1alpha1.InstanceReadinessGate{ConditionType: appsv1alpha1.InstanceInPlaceUpdateReady})
+	instance.Spec.ReadinessGates = append(instance.Spec.ReadinessGates, workloadsv1alpha2.RoleInstanceReadinessGate{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady})
 }
 
-func containsReadinessGate(instance *appsv1alpha1.Instance) bool {
+func containsReadinessGate(instance *workloadsv1alpha2.RoleInstance) bool {
 	for _, r := range instance.Spec.ReadinessGates {
-		if r.ConditionType == appsv1alpha1.InstanceInPlaceUpdateReady {
+		if r.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
 			return true
 		}
 	}
 	return false
 }
 
-func hasEqualCondition(instance *appsv1alpha1.Instance, newCondition *appsv1alpha1.InstanceCondition) bool {
-	oldCondition := inplaceutil.GetInstanceCondition(instance, newCondition.Type)
+func hasEqualCondition(instance *workloadsv1alpha2.RoleInstance, newCondition *workloadsv1alpha2.RoleInstanceCondition) bool {
+	oldCondition := inplaceutil.GetRoleInstanceCondition(instance, newCondition.Type)
 	isEqual := oldCondition != nil && oldCondition.Status == newCondition.Status &&
 		oldCondition.Reason == newCondition.Reason && oldCondition.Message == newCondition.Message
 	return isEqual
