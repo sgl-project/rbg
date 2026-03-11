@@ -100,9 +100,9 @@ func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 
 func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
 	instances := make([]Instance, 0, *role.Replicas)
-	serviceName, err := utils.GetCompatibleHeadlessServiceNameV2(context.TODO(), b.client, b.rbg, role)
+	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
 	if err != nil {
-		return nil, fmt.Errorf("GetCompatibleHeadlessServiceNameV2 error: %s", err.Error())
+		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 
 	for i := 0; i < int(*role.Replicas); i++ {

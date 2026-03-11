@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -61,7 +61,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		result.RequeueAfter = 1 * time.Minute
 	})
 
-	instance := new(v1alpha1.Instance)
+	instance := new(workloadsv1alpha2.RoleInstance)
 	if err := r.Get(ctx, request.NamespacedName, instance); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("Instance has been deleted")
@@ -98,7 +98,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		}
 	}
 
-	newStatus := v1alpha1.InstanceStatus{
+	newStatus := workloadsv1alpha2.RoleInstanceStatus{
 		ObservedGeneration: instance.Generation,
 		CurrentRevision:    currentRevision.Name,
 		UpdateRevision:     updateRevision.Name,
@@ -120,7 +120,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	return reconcile.Result{RequeueAfter: res.requeue}, res.err
 }
 
-func (r *reconciler) syncInstance(ctx context.Context, instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus,
+func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
 	currentRevision, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision,
 	filteredPods []*v1.Pod) syncResult {
 	if instance.DeletionTimestamp != nil {
@@ -141,8 +141,8 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *v1alpha1.Instan
 
 	scaling, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods)
 	if podsScaleErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, v1alpha1.InstanceCondition{
-			Type:               v1alpha1.InstanceFailedScale,
+		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Message:            podsScaleErr.Error(),
@@ -154,8 +154,8 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *v1alpha1.Instan
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, currentRevision, updateRevision, revisions, filteredPods)
 	if podsUpdateErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, v1alpha1.InstanceCondition{
-			Type:               v1alpha1.InstanceFailedUpdate,
+		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+			Type:               workloadsv1alpha2.RoleInstanceFailedUpdate,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Message:            podsUpdateErr.Error(),
@@ -170,7 +170,7 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *v1alpha1.Instan
 	}
 }
 
-func (r *reconciler) getOwnedPods(ctx context.Context, instance *v1alpha1.Instance) ([]*v1.Pod, []*v1.Pod, error) {
+func (r *reconciler) getOwnedPods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, []*v1.Pod, error) {
 	opts := &client.ListOptions{
 		Namespace:     instance.Namespace,
 		FieldSelector: fields.SelectorFromSet(fields.Set{fieldindex.IndexNameForOwnerRefUID: string(instance.UID)}),
@@ -178,7 +178,7 @@ func (r *reconciler) getOwnedPods(ctx context.Context, instance *v1alpha1.Instan
 	return instanceutil.GetActiveAndInactivePods(ctx, r.Client, opts)
 }
 
-func (r *reconciler) getActiveRevisions(instance *v1alpha1.Instance, revisions []*apps.ControllerRevision) (
+func (r *reconciler) getActiveRevisions(instance *workloadsv1alpha2.RoleInstance, revisions []*apps.ControllerRevision) (
 	*apps.ControllerRevision, *apps.ControllerRevision, int32, error,
 ) {
 	var currentRevision, updateRevision *apps.ControllerRevision

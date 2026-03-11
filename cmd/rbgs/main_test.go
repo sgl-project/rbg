@@ -11,7 +11,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
 
@@ -23,7 +23,7 @@ func TestInitFunction(t *testing.T) {
 	assert.NoError(t, clientgoscheme.AddToScheme(scheme))
 	assert.NoError(t, lwsv1.AddToScheme(scheme))
 	assert.NoError(t, schev1alpha1.AddToScheme(scheme))
-	assert.NoError(t, workloadsv1alpha1.AddToScheme(scheme))
+	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 }
 
 func TestPrintVersion(t *testing.T) {
@@ -40,7 +40,7 @@ func TestMainSchemeRegistration(t *testing.T) {
 	testClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	// Verify that various types of objects can be created
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -63,5 +63,5 @@ func TestMainSchemeRegistration(t *testing.T) {
 	// Verify that the scheme includes core types
 	assert.True(t, scheme.Recognizes(corev1.SchemeGroupVersion.WithKind("Pod")))
 	assert.True(t, scheme.Recognizes(appsv1.SchemeGroupVersion.WithKind("StatefulSet")))
-	assert.True(t, scheme.Recognizes(workloadsv1alpha1.GroupVersion.WithKind("RoleBasedGroup")))
+	assert.True(t, scheme.Recognizes(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")))
 }

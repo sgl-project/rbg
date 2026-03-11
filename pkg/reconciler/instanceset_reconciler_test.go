@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha1client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	"sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
 )
 
 func TestInstanceSetReconciler_Validate(t *testing.T) {
@@ -207,7 +207,7 @@ func TestInstanceSetReconciler_constructInstanceSetApplyConfiguration(t *testing
 	require.NoError(t, corev1.AddToScheme(s))
 
 	// Create test objects
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
 	// Setup fake client
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg).Build()
@@ -467,9 +467,9 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
-	rollingRole := wrappers.BuildBasicRole("test-role").WithReplicas(4).
+	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := v1alpha1.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
+	rollingRole := v1alpha1.BuildBasicRole("test-role").WithReplicas(4).
 		WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
 		WithRollingUpdate(
 			workloadsv1alpha1.RollingUpdate{
@@ -499,7 +499,7 @@ func TestInstanceSetReconciler_Reconciler(t *testing.T) {
 		},
 		{
 			name:      "rbg name start with numeric",
-			rbg:       wrappers.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
+			rbg:       v1alpha1.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
 			role:      &role,
 			expectErr: false,
 		},
@@ -553,8 +553,8 @@ func TestInstanceSetReconciler_CheckWorkloadReady(t *testing.T) {
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
+	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := v1alpha1.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
 
 	tests := []struct {
 		name        string
@@ -644,7 +644,7 @@ func TestInstanceSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
 	instanceSetOwned := &workloadsv1alpha1.InstanceSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -764,8 +764,8 @@ func TestInstanceSetReconciler_RecreateWorkload(t *testing.T) {
 	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha1.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
+	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := v1alpha1.BuildBasicRole("test-role").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj()
 	instanceSet := &workloadsv1alpha1.InstanceSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg-test-role",

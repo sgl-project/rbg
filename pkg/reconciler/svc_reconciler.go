@@ -56,9 +56,9 @@ func (r *ServiceReconciler) reconcileHeadlessService(
 	}
 
 	oldSvc := &corev1.Service{}
-	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, r.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
-		return fmt.Errorf("GetCompatibleHeadlessServiceNameV2 error: %s", err.Error())
+		return fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 	err = r.client.Get(ctx, types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, oldSvc)
 	if err != nil && !apierrors.IsNotFound(err) {
@@ -91,7 +91,7 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 		constants.GroupNameLabelKey: rbg.Name,
 		constants.RoleNameLabelKey:  role.Name,
 	}
-	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, r.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
 		return nil, err
 	}

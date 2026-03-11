@@ -10,8 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -644,7 +644,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "abcd1234",
 			topologyKey:    "kubernetes.io/hostname",
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -656,7 +656,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -672,11 +672,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -709,7 +709,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "xyz5678",
 			topologyKey:    "node",
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -722,7 +722,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -739,11 +739,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -768,7 +768,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -787,7 +787,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "newkey",
 			topologyKey:    "rack",
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -799,7 +799,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -821,7 +821,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "key",
 			topologyKey:    "", // illegal
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			want:           &corev1.PodTemplateSpec{}, // No change
 			wantErr:        true,
 		},

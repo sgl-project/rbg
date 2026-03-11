@@ -1,4 +1,4 @@
-package wrappers
+package v1alpha1
 
 import (
 	"fmt"
@@ -9,6 +9,7 @@ import (
 	"k8s.io/utils/ptr"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
+	"sigs.k8s.io/rbgs/test/wrappers"
 )
 
 type RoleWrapper struct {
@@ -139,7 +140,7 @@ func (roleWrapper *RoleWrapper) WithTemplatePatch(patch runtime.RawExtension) *R
 }
 
 func BuildBasicRole(name string) *RoleWrapper {
-	template := BuildBasicPodTemplateSpec().Obj()
+	template := wrappers.BuildBasicPodTemplateSpec().Obj()
 	return &RoleWrapper{
 		workloadsv1alpha.RoleSpec{
 			Name:     name,
@@ -161,7 +162,7 @@ func BuildBasicRole(name string) *RoleWrapper {
 func BuildLwsRole(name string) *RoleWrapper {
 	leaderPatch := BuildLWSTemplatePatch(map[string]string{"role": "leader"})
 	workerPatch := BuildLWSTemplatePatch(map[string]string{"role": "worker"})
-	template := BuildBasicPodTemplateSpec().Obj()
+	template := wrappers.BuildBasicPodTemplateSpec().Obj()
 
 	return &RoleWrapper{
 		workloadsv1alpha.RoleSpec{

@@ -252,7 +252,7 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 					VolumeSource: corev1.VolumeSource{
 						ConfigMap: &corev1.ConfigMapVolumeSource{
 							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-rbg-test-role",
+								Name: "test-rbg",
 							},
 							Items: []corev1.KeyToPath{
 								{
@@ -285,7 +285,7 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 							VolumeSource: corev1.VolumeSource{
 								ConfigMap: &corev1.ConfigMapVolumeSource{
 									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "test-rbg-test-role",
+										Name: "test-rbg",
 									},
 									Items: []corev1.KeyToPath{
 										{
@@ -319,7 +319,7 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 					VolumeSource: corev1.VolumeSource{
 						ConfigMap: &corev1.ConfigMapVolumeSource{
 							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-rbg-test-role",
+								Name: "test-rbg",
 							},
 							Items: []corev1.KeyToPath{
 								{

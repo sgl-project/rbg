@@ -121,9 +121,9 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			rbgScalingAdapter, corev1.EventTypeNormal, FailedGetRBGRole,
 			"Failed to get scale target role: %v", getTargetRoleErr,
 		)
-		if rbgScalingAdapter.Status.Phase != workloadsv1alpha2.AdapterPhaseNotBound {
+		if rbgScalingAdapter.Status.Phase != constants.AdapterPhaseNotBound {
 			rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
-				WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false).WithPhase(workloadsv1alpha2.AdapterPhaseNotBound))
+				WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false).WithPhase(constants.AdapterPhaseNotBound))
 			if err := utils.PatchObjectApplyConfiguration(
 				ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 			); err != nil {
@@ -143,7 +143,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	}
 
 	// check scale target exist succeed, init adapter status with phase bound, selector and initial replicas
-	if rbgScalingAdapter.Status.Phase != workloadsv1alpha2.AdapterPhaseBound {
+	if rbgScalingAdapter.Status.Phase != constants.AdapterPhaseBound {
 		spec := ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(rbgScalingAdapter.Spec)
 		if targetRole.Replicas != nil {
 			spec = spec.WithReplicas(*targetRole.Replicas)
@@ -169,7 +169,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		}
 		rbgScalingAdapterStatusApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 			WithStatus(
-				status.WithPhase(workloadsv1alpha2.AdapterPhaseBound).WithSelector(selector),
+				status.WithPhase(constants.AdapterPhaseBound).WithSelector(selector),
 			)
 
 		if err := utils.PatchObjectApplyConfiguration(

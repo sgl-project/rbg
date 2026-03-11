@@ -8,7 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -51,18 +50,13 @@ func (i *DefaultInjector) InjectConfig(
 		configKey  = "config.yaml"
 	)
 
-	var configMapName string
-	mode := rbg.GetDiscoveryConfigMode()
-	switch mode {
-	case constants.RefineDiscoveryConfigMode:
-		if !workloadsv1alpha2.IsStatefulRole(role) {
-			return nil
-		}
-		configMapName = rbg.Name
-	default:
-		// legacy and unknown modes keep role-level mount for backward compatibility.
-		configMapName = rbg.GetWorkloadName(role)
+	// Only stateful roles have a discovery ConfigMap.
+	// The controller (reconcileDiscoveryConfigMap) always creates a single RBG-level
+	// ConfigMap named after the RBG itself, regardless of discovery config mode.
+	if !workloadsv1alpha2.IsStatefulRole(role) {
+		return nil
 	}
+	configMapName := rbg.Name
 
 	volumeExists := false
 	for _, vol := range podSpec.Spec.Volumes {
@@ -156,7 +150,7 @@ func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
 		rbg:  rbg,
 		role: role,
 	}
-	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, i.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, i.client, rbg, role)
 	if err != nil {
 		return err
 	}

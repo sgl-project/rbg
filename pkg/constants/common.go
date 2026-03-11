@@ -91,6 +91,15 @@ func GetAnnotationValue(annotations map[string]string, newKey, oldKey string) st
 
 // ========== Discovery Config Mode ==========
 
+// AdapterPhase defines the phase of a ScalingAdapter
+type AdapterPhase string
+
+const (
+	AdapterPhaseNone     AdapterPhase = ""
+	AdapterPhaseNotBound AdapterPhase = "NotBound"
+	AdapterPhaseBound    AdapterPhase = "Bound"
+)
+
 // DiscoveryConfigMode defines the mode for discovery config
 type DiscoveryConfigMode string
 

@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -23,7 +23,7 @@ const (
 	initialBatchSize = 1
 )
 
-func (c *realControl) Scale(ctx context.Context, updateInstance *v1alpha1.Instance, currentRevision, updateRevision *apps.ControllerRevision,
+func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod) (bool, error) {
 	diffRes, err := c.calculateDiffsWithExpectation(ctx, updateInstance, currentRevision, updateRevision, revisions, pods)
 	if err != nil {
@@ -46,7 +46,7 @@ type expectationDiff struct {
 	toScaleRoleIDS map[string]sets.Set[int32]
 }
 
-func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *v1alpha1.Instance,
+func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod) (*expectationDiff, error) {
 
@@ -58,23 +58,6 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
 			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))
 		return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
-	}
-
-	if updateInstance.Spec.PodGroupPolicy.EnableGangScheduling() {
-		for i := range pods {
-			oldRevision := currentRevision
-			for _, r := range revisions {
-				if instanceutil.EqualToRevisionHash("", pods[i], r.Name) {
-					oldRevision = r
-					break
-				}
-			}
-			if !c.inplaceControl.CanUpdateInPlace(ctx, oldRevision, updateRevision, coreControl.GetUpdateOptions()) {
-				c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance", fmt.Sprintf("component %s can't inplace updated, "+
-					"recreate all pods of instance: %v", instanceutil.GetPodComponentName(pods[i]), klog.KObj(updateInstance)))
-				return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
-			}
-		}
 	}
 
 	var (
@@ -108,7 +91,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	}, nil
 }
 
-func (c *realControl) createPods(ctx context.Context, updateInstance *v1alpha1.Instance, expectedCreations map[string]sets.Set[int32], updateRevision string) (bool, error) {
+func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, expectedCreations map[string]sets.Set[int32], updateRevision string) (bool, error) {
 	coreControl := instancecore.New(updateInstance)
 	var newPods []*v1.Pod
 	for _, component := range updateInstance.Spec.Components {
@@ -122,9 +105,6 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *v1alpha1.I
 	toCreatePodNum := 0
 	for _, p := range newPods {
 		if c.hasOrphanPod(p.Namespace, p.Name) {
-			if updateInstance.Spec.PodGroupPolicy.EnableGangScheduling() {
-				return false, fmt.Errorf("orphan pod %v has not been gc, fail to create new pod", klog.KObj(p))
-			}
 			continue
 		}
 		toCreatePodNum++
@@ -145,7 +125,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *v1alpha1.I
 	return true, err
 }
 
-func (c *realControl) deletePods(ctx context.Context, instance *v1alpha1.Instance, podsToDelete []*v1.Pod) (bool, error) {
+func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, podsToDelete []*v1.Pod) (bool, error) {
 	var modified bool
 	for _, pod := range podsToDelete {
 		if err := c.Delete(ctx, pod); err != nil {
@@ -164,7 +144,7 @@ func (c *realControl) hasOrphanPod(namespace, name string) bool {
 	return err == nil
 }
 
-func (c *realControl) createOnePod(ctx context.Context, instance *v1alpha1.Instance, pod *v1.Pod) error {
+func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) error {
 	if err := c.Create(ctx, pod); err != nil {
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedCreate", "failed to create pod: %v, pod: %v", err, podinplace.DumpJSON(pod))
 		return err
@@ -180,9 +160,9 @@ func (c *realControl) createOnePod(ctx context.Context, instance *v1alpha1.Insta
 //
 // Note: We use Instance's Ready condition to distinguish between initial creation/scaling
 // and pod deletion. This avoids infinite recreation loops.
-func shouldRecreateInstance(instance *v1alpha1.Instance, pods []*v1.Pod) bool {
+func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
 	// Only check when RestartPolicy is RecreateInstanceOnPodRestart
-	if instance.Spec.RestartPolicy != v1alpha1.RecreateInstanceOnPodRestart {
+	if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
 		return false
 	}
 
@@ -222,9 +202,9 @@ func shouldRecreateInstance(instance *v1alpha1.Instance, pods []*v1.Pod) bool {
 }
 
 // wasInstanceReady checks if the Instance was previously in Ready state
-func wasInstanceReady(instance *v1alpha1.Instance) bool {
+func wasInstanceReady(instance *workloadsv1alpha2.RoleInstance) bool {
 	for _, cond := range instance.Status.Conditions {
-		if cond.Type == v1alpha1.InstanceReady && cond.Status == v1.ConditionTrue {
+		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
 			return true
 		}
 	}
@@ -232,7 +212,7 @@ func wasInstanceReady(instance *v1alpha1.Instance) bool {
 }
 
 // getExpectedPodCount calculates the expected total pod count from instance spec
-func getExpectedPodCount(instance *v1alpha1.Instance) int {
+func getExpectedPodCount(instance *workloadsv1alpha2.RoleInstance) int {
 	expectedPodCount := 0
 	for _, component := range instance.Spec.Components {
 		if component.Size != nil {

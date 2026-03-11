@@ -106,12 +106,6 @@ const (
 	RoleInstanceComponentIDKey = RBGPrefix + "role-instance-component-id"
 )
 
-// Unique Hash label
-const (
-	// GroupUniqueHashLabelKey is used for pod affinity rules in exclusive topology
-	GroupUniqueHashLabelKey = RBGPrefix + "group-unique-hash"
-)
-
 // LWS (LeaderWorkerSet) related labels
 const (
 	// RBGComponentIndexLabelKey identifies the component instance index
@@ -122,13 +116,4 @@ const (
 
 	// RBGComponentSizeLabelKey identifies the component size
 	RBGComponentSizeLabelKey = RBGPrefix + "component-size"
-)
-
-// RoleInstance component labels (aliases for compatibility)
-const (
-	// RoleInstanceComponentNameKey is the name of the component within a RoleInstance
-	RoleInstanceComponentNameKey = RBGPrefix + "role-instance-component-name"
-
-	// RoleInstanceComponentIDKey is the id of the component within a RoleInstance
-	RoleInstanceComponentIDKey = RBGPrefix + "role-instance-component-id"
 )

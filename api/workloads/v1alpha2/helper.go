@@ -321,6 +321,15 @@ func (rbg *RoleBasedGroup) HasStatefulRole() bool {
 	return false
 }
 
+// GetRoleTemplateType returns the RoleTemplateType for this RoleInstance.
+// In v1alpha2, RoleInstance always uses Components pattern by default.
+func (instance *RoleInstance) GetRoleTemplateType() constants.RoleTemplateType {
+	if t, ok := instance.Labels[constants.RoleTypeLabelKey]; ok {
+		return constants.RoleTemplateType(t)
+	}
+	return constants.ComponentsTemplateType
+}
+
 // IsStatefulRole checks if a role is stateful.
 func IsStatefulRole(role *RoleSpec) bool {
 	if role == nil {

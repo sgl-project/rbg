@@ -196,7 +196,7 @@ type RoleSpec struct {
 	// Workload type specification
 	// Deprecated: This field is deprecated and will be removed in future versions.
 	// The underlying workload will use InstanceSet.
-	// +kubebuilder:default={apiVersion:"workloads.x-k8s.io/v1alpha1", kind:"InstanceSet"}
+	// +kubebuilder:default={apiVersion:"workloads.x-k8s.io/v1alpha2", kind:"RoleInstanceSet"}
 	// +optional
 	Workload WorkloadSpec `json:"workload,omitempty"`
 

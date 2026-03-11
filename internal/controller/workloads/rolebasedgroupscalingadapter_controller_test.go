@@ -59,7 +59,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 	}
 
 	boundedRbgSA := rbgsa.DeepCopy()
-	boundedRbgSA.Status.Phase = workloadsv1alpha2.AdapterPhaseBound
+	boundedRbgSA.Status.Phase = constants.AdapterPhaseBound
 
 	// Create RBG with StatefulSet workload type to match the test StatefulSet
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
@@ -99,7 +99,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 		client           client.Client
 		expectError      bool
 		expectRequeue    bool
-		expectedPhase    workloadsv1alpha2.AdapterPhase
+		expectedPhase    constants.AdapterPhase
 		expectedReplicas *int32
 	}{
 		{
@@ -107,7 +107,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 			client:        fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbgsa, rbg, sts).Build(),
 			expectError:   false,
 			expectRequeue: true,
-			expectedPhase: workloadsv1alpha2.AdapterPhaseBound,
+			expectedPhase: constants.AdapterPhaseBound,
 		},
 		{
 			name: "bounded adapter scales role replicas",

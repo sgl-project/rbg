@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	instanceutils "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -23,7 +23,7 @@ var initialBatchSize = 3
 
 // StatusUpdater is interface for updating CloneSet status.
 type StatusUpdater interface {
-	UpdateInstanceStatus(ctx context.Context, instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus, pods []*v1.Pod) error
+	UpdateInstanceStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) error
 }
 
 func newStatusUpdater(c client.Client) StatusUpdater {
@@ -35,8 +35,8 @@ type realStatusUpdater struct {
 	lifecycleControl lifecycle.Interface
 }
 
-func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus, pods []*v1.Pod) error {
-	conditions := make([]v1alpha1.InstanceCondition, 0, len(newStatus.Conditions))
+func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) error {
+	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(newStatus.Conditions))
 	conditions = append(conditions, newStatus.Conditions...)
 	r.calculateStatus(instance, newStatus, conditions, pods)
 	var updateStatusErr error
@@ -47,14 +47,14 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
 }
 
-func (r *realStatusUpdater) calculateStatus(instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus,
-	conditions []v1alpha1.InstanceCondition, pods []*v1.Pod) {
+func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
+	conditions []workloadsv1alpha2.RoleInstanceCondition, pods []*v1.Pod) {
 	coreControl := instancecore.New(instance)
-	componentStatuses := make(map[string]v1alpha1.ComponentStatus)
+	componentStatuses := make(map[string]workloadsv1alpha2.RoleInstanceComponentStatus)
 
 	for _, pod := range pods {
 		componentStatus := componentStatuses[instanceutils.GetPodComponentName(pod)]
-		componentStatus.Replicas++
+		componentStatus.Size++
 		if coreControl.IsPodUpdateReady(pod, 0) {
 			componentStatus.ReadyReplicas++
 			componentStatus.AvailableReplicas++
@@ -76,7 +76,7 @@ func (r *realStatusUpdater) calculateStatus(instance *v1alpha1.Instance, newStat
 		newStatusReplicas        = int32(len(pods))
 		componentSize            int32
 	)
-	newStatus.ComponentStatuses = make([]v1alpha1.ComponentStatus, len(instance.Spec.Components))
+	newStatus.ComponentStatuses = make([]workloadsv1alpha2.RoleInstanceComponentStatus, len(instance.Spec.Components))
 	for i, component := range instance.Spec.Components {
 		newStatus.ComponentStatuses[i] = componentStatuses[component.Name]
 		newStatus.ComponentStatuses[i].Name = component.Name
@@ -89,9 +89,9 @@ func (r *realStatusUpdater) calculateStatus(instance *v1alpha1.Instance, newStat
 	r.setInstanceConditions(instance, newStatus, conditions)
 }
 
-func (r *realStatusUpdater) setInstanceConditions(instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus,
-	newInnerConditions []v1alpha1.InstanceCondition) {
-	conditions := make([]v1alpha1.InstanceCondition, 0, len(instance.Status.Conditions)+1)
+func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
+	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) {
+	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions)+1)
 	conditions = append(conditions, newInnerConditions...)
 	podsReadyCondition := r.getInstancePodsReadyCondition(instance)
 	conditions = append(conditions, getInstanceReadyCondition(
@@ -99,14 +99,14 @@ func (r *realStatusUpdater) setInstanceConditions(instance *v1alpha1.Instance, n
 		podsReadyCondition,
 		r.getInstanceInplaceUpdateReadyCondition(instance),
 	))
-	if instance.Spec.ReadyPolicy == v1alpha1.InstanceReadyOnAllPodReady && podsReadyCondition != nil {
+	if instance.Spec.ReadyPolicy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady && podsReadyCondition != nil {
 		conditions = append(conditions, *podsReadyCondition)
 	}
-	innerConditionTypes := sets.New[v1alpha1.InstanceConditionType]()
+	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
 	for _, c := range conditions {
 		innerConditionTypes.Insert(c.Type)
 	}
-	var customInstanceConditions []v1alpha1.InstanceCondition
+	var customInstanceConditions []workloadsv1alpha2.RoleInstanceCondition
 	for _, c := range instance.Status.Conditions {
 		if !innerConditionTypes.Has(c.Type) {
 			customInstanceConditions = append(customInstanceConditions, c)
@@ -116,24 +116,24 @@ func (r *realStatusUpdater) setInstanceConditions(instance *v1alpha1.Instance, n
 	newStatus.Conditions = conditions
 }
 
-func (r *realStatusUpdater) getInstancePodsReadyCondition(instance *v1alpha1.Instance) *v1alpha1.InstanceCondition {
+func (r *realStatusUpdater) getInstancePodsReadyCondition(instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceCondition {
 	policy := instance.Spec.ReadyPolicy
 	if policy == "" {
-		policy = v1alpha1.InstanceReadyOnAllPodReady
+		policy = workloadsv1alpha2.RoleInstanceReadyOnAllPodReady
 	}
 	switch policy {
-	case v1alpha1.InstanceReadyOnAllPodReady:
+	case workloadsv1alpha2.RoleInstanceReadyOnAllPodReady:
 		return r.getAllReadyCondition(instance)
-	case v1alpha1.InstanceReadyPolicyTypeNone:
+	case workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone:
 		return nil
 	default:
 		return r.getAllReadyCondition(instance)
 	}
 }
 
-func (r *realStatusUpdater) getAllReadyCondition(instance *v1alpha1.Instance) *v1alpha1.InstanceCondition {
-	readyCondition := &v1alpha1.InstanceCondition{
-		Type:               v1alpha1.InstanceAllPodsReady,
+func (r *realStatusUpdater) getAllReadyCondition(instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceCondition {
+	readyCondition := &workloadsv1alpha2.RoleInstanceCondition{
+		Type:               workloadsv1alpha2.RoleInstanceAllPodsReady,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 		Status:             v1.ConditionFalse,
 	}
@@ -157,7 +157,7 @@ func (r *realStatusUpdater) getAllReadyCondition(instance *v1alpha1.Instance) *v
 	return readyCondition
 }
 
-func (r *realStatusUpdater) getExpectOwnedPods(instance *v1alpha1.Instance) ([]*v1.Pod, error) {
+func (r *realStatusUpdater) getExpectOwnedPods(instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, error) {
 	var pods []*v1.Pod
 	for _, component := range instance.Spec.Components {
 		size := *component.Size
@@ -176,34 +176,34 @@ func (r *realStatusUpdater) getExpectOwnedPods(instance *v1alpha1.Instance) ([]*
 	return pods, nil
 }
 
-func (r *realStatusUpdater) getInstanceInplaceUpdateReadyCondition(instance *v1alpha1.Instance) *v1alpha1.InstanceCondition {
+func (r *realStatusUpdater) getInstanceInplaceUpdateReadyCondition(instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceCondition {
 	if !containsInstanceInplaceUpdateReadinessGates(instance) {
 		return nil
 	}
 	for _, condition := range instance.Status.Conditions {
-		if condition.Type == v1alpha1.InstanceInPlaceUpdateReady {
+		if condition.Type == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
 			return &condition
 		}
 	}
-	return &v1alpha1.InstanceCondition{
-		Type:               v1alpha1.InstanceInPlaceUpdateReady,
+	return &workloadsv1alpha2.RoleInstanceCondition{
+		Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		Status:             v1.ConditionFalse,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
 }
 
-func containsInstanceInplaceUpdateReadinessGates(instance *v1alpha1.Instance) bool {
+func containsInstanceInplaceUpdateReadinessGates(instance *workloadsv1alpha2.RoleInstance) bool {
 	for _, gate := range instance.Spec.ReadinessGates {
-		if gate.ConditionType == v1alpha1.InstanceInPlaceUpdateReady {
+		if gate.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
 			return true
 		}
 	}
 	return false
 }
 
-func getInstanceReadyCondition(instance *v1alpha1.Instance, podsReady, inplace *v1alpha1.InstanceCondition) v1alpha1.InstanceCondition {
-	instanceReady := v1alpha1.InstanceCondition{
-		Type:               v1alpha1.InstanceReady,
+func getInstanceReadyCondition(instance *workloadsv1alpha2.RoleInstance, podsReady, inplace *workloadsv1alpha2.RoleInstanceCondition) workloadsv1alpha2.RoleInstanceCondition {
+	instanceReady := workloadsv1alpha2.RoleInstanceCondition{
+		Type:               workloadsv1alpha2.RoleInstanceReady,
 		Status:             v1.ConditionFalse,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
@@ -217,7 +217,7 @@ func getInstanceReadyCondition(instance *v1alpha1.Instance, podsReady, inplace *
 		} else {
 			instanceReady.Reason = "ReadinessGatesNotReady"
 			instanceReady.Message = fmt.Sprintf("corresponding condition of pod readiness gate \"%s\" does not exist.",
-				v1alpha1.InstanceInPlaceUpdateReady)
+				workloadsv1alpha2.RoleInstanceInPlaceUpdateReady)
 			return instanceReady
 		}
 	}
@@ -231,7 +231,7 @@ func getInstanceReadyCondition(instance *v1alpha1.Instance, podsReady, inplace *
 	return instanceReady
 }
 
-func (r *realStatusUpdater) inconsistentStatus(instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus) bool {
+func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) bool {
 	oldStatus := instance.Status
 	if newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
 		newStatus.LabelSelector != oldStatus.LabelSelector ||
@@ -250,8 +250,8 @@ func (r *realStatusUpdater) inconsistentStatus(instance *v1alpha1.Instance, newS
 	return inconsistentCondition(oldStatus.Conditions, newStatus.Conditions)
 }
 
-func inconsistentComponentStatus(oldRoleStatus, newRoleStatus v1alpha1.ComponentStatus) bool {
-	return oldRoleStatus.Replicas != newRoleStatus.Replicas ||
+func inconsistentComponentStatus(oldRoleStatus, newRoleStatus workloadsv1alpha2.RoleInstanceComponentStatus) bool {
+	return oldRoleStatus.Size != newRoleStatus.Size ||
 		oldRoleStatus.Name != newRoleStatus.Name ||
 		oldRoleStatus.ReadyReplicas != newRoleStatus.ReadyReplicas ||
 		oldRoleStatus.UpdatedReadyReplicas != newRoleStatus.UpdatedReadyReplicas ||
@@ -259,11 +259,11 @@ func inconsistentComponentStatus(oldRoleStatus, newRoleStatus v1alpha1.Component
 		oldRoleStatus.UpdatedReplicas != newRoleStatus.UpdatedReplicas
 }
 
-func inconsistentCondition(oldConditions, newConditions []v1alpha1.InstanceCondition) bool {
+func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.RoleInstanceCondition) bool {
 	if len(oldConditions) != len(newConditions) {
 		return true
 	}
-	oldConditionMap := make(map[v1alpha1.InstanceConditionType]v1alpha1.InstanceCondition, len(oldConditions))
+	oldConditionMap := make(map[workloadsv1alpha2.RoleInstanceConditionType]workloadsv1alpha2.RoleInstanceCondition, len(oldConditions))
 	for _, c := range oldConditions {
 		oldConditionMap[c.Type] = c
 	}
@@ -281,19 +281,19 @@ func inconsistentCondition(oldConditions, newConditions []v1alpha1.InstanceCondi
 	return false
 }
 
-func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *v1alpha1.Instance, newStatus *v1alpha1.InstanceStatus) error {
+func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) error {
 	instance.Status = *newStatus
 	return r.Status().Update(ctx, instance)
 }
 
-func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *v1alpha1.Instance, pods []*v1.Pod) error {
+func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) error {
 	podsChan := make(chan *v1.Pod, len(pods))
 	for _, p := range pods {
 		podsChan <- p
 	}
 	inInplaceUpdating := isInstanceInInplaceUpdatingPhase(instance)
 	markPodNotReady := inInplaceUpdating
-	if getInstanceReadyPolicy(instance) == v1alpha1.InstanceReadyOnAllPodReady {
+	if getInstanceReadyPolicy(instance) == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
 		allPodRuntimeReady := r.allPodsRuntimeReady(ctx, instance)
 		markPodNotReady = inInplaceUpdating || !allPodRuntimeReady
 	}
@@ -309,27 +309,27 @@ func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *v
 	return err
 }
 
-func isInstanceInInplaceUpdatingPhase(instance *v1alpha1.Instance) bool {
-	if !instanceutils.ContainsReadinessGate(instance, v1alpha1.InstanceInPlaceUpdateReady) {
+func isInstanceInInplaceUpdatingPhase(instance *workloadsv1alpha2.RoleInstance) bool {
+	if !instanceutils.ContainsReadinessGate(instance, workloadsv1alpha2.RoleInstanceInPlaceUpdateReady) {
 		return false
 	}
 	for _, condition := range instance.Status.Conditions {
-		if condition.Type == v1alpha1.InstanceInPlaceUpdateReady {
+		if condition.Type == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
 			return condition.Status == v1.ConditionFalse
 		}
 	}
 	return true
 }
 
-func getInstanceReadyPolicy(instance *v1alpha1.Instance) v1alpha1.InstanceReadyPolicyType {
+func getInstanceReadyPolicy(instance *workloadsv1alpha2.RoleInstance) workloadsv1alpha2.RoleInstanceReadyPolicyType {
 	policy := instance.Spec.ReadyPolicy
 	if policy == "" {
-		policy = v1alpha1.InstanceReadyOnAllPodReady
+		policy = workloadsv1alpha2.RoleInstanceReadyOnAllPodReady
 	}
 	return policy
 }
 
-func (r *realStatusUpdater) allPodsRuntimeReady(ctx context.Context, instance *v1alpha1.Instance) bool {
+func (r *realStatusUpdater) allPodsRuntimeReady(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) bool {
 	logger := log.FromContext(ctx)
 	pods, err := r.getExpectOwnedPods(instance)
 	if err != nil {

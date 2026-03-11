@@ -261,7 +261,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByComponents(
 		// construct service name
 		svcName := component.ServiceName
 		if svcName == "" {
-			svcName, err = utils.GetCompatibleHeadlessServiceNameV2(ctx, r.client, rbg, role)
+			svcName, err = utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 			if err != nil {
 				return err
 			}
@@ -323,7 +323,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLWS(
 		return err
 	}
 
-	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, r.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
 		return err
 	}
@@ -355,7 +355,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByTemplate(
 	matchLabels map[string]string,
 	roleInstanceTemplateConfig *workloadsv1alpha2client.RoleInstanceTemplateApplyConfiguration,
 ) error {
-	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, r.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
 		return err
 	}

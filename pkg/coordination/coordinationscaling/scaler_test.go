@@ -19,24 +19,24 @@ package coordinationscaling
 import (
 	"testing"
 
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestNewCoordinationScaler(t *testing.T) {
 	tests := []struct {
 		name         string
-		coordination *workloadsv1alpha1.Coordination
+		coordination *workloadsv1alpha2.CoordinatedPolicyRule
 		wantErr      bool
 	}{
 		{
 			name: "valid coordination with 5% maxSkew",
-			coordination: &workloadsv1alpha1.Coordination{
-				Name:  "test-coordination",
+			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
-						MaxSkew: ptr.To("5%"),
+				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString("5%")),
 					},
 				},
 			},
@@ -49,10 +49,9 @@ func TestNewCoordinationScaler(t *testing.T) {
 		},
 		{
 			name: "nil scaling strategy",
-			coordination: &workloadsv1alpha1.Coordination{
-				Name:  "test-coordination",
+			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
+				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
 					Scaling: nil,
 				},
 			},
@@ -60,11 +59,10 @@ func TestNewCoordinationScaler(t *testing.T) {
 		},
 		{
 			name: "nil maxSkew uses default 100% (no limit)",
-			coordination: &workloadsv1alpha1.Coordination{
-				Name:  "test-coordination",
+			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
+				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 						MaxSkew: nil,
 					},
 				},
@@ -73,12 +71,11 @@ func TestNewCoordinationScaler(t *testing.T) {
 		},
 		{
 			name: "invalid maxSkew format",
-			coordination: &workloadsv1alpha1.Coordination{
-				Name:  "test-coordination",
+			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
-						MaxSkew: ptr.To("5"),
+				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString("5")),
 					},
 				},
 			},
@@ -88,13 +85,13 @@ func TestNewCoordinationScaler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scaler, err := NewCoordinationScaler(tt.coordination)
+			scaler, err := NewCoordinationScalerFromPolicy(tt.coordination)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("NewCoordinationScaler() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("NewCoordinationScalerFromPolicy() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr && scaler == nil {
-				t.Errorf("NewCoordinationScaler() returned nil scaler")
+				t.Errorf("NewCoordinationScalerFromPolicy() returned nil scaler")
 			}
 		})
 	}
@@ -482,17 +479,16 @@ func TestCalculateTargetReplicas(t *testing.T) {
 				roles = append(roles, roleName)
 			}
 
-			coordination := &workloadsv1alpha1.Coordination{
-				Name:  "test-coordination",
+			coordination := &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: roles,
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
-						MaxSkew: ptr.To(tt.maxSkew),
+				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString(tt.maxSkew)),
 					},
 				},
 			}
 
-			scaler, err := NewCoordinationScaler(coordination)
+			scaler, err := NewCoordinationScalerFromPolicy(coordination)
 			if err != nil {
 				t.Fatalf("Failed to create scaler: %v", err)
 			}
@@ -604,7 +600,7 @@ func TestProgressionStrategy(t *testing.T) {
 	tests := []struct {
 		name        string
 		maxSkew     string
-		progression *workloadsv1alpha1.ProgressionType
+		progression workloadsv1alpha2.ScalingProgression
 		roleStates  map[string]RoleScalingState
 		wantTargets map[string]int32
 		wantErr     bool
@@ -612,7 +608,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderScheduled - wait for scheduling",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+			progression: workloadsv1alpha2.OrderScheduledProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -638,7 +634,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderScheduled - all scheduled, proceed",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+			progression: workloadsv1alpha2.OrderScheduledProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -664,7 +660,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderReady - wait for ready",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderReady),
+			progression: workloadsv1alpha2.ParallelProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -690,7 +686,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderReady - all ready, proceed",
 			maxSkew:     "5%",
-			progression: ptr.To(workloadsv1alpha1.OrderReady),
+			progression: workloadsv1alpha2.ParallelProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -723,18 +719,17 @@ func TestProgressionStrategy(t *testing.T) {
 				roles = append(roles, roleName)
 			}
 
-			coordination := &workloadsv1alpha1.Coordination{
-				Name:  "test-coordination",
+			coordination := &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: roles,
-				Strategy: &workloadsv1alpha1.CoordinationStrategy{
-					Scaling: &workloadsv1alpha1.CoordinationScaling{
-						MaxSkew:     ptr.To(tt.maxSkew),
+				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+						MaxSkew:     ptr.To(intstr.FromString(tt.maxSkew)),
 						Progression: tt.progression,
 					},
 				},
 			}
 
-			scaler, err := NewCoordinationScaler(coordination)
+			scaler, err := NewCoordinationScalerFromPolicy(coordination)
 			if err != nil {
 				t.Fatalf("Failed to create scaler: %v", err)
 			}

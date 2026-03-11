@@ -23,15 +23,12 @@ import (
 	"strconv"
 	"strings"
 
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // CoordinationScaler calculates the target replicas for each role based on coordination scaling strategy.
 type CoordinationScaler struct {
-	coordination *workloadsv1alpha1.Coordination
-	maxSkew      float64
-	// v1alpha2 policy rule (if set, use this instead of coordination)
+	maxSkew    float64
 	policyRule *workloadsv1alpha2.CoordinatedPolicyRule
 }
 
@@ -64,29 +61,6 @@ func NewCoordinationScalerFromPolicy(policyRule *workloadsv1alpha2.CoordinatedPo
 	return &CoordinationScaler{
 		policyRule: policyRule,
 		maxSkew:    maxSkew,
-	}, nil
-}
-
-// NewCoordinationScaler creates a new CoordinationScaler instance.
-func NewCoordinationScaler(coordination *workloadsv1alpha1.Coordination) (*CoordinationScaler, error) {
-	if coordination == nil || coordination.Strategy == nil || coordination.Strategy.Scaling == nil {
-		return nil, fmt.Errorf("invalid coordination configuration: scaling strategy is nil")
-	}
-
-	// Use default maxSkew of 100% if not specified (no coordination limit)
-	maxSkewStr := "100%"
-	if coordination.Strategy.Scaling.MaxSkew != nil {
-		maxSkewStr = *coordination.Strategy.Scaling.MaxSkew
-	}
-
-	maxSkew, err := parsePercentage(maxSkewStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse maxSkew: %w", err)
-	}
-
-	return &CoordinationScaler{
-		coordination: coordination,
-		maxSkew:      maxSkew,
 	}, nil
 }
 
@@ -199,43 +173,25 @@ func (s *CoordinationScaler) CalculateTargetReplicas(roleStates map[string]RoleS
 
 // GetCoordinationRoles returns the list of roles in this coordination.
 func (s *CoordinationScaler) GetCoordinationRoles() []string {
-	// Return roles from policy rule if set
 	if s.policyRule != nil {
 		return s.policyRule.Roles
 	}
-	return s.coordination.Roles
+	return nil
 }
 
-// getProgressionType returns the progression type from policy rule or coordination.
-func (s *CoordinationScaler) getProgressionType() workloadsv1alpha1.ProgressionType {
-	// Default to OrderScheduled
-	progression := workloadsv1alpha1.OrderScheduled
-
-	if s.policyRule != nil {
-		// Map v1alpha2 ScalingProgression to v1alpha1 ProgressionType
-		if s.policyRule.Strategies.Scaling != nil {
-			switch s.policyRule.Strategies.Scaling.Progression {
-			case workloadsv1alpha2.OrderScheduledProgression:
-				progression = workloadsv1alpha1.OrderScheduled
-			case workloadsv1alpha2.ParallelProgression:
-				// Parallel means no progression check needed, treat as OrderScheduled for compatibility
-				progression = workloadsv1alpha1.OrderScheduled
-			}
-		}
-	} else if s.coordination != nil && s.coordination.Strategy != nil &&
-		s.coordination.Strategy.Scaling != nil &&
-		s.coordination.Strategy.Scaling.Progression != nil {
-		progression = *s.coordination.Strategy.Scaling.Progression
+// getProgressionType returns the progression type from policy rule.
+func (s *CoordinationScaler) getProgressionType() workloadsv1alpha2.ScalingProgression {
+	if s.policyRule != nil && s.policyRule.Strategies.Scaling != nil {
+		return s.policyRule.Strategies.Scaling.Progression
 	}
-
-	return progression
+	return workloadsv1alpha2.OrderScheduledProgression
 }
 
 // canProceedToNextBatch checks if we can proceed to the next batch based on progression strategy.
 // It verifies that all roles in the coordination meet the progression requirement.
 func (s *CoordinationScaler) canProceedToNextBatch(
 	roleStates map[string]RoleScalingState,
-	progression workloadsv1alpha1.ProgressionType,
+	progression workloadsv1alpha2.ScalingProgression,
 ) bool {
 	// Get roles list
 	roles := s.GetCoordinationRoles()
@@ -269,16 +225,13 @@ func (s *CoordinationScaler) canProceedToNextBatch(
 
 		// Check based on progression type
 		switch progression {
-		case workloadsv1alpha1.OrderScheduled:
+		case workloadsv1alpha2.OrderScheduledProgression:
 			// All current replicas must be scheduled
 			if state.ScheduledReplicas < state.CurrentReplicas {
 				return false
 			}
-		case workloadsv1alpha1.OrderReady:
-			// All current replicas must be ready
-			if state.ReadyReplicas < state.CurrentReplicas {
-				return false
-			}
+		case workloadsv1alpha2.ParallelProgression:
+			// Parallel: no ordering constraint, always proceed
 		}
 	}
 

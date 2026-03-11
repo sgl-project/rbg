@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,7 +14,6 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -113,15 +111,6 @@ func CalculatePartitionReplicas(partition *intstrutil.IntOrString, replicasPoint
 	return pValue, nil
 }
 
-func GetRoleReplicas(rbg *v1alpha1.RoleBasedGroup, roleName string) int32 {
-	for _, role := range rbg.Spec.Roles {
-		if role.Name == roleName {
-			return *role.Replicas
-		}
-	}
-	return 0
-}
-
 // GetRoleReplicasV2 returns the replicas for a role from a v1alpha2 RoleBasedGroup.
 func GetRoleReplicasV2(rbg *v1alpha2.RoleBasedGroup, roleName string) int32 {
 	for _, role := range rbg.Spec.Roles {
@@ -143,30 +132,6 @@ func ParseIntStrAsNonZero(p intstrutil.IntOrString, replicas int32) (int32, erro
 		value = 1
 	}
 	return int32(value), nil
-}
-
-func RoleInMaxSkewCoordination(rbg *v1alpha1.RoleBasedGroup, role string) bool {
-	for _, coordination := range rbg.Spec.CoordinationRequirements {
-		if !slices.Contains(coordination.Roles, role) {
-			continue
-		}
-		if coordination.Strategy != nil &&
-			coordination.Strategy.RollingUpdate != nil &&
-			coordination.Strategy.RollingUpdate.MaxSkew != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// RoleInMaxSkewCoordinationV2 checks if a role is part of a coordination with maxSkew (v1alpha2).
-// Note: In v1alpha2, coordination is handled via CoordinatedPolicy CR, this function
-// is kept for compatibility but should be updated when CoordinatedPolicy lookup is available.
-func RoleInMaxSkewCoordinationV2(rbg *v1alpha2.RoleBasedGroup, role string) bool {
-	// In v1alpha2, coordination is handled via CoordinatedPolicy CR
-	// This requires a client to look up the policy, so for now we return false
-	// The coordination logic should be handled in the controller level
-	return false
 }
 
 func ABSFloat64(x float64) float64 {
@@ -248,4 +213,11 @@ func NonZeroValue(value int32) int32 {
 		return 0
 	}
 	return value
+}
+
+// RoleInMaxSkewCoordinationV2 checks if the given role is part of a MaxSkew coordination
+// in v1alpha2. In v1alpha2, coordination rules are managed via separate CoordinatedPolicy
+// resources, not embedded in the RoleBasedGroup spec, so this always returns false.
+func RoleInMaxSkewCoordinationV2(_ *v1alpha2.RoleBasedGroup, _ string) bool {
+	return false
 }

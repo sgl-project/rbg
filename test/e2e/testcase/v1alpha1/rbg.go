@@ -8,7 +8,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	wrappers "sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
 )
 
 func RunRbgControllerTestCases(f *framework.Framework) {

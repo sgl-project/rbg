@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/test/utils"
 )
@@ -150,7 +151,7 @@ func expectRbgV2ScalingAdapterEqual(
 		return fmt.Errorf("Role.Replicas %v != expectedReplicas %v", *role.Replicas, *expectedReplicas)
 	}
 
-	if rbgSa.Status.Phase != workloadsv1alpha2.AdapterPhaseBound {
+	if rbgSa.Status.Phase != constants.AdapterPhaseBound {
 		return fmt.Errorf("ScalingAdapter.Status.Phase %s is not AdapterPhaseBound", rbgSa.Status.Phase)
 	}
 

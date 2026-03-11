@@ -451,7 +451,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	stsLabel := maps.Clone(matchLabels)
 	stsLabel[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
-	svcName, err := utils.GetCompatibleHeadlessServiceNameV2(ctx, r.client, rbg, role)
+	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
 		return nil, err
 	}
@@ -518,7 +518,6 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 		return false, err
 	}
 
-	// We don't check ready if workload is rolling update if maxSkew is set.
 	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&
 		sts.Status.CurrentRevision != sts.Status.UpdateRevision {
 		return true, nil

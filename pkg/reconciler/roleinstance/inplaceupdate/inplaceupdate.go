@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	inplaceutils "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	clientdapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
@@ -207,11 +207,11 @@ func (c *realControl) onlyUpdateRevision(pod *v1.Pod, newRevision *apps.Controll
 }
 
 func (c *realControl) updateInstanceReadyCondition(pod *v1.Pod) error {
-	if !instanceutil.PodContainsReadinessGate(pod, v1alpha1.InstancePodReadyConditionType) {
+	if !instanceutil.PodContainsReadinessGate(pod, constants.InstancePodReadyConditionType) {
 		return nil
 	}
 	newCondition := v1.PodCondition{
-		Type:               v1alpha1.InstancePodReadyConditionType,
+		Type:               constants.InstancePodReadyConditionType,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 		Status:             v1.ConditionFalse,
 
