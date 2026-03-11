@@ -33,6 +33,14 @@ type RoleBasedGroupListerExpansion interface{}
 // RoleBasedGroupNamespaceLister.
 type RoleBasedGroupNamespaceListerExpansion interface{}
 
+// RoleBasedGroupScalingAdapterListerExpansion allows custom methods to be added to
+// RoleBasedGroupScalingAdapterLister.
+type RoleBasedGroupScalingAdapterListerExpansion interface{}
+
+// RoleBasedGroupScalingAdapterNamespaceListerExpansion allows custom methods to be added to
+// RoleBasedGroupScalingAdapterNamespaceLister.
+type RoleBasedGroupScalingAdapterNamespaceListerExpansion interface{}
+
 // RoleBasedGroupSetListerExpansion allows custom methods to be added to
 // RoleBasedGroupSetLister.
 type RoleBasedGroupSetListerExpansion interface{}

@@ -35,6 +35,10 @@ func (c *FakeWorkloadsV1alpha2) RoleBasedGroups(namespace string) v1alpha2.RoleB
 	return newFakeRoleBasedGroups(c, namespace)
 }
 
+func (c *FakeWorkloadsV1alpha2) RoleBasedGroupScalingAdapters(namespace string) v1alpha2.RoleBasedGroupScalingAdapterInterface {
+	return newFakeRoleBasedGroupScalingAdapters(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha2) RoleBasedGroupSets(namespace string) v1alpha2.RoleBasedGroupSetInterface {
 	return newFakeRoleBasedGroupSets(c, namespace)
 }
