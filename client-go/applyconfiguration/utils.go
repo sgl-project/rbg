@@ -133,6 +133,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		// Group=workloads.x-k8s.io, Version=v1alpha2
 	case v1alpha2.SchemeGroupVersion.WithKind("AdapterScaleTargetRef"):
 		return &workloadsv1alpha2.AdapterScaleTargetRefApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfile"):
+		return &workloadsv1alpha2.ClusterEngineRuntimeProfileApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
+		return &workloadsv1alpha2.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
 		return &workloadsv1alpha2.CoordinatedPolicyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyRule"):

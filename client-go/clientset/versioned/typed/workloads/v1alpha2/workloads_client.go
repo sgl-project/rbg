@@ -27,6 +27,7 @@ import (
 
 type WorkloadsV1alpha2Interface interface {
 	RESTClient() rest.Interface
+	ClusterEngineRuntimeProfilesGetter
 	CoordinatedPoliciesGetter
 	RoleBasedGroupsGetter
 	RoleBasedGroupScalingAdaptersGetter
@@ -38,6 +39,10 @@ type WorkloadsV1alpha2Interface interface {
 // WorkloadsV1alpha2Client is used to interact with features provided by the workloads.x-k8s.io group.
 type WorkloadsV1alpha2Client struct {
 	restClient rest.Interface
+}
+
+func (c *WorkloadsV1alpha2Client) ClusterEngineRuntimeProfiles(namespace string) ClusterEngineRuntimeProfileInterface {
+	return newClusterEngineRuntimeProfiles(c, namespace)
 }
 
 func (c *WorkloadsV1alpha2Client) CoordinatedPolicies(namespace string) CoordinatedPolicyInterface {

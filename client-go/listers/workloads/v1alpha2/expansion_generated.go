@@ -17,6 +17,14 @@ limitations under the License.
 
 package v1alpha2
 
+// ClusterEngineRuntimeProfileListerExpansion allows custom methods to be added to
+// ClusterEngineRuntimeProfileLister.
+type ClusterEngineRuntimeProfileListerExpansion interface{}
+
+// ClusterEngineRuntimeProfileNamespaceListerExpansion allows custom methods to be added to
+// ClusterEngineRuntimeProfileNamespaceLister.
+type ClusterEngineRuntimeProfileNamespaceListerExpansion interface{}
+
 // CoordinatedPolicyListerExpansion allows custom methods to be added to
 // CoordinatedPolicyLister.
 type CoordinatedPolicyListerExpansion interface{}

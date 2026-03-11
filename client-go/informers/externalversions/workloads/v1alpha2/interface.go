@@ -23,6 +23,8 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// ClusterEngineRuntimeProfiles returns a ClusterEngineRuntimeProfileInformer.
+	ClusterEngineRuntimeProfiles() ClusterEngineRuntimeProfileInformer
 	// CoordinatedPolicies returns a CoordinatedPolicyInformer.
 	CoordinatedPolicies() CoordinatedPolicyInformer
 	// RoleBasedGroups returns a RoleBasedGroupInformer.
@@ -46,6 +48,11 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
+}
+
+// ClusterEngineRuntimeProfiles returns a ClusterEngineRuntimeProfileInformer.
+func (v *version) ClusterEngineRuntimeProfiles() ClusterEngineRuntimeProfileInformer {
+	return &clusterEngineRuntimeProfileInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // CoordinatedPolicies returns a CoordinatedPolicyInformer.

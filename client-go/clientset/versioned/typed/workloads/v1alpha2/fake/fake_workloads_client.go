@@ -27,6 +27,10 @@ type FakeWorkloadsV1alpha2 struct {
 	*testing.Fake
 }
 
+func (c *FakeWorkloadsV1alpha2) ClusterEngineRuntimeProfiles(namespace string) v1alpha2.ClusterEngineRuntimeProfileInterface {
+	return newFakeClusterEngineRuntimeProfiles(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha2) CoordinatedPolicies(namespace string) v1alpha2.CoordinatedPolicyInterface {
 	return newFakeCoordinatedPolicies(c, namespace)
 }
