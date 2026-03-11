@@ -17,6 +17,8 @@ limitations under the License.
 
 package v1alpha2
 
+type ClusterEngineRuntimeProfileExpansion interface{}
+
 type CoordinatedPolicyExpansion interface{}
 
 type RoleBasedGroupExpansion interface{}
