@@ -660,7 +660,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderReady - wait for ready",
 			maxSkew:     "5%",
-			progression: workloadsv1alpha2.ParallelProgression,
+			progression: workloadsv1alpha2.OrderReadyProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",
@@ -686,7 +686,7 @@ func TestProgressionStrategy(t *testing.T) {
 		{
 			name:        "OrderReady - all ready, proceed",
 			maxSkew:     "5%",
-			progression: workloadsv1alpha2.ParallelProgression,
+			progression: workloadsv1alpha2.OrderReadyProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
 					RoleName:          "prefill",

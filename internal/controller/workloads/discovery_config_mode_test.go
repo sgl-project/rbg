@@ -13,6 +13,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 	"sigs.k8s.io/yaml"
@@ -34,6 +35,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 				Kind:       "Deployment",
 			},
 		})
+		rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
@@ -81,6 +83,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 					},
 				},
 			}).Obj()
+		rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
@@ -108,6 +111,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 		// BuildBasicRole creates StatefulSet workload by default → stateful
+		rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
@@ -137,6 +141,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 		_ = corev1.AddToScheme(scheme)
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+		rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 		existingCM := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      rbg.Name,

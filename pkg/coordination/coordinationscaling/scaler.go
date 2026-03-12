@@ -230,8 +230,11 @@ func (s *CoordinationScaler) canProceedToNextBatch(
 			if state.ScheduledReplicas < state.CurrentReplicas {
 				return false
 			}
-		case workloadsv1alpha2.ParallelProgression:
-			// Parallel: no ordering constraint, always proceed
+		case workloadsv1alpha2.OrderReadyProgression:
+			// All current replicas must be ready
+			if state.ReadyReplicas < state.CurrentReplicas {
+				return false
+			}
 		}
 	}
 
