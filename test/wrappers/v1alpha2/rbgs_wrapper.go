@@ -1,16 +1,16 @@
-package wrappers
+package v1alpha2
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 type RoleBasedGroupSetWrapper struct {
-	workloadsv1alpha.RoleBasedGroupSet
+	workloadsv1alpha2.RoleBasedGroupSet
 }
 
-func (rsWrapper *RoleBasedGroupSetWrapper) Obj() *workloadsv1alpha.RoleBasedGroupSet {
+func (rsWrapper *RoleBasedGroupSetWrapper) Obj() *workloadsv1alpha2.RoleBasedGroupSet {
 	return &rsWrapper.RoleBasedGroupSet
 }
 
@@ -36,12 +36,16 @@ func (rsWrapper *RoleBasedGroupSetWrapper) WithReplicas(replicas int32) *RoleBas
 
 func BuildBasicRoleBasedGroupSet(name, ns string) *RoleBasedGroupSetWrapper {
 	return &RoleBasedGroupSetWrapper{
-		workloadsv1alpha.RoleBasedGroupSet{
+		workloadsv1alpha2.RoleBasedGroupSet{
+			TypeMeta: v1.TypeMeta{
+				APIVersion: "workloads.x-k8s.io/v1alpha2",
+				Kind:       "RoleBasedGroupSet",
+			},
 			ObjectMeta: v1.ObjectMeta{
 				Name:      name,
 				Namespace: ns,
 			},
-			Spec: workloadsv1alpha.RoleBasedGroupSetSpec{
+			Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
 				Replicas: ptr.To(int32(1)),
 				Template: BuildBasicRoleBasedGroup(name, ns).Obj().Spec,
 			},

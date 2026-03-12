@@ -10,14 +10,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 const (
 	// maxJobNameLength is the maximum length of a Kubernetes resource name.
 	maxJobNameLength = 63
 	// benchmarkConfigAnnotationKey is the annotation key used to store the serialized benchmark config on the Job.
-	benchmarkConfigAnnotationKey = workloadsv1alpha1.RBGPrefix + "rbg-benchmark-config"
+	benchmarkConfigAnnotationKey = constants.RBGPrefix + "rbg-benchmark-config"
 )
 
 type JobState string

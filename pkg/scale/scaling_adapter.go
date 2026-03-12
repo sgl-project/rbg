@@ -3,7 +3,7 @@ package scale
 import (
 	"fmt"
 
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func GenerateScalingAdapterName(rbgName, roleName string) string {
@@ -11,8 +11,8 @@ func GenerateScalingAdapterName(rbgName, roleName string) string {
 }
 
 func IsScalingAdapterManagedByRBG(
-	scalingAdapter *workloadsv1alpha.RoleBasedGroupScalingAdapter,
-	rbg *workloadsv1alpha.RoleBasedGroup,
+	scalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
 	if scalingAdapter == nil || rbg == nil {
 		return false
@@ -21,7 +21,7 @@ func IsScalingAdapterManagedByRBG(
 	return scalingAdapter.ContainsRBGOwner(rbg)
 }
 
-func IsScalingAdapterEnable(roleSpec *workloadsv1alpha.RoleSpec) bool {
+func IsScalingAdapterEnable(roleSpec *workloadsv1alpha2.RoleSpec) bool {
 	if roleSpec == nil || roleSpec.ScalingAdapter == nil {
 		return false
 	}

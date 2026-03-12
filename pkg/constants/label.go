@@ -105,3 +105,15 @@ const (
 	// RoleInstanceComponentIDKey is the id of the component within a RoleInstance
 	RoleInstanceComponentIDKey = RBGPrefix + "role-instance-component-id"
 )
+
+// LWS (LeaderWorkerSet) related labels
+const (
+	// RBGComponentIndexLabelKey identifies the component instance index
+	// for LWS workloads this maps to:
+	// - leader's RBGComponentIndex = 0
+	// - worker's RBGComponentIndex = ComponentIDKey.value + 1
+	RBGComponentIndexLabelKey = RBGPrefix + "component-index"
+
+	// RBGComponentSizeLabelKey identifies the component size
+	RBGComponentSizeLabelKey = RBGPrefix + "component-size"
+)

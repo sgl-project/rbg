@@ -5,7 +5,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestGenerateScalingAdapterName(t *testing.T) {

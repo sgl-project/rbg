@@ -51,8 +51,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"sigs.k8s.io/rbgs/version"
 	// +kubebuilder:scaffold:imports
@@ -70,8 +70,6 @@ func init() {
 	utilruntime.Must(schev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(volcanoschedulingv1beta1.AddToScheme(scheme))
 
-	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(workloadsv1alpha1.AddToScheme(clientgoscheme.Scheme))
 	utilruntime.Must(workloadsv1alpha2.AddToScheme(scheme))
 	utilruntime.Must(workloadsv1alpha2.AddToScheme(clientgoscheme.Scheme))
 	// +kubebuilder:scaffold:scheme
@@ -270,7 +268,7 @@ func main() {
 			WebhookServer:          webhookServer,
 			HealthProbeBindAddress: probeAddr,
 			LeaderElection:         enableLeaderElection,
-			LeaderElectionID:       workloadsv1alpha1.ControllerName,
+			LeaderElectionID:       constants.ControllerName,
 			Cache:                  cacheOptions(),
 		},
 	)
@@ -384,7 +382,7 @@ func main() {
 }
 
 func cacheOptions() cache.Options {
-	keyExistsRequirement, err := labels.NewRequirement(workloadsv1alpha1.SetNameLabelKey, selection.Exists, nil)
+	keyExistsRequirement, err := labels.NewRequirement(constants.GroupNameLabelKey, selection.Exists, nil)
 	if err != nil {
 		panic(err)
 	}

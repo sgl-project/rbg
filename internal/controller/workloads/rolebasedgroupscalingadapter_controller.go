@@ -40,8 +40,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -68,7 +69,7 @@ func NewRoleBasedGroupScalingAdapterReconciler(mgr ctrl.Manager) *RoleBasedGroup
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters/finalizers,verbs=update
 func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the RoleBasedGroupScalingAdapter instance
-	rbgScalingAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
+	rbgScalingAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbgScalingAdapter,
 	); err != nil {
@@ -94,7 +95,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	// check scale target exist
 	var (
 		getTargetRoleErr error
-		targetRole       *workloadsv1alpha1.RoleSpec
+		targetRole       *workloadsv1alpha2.RoleSpec
 	)
 	rbg, err := r.GetTargetRbgFromAdapter(ctx, rbgScalingAdapter)
 	if err != nil {
@@ -120,9 +121,9 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			rbgScalingAdapter, corev1.EventTypeNormal, FailedGetRBGRole,
 			"Failed to get scale target role: %v", getTargetRoleErr,
 		)
-		if rbgScalingAdapter.Status.Phase != workloadsv1alpha1.AdapterPhaseNotBound {
+		if rbgScalingAdapter.Status.Phase != constants.AdapterPhaseNotBound {
 			rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
-				WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false).WithPhase(workloadsv1alpha1.AdapterPhaseNotBound))
+				WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false).WithPhase(constants.AdapterPhaseNotBound))
 			if err := utils.PatchObjectApplyConfiguration(
 				ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 			); err != nil {
@@ -142,7 +143,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	}
 
 	// check scale target exist succeed, init adapter status with phase bound, selector and initial replicas
-	if rbgScalingAdapter.Status.Phase != workloadsv1alpha1.AdapterPhaseBound {
+	if rbgScalingAdapter.Status.Phase != constants.AdapterPhaseBound {
 		spec := ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(rbgScalingAdapter.Spec)
 		if targetRole.Replicas != nil {
 			spec = spec.WithReplicas(*targetRole.Replicas)
@@ -168,7 +169,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		}
 		rbgScalingAdapterStatusApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 			WithStatus(
-				status.WithPhase(workloadsv1alpha1.AdapterPhaseBound).WithSelector(selector),
+				status.WithPhase(constants.AdapterPhaseBound).WithSelector(selector),
 			)
 
 		if err := utils.PatchObjectApplyConfiguration(
@@ -225,8 +226,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 
 func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 	ctx context.Context,
-	rbgScalingAdapter *workloadsv1alpha1.RoleBasedGroupScalingAdapter,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
+	rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	rbgGKV := utils.GetRbgGVK()
 	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).WithOwnerReferences(
@@ -240,7 +241,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchSpec)
 }
 
-func ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter *workloadsv1alpha1.RoleBasedGroupScalingAdapter) *applyconfiguration.RoleBasedGroupScalingAdapterApplyConfiguration {
+func ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter) *applyconfiguration.RoleBasedGroupScalingAdapterApplyConfiguration {
 	if rbgScalingAdapter == nil {
 		return nil
 	}
@@ -252,7 +253,7 @@ func ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter *workloa
 	return rbgScalingAdapterApplyConfig
 }
 
-func ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(spec workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec) *applyconfiguration.RoleBasedGroupScalingAdapterSpecApplyConfiguration {
+func ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(spec workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec) *applyconfiguration.RoleBasedGroupScalingAdapterSpecApplyConfiguration {
 	specApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapterSpec().
 		WithScaleTargetRef(
 			applyconfiguration.AdapterScaleTargetRef().
@@ -265,7 +266,7 @@ func ToRoleBasedGroupScalingAdapterSpecApplyConfiguration(spec workloadsv1alpha1
 	return specApplyConfig
 }
 
-func ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(status workloadsv1alpha1.RoleBasedGroupScalingAdapterStatus, scale bool) *applyconfiguration.RoleBasedGroupScalingAdapterStatusApplyConfiguration {
+func ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(status workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus, scale bool) *applyconfiguration.RoleBasedGroupScalingAdapterStatusApplyConfiguration {
 	statusApplyConfig := applyconfiguration.RoleBasedGroupScalingAdapterStatus().
 		WithPhase(status.Phase).
 		WithSelector(status.Selector)
@@ -285,7 +286,7 @@ func ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(status workloadsv1al
 func (r *RoleBasedGroupScalingAdapterReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
-		For(&workloadsv1alpha1.RoleBasedGroupScalingAdapter{}, builder.WithPredicates(RBGScalingAdapterPredicate())).
+		For(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.WithPredicates(RBGScalingAdapterPredicate())).
 		Named("workloads-rolebasedgroup-scalingadapter").
 		Complete(r)
 }
@@ -307,7 +308,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) CheckCrdExists() error {
 func RBGScalingAdapterPredicate() predicate.Funcs {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			_, ok := e.Object.(*workloadsv1alpha1.RoleBasedGroupScalingAdapter)
+			_, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
 			if ok {
 				ctrl.Log.Info("enqueue: rbg scalingAdapter create event", "rbg", klog.KObj(e.Object))
 				return true
@@ -315,8 +316,8 @@ func RBGScalingAdapterPredicate() predicate.Funcs {
 			return false
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha1.RoleBasedGroupScalingAdapter)
-			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha1.RoleBasedGroupScalingAdapter)
+			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
+			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
 			if ok1 && ok2 {
 				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
 					ctrl.Log.Info("enqueue: rbg scalingAdapter update event", "rbg", klog.KObj(e.ObjectOld))
@@ -326,7 +327,7 @@ func RBGScalingAdapterPredicate() predicate.Funcs {
 			return false
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			_, ok := e.Object.(*workloadsv1alpha1.RoleBasedGroupScalingAdapter)
+			_, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
 			if ok {
 				ctrl.Log.Info("enqueue: rbg scalingAdapter delete event", "rbg", klog.KObj(e.Object))
 				return true
@@ -340,12 +341,12 @@ func RBGScalingAdapterPredicate() predicate.Funcs {
 }
 
 func (r *RoleBasedGroupScalingAdapterReconciler) GetTargetRbgFromAdapter(
-	ctx context.Context, rbgScalingAdapter *workloadsv1alpha1.RoleBasedGroupScalingAdapter,
-) (*workloadsv1alpha1.RoleBasedGroup, error) {
+	ctx context.Context, rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+) (*workloadsv1alpha2.RoleBasedGroup, error) {
 	name := rbgScalingAdapter.Spec.ScaleTargetRef.Name
 	namespace := rbgScalingAdapter.Namespace
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
 	if err := r.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, rbg); err != nil {
 		return nil, err
 	}
@@ -353,7 +354,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) GetTargetRbgFromAdapter(
 }
 
 func (r *RoleBasedGroupScalingAdapterReconciler) updateRoleReplicas(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, targetRoleName string, newReplicas *int32,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, targetRoleName string, newReplicas *int32,
 ) error {
 	return retry.RetryOnConflict(
 		retry.DefaultBackoff, func() error {
@@ -381,7 +382,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) updateRoleReplicas(
 
 // extractLabelSelectorDefault extracts a LabelSelector string from the given role's scale subresource.
 func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
-	rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (string, error) {
 	apiVersion, kind := role.Workload.APIVersion, role.Workload.Kind
 
@@ -425,8 +426,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
 		return "", fmt.Errorf("failed to get selectore field in status: %v", err)
 	}
 
-	if kind == "InstanceSet" && role.LeaderWorkerSet != nil {
-		selectorStr += fmt.Sprintf(",%s=0", workloadsv1alpha1.RBGComponentIndexLabelKey)
+	if kind == "RoleInstanceSet" && role.IsLeaderWorkerPattern() {
+		selectorStr += fmt.Sprintf(",%s=0", constants.RBGComponentIndexLabelKey)
 	}
 
 	return selectorStr, nil

@@ -20,11 +20,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	pub "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 var (
-	ControllerKind              = v1alpha1.SchemeGroupVersion.WithKind("Instance")
+	ControllerKind              = workloadsv1alpha2.SchemeGroupVersion.WithKind("RoleInstance")
 	RevisionAdapterImpl         = &revisionAdapterImpl{}
 	EqualToRevisionHash         = RevisionAdapterImpl.EqualToRevisionHash
 	WriteRevisionHash           = RevisionAdapterImpl.WriteRevisionHash
@@ -57,30 +58,30 @@ func GetShortHash(hash string) string {
 	return list[len(list)-1]
 }
 
-func FormatComponentPodName(instanceName, componentName string, id int32, roleTemplateType v1alpha1.RBGRoleTemplateType) string {
+func FormatComponentPodName(instanceName, componentName string, id int32, roleTemplateType constants.RoleTemplateType) string {
 	switch roleTemplateType {
-	case v1alpha1.LeaderWorkerSetTemplateType:
+	case constants.LeaderWorkerSetTemplateType:
 		podIndex := id
 		if componentName == "worker" {
 			podIndex++
 		}
 		return fmt.Sprintf("%s-%d", instanceName, podIndex)
-	case v1alpha1.ComponentsTemplateType:
+	case constants.ComponentsTemplateType:
 		return fmt.Sprintf("%s-%s-%d", instanceName, componentName, id)
 	default:
 		return instanceName
 	}
 }
 
-func InitComponentPodLabels(instanceName, componentName string, id int32, roleTemplateType v1alpha1.RBGRoleTemplateType) map[string]string {
+func InitComponentPodLabels(instanceName, componentName string, id int32, roleTemplateType constants.RoleTemplateType) map[string]string {
 	l := GetSelectorMatchLabels(instanceName)
-	l[v1alpha1.InstanceComponentNameKey] = componentName
-	l[v1alpha1.InstanceComponentIDKey] = fmt.Sprintf("%d", id)
-	if roleTemplateType == v1alpha1.LeaderWorkerSetTemplateType {
-		l[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id)
+	l[constants.RoleInstanceComponentNameKey] = componentName
+	l[constants.RoleInstanceComponentIDKey] = fmt.Sprintf("%d", id)
+	if roleTemplateType == constants.LeaderWorkerSetTemplateType {
+		l[constants.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id)
 		// when roleTemplateType is LWS, component name will be controlled by RBG-controller
 		if componentName == "worker" {
-			l[v1alpha1.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
+			l[constants.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
 		}
 	}
 
@@ -94,11 +95,11 @@ func IsRunningAndAvailable(pod *v1.Pod, minReadySeconds int32) bool {
 
 func GetSelectorMatchLabels(instanceName string) map[string]string {
 	return map[string]string{
-		v1alpha1.InstanceNameLabelKey: instanceName,
+		constants.RoleInstanceNameLabelKey: instanceName,
 	}
 }
 
-func GetSelector(instance *v1alpha1.Instance) labels.Selector {
+func GetSelector(instance *workloadsv1alpha2.RoleInstance) labels.Selector {
 	matchLabels := GetSelectorMatchLabels(instance.Name)
 	selector := labels.NewSelector()
 	for k, v := range matchLabels {
@@ -141,7 +142,7 @@ func NextRevision(revisions []*apps.ControllerRevision) int64 {
 }
 
 func GetPodComponentName(pod *v1.Pod) string {
-	componentName := pod.Labels[v1alpha1.InstanceComponentNameKey]
+	componentName := pod.Labels[constants.RoleInstanceComponentNameKey]
 	if len(componentName) != 0 {
 		return componentName
 	}
@@ -153,7 +154,7 @@ func GetPodComponentName(pod *v1.Pod) string {
 }
 
 func GetPodComponentID(pod *v1.Pod) int32 {
-	componentId := pod.Labels[v1alpha1.InstanceComponentIDKey]
+	componentId := pod.Labels[constants.RoleInstanceComponentIDKey]
 	if len(componentId) != 0 {
 		id, _ := strconv.Atoi(componentId)
 		return int32(id)
@@ -219,7 +220,7 @@ func IsPodScheduled(pod *v1.Pod) bool {
 	return false
 }
 
-func ContainsReadinessGate(instance *v1alpha1.Instance, gate v1alpha1.InstanceConditionType) bool {
+func ContainsReadinessGate(instance *workloadsv1alpha2.RoleInstance, gate workloadsv1alpha2.RoleInstanceConditionType) bool {
 	for _, readinessGate := range instance.Spec.ReadinessGates {
 		if readinessGate.ConditionType == gate {
 			return true

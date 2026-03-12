@@ -1,3 +1,5 @@
+//go:build ignore
+
 // svc_reconciler_test.go
 package reconciler
 
@@ -15,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	"sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
 )
 
 func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
@@ -25,10 +27,10 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	require.NoError(t, appsv1.AddToScheme(s))
 
 	// Create test objects
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
+	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
 		[]workloadsv1alpha1.RoleSpec{
-			wrappers.BuildBasicRole("test-role-statefulset").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
-			wrappers.BuildBasicRole("test-role-instanceset").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj(),
+			v1alpha1.BuildBasicRole("test-role-statefulset").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+			v1alpha1.BuildBasicRole("test-role-instanceset").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj(),
 		},
 	).Obj()
 

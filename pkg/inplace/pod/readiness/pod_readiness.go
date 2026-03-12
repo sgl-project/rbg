@@ -4,7 +4,7 @@ import (
 	"sort"
 
 	v1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	podadapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	util "sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -31,23 +31,23 @@ type commonControl struct {
 }
 
 func (c *commonControl) GetCondition(pod *v1.Pod) *v1.PodCondition {
-	return getReadinessCondition(pod, v1alpha1.InstancePodReadyConditionType)
+	return getReadinessCondition(pod, constants.InstancePodReadyConditionType)
 }
 
 func (c *commonControl) ContainsReadinessGate(pod *v1.Pod) bool {
-	return containsReadinessGate(pod, v1alpha1.InstancePodReadyConditionType)
+	return containsReadinessGate(pod, constants.InstancePodReadyConditionType)
 }
 
 func (c *commonControl) ContainsNotReadyKey(pod *v1.Pod, msg Message) bool {
-	return alreadyHasKey(pod, msg, v1alpha1.InstancePodReadyConditionType)
+	return alreadyHasKey(pod, msg, constants.InstancePodReadyConditionType)
 }
 
 func (c *commonControl) AddNotReadyKey(pod *v1.Pod, msg Message) (bool, error) {
-	return addNotReadyKey(c.adp, pod, msg, v1alpha1.InstancePodReadyConditionType)
+	return addNotReadyKey(c.adp, pod, msg, constants.InstancePodReadyConditionType)
 }
 
 func (c *commonControl) RemoveNotReadyKey(pod *v1.Pod, msg Message) (bool, error) {
-	return removeNotReadyKey(c.adp, pod, msg, v1alpha1.InstancePodReadyConditionType)
+	return removeNotReadyKey(c.adp, pod, msg, constants.InstancePodReadyConditionType)
 }
 
 type messageList []Message

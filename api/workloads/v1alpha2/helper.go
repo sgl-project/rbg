@@ -264,3 +264,73 @@ func (r *RoleSpec) GetLeaderWorkerSize() *int32 {
 func (r *RoleSpec) HasTemplate() bool {
 	return r.GetTemplate() != nil || r.GetTemplateRef() != nil
 }
+
+// GetDiscoveryConfigMode returns the discovery config mode from annotations.
+func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() constants.DiscoveryConfigMode {
+	if rbg == nil || rbg.Annotations == nil {
+		return ""
+	}
+	return constants.DiscoveryConfigMode(rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey])
+}
+
+// SetDiscoveryConfigMode sets the discovery config mode in annotations.
+func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode constants.DiscoveryConfigMode) {
+	if rbg == nil {
+		return
+	}
+	if rbg.Annotations == nil {
+		rbg.Annotations = make(map[string]string)
+	}
+	rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey] = string(mode)
+}
+
+// ContainsRBGOwner checks if the RoleBasedGroupScalingAdapter has the given RBG as owner.
+func (rbgsa *RoleBasedGroupScalingAdapter) ContainsRBGOwner(rbg *RoleBasedGroup) bool {
+	for _, owner := range rbgsa.OwnerReferences {
+		if owner.UID == rbg.UID {
+			return true
+		}
+	}
+	return false
+}
+
+// HasStatefulRole returns true if the RBG has at least one stateful role.
+func (rbg *RoleBasedGroup) HasStatefulRole() bool {
+	if rbg == nil {
+		return false
+	}
+	for i := range rbg.Spec.Roles {
+		if IsStatefulRole(&rbg.Spec.Roles[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetRoleTemplateType returns the RoleTemplateType for this RoleInstance.
+// In v1alpha2, RoleInstance always uses Components pattern by default.
+func (instance *RoleInstance) GetRoleTemplateType() constants.RoleTemplateType {
+	if t, ok := instance.Labels[constants.RoleTypeLabelKey]; ok {
+		return constants.RoleTemplateType(t)
+	}
+	return constants.ComponentsTemplateType
+}
+
+// IsStatefulRole checks if a role is stateful.
+func IsStatefulRole(role *RoleSpec) bool {
+	if role == nil {
+		return false
+	}
+	switch role.Workload.String() {
+	case constants.DeploymentWorkloadType:
+		return false
+	case constants.StatefulSetWorkloadType, constants.LeaderWorkerSetWorkloadType, "":
+		return true
+	case constants.RoleInstanceSetWorkloadType:
+		pattern := constants.InstancePatternType(role.Annotations[constants.RoleInstancePatternKey])
+		return pattern != constants.StatelessPattern
+	default:
+		// Keep unknown kinds conservative and stateful by default.
+		return true
+	}
+}

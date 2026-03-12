@@ -13,39 +13,39 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestSidecarBuilder_Build(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = v1.AddToScheme(scheme)
 
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha.RoleBasedGroup
-		role          *workloadsv1alpha.RoleSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
 		podSpec       *v1.PodTemplateSpec
 		expectedError bool
 	}{
 		{
 			name:   "role not found",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name: "existing-role",
 						},
 					},
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "non-existent-role",
 			},
 			podSpec:       &v1.PodTemplateSpec{},
@@ -54,20 +54,20 @@ func TestSidecarBuilder_Build(t *testing.T) {
 		{
 			name:   "no engine runtimes",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:           "test-role",
-							EngineRuntimes: []workloadsv1alpha.EngineRuntime{},
+							EngineRuntimes: []workloadsv1alpha2.EngineRuntime{},
 						},
 					},
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
 			podSpec:       &v1.PodTemplateSpec{},
@@ -97,15 +97,15 @@ func TestSidecarBuilder_Build(t *testing.T) {
 func TestSidecarBuilder_injectRuntime(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = v1.AddToScheme(scheme)
 
 	// Create test ClusterEngineRuntimeProfile
-	engineRuntime := &workloadsv1alpha.ClusterEngineRuntimeProfile{
+	engineRuntime := &workloadsv1alpha2.ClusterEngineRuntimeProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-engine",
 		},
-		Spec: workloadsv1alpha.ClusterEngineRuntimeProfileSpec{
+		Spec: workloadsv1alpha2.ClusterEngineRuntimeProfileSpec{
 			InitContainers: []v1.Container{
 				{
 					Name:  "init-container",
@@ -137,22 +137,22 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha.RoleBasedGroup
-		role          *workloadsv1alpha.RoleSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
 		podSpec       *v1.PodTemplateSpec
-		runtime       workloadsv1alpha.EngineRuntime
+		runtime       workloadsv1alpha2.EngineRuntime
 		expectedError bool
 		verifyFunc    func(*testing.T, *v1.PodTemplateSpec)
 	}{
 		{
 			name:   "inject runtime successfully",
 			client: fakeClient,
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
 			podSpec: &v1.PodTemplateSpec{
@@ -167,7 +167,7 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 					Volumes: []v1.Volume{},
 				},
 			},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "test-engine",
 				Containers:  []v1.Container{},
 			},
@@ -192,16 +192,16 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 		{
 			name:   "runtime not found",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
 			podSpec: &v1.PodTemplateSpec{},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "non-existent-engine",
 			},
 			expectedError: true,
@@ -210,12 +210,12 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 		{
 			name:   "override container env and args",
 			client: fakeClient,
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
 			podSpec: &v1.PodTemplateSpec{
@@ -228,7 +228,7 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 					},
 				},
 			},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "test-engine",
 				Containers: []v1.Container{
 					{
@@ -269,12 +269,12 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 		{
 			name:   "override non-existent container",
 			client: fakeClient,
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-rbg",
 				},
 			},
-			role: &workloadsv1alpha.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name: "test-role",
 			},
 			podSpec: &v1.PodTemplateSpec{
@@ -287,7 +287,7 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 					},
 				},
 			},
-			runtime: workloadsv1alpha.EngineRuntime{
+			runtime: workloadsv1alpha2.EngineRuntime{
 				ProfileName: "test-engine",
 				Containers: []v1.Container{
 					{
@@ -340,12 +340,12 @@ func TestSidecarBuilder_injectRuntime(t *testing.T) {
 func TestNewSidecarBuilder(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = v1.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	rbg := &workloadsv1alpha.RoleBasedGroup{}
-	role := &workloadsv1alpha.RoleSpec{}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	role := &workloadsv1alpha2.RoleSpec{}
 
 	builder := NewSidecarBuilder(client, rbg, role)
 	assert.NotEmpty(t, builder, "NewSidecarBuilder() should not return nil")

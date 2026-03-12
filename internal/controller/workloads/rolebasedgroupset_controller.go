@@ -37,7 +37,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -69,7 +70,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	logger.Info("Start to reconcile rbgset")
 
 	// 1. Fetch the RoleBasedGroupSet instance.
-	rbgset := &workloadsv1alpha1.RoleBasedGroupSet{}
+	rbgset := &workloadsv1alpha2.RoleBasedGroupSet{}
 	if err := r.client.Get(ctx, req.NamespacedName, rbgset); err != nil {
 		// Ignore not-found errors, which can happen after an object has been deleted.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -81,8 +82,8 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// 2. List all child RoleBasedGroup instances currently associated with this RoleBasedGroupSet.
-	var rbglist workloadsv1alpha1.RoleBasedGroupList
-	selector, _ := labels.Parse(fmt.Sprintf("%s=%s", workloadsv1alpha1.SetRBGSetNameLabelKey, rbgset.Name))
+	var rbglist workloadsv1alpha2.RoleBasedGroupList
+	selector, _ := labels.Parse(fmt.Sprintf("%s=%s", constants.GroupSetNameLabelKey, rbgset.Name))
 	if err := r.client.List(
 		ctx, &rbglist, client.InNamespace(rbgset.Namespace), client.MatchingLabelsSelector{Selector: selector},
 	); err != nil {
@@ -92,11 +93,11 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// 3. Calculate the difference between the desired state and the current state to determine which RBGs to create or delete.
 	// Map existing RBGs by their index label for efficient lookup.
-	existingRBGs := make(map[int]*workloadsv1alpha1.RoleBasedGroup)
-	var rbgsToDelete []*workloadsv1alpha1.RoleBasedGroup
+	existingRBGs := make(map[int]*workloadsv1alpha2.RoleBasedGroup)
+	var rbgsToDelete []*workloadsv1alpha2.RoleBasedGroup
 	for i := range rbglist.Items {
 		rbg := &rbglist.Items[i]
-		indexStr, ok := rbg.Labels[workloadsv1alpha1.SetRBGIndexLabelKey]
+		indexStr, ok := rbg.Labels[constants.GroupSetIndexLabelKey]
 		if !ok {
 			logger.Info("Found RoleBasedGroup with missing index label, marking for deletion", "rbgName", rbg.Name)
 			rbgsToDelete = append(rbgsToDelete, rbg)
@@ -114,7 +115,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	desiredReplicas := int(*rbgset.Spec.Replicas)
-	var rbgsToCreate []*workloadsv1alpha1.RoleBasedGroup
+	var rbgsToCreate []*workloadsv1alpha2.RoleBasedGroup
 
 	// Determine which RBGs need to be created.
 	for i := 0; i < desiredReplicas; i++ {
@@ -151,7 +152,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Check for updates needed on existing RBGs that won't be deleted
-	var rbgsToUpdate []*workloadsv1alpha1.RoleBasedGroup
+	var rbgsToUpdate []*workloadsv1alpha2.RoleBasedGroup
 	for _, rbg := range existingRBGs {
 		// Skip RBGs that are being deleted
 		if rbgsToDeleteMap[rbg.Name] {
@@ -203,7 +204,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // scaleUp concurrently creates a given set of RoleBasedGroup instances.
 func (r *RoleBasedGroupSetReconciler) scaleUp(
-	ctx context.Context, rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbgsToCreate []*workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbgsToCreate []*workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	// TODO: we need to enhance it by following the way:
@@ -217,7 +218,7 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 		}
 
 		// Already created not need to continue
-		got := &workloadsv1alpha1.RoleBasedGroup{}
+		got := &workloadsv1alpha2.RoleBasedGroup{}
 		if err := r.client.Get(
 			ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, got,
 		); err == nil {
@@ -244,7 +245,7 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 
 // scaleDown concurrently deletes a given set of RoleBasedGroup instances.
 func (r *RoleBasedGroupSetReconciler) scaleDown(
-	ctx context.Context, rbgsToDelete []*workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbgsToDelete []*workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	allErrs := make([]error, 0, len(rbgsToDelete))
@@ -264,7 +265,7 @@ func (r *RoleBasedGroupSetReconciler) scaleDown(
 
 // updateStatus updates the status of the RoleBasedGroupSet.
 func (r *RoleBasedGroupSetReconciler) updateStatus(
-	ctx context.Context, rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbglist *workloadsv1alpha1.RoleBasedGroupList,
+	ctx context.Context, rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbglist *workloadsv1alpha2.RoleBasedGroupList,
 ) error {
 	logger := log.FromContext(ctx)
 
@@ -275,7 +276,7 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 	// Calculate the number of ready replicas.
 	readyReplicas := 0
 	for _, rbg := range rbglist.Items {
-		if meta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha1.RoleBasedGroupReady)) {
+		if meta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)) {
 			readyReplicas++
 		}
 	}
@@ -286,7 +287,7 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 	var condition metav1.Condition
 	if newStatus.ReadyReplicas >= desiredReplicas {
 		condition = metav1.Condition{
-			Type:               string(workloadsv1alpha1.RoleBasedGroupSetReady),
+			Type:               string(workloadsv1alpha2.RoleBasedGroupSetReady),
 			Status:             metav1.ConditionTrue,
 			Reason:             "AllReplicasReady",
 			Message:            "All RoleBasedGroup replicas are ready.",
@@ -294,7 +295,7 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 		}
 	} else {
 		condition = metav1.Condition{
-			Type:   string(workloadsv1alpha1.RoleBasedGroupSetReady),
+			Type:   string(workloadsv1alpha2.RoleBasedGroupSetReady),
 			Status: metav1.ConditionFalse,
 			Reason: "ReplicasNotReady",
 			Message: fmt.Sprintf(
@@ -315,7 +316,7 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 	return retry.RetryOnConflict(
 		retry.DefaultRetry, func() error {
 			// On each retry, get the latest version of the rbgset object.
-			latestRBGSet := &workloadsv1alpha1.RoleBasedGroupSet{}
+			latestRBGSet := &workloadsv1alpha2.RoleBasedGroupSet{}
 			if err := r.client.Get(
 				ctx, types.NamespacedName{Name: rbgset.Name, Namespace: rbgset.Namespace}, latestRBGSet,
 			); err != nil {
@@ -339,15 +340,15 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 
 // rolesEqual compares two role slices by sorting them by name first.
 func (r *RoleBasedGroupSetReconciler) rolesEqual(
-	roles1, roles2 []workloadsv1alpha1.RoleSpec,
+	roles1, roles2 []workloadsv1alpha2.RoleSpec,
 ) bool {
 	if len(roles1) != len(roles2) {
 		return false
 	}
 
 	// Create copies to avoid modifying the original slices
-	sortedRoles1 := make([]workloadsv1alpha1.RoleSpec, len(roles1))
-	sortedRoles2 := make([]workloadsv1alpha1.RoleSpec, len(roles2))
+	sortedRoles1 := make([]workloadsv1alpha2.RoleSpec, len(roles1))
+	sortedRoles2 := make([]workloadsv1alpha2.RoleSpec, len(roles2))
 	copy(sortedRoles1, roles1)
 	copy(sortedRoles2, roles2)
 
@@ -369,20 +370,10 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 
 // needsUpdate checks if a child RBG needs to be updated based on changes in the parent RBGSet.
 func (r *RoleBasedGroupSetReconciler) needsUpdate(
-	rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbg *workloadsv1alpha1.RoleBasedGroup,
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
 	// Check if the template spec has changed using order-insensitive comparison
 	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.Template.Roles) {
-		return true
-	}
-
-	// Check if CoordinationRequirements have changed
-	if !reflect.DeepEqual(rbg.Spec.CoordinationRequirements, rbgset.Spec.Template.CoordinationRequirements) {
-		return true
-	}
-
-	// Check if PodGroupPolicy have changed
-	if !reflect.DeepEqual(rbg.Spec.PodGroupPolicy, rbgset.Spec.Template.PodGroupPolicy) {
 		return true
 	}
 
@@ -392,11 +383,11 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 
 // needsAnnotationUpdate checks if RBG annotations need to be updated to match RBGSet annotations.
 func (r *RoleBasedGroupSetReconciler) needsAnnotationUpdate(
-	rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbg *workloadsv1alpha1.RoleBasedGroup,
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
 	// Check exclusive topology annotation
-	setExclusiveKey, setHasExclusive := rbgset.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey]
-	rbgExclusiveKey, rbgHasExclusive := rbg.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey]
+	setExclusiveKey, setHasExclusive := rbgset.Annotations[constants.GroupExclusiveTopologyKey]
+	rbgExclusiveKey, rbgHasExclusive := rbg.Annotations[constants.GroupExclusiveTopologyKey]
 
 	// If RBGSet has the annotation but RBG doesn't, or they have different values
 	if setHasExclusive {
@@ -414,7 +405,7 @@ func (r *RoleBasedGroupSetReconciler) needsAnnotationUpdate(
 
 // updateExistingRBGs updates existing RoleBasedGroup instances to match the current template.
 func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
-	ctx context.Context, rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbgsToUpdate []*workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbgsToUpdate []*workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	allErrs := make([]error, 0, len(rbgsToUpdate))
@@ -425,7 +416,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 		err := retry.RetryOnConflict(
 			retry.DefaultRetry, func() error {
 				// Get the latest version of the RBG
-				latestRBG := &workloadsv1alpha1.RoleBasedGroup{}
+				latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
 				if err := r.client.Get(
 					ctx, types.NamespacedName{
 						Name:      rbg.Name,
@@ -437,8 +428,6 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 
 				// Update the spec from template
 				latestRBG.Spec.Roles = rbgset.Spec.Template.Roles
-				latestRBG.Spec.CoordinationRequirements = rbgset.Spec.Template.CoordinationRequirements
-				latestRBG.Spec.PodGroupPolicy = rbgset.Spec.Template.PodGroupPolicy
 
 				// Update annotations
 				r.updateRBGAnnotations(rbgset, latestRBG)
@@ -463,45 +452,43 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 
 // updateRBGAnnotations updates the RBG annotations to match the RBGSet annotations.
 func (r *RoleBasedGroupSetReconciler) updateRBGAnnotations(
-	rbgset *workloadsv1alpha1.RoleBasedGroupSet, rbg *workloadsv1alpha1.RoleBasedGroup,
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) {
 	if rbg.Annotations == nil {
 		rbg.Annotations = make(map[string]string)
 	}
 
 	// Handle exclusive topology annotation
-	if exclusiveKey, found := rbgset.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey]; found {
-		rbg.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = exclusiveKey
+	if exclusiveKey, found := rbgset.Annotations[constants.GroupExclusiveTopologyKey]; found {
+		rbg.Annotations[constants.GroupExclusiveTopologyKey] = exclusiveKey
 	} else {
 		// Remove the annotation if it exists in RBG but not in RBGSet
-		delete(rbg.Annotations, workloadsv1alpha1.ExclusiveKeyAnnotationKey)
+		delete(rbg.Annotations, constants.GroupExclusiveTopologyKey)
 	}
 }
 
 // newRBGForSet creates a new RoleBasedGroup object based on the set's template.
-func newRBGForSet(rbgset *workloadsv1alpha1.RoleBasedGroupSet, index int) *workloadsv1alpha1.RoleBasedGroup {
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workloadsv1alpha2.RoleBasedGroup {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: rbgset.Namespace,
 			Name:      fmt.Sprintf("%s-%d", rbgset.Name, index),
 			Labels: map[string]string{
-				workloadsv1alpha1.SetRBGSetNameLabelKey: rbgset.Name,
-				workloadsv1alpha1.SetRBGIndexLabelKey:   fmt.Sprintf("%d", index),
+				constants.GroupSetNameLabelKey:  rbgset.Name,
+				constants.GroupSetIndexLabelKey: fmt.Sprintf("%d", index),
 			},
 			// The OwnerReference will be set in the scaleUp function.
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			PodGroupPolicy:           rbgset.Spec.Template.PodGroupPolicy,
-			Roles:                    rbgset.Spec.Template.Roles,
-			CoordinationRequirements: rbgset.Spec.Template.CoordinationRequirements,
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: rbgset.Spec.Template.Roles,
 		},
 	}
 	// Copy annotations from RBGSet to child RBG
-	if exclusiveKey, found := rbgset.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey]; found {
+	if exclusiveKey, found := rbgset.Annotations[constants.GroupExclusiveTopologyKey]; found {
 		if rbg.Annotations == nil {
 			rbg.Annotations = make(map[string]string)
 		}
-		rbg.Annotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = exclusiveKey
+		rbg.Annotations[constants.GroupExclusiveTopologyKey] = exclusiveKey
 	}
 
 	return rbg
@@ -511,8 +498,8 @@ func newRBGForSet(rbgset *workloadsv1alpha1.RoleBasedGroupSet, index int) *workl
 func (r *RoleBasedGroupSetReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
-		For(&workloadsv1alpha1.RoleBasedGroupSet{}).
-		Owns(&workloadsv1alpha1.RoleBasedGroup{}).
+		For(&workloadsv1alpha2.RoleBasedGroupSet{}).
+		Owns(&workloadsv1alpha2.RoleBasedGroup{}).
 		Named("rbgset-controller").
 		Complete(r)
 }

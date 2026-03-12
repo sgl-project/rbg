@@ -20,7 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 const (
@@ -82,8 +83,8 @@ func EqualRevision(lhs, rhs *appsv1.ControllerRevision) bool {
 // Note: The ControllerRevision does not store the actual Role replica counts. After deserialization, the replica counts from the current RBG Roles are used.
 // If a Role from the historical ControllerRevision does not exist in the current RBG, its replica count will default to 1.
 func ApplyRevision(
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	revision *appsv1.ControllerRevision) (*workloadsv1alpha1.RoleBasedGroup, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	revision *appsv1.ControllerRevision) (*workloadsv1alpha2.RoleBasedGroup, error) {
 	currentRolesReplicas := make(map[string]int32)
 	for _, role := range rbg.Spec.Roles {
 		currentRolesReplicas[role.Name] = *role.Replicas
@@ -97,7 +98,7 @@ func ApplyRevision(
 	if err != nil {
 		return nil, err
 	}
-	restoredRbg := &workloadsv1alpha1.RoleBasedGroup{}
+	restoredRbg := &workloadsv1alpha2.RoleBasedGroup{}
 	if err = json.Unmarshal(patched, restoredRbg); err != nil {
 		return nil, err
 	}
@@ -115,10 +116,10 @@ func ApplyRevision(
 
 func CleanExpiredRevision(
 	ctx context.Context, client client.Client,
-	rbg *workloadsv1alpha1.RoleBasedGroup) ([]*appsv1.ControllerRevision, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup) ([]*appsv1.ControllerRevision, error) {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			constants.GroupNameLabelKey: rbg.Name,
 		},
 	})
 	if err != nil {
@@ -159,7 +160,7 @@ func CleanExpiredRevision(
 }
 
 func NewRevision(ctx context.Context, client client.Client,
-	rbg *workloadsv1alpha1.RoleBasedGroup, currentRevision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup, currentRevision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	revision := int64(1)
 	if currentRevision != nil {
 		revision = currentRevision.Revision + 1
@@ -174,7 +175,7 @@ func NewRevision(ctx context.Context, client client.Client,
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: rbg.Namespace,
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				constants.GroupNameLabelKey: rbg.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(rbg, rbg.GroupVersionKind()),
@@ -190,7 +191,7 @@ func NewRevision(ctx context.Context, client client.Client,
 	if err != nil {
 		return nil, err
 	}
-	cr.Labels[workloadsv1alpha1.RevisionLabelKey] = rgbHash
+	cr.Labels[constants.GroupRevisionLabelKey] = rgbHash
 	cr.Name = revisionName(rbg.Name, rgbHash, revision)
 	return cr, nil
 }
@@ -276,7 +277,20 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 			hf.Write(roleBytes)
 		}
 
-		if templateRef, ok := roleMap["templateRef"].(map[string]interface{}); ok {
+		// Look for templateRef in v1alpha2 paths (Pattern and TemplateSource are inline):
+		// - standalonePattern.templateRef
+		// - leaderWorkerPattern.templateRef
+		var templateRef map[string]interface{}
+		if sp, ok := roleMap["standalonePattern"].(map[string]interface{}); ok {
+			templateRef, _ = sp["templateRef"].(map[string]interface{})
+		}
+		if templateRef == nil {
+			if lw, ok := roleMap["leaderWorkerPattern"].(map[string]interface{}); ok {
+				templateRef, _ = lw["templateRef"].(map[string]interface{})
+			}
+		}
+
+		if templateRef != nil {
 			if templateName, ok := templateRef["name"].(string); ok && templateName != "" {
 				template, found := templateLookup[templateName]
 				if !found {
@@ -303,7 +317,7 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 // previous version.
 // Note: This approach creates a copy of the original RBG object before performing the serialization.
 // In the serialized output, the replica count for each role will be set to the default value of 1.
-func getRBGPatch(rbg *workloadsv1alpha1.RoleBasedGroup) ([]byte, error) {
+func getRBGPatch(rbg *workloadsv1alpha2.RoleBasedGroup) ([]byte, error) {
 	clone := rbg.DeepCopy()
 	for i := range clone.Spec.Roles {
 		clone.Spec.Roles[i].Replicas = nil

@@ -11,12 +11,12 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
-func (c *realControl) Update(ctx context.Context, instance *v1alpha1.Instance, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error) {
+func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error) {
 	logger := log.FromContext(ctx)
 	requeueDuration := requeueduration.Duration{}
 	coreControl := instancecore.New(instance)
@@ -46,7 +46,7 @@ func (c *realControl) Update(ctx context.Context, instance *v1alpha1.Instance, _
 	return requeueDuration.Get(), nil
 }
 
-func (c *realControl) updatePod(ctx context.Context, instance *v1alpha1.Instance,
+func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance,
 	updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pod *v1.Pod) (time.Duration, error) {
 	logger := log.FromContext(ctx)
 	var oldRevision *apps.ControllerRevision

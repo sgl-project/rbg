@@ -16782,7 +16782,7 @@ spec:
             type: object
         type: object
     served: true
-    storage: true
+    storage: false
     subresources:
       scale:
         specReplicasPath: .spec.replicas
@@ -40979,8 +40979,8 @@ spec:
                             rule: '!(has(self.template) && has(self.templateRef))'
                         workload:
                           default:
-                            apiVersion: workloads.x-k8s.io/v1alpha1
-                            kind: InstanceSet
+                            apiVersion: workloads.x-k8s.io/v1alpha2
+                            kind: RoleInstanceSet
                           description: |-
                             Workload type specification
                             Deprecated: This field is deprecated and will be removed in future versions.
@@ -41082,7 +41082,7 @@ spec:
             type: object
         type: object
     served: true
-    storage: false
+    storage: true
     subresources:
       scale:
         specReplicasPath: .spec.replicas

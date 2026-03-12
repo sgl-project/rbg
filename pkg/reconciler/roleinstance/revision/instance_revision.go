@@ -8,19 +8,19 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/kubernetes/pkg/controller/history"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned/scheme"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
 var (
-	patchCodec = scheme.Codecs.LegacyCodec(v1alpha1.SchemeGroupVersion)
+	patchCodec = scheme.Codecs.LegacyCodec(workloadsv1alpha2.SchemeGroupVersion)
 )
 
 type Interface interface {
-	NewRevision(instance *v1alpha1.Instance, revision int64, collisionCount *int32) (*apps.ControllerRevision, error)
-	ApplyRevision(instance *v1alpha1.Instance, revision *apps.ControllerRevision) (*v1alpha1.Instance, error)
+	NewRevision(instance *workloadsv1alpha2.RoleInstance, revision int64, collisionCount *int32) (*apps.ControllerRevision, error)
+	ApplyRevision(instance *workloadsv1alpha2.RoleInstance, revision *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstance, error)
 }
 
 // NewRevisionControl create a normal revision control.
@@ -31,7 +31,7 @@ func NewRevisionControl() Interface {
 type realControl struct {
 }
 
-func (c *realControl) NewRevision(instance *v1alpha1.Instance, revision int64, collisionCount *int32) (*apps.ControllerRevision, error) {
+func (c *realControl) NewRevision(instance *workloadsv1alpha2.RoleInstance, revision int64, collisionCount *int32) (*apps.ControllerRevision, error) {
 	coreControl := instancecore.New(instance)
 	patch, err := c.buildPatch(instance, coreControl)
 	if err != nil {
@@ -56,7 +56,7 @@ func (c *realControl) NewRevision(instance *v1alpha1.Instance, revision int64, c
 	return cr, nil
 }
 
-func (c *realControl) ApplyRevision(instance *v1alpha1.Instance, revision *apps.ControllerRevision) (*v1alpha1.Instance, error) {
+func (c *realControl) ApplyRevision(instance *workloadsv1alpha2.RoleInstance, revision *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstance, error) {
 	clone := instance.DeepCopy()
 	cloneBytes, err := runtime.Encode(patchCodec, clone)
 	if err != nil {
@@ -70,7 +70,7 @@ func (c *realControl) ApplyRevision(instance *v1alpha1.Instance, revision *apps.
 	return coreControl.ApplyRevisionPatch(patched)
 }
 
-func (c *realControl) buildPatch(instance *v1alpha1.Instance, coreControl instancecore.Control) ([]byte, error) {
+func (c *realControl) buildPatch(instance *workloadsv1alpha2.RoleInstance, coreControl instancecore.Control) ([]byte, error) {
 	str, err := runtime.Encode(patchCodec, instance)
 	if err != nil {
 		return nil, err

@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -28,7 +28,7 @@ var (
 
 type Control interface {
 	SetRevisionTemplate(revisionSpec map[string]interface{}, componentTemplates []interface{})
-	ApplyRevisionPatch(patched []byte) (*v1alpha1.Instance, error)
+	ApplyRevisionPatch(patched []byte) (*workloadsv1alpha2.RoleInstance, error)
 
 	GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopology, error)
 	NewUpdatePods(updateVersion string, componentName string, availableIDs []int32) ([]*v1.Pod, error)
@@ -37,14 +37,14 @@ type Control interface {
 	IsPodUpdateReady(pod *v1.Pod, minReadySeconds int32) bool
 }
 
-func New(instance *v1alpha1.Instance) Control {
+func New(instance *workloadsv1alpha2.RoleInstance) Control {
 	return &commonControl{
-		Instance: instance,
+		RoleInstance: instance,
 	}
 }
 
 type commonControl struct {
-	*v1alpha1.Instance
+	*workloadsv1alpha2.RoleInstance
 }
 
 func (c *commonControl) SetRevisionTemplate(revisionSpec map[string]interface{}, componentTemplates []interface{}) {
@@ -69,8 +69,8 @@ func (c *commonControl) SetRevisionTemplate(revisionSpec map[string]interface{},
 	revisionSpec["components"] = componentTemplates
 }
 
-func (c *commonControl) ApplyRevisionPatch(patched []byte) (*v1alpha1.Instance, error) {
-	restoreInstance := new(v1alpha1.Instance)
+func (c *commonControl) ApplyRevisionPatch(patched []byte) (*workloadsv1alpha2.RoleInstance, error) {
+	restoreInstance := new(workloadsv1alpha2.RoleInstance)
 	if err := json.Unmarshal(patched, restoreInstance); err != nil {
 		return nil, err
 	}
@@ -82,8 +82,8 @@ func (c *commonControl) GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopolo
 		Components: sets.New[string](),
 	}
 	componentGroup := instanceutil.GroupPodsByComponentName(pods)
-	for i := range c.Instance.Spec.Components {
-		component := c.Instance.Spec.Components[i]
+	for i := range c.RoleInstance.Spec.Components {
+		component := c.RoleInstance.Spec.Components[i]
 		if component.Size == nil {
 			return nil, fmt.Errorf("component %s'size is empty", component.Name)
 		}
@@ -97,14 +97,14 @@ func (c *commonControl) GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopolo
 }
 
 func (c *commonControl) NewUpdatePods(updateVersion string, componentName string, availableIDs []int32) ([]*v1.Pod, error) {
-	var component *v1alpha1.InstanceComponent
-	for i := range c.Instance.Spec.Components {
+	var component *workloadsv1alpha2.RoleInstanceComponent
+	for i := range c.RoleInstance.Spec.Components {
 		if c.Spec.Components[i].Name == componentName {
 			component = &c.Spec.Components[i]
 			break
 		}
 	}
-	instance := c.Instance
+	instance := c.RoleInstance
 	newPods := make([]*v1.Pod, 0, len(availableIDs))
 	for _, id := range availableIDs {
 		pod, _ := kubecontroller.GetPodFromTemplate(&component.Template, instance,
@@ -135,7 +135,7 @@ func (c *commonControl) NewUpdatePods(updateVersion string, componentName string
 	return newPods, nil
 }
 
-func (c *commonControl) setComponentPodIdentity(component *v1alpha1.InstanceComponent, pod *v1.Pod) {
+func (c *commonControl) setComponentPodIdentity(component *workloadsv1alpha2.RoleInstanceComponent, pod *v1.Pod) {
 	if len(component.ServiceName) == 0 {
 		return
 	}
@@ -166,7 +166,7 @@ type ComponentsTopology struct {
 }
 
 type ComponentPodGroup struct {
-	*v1alpha1.InstanceComponent
+	*workloadsv1alpha2.RoleInstanceComponent
 
 	DesiredReplicas int32
 	ExistIDs        sets.Set[int32]
@@ -177,7 +177,7 @@ type ComponentPodGroup struct {
 	Pods        []*v1.Pod
 }
 
-func newComponentPodGroup(component *v1alpha1.InstanceComponent, pods []*v1.Pod) ComponentPodGroup {
+func newComponentPodGroup(component *workloadsv1alpha2.RoleInstanceComponent, pods []*v1.Pod) ComponentPodGroup {
 	desiredReplicas := *component.Size
 	var existIDs, toDeleteIDs, toScaleIDs = sets.New[int32](), sets.New[int32](), sets.New[int32]()
 	for _, pod := range pods {
@@ -203,13 +203,13 @@ func newComponentPodGroup(component *v1alpha1.InstanceComponent, pods []*v1.Pod)
 		toScaleIDs.Insert(int32(i))
 	}
 	podTopology := ComponentPodGroup{
-		InstanceComponent: component,
-		DesiredReplicas:   desiredReplicas,
-		Pods:              pods,
-		ExistIDs:          existIDs,
-		ToDeleteIDs:       toDeleteIDs,
-		ToScaleIDs:        toScaleIDs,
-		ToDeletePod:       toDeletePods,
+		RoleInstanceComponent: component,
+		DesiredReplicas:       desiredReplicas,
+		Pods:                  pods,
+		ExistIDs:              existIDs,
+		ToDeleteIDs:           toDeleteIDs,
+		ToScaleIDs:            toScaleIDs,
+		ToDeletePod:           toDeletePods,
 	}
 	return podTopology
 }

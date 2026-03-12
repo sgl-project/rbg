@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -25,8 +25,8 @@ func NewDefaultDependencyManager(scheme *runtime.Scheme, client client.Client) *
 }
 
 func (m *DefaultDependencyManager) SortRoles(
-	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup,
-) ([][]*workloadsv1alpha.RoleSpec, error) {
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
+) ([][]*workloadsv1alpha2.RoleSpec, error) {
 	logger := log.FromContext(ctx)
 	if len(rbg.Spec.Roles) == 0 {
 		logger.Info("warning: rbg has no roles, skip")
@@ -59,9 +59,9 @@ func (m *DefaultDependencyManager) SortRoles(
 	}
 	logger.V(1).Info("roleOrder", "roleOrder", roleOrder)
 
-	ret := make([][]*workloadsv1alpha.RoleSpec, len(roleOrder))
+	ret := make([][]*workloadsv1alpha2.RoleSpec, len(roleOrder))
 	for order, roles := range roleOrder {
-		ret[order] = make([]*workloadsv1alpha.RoleSpec, 0, len(roles))
+		ret[order] = make([]*workloadsv1alpha2.RoleSpec, 0, len(roles))
 		for _, roleName := range roles {
 			for i := range rbg.Spec.Roles {
 				if rbg.Spec.Roles[i].Name == roleName {
@@ -76,7 +76,7 @@ func (m *DefaultDependencyManager) SortRoles(
 }
 
 func (m *DefaultDependencyManager) CheckDependencyReady(
-	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (bool, error) {
 
 	for _, dep := range role.Dependencies {

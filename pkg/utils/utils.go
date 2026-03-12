@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,11 +14,15 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const (
 	FieldManager = "rbg"
+	// PodControllerFieldManager is used by the pod controller to manage conditions it owns
+	// (e.g. RestartInProgress). A separate field manager ensures the RBG controller's SSA
+	// patches (Force=true, FieldManager="rbg") cannot overwrite conditions owned here.
+	PodControllerFieldManager = "rbg-pod-controller"
 
 	PatchAll    PatchType = "all"
 	PatchSpec   PatchType = "spec"
@@ -83,6 +86,36 @@ func PatchObjectApplyConfiguration(
 	return nil
 }
 
+// PatchStatusWithFieldManager patches the status sub-resource using Server-Side Apply with the
+// given field manager and Force=true.
+func PatchStatusWithFieldManager(
+	ctx context.Context, k8sClient client.Client,
+	objApplyConfig interface{}, fieldManager string,
+) error {
+	logger := log.FromContext(ctx)
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(objApplyConfig)
+	if err != nil {
+		logger.Error(err, "Converting obj apply configuration to json.")
+		return err
+	}
+	patch := &unstructured.Unstructured{Object: obj}
+	logger.V(1).Info("patch content", "patchObject", patch.Object)
+	err = k8sClient.Status().Patch(
+		ctx, patch, client.Apply,
+		&client.SubResourcePatchOptions{
+			PatchOptions: client.PatchOptions{
+				FieldManager: fieldManager,
+				Force:        ptr.To[bool](true),
+			},
+		},
+	)
+	if err != nil {
+		logger.Error(err, "Using server side apply to patch object status")
+		return err
+	}
+	return nil
+}
+
 // CalculatePartitionReplicas returns absolute value of partition for workload. This func can solve some
 // corner cases about percentage-type partition, such as:
 // - if partition > "0%" and replicas > 0, we will ensure at least 1 old pod is reserved.
@@ -112,10 +145,14 @@ func CalculatePartitionReplicas(partition *intstrutil.IntOrString, replicasPoint
 	return pValue, nil
 }
 
-func GetRoleReplicas(rbg *v1alpha1.RoleBasedGroup, roleName string) int32 {
+// GetRoleReplicasV2 returns the replicas for a role from a v1alpha2 RoleBasedGroup.
+func GetRoleReplicasV2(rbg *v1alpha2.RoleBasedGroup, roleName string) int32 {
 	for _, role := range rbg.Spec.Roles {
 		if role.Name == roleName {
-			return *role.Replicas
+			if role.Replicas != nil {
+				return *role.Replicas
+			}
+			return 1 // default replicas
 		}
 	}
 	return 0
@@ -129,20 +166,6 @@ func ParseIntStrAsNonZero(p intstrutil.IntOrString, replicas int32) (int32, erro
 		value = 1
 	}
 	return int32(value), nil
-}
-
-func RoleInMaxSkewCoordination(rbg *v1alpha1.RoleBasedGroup, role string) bool {
-	for _, coordination := range rbg.Spec.CoordinationRequirements {
-		if !slices.Contains(coordination.Roles, role) {
-			continue
-		}
-		if coordination.Strategy != nil &&
-			coordination.Strategy.RollingUpdate != nil &&
-			coordination.Strategy.RollingUpdate.MaxSkew != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func ABSFloat64(x float64) float64 {
@@ -224,4 +247,11 @@ func NonZeroValue(value int32) int32 {
 		return 0
 	}
 	return value
+}
+
+// RoleInMaxSkewCoordinationV2 checks if the given role is part of a MaxSkew coordination
+// in v1alpha2. In v1alpha2, coordination rules are managed via separate CoordinatedPolicy
+// resources, not embedded in the RoleBasedGroup spec, so this always returns false.
+func RoleInMaxSkewCoordinationV2(_ *v1alpha2.RoleBasedGroup, _ string) bool {
+	return false
 }

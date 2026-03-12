@@ -19,21 +19,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").Obj()
-	rollingRole := wrappers.BuildBasicRole("test-role").WithReplicas(4).
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
+	rollingRole := wrappersv2.BuildStandaloneRole("test-role").WithReplicas(4).WithWorkload("apps/v1", "StatefulSet").
 		WithRollingUpdate(
-			workloadsv1alpha1.RollingUpdate{
+			workloadsv1alpha2.RollingUpdate{
 				MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 				MaxSurge:       ptr.To(intstr.FromInt32(2)),
 				Partition:      ptr.To(intstr.FromInt32(1)),
@@ -42,8 +43,8 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		rbg       *workloadsv1alpha1.RoleBasedGroup
-		role      *workloadsv1alpha1.RoleSpec
+		rbg       *workloadsv1alpha2.RoleBasedGroup
+		role      *workloadsv1alpha2.RoleSpec
 		expectErr bool
 	}{
 		{
@@ -59,9 +60,12 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name:      "rbg name start with numeric",
-			rbg:       wrappers.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
-			role:      &role,
+			name: "rbg name start with numeric",
+			rbg:  wrappersv2.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
+			role: func() *workloadsv1alpha2.RoleSpec {
+				r := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
+				return &r
+			}(),
 			expectErr: false,
 		},
 	}
@@ -93,7 +97,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					)
 					assert.NoError(t, err)
 					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), sts.Name)
-					assert.Equal(t, expectedRevisionHash, sts.Labels[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, tt.role.Name)])
+					assert.Equal(t, expectedRevisionHash, sts.Labels[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, tt.role.Name)])
 
 					// Check if Service was created
 					svc := &corev1.Service{}
@@ -114,15 +118,15 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
 
 	tests := []struct {
 		name        string
-		rbg         *workloadsv1alpha1.RoleBasedGroup
-		role        *workloadsv1alpha1.RoleSpec
+		rbg         *workloadsv1alpha2.RoleBasedGroup
+		role        *workloadsv1alpha2.RoleSpec
 		sts         *appsv1.StatefulSet
 		expectReady bool
 		expectErr   bool
@@ -205,20 +209,20 @@ func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
 	stsOwned := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg-worker",
 			Namespace: "default",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					APIVersion: workloadsv1alpha2.GroupVersion.String(),
 					Kind:       "RoleBasedGroup",
 					Name:       "test-rbg",
 					UID:        rbg.UID,
@@ -233,11 +237,11 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 			Name:      "test-rbg-orphaned",
 			Namespace: "default",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					APIVersion: workloadsv1alpha2.GroupVersion.String(),
 					Kind:       "RoleBasedGroup",
 					Name:       "test-rbg",
 					UID:        rbg.UID,
@@ -252,11 +256,11 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 			Name:      "other-rbg-worker",
 			Namespace: "default",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "other-rbg",
+				constants.GroupNameLabelKey: "other-rbg",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					APIVersion: workloadsv1alpha2.GroupVersion.String(),
 					Kind:       "RoleBasedGroup",
 					Name:       "other-rbg",
 					UID:        "other-uid",
@@ -268,7 +272,7 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		rbg           *workloadsv1alpha1.RoleBasedGroup
+		rbg           *workloadsv1alpha2.RoleBasedGroup
 		existingObjs  []runtime.Object
 		expectDeleted []string
 		expectErr     bool
@@ -325,10 +329,10 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg-test-role",
@@ -340,8 +344,8 @@ func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha1.RoleBasedGroup
-		role          *workloadsv1alpha1.RoleSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
 		mockReconcile bool
 		expectErr     bool
 	}{
@@ -420,19 +424,19 @@ func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
 func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	// test 4 replicas sts rolling update process, maxSurge=2, maxUnavailable=2
 	schema := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
 	_ = appsv1.AddToScheme(schema)
 	_ = corev1.AddToScheme(schema)
 	// the same as *RoleBasedGroup.GetCommonLabelsFromRole()
 	commonLabels := map[string]string{
-		workloadsv1alpha1.SetNameLabelKey:            "test-rbg",
-		workloadsv1alpha1.SetRoleLabelKey:            "test-role",
-		workloadsv1alpha1.SetGroupUniqueHashLabelKey: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj().GenGroupUniqueKey(),
+		constants.GroupNameLabelKey: "test-rbg",
+		constants.RoleNameLabelKey:  "test-role",
+		constants.GroupUIDLabelKey:  wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj().GenGroupUniqueKey(),
 	}
 
 	tests := []struct {
 		name            string
-		rollingStrategy *workloadsv1alpha1.RolloutStrategy
+		rollingStrategy *workloadsv1alpha2.RolloutStrategy
 		sts             *appsv1.StatefulSet
 		stsUpdated      bool
 		podList         *corev1.PodList
@@ -442,9 +446,9 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	}{
 		{
 			name: "Stage 1: add 2 new instances",
-			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+			rollingStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
 					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 					MaxSurge:       ptr.To(intstr.FromInt32(2)),
 					Partition:      ptr.To(intstr.FromInt32(0)),
@@ -457,7 +461,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					UID:       "sts-uid",
 					Labels:    commonLabels,
 					Annotations: map[string]string{
-						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+						constants.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -559,9 +563,9 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 		},
 		{
 			name: "Stage 2: rolling update 2 old instances",
-			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+			rollingStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
 					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 					MaxSurge:       ptr.To(intstr.FromInt32(2)),
 					Partition:      ptr.To(intstr.FromInt32(0)),
@@ -574,7 +578,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					UID:       "sts-uid",
 					Labels:    commonLabels,
 					Annotations: map[string]string{
-						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+						constants.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -718,9 +722,9 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 		},
 		{
 			name: "Stage 3: rolling update remaining old instances",
-			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
+			rollingStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
 					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 					MaxSurge:       ptr.To(intstr.FromInt32(2)),
 					Partition:      ptr.To(intstr.FromInt32(0)),
@@ -733,7 +737,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					UID:       "sts-uid",
 					Labels:    commonLabels,
 					Annotations: map[string]string{
-						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+						constants.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -899,7 +903,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 				rbg.Spec.Roles[0].Replicas = ptr.To(int32(4))
 				if tt.rollingStrategy != nil {
 					rbg.Spec.Roles[0].RolloutStrategy = tt.rollingStrategy
@@ -1045,18 +1049,18 @@ func mergeLabels(labels ...map[string]string) map[string]string {
 }
 
 func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
-	role := &workloadsv1alpha1.RoleSpec{
+	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
 	}
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{*role},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{*role},
 		},
 	}
 
@@ -1075,53 +1079,53 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 				"custom-label": "role-value",
 			},
 			expectedLabels: map[string]string{
-				"app":                             "my-app",
-				"version":                         "v1.0",
-				"custom-label":                    "role-value",
-				workloadsv1alpha1.SetRoleLabelKey: role.Name,
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
-				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  role.Name,
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
 			},
 			roleAnnotations: map[string]string{
 				"description":       "custom description",
 				"custom-annotation": "role-value",
 			},
 			expectedAnnotations: map[string]string{
-				"description":                           "custom description",
-				"custom-annotation":                     "role-value",
-				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "3",
 			},
 		},
 		{
 			name: "test role labels and annotations with priority",
 			roleLabels: map[string]string{
-				"app":                             "my-app",
-				"version":                         "v1.0",
-				"custom-label":                    "role-value",
-				workloadsv1alpha1.SetRoleLabelKey: "custom",
-				workloadsv1alpha1.SetNameLabelKey: "custom",
-				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      "custom",
-				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): "custom",
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  "custom",
+				constants.GroupNameLabelKey: "custom",
+				constants.GroupUIDLabelKey:  "custom",
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): "custom",
 			},
 			expectedLabels: map[string]string{
-				"app":                             "my-app",
-				"version":                         "v1.0",
-				"custom-label":                    "role-value",
-				workloadsv1alpha1.SetRoleLabelKey: role.Name,
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
-				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  role.Name,
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
 			},
 			roleAnnotations: map[string]string{
-				"description":                           "custom description",
-				"custom-annotation":                     "role-value",
-				workloadsv1alpha1.RoleSizeAnnotationKey: "custom",
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "custom",
 			},
 			expectedAnnotations: map[string]string{
-				"description":                           "custom description",
-				"custom-annotation":                     "role-value",
-				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "3",
 			},
 		},
 		{
@@ -1129,13 +1133,13 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 			roleLabels:      nil,
 			roleAnnotations: nil,
 			expectedLabels: map[string]string{
-				workloadsv1alpha1.SetRoleLabelKey:                                 role.Name,
-				workloadsv1alpha1.SetNameLabelKey:                                 rbg.Name,
-				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
-				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+				constants.RoleNameLabelKey:                                role.Name,
+				constants.GroupNameLabelKey:                               rbg.Name,
+				constants.GroupUIDLabelKey:                                rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
 			},
 			expectedAnnotations: map[string]string{
-				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+				constants.RoleSizeAnnotationKey: "3",
 			},
 		},
 		{
@@ -1143,13 +1147,13 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 			roleLabels:      map[string]string{},
 			roleAnnotations: map[string]string{},
 			expectedLabels: map[string]string{
-				workloadsv1alpha1.SetRoleLabelKey:                                 role.Name,
-				workloadsv1alpha1.SetNameLabelKey:                                 rbg.Name,
-				workloadsv1alpha1.SetGroupUniqueHashLabelKey:                      rbg.GenGroupUniqueKey(),
-				fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+				constants.RoleNameLabelKey:                                role.Name,
+				constants.GroupNameLabelKey:                               rbg.Name,
+				constants.GroupUIDLabelKey:                                rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
 			},
 			expectedAnnotations: map[string]string{
-				workloadsv1alpha1.RoleSizeAnnotationKey: "3",
+				constants.RoleSizeAnnotationKey: "3",
 			},
 		},
 	}
@@ -1159,7 +1163,7 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 			scheme := runtime.NewScheme()
 			_ = appsv1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
-			_ = workloadsv1alpha1.AddToScheme(scheme)
+			_ = workloadsv1alpha2.AddToScheme(scheme)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			reconciler := NewStatefulSetReconciler(scheme, fakeClient)

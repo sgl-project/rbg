@@ -23,13 +23,13 @@ import (
 	"strconv"
 	"strings"
 
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // CoordinationScaler calculates the target replicas for each role based on coordination scaling strategy.
 type CoordinationScaler struct {
-	coordination *workloadsv1alpha1.Coordination
-	maxSkew      float64
+	maxSkew    float64
+	policyRule *workloadsv1alpha2.CoordinatedPolicyRule
 }
 
 // RoleScalingState represents the current scaling state of a role.
@@ -41,16 +41,16 @@ type RoleScalingState struct {
 	ReadyReplicas     int32 // Number of replicas that are ready
 }
 
-// NewCoordinationScaler creates a new CoordinationScaler instance.
-func NewCoordinationScaler(coordination *workloadsv1alpha1.Coordination) (*CoordinationScaler, error) {
-	if coordination == nil || coordination.Strategy == nil || coordination.Strategy.Scaling == nil {
-		return nil, fmt.Errorf("invalid coordination configuration: scaling strategy is nil")
+// NewCoordinationScalerFromPolicy creates a new CoordinationScaler instance from v1alpha2 CoordinatedPolicyRule.
+func NewCoordinationScalerFromPolicy(policyRule *workloadsv1alpha2.CoordinatedPolicyRule) (*CoordinationScaler, error) {
+	if policyRule == nil || policyRule.Strategies.Scaling == nil {
+		return nil, fmt.Errorf("invalid policy configuration: scaling strategy is nil")
 	}
 
 	// Use default maxSkew of 100% if not specified (no coordination limit)
 	maxSkewStr := "100%"
-	if coordination.Strategy.Scaling.MaxSkew != nil {
-		maxSkewStr = *coordination.Strategy.Scaling.MaxSkew
+	if policyRule.Strategies.Scaling.MaxSkew != nil {
+		maxSkewStr = policyRule.Strategies.Scaling.MaxSkew.String()
 	}
 
 	maxSkew, err := parsePercentage(maxSkewStr)
@@ -59,8 +59,8 @@ func NewCoordinationScaler(coordination *workloadsv1alpha1.Coordination) (*Coord
 	}
 
 	return &CoordinationScaler{
-		coordination: coordination,
-		maxSkew:      maxSkew,
+		policyRule: policyRule,
+		maxSkew:    maxSkew,
 	}, nil
 }
 
@@ -73,31 +73,29 @@ func (s *CoordinationScaler) CalculateTargetReplicas(roleStates map[string]RoleS
 	}
 
 	// Validate that all roles in coordination are present in roleStates
-	for _, roleName := range s.coordination.Roles {
+	roles := s.GetCoordinationRoles()
+	for _, roleName := range roles {
 		if _, exists := roleStates[roleName]; !exists {
 			return nil, fmt.Errorf("role %s not found in roleStates", roleName)
 		}
 	}
 
 	// Get progression strategy (default to OrderScheduled)
-	progression := workloadsv1alpha1.OrderScheduled
-	if s.coordination.Strategy.Scaling.Progression != nil {
-		progression = *s.coordination.Strategy.Scaling.Progression
-	}
+	progression := s.getProgressionType()
 
 	// Check if current batch satisfies progression requirement
 	if !s.canProceedToNextBatch(roleStates, progression) {
 		// Cannot proceed to next batch yet, keep current targets
 		result := make(map[string]int32)
-		for _, roleName := range s.coordination.Roles {
+		for _, roleName := range roles {
 			result[roleName] = roleStates[roleName].CurrentReplicas
 		}
 		return result, nil
 	}
 
 	// Calculate current progress for each role
-	roleProgresses := make([]roleProgress, 0, len(s.coordination.Roles))
-	for _, roleName := range s.coordination.Roles {
+	roleProgresses := make([]roleProgress, 0, len(roles))
+	for _, roleName := range roles {
 		state := roleStates[roleName]
 
 		// Calculate progress, handling zero desired replicas (scale down to zero)
@@ -175,18 +173,32 @@ func (s *CoordinationScaler) CalculateTargetReplicas(roleStates map[string]RoleS
 
 // GetCoordinationRoles returns the list of roles in this coordination.
 func (s *CoordinationScaler) GetCoordinationRoles() []string {
-	return s.coordination.Roles
+	if s.policyRule != nil {
+		return s.policyRule.Roles
+	}
+	return nil
+}
+
+// getProgressionType returns the progression type from policy rule.
+func (s *CoordinationScaler) getProgressionType() workloadsv1alpha2.ScalingProgression {
+	if s.policyRule != nil && s.policyRule.Strategies.Scaling != nil {
+		return s.policyRule.Strategies.Scaling.Progression
+	}
+	return workloadsv1alpha2.OrderScheduledProgression
 }
 
 // canProceedToNextBatch checks if we can proceed to the next batch based on progression strategy.
 // It verifies that all roles in the coordination meet the progression requirement.
 func (s *CoordinationScaler) canProceedToNextBatch(
 	roleStates map[string]RoleScalingState,
-	progression workloadsv1alpha1.ProgressionType,
+	progression workloadsv1alpha2.ScalingProgression,
 ) bool {
+	// Get roles list
+	roles := s.GetCoordinationRoles()
+
 	// If all roles are at desired replicas, we're done
 	allAtDesired := true
-	for _, roleName := range s.coordination.Roles {
+	for _, roleName := range roles {
 		state := roleStates[roleName]
 		if state.CurrentReplicas < state.DesiredReplicas {
 			allAtDesired = false
@@ -198,7 +210,7 @@ func (s *CoordinationScaler) canProceedToNextBatch(
 	}
 
 	// Check if current batch meets progression requirement
-	for _, roleName := range s.coordination.Roles {
+	for _, roleName := range roles {
 		state := roleStates[roleName]
 
 		// Skip if this role is already at desired replicas
@@ -213,12 +225,12 @@ func (s *CoordinationScaler) canProceedToNextBatch(
 
 		// Check based on progression type
 		switch progression {
-		case workloadsv1alpha1.OrderScheduled:
+		case workloadsv1alpha2.OrderScheduledProgression:
 			// All current replicas must be scheduled
 			if state.ScheduledReplicas < state.CurrentReplicas {
 				return false
 			}
-		case workloadsv1alpha1.OrderReady:
+		case workloadsv1alpha2.OrderReadyProgression:
 			// All current replicas must be ready
 			if state.ReadyReplicas < state.CurrentReplicas {
 				return false

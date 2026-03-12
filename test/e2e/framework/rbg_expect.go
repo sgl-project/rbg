@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework/workloads"
 	"sigs.k8s.io/rbgs/test/utils"
@@ -41,7 +42,10 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 
 	// check controllerrevision
 	f.ExpectRBGRevisionEqual(rbg)
-	expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+	// NewRevision requires v1alpha2 RBG (storage version); fetch the stored object.
+	rbgV2 := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, rbgV2)).Should(gomega.Succeed())
+	expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbgV2, nil)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	expectedRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(expect)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
