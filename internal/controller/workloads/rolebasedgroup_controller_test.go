@@ -1551,11 +1551,11 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 			},
 			wantTargets: map[string]int32{
 				// All pods scheduled, can proceed to next batch
-				// coord1: prefill=5 (100*5%), decode=5 (100*5%)
-				// coord2: decode=10 (100*10%), router=5 (50*10%)
-				"prefill": 5, // Only in coord1 (100*5%=5)
-				"decode":  5, // min(5 from coord1, 10 from coord2)
-				"router":  0, // Only in coord2, but decode not all scheduled yet
+				// coord1: prefill=10 (100*10%), decode=10 (100*10%)
+				// coord2: decode=15 (100*15%), router=5 (50*10%)
+				"prefill": 10, // Only in coord1
+				"decode":  10, // min(10 from coord1, 15 from coord2)
+				"router":  5,  // Only in coord2
 			},
 			wantErr: false,
 		},

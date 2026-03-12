@@ -19,7 +19,109 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestReconcileDiscoveryConfigMap(t *testing.T) {
+func TestEnsureDiscoveryConfigMode(t *testing.T) {
+	type testCase struct {
+		name               string
+		mutateRBG          func(*workloadsv1alpha2.RoleBasedGroup)
+		buildExtraObjects  func(*workloadsv1alpha2.RoleBasedGroup) []runtime.Object
+		wantRequeue        bool
+		wantMode           constants.DiscoveryConfigMode
+		wantModeAnnotation bool
+	}
+
+	tests := []testCase{
+		{
+			name: "missing annotation with legacy role configmap should set legacy mode without requeue",
+			buildExtraObjects: func(rbg *workloadsv1alpha2.RoleBasedGroup) []runtime.Object {
+				return []runtime.Object{
+					&corev1.ConfigMap{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+							Namespace: rbg.Namespace,
+						},
+					},
+				}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name:               "missing annotation without legacy signal should set refine mode without requeue",
+			wantRequeue:        false,
+			wantMode:           constants.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "existing legacy annotation should not requeue",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.SetDiscoveryConfigMode(constants.LegacyDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "existing refine annotation should not requeue",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           constants.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = workloadsv1alpha2.AddToScheme(scheme)
+			_ = appsv1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+			if tt.mutateRBG != nil {
+				tt.mutateRBG(rbg)
+			}
+
+			objs := []runtime.Object{rbg}
+			if tt.buildExtraObjects != nil {
+				objs = append(objs, tt.buildExtraObjects(rbg)...)
+			}
+
+			client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
+			reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
+
+			current := &workloadsv1alpha2.RoleBasedGroup{}
+			key := types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}
+			if err := client.Get(context.Background(), key, current); err != nil {
+				t.Fatalf("get rbg error: %v", err)
+			}
+
+			requeue, err := reconciler.ensureDiscoveryConfigMode(context.Background(), current)
+			if err != nil {
+				t.Fatalf("ensureDiscoveryConfigMode() error = %v", err)
+			}
+			if requeue != tt.wantRequeue {
+				t.Fatalf("requeue = %v, want %v", requeue, tt.wantRequeue)
+			}
+
+			persisted := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := client.Get(context.Background(), key, persisted); err != nil {
+				t.Fatalf("get persisted rbg error: %v", err)
+			}
+			if got := persisted.GetDiscoveryConfigMode(); got != tt.wantMode {
+				t.Fatalf("mode = %s, want %s", got, tt.wantMode)
+			}
+			_, hasModeAnnotation := persisted.Annotations[constants.DiscoveryConfigModeAnnotationKey]
+			if hasModeAnnotation != tt.wantModeAnnotation {
+				t.Fatalf("has discovery-config-mode annotation = %v, want %v", hasModeAnnotation, tt.wantModeAnnotation)
+			}
+		})
+	}
+}
+
+func TestReconcileRefinedDiscoveryConfigMap(t *testing.T) {
 	t.Run("creates shared configmap for stateful role", func(t *testing.T) {
 		scheme := runtime.NewScheme()
 		_ = workloadsv1alpha2.AddToScheme(scheme)
@@ -27,6 +129,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 		_ = corev1.AddToScheme(scheme)
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+		rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 		rbg.Spec.Roles = append(rbg.Spec.Roles, workloadsv1alpha2.RoleSpec{
 			Name:     "router",
 			Replicas: ptr.To(int32(1)),
@@ -35,13 +138,12 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 				Kind:       "Deployment",
 			},
 		})
-		rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 
 		client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
 		reconciler := &RoleBasedGroupReconciler{client: client, scheme: scheme}
 
 		if err := reconciler.reconcileRefinedDiscoveryConfigMap(context.Background(), rbg); err != nil {
-			t.Fatalf("reconcileDiscoveryConfigMap() error = %v", err)
+			t.Fatalf("reconcileRefinedDiscoveryConfigMap() error = %v", err)
 		}
 
 		cm := &corev1.ConfigMap{}
@@ -58,6 +160,9 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 			t.Fatalf("unmarshal shared configmap data error: %v", err)
 		}
 
+		if len(cfg.Roles) != 1 {
+			t.Fatalf("stateful roles in config = %d, want 1", len(cfg.Roles))
+		}
 		if _, ok := cfg.Roles["test-role"]; !ok {
 			t.Fatalf("stateful role test-role should exist in refined config")
 		}
