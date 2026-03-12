@@ -303,7 +303,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
 	// workerTemplate do not need to inject sidecar
-	workerPodReconciler.SetInjectors([]string{"config", "common_env", "lws_env"})
+	workerPodReconciler.SetInjectors([]string{"config", "common_env", "lwp_env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, *workerTemp,
 	)

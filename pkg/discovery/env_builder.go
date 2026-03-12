@@ -41,7 +41,7 @@ func (b *EnvBuilder) BuildLwsEnv(svcName string) []corev1.EnvVar {
 			Name: constants.EnvRBGIndex,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RBGComponentIndexLabelKey),
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIndexLabelKey),
 				},
 			},
 		},
@@ -49,7 +49,7 @@ func (b *EnvBuilder) BuildLwsEnv(svcName string) []corev1.EnvVar {
 			Name: constants.EnvRBGSize,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RBGComponentSizeLabelKey),
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentSizeLabelKey),
 				},
 			},
 		},
@@ -72,7 +72,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 		},
 	}
 
-	if g.role.Workload.Kind == "StatefulSet" || g.role.Workload.Kind == "LeaderWorkerSet" {
+	if workloadsv1alpha2.IsStatefulRole(g.role) {
 		envVars = append(envVars,
 			corev1.EnvVar{
 				Name: constants.EnvRBGRoleIndex,
@@ -98,7 +98,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 				Name: constants.EnvRBGComponentName,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
-						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceComponentNameKey),
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentNameLabelKey),
 					},
 				},
 			},
@@ -106,7 +106,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 				Name: constants.EnvRBGComponentIndex,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
-						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceComponentIDKey),
+						FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIDLabelKey),
 					},
 				},
 			},

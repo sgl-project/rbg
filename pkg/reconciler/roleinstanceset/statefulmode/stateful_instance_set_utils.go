@@ -30,6 +30,7 @@ import (
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // statefulInstanceRegex is a regular expression that extracts the parent InstanceSet and ordinal from the Name of an Instance
@@ -96,8 +97,29 @@ func updateIdentity(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv
 	if instance.Labels == nil {
 		instance.Labels = make(map[string]string)
 	}
-	instance.Labels[apps.StatefulSetPodNameLabel] = instance.Name
-	instance.Labels[apps.PodIndexLabel] = strconv.Itoa(ordinal)
+	identityLabels := map[string]string{
+		apps.StatefulSetPodNameLabel:        instance.Name,
+		apps.PodIndexLabel:                  strconv.Itoa(ordinal),
+		constants.RoleInstanceIndexLabelKey: strconv.Itoa(ordinal),
+	}
+	for k, v := range identityLabels {
+		instance.Labels[k] = v
+	}
+	injectIdentityLabelsIntoComponents(instance, identityLabels)
+}
+
+// injectIdentityLabelsIntoComponents writes the given identity labels into each
+// component's pod template metadata, so that pods created from the template
+// also carry the instance's ordinal identity labels.
+func injectIdentityLabelsIntoComponents(instance *workloadsv1alpha2.RoleInstance, identityLabels map[string]string) {
+	for i := range instance.Spec.Components {
+		if instance.Spec.Components[i].Template.Labels == nil {
+			instance.Spec.Components[i].Template.Labels = make(map[string]string)
+		}
+		for k, v := range identityLabels {
+			instance.Spec.Components[i].Template.Labels[k] = v
+		}
+	}
 }
 
 // getInstanceSetReplicasRange returns the start ordinal, end ordinal (exclusive), and set of reserved ordinals for a InstanceSet.
@@ -181,14 +203,23 @@ func newVersionedInstance(
 			instance.Labels[k] = v
 		}
 	}
-	instance.Labels[apps.StatefulSetPodNameLabel] = instance.Name
-
 	// Set revision label
 	if useUpdateRevision {
 		instance.Labels[apps.ControllerRevisionHashLabelKey] = updateRevision
 	} else {
 		instance.Labels[apps.ControllerRevisionHashLabelKey] = currentRevision
 	}
+
+	// Set identity labels and propagate them into each component's pod template.
+	identityLabels := map[string]string{
+		apps.StatefulSetPodNameLabel:        instance.Name,
+		apps.PodIndexLabel:                  strconv.Itoa(ordinal),
+		constants.RoleInstanceIndexLabelKey: strconv.Itoa(ordinal),
+	}
+	for k, v := range identityLabels {
+		instance.Labels[k] = v
+	}
+	injectIdentityLabelsIntoComponents(instance, identityLabels)
 
 	// Set owner reference
 	instance.OwnerReferences = []metav1.OwnerReference{

@@ -427,7 +427,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
 	}
 
 	if kind == "RoleInstanceSet" && role.IsLeaderWorkerPattern() {
-		selectorStr += fmt.Sprintf(",%s=0", constants.RBGComponentIndexLabelKey)
+		selectorStr += fmt.Sprintf(",%s=0", constants.ComponentIndexLabelKey)
 	}
 
 	return selectorStr, nil
