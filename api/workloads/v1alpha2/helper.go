@@ -185,6 +185,10 @@ func (r *RoleSpec) GetLeaderWorkerPattern() *LeaderWorkerPattern {
 	return r.LeaderWorkerPattern
 }
 
+func (r *RoleSpec) GetCustomComponentsPattern() *CustomComponentsPattern {
+	return r.CustomComponentsPatten
+}
+
 // GetTemplate returns the PodTemplateSpec for this role.
 // It checks both StandalonePattern and LeaderWorkerPattern.
 func (r *RoleSpec) GetTemplate() *corev1.PodTemplateSpec {

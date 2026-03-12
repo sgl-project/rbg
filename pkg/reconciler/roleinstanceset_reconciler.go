@@ -141,15 +141,16 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 		WithRestartPolicy(restartPolicy)
 	var constructErr error
 	switch {
-	case len(role.Components) > 0:
-		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.ComponentsTemplateType)
-		constructErr = r.constructRoleInstanceTemplateByCustomComponentPattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
-	case role.GetLeaderWorkerPattern() != nil:
-		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.LeaderWorkerSetTemplateType)
-		constructErr = r.constructRoleInstanceTemplateByLeaderWorkerPattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
 	case role.GetStandalonePattern() != nil:
 		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.PodTemplateTemplateType)
 		constructErr = r.constructRoleInstanceTemplateFromStandalonePattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
+	case role.GetLeaderWorkerPattern() != nil:
+		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.LeaderWorkerSetTemplateType)
+		constructErr = r.constructRoleInstanceTemplateByLeaderWorkerPattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
+	case role.GetCustomComponentsPattern() != nil:
+		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.ComponentsTemplateType)
+		constructErr = r.constructRoleInstanceTemplateByCustomComponentsPattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
+
 	default:
 		constructErr = fmt.Errorf("no valid pattern found for role %s", role.Name)
 	}
@@ -231,7 +232,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	return roleInstanceSetConfig, nil
 }
 
-func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomComponentPattern(
+func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomComponentsPattern(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -239,7 +240,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 	roleInstanceTemplateConfig *workloadsv1alpha2client.RoleInstanceTemplateApplyConfiguration,
 ) error {
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	for _, component := range role.Components {
+	for _, component := range role.GetCustomComponentsPattern().Components {
 		podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 			ctx, rbg, role, maps.Clone(matchLabels), component.Template)
 		if err != nil {

@@ -20,8 +20,9 @@ package v1alpha2
 // PatternApplyConfiguration represents a declarative configuration of the Pattern type for use
 // with apply.
 type PatternApplyConfiguration struct {
-	StandalonePattern   *StandalonePatternApplyConfiguration   `json:"standalonePattern,omitempty"`
-	LeaderWorkerPattern *LeaderWorkerPatternApplyConfiguration `json:"leaderWorkerPattern,omitempty"`
+	StandalonePattern      *StandalonePatternApplyConfiguration       `json:"standalonePattern,omitempty"`
+	LeaderWorkerPattern    *LeaderWorkerPatternApplyConfiguration     `json:"leaderWorkerPattern,omitempty"`
+	CustomComponentsPatten *CustomComponentsPatternApplyConfiguration `json:"customComponentsPatten,omitempty"`
 }
 
 // PatternApplyConfiguration constructs a declarative configuration of the Pattern type for use with
@@ -43,5 +44,13 @@ func (b *PatternApplyConfiguration) WithStandalonePattern(value *StandalonePatte
 // If called multiple times, the LeaderWorkerPattern field is set to the value of the last call.
 func (b *PatternApplyConfiguration) WithLeaderWorkerPattern(value *LeaderWorkerPatternApplyConfiguration) *PatternApplyConfiguration {
 	b.LeaderWorkerPattern = value
+	return b
+}
+
+// WithCustomComponentsPatten sets the CustomComponentsPatten field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CustomComponentsPatten field is set to the value of the last call.
+func (b *PatternApplyConfiguration) WithCustomComponentsPatten(value *CustomComponentsPatternApplyConfiguration) *PatternApplyConfiguration {
+	b.CustomComponentsPatten = value
 	return b
 }
