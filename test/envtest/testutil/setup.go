@@ -215,13 +215,13 @@ func SetupRBGSController(mgr manager.Manager) error {
 
 // SetupInstanceController sets up the Instance controller
 func SetupInstanceController(mgr manager.Manager) error {
-	instanceReconciler := workloadscontroller.NewInstanceReconciler(mgr)
+	instanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr)
 	return instanceReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
 // SetupInstanceSetController sets up the InstanceSet controller
 func SetupInstanceSetController(mgr manager.Manager) error {
-	instanceSetReconciler := workloadscontroller.NewInstanceSetReconciler(mgr)
+	instanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
 	return instanceSetReconciler.SetupWithManager(mgr, controller.Options{})
 }
 

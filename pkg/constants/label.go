@@ -83,4 +83,25 @@ const (
 
 	// ComponentSizeLabelKey identifies the component replica count
 	ComponentSizeLabelKey = RBGPrefix + "component-size"
+
+	// ComponentIndexLabelKey identifies the component instance index
+	// for LWS workloads this maps to:
+	// - leader's ComponentIndexLabelKey = 0
+	// - worker's ComponentIndexLabelKey = ComponentIDKey.value + 1
+	ComponentIndexLabelKey = RBGPrefix + "component-index"
+)
+
+// Unique Hash label
+const (
+	// GroupUniqueHashLabelKey is used for pod affinity rules in exclusive topology
+	GroupUniqueHashLabelKey = RBGPrefix + "group-unique-hash"
+)
+
+// RoleInstance component labels (aliases for compatibility)
+const (
+	// RoleInstanceComponentNameKey is the name of the component within a RoleInstance
+	RoleInstanceComponentNameKey = RBGPrefix + "role-instance-component-name"
+
+	// RoleInstanceComponentIDKey is the id of the component within a RoleInstance
+	RoleInstanceComponentIDKey = RBGPrefix + "role-instance-component-id"
 )

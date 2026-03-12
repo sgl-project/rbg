@@ -23,12 +23,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/clientdapter"
 )
 
-func addNotReadyKey(adp clientdapter.Adapter, instance *appsv1alpha1.Instance, msg Message, condType appsv1alpha1.InstanceConditionType) error {
+func addNotReadyKey(adp clientdapter.Adapter, instance *workloadsv1alpha2.RoleInstance, msg Message, condType workloadsv1alpha2.RoleInstanceConditionType) error {
 	if alreadyHasKey(instance, msg, condType) {
 		return nil
 	}
@@ -38,7 +38,7 @@ func addNotReadyKey(adp clientdapter.Adapter, instance *appsv1alpha1.Instance, m
 	}
 
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		newInstance, err := adp.GetInstance(instance.Namespace, instance.Name)
+		newInstance, err := adp.GetRoleInstance(instance.Namespace, instance.Name)
 		if err != nil {
 			return err
 		}
@@ -46,8 +46,8 @@ func addNotReadyKey(adp clientdapter.Adapter, instance *appsv1alpha1.Instance, m
 		condition := getReadinessCondition(newInstance, condType)
 		if condition == nil {
 			_, messages := addMessage("", msg)
-			newInstance.Status.Conditions = append(newInstance.Status.Conditions, appsv1alpha1.InstanceCondition{
-				Type:               appsv1alpha1.InstanceCustomReady,
+			newInstance.Status.Conditions = append(newInstance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+				Type:               workloadsv1alpha2.RoleInstanceCustomReady,
 				Message:            messages.dump(),
 				LastTransitionTime: metav1.Now(),
 			})
@@ -62,19 +62,19 @@ func addNotReadyKey(adp clientdapter.Adapter, instance *appsv1alpha1.Instance, m
 		}
 
 		// set instance ready condition to "False"
-		inplaceutil.SetInstanceNotReadyCondition(newInstance)
-		return adp.UpdateInstanceStatus(newInstance)
+		inplaceutil.SetRoleInstanceNotReadyCondition(newInstance)
+		return adp.UpdateRoleInstanceStatus(newInstance)
 	})
 	return err
 }
 
-func removeNotReadyKey(adp clientdapter.Adapter, instance *appsv1alpha1.Instance, msg Message, condType appsv1alpha1.InstanceConditionType) error {
+func removeNotReadyKey(adp clientdapter.Adapter, instance *workloadsv1alpha2.RoleInstance, msg Message, condType workloadsv1alpha2.RoleInstanceConditionType) error {
 	if !containsReadinessGate(instance, condType) {
 		return nil
 	}
 
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		newInstance, err := adp.GetInstance(instance.Namespace, instance.Name)
+		newInstance, err := adp.GetRoleInstance(instance.Namespace, instance.Name)
 		if err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ func removeNotReadyKey(adp clientdapter.Adapter, instance *appsv1alpha1.Instance
 		}
 		condition.Message = messages.dump()
 		condition.LastTransitionTime = metav1.Now()
-		return adp.UpdateInstanceStatus(newInstance)
+		return adp.UpdateRoleInstanceStatus(newInstance)
 	})
 }
 
@@ -127,15 +127,15 @@ func removeMessage(base string, msg Message) (bool, messageList) {
 	return removed, newMessages
 }
 
-func GetReadinessCondition(instance *appsv1alpha1.Instance) *appsv1alpha1.InstanceCondition {
-	return getReadinessCondition(instance, appsv1alpha1.InstanceCustomReady)
+func GetReadinessCondition(instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceCondition {
+	return getReadinessCondition(instance, workloadsv1alpha2.RoleInstanceCustomReady)
 }
 
-func ContainsReadinessGate(instance *appsv1alpha1.Instance) bool {
-	return containsReadinessGate(instance, appsv1alpha1.InstanceCustomReady)
+func ContainsReadinessGate(instance *workloadsv1alpha2.RoleInstance) bool {
+	return containsReadinessGate(instance, workloadsv1alpha2.RoleInstanceCustomReady)
 }
 
-func getReadinessCondition(instance *appsv1alpha1.Instance, condType appsv1alpha1.InstanceConditionType) *appsv1alpha1.InstanceCondition {
+func getReadinessCondition(instance *workloadsv1alpha2.RoleInstance, condType workloadsv1alpha2.RoleInstanceConditionType) *workloadsv1alpha2.RoleInstanceCondition {
 	if instance == nil {
 		return nil
 	}
@@ -148,7 +148,7 @@ func getReadinessCondition(instance *appsv1alpha1.Instance, condType appsv1alpha
 	return nil
 }
 
-func containsReadinessGate(instance *appsv1alpha1.Instance, condType appsv1alpha1.InstanceConditionType) bool {
+func containsReadinessGate(instance *workloadsv1alpha2.RoleInstance, condType workloadsv1alpha2.RoleInstanceConditionType) bool {
 	for _, g := range instance.Spec.ReadinessGates {
 		if g.ConditionType == condType {
 			return true
@@ -157,7 +157,7 @@ func containsReadinessGate(instance *appsv1alpha1.Instance, condType appsv1alpha
 	return false
 }
 
-func alreadyHasKey(instance *appsv1alpha1.Instance, msg Message, condType appsv1alpha1.InstanceConditionType) bool {
+func alreadyHasKey(instance *workloadsv1alpha2.RoleInstance, msg Message, condType workloadsv1alpha2.RoleInstanceConditionType) bool {
 	condition := getReadinessCondition(instance, condType)
 	if condition == nil {
 		return false

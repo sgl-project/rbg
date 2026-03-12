@@ -27,6 +27,10 @@ type FakeWorkloadsV1alpha2 struct {
 	*testing.Fake
 }
 
+func (c *FakeWorkloadsV1alpha2) ClusterEngineRuntimeProfiles(namespace string) v1alpha2.ClusterEngineRuntimeProfileInterface {
+	return newFakeClusterEngineRuntimeProfiles(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha2) CoordinatedPolicies(namespace string) v1alpha2.CoordinatedPolicyInterface {
 	return newFakeCoordinatedPolicies(c, namespace)
 }
@@ -35,8 +39,20 @@ func (c *FakeWorkloadsV1alpha2) RoleBasedGroups(namespace string) v1alpha2.RoleB
 	return newFakeRoleBasedGroups(c, namespace)
 }
 
+func (c *FakeWorkloadsV1alpha2) RoleBasedGroupScalingAdapters(namespace string) v1alpha2.RoleBasedGroupScalingAdapterInterface {
+	return newFakeRoleBasedGroupScalingAdapters(c, namespace)
+}
+
 func (c *FakeWorkloadsV1alpha2) RoleBasedGroupSets(namespace string) v1alpha2.RoleBasedGroupSetInterface {
 	return newFakeRoleBasedGroupSets(c, namespace)
+}
+
+func (c *FakeWorkloadsV1alpha2) RoleInstances(namespace string) v1alpha2.RoleInstanceInterface {
+	return newFakeRoleInstances(c, namespace)
+}
+
+func (c *FakeWorkloadsV1alpha2) RoleInstanceSets(namespace string) v1alpha2.RoleInstanceSetInterface {
+	return newFakeRoleInstanceSets(c, namespace)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

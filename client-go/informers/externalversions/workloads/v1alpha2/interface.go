@@ -23,12 +23,20 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// ClusterEngineRuntimeProfiles returns a ClusterEngineRuntimeProfileInformer.
+	ClusterEngineRuntimeProfiles() ClusterEngineRuntimeProfileInformer
 	// CoordinatedPolicies returns a CoordinatedPolicyInformer.
 	CoordinatedPolicies() CoordinatedPolicyInformer
 	// RoleBasedGroups returns a RoleBasedGroupInformer.
 	RoleBasedGroups() RoleBasedGroupInformer
+	// RoleBasedGroupScalingAdapters returns a RoleBasedGroupScalingAdapterInformer.
+	RoleBasedGroupScalingAdapters() RoleBasedGroupScalingAdapterInformer
 	// RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 	RoleBasedGroupSets() RoleBasedGroupSetInformer
+	// RoleInstances returns a RoleInstanceInformer.
+	RoleInstances() RoleInstanceInformer
+	// RoleInstanceSets returns a RoleInstanceSetInformer.
+	RoleInstanceSets() RoleInstanceSetInformer
 }
 
 type version struct {
@@ -42,6 +50,11 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
+// ClusterEngineRuntimeProfiles returns a ClusterEngineRuntimeProfileInformer.
+func (v *version) ClusterEngineRuntimeProfiles() ClusterEngineRuntimeProfileInformer {
+	return &clusterEngineRuntimeProfileInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
 // CoordinatedPolicies returns a CoordinatedPolicyInformer.
 func (v *version) CoordinatedPolicies() CoordinatedPolicyInformer {
 	return &coordinatedPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
@@ -52,7 +65,22 @@ func (v *version) RoleBasedGroups() RoleBasedGroupInformer {
 	return &roleBasedGroupInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
+// RoleBasedGroupScalingAdapters returns a RoleBasedGroupScalingAdapterInformer.
+func (v *version) RoleBasedGroupScalingAdapters() RoleBasedGroupScalingAdapterInformer {
+	return &roleBasedGroupScalingAdapterInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
 // RoleBasedGroupSets returns a RoleBasedGroupSetInformer.
 func (v *version) RoleBasedGroupSets() RoleBasedGroupSetInformer {
 	return &roleBasedGroupSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleInstances returns a RoleInstanceInformer.
+func (v *version) RoleInstances() RoleInstanceInformer {
+	return &roleInstanceInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// RoleInstanceSets returns a RoleInstanceSetInformer.
+func (v *version) RoleInstanceSets() RoleInstanceSetInformer {
+	return &roleInstanceSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

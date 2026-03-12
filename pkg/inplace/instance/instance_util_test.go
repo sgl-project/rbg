@@ -5,22 +5,23 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
-func TestIsInstanceReady(t *testing.T) {
+func TestIsRoleInstanceReady(t *testing.T) {
 	testCases := []struct {
 		name     string
-		instance *appsv1alpha1.Instance
+		instance *appsv1alpha2.RoleInstance
 		expected bool
 	}{
 		{
 			name: "Instance is ready",
-			instance: &appsv1alpha1.Instance{
-				Status: appsv1alpha1.InstanceStatus{
-					Conditions: []appsv1alpha1.InstanceCondition{
+			instance: &appsv1alpha2.RoleInstance{
+				Status: appsv1alpha2.RoleInstanceStatus{
+					Conditions: []appsv1alpha2.RoleInstanceCondition{
 						{
-							Type:   appsv1alpha1.InstanceReady,
+							Type:   appsv1alpha2.RoleInstanceReady,
 							Status: corev1.ConditionTrue,
 						},
 					},
@@ -30,20 +31,20 @@ func TestIsInstanceReady(t *testing.T) {
 		},
 		{
 			name: "Instance is not ready, ready condition is null",
-			instance: &appsv1alpha1.Instance{
-				Status: appsv1alpha1.InstanceStatus{
-					Conditions: []appsv1alpha1.InstanceCondition{},
+			instance: &appsv1alpha2.RoleInstance{
+				Status: appsv1alpha2.RoleInstanceStatus{
+					Conditions: []appsv1alpha2.RoleInstanceCondition{},
 				},
 			},
 			expected: false,
 		},
 		{
 			name: "Instance is not ready, ready condition is false",
-			instance: &appsv1alpha1.Instance{
-				Status: appsv1alpha1.InstanceStatus{
-					Conditions: []appsv1alpha1.InstanceCondition{
+			instance: &appsv1alpha2.RoleInstance{
+				Status: appsv1alpha2.RoleInstanceStatus{
+					Conditions: []appsv1alpha2.RoleInstanceCondition{
 						{
-							Type:   appsv1alpha1.InstanceReady,
+							Type:   appsv1alpha2.RoleInstanceReady,
 							Status: corev1.ConditionFalse,
 						},
 					},
@@ -55,7 +56,7 @@ func TestIsInstanceReady(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ready := IsInstanceReady(tc.instance)
+			ready := IsRoleInstanceReady(tc.instance)
 			if ready != tc.expected {
 				t.Errorf("expected %v, got %v", tc.expected, ready)
 			}
@@ -73,7 +74,7 @@ func TestIsMatchComponent(t *testing.T) {
 		{
 			name: "Pod matches component",
 			podLabels: map[string]string{
-				appsv1alpha1.InstanceComponentNameKey: "web",
+				constants.RoleInstanceComponentNameKey: "web",
 			},
 			componentName: "web",
 			expected:      true,
@@ -81,7 +82,7 @@ func TestIsMatchComponent(t *testing.T) {
 		{
 			name: "Pod does not match component",
 			podLabels: map[string]string{
-				appsv1alpha1.InstanceComponentNameKey: "db",
+				constants.RoleInstanceComponentNameKey: "db",
 			},
 			componentName: "web",
 			expected:      false,
@@ -105,19 +106,19 @@ func TestIsMatchComponent(t *testing.T) {
 func TestGetComponentSize(t *testing.T) {
 	testCases := []struct {
 		name      string
-		component appsv1alpha1.InstanceComponent
+		component appsv1alpha2.RoleInstanceComponent
 		expected  int32
 	}{
 		{
 			name: "Component with replicas",
-			component: appsv1alpha1.InstanceComponent{
+			component: appsv1alpha2.RoleInstanceComponent{
 				Size: func() *int32 { i := int32(3); return &i }(),
 			},
 			expected: 3,
 		},
 		{
 			name: "Component with default replicas",
-			component: appsv1alpha1.InstanceComponent{
+			component: appsv1alpha2.RoleInstanceComponent{
 				Size: nil,
 			},
 			expected: 1,

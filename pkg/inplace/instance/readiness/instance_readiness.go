@@ -21,14 +21,14 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/clientdapter"
 	util "sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type Interface interface {
-	AddNotReadyKey(instance *appsv1alpha1.Instance, msg Message) error
-	RemoveNotReadyKey(instance *appsv1alpha1.Instance, msg Message) error
+	AddNotReadyKey(instance *workloadsv1alpha2.RoleInstance, msg Message) error
+	RemoveNotReadyKey(instance *workloadsv1alpha2.RoleInstance, msg Message) error
 }
 
 func New(c client.Client) Interface {
@@ -43,12 +43,12 @@ type commonControl struct {
 	adp clientdapter.Adapter
 }
 
-func (c *commonControl) AddNotReadyKey(instance *appsv1alpha1.Instance, msg Message) error {
-	return addNotReadyKey(c.adp, instance, msg, appsv1alpha1.InstanceCustomReady)
+func (c *commonControl) AddNotReadyKey(instance *workloadsv1alpha2.RoleInstance, msg Message) error {
+	return addNotReadyKey(c.adp, instance, msg, workloadsv1alpha2.RoleInstanceCustomReady)
 }
 
-func (c *commonControl) RemoveNotReadyKey(instance *appsv1alpha1.Instance, msg Message) error {
-	return removeNotReadyKey(c.adp, instance, msg, appsv1alpha1.InstanceCustomReady)
+func (c *commonControl) RemoveNotReadyKey(instance *workloadsv1alpha2.RoleInstance, msg Message) error {
+	return removeNotReadyKey(c.adp, instance, msg, workloadsv1alpha2.RoleInstanceCustomReady)
 }
 
 type Message struct {

@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
@@ -71,6 +72,8 @@ func init() {
 
 	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(workloadsv1alpha1.AddToScheme(clientgoscheme.Scheme))
+	utilruntime.Must(workloadsv1alpha2.AddToScheme(scheme))
+	utilruntime.Must(workloadsv1alpha2.AddToScheme(clientgoscheme.Scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -319,25 +322,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	instanceReconciler := workloadscontroller.NewInstanceReconciler(mgr)
-	if err = instanceReconciler.CheckCrdExists(); err != nil {
-		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+	roleInstanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr)
+	if err = roleInstanceReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create roleinstance controller", "controller", "RoleInstance")
 		os.Exit(1)
 	}
 
-	if err = instanceReconciler.SetupWithManager(mgr, options); err != nil {
-		setupLog.Error(err, "unable to create instance controller", "controller", "Instance")
+	if err = roleInstanceReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create roleinstance controller", "controller", "RoleInstance")
 		os.Exit(1)
 	}
 
-	instancesetReconciler := workloadscontroller.NewInstanceSetReconciler(mgr)
-	if err = instancesetReconciler.CheckCrdExists(); err != nil {
-		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
+	roleInstanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	if err = roleInstanceSetReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create roleinstanceset controller", "controller", "RoleInstanceSet")
 		os.Exit(1)
 	}
 
-	if err = instancesetReconciler.SetupWithManager(mgr, options); err != nil {
-		setupLog.Error(err, "unable to create instanceset controller", "controller", "InstanceSet")
+	if err = roleInstanceSetReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create roleinstanceset controller", "controller", "RoleInstanceSet")
 		os.Exit(1)
 	}
 

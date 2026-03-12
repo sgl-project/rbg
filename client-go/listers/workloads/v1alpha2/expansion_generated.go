@@ -17,6 +17,14 @@ limitations under the License.
 
 package v1alpha2
 
+// ClusterEngineRuntimeProfileListerExpansion allows custom methods to be added to
+// ClusterEngineRuntimeProfileLister.
+type ClusterEngineRuntimeProfileListerExpansion interface{}
+
+// ClusterEngineRuntimeProfileNamespaceListerExpansion allows custom methods to be added to
+// ClusterEngineRuntimeProfileNamespaceLister.
+type ClusterEngineRuntimeProfileNamespaceListerExpansion interface{}
+
 // CoordinatedPolicyListerExpansion allows custom methods to be added to
 // CoordinatedPolicyLister.
 type CoordinatedPolicyListerExpansion interface{}
@@ -33,6 +41,14 @@ type RoleBasedGroupListerExpansion interface{}
 // RoleBasedGroupNamespaceLister.
 type RoleBasedGroupNamespaceListerExpansion interface{}
 
+// RoleBasedGroupScalingAdapterListerExpansion allows custom methods to be added to
+// RoleBasedGroupScalingAdapterLister.
+type RoleBasedGroupScalingAdapterListerExpansion interface{}
+
+// RoleBasedGroupScalingAdapterNamespaceListerExpansion allows custom methods to be added to
+// RoleBasedGroupScalingAdapterNamespaceLister.
+type RoleBasedGroupScalingAdapterNamespaceListerExpansion interface{}
+
 // RoleBasedGroupSetListerExpansion allows custom methods to be added to
 // RoleBasedGroupSetLister.
 type RoleBasedGroupSetListerExpansion interface{}
@@ -40,3 +56,19 @@ type RoleBasedGroupSetListerExpansion interface{}
 // RoleBasedGroupSetNamespaceListerExpansion allows custom methods to be added to
 // RoleBasedGroupSetNamespaceLister.
 type RoleBasedGroupSetNamespaceListerExpansion interface{}
+
+// RoleInstanceListerExpansion allows custom methods to be added to
+// RoleInstanceLister.
+type RoleInstanceListerExpansion interface{}
+
+// RoleInstanceNamespaceListerExpansion allows custom methods to be added to
+// RoleInstanceNamespaceLister.
+type RoleInstanceNamespaceListerExpansion interface{}
+
+// RoleInstanceSetListerExpansion allows custom methods to be added to
+// RoleInstanceSetLister.
+type RoleInstanceSetListerExpansion interface{}
+
+// RoleInstanceSetNamespaceListerExpansion allows custom methods to be added to
+// RoleInstanceSetNamespaceLister.
+type RoleInstanceSetNamespaceListerExpansion interface{}

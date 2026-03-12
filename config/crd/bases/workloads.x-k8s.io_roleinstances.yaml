@@ -1,0 +1,218 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: roleinstances.workloads.x-k8s.io
+spec:
+  group: workloads.x-k8s.io
+  names:
+    kind: RoleInstance
+    listKind: RoleInstanceList
+    plural: roleinstances
+    shortNames:
+    - rins
+    singular: roleinstance
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Overall readiness status
+      jsonPath: .status.conditions[?(@.type=='RoleInstanceReady')].status
+      name: READY
+      type: string
+    - description: CreationTimestamp is a timestamp representing the server time when
+        this object was created. It is not guaranteed to be set in happens-before
+        order across separate operations. Clients may not set this value. It is represented
+        in RFC3339 form and is in UTC.
+      jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha2
+    schema:
+      openAPIV3Schema:
+        description: RoleInstance is the Schema for the roleinstances API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RoleInstanceSpec defines the desired state of RoleInstance
+            properties:
+              components:
+                description: Components is a list of components, each of which specifies
+                  a component and the number of replicas and template for RoleInstance
+                  that match the component.
+                items:
+                  properties:
+                    name:
+                      description: Name is the type name of the component.
+                      type: string
+                    serviceName:
+                      description: |-
+                        ServiceName is the name of the service that governs this RoleInstance Component.
+                        This service must exist before the RoleInstance, and is responsible for
+                        the network identity of the set.
+                      type: string
+                    size:
+                      description: Size is the number of replicas for Pods that match
+                        the PodRule.
+                      format: int32
+                      type: integer
+                    template:
+                      description: Template is the template for the component pods.
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - name
+                  - template
+                  type: object
+                type: array
+              readinessGates:
+                description: ReadinessGates is an optional list of PodReadinessGates
+                  for the whole RoleInstance.
+                items:
+                  description: RoleInstanceReadinessGate contains the reference to
+                    a RoleInstance condition
+                  properties:
+                    conditionType:
+                      description: ConditionType refers to a condition in the pod's
+                        condition list with matching type.
+                      type: string
+                  required:
+                  - conditionType
+                  type: object
+                type: array
+              readyPolicy:
+                default: AllPodReady
+                description: |-
+                  RoleInstanceReadyPolicy specifies the policy for determining if the RoleInstance is ready.
+                  Defaults to `AllPodReady`
+                type: string
+              restartPolicy:
+                description: RestartPolicy defines the restart policy for all pods
+                  within the RoleInstance.
+                type: string
+            required:
+            - components
+            type: object
+          status:
+            description: RoleInstanceStatus defines the observed state of RoleInstance
+            properties:
+              collisionCount:
+                description: CollisionCount is the count of hash collisions for the
+                  RoleInstanceSet.
+                format: int32
+                type: integer
+              componentStatuses:
+                description: ComponentStatuses is a list of RoleInstanceComponentStatus,
+                  each of which specifies the status of a component.
+                items:
+                  properties:
+                    availableReplicas:
+                      description: AvailableReplicas is the number of available Pod
+                        for RoleInstance that match the component.
+                      format: int32
+                      type: integer
+                    name:
+                      description: Name is the type name of the component.
+                      type: string
+                    readyReplicas:
+                      description: ReadyReplicas is the number of ready Pod for RoleInstance
+                        that match the component.
+                      format: int32
+                      type: integer
+                    scheduledReplicas:
+                      description: ScheduledReplicas is the number of scheduled Pod
+                        for RoleInstance that match the component.
+                      format: int32
+                      type: integer
+                    size:
+                      description: Size is the number of Pod for RoleInstance that
+                        match the component.
+                      format: int32
+                      type: integer
+                    updatedReadyReplicas:
+                      description: UpdatedReadyReplicas is the number of updated and
+                        ready Pod for RoleInstance that match the component.
+                      format: int32
+                      type: integer
+                    updatedReplicas:
+                      description: UpdatedReplicas is the number of updated Pod for
+                        RoleInstance that match the component.
+                      format: int32
+                      type: integer
+                  required:
+                  - availableReplicas
+                  - name
+                  - readyReplicas
+                  - scheduledReplicas
+                  - size
+                  - updatedReadyReplicas
+                  - updatedReplicas
+                  type: object
+                type: array
+              conditions:
+                description: Conditions track the condition of the RoleInstance
+                items:
+                  description: RoleInstanceCondition describes the state of a RoleInstance
+                    at a certain point.
+                  properties:
+                    lastTransitionTime:
+                      description: Last time the condition transitioned from one status
+                        to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: A human readable message indicating details about
+                        the transition.
+                      type: string
+                    reason:
+                      description: The reason for the condition's last transition.
+                      type: string
+                    status:
+                      description: Status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: Type of RoleInstance condition.
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              currentRevision:
+                description: CurrentRevision is a hash value that changes when the
+                  spec is changed.
+                type: string
+              labelSelector:
+                description: LabelSelector of a RoleInstance is a label query over
+                  Pods that should match the RoleInstance.
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this RoleInstance. It corresponds to the
+                  RoleInstance's generation, which is updated on mutation by the API Server.
+                format: int64
+                type: integer
+              updateRevision:
+                description: UpdateRevision is a hash value that changes when the
+                  spec is changed.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

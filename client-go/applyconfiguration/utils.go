@@ -131,6 +131,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.WorkloadSpecApplyConfiguration{}
 
 		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithKind("AdapterScaleTargetRef"):
+		return &workloadsv1alpha2.AdapterScaleTargetRefApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfile"):
+		return &workloadsv1alpha2.ClusterEngineRuntimeProfileApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
+		return &workloadsv1alpha2.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
 		return &workloadsv1alpha2.CoordinatedPolicyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyRule"):
@@ -153,6 +159,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.PatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroup"):
 		return &workloadsv1alpha2.RoleBasedGroupApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapter"):
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapterApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapterSpec"):
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapterSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapterStatus"):
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapterStatusApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSet"):
 		return &workloadsv1alpha2.RoleBasedGroupSetApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupSetSpec"):
@@ -163,6 +175,40 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.RoleBasedGroupSpecApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupStatus"):
 		return &workloadsv1alpha2.RoleBasedGroupStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstance"):
+		return &workloadsv1alpha2.RoleInstanceApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceComponent"):
+		return &workloadsv1alpha2.RoleInstanceComponentApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceComponentStatus"):
+		return &workloadsv1alpha2.RoleInstanceComponentStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceCondition"):
+		return &workloadsv1alpha2.RoleInstanceConditionApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceReadinessGate"):
+		return &workloadsv1alpha2.RoleInstanceReadinessGateApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSet"):
+		return &workloadsv1alpha2.RoleInstanceSetApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetCondition"):
+		return &workloadsv1alpha2.RoleInstanceSetConditionApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetInPlaceUpdateStrategy"):
+		return &workloadsv1alpha2.RoleInstanceSetInPlaceUpdateStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetLifecycle"):
+		return &workloadsv1alpha2.RoleInstanceSetLifecycleApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetLifecycleHook"):
+		return &workloadsv1alpha2.RoleInstanceSetLifecycleHookApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetScaleStrategy"):
+		return &workloadsv1alpha2.RoleInstanceSetScaleStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetSpec"):
+		return &workloadsv1alpha2.RoleInstanceSetSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetStatus"):
+		return &workloadsv1alpha2.RoleInstanceSetStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSetUpdateStrategy"):
+		return &workloadsv1alpha2.RoleInstanceSetUpdateStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSpec"):
+		return &workloadsv1alpha2.RoleInstanceSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceStatus"):
+		return &workloadsv1alpha2.RoleInstanceStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceTemplate"):
+		return &workloadsv1alpha2.RoleInstanceTemplateApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleSpec"):
 		return &workloadsv1alpha2.RoleSpecApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleStatus"):
