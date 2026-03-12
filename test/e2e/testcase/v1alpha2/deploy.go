@@ -15,7 +15,7 @@ import (
 func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("update standalone role replicas & template", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
-			wrappersv2.BuildStandaloneRole("role-1").Obj(),
+			wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").Obj(),
 		}).Obj()
 
 		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
@@ -37,7 +37,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("standalone role with rollingUpdate", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
-				wrappersv2.BuildStandaloneRole("role-1").
+				wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").
 					WithReplicas(2).
 					WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(1)),
@@ -63,7 +63,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("standalone role with restartPolicy", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
-				wrappersv2.BuildStandaloneRole("role-1").
+				wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").
 					WithReplicas(2).
 					WithRestartPolicy(workloadsv1alpha2.RecreateRBGOnPodRestart).
 					Obj(),

@@ -37,19 +37,6 @@ func (r *RoleInstanceSetReconciler) Validate(
 	ctx context.Context, role *workloadsv1alpha2.RoleSpec) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
-	if len(role.Components) > 0 {
-		if role.GetTemplate() != nil || role.GetLeaderWorkerPattern() != nil {
-			return fmt.Errorf("when 'components' field is set, 'template' and 'leaderWorkerPattern' fields must not be set")
-		}
-	} else if role.GetTemplate() == nil {
-		lwp := role.GetLeaderWorkerPattern()
-		if lwp == nil {
-			return fmt.Errorf("either 'template' or 'leaderWorkerPattern' field must be provided")
-		}
-		if lwp.LeaderTemplatePatch == nil || lwp.WorkerTemplatePatch == nil {
-			return fmt.Errorf("both 'leaderTemplatePatch' and 'workerTemplatePatch' fields must be provided when 'template' field not set")
-		}
-	}
 
 	return nil
 }
@@ -156,15 +143,15 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	switch {
 	case len(role.Components) > 0:
 		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.ComponentsTemplateType)
-		constructErr = r.constructRoleInstanceTemplateByComponents(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
+		constructErr = r.constructRoleInstanceTemplateByCustomComponentPattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
 	case role.GetLeaderWorkerPattern() != nil:
 		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.LeaderWorkerSetTemplateType)
-		constructErr = r.constructRoleInstanceTemplateByLWS(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
-	case role.GetTemplate() != nil:
+		constructErr = r.constructRoleInstanceTemplateByLeaderWorkerPattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
+	case role.GetStandalonePattern() != nil:
 		roleInstanceSetLabel[constants.RoleTypeLabelKey] = string(constants.PodTemplateTemplateType)
-		constructErr = r.constructRoleInstanceTemplateByTemplate(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
+		constructErr = r.constructRoleInstanceTemplateFromStandalonePattern(ctx, rbg, role, matchLabels, roleInstanceTemplateConfig)
 	default:
-		constructErr = fmt.Errorf("no valid template configuration found for role %s", role.Name)
+		constructErr = fmt.Errorf("no valid pattern found for role %s", role.Name)
 	}
 
 	if constructErr != nil {
@@ -244,7 +231,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	return roleInstanceSetConfig, nil
 }
 
-func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByComponents(
+func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomComponentPattern(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -266,18 +253,20 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByComponents(
 				return err
 			}
 		}
-		roleInstanceTemplateConfig.WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
-			WithName(component.Name).
-			WithServiceName(svcName).
-			WithSize(*component.Size).
-			WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
-				constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *component.Size),
-			})))
+		roleInstanceTemplateConfig.
+			WithRestartPolicy(workloadsv1alpha2.NoneRoleInstanceRestartPolicy).
+			WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
+				WithName(component.Name).
+				WithServiceName(svcName).
+				WithSize(*component.Size).
+				WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
+					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *component.Size),
+				})))
 	}
 	return nil
 }
 
-func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLWS(
+func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerPattern(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -296,7 +285,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLWS(
 	}
 
 	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
-	leaderPodReconciler.SetInjectors([]string{"config", "sidecar", "common_env", "lws_env"})
+	leaderPodReconciler.SetInjectors([]string{"config", "sidecar", "common_env", "lwp_env"})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, *leaderTemp,
 	)
@@ -329,26 +318,28 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLWS(
 	}
 
 	workerSize := utils.NonZeroValue(*lwp.Size - 1)
-	roleInstanceTemplateConfig.WithComponents(
-		workloadsv1alpha2client.RoleInstanceComponent().
-			WithName("leader").
-			WithServiceName(svcName).
-			WithSize(1).
-			WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
-				constants.ComponentNameLabelKey: "leader",
-				constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
-			})),
-		workloadsv1alpha2client.RoleInstanceComponent().
-			WithName("worker").
-			WithSize(workerSize).
-			WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
-				constants.ComponentNameLabelKey: "worker",
-				constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
-			})))
+	roleInstanceTemplateConfig.
+		WithRestartPolicy(workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart).
+		WithComponents(
+			workloadsv1alpha2client.RoleInstanceComponent().
+				WithName("leader").
+				WithServiceName(svcName).
+				WithSize(1).
+				WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
+					constants.ComponentNameLabelKey: "leader",
+					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
+				})),
+			workloadsv1alpha2client.RoleInstanceComponent().
+				WithName("worker").
+				WithSize(workerSize).
+				WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
+					constants.ComponentNameLabelKey: "worker",
+					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
+				})))
 	return nil
 }
 
-func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByTemplate(
+func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandalonePattern(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -368,13 +359,15 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByTemplate(
 		return err
 	}
 
-	roleInstanceTemplateConfig.WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
-		WithName(role.Name).
-		WithServiceName(svcName).
-		WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
-			constants.ComponentSizeLabelKey: "1",
-		})).
-		WithSize(1))
+	roleInstanceTemplateConfig.
+		WithRestartPolicy(workloadsv1alpha2.NoneRoleInstanceRestartPolicy).
+		WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
+			WithName(role.Name).
+			WithServiceName(svcName).
+			WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
+				constants.ComponentSizeLabelKey: "1",
+			})).
+			WithSize(1))
 	return nil
 }
 

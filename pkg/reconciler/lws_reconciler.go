@@ -46,17 +46,6 @@ func (r *LeaderWorkerSetReconciler) Validate(
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to validate role declaration")
 
-	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
-	if role.GetTemplate() == nil {
-		lwp := role.GetLeaderWorkerPattern()
-		if lwp == nil {
-			return fmt.Errorf("either 'template' or 'leaderWorkerPattern' field must be provided")
-		}
-		if lwp.LeaderTemplatePatch == nil || lwp.WorkerTemplatePatch == nil {
-			return fmt.Errorf("both 'leaderTemplatePatch' and 'workerTemplatePatch' fields must be provided when 'template' field not set")
-		}
-	}
-
 	return nil
 }
 

@@ -8,7 +8,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/test/utils"
@@ -133,19 +135,21 @@ func (s *RoleInstanceSetCheckerV2) ExpectTopologyAffinityV2(
 	podList := &corev1.PodList{}
 	gomega.Eventually(
 		func() error {
-			return s.client.List(s.ctx, podList,
+			if err := s.client.List(s.ctx, podList,
 				client.InNamespace(rbg.Namespace),
 				client.MatchingLabels{
 					constants.GroupNameLabelKey: rbg.Name,
 					constants.RoleNameLabelKey:  role.Name,
 				},
-			)
+			); err != nil {
+				return err
+			}
+			if len(podList.Items) == 0 {
+				return fmt.Errorf("no pods found for role %s", role.Name)
+			}
+			return nil
 		}, utils.Timeout, utils.Interval,
-	).ToNot(gomega.HaveOccurred())
-
-	if len(podList.Items) == 0 {
-		return fmt.Errorf("no pods found for role %s", role.Name)
-	}
+	).Should(gomega.Succeed())
 
 	rbgTopologyKey, found := rbg.GetExclusiveKey()
 	if !found {
@@ -188,6 +192,16 @@ func (s *LeaderWorkerSetCheckerV2) ExpectWorkloadEqualV2(
 		return fmt.Errorf("role %s status not found", role.Name)
 	}
 	if roleStatus.ReadyReplicas != *role.Replicas {
+		// Also fetch the actual LWS to compare its readyReplicas with what is reflected in the RBG status.
+		// This helps diagnose cases where the LWS is ready but the RBG controller has not updated the status yet.
+		lwsObj := &lwsv1.LeaderWorkerSet{}
+		lwsName := rbg.Name + "-" + role.Name
+		if lwsErr := s.client.Get(s.ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, lwsObj); lwsErr == nil {
+			return fmt.Errorf(
+				"role %s lws not ready: rbgStatus.readyReplicas=%d, lws.readyReplicas=%d, lws.replicas=%d, desired=%d",
+				role.Name, roleStatus.ReadyReplicas, lwsObj.Status.ReadyReplicas, lwsObj.Status.Replicas, *role.Replicas,
+			)
+		}
 		return fmt.Errorf("role %s lws not ready: readyReplicas=%d, desired=%d",
 			role.Name, roleStatus.ReadyReplicas, *role.Replicas)
 	}

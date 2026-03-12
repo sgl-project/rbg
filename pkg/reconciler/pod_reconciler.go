@@ -17,7 +17,6 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/discovery"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -93,7 +92,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "lws_env") {
+	if utils.ContainsString(r.injectObjects, "lwp_env") {
 		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
@@ -123,8 +122,6 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	if err != nil {
 		return nil, err
 	}
-
-	scheduler.InjectPodGroupProtocolV2(rbg, podTemplateApplyConfiguration)
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
 	return podTemplateApplyConfiguration, nil

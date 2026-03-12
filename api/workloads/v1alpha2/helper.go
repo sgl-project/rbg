@@ -284,20 +284,6 @@ func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode constants.DiscoveryConfig
 	rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey] = string(mode)
 }
 
-// IsVolcanoGangSchedulingV2 checks if volcano gang scheduling is enabled (v1alpha2).
-func (rbg *RoleBasedGroup) IsVolcanoGangSchedulingV2() bool {
-	// In v1alpha2, PodGroupPolicy is not yet implemented
-	// This is a placeholder for future implementation
-	return false
-}
-
-// IsKubeGangSchedulingV2 checks if kube gang scheduling is enabled (v1alpha2).
-func (rbg *RoleBasedGroup) IsKubeGangSchedulingV2() bool {
-	// In v1alpha2, PodGroupPolicy is not yet implemented
-	// This is a placeholder for future implementation
-	return false
-}
-
 // ContainsRBGOwner checks if the RoleBasedGroupScalingAdapter has the given RBG as owner.
 func (rbgsa *RoleBasedGroupScalingAdapter) ContainsRBGOwner(rbg *RoleBasedGroup) bool {
 	for _, owner := range rbgsa.OwnerReferences {

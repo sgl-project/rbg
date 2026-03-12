@@ -127,6 +127,11 @@ func (f *Framework) ExpectRbgV2Condition(
 					return true
 				}
 			}
+			logger.V(1).Info("condition not yet matched",
+				"conditionType", conditionType,
+				"expected", conditionStatus,
+				"currentConditions", newRbg.Status.Conditions,
+			)
 			return false
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())

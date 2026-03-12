@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 const (
@@ -109,14 +110,13 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 }
 
 // DeletePodV2 deletes one pod belonging to a v1alpha2 RoleBasedGroup identified by rbgName.
-// It uses the v1alpha2 SetNameLabelKey ("rbg.workloads.x-k8s.io/name") to find the pod.
+// It uses the v1alpha2 GroupNameLabelKey ("rbg.workloads.x-k8s.io/group-name") to find the pod.
 func DeletePodV2(ctx context.Context, rclient client.Client, namespace string, rbgName string) error {
-	const setNameLabelKeyV2 = "rbg.workloads.x-k8s.io/name"
 	logger := log.FromContext(ctx)
 	podList := &v1.PodList{}
 	if err := rclient.List(
 		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
-			setNameLabelKeyV2: rbgName,
+			constants.GroupNameLabelKey: rbgName,
 		},
 	); err != nil {
 		logger.V(1).Error(err, "list pod error")

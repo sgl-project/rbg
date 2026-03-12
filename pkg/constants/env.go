@@ -55,14 +55,14 @@ const (
 const (
 	// EnvRBGLeaderAddress is the DNS address of the Leader component
 	// Source: Computed as $(INSTANCE_NAME)-0.{svcName}.{namespace}
-	EnvRBGLeaderAddress = "RBG_LEADER_ADDRESS"
+	EnvRBGLeaderAddress = "RBG_LWP_LEADER_ADDRESS"
 
 	// EnvRBGIndex is the Component index within the Instance
-	EnvRBGIndex = "RBG_INDEX"
+	EnvRBGIndex = "RBG_LWP_WORKER_INDEX"
 
 	// EnvRBGSize is the total number of Components in the Instance
 	// Source: Downward API from label rbg.workloads.x-k8s.io/component-size
-	EnvRBGSize = "RBG_SIZE"
+	EnvRBGSize = "RBG_LWP_GROUP_SIZE"
 )
 
 // System environment variable prefix for filtering

@@ -977,12 +977,12 @@ func (r *RoleBasedGroupReconciler) CalculateScalingForAllCoordination(
 func (r *RoleBasedGroupReconciler) getScheduledReplicas(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	rollName string,
+	roleName string,
 ) (int32, error) {
 	podList := &corev1.PodList{}
 	labelSelector := client.MatchingLabels{
 		constants.GroupNameLabelKey: rbg.Name,
-		constants.RoleNameLabelKey:  rollName,
+		constants.RoleNameLabelKey:  roleName,
 	}
 
 	if err := r.client.List(ctx, podList, client.InNamespace(rbg.Namespace), labelSelector); err != nil {

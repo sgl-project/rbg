@@ -19,6 +19,10 @@ import (
 
 const (
 	FieldManager = "rbg"
+	// PodControllerFieldManager is used by the pod controller to manage conditions it owns
+	// (e.g. RestartInProgress). A separate field manager ensures the RBG controller's SSA
+	// patches (Force=true, FieldManager="rbg") cannot overwrite conditions owned here.
+	PodControllerFieldManager = "rbg-pod-controller"
 
 	PatchAll    PatchType = "all"
 	PatchSpec   PatchType = "spec"
@@ -79,6 +83,36 @@ func PatchObjectApplyConfiguration(
 		}
 	}
 
+	return nil
+}
+
+// PatchStatusWithFieldManager patches the status sub-resource using Server-Side Apply with the
+// given field manager and Force=true.
+func PatchStatusWithFieldManager(
+	ctx context.Context, k8sClient client.Client,
+	objApplyConfig interface{}, fieldManager string,
+) error {
+	logger := log.FromContext(ctx)
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(objApplyConfig)
+	if err != nil {
+		logger.Error(err, "Converting obj apply configuration to json.")
+		return err
+	}
+	patch := &unstructured.Unstructured{Object: obj}
+	logger.V(1).Info("patch content", "patchObject", patch.Object)
+	err = k8sClient.Status().Patch(
+		ctx, patch, client.Apply,
+		&client.SubResourcePatchOptions{
+			PatchOptions: client.PatchOptions{
+				FieldManager: fieldManager,
+				Force:        ptr.To[bool](true),
+			},
+		},
+	)
+	if err != nil {
+		logger.Error(err, "Using server side apply to patch object status")
+		return err
+	}
 	return nil
 }
 

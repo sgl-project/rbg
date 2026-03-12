@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
@@ -74,15 +73,6 @@ func InjectPodGroupProtocol(rbg *workloadsv1alpha.RoleBasedGroup, pts *coreapply
 	if rbg.IsKubeGangScheduling() {
 		pts.WithLabels(map[string]string{KubePodGroupLabelKey: rbg.Name})
 	} else if rbg.IsVolcanoGangScheduling() {
-		pts.WithAnnotations(map[string]string{VolcanoPodGroupAnnotationKey: rbg.Name})
-	}
-}
-
-// InjectPodGroupProtocolV2 is the v1alpha2 version of InjectPodGroupProtocol
-func InjectPodGroupProtocolV2(rbg *workloadsv1alpha2.RoleBasedGroup, pts *coreapplyv1.PodTemplateSpecApplyConfiguration) {
-	if rbg.IsKubeGangSchedulingV2() {
-		pts.WithLabels(map[string]string{KubePodGroupLabelKey: rbg.Name})
-	} else if rbg.IsVolcanoGangSchedulingV2() {
 		pts.WithAnnotations(map[string]string{VolcanoPodGroupAnnotationKey: rbg.Name})
 	}
 }

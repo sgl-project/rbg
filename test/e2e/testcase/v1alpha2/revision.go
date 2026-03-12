@@ -63,12 +63,12 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 				f.ExpectRbgV2Equal(rbg)
-				oldSts := &appsv1.StatefulSet{}
+				oldRis := &workloadsv1alpha2.RoleInstanceSet{}
 				err := f.Client.Get(
 					f.Ctx, client.ObjectKey{
 						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
 						Namespace: rbg.Namespace,
-					}, oldSts,
+					}, oldRis,
 				)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
@@ -77,15 +77,15 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				})
 				f.ExpectRbgV2Equal(rbg)
 
-				newSts := &appsv1.StatefulSet{}
+				newRis := &workloadsv1alpha2.RoleInstanceSet{}
 				err = f.Client.Get(
 					f.Ctx, client.ObjectKey{
 						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
 						Namespace: rbg.Namespace,
-					}, newSts,
+					}, newRis,
 				)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
-				gomega.Expect(newSts.Generation).Should(gomega.Equal(oldSts.Generation + 2))
+				gomega.Expect(newRis.Generation).Should(gomega.Equal(oldRis.Generation + 2))
 			},
 		)
 

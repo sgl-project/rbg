@@ -129,11 +129,11 @@ func (r *PodReconciler) setRestartCondition(
 
 	setCondition(rbg, restartCondition)
 
-	// Only patch the conditions, not the RoleStatuses.
-	// RoleStatuses should be managed by RBG controller only.
+	// Only patch the RestartInProgress condition via a dedicated field manager,
+	// so RBG controller's SSA patches (FieldManager="rbg", Force=true) cannot overwrite it.
 	rbgApplyConfig := toRBGApplyConfigurationForConditionsOnly(rbg)
 
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
+	return utils.PatchStatusWithFieldManager(ctx, r.client, rbgApplyConfig, utils.PodControllerFieldManager)
 }
 
 func restartConditionTrue(status workloadsv1alpha2.RoleBasedGroupStatus) bool {
@@ -172,9 +172,13 @@ func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *ap
 	return rbgApplyConfig
 }
 
-// toRBGApplyConfigurationForConditionsOnly creates an apply configuration that only updates conditions.
-// This is used by pod_controller to avoid overwriting RoleStatuses managed by RBG controller.
-func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+// ToRBGApplyConfigurationForStatusWithConditions creates an apply configuration with explicit
+// conditions. Used by the RBG controller to patch only the conditions it owns (excluding
+// RestartInProgress which is owned by the pod controller via PodControllerFieldManager).
+func ToRBGApplyConfigurationForStatusWithConditions(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	conditions []metav1.Condition,
+) *applyconfiguration.RoleBasedGroupApplyConfiguration {
 	if rbg == nil {
 		return nil
 	}
@@ -183,7 +187,33 @@ func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGr
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().
-			WithConditions(ToConditionApplyConfigurations(rbg.Status.Conditions)...))
+			WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
+			WithConditions(ToConditionApplyConfigurations(conditions)...))
+	return rbgApplyConfig
+}
+
+// toRBGApplyConfigurationForConditionsOnly creates an apply configuration that only updates the
+// RestartInProgress condition. Used by pod_controller with PodControllerFieldManager so the RBG
+// controller (FieldManager="rbg", Force=true) cannot overwrite this condition.
+func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+	if rbg == nil {
+		return nil
+	}
+	gkv := utils.GetRbgGVK()
+
+	// Only include the RestartInProgress condition.
+	var restartConditions []metav1.Condition
+	for _, cond := range rbg.Status.Conditions {
+		if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+			restartConditions = append(restartConditions, cond)
+		}
+	}
+
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gkv.Kind).
+		WithAPIVersion(gkv.GroupVersion().String()).
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithConditions(ToConditionApplyConfigurations(restartConditions)...))
 	return rbgApplyConfig
 }
 
