@@ -14,6 +14,7 @@ const (
 	Succeed                           = "Succeed"
 	FailedUpdateStatus                = "FailedUpdateStatus"
 	FailedCreatePodGroup              = "FailedCreatePodGroup"
+	FailedReconcilePodGroup           = "FailedReconcilePodGroup"
 	FailedCreateRevision              = "FailedCreateRevision"
 	FailedReconcileDiscoveryConfigMap = "FailedReconcileDiscoveryConfigMap"
 	SucceedCreateRevision             = "SucceedCreateRevision"

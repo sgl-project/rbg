@@ -27,6 +27,25 @@ const (
 	// DisableExclusiveKeyAnnotationKey can be set to "true" on a Pod template
 	// to skip exclusive-topology affinity injection for that pod.
 	DisableExclusiveKeyAnnotationKey = RBGPrefix + "role-disable-exclusive"
+
+	// GangSchedulingAnnotationKey enables gang scheduling for a RoleBasedGroup when set to "true".
+	// When enabled, the controller will create a PodGroup CR managed by the scheduler
+	// configured via --scheduler-name flag (scheduler-plugins or volcano).
+	// Example: rbg.workloads.x-k8s.io/gang-scheduling: "true"
+	GangSchedulingAnnotationKey = RBGPrefix + "group-gang-scheduling"
+
+	// GangSchedulingScheduleTimeoutSecondsKey specifies the schedule timeout seconds for
+	// scheduler-plugins based gang scheduling. Defaults to 60 seconds if not set.
+	// Example: rbg.workloads.x-k8s.io/gang-scheduling-timeout: "120"
+	GangSchedulingScheduleTimeoutSecondsKey = RBGPrefix + "group-gang-scheduling-timeout"
+
+	// GangSchedulingVolcanoPriorityClassKey specifies the PriorityClassName for volcano gang scheduling.
+	// Example: rbg.workloads.x-k8s.io/gang-scheduling-volcano-priority: "system-node-critical"
+	GangSchedulingVolcanoPriorityClassKey = RBGPrefix + "group-gang-scheduling-volcano-priority"
+
+	// GangSchedulingVolcanoQueueKey specifies the Queue for volcano gang scheduling.
+	// Example: rbg.workloads.x-k8s.io/gang-scheduling-volcano-queue: "default"
+	GangSchedulingVolcanoQueueKey = RBGPrefix + "group-gang-scheduling-volcano-queue"
 )
 
 // Role level annotations
@@ -43,6 +62,20 @@ const (
 const (
 	// RoleInstancePatternKey identifies the RoleInstance organization pattern (Stateful/Stateless)
 	RoleInstancePatternKey = RBGPrefix + "role-instance-pattern"
+
+	// RoleInstanceGangSchedulingAnnotationKey enables gang-scheduling aware behavior at the
+	// RoleInstance level when set to "true". It is derived automatically from the RBG-level
+	// GangSchedulingAnnotationKey annotation during RoleInstanceSet reconciliation, but users
+	// can also set it explicitly in role.Annotations within the RBG spec.
+	//
+	// When enabled, the RoleInstance controller enforces gang-scheduling constraints:
+	//   1. If any orphan pod (not yet GC'd) exists, pod creation fails immediately instead
+	//      of silently skipping — preventing partial group startup.
+	//   2. If an in-place update cannot be applied to a pod, all pods of the instance are
+	//      recreated atomically so the PodGroup minimum member requirement is met.
+	//
+	// Example: rbg.workloads.x-k8s.io/role-instance-gang-scheduling: "true"
+	RoleInstanceGangSchedulingAnnotationKey = RBGPrefix + "role-instance-gang-scheduling"
 
 	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
 	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"

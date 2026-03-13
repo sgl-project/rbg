@@ -81,15 +81,17 @@ type RoleBasedGroupReconciler struct {
 	recorder           record.EventRecorder
 	workloadReconciler map[string]reconciler.WorkloadReconciler
 	reconcilerMu       sync.RWMutex
+	podGroupManager    scheduler.PodGroupManager
 }
 
-func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
+func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerPlugin scheduler.SchedulerPluginType) *RoleBasedGroupReconciler {
 	return &RoleBasedGroupReconciler{
 		client:             mgr.GetClient(),
 		apiReader:          mgr.GetAPIReader(),
 		scheme:             mgr.GetScheme(),
 		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
 		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+		podGroupManager:    scheduler.NewPodGroupManager(schedulerPlugin, mgr.GetClient()),
 	}
 }
 
@@ -170,12 +172,18 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Reconcile roles, do create/update actions for roles.
+	// Step 6: Reconcile PodGroup for gang scheduling (annotation-driven).
+	if err := r.reconcilePodGroup(ctx, rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
+		return ctrl.Result{}, err
+	}
+
+	// Step 7: Reconcile roles, do create/update actions for roles.
 	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Cleanup orphaned resources
+	// Step 8: Cleanup orphaned resources
 	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -369,6 +377,13 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, cmApplyConfig, utils.PatchSpec)
 }
 
+func (r *RoleBasedGroupReconciler) reconcilePodGroup(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	return r.podGroupManager.ReconcilePodGroup(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader)
+}
+
 func (r *RoleBasedGroupReconciler) reconcileRoles(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -532,6 +547,11 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 	rec, err := reconciler.NewWorkloadReconciler(workloadSpec, r.scheme, r.client)
 	if err != nil {
 		return nil, err
+	}
+
+	// Inject PodGroupManager if the reconciler supports it (PodGroupManagerSetter).
+	if setter, ok := rec.(reconciler.PodGroupManagerSetter); ok {
+		setter.SetPodGroupManager(r.podGroupManager)
 	}
 
 	// Cache the reconciler
