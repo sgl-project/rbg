@@ -99,7 +99,6 @@ func updateIdentity(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv
 	}
 	identityLabels := map[string]string{
 		apps.StatefulSetPodNameLabel:        instance.Name,
-		apps.PodIndexLabel:                  strconv.Itoa(ordinal),
 		constants.RoleInstanceIndexLabelKey: strconv.Itoa(ordinal),
 	}
 	for k, v := range identityLabels {
@@ -213,7 +212,6 @@ func newVersionedInstance(
 	// Set identity labels and propagate them into each component's pod template.
 	identityLabels := map[string]string{
 		apps.StatefulSetPodNameLabel:        instance.Name,
-		apps.PodIndexLabel:                  strconv.Itoa(ordinal),
 		constants.RoleInstanceIndexLabelKey: strconv.Itoa(ordinal),
 	}
 	for k, v := range identityLabels {
