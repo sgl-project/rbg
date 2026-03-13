@@ -182,11 +182,11 @@ jobs:
         if: failure()
         run: |
           echo "=== Controller logs ==="
-          kubectl logs -n rbgs-system -l control-plane=controller-manager --tail=200 || true
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 || true
           echo "=== Controller previous logs (if restarted) ==="
-          kubectl logs -n rbgs-system -l control-plane=controller-manager --tail=200 --previous 2>/dev/null || true
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 --previous 2>/dev/null || true
           echo "=== Controller pod describe ==="
-          kubectl describe pods -n rbgs-system -l control-plane=controller-manager || true
+          kubectl describe pods -n rbgs-system -l control-plane=rbgs-controller || true
           echo "=== All pods in test namespaces ==="
           kubectl get pods -A | grep test-ns || true
           echo "=== Events ==="
