@@ -1,9 +1,3 @@
-//go:build ignore
-// +build ignore
-
-// TODO: This test file needs to be updated for v1alpha2 RoleSpec structure.
-// v1alpha2 uses Pattern (StandalonePattern/LeaderWorkerPattern) instead of TemplateSource/LeaderWorkerSet.
-
 package reconciler
 
 import (
@@ -27,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -229,20 +224,22 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 						APIVersion: "leaderworkerset.x-k8s.io/v1",
 						Kind:       "LeaderWorkerSet",
 					},
-					TemplateSource: workloadsv1alpha2.TemplateSource{
-						Template: &corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{
-								Containers: []corev1.Container{
-									{
-										Name:  "test-container",
-										Image: "nginx:latest",
+					Pattern: workloadsv1alpha2.Pattern{
+						LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+							Size: ptr.To(int32(3)),
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &corev1.PodTemplateSpec{
+									Spec: corev1.PodSpec{
+										Containers: []corev1.Container{
+											{
+												Name:  "test-container",
+												Image: "nginx:latest",
+											},
+										},
 									},
 								},
 							},
 						},
-					},
-					LeaderWorkerSet: &workloadsv1alpha2.LeaderWorkerTemplate{
-						Size: ptr.To(int32(3)),
 					},
 				},
 			},

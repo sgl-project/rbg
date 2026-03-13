@@ -1,5 +1,3 @@
-//go:build ignore
-
 // svc_reconciler_test.go
 package reconciler
 
@@ -12,25 +10,25 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
-	"sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	// Setup test environment
-	s := scheme.Scheme
-	require.NoError(t, workloadsv1alpha1.AddToScheme(s))
+	s := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
 	require.NoError(t, appsv1.AddToScheme(s))
 
 	// Create test objects
-	rbg := v1alpha1.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
-		[]workloadsv1alpha1.RoleSpec{
-			v1alpha1.BuildBasicRole("test-role-statefulset").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
-			v1alpha1.BuildBasicRole("test-role-instanceset").WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).Obj(),
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
+		[]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role-statefulset").WithWorkload("apps/v1", "StatefulSet").Obj(),
+			wrappersv2.BuildStandaloneRole("test-role-roleinstanceset").WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet").Obj(),
 		},
 	).Obj()
 
@@ -46,15 +44,15 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 		},
 	}
 
-	instanceSet := &workloadsv1alpha1.InstanceSet{
+	roleInstanceSet := &workloadsv1alpha2.RoleInstanceSet{
 		TypeMeta: metav1.TypeMeta{
-			Kind:       "InstanceSet",
-			APIVersion: "workloads.x-k8s.io/v1alpha1",
+			Kind:       "RoleInstanceSet",
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[1]),
 			Namespace: rbg.Namespace,
-			UID:       "test-instanceset",
+			UID:       "test-roleinstanceset",
 		},
 	}
 
@@ -62,7 +60,7 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	rbg.ObjectMeta.Labels = map[string]string{"app": "test"}
 
 	// Create fake client
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg, statefulset, instanceSet).Build()
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg, statefulset, roleInstanceSet).Build()
 
 	reconciler := NewServiceReconciler(cl)
 
