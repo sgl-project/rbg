@@ -31,6 +31,8 @@ const (
 	// GangSchedulingAnnotationKey enables gang scheduling for a RoleBasedGroup when set to "true".
 	// When enabled, the controller will create a PodGroup CR managed by the scheduler
 	// configured via --scheduler-name flag (scheduler-plugins or volcano).
+	// Setting this annotation automatically derives RoleInstanceGangSchedulingAnnotationKey
+	// for each role's RoleInstanceSet, so they must NOT be set simultaneously.
 	// Example: rbg.workloads.x-k8s.io/gang-scheduling: "true"
 	GangSchedulingAnnotationKey = RBGPrefix + "group-gang-scheduling"
 
@@ -67,6 +69,11 @@ const (
 	// RoleInstance level when set to "true". It is derived automatically from the RBG-level
 	// GangSchedulingAnnotationKey annotation during RoleInstanceSet reconciliation, but users
 	// can also set it explicitly in role.Annotations within the RBG spec.
+	//
+	// NOTE: This annotation must NOT be set on the RBG object (metadata.annotations) directly
+	// when GangSchedulingAnnotationKey is already set, as they are mutually exclusive at the
+	// RBG level. Use either GangSchedulingAnnotationKey (group-level) or set
+	// RoleInstanceGangSchedulingAnnotationKey per role via role.Annotations, not both.
 	//
 	// When enabled, the RoleInstance controller enforces gang-scheduling constraints:
 	//   1. If any orphan pod (not yet GC'd) exists, pod creation fails immediately instead
