@@ -20,6 +20,7 @@ import (
 type WorkloadV2EqualChecker interface {
 	ExpectWorkloadEqualV2(rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec) error
 	ExpectPodTemplateLabelContainsV2(rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, labels ...map[string]string) error
+	ExpectPodTemplateAnnotationContainsV2(rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, annotations ...map[string]string) error
 	ExpectWorkloadNotExistV2(rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec) error
 	ExpectTopologyAffinityV2(rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, topologyKey string) error
 }
@@ -103,6 +104,33 @@ func (s *RoleInstanceSetCheckerV2) ExpectPodTemplateLabelContainsV2(
 		for key, value := range labelMap {
 			if !utils.MapContains(podList.Items[0].Labels, key, value) {
 				return fmt.Errorf("pod labels missing key=%s value=%s", key, value)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *RoleInstanceSetCheckerV2) ExpectPodTemplateAnnotationContainsV2(
+	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, annotationMaps ...map[string]string,
+) error {
+	podList := &corev1.PodList{}
+	err := s.client.List(s.ctx, podList,
+		client.InNamespace(rbg.Namespace),
+		client.MatchingLabels{
+			constants.GroupNameLabelKey: rbg.Name,
+			constants.RoleNameLabelKey:  role.Name,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("list pods for role %s failed: %w", role.Name, err)
+	}
+	if len(podList.Items) == 0 {
+		return fmt.Errorf("no pods found for role %s", role.Name)
+	}
+	for _, annotationMap := range annotationMaps {
+		for key, value := range annotationMap {
+			if !utils.MapContains(podList.Items[0].Annotations, key, value) {
+				return fmt.Errorf("pod annotations missing key=%s value=%s", key, value)
 			}
 		}
 	}
@@ -235,6 +263,12 @@ func (s *LeaderWorkerSetCheckerV2) ExpectPodTemplateLabelContainsV2(
 	return nil
 }
 
+func (s *LeaderWorkerSetCheckerV2) ExpectPodTemplateAnnotationContainsV2(
+	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, annotations ...map[string]string,
+) error {
+	return (&RoleInstanceSetCheckerV2{ctx: s.ctx, client: s.client}).ExpectPodTemplateAnnotationContainsV2(rbg, role, annotations...)
+}
+
 func (s *LeaderWorkerSetCheckerV2) ExpectWorkloadNotExistV2(
 	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec,
 ) error {
@@ -286,6 +320,12 @@ func (s *DeploymentCheckerV2) ExpectPodTemplateLabelContainsV2(
 	return (&RoleInstanceSetCheckerV2{ctx: s.ctx, client: s.client}).ExpectPodTemplateLabelContainsV2(rbg, role, labels...)
 }
 
+func (s *DeploymentCheckerV2) ExpectPodTemplateAnnotationContainsV2(
+	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, annotations ...map[string]string,
+) error {
+	return (&RoleInstanceSetCheckerV2{ctx: s.ctx, client: s.client}).ExpectPodTemplateAnnotationContainsV2(rbg, role, annotations...)
+}
+
 func (s *DeploymentCheckerV2) ExpectWorkloadNotExistV2(
 	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec,
 ) error {
@@ -321,6 +361,12 @@ func (s *StatefulSetCheckerV2) ExpectPodTemplateLabelContainsV2(
 	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, labels ...map[string]string,
 ) error {
 	return (&RoleInstanceSetCheckerV2{ctx: s.ctx, client: s.client}).ExpectPodTemplateLabelContainsV2(rbg, role, labels...)
+}
+
+func (s *StatefulSetCheckerV2) ExpectPodTemplateAnnotationContainsV2(
+	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, annotations ...map[string]string,
+) error {
+	return (&RoleInstanceSetCheckerV2{ctx: s.ctx, client: s.client}).ExpectPodTemplateAnnotationContainsV2(rbg, role, annotations...)
 }
 
 func (s *StatefulSetCheckerV2) ExpectWorkloadNotExistV2(

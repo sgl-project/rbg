@@ -53,6 +53,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
 	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"sigs.k8s.io/rbgs/version"
 	// +kubebuilder:scaffold:imports
@@ -101,6 +102,8 @@ func main() {
 		// Controller runtime options
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
+		// Gang scheduling scheduler name: scheduler-plugins or volcano
+		schedulerPlugin string
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -135,6 +138,11 @@ func main() {
 		"The number of worker threads used by the the RBGS controller.",
 	)
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 120*time.Second, "Informer cache sync timeout.")
+	flag.StringVar(
+		&schedulerPlugin, "scheduler-name", string(scheduler.KubeSchedulerPlugin),
+		"The scheduler name to use for gang scheduling. Supported values: scheduler-plugins, volcano. "+
+			"Defaults to scheduler-plugins.",
+	)
 
 	flag.Parse()
 	opts := zap.Options{
@@ -282,7 +290,7 @@ func main() {
 		CacheSyncTimeout:        cacheSyncTimeout,
 	}
 
-	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr)
+	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerPlugin))
 	if err = rbgReconciler.CheckCrdExists(); err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)

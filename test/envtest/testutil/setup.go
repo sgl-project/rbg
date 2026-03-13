@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
 
@@ -191,7 +192,7 @@ func SetupManager(ctx context.Context) (manager.Manager, error) {
 
 // SetupRBGController sets up the RoleBasedGroup controller
 func SetupRBGController(mgr manager.Manager) error {
-	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr)
+	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin)
 	return rbgReconciler.SetupWithManager(mgr, controller.Options{})
 }
 

@@ -17,9 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
-	wrappers "sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
@@ -27,7 +28,7 @@ import (
 func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = schedv1alpha1.AddToScheme(scheme)
 	_ = volcanoschedulingv1beta1.AddToScheme(scheme)
 	_ = apiextensionsv1.AddToScheme(scheme)
@@ -62,17 +63,21 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	tests := []struct {
 		name        string
 		client      client.Client
-		rbg         *workloadsv1alpha.RoleBasedGroup
+		rbg         *workloadsv1alpha2.RoleBasedGroup
+		pluginType  SchedulerPluginType
 		apiReader   client.Reader
 		preFunc     func()
 		expectPG    bool
 		expectError bool
 	}{
 		{
-			name:   "create pod group when gang scheduling enabled and pod group not exists",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
-				WithKubeGangScheduling(true).Obj(),
+			name:       "create pod group when kube gang scheduling enabled and pod group not exists",
+			client:     fake.NewClientBuilder().WithScheme(scheme).Build(),
+			pluginType: KubeSchedulerPlugin,
+			rbg: wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+				WithAnnotations(map[string]string{
+					constants.GangSchedulingAnnotationKey: "true",
+				}).Obj(),
 			apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&apiextensionsv1.CustomResourceDefinition{
 					ObjectMeta: metav1.ObjectMeta{Name: KubePodGroupCrdName},
@@ -90,41 +95,15 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:   "create kube pod group with instanceset lws role should use lws size",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: func() *workloadsv1alpha.RoleBasedGroup {
-				role := wrappers.BuildBasicRole("instance-lws-role").
-					WithWorkload(workloadsv1alpha.InstanceSetWorkloadType).
-					WithReplicas(2).Obj()
-				role.LeaderWorkerSet = &workloadsv1alpha.LeaderWorkerTemplate{
-					Size: ptr.To(int32(3)),
-				}
-
-				return wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
-					WithRoles([]workloadsv1alpha.RoleSpec{role}).
-					WithKubeGangScheduling(true).Obj()
-			}(),
-			apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-				&apiextensionsv1.CustomResourceDefinition{
-					ObjectMeta: metav1.ObjectMeta{Name: KubePodGroupCrdName},
-					Status: apiextensionsv1.CustomResourceDefinitionStatus{
-						Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
-							{
-								Type:   apiextensionsv1.Established,
-								Status: apiextensionsv1.ConditionTrue,
-							},
-						},
-					},
-				},
-			).Build(),
-			expectPG:    true,
-			expectError: false,
-		},
-		{
-			name:   "create pod group when volcano gang scheduling enabled and pod group not exists",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
-				WithVolcanoGangScheduling("high-priority", "gpu-queue").Obj(),
+			name:       "create pod group when volcano gang scheduling enabled and pod group not exists",
+			client:     fake.NewClientBuilder().WithScheme(scheme).Build(),
+			pluginType: VolcanoSchedulerPlugin,
+			rbg: wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+				WithAnnotations(map[string]string{
+					constants.GangSchedulingAnnotationKey:           "true",
+					constants.GangSchedulingVolcanoPriorityClassKey: "high-priority",
+					constants.GangSchedulingVolcanoQueueKey:         "gpu-queue",
+				}).Obj(),
 			apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&apiextensionsv1.CustomResourceDefinition{
 					ObjectMeta: metav1.ObjectMeta{Name: VolcanoPodGroupCrdName},
@@ -142,23 +121,10 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:   "rbg with nil PodGroupPolicy",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      rbgName,
-					Namespace: rbgNamespace,
-				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					PodGroupPolicy: nil,
-					Roles: []workloadsv1alpha.RoleSpec{
-						{
-							Name:     "role1",
-							Replicas: ptr.To[int32](5), // Updated replica count
-						},
-					},
-				},
-			},
+			name:       "gang scheduling disabled (no annotation)",
+			client:     fake.NewClientBuilder().WithScheme(scheme).Build(),
+			pluginType: KubeSchedulerPlugin,
+			rbg:        wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).Obj(),
 			preFunc: func() {
 				watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
 				runtimeController.Owns(&schedv1alpha1.PodGroup{})
@@ -167,50 +133,36 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:   "rbg with nil KubeScheduling",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      rbgName,
-					Namespace: rbgNamespace,
-				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					PodGroupPolicy: &workloadsv1alpha.PodGroupPolicy{
-						PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
-							KubeScheduling: nil,
-						},
-					},
-					Roles: []workloadsv1alpha.RoleSpec{
-						{
-							Name:     "role1",
-							Replicas: ptr.To[int32](5), // Updated replica count
-						},
-					},
-				},
+			name:       "delete pod group when gang scheduling disabled and pod group exists",
+			client:     fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
+			pluginType: KubeSchedulerPlugin,
+			rbg:        wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).Obj(),
+			preFunc: func() {
+				watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
+				runtimeController.Owns(&schedv1alpha1.PodGroup{})
 			},
 			expectPG:    false,
 			expectError: false,
 		},
 		{
-			name:   "update pod group when gang scheduling enabled and pod group exists with different min member",
-			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
-			rbg: &workloadsv1alpha.RoleBasedGroup{
+			name:       "update pod group when kube gang scheduling enabled and min member changed",
+			client:     fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
+			pluginType: KubeSchedulerPlugin,
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      rbgName,
 					Namespace: rbgNamespace,
-				},
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					PodGroupPolicy: &workloadsv1alpha.PodGroupPolicy{
-						PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
-							KubeScheduling: &workloadsv1alpha.KubeSchedulingPodGroupPolicySource{
-								ScheduleTimeoutSeconds: ptr.To(int32(30)),
-							},
-						},
+					UID:       "rbg-test-uid",
+					Annotations: map[string]string{
+						constants.GangSchedulingAnnotationKey:             "true",
+						constants.GangSchedulingScheduleTimeoutSecondsKey: "30",
 					},
-					Roles: []workloadsv1alpha.RoleSpec{
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "role1",
-							Replicas: ptr.To[int32](5), // Updated replica count
+							Replicas: ptr.To[int32](5),
 						},
 					},
 				},
@@ -231,53 +183,28 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 			expectPG:    true,
 			expectError: false,
 		},
-		{
-			name:   "delete pod group when gang scheduling disabled and pod group exists",
-			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroup).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
-				WithKubeGangScheduling(false).Obj(),
-			preFunc: func() {
-				watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
-				runtimeController.Owns(&schedv1alpha1.PodGroup{})
-			},
-			expectPG:    false,
-			expectError: false,
-		},
-		{
-			name:   "do nothing when gang scheduling disabled and pod group not exists",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: wrappers.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
-				WithKubeGangScheduling(false).Obj(),
-			preFunc: func() {
-				watchedWorkload.LoadOrStore(KubePodGroupCrdName, struct{}{})
-				runtimeController.Owns(&schedv1alpha1.PodGroup{})
-			},
-			expectPG:    false,
-			expectError: false,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-
-				scheduler := NewPodGroupScheduler(tt.client)
+				mgr := NewPodGroupManager(tt.pluginType, tt.client)
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				if tt.preFunc != nil {
 					tt.preFunc()
 				}
-				err := scheduler.Reconcile(ctx, tt.rbg, &runtimeController, &watchedWorkload, tt.apiReader)
+				err := mgr.ReconcilePodGroup(ctx, tt.rbg, &runtimeController, &watchedWorkload, tt.apiReader)
 
 				// Verify
 				if (err != nil) != tt.expectError {
-					t.Errorf("PodGroupScheduler.Reconcile() error = %v, expectError %v", err, tt.expectError)
+					t.Errorf("PodGroupManager.ReconcilePodGroup() error = %v, expectError %v", err, tt.expectError)
 				}
 
 				// Check if pod group exists or not
 				var obj client.Object
-				if tt.rbg.IsVolcanoGangScheduling() {
+				if tt.pluginType == VolcanoSchedulerPlugin {
 					pg := &volcanoschedulingv1beta1.PodGroup{}
-					err = scheduler.client.Get(
+					err = tt.client.Get(
 						context.Background(), types.NamespacedName{
 							Name:      tt.rbg.Name,
 							Namespace: tt.rbg.Namespace,
@@ -286,7 +213,7 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 					obj = pg
 				} else {
 					pg := &schedv1alpha1.PodGroup{}
-					err = scheduler.client.Get(
+					err = tt.client.Get(
 						context.Background(), types.NamespacedName{
 							Name:      tt.rbg.Name,
 							Namespace: tt.rbg.Namespace,

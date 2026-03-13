@@ -166,6 +166,22 @@ func (f *Framework) ExpectWorkloadV2PodTemplateLabelContains(
 	).Should(gomega.BeTrue())
 }
 
+// ExpectWorkloadV2PodTemplateAnnotationContains checks that the workload's pod template has the given annotations.
+func (f *Framework) ExpectWorkloadV2PodTemplateAnnotationContains(
+	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec,
+	annotations ...map[string]string,
+) {
+	wlType := workloadTypeFromRoleV2(role)
+	wlCheck, err := workloads.NewWorkloadEqualCheckerV2(f.Ctx, f.Client, wlType)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	gomega.Eventually(
+		func() bool {
+			return wlCheck.ExpectPodTemplateAnnotationContainsV2(rbg, role, annotations...) == nil
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue())
+}
+
 // ExpectWorkloadV2ExclusiveTopology checks that the workload has the correct exclusive topology affinity.
 func (f *Framework) ExpectWorkloadV2ExclusiveTopology(
 	rbg *workloadsv1alpha2.RoleBasedGroup, role workloadsv1alpha2.RoleSpec, topologyKey string,

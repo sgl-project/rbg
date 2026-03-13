@@ -224,6 +224,12 @@ func newVersionedInstance(
 		*metav1.NewControllerRef(currentSet, controllerKind),
 	}
 
+	// Propagate gang-scheduling annotation from RoleInstanceSet to RoleInstance so that
+	// the instance controller can enforce gang-scheduling constraints without access to the RBG.
+	if v, ok := currentSet.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey]; ok {
+		instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] = v
+	}
+
 	return instance
 }
 
