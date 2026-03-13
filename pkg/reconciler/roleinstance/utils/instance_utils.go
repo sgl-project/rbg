@@ -75,13 +75,13 @@ func FormatComponentPodName(instanceName, componentName string, id int32, roleTe
 
 func InitComponentPodLabels(instanceName, componentName string, id int32, roleTemplateType constants.RoleTemplateType) map[string]string {
 	l := GetSelectorMatchLabels(instanceName)
-	l[constants.RoleInstanceComponentNameKey] = componentName
-	l[constants.RoleInstanceComponentIDKey] = fmt.Sprintf("%d", id)
+	l[constants.ComponentNameLabelKey] = componentName
+	l[constants.ComponentIDLabelKey] = fmt.Sprintf("%d", id)
 	if roleTemplateType == constants.LeaderWorkerSetTemplateType {
-		l[constants.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id)
+		l[constants.ComponentIndexLabelKey] = fmt.Sprintf("%d", id)
 		// when roleTemplateType is LWS, component name will be controlled by RBG-controller
 		if componentName == "worker" {
-			l[constants.RBGComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
+			l[constants.ComponentIndexLabelKey] = fmt.Sprintf("%d", id+1)
 		}
 	}
 
@@ -142,7 +142,7 @@ func NextRevision(revisions []*apps.ControllerRevision) int64 {
 }
 
 func GetPodComponentName(pod *v1.Pod) string {
-	componentName := pod.Labels[constants.RoleInstanceComponentNameKey]
+	componentName := pod.Labels[constants.ComponentNameLabelKey]
 	if len(componentName) != 0 {
 		return componentName
 	}
@@ -154,7 +154,7 @@ func GetPodComponentName(pod *v1.Pod) string {
 }
 
 func GetPodComponentID(pod *v1.Pod) int32 {
-	componentId := pod.Labels[constants.RoleInstanceComponentIDKey]
+	componentId := pod.Labels[constants.ComponentIDLabelKey]
 	if len(componentId) != 0 {
 		id, _ := strconv.Atoi(componentId)
 		return int32(id)
