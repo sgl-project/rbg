@@ -141,7 +141,10 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 		return nil
 	}
 
-	if podGroup.Spec.MinMember != int32(rbg.GetGroupSize()) {
+	desiredMinMember := int32(rbg.GetGroupSize())
+	desiredTimeout := getScheduleTimeoutSeconds(rbg)
+	if podGroup.Spec.MinMember != desiredMinMember ||
+		(podGroup.Spec.ScheduleTimeoutSeconds == nil || *podGroup.Spec.ScheduleTimeoutSeconds != *desiredTimeout) {
 		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if fetchErr := m.client.Get(
 				ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup,
@@ -151,7 +154,8 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 			if !utils.CheckOwnerReference(podGroup.OwnerReferences, gvk) {
 				podGroup.OwnerReferences = append(podGroup.OwnerReferences, *metav1.NewControllerRef(rbg, gvk))
 			}
-			podGroup.Spec.MinMember = int32(rbg.GetGroupSize())
+			podGroup.Spec.MinMember = desiredMinMember
+			podGroup.Spec.ScheduleTimeoutSeconds = desiredTimeout
 			return m.client.Update(ctx, podGroup)
 		})
 		if updateErr != nil {

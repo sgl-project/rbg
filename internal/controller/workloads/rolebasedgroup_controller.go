@@ -229,6 +229,23 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 
 func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
+
+	// Validate that group-gang-scheduling and role-instance-gang-scheduling are not both set
+	// on the RBG metadata.annotations, as they are mutually exclusive at the RBG level.
+	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" &&
+		rbg.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "true" {
+		err := fmt.Errorf(
+			"annotations %q and %q cannot be set simultaneously on the same RoleBasedGroup; "+
+				"use %q for group-level gang scheduling, or set %q per role via role.Annotations",
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+		)
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidGangSchedulingAnnotations, err.Error())
+		return err
+	}
+
 	// Validate RoleTemplates
 	if err := workloadsv1alpha2.ValidateRoleTemplates(rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
