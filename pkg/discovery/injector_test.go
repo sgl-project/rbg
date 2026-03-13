@@ -493,6 +493,14 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 					Value: "test-rbg",
 				},
 				{
+					Name: "RBG_ROLE_INDEX",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['apps.kubernetes.io/pod-index']",
+						},
+					},
+				},
+				{
 					Name:  "RBG_ROLE_NAME",
 					Value: "worker",
 				},
@@ -550,6 +558,14 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 				{
 					Name:  "RBG_GROUP_NAME",
 					Value: "test-rbg",
+				},
+				{
+					Name: "RBG_ROLE_INDEX",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['apps.kubernetes.io/pod-index']",
+						},
+					},
 				},
 				{
 					Name:  "RBG_ROLE_NAME",
