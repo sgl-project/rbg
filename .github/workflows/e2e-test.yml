@@ -149,6 +149,16 @@ jobs:
         run: |
           kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
 
+      - name: Verify CRDs are installed
+        run: |
+          echo "Verifying CRDs from config/crd/bases are installed..."
+          for f in config/crd/bases/*.yaml; do
+            CRD_NAME=$(grep '^  name:' "$f" | head -1 | awk '{print $2}')
+            echo "Checking CRD: $CRD_NAME"
+            kubectl get crd "$CRD_NAME"
+          done
+          echo "All CRDs verified successfully"
+
       - name: Pre-load e2e test images
         run: |
           # Pull and load e2e test images to avoid image pull timeout during tests
