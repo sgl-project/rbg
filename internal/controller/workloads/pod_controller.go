@@ -6,6 +6,7 @@ import (
 
 	"golang.org/x/net/context"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -126,6 +127,7 @@ func (r *PodReconciler) setRestartCondition(
 			Message:            "RBG Restart in progress",
 		}
 	}
+	restartCondition.ObservedGeneration = rbg.Generation
 
 	setCondition(rbg, restartCondition)
 
@@ -146,18 +148,7 @@ func restartConditionTrue(status workloadsv1alpha2.RoleBasedGroupStatus) bool {
 }
 
 func setCondition(rbg *workloadsv1alpha2.RoleBasedGroup, newCondition metav1.Condition) {
-	found := false
-	for i, curCondition := range rbg.Status.Conditions {
-		if newCondition.Type == curCondition.Type {
-			found = true
-			if newCondition.Status != curCondition.Status {
-				rbg.Status.Conditions[i] = newCondition
-			}
-		}
-	}
-	if !found {
-		rbg.Status.Conditions = append(rbg.Status.Conditions, newCondition)
-	}
+	meta.SetStatusCondition(&rbg.Status.Conditions, newCondition)
 }
 
 func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
@@ -168,7 +159,10 @@ func ToRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *ap
 	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
-		WithStatus(applyconfiguration.RoleBasedGroupStatus().WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).WithConditions(ToConditionApplyConfigurations(rbg.Status.Conditions)...))
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithObservedGeneration(rbg.Status.ObservedGeneration).
+			WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
+			WithConditions(ToConditionApplyConfigurations(rbg.Status.Conditions)...))
 	return rbgApplyConfig
 }
 
@@ -237,6 +231,7 @@ func ToConditionApplyConfigurations(conds []metav1.Condition) []*metav1ac.Condit
 			WithStatus(c.Status).
 			WithReason(c.Reason).
 			WithMessage(c.Message).
+			WithObservedGeneration(c.ObservedGeneration).
 			WithLastTransitionTime(c.LastTransitionTime))
 	}
 	return out

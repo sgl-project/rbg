@@ -654,6 +654,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 			Message:            "Not all role ready",
 		}
 	}
+	readyCondition.ObservedGeneration = rbg.Generation
 
 	setCondition(rbg, readyCondition)
 	rbg.Status.ObservedGeneration = rbg.Generation
