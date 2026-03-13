@@ -231,9 +231,9 @@ type Pattern struct {
 	// +optional
 	LeaderWorkerPattern *LeaderWorkerPattern `json:"leaderWorkerPattern,omitempty"`
 
-	// CustomComponentsPatten defines a pattern with custom components.
+	// CustomComponentsPattern defines a pattern with custom components.
 	// +optional
-	CustomComponentsPatten *CustomComponentsPattern `json:"customComponentsPatten,omitempty"`
+	CustomComponentsPattern *CustomComponentsPattern `json:"customComponentsPattern,omitempty"`
 }
 
 // TemplateSource defines either an inline template or a reference to a RoleTemplate.

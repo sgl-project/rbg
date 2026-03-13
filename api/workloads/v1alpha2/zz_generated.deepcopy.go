@@ -430,8 +430,8 @@ func (in *Pattern) DeepCopyInto(out *Pattern) {
 		*out = new(LeaderWorkerPattern)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.CustomComponentsPatten != nil {
-		in, out := &in.CustomComponentsPatten, &out.CustomComponentsPatten
+	if in.CustomComponentsPattern != nil {
+		in, out := &in.CustomComponentsPattern, &out.CustomComponentsPattern
 		*out = new(CustomComponentsPattern)
 		(*in).DeepCopyInto(*out)
 	}

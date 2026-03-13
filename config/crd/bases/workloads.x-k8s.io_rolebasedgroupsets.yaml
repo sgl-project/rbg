@@ -24284,8 +24284,8 @@ spec:
                           description: Annotations is an unstructured key value map
                             stored with a resource.
                           type: object
-                        customComponentsPatten:
-                          description: CustomComponentsPatten defines a pattern with
+                        customComponentsPattern:
+                          description: CustomComponentsPattern defines a pattern with
                             custom components.
                           properties:
                             components:

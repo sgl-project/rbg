@@ -140,11 +140,11 @@ func (b *RoleSpecApplyConfiguration) WithLeaderWorkerPattern(value *LeaderWorker
 	return b
 }
 
-// WithCustomComponentsPatten sets the CustomComponentsPatten field in the declarative configuration to the given value
+// WithCustomComponentsPattern sets the CustomComponentsPattern field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the CustomComponentsPatten field is set to the value of the last call.
-func (b *RoleSpecApplyConfiguration) WithCustomComponentsPatten(value *CustomComponentsPatternApplyConfiguration) *RoleSpecApplyConfiguration {
-	b.PatternApplyConfiguration.CustomComponentsPatten = value
+// If called multiple times, the CustomComponentsPattern field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithCustomComponentsPattern(value *CustomComponentsPatternApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.PatternApplyConfiguration.CustomComponentsPattern = value
 	return b
 }
 

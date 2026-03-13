@@ -186,7 +186,7 @@ func (r *RoleSpec) GetLeaderWorkerPattern() *LeaderWorkerPattern {
 }
 
 func (r *RoleSpec) GetCustomComponentsPattern() *CustomComponentsPattern {
-	return r.CustomComponentsPatten
+	return r.CustomComponentsPattern
 }
 
 // GetTemplate returns the PodTemplateSpec for this role.
