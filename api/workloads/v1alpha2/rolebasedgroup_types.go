@@ -205,10 +205,6 @@ type RoleSpec struct {
 	// +optional
 	Pattern `json:",inline"`
 
-	// Components describe the components that will be created.
-	// +optional
-	Components []InstanceComponent `json:"components,omitempty"`
-
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`
 
@@ -234,6 +230,10 @@ type Pattern struct {
 	// LeaderWorkerPattern defines a multi-pod pattern with leader and workers.
 	// +optional
 	LeaderWorkerPattern *LeaderWorkerPattern `json:"leaderWorkerPattern,omitempty"`
+
+	// CustomComponentsPattern defines a pattern with custom components.
+	// +optional
+	CustomComponentsPattern *CustomComponentsPattern `json:"customComponentsPattern,omitempty"`
 }
 
 // TemplateSource defines either an inline template or a reference to a RoleTemplate.
@@ -279,6 +279,11 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
+}
+
+type CustomComponentsPattern struct {
+	// +optional
+	Components []InstanceComponent `json:"components,omitempty"`
 }
 
 type WorkloadSpec struct {

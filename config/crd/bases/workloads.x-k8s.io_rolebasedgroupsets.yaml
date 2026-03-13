@@ -24284,32 +24284,35 @@ spec:
                           description: Annotations is an unstructured key value map
                             stored with a resource.
                           type: object
-                        components:
-                          description: Components describe the components that will
-                            be created.
-                          items:
-                            properties:
-                              name:
-                                description: Name is the type name of the component.
-                                type: string
-                              serviceName:
-                                description: ServiceName is the name of the service
-                                  that governs this Instance Component.
-                                type: string
-                              size:
-                                description: Size is the number of replicas for Pods
-                                  that match the PodRule.
-                                format: int32
-                                type: integer
-                              template:
-                                description: Template is the template for the component
-                                  pods.
-                                x-kubernetes-preserve-unknown-fields: true
-                            required:
-                            - name
-                            - template
-                            type: object
-                          type: array
+                        customComponentsPattern:
+                          description: CustomComponentsPattern defines a pattern with
+                            custom components.
+                          properties:
+                            components:
+                              items:
+                                properties:
+                                  name:
+                                    description: Name is the type name of the component.
+                                    type: string
+                                  serviceName:
+                                    description: ServiceName is the name of the service
+                                      that governs this Instance Component.
+                                    type: string
+                                  size:
+                                    description: Size is the number of replicas for
+                                      Pods that match the PodRule.
+                                    format: int32
+                                    type: integer
+                                  template:
+                                    description: Template is the template for the
+                                      component pods.
+                                    x-kubernetes-preserve-unknown-fields: true
+                                required:
+                                - name
+                                - template
+                                type: object
+                              type: array
+                          type: object
                         dependencies:
                           description: Dependencies of the role
                           items:
