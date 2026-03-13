@@ -382,6 +382,9 @@ func (r *RoleBasedGroupReconciler) reconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
+	if r.podGroupManager == nil {
+		return nil
+	}
 	return r.podGroupManager.ReconcilePodGroup(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader)
 }
 
