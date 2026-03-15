@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 )
 
 type WorkloadReconciler interface {
@@ -27,6 +28,12 @@ type WorkloadReconciler interface {
 	) (bool, error)
 	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error
 	RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) error
+}
+
+// PodGroupManagerSetter is an optional interface implemented by WorkloadReconcilers
+// that support injecting a PodGroupManager for gang-scheduling label injection.
+type PodGroupManagerSetter interface {
+	SetPodGroupManager(m scheduler.PodGroupManager)
 }
 
 func NewWorkloadReconciler(

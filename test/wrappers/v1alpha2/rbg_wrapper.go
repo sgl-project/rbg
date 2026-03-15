@@ -6,6 +6,28 @@ import (
 	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
+// WithGangScheduling enables kube scheduler-plugins based gang scheduling
+// by setting the GangSchedulingAnnotationKey annotation to "true".
+func (rbgWrapper *RoleBasedGroupWrapper) WithGangScheduling() *RoleBasedGroupWrapper {
+	if rbgWrapper.Annotations == nil {
+		rbgWrapper.Annotations = make(map[string]string)
+	}
+	rbgWrapper.Annotations[constants.GangSchedulingAnnotationKey] = "true"
+	return rbgWrapper
+}
+
+// WithVolcanoGangScheduling enables Volcano based gang scheduling
+// by setting the GangSchedulingAnnotationKey annotation to "true" and
+// the GangSchedulingVolcanoQueueKey annotation to the given queue.
+func (rbgWrapper *RoleBasedGroupWrapper) WithVolcanoGangScheduling(queue string) *RoleBasedGroupWrapper {
+	if rbgWrapper.Annotations == nil {
+		rbgWrapper.Annotations = make(map[string]string)
+	}
+	rbgWrapper.Annotations[constants.GangSchedulingAnnotationKey] = "true"
+	rbgWrapper.Annotations[constants.GangSchedulingVolcanoQueueKey] = queue
+	return rbgWrapper
+}
+
 type RoleBasedGroupWrapper struct {
 	workloadsv1alpha2.RoleBasedGroup
 }

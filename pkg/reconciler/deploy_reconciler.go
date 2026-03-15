@@ -22,18 +22,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type DeploymentReconciler struct {
-	scheme *runtime.Scheme
-	client client.Client
+	scheme          *runtime.Scheme
+	client          client.Client
+	podGroupManager scheduler.PodGroupManager
 }
 
 var _ WorkloadReconciler = &DeploymentReconciler{}
 
 func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *DeploymentReconciler {
 	return &DeploymentReconciler{scheme: scheme, client: client}
+}
+
+// SetPodGroupManager implements PodGroupManagerSetter.
+func (r *DeploymentReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
+	r.podGroupManager = m
 }
 
 func (r *DeploymentReconciler) Validate(
@@ -112,6 +119,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
+	podReconciler.SetPodGroupManager(r.podGroupManager)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)

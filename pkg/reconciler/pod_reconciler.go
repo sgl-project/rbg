@@ -17,13 +17,15 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/discovery"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type PodReconciler struct {
-	scheme        *runtime.Scheme
-	client        client.Client
-	injectObjects []string
+	scheme          *runtime.Scheme
+	client          client.Client
+	injectObjects   []string
+	podGroupManager scheduler.PodGroupManager
 }
 
 func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconciler {
@@ -35,6 +37,12 @@ func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconcil
 
 func (r *PodReconciler) SetInjectors(injectObjects []string) {
 	r.injectObjects = injectObjects
+}
+
+// SetPodGroupManager configures the PodGroupManager used to inject gang-scheduling
+// labels/annotations into pod templates.
+func (r *PodReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
+	r.podGroupManager = m
 }
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
@@ -121,6 +129,11 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &podTemplateApplyConfiguration)
 	if err != nil {
 		return nil, err
+	}
+
+	// Inject gang-scheduling labels/annotations if a PodGroupManager is configured.
+	if r.podGroupManager != nil {
+		r.podGroupManager.InjectPodGroupLabels(rbg, podTemplateApplyConfiguration)
 	}
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
