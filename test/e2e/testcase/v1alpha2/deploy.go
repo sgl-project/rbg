@@ -13,7 +13,7 @@ import (
 )
 
 func RunDeploymentWorkloadTestCases(f *framework.Framework) {
-	ginkgo.PIt("update standalone role replicas & template", func() {
+	ginkgo.It("update standalone role replicas & template", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").Obj(),
 		}).Obj()
