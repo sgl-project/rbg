@@ -1,6 +1,7 @@
 package v1alpha2
 
 import (
+	"fmt"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -71,6 +72,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					}, oldRis,
 				)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
+				ginkgo.By(fmt.Sprintf("Got old RoleInstanceSet, generation: %d", oldRis.Generation))
 
 				updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
 					rbg.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Command = []string{"sleep", "1000001"}
@@ -85,6 +87,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					}, newRis,
 				)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
+				ginkgo.By(fmt.Sprintf("Got new RoleInstanceSet, generation: %d (expected: %d)", newRis.Generation, oldRis.Generation+2))
 				gomega.Expect(newRis.Generation).Should(gomega.Equal(oldRis.Generation + 2))
 			},
 		)

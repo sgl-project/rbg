@@ -71,6 +71,8 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	logger.Info(fmt.Sprintf("[DEBUG] Get old RoleInstanceSet, name=%s, generation=%d, observedGeneration=%d",
+		oldRoleInstanceSet.Name, oldRoleInstanceSet.Generation, oldRoleInstanceSet.Status.ObservedGeneration))
 
 	roleInstanceSetApplyConfig, err := r.constructRoleInstanceSetApplyConfiguration(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
 	if err != nil {
@@ -98,11 +100,14 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 			),
 		)
 	}
+	logger.Info(fmt.Sprintf("[DEBUG] RoleInstanceSet update check, name=%s, revisionHashEqual=%v, oldHash=%s, newHash=%s, revisionKey=%s",
+		newRoleInstanceSet.Name, revisionHashEqual, oldRoleInstanceSet.Labels[roleHashKey], newRoleInstanceSet.Labels[roleHashKey], revisionKey))
 
 	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, roleInstanceSetApplyConfig, utils.PatchSpec); err != nil {
 		logger.Error(err, "Failed to patch roleInstanceSet apply configuration")
 		return err
 	}
+	logger.Info(fmt.Sprintf("[DEBUG] Patched RoleInstanceSet, name=%s", newRoleInstanceSet.Name))
 
 	return nil
 }
