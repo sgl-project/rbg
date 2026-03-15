@@ -37,6 +37,7 @@ rules:
   - apiGroups:
       - workloads.x-k8s.io
     resources:
+      - coordinatedpolicies
       - instances
       - instancesets
       - rolebasedgroups
@@ -62,6 +63,7 @@ rules:
   - apiGroups:
       - workloads.x-k8s.io
     resources:
+      - coordinatedpolicies/status
       - instances/status
       - instancesets/status
       - rolebasedgroups/status
