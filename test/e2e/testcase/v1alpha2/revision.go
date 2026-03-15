@@ -80,15 +80,19 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				f.ExpectRbgV2Equal(rbg)
 
 				newRis := &workloadsv1alpha2.RoleInstanceSet{}
-				err = f.Client.Get(
-					f.Ctx, client.ObjectKey{
-						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
-						Namespace: rbg.Namespace,
-					}, newRis,
-				)
-				gomega.Expect(err).ToNot(gomega.HaveOccurred())
-				ginkgo.By(fmt.Sprintf("Got new RoleInstanceSet, generation: %d (expected: %d)", newRis.Generation, oldRis.Generation+2))
-				gomega.Expect(newRis.Generation).Should(gomega.Equal(oldRis.Generation + 2))
+				gomega.Eventually(func() bool {
+					err = f.Client.Get(
+						f.Ctx, client.ObjectKey{
+							Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+							Namespace: rbg.Namespace,
+						}, newRis,
+					)
+					if err != nil {
+						return false
+					}
+					ginkgo.By(fmt.Sprintf("Got new RoleInstanceSet, generation: %d (expected: %d)", newRis.Generation, oldRis.Generation+2))
+					return newRis.Generation == oldRis.Generation+2
+				}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 			},
 		)
 
