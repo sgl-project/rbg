@@ -207,6 +207,7 @@ func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGr
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
 			WithConditions(ToConditionApplyConfigurations(restartConditions)...))
 	return rbgApplyConfig
 }
