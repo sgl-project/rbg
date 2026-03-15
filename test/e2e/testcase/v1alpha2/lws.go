@@ -20,7 +20,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 				Obj(),
 		}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(testutils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -32,7 +32,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 			wrappersv2.BuildLeaderWorkerRole("role-1").Obj(),
 		}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
@@ -59,7 +59,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 					}).Obj(),
 			}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
@@ -81,7 +81,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 					Obj(),
 			}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)

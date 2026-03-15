@@ -25,7 +25,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
@@ -47,7 +47,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
@@ -68,7 +68,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(utils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 
@@ -87,7 +87,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 						},
 					).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
@@ -126,7 +126,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectWorkloadV2ExclusiveTopology(rbg, rbg.Spec.Roles[0], topologyKey)

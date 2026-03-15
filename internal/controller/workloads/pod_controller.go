@@ -181,6 +181,7 @@ func ToRBGApplyConfigurationForStatusWithConditions(
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithObservedGeneration(rbg.Status.ObservedGeneration).
 			WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
 			WithConditions(ToConditionApplyConfigurations(conditions)...))
 	return rbgApplyConfig
@@ -207,11 +208,15 @@ func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGr
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
 			WithConditions(ToConditionApplyConfigurations(restartConditions)...))
 	return rbgApplyConfig
 }
 
 func ToRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha2.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
+	if roleStatus == nil {
+		return []*applyconfiguration.RoleStatusApplyConfiguration{}
+	}
 	out := make([]*applyconfiguration.RoleStatusApplyConfiguration, 0, len(roleStatus))
 	for _, rs := range roleStatus {
 		out = append(out, applyconfiguration.RoleStatus().

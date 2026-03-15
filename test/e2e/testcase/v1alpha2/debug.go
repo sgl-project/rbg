@@ -41,11 +41,17 @@ func dumpDebugInfo(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup
 		workloadName := rbg.GetWorkloadName(&role)
 		fmt.Printf("\n--- Role: %s, Workload: %s ---\n", role.Name, workloadName)
 
-		if role.IsLeaderWorkerPattern() {
-			dumpV2LWSWorkload(f, rbg.Namespace, workloadName)
-		} else {
-			// For standalone pattern, look up underlying StatefulSet/Deployment
+		switch role.Workload.String() {
+		case constants.DeploymentWorkloadType:
+			dumpV2DeploymentWorkload(f, rbg.Namespace, workloadName)
+		case constants.StatefulSetWorkloadType:
 			dumpV2StatefulSetWorkload(f, rbg.Namespace, workloadName)
+		case constants.LeaderWorkerSetWorkloadType:
+			dumpV2LWSWorkload(f, rbg.Namespace, workloadName)
+		case constants.RoleInstanceSetWorkloadType:
+			dumpV2RoleInstanceSetWorkload(f, rbg.Namespace, workloadName)
+		default:
+			dumpV2RoleInstanceSetWorkload(f, rbg.Namespace, workloadName)
 		}
 
 		dumpV2RolePods(f, rbg, role.Name, workloadName)
@@ -101,6 +107,36 @@ func dumpV2LWSWorkload(f *framework.Framework, namespace, lwsName string) {
 		fmt.Printf("[LWS] Status: Replicas=%d, ReadyReplicas=%d, UpdatedReplicas=%d\n",
 			lws.Status.Replicas, lws.Status.ReadyReplicas, lws.Status.UpdatedReplicas)
 		for _, cond := range lws.Status.Conditions {
+			fmt.Printf("  - Type=%s, Status=%s, Reason=%s, Message=%s\n",
+				cond.Type, cond.Status, cond.Reason, cond.Message)
+		}
+	}
+}
+
+func dumpV2DeploymentWorkload(f *framework.Framework, namespace, deployName string) {
+	deploy := &appsv1.Deployment{}
+	if err := f.Client.Get(f.Ctx, client.ObjectKey{Name: deployName, Namespace: namespace}, deploy); err != nil {
+		fmt.Printf("[Deployment] Failed to get Deployment: %v\n", err)
+	} else {
+		fmt.Printf("[Deployment] Status: Replicas=%d, ReadyReplicas=%d, AvailableReplicas=%d, UpdatedReplicas=%d\n",
+			*deploy.Spec.Replicas, deploy.Status.ReadyReplicas, deploy.Status.AvailableReplicas, deploy.Status.UpdatedReplicas)
+		for _, cond := range deploy.Status.Conditions {
+			fmt.Printf("  - Type=%s, Status=%s, Reason=%s, Message=%s\n",
+				cond.Type, cond.Status, cond.Reason, cond.Message)
+		}
+	}
+}
+
+func dumpV2RoleInstanceSetWorkload(f *framework.Framework, namespace, risName string) {
+	ris := &workloadsv1alpha2.RoleInstanceSet{}
+	if err := f.Client.Get(f.Ctx, client.ObjectKey{Name: risName, Namespace: namespace}, ris); err != nil {
+		fmt.Printf("[RoleInstanceSet] Failed to get RoleInstanceSet: %v\n", err)
+	} else {
+		fmt.Printf("[RoleInstanceSet] Status: Replicas=%d, ReadyReplicas=%d, CurrentReplicas=%d, UpdatedReplicas=%d\n",
+			ris.Status.Replicas, ris.Status.ReadyReplicas, ris.Status.CurrentReplicas, ris.Status.UpdatedReplicas)
+		fmt.Printf("[RoleInstanceSet] CurrentRevision=%s, UpdateRevision=%s\n",
+			ris.Status.CurrentRevision, ris.Status.UpdateRevision)
+		for _, cond := range ris.Status.Conditions {
 			fmt.Printf("  - Type=%s, Status=%s, Reason=%s, Message=%s\n",
 				cond.Type, cond.Status, cond.Reason, cond.Message)
 		}

@@ -180,9 +180,5 @@ func (f *Framework) ExpectWorkloadV2ExclusiveTopology(
 
 // workloadTypeFromRoleV2 maps a v1alpha2 RoleSpec to the corresponding workload type string.
 func workloadTypeFromRoleV2(role workloadsv1alpha2.RoleSpec) string {
-	if role.IsLeaderWorkerPattern() {
-		return constants.LeaderWorkerSetWorkloadType
-	}
-	// StandalonePattern defaults to StatefulSet (RoleInstanceSet in v1alpha2)
-	return constants.RoleInstanceSetWorkloadType
+	return role.Workload.String()
 }

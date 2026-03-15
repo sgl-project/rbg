@@ -23,6 +23,7 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	s := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
 	require.NoError(t, appsv1.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
 
 	// Create test objects
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(

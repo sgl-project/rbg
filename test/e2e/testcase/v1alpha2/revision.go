@@ -1,6 +1,7 @@
 package v1alpha2
 
 import (
+	"fmt"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,7 +29,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					},
 				).Obj()
 
-			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+			f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgV2Equal(rbg)
@@ -56,7 +57,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 						},
 					).Obj()
 
-				ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+				f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 				gomega.Expect(utils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 
@@ -71,6 +72,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					}, oldRis,
 				)
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
+				ginkgo.By(fmt.Sprintf("Got old RoleInstanceSet, generation: %d", oldRis.Generation))
 
 				updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
 					rbg.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Command = []string{"sleep", "1000001"}
@@ -78,14 +80,19 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				f.ExpectRbgV2Equal(rbg)
 
 				newRis := &workloadsv1alpha2.RoleInstanceSet{}
-				err = f.Client.Get(
-					f.Ctx, client.ObjectKey{
-						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
-						Namespace: rbg.Namespace,
-					}, newRis,
-				)
-				gomega.Expect(err).ToNot(gomega.HaveOccurred())
-				gomega.Expect(newRis.Generation).Should(gomega.Equal(oldRis.Generation + 2))
+				gomega.Eventually(func() bool {
+					err = f.Client.Get(
+						f.Ctx, client.ObjectKey{
+							Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+							Namespace: rbg.Namespace,
+						}, newRis,
+					)
+					if err != nil {
+						return false
+					}
+					ginkgo.By(fmt.Sprintf("Got new RoleInstanceSet, generation: %d (expected: %d)", newRis.Generation, oldRis.Generation+2))
+					return newRis.Generation == oldRis.Generation+1
+				}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 			},
 		)
 
@@ -94,7 +101,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				wrappersv2.BuildLeaderWorkerRole("role-1").Obj(),
 			}).Obj()
 
-			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+			f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgV2Equal(rbg)

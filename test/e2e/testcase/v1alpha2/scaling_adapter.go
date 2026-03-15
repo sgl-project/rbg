@@ -28,7 +28,7 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
@@ -54,7 +54,7 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
@@ -91,7 +91,7 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
@@ -135,7 +135,7 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
@@ -178,7 +178,7 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 							},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Equal(rbg)
