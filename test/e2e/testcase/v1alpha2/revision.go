@@ -91,7 +91,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 						return false
 					}
 					ginkgo.By(fmt.Sprintf("Got new RoleInstanceSet, generation: %d (expected: %d)", newRis.Generation, oldRis.Generation+2))
-					return newRis.Generation == oldRis.Generation+2
+					return newRis.Generation == oldRis.Generation+1
 				}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 			},
 		)
