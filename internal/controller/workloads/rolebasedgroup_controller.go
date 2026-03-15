@@ -688,7 +688,17 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	// update rbg status
-	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
+	// Only include the Ready condition in the SSA patch for the "rbg" field manager.
+	// RestartInProgress is exclusively managed by the pod controller (PodControllerFieldManager).
+	// Including it here would cause the "rbg" field manager (Force=true) to overwrite the pod
+	// controller's value on every reconcile, creating a race condition.
+	var rbgManagedConditions []metav1.Condition
+	for _, cond := range rbg.Status.Conditions {
+		if cond.Type != string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+			rbgManagedConditions = append(rbgManagedConditions, cond)
+		}
+	}
+	rbgApplyConfig := ToRBGApplyConfigurationForStatusWithConditions(rbg, rbgManagedConditions)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 
