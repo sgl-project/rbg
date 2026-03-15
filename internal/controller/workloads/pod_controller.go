@@ -181,6 +181,7 @@ func ToRBGApplyConfigurationForStatusWithConditions(
 		WithKind(gkv.Kind).
 		WithAPIVersion(gkv.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithObservedGeneration(rbg.Status.ObservedGeneration).
 			WithRoleStatuses(ToRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
 			WithConditions(ToConditionApplyConfigurations(conditions)...))
 	return rbgApplyConfig
