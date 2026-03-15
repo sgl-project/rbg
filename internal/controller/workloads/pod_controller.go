@@ -213,6 +213,9 @@ func toRBGApplyConfigurationForConditionsOnly(rbg *workloadsv1alpha2.RoleBasedGr
 }
 
 func ToRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha2.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
+	if roleStatus == nil {
+		return []*applyconfiguration.RoleStatusApplyConfiguration{}
+	}
 	out := make([]*applyconfiguration.RoleStatusApplyConfiguration, 0, len(roleStatus))
 	for _, rs := range roleStatus {
 		out = append(out, applyconfiguration.RoleStatus().
