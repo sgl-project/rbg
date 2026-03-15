@@ -18,7 +18,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 			wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").Obj(),
 		}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
@@ -45,7 +45,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 					}).Obj(),
 			}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
@@ -69,7 +69,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 					Obj(),
 			}).Obj()
 
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)

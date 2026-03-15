@@ -29,6 +29,7 @@ type Framework struct {
 	Ctx       context.Context
 	Client    client.Client
 	Namespace string
+	debugFn   func()
 }
 
 func NewFramework(development bool) *Framework {
@@ -48,6 +49,12 @@ func NewFramework(development bool) *Framework {
 		Ctx:    ctx,
 		Client: runtimeClient,
 	}
+}
+
+// RegisterDebugFn registers a debug function to be called in AfterEach before resources are deleted.
+// Each test case should call this to register its debug dump function.
+func (f *Framework) RegisterDebugFn(fn func()) {
+	f.debugFn = fn
 }
 
 func initLogger(ctx context.Context, development bool) context.Context {
@@ -110,6 +117,12 @@ func (f *Framework) AfterAll() {
 
 func (f *Framework) AfterEach() {
 	logger := log.FromContext(f.Ctx)
+
+	// Run debug function before deleting resources, so debug info can be collected
+	if f.debugFn != nil {
+		f.debugFn()
+		f.debugFn = nil
+	}
 
 	gomega.Expect(
 		f.Client.DeleteAllOf(

@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -574,8 +575,17 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 		roleStatuses = append(roleStatuses, roleStatus)
 	}
 
+	// Also trigger an update if the Ready condition is missing, which can happen when
+	// the pod controller patches only the RestartInProgress condition and the RBG
+	// controller has not yet re-evaluated readiness (e.g. after a pod restart/recreate).
+	readyConditionMissing := !apimeta.IsStatusConditionPresentAndEqual(
+		rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady), metav1.ConditionTrue,
+	) && !apimeta.IsStatusConditionPresentAndEqual(
+		rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady), metav1.ConditionFalse,
+	)
+
 	// Update the status based on the observed role statuses.
-	if updateStatus {
+	if updateStatus || readyConditionMissing {
 		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
 			r.recorder.Eventf(
 				rbg, corev1.EventTypeWarning, FailedUpdateStatus,

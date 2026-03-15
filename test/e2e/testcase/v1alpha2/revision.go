@@ -29,7 +29,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					},
 				).Obj()
 
-			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+			f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgV2Equal(rbg)
@@ -57,7 +57,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 						},
 					).Obj()
 
-				ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+				f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 				gomega.Expect(utils.CreatePatioRuntime(f.Ctx, f.Client)).Should(gomega.Succeed())
 
@@ -101,7 +101,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				wrappersv2.BuildLeaderWorkerRole("role-1").Obj(),
 			}).Obj()
 
-			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+			f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
 
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgV2Equal(rbg)

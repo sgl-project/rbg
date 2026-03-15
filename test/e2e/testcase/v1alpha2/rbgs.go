@@ -17,7 +17,7 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 				"create & delete rbgset", func() {
 					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
 					f.ExpectRbgSetV2Equal(rbgset)
@@ -32,7 +32,7 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 				"scaling rbgset", func() {
 					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).WithReplicas(1).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
 					f.ExpectRbgSetV2Equal(rbgset)
@@ -63,7 +63,7 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 							map[string]string{constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone"},
 						).Obj()
 
-					ginkgo.DeferCleanup(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
 					f.ExpectRbgV2AnnotationFromSet(
