@@ -58,12 +58,12 @@ spec:
                         type: string
                       minItems: 1
                       type: array
-                    strategies:
-                      description: Strategies defines the coordination strategies
-                        for the roles.
+                    strategy:
+                      description: Strategy defines the coordinated strategies for
+                        the roles.
                       properties:
                         rollingUpdate:
-                          description: RollingUpdate defines the coordination strategy
+                          description: RollingUpdate defines the coordinated strategy
                             for rolling updates.
                           properties:
                             maxSkew:
@@ -92,7 +92,7 @@ spec:
                               x-kubernetes-int-or-string: true
                           type: object
                         scaling:
-                          description: Scaling defines the coordination strategy for
+                          description: Scaling defines the coordinated strategy for
                             scaling operations.
                           properties:
                             maxSkew:
@@ -114,7 +114,7 @@ spec:
                       type: object
                   required:
                   - roles
-                  - strategies
+                  - strategy
                   type: object
                 minItems: 1
                 type: array

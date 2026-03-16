@@ -37,18 +37,18 @@ type CoordinatedPolicyRule struct {
 	// +kubebuilder:validation:Required
 	Roles []string `json:"roles"`
 
-	// Strategies defines the coordination strategies for the roles.
+	// Strategy defines the coordinated strategies for the roles.
 	// +kubebuilder:validation:Required
-	Strategies CoordinatedPolicyStrategies `json:"strategies"`
+	Strategy CoordinatedPolicyStrategy `json:"strategy"`
 }
 
-// CoordinatedPolicyStrategies defines the strategies for coordinating roles.
-type CoordinatedPolicyStrategies struct {
-	// RollingUpdate defines the coordination strategy for rolling updates.
+// CoordinatedPolicyStrategy defines the strategy for coordinated roles.
+type CoordinatedPolicyStrategy struct {
+	// RollingUpdate defines the coordinated strategy for rolling updates.
 	// +optional
 	RollingUpdate *RollingUpdateCoordinationStrategy `json:"rollingUpdate,omitempty"`
 
-	// Scaling defines the coordination strategy for scaling operations.
+	// Scaling defines the coordinated strategy for scaling operations.
 	// +optional
 	Scaling *ScalingCoordinationStrategy `json:"scaling,omitempty"`
 }

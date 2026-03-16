@@ -145,8 +145,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.CoordinatedPolicySpecApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStatus"):
 		return &workloadsv1alpha2.CoordinatedPolicyStatusApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStrategies"):
-		return &workloadsv1alpha2.CoordinatedPolicyStrategiesApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyStrategy"):
+		return &workloadsv1alpha2.CoordinatedPolicyStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CustomComponentsPattern"):
 		return &workloadsv1alpha2.CustomComponentsPatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntime"):

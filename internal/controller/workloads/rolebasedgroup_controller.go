@@ -916,14 +916,14 @@ func (r *RoleBasedGroupReconciler) CalculateScalingForAllCoordination(
 
 	for _, policyRule := range policy.Spec.Policies {
 		// Skip if no scaling strategy
-		if policyRule.Strategies.Scaling == nil {
+		if policyRule.Strategy.Scaling == nil {
 			logger.V(2).Info("Skipping policy rule without scaling strategy", "roles", policyRule.Roles)
 			continue
 		}
 
 		maxSkewStr := "100%"
-		if policyRule.Strategies.Scaling.MaxSkew != nil {
-			maxSkewStr = policyRule.Strategies.Scaling.MaxSkew.String()
+		if policyRule.Strategy.Scaling.MaxSkew != nil {
+			maxSkewStr = policyRule.Strategy.Scaling.MaxSkew.String()
 		}
 		logger.V(1).Info("Processing coordination scaling", "roles", policyRule.Roles, "maxSkew", maxSkewStr)
 
@@ -1042,7 +1042,7 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForPolicyRule(
 	roleStatuses []workloadsv1alpha2.RoleStatus,
 ) (map[string]workloadsv1alpha2.RollingUpdate, error) {
 	if policyRule == nil ||
-		policyRule.Strategies.RollingUpdate == nil ||
+		policyRule.Strategy.RollingUpdate == nil ||
 		len(policyRule.Roles) <= 1 {
 		return nil, nil
 	}
@@ -1065,11 +1065,11 @@ func (r *RoleBasedGroupReconciler) calculateRollingUpdateForPolicyRule(
 		if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
 			strategy = *(role.RolloutStrategy.RollingUpdate.DeepCopy())
 		}
-		if policyRule.Strategies.RollingUpdate.MaxUnavailable != nil {
-			strategy.MaxUnavailable = policyRule.Strategies.RollingUpdate.MaxUnavailable
+		if policyRule.Strategy.RollingUpdate.MaxUnavailable != nil {
+			strategy.MaxUnavailable = policyRule.Strategy.RollingUpdate.MaxUnavailable
 		}
-		if policyRule.Strategies.RollingUpdate.Partition != nil {
-			partition, err := utils.CalculatePartitionReplicas(policyRule.Strategies.RollingUpdate.Partition, role.Replicas)
+		if policyRule.Strategy.RollingUpdate.Partition != nil {
+			partition, err := utils.CalculatePartitionReplicas(policyRule.Strategy.RollingUpdate.Partition, role.Replicas)
 			if err != nil {
 				return nil, err
 			}
@@ -1124,8 +1124,8 @@ func calculateNextRollingTargetFromPolicy(rbg *workloadsv1alpha2.RoleBasedGroup,
 	coordinationRoles sets.Set[string],
 ) map[string]int32 {
 	// single role no need coordination for skew, just return
-	if policyRule.Strategies.RollingUpdate == nil ||
-		policyRule.Strategies.RollingUpdate.MaxSkew == nil ||
+	if policyRule.Strategy.RollingUpdate == nil ||
+		policyRule.Strategy.RollingUpdate.MaxSkew == nil ||
 		len(policyRule.Roles) <= 1 {
 		return nil
 	}
@@ -1151,7 +1151,7 @@ func calculateNextRollingTargetFromPolicy(rbg *workloadsv1alpha2.RoleBasedGroup,
 		updatedReplicas[status.Name] = status.UpdatedReplicas
 	}
 
-	maxSkewStr := policyRule.Strategies.RollingUpdate.MaxSkew.String()
+	maxSkewStr := policyRule.Strategy.RollingUpdate.MaxSkew.String()
 	return calculateNextRollingTarget(&maxSkewStr, coordinationRoles, desiredReplicas, updatedReplicas, readyReplicas)
 }
 
