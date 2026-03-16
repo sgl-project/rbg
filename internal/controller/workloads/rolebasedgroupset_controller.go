@@ -375,7 +375,7 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
 	// Check if the template spec has changed using order-insensitive comparison
-	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.Template.Roles) {
+	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.GroupTemplate.Spec.Roles) {
 		return true
 	}
 
@@ -429,7 +429,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 				}
 
 				// Update the spec from template
-				latestRBG.Spec.Roles = rbgset.Spec.Template.Roles
+				latestRBG.Spec.Roles = rbgset.Spec.GroupTemplate.Spec.Roles
 
 				// Update annotations
 				r.updateRBGAnnotations(rbgset, latestRBG)
@@ -482,7 +482,7 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 			// The OwnerReference will be set in the scaleUp function.
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-			Roles: rbgset.Spec.Template.Roles,
+			Roles: rbgset.Spec.GroupTemplate.Spec.Roles,
 		},
 	}
 	// Copy annotations from RBGSet to child RBG

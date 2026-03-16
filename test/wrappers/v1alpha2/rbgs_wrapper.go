@@ -47,7 +47,9 @@ func BuildBasicRoleBasedGroupSet(name, ns string) *RoleBasedGroupSetWrapper {
 			},
 			Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
 				Replicas: ptr.To(int32(1)),
-				Template: BuildBasicRoleBasedGroup(name, ns).Obj().Spec,
+				GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+					Spec: BuildBasicRoleBasedGroup(name, ns).Obj().Spec,
+				},
 			},
 		},
 	}

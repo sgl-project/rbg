@@ -20,14 +20,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// RoleBasedGroupTemplateSpec describes the data a RoleBasedGroup should have when created from a template.
+type RoleBasedGroupTemplateSpec struct {
+	// Standard object's metadata.
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Spec defines the desired behavior of the RoleBasedGroup.
+	// +optional
+	Spec RoleBasedGroupSpec `json:"spec,omitempty"`
+}
+
 // RoleBasedGroupSetSpec defines the desired state of RoleBasedGroupSet.
 type RoleBasedGroupSetSpec struct {
 	// Replicas is the number of RoleBasedGroup that will be created.
 	// +kubebuilder:default=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Template describes the RoleBasedGroup that will be created.
-	Template RoleBasedGroupSpec `json:"template"`
+	// GroupTemplate describes the RoleBasedGroup that will be created.
+	GroupTemplate RoleBasedGroupTemplateSpec `json:"groupTemplate"`
 }
 
 type RoleBasedGroupSetConditionType string

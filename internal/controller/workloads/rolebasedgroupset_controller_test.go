@@ -48,10 +48,12 @@ func TestRoleBasedGroupSetReconciler_scaleUp(t *testing.T) {
 			UID:       "test-uid",
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-			Template: workloadsv1alpha2.RoleBasedGroupSpec{
-				Roles: []workloadsv1alpha2.RoleSpec{
-					{Name: "role-1"},
-					{Name: "role-2"},
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{Name: "role-1"},
+						{Name: "role-2"},
+					},
 				},
 			},
 		},
@@ -250,9 +252,11 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{
-							{Name: "new-role"},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{
+								{Name: "new-role"},
+							},
 						},
 					},
 				},
@@ -280,8 +284,10 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 					},
 				},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
 					},
 				},
 			},
@@ -296,8 +302,10 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 			name: "RBG no update needed - same CoordinationRequirements and PodGroupPolicy",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
 					},
 				},
 			},
@@ -312,8 +320,10 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 			name: "RBG no update needed",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
 					},
 				},
 			},
@@ -435,8 +445,10 @@ func TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder(t *testing.T) {
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
 			Replicas: ptr.To(int32(2)), // Reduced from 4 to 2
-			Template: workloadsv1alpha2.RoleBasedGroupSpec{
-				Roles: []workloadsv1alpha2.RoleSpec{{Name: "new-role"}},
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{Name: "new-role"}},
+				},
 			},
 		},
 	}
