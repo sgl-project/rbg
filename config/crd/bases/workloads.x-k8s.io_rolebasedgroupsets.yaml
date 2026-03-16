@@ -33301,6 +33301,15 @@ spec:
                           description: Unique identifier for the role
                           minLength: 1
                           type: string
+                        podManagementPolicy:
+                          default: Parallel
+                          description: |-
+                            PodManagementPolicy controls how RoleInstances are created during initial scale-up.
+                            Parallel (default) creates all instances simultaneously.
+                          enum:
+                          - OrderedReady
+                          - Parallel
+                          type: string
                         replicas:
                           default: 1
                           format: int32

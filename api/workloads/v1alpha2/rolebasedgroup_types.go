@@ -218,6 +218,13 @@ type RoleSpec struct {
 	// +optional
 	// +kubebuilder:default=0
 	MinReadySeconds int32 `json:"minReadySeconds,omitempty" protobuf:"varint,9,opt,name=minReadySeconds"`
+
+	// PodManagementPolicy controls how RoleInstances are created during initial scale-up.
+	// Parallel (default) creates all instances simultaneously.
+	// OrderedReady creates instances one by one, waiting for each to be ready.
+	// +optional
+	// +kubebuilder:default=Parallel
+	PodManagementPolicy PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
 }
 
 // Pattern defines the deployment pattern for a role.

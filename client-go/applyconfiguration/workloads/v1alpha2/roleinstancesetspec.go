@@ -19,6 +19,7 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	constants "sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // RoleInstanceSetSpecApplyConfiguration represents a declarative configuration of the RoleInstanceSetSpec type for use
@@ -27,6 +28,7 @@ type RoleInstanceSetSpecApplyConfiguration struct {
 	Replicas             *int32                                           `json:"replicas,omitempty"`
 	Selector             *v1.LabelSelectorApplyConfiguration              `json:"selector,omitempty"`
 	RoleInstanceTemplate *RoleInstanceTemplateApplyConfiguration          `json:"roleInstanceTemplate,omitempty"`
+	PodManagementPolicy  *constants.PodManagementPolicyType               `json:"podManagementPolicy,omitempty"`
 	ScaleStrategy        *RoleInstanceSetScaleStrategyApplyConfiguration  `json:"scaleStrategy,omitempty"`
 	UpdateStrategy       *RoleInstanceSetUpdateStrategyApplyConfiguration `json:"updateStrategy,omitempty"`
 	RevisionHistoryLimit *int32                                           `json:"revisionHistoryLimit,omitempty"`
@@ -61,6 +63,14 @@ func (b *RoleInstanceSetSpecApplyConfiguration) WithSelector(value *v1.LabelSele
 // If called multiple times, the RoleInstanceTemplate field is set to the value of the last call.
 func (b *RoleInstanceSetSpecApplyConfiguration) WithRoleInstanceTemplate(value *RoleInstanceTemplateApplyConfiguration) *RoleInstanceSetSpecApplyConfiguration {
 	b.RoleInstanceTemplate = value
+	return b
+}
+
+// WithPodManagementPolicy sets the PodManagementPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PodManagementPolicy field is set to the value of the last call.
+func (b *RoleInstanceSetSpecApplyConfiguration) WithPodManagementPolicy(value constants.PodManagementPolicyType) *RoleInstanceSetSpecApplyConfiguration {
+	b.PodManagementPolicy = &value
 	return b
 }
 

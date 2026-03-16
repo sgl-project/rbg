@@ -118,6 +118,15 @@ spec:
                   without any of its container crashing, for it to be considered available.
                 format: int32
                 type: integer
+              podManagementPolicy:
+                default: Parallel
+                description: |-
+                  PodManagementPolicy controls how pods are created during the initial scale-up.
+                  Parallel (default) creates all instances simultaneously.
+                enum:
+                - OrderedReady
+                - Parallel
+                type: string
               replicas:
                 description: |-
                   Replicas is the desired number of replicas of the given Template.
