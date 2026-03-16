@@ -33,20 +33,20 @@ const (
 	// configured via --scheduler-name flag (scheduler-plugins or volcano).
 	// Setting this annotation automatically derives RoleInstanceGangSchedulingAnnotationKey
 	// for each role's RoleInstanceSet, so they must NOT be set simultaneously.
-	// Example: rbg.workloads.x-k8s.io/gang-scheduling: "true"
+	// Example: rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
 	GangSchedulingAnnotationKey = RBGPrefix + "group-gang-scheduling"
 
 	// GangSchedulingScheduleTimeoutSecondsKey specifies the schedule timeout seconds for
 	// scheduler-plugins based gang scheduling. Defaults to 60 seconds if not set.
-	// Example: rbg.workloads.x-k8s.io/gang-scheduling-timeout: "120"
+	// Example: rbg.workloads.x-k8s.io/group-gang-scheduling-timeout: "120"
 	GangSchedulingScheduleTimeoutSecondsKey = RBGPrefix + "group-gang-scheduling-timeout"
 
 	// GangSchedulingVolcanoPriorityClassKey specifies the PriorityClassName for volcano gang scheduling.
-	// Example: rbg.workloads.x-k8s.io/gang-scheduling-volcano-priority: "system-node-critical"
+	// Example: rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority: "system-node-critical"
 	GangSchedulingVolcanoPriorityClassKey = RBGPrefix + "group-gang-scheduling-volcano-priority"
 
 	// GangSchedulingVolcanoQueueKey specifies the Queue for volcano gang scheduling.
-	// Example: rbg.workloads.x-k8s.io/gang-scheduling-volcano-queue: "default"
+	// Example: rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue: "default"
 	GangSchedulingVolcanoQueueKey = RBGPrefix + "group-gang-scheduling-volcano-queue"
 )
 

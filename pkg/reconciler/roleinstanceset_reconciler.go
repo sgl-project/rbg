@@ -131,11 +131,6 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	if role.Annotations[constants.RoleInstancePatternKey] == "" {
 		roleInstanceSetAnnotation[constants.RoleInstancePatternKey] = string(constants.StatefulPattern)
 	}
-	// Derive role-instance-level gang scheduling annotation from the RBG-level gang annotation.
-	// This lets users also set it explicitly per role via role.Annotations.
-	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" {
-		roleInstanceSetAnnotation[constants.RoleInstanceGangSchedulingAnnotationKey] = "true"
-	}
 
 	// 1. construct role instance configuration
 	var restartPolicy workloadsv1alpha2.RoleInstanceRestartPolicyType
