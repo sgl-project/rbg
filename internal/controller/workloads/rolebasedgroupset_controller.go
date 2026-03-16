@@ -379,29 +379,55 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 		return true
 	}
 
-	// Check if annotations need to be propagated
-	return r.needsAnnotationUpdate(rbgset, rbg)
-}
-
-// needsAnnotationUpdate checks if RBG annotations need to be updated to match RBGSet annotations.
-func (r *RoleBasedGroupSetReconciler) needsAnnotationUpdate(
-	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
-) bool {
-	// Check exclusive topology annotation
-	setExclusiveKey, setHasExclusive := rbgset.Annotations[constants.GroupExclusiveTopologyKey]
-	rbgExclusiveKey, rbgHasExclusive := rbg.Annotations[constants.GroupExclusiveTopologyKey]
-
-	// If RBGSet has the annotation but RBG doesn't, or they have different values
-	if setHasExclusive {
-		if !rbgHasExclusive || setExclusiveKey != rbgExclusiveKey {
-			return true
-		}
-	} else if rbgHasExclusive {
-		// If RBGSet doesn't have the annotation but RBG does, remove it
+	// Check if labels from the template need to be propagated
+	if r.needsTemplateLabelUpdate(rbgset, rbg) {
 		return true
 	}
 
-	// Add other annotation checks here as needed
+	// Check if annotations from the template need to be propagated
+	return r.needsTemplateAnnotationUpdate(rbgset, rbg)
+}
+
+// needsTemplateLabelUpdate checks if the RBG labels need to be updated to match GroupTemplate.Labels.
+// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are excluded from comparison.
+func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
+) bool {
+	templateLabels := rbgset.Spec.GroupTemplate.Labels
+	for k, v := range templateLabels {
+		if rbg.Labels[k] != v {
+			return true
+		}
+	}
+	// Check if any template label was removed from the template but still exists on RBG
+	for k := range rbg.Labels {
+		// Skip system-managed labels
+		if k == constants.GroupSetNameLabelKey || k == constants.GroupSetIndexLabelKey {
+			continue
+		}
+		if _, exists := templateLabels[k]; !exists {
+			return true
+		}
+	}
+	return false
+}
+
+// needsTemplateAnnotationUpdate checks if the RBG annotations need to be updated to match GroupTemplate.Annotations.
+func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
+) bool {
+	templateAnnotations := rbgset.Spec.GroupTemplate.Annotations
+	for k, v := range templateAnnotations {
+		if rbg.Annotations[k] != v {
+			return true
+		}
+	}
+	// Check if any template annotation was removed from the template but still exists on RBG
+	for k := range rbg.Annotations {
+		if _, exists := templateAnnotations[k]; !exists {
+			return true
+		}
+	}
 	return false
 }
 
@@ -431,8 +457,8 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 				// Update the spec from template
 				latestRBG.Spec.Roles = rbgset.Spec.GroupTemplate.Spec.Roles
 
-				// Update annotations
-				r.updateRBGAnnotations(rbgset, latestRBG)
+				// Sync labels and annotations from the template
+				r.syncRBGMetadata(rbgset, latestRBG)
 
 				// Perform the update
 				return r.client.Update(ctx, latestRBG)
@@ -452,48 +478,65 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	return utilerrors.NewAggregate(allErrs)
 }
 
-// updateRBGAnnotations updates the RBG annotations to match the RBGSet annotations.
-func (r *RoleBasedGroupSetReconciler) updateRBGAnnotations(
+// syncRBGMetadata syncs the labels and annotations from GroupTemplate to the child RBG.
+// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are preserved.
+func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) {
-	if rbg.Annotations == nil {
-		rbg.Annotations = make(map[string]string)
+	// Sync labels: start from system-managed labels, then apply template labels on top.
+	newLabels := map[string]string{
+		constants.GroupSetNameLabelKey:  rbgset.Name,
+		constants.GroupSetIndexLabelKey: rbg.Labels[constants.GroupSetIndexLabelKey],
 	}
+	for k, v := range rbgset.Spec.GroupTemplate.Labels {
+		newLabels[k] = v
+	}
+	rbg.Labels = newLabels
 
-	// Handle exclusive topology annotation
-	if exclusiveKey, found := rbgset.Annotations[constants.GroupExclusiveTopologyKey]; found {
-		rbg.Annotations[constants.GroupExclusiveTopologyKey] = exclusiveKey
+	// Sync annotations: replace with exactly what the template specifies.
+	if len(rbgset.Spec.GroupTemplate.Annotations) == 0 {
+		rbg.Annotations = nil
 	} else {
-		// Remove the annotation if it exists in RBG but not in RBGSet
-		delete(rbg.Annotations, constants.GroupExclusiveTopologyKey)
+		newAnnotations := make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
+		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
+			newAnnotations[k] = v
+		}
+		rbg.Annotations = newAnnotations
 	}
 }
 
 // newRBGForSet creates a new RoleBasedGroup object based on the set's template.
 func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workloadsv1alpha2.RoleBasedGroup {
-	rbg := &workloadsv1alpha2.RoleBasedGroup{
+	// Start with system-managed labels, then merge template labels on top.
+	rbgLabels := map[string]string{
+		constants.GroupSetNameLabelKey:  rbgset.Name,
+		constants.GroupSetIndexLabelKey: fmt.Sprintf("%d", index),
+	}
+	for k, v := range rbgset.Spec.GroupTemplate.Labels {
+		rbgLabels[k] = v
+	}
+
+	// Copy annotations from the template.
+	var rbgAnnotations map[string]string
+	if len(rbgset.Spec.GroupTemplate.Annotations) > 0 {
+		rbgAnnotations = make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
+		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
+			rbgAnnotations[k] = v
+		}
+	}
+
+	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: rbgset.Namespace,
-			Name:      fmt.Sprintf("%s-%d", rbgset.Name, index),
-			Labels: map[string]string{
-				constants.GroupSetNameLabelKey:  rbgset.Name,
-				constants.GroupSetIndexLabelKey: fmt.Sprintf("%d", index),
-			},
+			Namespace:   rbgset.Namespace,
+			Name:        fmt.Sprintf("%s-%d", rbgset.Name, index),
+			Labels:      rbgLabels,
+			Annotations: rbgAnnotations,
 			// The OwnerReference will be set in the scaleUp function.
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 			Roles: rbgset.Spec.GroupTemplate.Spec.Roles,
 		},
 	}
-	// Copy annotations from RBGSet to child RBG
-	if exclusiveKey, found := rbgset.Annotations[constants.GroupExclusiveTopologyKey]; found {
-		if rbg.Annotations == nil {
-			rbg.Annotations = make(map[string]string)
-		}
-		rbg.Annotations[constants.GroupExclusiveTopologyKey] = exclusiveKey
-	}
-
-	return rbg
 }
 
 // SetupWithManager sets up the controller with the Manager.

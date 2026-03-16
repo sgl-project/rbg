@@ -17,28 +17,45 @@ limitations under the License.
 
 package v1alpha2
 
-import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
 // RoleBasedGroupTemplateSpecApplyConfiguration represents a declarative configuration of the RoleBasedGroupTemplateSpec type for use
 // with apply.
 type RoleBasedGroupTemplateSpecApplyConfiguration struct {
-	*metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec               *RoleBasedGroupSpecApplyConfiguration `json:"spec,omitempty"`
+	Labels      map[string]string                     `json:"labels,omitempty"`
+	Annotations map[string]string                     `json:"annotations,omitempty"`
+	Spec        *RoleBasedGroupSpecApplyConfiguration `json:"spec,omitempty"`
 }
 
-// RoleBasedGroupTemplateSpec constructs a declarative configuration of the RoleBasedGroupTemplateSpec type for use with
+// RoleBasedGroupTemplateSpecApplyConfiguration constructs a declarative configuration of the RoleBasedGroupTemplateSpec type for use with
 // apply.
 func RoleBasedGroupTemplateSpec() *RoleBasedGroupTemplateSpecApplyConfiguration {
 	return &RoleBasedGroupTemplateSpecApplyConfiguration{}
 }
 
-// WithMetadata sets the Metadata field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Metadata field is set to the value of the last call.
-func (b *RoleBasedGroupTemplateSpecApplyConfiguration) WithMetadata(value metav1.ObjectMeta) *RoleBasedGroupTemplateSpecApplyConfiguration {
-	b.ObjectMeta = &value
+// WithLabels puts the entries into the Labels field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Labels field,
+// overwriting an existing map entries in Labels field with the same key.
+func (b *RoleBasedGroupTemplateSpecApplyConfiguration) WithLabels(entries map[string]string) *RoleBasedGroupTemplateSpecApplyConfiguration {
+	if b.Labels == nil && len(entries) > 0 {
+		b.Labels = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.Labels[k] = v
+	}
+	return b
+}
+
+// WithAnnotations puts the entries into the Annotations field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Annotations field,
+// overwriting an existing map entries in Annotations field with the same key.
+func (b *RoleBasedGroupTemplateSpecApplyConfiguration) WithAnnotations(entries map[string]string) *RoleBasedGroupTemplateSpecApplyConfiguration {
+	if b.Annotations == nil && len(entries) > 0 {
+		b.Annotations = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.Annotations[k] = v
+	}
 	return b
 }
 

@@ -22,9 +22,13 @@ import (
 
 // RoleBasedGroupTemplateSpec describes the data a RoleBasedGroup should have when created from a template.
 type RoleBasedGroupTemplateSpec struct {
-	// Standard object's metadata.
+	// Map of string keys and values that can be used to organize and categorize objects.
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations is an unstructured key value map stored with a resource.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// Spec defines the desired behavior of the RoleBasedGroup.
 	// +optional
