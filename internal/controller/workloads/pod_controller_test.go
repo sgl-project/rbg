@@ -371,7 +371,7 @@ func TestPodReconciler_Reconcile(t *testing.T) {
 		},
 	).Obj()
 
-	fclient := fake.NewClientBuilder().WithScheme(schema).WithRuntimeObjects(obj).Build()
+	fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(obj).WithStatusSubresource(obj).Build()
 	r := &PodReconciler{
 		client: fclient,
 		scheme: schema,

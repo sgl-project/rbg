@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -129,13 +130,18 @@ func (r *PodReconciler) setRestartCondition(
 	}
 	restartCondition.ObservedGeneration = rbg.Generation
 
-	setCondition(rbg, restartCondition)
-
-	// Only patch the RestartInProgress condition via a dedicated field manager,
-	// so RBG controller's SSA patches (FieldManager="rbg", Force=true) cannot overwrite it.
-	rbgApplyConfig := toRBGApplyConfigurationForConditionsOnly(rbg)
-
-	return utils.PatchStatusWithFieldManager(ctx, r.client, rbgApplyConfig, utils.PodControllerFieldManager)
+	// Use RetryOnConflict + UpdateStatus to avoid SSA field-manager ownership conflicts.
+	// RoleBasedGroupStatus.Conditions is an atomic list in SSA, so two field managers cannot
+	// safely manage different entries. Instead, we use a standard UpdateStatus with optimistic
+	// locking: re-fetch the latest RBG, merge the RestartInProgress condition, then update.
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latest := &workloadsv1alpha2.RoleBasedGroup{}
+		if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latest); err != nil {
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, restartCondition)
+		return r.client.Status().Update(ctx, latest)
+	})
 }
 
 func restartConditionTrue(status workloadsv1alpha2.RoleBasedGroupStatus) bool {
