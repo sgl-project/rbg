@@ -12,7 +12,6 @@
       args:
         - "--tensor-parallel-size=1"
         - "--max-model-len=8192"
-        - "--disable-log-requests"
       env:
         - name: CUDA_VISIBLE_DEVICES
           value: "0"

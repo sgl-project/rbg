@@ -248,8 +248,8 @@ func TestInjectMetadataSave_MaliciousModelID_QuotedAndEscaped(t *testing.T) {
 	assert.Contains(t, arg, `.rbg-metadata.json`)
 	// Verify single quotes in modelID are escaped with shell escape pattern '\"'\"'
 	assert.Contains(t, arg, `'"'"'`)
-	// The entire echo argument should be shell-escaped (wrapped in single quotes)
-	assert.Contains(t, arg, `echo '`)
+	// The entire printf argument should be shell-escaped (wrapped in single quotes)
+	assert.Contains(t, arg, `printf '`)
 	// Verify the malicious content appears as escaped string data, not executable
 	assert.Contains(t, arg, `rm -rf /`)
 }
@@ -272,7 +272,7 @@ func TestInjectMetadataSave_MaliciousRevision_QuotedAndEscaped(t *testing.T) {
 	// The malicious input should be properly shell-escaped
 	assert.Contains(t, arg, `.rbg-metadata.json`)
 	// Verify the $() is escaped by shellEscape (wrapped in single quotes)
-	assert.Contains(t, arg, `echo '`)
+	assert.Contains(t, arg, `printf '`)
 	// The $( should appear inside the escaped string, not as executable
 	assert.Contains(t, arg, `$(rm -rf /)`)
 }
@@ -297,7 +297,7 @@ func TestInjectMetadataSave_DirectBinary_MaliciousInput_Escaped(t *testing.T) {
 	// Verify the command is wrapped and malicious input is escaped
 	assert.Contains(t, c.Args[0], `.rbg-metadata.json`)
 	// The backticks should be inside single quotes, not executable
-	assert.Contains(t, c.Args[0], `echo '`)
+	assert.Contains(t, c.Args[0], `printf '`)
 	assert.Contains(t, c.Args[0], "`cat /etc/passwd`")
 }
 

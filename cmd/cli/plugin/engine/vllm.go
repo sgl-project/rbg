@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"fmt"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
@@ -83,9 +81,4 @@ func (v *VLLMEngine) GenerateTemplate(name string, modelID string, modelPath str
 			},
 		},
 	}, nil
-}
-
-// GetModelService returns the model service URL
-func (v *VLLMEngine) GetModelService(name string) (string, error) {
-	return fmt.Sprintf("http://%s:8000", name), nil
 }

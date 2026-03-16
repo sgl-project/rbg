@@ -136,3 +136,130 @@ func TestRunEnvVarParsing_EmptyValue(t *testing.T) {
 	assert.Equal(t, "EMPTY", parts[0])
 	assert.Equal(t, "", parts[1])
 }
+
+// --- resolveRunContext ---
+
+func TestResolveRunContext_DefaultMode_VLLMEngine(t *testing.T) {
+	// Qwen/Qwen3.5-0.8B standard mode uses vllm with port 8000
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "vllm", rctx.EngineType)
+	assert.Equal(t, "standard", rctx.ModeName)
+	assert.Equal(t, int32(8000), rctx.ResolvedPort)
+	assert.NotNil(t, rctx.PodTemplate)
+	assert.Nil(t, rctx.StoragePlugin)
+}
+
+func TestResolveRunContext_LatencyMode_SGLangEngine(t *testing.T) {
+	// Qwen/Qwen3.5-0.8B latency mode uses sglang with port 30000
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Mode:     "latency",
+		Revision: "main",
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "sglang", rctx.EngineType)
+	assert.Equal(t, "latency", rctx.ModeName)
+	assert.Equal(t, int32(30000), rctx.ResolvedPort)
+}
+
+func TestResolveRunContext_EngineOverride(t *testing.T) {
+	// Engine flag overrides the mode's default engine
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Engine:   "sglang",
+		Revision: "main",
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "sglang", rctx.EngineType)
+	assert.Equal(t, int32(30000), rctx.ResolvedPort)
+}
+
+func TestResolveRunContext_GPUOverride(t *testing.T) {
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+		GPU:      4,
+	}, nil)
+	require.NoError(t, err)
+	gpuQty := rctx.PodTemplate.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
+	assert.Equal(t, "4", gpuQty.String())
+}
+
+func TestResolveRunContext_MemoryOverride(t *testing.T) {
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+		Memory:   "64Gi",
+	}, nil)
+	require.NoError(t, err)
+	memQty := rctx.PodTemplate.Spec.Containers[0].Resources.Requests["memory"]
+	assert.Equal(t, "64Gi", memQty.String())
+}
+
+func TestResolveRunContext_EnvVarInjection(t *testing.T) {
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+		EnvVars:  []string{"MY_KEY=my_value"},
+	}, nil)
+	require.NoError(t, err)
+	envMap := map[string]string{}
+	for _, e := range rctx.PodTemplate.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	assert.Equal(t, "my_value", envMap["MY_KEY"])
+}
+
+func TestResolveRunContext_InvalidEnvVar(t *testing.T) {
+	_, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+		EnvVars:  []string{"NOEQUALSSIGN"},
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid environment variable format")
+}
+
+func TestResolveRunContext_UnknownModel(t *testing.T) {
+	// Unknown model falls back to wildcard "*" config
+	rctx, err := resolveRunContext("my-svc", "unknown/unknown-model", RunParams{
+		Revision: "main",
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "vllm", rctx.EngineType)
+}
+
+func TestResolveRunContext_UnknownEngine_Errors(t *testing.T) {
+	_, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Engine:   "nonexistent-engine",
+		Revision: "main",
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown engine type")
+}
+
+func TestResolveRunContext_AdditionalArgs(t *testing.T) {
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+		ArgsList: []string{"--custom-flag", "value"},
+	}, nil)
+	require.NoError(t, err)
+	args := rctx.PodTemplate.Spec.Containers[0].Args
+	assert.Contains(t, args, "--custom-flag")
+	assert.Contains(t, args, "value")
+}
+
+func TestResolveRunContext_FallbackModelPath(t *testing.T) {
+	// Without storage config, model path uses the /model/ fallback
+	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
+		Revision: "main",
+	}, nil)
+	require.NoError(t, err)
+	// vllm passes model path via --model arg
+	args := rctx.PodTemplate.Spec.Containers[0].Args
+	var modelPathArg string
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			modelPathArg = args[i+1]
+			break
+		}
+	}
+	assert.True(t, strings.HasPrefix(modelPathArg, "/model/"), "expected fallback model path, got: %s", modelPathArg)
+}
