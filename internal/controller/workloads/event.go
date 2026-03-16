@@ -14,9 +14,13 @@ const (
 	Succeed                           = "Succeed"
 	FailedUpdateStatus                = "FailedUpdateStatus"
 	FailedCreatePodGroup              = "FailedCreatePodGroup"
+	FailedReconcilePodGroup           = "FailedReconcilePodGroup"
 	FailedCreateRevision              = "FailedCreateRevision"
 	FailedReconcileDiscoveryConfigMap = "FailedReconcileDiscoveryConfigMap"
 	SucceedCreateRevision             = "SucceedCreateRevision"
+	// InvalidGangSchedulingAnnotations is emitted when group-gang-scheduling and
+	// role-instance-gang-scheduling annotations are set simultaneously on the same RBG.
+	InvalidGangSchedulingAnnotations = "InvalidGangSchedulingAnnotations"
 )
 
 // rbg-scaling-adapter events

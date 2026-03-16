@@ -82,16 +82,22 @@ type RoleBasedGroupReconciler struct {
 	recorder           record.EventRecorder
 	workloadReconciler map[string]reconciler.WorkloadReconciler
 	reconcilerMu       sync.RWMutex
+	podGroupManager    scheduler.PodGroupManager
 }
 
-func NewRoleBasedGroupReconciler(mgr ctrl.Manager) *RoleBasedGroupReconciler {
+func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType) (*RoleBasedGroupReconciler, error) {
+	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, mgr.GetClient())
+	if err != nil {
+		return nil, err
+	}
 	return &RoleBasedGroupReconciler{
 		client:             mgr.GetClient(),
 		apiReader:          mgr.GetAPIReader(),
 		scheme:             mgr.GetScheme(),
 		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
 		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
-	}
+		podGroupManager:    podGroupManager,
+	}, nil
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch;create;update;patch;delete
@@ -171,12 +177,18 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Reconcile roles, do create/update actions for roles.
+	// Step 6: Reconcile PodGroup for gang scheduling (annotation-driven).
+	if err := r.reconcilePodGroup(ctx, rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
+		return ctrl.Result{}, err
+	}
+
+	// Step 7: Reconcile roles, do create/update actions for roles.
 	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Cleanup orphaned resources
+	// Step 8: Cleanup orphaned resources
 	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -222,6 +234,23 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 
 func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
+
+	// Validate that group-gang-scheduling and role-instance-gang-scheduling are not both set
+	// on the RBG metadata.annotations, as they are mutually exclusive at the RBG level.
+	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" &&
+		rbg.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "true" {
+		err := fmt.Errorf(
+			"annotations %q and %q cannot be set simultaneously on the same RoleBasedGroup; "+
+				"use %q for group-level gang scheduling, or set %q per role via role.Annotations",
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+		)
+		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidGangSchedulingAnnotations, err.Error())
+		return err
+	}
+
 	// Validate RoleTemplates
 	if err := workloadsv1alpha2.ValidateRoleTemplates(rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
@@ -368,6 +397,16 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 		)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, cmApplyConfig, utils.PatchSpec)
+}
+
+func (r *RoleBasedGroupReconciler) reconcilePodGroup(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	if r.podGroupManager == nil {
+		return nil
+	}
+	return r.podGroupManager.ReconcilePodGroup(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader)
 }
 
 func (r *RoleBasedGroupReconciler) reconcileRoles(
@@ -533,6 +572,11 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 	rec, err := reconciler.NewWorkloadReconciler(workloadSpec, r.scheme, r.client)
 	if err != nil {
 		return nil, err
+	}
+
+	// Inject PodGroupManager if the reconciler supports it (PodGroupManagerSetter).
+	if setter, ok := rec.(reconciler.PodGroupManagerSetter); ok {
+		setter.SetPodGroupManager(r.podGroupManager)
 	}
 
 	// Cache the reconciler

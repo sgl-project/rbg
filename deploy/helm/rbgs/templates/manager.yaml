@@ -32,6 +32,7 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
           command:
             - /manager
           securityContext:

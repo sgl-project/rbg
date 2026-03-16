@@ -34,6 +34,11 @@ nodeSelector: {}
 
 tolerations: []
 
+# Gang scheduling scheduler name configuration.
+# Supported values: scheduler-plugins, volcano
+# Defaults to scheduler-plugins.
+schedulerName: scheduler-plugins
+
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)
   enabled: true

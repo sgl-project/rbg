@@ -190,6 +190,15 @@ func GenInstanceFromTemplate(template *appsv1alpha2.RoleInstanceTemplate, set *a
 		instance.OwnerReferences = append(instance.OwnerReferences, *controllerRef)
 	}
 	instance.Spec = *template.RoleInstanceSpec.DeepCopy()
+	// Propagate gang-scheduling annotation from RoleInstanceSet to RoleInstance so that
+	// the instance controller can enforce gang-scheduling constraints (e.g. orphan-pod check,
+	// atomic pod recreation) without access to the parent RBG.
+	if v, ok := set.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey]; ok {
+		if instance.Annotations == nil {
+			instance.Annotations = make(map[string]string)
+		}
+		instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] = v
+	}
 	return instance, nil
 }
 

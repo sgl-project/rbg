@@ -16,12 +16,14 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	workloadsv1alpha2client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type RoleInstanceSetReconciler struct {
-	scheme *runtime.Scheme
-	client client.Client
+	scheme          *runtime.Scheme
+	client          client.Client
+	podGroupManager scheduler.PodGroupManager
 }
 
 var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
@@ -31,6 +33,11 @@ func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) 
 		scheme: scheme,
 		client: client,
 	}
+}
+
+// SetPodGroupManager implements PodGroupManagerSetter.
+func (r *RoleInstanceSetReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
+	r.podGroupManager = m
 }
 
 func (r *RoleInstanceSetReconciler) Validate(
@@ -240,6 +247,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 	roleInstanceTemplateConfig *workloadsv1alpha2client.RoleInstanceTemplateApplyConfiguration,
 ) error {
 	podReconciler := NewPodReconciler(r.scheme, r.client)
+	podReconciler.SetPodGroupManager(r.podGroupManager)
 	for _, component := range role.GetCustomComponentsPattern().Components {
 		podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 			ctx, rbg, role, maps.Clone(matchLabels), component.Template)
@@ -286,6 +294,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
+	leaderPodReconciler.SetPodGroupManager(r.podGroupManager)
 	leaderPodReconciler.SetInjectors([]string{"config", "sidecar", "common_env", "lwp_env"})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, *leaderTemp,
@@ -303,6 +312,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
+	workerPodReconciler.SetPodGroupManager(r.podGroupManager)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "common_env", "lwp_env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
@@ -353,6 +363,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandaloneP
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
+	podReconciler.SetPodGroupManager(r.podGroupManager)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)

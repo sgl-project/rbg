@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -60,6 +61,23 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
 	}
 
+	if isGangSchedulingEnabled(updateInstance) {
+		for i := range pods {
+			oldRevision := currentRevision
+			for _, r := range revisions {
+				if instanceutil.EqualToRevisionHash("", pods[i], r.Name) {
+					oldRevision = r
+					break
+				}
+			}
+			if !c.inplaceControl.CanUpdateInPlace(ctx, oldRevision, updateRevision, coreControl.GetUpdateOptions()) {
+				c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance", fmt.Sprintf("component %s can't inplace updated, "+
+					"recreate all pods of instance: %v", instanceutil.GetPodComponentName(pods[i]), klog.KObj(updateInstance)))
+				return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
+			}
+		}
+	}
+
 	var (
 		toDeleteNum  = 0
 		toDeletePods []*v1.Pod
@@ -105,6 +123,9 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 	toCreatePodNum := 0
 	for _, p := range newPods {
 		if c.hasOrphanPod(p.Namespace, p.Name) {
+			if isGangSchedulingEnabled(updateInstance) {
+				return false, fmt.Errorf("orphan pod %v has not been gc, fail to create new pod", klog.KObj(p))
+			}
 			continue
 		}
 		toCreatePodNum++
@@ -220,4 +241,11 @@ func getExpectedPodCount(instance *workloadsv1alpha2.RoleInstance) int {
 		}
 	}
 	return expectedPodCount
+}
+
+// isGangSchedulingEnabled reports whether gang-scheduling constraints are active for the
+// given RoleInstance. The annotation is derived from the parent RBG's gang-scheduling
+// annotation during RoleInstanceSet reconciliation, or set directly via role.Annotations.
+func isGangSchedulingEnabled(instance *workloadsv1alpha2.RoleInstance) bool {
+	return instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "true"
 }

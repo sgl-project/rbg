@@ -27,18 +27,25 @@ import (
 	lwsapplyv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type LeaderWorkerSetReconciler struct {
-	scheme *runtime.Scheme
-	client client.Client
+	scheme          *runtime.Scheme
+	client          client.Client
+	podGroupManager scheduler.PodGroupManager
 }
 
 var _ WorkloadReconciler = &LeaderWorkerSetReconciler{}
 
 func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) *LeaderWorkerSetReconciler {
 	return &LeaderWorkerSetReconciler{scheme: scheme, client: client}
+}
+
+// SetPodGroupManager implements PodGroupManagerSetter.
+func (r *LeaderWorkerSetReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
+	r.podGroupManager = m
 }
 
 func (r *LeaderWorkerSetReconciler) Validate(
@@ -226,6 +233,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// leaderTemplate
 	podReconciler := NewPodReconciler(r.scheme, r.client)
+	podReconciler.SetPodGroupManager(r.podGroupManager)
 	// KEP-8: use applyStrategicMergePatch
 	leaderTemp, err := applyStrategicMergePatch(baseTemplate, leaderPatch)
 	if err != nil {
@@ -247,6 +255,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		return nil, err
 	}
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
+	workerPodReconciler.SetPodGroupManager(r.podGroupManager)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "common_env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
