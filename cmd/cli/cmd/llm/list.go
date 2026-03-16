@@ -1,4 +1,20 @@
-package list
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package llm
 
 import (
 	"context"
@@ -9,13 +25,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
 
-// ServiceInfo represents a single LLM service entry for display
-type ServiceInfo struct {
+// serviceInfo represents a single LLM service entry for display
+type serviceInfo struct {
 	Name      string
 	Namespace string
 	Model     string
@@ -26,8 +42,7 @@ type ServiceInfo struct {
 	Status    string
 }
 
-// NewListCmd creates the llm list command
-func NewListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
+func newListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	var (
 		allNamespaces bool
 		output        string
@@ -61,7 +76,6 @@ func NewListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				LabelSelector: llmmeta.RunCommandSourceLabelKey + "=" + llmmeta.RunCommandSourceLabelValue,
 			}
 
-			// Determine the namespace to list from
 			var namespace string
 			if allNamespaces {
 				namespace = ""
@@ -70,22 +84,19 @@ func NewListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			}
 
 			ctx := context.Background()
-			// rbgList, err := client.WorkloadsV1alpha2().RoleBasedGroups(namespace).List(ctx, listOpts)
-			rbgList, err := client.WorkloadsV1alpha1().RoleBasedGroups(namespace).List(ctx, listOpts)
+			rbgList, err := client.WorkloadsV1alpha2().RoleBasedGroups(namespace).List(ctx, listOpts)
 			if err != nil {
 				return fmt.Errorf("failed to list RoleBasedGroups: %w", err)
 			}
 
-			// Handle output format
 			switch output {
 			case "json":
-				return printJSON(cmd, rbgList)
+				return listPrintJSON(cmd, rbgList)
 			case "yaml":
-				return printYAML(cmd, rbgList)
+				return listPrintYAML(cmd, rbgList)
 			default:
-				// table format
 				services := extractServiceInfos(rbgList)
-				printTable(cmd, services, allNamespaces)
+				listPrintTable(cmd, services, allNamespaces)
 			}
 
 			return nil
@@ -98,19 +109,17 @@ func NewListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	return cmd
 }
 
-// extractServiceInfos extracts ServiceInfo from a list of RoleBasedGroups
-func extractServiceInfos(rbgList *workloadsv1alpha1.RoleBasedGroupList) []ServiceInfo {
-	services := make([]ServiceInfo, 0, len(rbgList.Items))
+// extractServiceInfos extracts serviceInfo from a list of RoleBasedGroups
+func extractServiceInfos(rbgList *workloadsv1alpha2.RoleBasedGroupList) []serviceInfo {
+	services := make([]serviceInfo, 0, len(rbgList.Items))
 	for i := range rbgList.Items {
 		rbg := &rbgList.Items[i]
-		info := ServiceInfo{
+		info := serviceInfo{
 			Name:      rbg.Name,
 			Namespace: rbg.Namespace,
-			Status:    extractStatus(rbg),
-			Replicas:  0,
+			Status:    extractRBGStatus(rbg),
 		}
 
-		// Parse CLI metadata annotation
 		if annotationVal, ok := rbg.Annotations[llmmeta.RunCommandMetadataAnnotationKey]; ok {
 			var meta llmmeta.RunMetadata
 			if err := json.Unmarshal([]byte(annotationVal), &meta); err == nil {
@@ -131,7 +140,6 @@ func extractServiceInfos(rbgList *workloadsv1alpha1.RoleBasedGroupList) []Servic
 			info.Revision = "unknown"
 		}
 
-		// Extract replicas from first role
 		if len(rbg.Spec.Roles) > 0 && rbg.Spec.Roles[0].Replicas != nil {
 			info.Replicas = *rbg.Spec.Roles[0].Replicas
 		}
@@ -141,11 +149,10 @@ func extractServiceInfos(rbgList *workloadsv1alpha1.RoleBasedGroupList) []Servic
 	return services
 }
 
-// extractStatus returns the human-readable status from an RBG's conditions
-func extractStatus(rbg *workloadsv1alpha1.RoleBasedGroup) string {
+// extractRBGStatus returns the human-readable status from an RBG's conditions
+func extractRBGStatus(rbg *workloadsv1alpha2.RoleBasedGroup) string {
 	if len(rbg.Status.Conditions) == 0 {
 		return "Pending"
 	}
-	// Use the first condition's type as status
 	return string(rbg.Status.Conditions[0].Type)
 }

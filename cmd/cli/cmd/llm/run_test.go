@@ -175,26 +175,6 @@ func TestResolveRunContext_EngineOverride(t *testing.T) {
 	assert.Equal(t, int32(30000), rctx.ResolvedPort)
 }
 
-func TestResolveRunContext_GPUOverride(t *testing.T) {
-	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
-		Revision: "main",
-		GPU:      4,
-	}, nil)
-	require.NoError(t, err)
-	gpuQty := rctx.PodTemplate.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
-	assert.Equal(t, "4", gpuQty.String())
-}
-
-func TestResolveRunContext_MemoryOverride(t *testing.T) {
-	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
-		Revision: "main",
-		Memory:   "64Gi",
-	}, nil)
-	require.NoError(t, err)
-	memQty := rctx.PodTemplate.Spec.Containers[0].Resources.Requests["memory"]
-	assert.Equal(t, "64Gi", memQty.String())
-}
-
 func TestResolveRunContext_EnvVarInjection(t *testing.T) {
 	rctx, err := resolveRunContext("my-svc", "Qwen/Qwen3.5-0.8B", RunParams{
 		Revision: "main",

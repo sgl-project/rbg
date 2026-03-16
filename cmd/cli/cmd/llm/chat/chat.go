@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,8 +31,10 @@ import (
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
@@ -120,7 +122,7 @@ port-forward tunnel, and communicates over the OpenAI /v1/chat/completions API.`
 				return fmt.Errorf("failed to connect to cluster: %w", err)
 			}
 			// rbg, err := rbgClient.WorkloadsV1alpha2().RoleBasedGroups(namespace).Get(ctx, name, metav1.GetOptions{})
-			rbg, err := rbgClient.WorkloadsV1alpha1().RoleBasedGroups(namespace).Get(ctx, name, metav1.GetOptions{})
+			rbg, err := rbgClient.WorkloadsV1alpha2().RoleBasedGroups(namespace).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("RoleBasedGroup %q not found in namespace %q: %w", name, namespace, err)
 			}
@@ -142,10 +144,10 @@ port-forward tunnel, and communicates over the OpenAI /v1/chat/completions API.`
 			if err != nil {
 				return fmt.Errorf("failed to create Kubernetes client: %w", err)
 			}
-			labelSelector := fmt.Sprintf(
-				"rolebasedgroup.workloads.x-k8s.io/name=%s,rolebasedgroup.workloads.x-k8s.io/role=inference",
-				name,
-			)
+			labelSelector := labels.SelectorFromSet(labels.Set{
+				constants.GroupNameLabelKey: name,
+				constants.RoleNameLabelKey:  "inference",
+			}).String()
 			pods, err := k8sClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: labelSelector,
 			})
@@ -177,7 +179,7 @@ port-forward tunnel, and communicates over the OpenAI /v1/chat/completions API.`
 			}
 
 			// 5. Start port-forward tunnel.
-			fmt.Fprintf(os.Stderr, "Connecting to pod %s (port-forward %d → %d)...\n", podName, localPort, meta.Port)
+			fmt.Fprintf(os.Stderr, "Connecting to pod %s...\n", podName)
 			session, err := startPortForward(kubeconfig, namespace, podName, localPort, meta.Port, pfReadyTimeout)
 			if err != nil {
 				return fmt.Errorf("port-forward failed: %w", err)
