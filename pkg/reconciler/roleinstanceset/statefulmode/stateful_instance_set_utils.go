@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 )
 
 // statefulInstanceRegex is a regular expression that extracts the parent InstanceSet and ordinal from the Name of an Instance
@@ -229,6 +230,8 @@ func newVersionedInstance(
 	if v, ok := currentSet.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey]; ok {
 		instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] = v
 	}
+
+	portallocator.AllocatePortsForInstance(instance, currentSet)
 
 	return instance
 }

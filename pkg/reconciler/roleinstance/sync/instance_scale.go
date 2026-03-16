@@ -27,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -128,13 +129,25 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, expectedCreations map[string]sets.Set[int32], updateRevision string) (bool, error) {
 	coreControl := instancecore.New(updateInstance)
 	var newPods []*v1.Pod
+	componentPortConfigs := make(map[string]*portallocator.PortAllocatorConfig)
+
 	for _, component := range updateInstance.Spec.Components {
 		updatePods, err := coreControl.NewUpdatePods(updateRevision, component.Name, sets.List(expectedCreations[component.Name]))
 		if err != nil {
 			return false, err
 		}
 		newPods = append(newPods, updatePods...)
+
+		// Parse port allocator config from component template
+		if portallocator.HasPortAllocatorConfig(&component.Template) {
+			config, err := portallocator.ParsePortAllocatorConfigFromTemplate(&component.Template)
+			if err != nil {
+				return false, fmt.Errorf("failed to parse port allocator config for component %s: %w", component.Name, err)
+			}
+			componentPortConfigs[component.Name] = config
+		}
 	}
+
 	podsCreationChan := make(chan *v1.Pod, len(newPods))
 	toCreatePodNum := 0
 	for _, p := range newPods {
@@ -144,6 +157,16 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 			}
 			continue
 		}
+
+		// Handle port injection for the pod from Instance annotation
+		componentName := instanceutil.GetPodComponentName(p)
+		if config, exists := componentPortConfigs[componentName]; exists {
+			// Inject ports into the pod spec from Instance annotation
+			if err := portallocator.InjectPortsIntoPod(p, updateInstance, config, componentName); err != nil {
+				return false, fmt.Errorf("failed to inject ports into pod %s: %w", p.Name, err)
+			}
+		}
+
 		toCreatePodNum++
 		podsCreationChan <- p
 	}
@@ -164,6 +187,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 
 func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, podsToDelete []*v1.Pod) (bool, error) {
 	var modified bool
+
 	for _, pod := range podsToDelete {
 		if err := c.Delete(ctx, pod); err != nil {
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedDelete", "failed to delete pod %s: %v", pod.Name, err)
