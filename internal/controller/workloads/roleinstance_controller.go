@@ -27,7 +27,7 @@ func NewRoleInstanceReconciler(mgr ctrl.Manager) *RoleInstanceReconciler {
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances/status,verbs=get;update;patch;create;delete;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances/finalizers,verbs=update
 
 func (r *RoleInstanceReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {

@@ -37,14 +37,14 @@ func NewRoleInstanceSetReconciler(mgr ctrl.Manager) *RoleInstanceSetReconciler {
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstancesets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstancesets/status,verbs=get;update;patch;create;delete;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstancesets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstancesets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances/status,verbs=get;update;patch;create;delete;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instances,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instances/status,verbs=get;update;patch;create;delete;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instancesets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instancesets/status,verbs=get;update;patch;create;delete;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instancesets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 

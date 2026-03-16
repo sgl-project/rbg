@@ -82,7 +82,6 @@ rules:
   - leaderworkerset.x-k8s.io
   resources:
   - leaderworkersets
-  - leaderworkersets/status
   verbs:
   - create
   - delete
@@ -91,6 +90,14 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
+  - leaderworkersets/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - scheduling.volcano.sh
   - scheduling.x-k8s.io
@@ -118,20 +125,29 @@ rules:
   - workloads.x-k8s.io
   resources:
   - clusterengineruntimeprofiles/status
-  - coordinatedpolicies
   - coordinatedpolicies/status
-  - instances
   - instances/status
-  - instancesets
   - instancesets/status
-  - rolebasedgroups
   - rolebasedgroups/status
-  - rolebasedgroupsets
+  - rolebasedgroupscalingadapters/status
   - rolebasedgroupsets/status
-  - roleinstances
   - roleinstances/status
-  - roleinstancesets
   - roleinstancesets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - coordinatedpolicies
+  - instances
+  - instancesets
+  - rolebasedgroups
+  - rolebasedgroupscalingadapters
+  - rolebasedgroupsets
+  - roleinstances
+  - roleinstancesets
   verbs:
   - create
   - delete
