@@ -1,0 +1,56 @@
+# Example: Gang scheduling with Volcano (v1alpha2)
+# Volcano gang scheduling ensures all pods in a group are scheduled atomically.
+# All-or-nothing: the scheduler only places the group if all pods can be allocated.
+#
+# IMPORTANT: To use Volcano gang scheduling, the controller must be configured with:
+#   --scheduler-name=volcano (or set schedulerName: volcano in Helm values.yaml)
+# This ensures the controller creates Volcano PodGroup CRs and injects required annotations.
+#
+# Optional annotations for Volcano PodGroup configuration:
+#   rbg.workloads.x-k8s.io/group-gang-scheduling: "true"           # Required: enables gang scheduling
+#   rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue: "default"      # Optional: specifies the queue
+#   rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority: "high"      # Optional: specifies the priority class
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: volcano-gang
+  namespace: default
+  # annotations:
+  #   rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
+  #   rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue: "default"
+  #   rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority: "high-priority"
+spec:
+  roles:
+    - name: prefill
+      replicas: 2
+      standalonePattern:
+        template:
+          spec:
+            schedulerName: volcano
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+
+    - name: decode
+      replicas: 4
+      standalonePattern:
+        template:
+          spec:
+            schedulerName: volcano
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"

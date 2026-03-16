@@ -1,0 +1,86 @@
+# Example: ClusterEngineRuntimeProfile with RoleBasedGroup (v1alpha2)
+# ClusterEngineRuntimeProfile defines a cluster-scoped reusable sidecar/init-container profile
+# that can be injected into role pods via the engineRuntimes field.
+# Useful for injecting GPU drivers, monitoring sidecars, or shared runtime dependencies.
+---
+# Step 1: Create a ClusterEngineRuntimeProfile (cluster-scoped resource)
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: ClusterEngineRuntimeProfile
+metadata:
+  name: nvidia-runtime-profile
+spec:
+  # updateStrategy: NoUpdate (default) or RollingUpdate
+  # NoUpdate: profile changes do not trigger pod updates
+  # RollingUpdate: profile changes trigger rolling update of associated pods
+  updateStrategy: RollingUpdate
+  initContainers:
+    - name: gpu-driver-init
+      image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+      command: ["/bin/sh", "-c", "echo 'GPU driver initialized'"]
+      volumeMounts:
+        - name: gpu-lib
+          mountPath: /usr/local/lib/gpu
+  containers:
+    - name: gpu-monitor
+      image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+      ports:
+        - containerPort: 9090
+          name: metrics
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+  volumes:
+    - name: gpu-lib
+      emptyDir: {}
+
+---
+# Step 2: Create a RoleBasedGroup referencing the engine runtime profile
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: gpu-inference
+  namespace: default
+spec:
+  roles:
+    - name: prefill
+      replicas: 2
+      # engineRuntimes: inject the profile into specified containers of this role
+      engineRuntimes:
+        - profileName: nvidia-runtime-profile
+          # injectContainers: which containers to inject the runtime into
+          injectContainers:
+            - prefill-main
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: prefill-main
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+
+    - name: decode
+      replicas: 4
+      engineRuntimes:
+        - profileName: nvidia-runtime-profile
+          injectContainers:
+            - decode-main
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: decode-main
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"

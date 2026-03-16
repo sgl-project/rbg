@@ -1,0 +1,132 @@
+# Example: CoordinatedPolicy for coordinated scaling (v1alpha2)
+# Uses CoordinatedPolicy to coordinate scale-out between multiple roles,
+# ensuring they scale together and don't diverge too much during the process.
+#
+# Three sub-examples are shown in separate sections:
+# 1. Simple coordinated scaling (OrderScheduled)
+# 2. Fast coordinated scaling (large maxSkew)
+# 3. Safe coordinated scaling (OrderReady, small maxSkew)
+
+# -------------------------------------------------------------------
+# Example 1: Simple coordinated scaling with OrderScheduled
+# Useful for PD disaggregation where prefill and decode scale together.
+# -------------------------------------------------------------------
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: simple-inference
+  namespace: default
+spec:
+  roles:
+    - name: prefill
+      replicas: 10
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+
+    - name: decode
+      replicas: 10
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: CoordinatedPolicy
+metadata:
+  name: simple-scaling-policy
+  namespace: default
+spec:
+  policies:
+    - roles:
+        - prefill
+        - decode
+      strategy:
+        scaling:
+          # 10% deployment progress difference allowed between roles
+          maxSkew: "10%"
+          # Wait for pods to be scheduled before proceeding to next batch
+          progression: OrderScheduled
+
+# -------------------------------------------------------------------
+# Example 2: Safe coordinated scaling with OrderReady
+# Ensures all pods in a batch are fully ready before proceeding.
+# -------------------------------------------------------------------
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: safe-progressive-deployment
+  namespace: default
+spec:
+  roles:
+    - name: frontend
+      replicas: 50
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: frontend
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 80
+                readinessProbe:
+                  exec:
+                    command: ["/bin/sh", "-c", "echo 1"]
+                  successThreshold: 3
+                  periodSeconds: 3
+                  initialDelaySeconds: 10
+
+    - name: backend
+      replicas: 30
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: backend
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                readinessProbe:
+                  exec:
+                    command: ["/bin/sh", "-c", "echo 1"]
+                  successThreshold: 3
+                  periodSeconds: 3
+                  initialDelaySeconds: 10
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: CoordinatedPolicy
+metadata:
+  name: safe-scaling-policy
+  namespace: default
+spec:
+  policies:
+    - roles:
+        - frontend
+        - backend
+      strategy:
+        scaling:
+          # Small maxSkew for careful, incremental scale-out
+          maxSkew: "5%"
+          # OrderReady: wait for all pods in batch to be ready before next batch
+          progression: OrderScheduled

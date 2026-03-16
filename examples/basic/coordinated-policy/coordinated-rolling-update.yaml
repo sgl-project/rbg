@@ -1,0 +1,94 @@
+# Example: CoordinatedPolicy for coordinated rolling updates (v1alpha2)
+# In v1alpha2, coordination is a separate CRD (CoordinatedPolicy) instead of
+# being inline in the RoleBasedGroup spec. The policy references roles by name.
+#
+# This example shows coordinated rolling update between prefill and decode roles,
+# ensuring they don't fall too far behind each other during updates (maxSkew).
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: pd-inference
+  namespace: default
+spec:
+  roles:
+    - name: prefill
+      replicas: 7
+      minReadySeconds: 10
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              version: v2
+          spec:
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                    protocol: TCP
+                readinessProbe:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - echo "1"
+                  successThreshold: 3
+                  periodSeconds: 3
+                  initialDelaySeconds: 10
+
+    - name: decode
+      replicas: 3
+      minReadySeconds: 10
+      dependencies:
+        - prefill
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              version: v2
+          spec:
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                    protocol: TCP
+                readinessProbe:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - echo "1"
+                  successThreshold: 3
+                  periodSeconds: 3
+                  initialDelaySeconds: 10
+
+---
+# CoordinatedPolicy ensures coordinated rolling updates between prefill and decode.
+# maxSkew: 1% means at most 1% difference in update progress between roles.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: CoordinatedPolicy
+metadata:
+  name: pd-rollout-policy
+  namespace: default
+spec:
+  policies:
+    - roles:
+        - prefill
+        - decode
+      strategy:
+        rollingUpdate:
+          maxSkew: "1%"
+          maxUnavailable: "10%"

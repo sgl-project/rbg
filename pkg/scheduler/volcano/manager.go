@@ -16,6 +16,11 @@ limitations under the License.
 
 // Package volcano implements the PodGroupManager interface for
 // the Volcano PodGroup (scheduling.volcano.sh).
+//
+// To enable Volcano gang scheduling, the controller must be started with
+// --scheduler-name=volcano (or set schedulerName: volcano in Helm values.yaml).
+// This ensures the controller creates Volcano PodGroup CRs and injects the
+// required annotations into pod templates.
 package volcano
 
 import (

@@ -1,0 +1,38 @@
+# Example: Basic RoleBasedGroupSet (v1alpha2)
+# RoleBasedGroupSet manages multiple identical RoleBasedGroups (replicas).
+# In v1alpha2, the template field is renamed to groupTemplate.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroupSet
+metadata:
+  name: rbgs-base
+  namespace: default
+spec:
+  replicas: 2
+  groupTemplate:
+    metadata:
+      labels:
+        app: inference-cluster
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          standalonePattern:
+            template:
+              spec:
+                containers:
+                  - name: prefill
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 8080
+
+        - name: decode
+          replicas: 2
+          dependencies: ["prefill"]
+          standalonePattern:
+            template:
+              spec:
+                containers:
+                  - name: decode
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 8081

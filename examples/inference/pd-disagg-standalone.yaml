@@ -1,0 +1,265 @@
+# Example: PD-Disaggregated LLM Inference with SGLang and RoleBasedGroup (v1alpha2)
+# This example demonstrates a complete Prefill-Decode disaggregated deployment
+# using SGLang runtime with Qwen 0.6B model.
+#
+# Architecture:
+#   - router: SGLang frontend router for request routing and dispatching
+#   - prefill: SGLang prefill engine for prompt encoding (GPU-accelerated)
+#   - decode: SGLang decode engine for token generation (GPU-accelerated)
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation)
+#
+# Features demonstrated:
+#   - SGLang runtime with PD disaggregation mode
+#   - standalonePattern for independent pod-per-instance deployment
+#   - dependencies to control startup order (router -> prefill -> decode)
+#   - scalingAdapter for HPA integration
+#   - CoordinatedPolicy for coordinated scaling
+#   - rolloutStrategy with InPlaceIfPossible
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.9-cu124 (or later)
+#   - GPU nodes with CUDA support
+#   - Model weights mounted at /models or use HuggingFace download
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: sglang-pd-inference
+  namespace: default
+  labels:
+    app: sglang-inference
+    deployment-type: pd-disaggregated
+    model: qwen-0.6b
+spec:
+  roles:
+    # Router: SGLang frontend that routes requests to prefill/decode engines
+    # Uses --disaggregation-mode=router for PD disaggregation
+    - name: router
+      replicas: 1
+      servicePorts:
+        - name: http
+          port: 80
+          targetPort: 8000
+          protocol: TCP
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              app: sglang-inference
+              role: router
+          spec:
+            containers:
+              - name: router
+                image: lmsysorg/sglang:v0.5.9-cu124
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                  - --disaggregation-mode
+                  - "router"
+                  - --prefill
+                  - "sglang-pd-inference-prefill-0.sglang-pd-inference-prefill:8001"
+                  - --decode
+                  - "sglang-pd-inference-decode-0.sglang-pd-inference-decode:8002"
+                ports:
+                  - name: http
+                    containerPort: 8000
+                  - name: metrics
+                    containerPort: 9090
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: "4Gi"
+                  limits:
+                    cpu: "4"
+                    memory: "8Gi"
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  initialDelaySeconds: 60
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  initialDelaySeconds: 120
+                  periodSeconds: 30
+
+    # Prefill: SGLang prefill engine for prompt encoding
+    # Uses --disaggregation-mode=prefill for PD disaggregation
+    - name: prefill
+      replicas: 1
+      dependencies: ["router"]  # start after router is ready
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      scalingAdapter:
+        enable: true
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 30
+      servicePorts:
+        - name: grpc
+          port: 8001
+          targetPort: 8001
+          protocol: TCP
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              app: sglang-inference
+              role: prefill
+          spec:
+            containers:
+              - name: prefill
+                image: lmsysorg/sglang:v0.5.9-cu124
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8001"
+                  - --disaggregation-mode
+                  - "prefill"
+                  - --tp-size
+                  - "1"
+                ports:
+                  - name: grpc
+                    containerPort: 8001
+                  - name: metrics
+                    containerPort: 9090
+                env:
+                  - name: ROLE
+                    value: prefill
+                  - name: SGLANG_DISAGGREGATION_MODE
+                    value: "prefill"
+                resources:
+                  requests:
+                    cpu: "4"
+                    memory: "8Gi"
+                    nvidia.com/gpu: "1"
+                  limits:
+                    cpu: "8"
+                    memory: "16Gi"
+                    nvidia.com/gpu: "1"
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8001
+                  initialDelaySeconds: 60
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8001
+                  initialDelaySeconds: 120
+                  periodSeconds: 30
+
+    # Decode: SGLang decode engine for token generation
+    # Uses --disaggregation-mode=decode for PD disaggregation
+    - name: decode
+      replicas: 1
+      dependencies: ["prefill"]  # start after prefill is ready
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      scalingAdapter:
+        enable: true
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 30
+      servicePorts:
+        - name: grpc
+          port: 8002
+          targetPort: 8002
+          protocol: TCP
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              app: sglang-inference
+              role: decode
+          spec:
+            containers:
+              - name: decode
+                image: lmsysorg/sglang:v0.5.9-cu124
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8002"
+                  - --disaggregation-mode
+                  - "decode"
+                  - --tp-size
+                  - "1"
+                ports:
+                  - name: grpc
+                    containerPort: 8002
+                  - name: metrics
+                    containerPort: 9090
+                env:
+                  - name: ROLE
+                    value: decode
+                  - name: SGLANG_DISAGGREGATION_MODE
+                    value: "decode"
+                resources:
+                  requests:
+                    cpu: "4"
+                    memory: "8Gi"
+                    nvidia.com/gpu: "1"
+                  limits:
+                    cpu: "8"
+                    memory: "16Gi"
+                    nvidia.com/gpu: "1"
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8002
+                  initialDelaySeconds: 60
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8002
+                  initialDelaySeconds: 120
+                  periodSeconds: 30
+
+---
+# CoordinatedPolicy: coordinate scale-out between prefill and decode
+# Ensures they scale proportionally for PD disaggregated inference
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: CoordinatedPolicy
+metadata:
+  name: sglang-pd-scaling-policy
+  namespace: default
+spec:
+  policies:
+    - roles:
+        - prefill
+        - decode
+      strategy:
+        scaling:
+          maxSkew: "10%"
+          progression: OrderScheduled

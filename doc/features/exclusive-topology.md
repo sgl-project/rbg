@@ -36,7 +36,7 @@ In this example, all pods (leader, worker, and lws) will be scheduled on the sam
 ## Example: RoleBasedGroupSet with Exclusive Topology
 
 RoleBasedGroupSet extends the exclusive topology feature to multiple groups, where each group is scheduled exclusively
-on a topology domain. See example [rbgs-exclusive-topology.yaml](../../examples/rbgs/exclusive-topology.yaml).
+on a topology domain. See example [rbgs-exclusive-topology.yaml](../../examples/workload/rbgs/exclusive-topology.yaml).
 
 In this example:
 

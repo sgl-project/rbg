@@ -1,0 +1,211 @@
+# Example: RoleBasedGroup with router-worker dependency pattern (v1alpha2)
+# This example demonstrates how to use dependencies to control the startup order
+# of inference service roles. Roles are created only after all their dependencies are ready.
+#
+# Dependency chain in this example:
+#   router (no deps) -> worker-1 (depends on router) -> worker-2 (depends on router)
+#
+# This pattern is useful for:
+# - LLM inference services (router waits for workers to register)
+# - Distributed training jobs (workers wait for scheduler)
+# - Service mesh (sidecars wait for main service)
+# - Multi-role inference with token routing
+
+---
+# Example 1: Basic router + workers pattern
+# Router starts first, workers start after router is ready
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: router-workers-basic
+  namespace: default
+spec:
+  roles:
+    # Router role (no dependencies, starts first)
+    # The router receives requests and distributes them to workers
+    - name: router
+      replicas: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              component: router
+          spec:
+            containers:
+              - name: router
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                env:
+                  - name: ROLE
+                    value: router
+
+    # Worker-1 (depends on router)
+    # Workers start only after router is ready, then register themselves
+    - name: worker-1
+      replicas: 2
+      dependencies: ["router"]  # worker-1 starts only after router is ready
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              component: worker
+              worker-type: type-a
+          spec:
+            containers:
+              - name: worker
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                env:
+                  - name: ROLE
+                    value: worker-1
+                  - name: ROUTER_ENDPOINT
+                    value: "http://router-svc:8080"
+
+    # Worker-2 (depends on router)
+    - name: worker-2
+      replicas: 2
+      dependencies: ["router"]  # worker-2 starts only after router is ready
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              component: worker
+              worker-type: type-b
+          spec:
+            containers:
+              - name: worker
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8082
+                env:
+                  - name: ROLE
+                    value: worker-2
+                  - name: ROUTER_ENDPOINT
+                    value: "http://router-svc:8080"
+
+---
+# Example 2: Hierarchical router + prefill + decode pattern
+# Common pattern for PD-disaggregated inference services
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: pd-inference-deps
+  namespace: default
+spec:
+  roles:
+    # Router/Entry point (no dependencies)
+    - name: gateway
+      replicas: 1
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 80
+
+    # Prefill workers (depend on gateway)
+    - name: prefill
+      replicas: 2
+      dependencies: ["gateway"]
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+
+    # Decode workers (depend on prefill)
+    - name: decode
+      replicas: 2
+      dependencies: ["prefill"]  # decode starts after prefill is ready
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+
+---
+# Example 3: Master + multiple worker groups pattern
+# Master coordinates multiple types of workers
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: master-workers-pattern
+  namespace: default
+spec:
+  roles:
+    # Master/Coordinator (no dependencies)
+    - name: master
+      replicas: 1
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: master
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 9090
+                env:
+                  - name: ROLE
+                    value: master
+
+    # GPU workers (depend on master)
+    - name: gpu-workers
+      replicas: 2
+      dependencies: ["master"]
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: gpu-worker
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                env:
+                  - name: ROLE
+                    value: gpu-worker
+                  - name: MASTER_ADDR
+                    value: "master-svc:9090"
+
+    # CPU workers (depend on master)
+    - name: cpu-workers
+      replicas: 2
+      dependencies: ["master"]
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: cpu-worker
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                env:
+                  - name: ROLE
+                    value: cpu-worker
+                  - name: MASTER_ADDR
+                    value: "master-svc:9090"
+
+    # Monitor/Collector (depends on both worker types)
+    - name: monitor
+      replicas: 1
+      dependencies: ["gpu-workers", "cpu-workers"]  # waits for all workers
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: monitor
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 9091
+                env:
+                  - name: ROLE
+                    value: monitor

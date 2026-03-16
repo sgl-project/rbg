@@ -1,0 +1,55 @@
+# Example: CustomComponentsPattern - heterogeneous pod groups (v1alpha2)
+# customComponentsPattern creates instances with multiple different types of pods
+# (components), each component can have a different size and template.
+# Use this for workloads requiring heterogeneous pod groups, e.g. disaggregated inference.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: custom-components-demo
+  namespace: default
+spec:
+  roles:
+    - name: engine
+      replicas: 3
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+      # customComponentsPattern: define heterogeneous components per instance
+      customComponentsPattern:
+        components:
+          - name: prefill-component
+            size: 1
+            template:
+              spec:
+                containers:
+                  - name: prefill
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 8080
+                    resources:
+                      requests:
+                        cpu: "2"
+                        memory: "4Gi"
+          - name: decode-component
+            size: 2
+            template:
+              spec:
+                containers:
+                  - name: decode
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 8081
+                    resources:
+                      requests:
+                        cpu: "4"
+                        memory: "8Gi"
+          - name: router-component
+            size: 1
+            template:
+              spec:
+                containers:
+                  - name: router
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 80
