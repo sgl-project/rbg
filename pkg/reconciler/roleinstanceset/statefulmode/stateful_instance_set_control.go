@@ -637,7 +637,11 @@ func (ssc *defaultStatefulInstanceSetControl) updateInstancesInSequence(
 	return status, nil
 }
 
-// processReplica processes a single replica instance
+// processReplica processes a single replica instance.
+// Creation is always performed in parallel regardless of monotonic mode:
+// all pending replicas are created in a single reconcile pass so that scale-up
+// is instantaneous.  Monotonic ordering is only enforced while waiting for an
+// already-created but unhealthy instance to become healthy.
 func (ssc *defaultStatefulInstanceSetControl) processReplica(
 	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
@@ -648,7 +652,9 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 	status *workloadsv1alpha2.RoleInstanceSetStatus,
 	_ int) (bool, bool, error) {
 
-	// if the Instance is in pending create it
+	// if the Instance is in pending, create it.
+	// Creation is always non-blocking: we create all pending replicas in one
+	// reconcile pass (parallel scale-up) regardless of monotonic mode.
 	if !isCreated(replicas[i]) {
 		if err := ssc.instanceControl.CreateStatefulInstance(ctx, set, replicas[i]); err != nil {
 			return false, false, err
@@ -658,14 +664,13 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 		if getInstanceRevision(replicas[i]) == set.Status.CurrentRevision {
 			status.CurrentReplicas++
 		}
-		// if the set does not allow bursting, return immediately
-		if monotonic {
-			return true, false, nil
-		}
-		return false, true, nil
+		// Always continue to the next replica; do NOT exit in monotonic mode so
+		// that all replicas are created within a single reconcile iteration.
+		return false, false, nil
 	}
 
-	// If we find a Instance that has not been updated, return immediately
+	// If we find an Instance that has not become healthy yet, block in monotonic
+	// mode so that the next replica is not processed until this one is ready.
 	if !isHealthy(replicas[i]) {
 		klog.V(4).InfoS("InstanceSet waiting for unhealthy Instance to become healthy", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[i]))
 		return monotonic, false, nil
