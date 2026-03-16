@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -188,12 +189,13 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				mgr := NewPodGroupManager(tt.pluginType, tt.client)
+				mgr, err := NewPodGroupManager(tt.pluginType, tt.client)
+				require.NoError(t, err)
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				if tt.preFunc != nil {
 					tt.preFunc()
 				}
-				err := mgr.ReconcilePodGroup(ctx, tt.rbg, &runtimeController, &watchedWorkload, tt.apiReader)
+				err = mgr.ReconcilePodGroup(ctx, tt.rbg, &runtimeController, &watchedWorkload, tt.apiReader)
 
 				// Verify
 				if (err != nil) != tt.expectError {

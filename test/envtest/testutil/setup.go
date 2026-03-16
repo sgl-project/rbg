@@ -192,7 +192,10 @@ func SetupManager(ctx context.Context) (manager.Manager, error) {
 
 // SetupRBGController sets up the RoleBasedGroup controller
 func SetupRBGController(mgr manager.Manager) error {
-	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin)
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin)
+	if err != nil {
+		return err
+	}
 	return rbgReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
