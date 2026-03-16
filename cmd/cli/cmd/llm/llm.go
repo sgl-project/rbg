@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/benchmark"
+	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/chat"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/config"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/generate"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm/list"
@@ -30,6 +31,7 @@ func NewLLMCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	cmd.AddCommand(newModelsCmd(cf))
 	cmd.AddCommand(newRunCmd(cf))
 	cmd.AddCommand(list.NewListCmd(cf))
+	cmd.AddCommand(chat.NewChatCmd(cf))
 
 	return cmd
 }

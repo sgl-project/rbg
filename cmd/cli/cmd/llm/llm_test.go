@@ -34,7 +34,7 @@ func TestNewLLMCmd_HasExpectedSubcommands(t *testing.T) {
 func TestNewLLMCmd_SubcommandCount(t *testing.T) {
 	cf := genericclioptions.NewConfigFlags(true)
 	cmd := NewLLMCmd(cf)
-	assert.Equal(t, 7, len(cmd.Commands()))
+	assert.Equal(t, 8, len(cmd.Commands()))
 }
 
 func TestNewLLMCmd_PullSubcommand_Flags(t *testing.T) {

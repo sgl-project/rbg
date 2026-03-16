@@ -19,9 +19,6 @@ type Plugin interface {
 
 	// GenerateTemplate generates a PodTemplateSpec used to start the model engine.
 	GenerateTemplate(name string, modelID string, modelPath string) (*corev1.PodTemplateSpec, error)
-
-	// GetModelService returns the model service URL.
-	GetModelService(name string) (string, error)
 }
 
 // Factory is a constructor for an engine plugin.

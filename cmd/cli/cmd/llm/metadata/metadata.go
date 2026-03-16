@@ -20,4 +20,5 @@ type RunMetadata struct {
 	Engine   string `json:"engine"`
 	Mode     string `json:"mode"`
 	Revision string `json:"revision"`
+	Port     int32  `json:"port"`
 }

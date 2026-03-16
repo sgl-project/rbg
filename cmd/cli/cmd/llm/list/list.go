@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
@@ -70,7 +70,8 @@ func NewListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			}
 
 			ctx := context.Background()
-			rbgList, err := client.WorkloadsV1alpha2().RoleBasedGroups(namespace).List(ctx, listOpts)
+			// rbgList, err := client.WorkloadsV1alpha2().RoleBasedGroups(namespace).List(ctx, listOpts)
+			rbgList, err := client.WorkloadsV1alpha1().RoleBasedGroups(namespace).List(ctx, listOpts)
 			if err != nil {
 				return fmt.Errorf("failed to list RoleBasedGroups: %w", err)
 			}
@@ -98,7 +99,7 @@ func NewListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 }
 
 // extractServiceInfos extracts ServiceInfo from a list of RoleBasedGroups
-func extractServiceInfos(rbgList *workloadsv1alpha2.RoleBasedGroupList) []ServiceInfo {
+func extractServiceInfos(rbgList *workloadsv1alpha1.RoleBasedGroupList) []ServiceInfo {
 	services := make([]ServiceInfo, 0, len(rbgList.Items))
 	for i := range rbgList.Items {
 		rbg := &rbgList.Items[i]
@@ -106,6 +107,7 @@ func extractServiceInfos(rbgList *workloadsv1alpha2.RoleBasedGroupList) []Servic
 			Name:      rbg.Name,
 			Namespace: rbg.Namespace,
 			Status:    extractStatus(rbg),
+			Replicas:  0,
 		}
 
 		// Parse CLI metadata annotation
@@ -140,7 +142,7 @@ func extractServiceInfos(rbgList *workloadsv1alpha2.RoleBasedGroupList) []Servic
 }
 
 // extractStatus returns the human-readable status from an RBG's conditions
-func extractStatus(rbg *workloadsv1alpha2.RoleBasedGroup) string {
+func extractStatus(rbg *workloadsv1alpha1.RoleBasedGroup) string {
 	if len(rbg.Status.Conditions) == 0 {
 		return "Pending"
 	}

@@ -78,13 +78,6 @@ func TestSGLangEngine_GenerateTemplate_EnvVar(t *testing.T) {
 	assert.Equal(t, "/path/to/model", envMap["SGLANG_MODEL_PATH"])
 }
 
-func TestSGLangEngine_GetModelService(t *testing.T) {
-	s := &SGLangEngine{}
-	svc, err := s.GetModelService("my-service")
-	require.NoError(t, err)
-	assert.Equal(t, "http://my-service:30000", svc)
-}
-
 func TestGet_SGLang_InitAndReturn(t *testing.T) {
 	p, err := Get("sglang", map[string]interface{}{})
 	require.NoError(t, err)

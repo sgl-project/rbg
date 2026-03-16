@@ -77,13 +77,6 @@ func TestVLLMEngine_GenerateTemplate_EnvVar(t *testing.T) {
 	assert.Equal(t, "/path/to/model", envMap["VLLM_MODEL_PATH"])
 }
 
-func TestVLLMEngine_GetModelService(t *testing.T) {
-	v := &VLLMEngine{}
-	svc, err := v.GetModelService("my-service")
-	require.NoError(t, err)
-	assert.Equal(t, "http://my-service:8000", svc)
-}
-
 func TestGet_VLLM_InitAndReturn(t *testing.T) {
 	p, err := Get("vllm", map[string]interface{}{})
 	require.NoError(t, err)

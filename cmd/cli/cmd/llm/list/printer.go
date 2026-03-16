@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
 
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 // printTable prints the service list as a formatted table
@@ -29,16 +29,16 @@ func printTable(cmd *cobra.Command, services []ServiceInfo, showNamespace bool) 
 				svc.Name, svc.Namespace, svc.Model, svc.Engine, svc.Mode, svc.Revision, svc.Replicas, svc.Status)
 		}
 	} else {
-		fmt.Fprintln(w, "NAME\tNAMESPACE\tMODEL\tENGINE\tMODE\tREVISION\tREPLICAS\tSTATUS")
+		fmt.Fprintln(w, "NAME\tMODEL\tENGINE\tMODE\tREVISION\tREPLICAS\tSTATUS")
 		for _, svc := range services {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
-				svc.Name, svc.Namespace, svc.Model, svc.Engine, svc.Mode, svc.Revision, svc.Replicas, svc.Status)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+				svc.Name, svc.Model, svc.Engine, svc.Mode, svc.Revision, svc.Replicas, svc.Status)
 		}
 	}
 }
 
 // printJSON prints the RoleBasedGroupList as JSON
-func printJSON(_ *cobra.Command, rbgList *workloadsv1alpha2.RoleBasedGroupList) error {
+func printJSON(_ *cobra.Command, rbgList *workloadsv1alpha1.RoleBasedGroupList) error {
 	out, err := json.MarshalIndent(rbgList, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal to JSON: %w", err)
@@ -48,7 +48,7 @@ func printJSON(_ *cobra.Command, rbgList *workloadsv1alpha2.RoleBasedGroupList) 
 }
 
 // printYAML prints the RoleBasedGroupList as YAML
-func printYAML(_ *cobra.Command, rbgList *workloadsv1alpha2.RoleBasedGroupList) error {
+func printYAML(_ *cobra.Command, rbgList *workloadsv1alpha1.RoleBasedGroupList) error {
 	out, err := yaml.Marshal(rbgList)
 	if err != nil {
 		return fmt.Errorf("failed to marshal to YAML: %w", err)
