@@ -103,8 +103,28 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/finalizers,verbs=update
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=coordinatedpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=coordinatedpolicies/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers;deployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/status;deployments/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=scheduling.x-k8s.io,resources=podgroups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=scheduling.volcano.sh,resources=podgroups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
