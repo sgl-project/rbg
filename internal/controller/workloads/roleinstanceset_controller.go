@@ -3,16 +3,19 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -52,6 +55,11 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 	set := &v1alpha2.RoleInstanceSet{}
 	if err := r.client.Get(ctx, request.NamespacedName, set); err != nil {
 		if errors.IsNotFound(err) {
+			if cleanupErr := r.cleanupInstanceSetPortsOnDeletion(ctx, request.Namespace, request.Name); cleanupErr != nil {
+				klog.ErrorS(cleanupErr, "Failed to cleanup port ConfigMap for deleted InstanceSet", "instanceSet", request.NamespacedName)
+				// Requeue to retry cleanup
+				return reconcile.Result{RequeueAfter: 10 * time.Second}, cleanupErr
+			}
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
@@ -92,4 +100,11 @@ func (r *RoleInstanceSetReconciler) SetupWithManager(mgr ctrl.Manager, options c
 		Owns(&v1alpha2.RoleInstance{}).
 		Watches(&v1alpha2.RoleInstance{}, statelessmode.NewRoleInstanceEventHandler(mgr.GetClient())).
 		Complete(r)
+}
+
+// cleanupInstanceSetPortsOnDeletion handles port release and ConfigMap cleanup when InstanceSet has been deleted
+func (r *RoleInstanceSetReconciler) cleanupInstanceSetPortsOnDeletion(ctx context.Context, namespace, name string) error {
+	// Release all ports and delete the InstanceSet-level ConfigMap
+	cmName := portallocator.GetInstanceSetPortConfigMapName(name)
+	return portallocator.ReleasePortsAndDeleteCM(ctx, r.client, namespace, cmName)
 }

@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
@@ -65,6 +66,11 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	if err := r.Get(ctx, request.NamespacedName, instance); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("Instance has been deleted")
+			if cleanupErr := r.cleanupInstancePortsOnDeletion(ctx, request.Namespace, request.Name); cleanupErr != nil {
+				logger.Error(cleanupErr, "Failed to cleanup port ConfigMap for deleted Instance", "instance", request.Name)
+				// Requeue to retry cleanup
+				return reconcile.Result{RequeueAfter: 10 * time.Second}, cleanupErr
+			}
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
@@ -174,6 +180,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 			podsScaleErr, podsUpdateErr,
 		}),
 	}
+}
+
+// cleanupInstancePortsOnDeletion handles port release and ConfigMap cleanup when Instance has been deleted
+func (r *reconciler) cleanupInstancePortsOnDeletion(ctx context.Context, namespace, name string) error {
+	// Release all ports and delete the Instance-level ConfigMap
+	cmName := portallocator.GetInstancePortConfigMapName(name)
+	return portallocator.ReleasePortsAndDeleteCM(ctx, r.Client, namespace, cmName)
 }
 
 func (r *reconciler) getOwnedPods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, []*v1.Pod, error) {

@@ -11,6 +11,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -112,13 +113,36 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, expectedCreations map[string]sets.Set[int32], updateRevision string) (bool, error) {
 	coreControl := instancecore.New(updateInstance)
 	var newPods []*v1.Pod
+	componentPortConfigs := make(map[string]*portallocator.PortAllocatorConfig)
+
 	for _, component := range updateInstance.Spec.Components {
 		updatePods, err := coreControl.NewUpdatePods(updateRevision, component.Name, sets.List(expectedCreations[component.Name]))
 		if err != nil {
 			return false, err
 		}
 		newPods = append(newPods, updatePods...)
+
+		// Parse port allocator config from component template
+		if portallocator.HasPortAllocatorConfig(&component.Template) {
+			config, err := portallocator.ParsePortAllocatorConfigFromTemplate(&component.Template)
+			if err != nil {
+				return false, fmt.Errorf("failed to parse port allocator config for component %s: %w", component.Name, err)
+			}
+			componentPortConfigs[component.Name] = config
+		}
 	}
+
+	// Initialize port manager if any component has port allocator config
+	var portManager *portallocator.PortManager
+	if len(componentPortConfigs) > 0 {
+		var err error
+		// Use the Instance object directly - PortManager will determine owner type automatically
+		portManager, err = portallocator.NewPortManager(ctx, c.Client, updateInstance)
+		if err != nil {
+			return false, fmt.Errorf("failed to create port manager: %w", err)
+		}
+	}
+
 	podsCreationChan := make(chan *v1.Pod, len(newPods))
 	toCreatePodNum := 0
 	for _, p := range newPods {
@@ -128,6 +152,22 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 			}
 			continue
 		}
+
+		// Handle port allocation for the pod
+		componentName := instanceutil.GetPodComponentName(p)
+		if config, exists := componentPortConfigs[componentName]; exists && portManager != nil {
+			// Allocate both dynamic and static ports for the pod
+			// componentName is used as the role name for static port keys
+			if err := portManager.AllocatePortsForPod(ctx, p, config, componentName); err != nil {
+				return false, fmt.Errorf("failed to allocate ports for pod %s: %w", p.Name, err)
+			}
+
+			// Inject ports into the pod spec
+			if err := portManager.InjectPortsIntoPod(p, config, componentName); err != nil {
+				return false, fmt.Errorf("failed to inject ports into pod %s: %w", p.Name, err)
+			}
+		}
+
 		toCreatePodNum++
 		podsCreationChan <- p
 	}
@@ -148,7 +188,40 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 
 func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, podsToDelete []*v1.Pod) (bool, error) {
 	var modified bool
+
+	// Build a map of component name to port config
+	componentPortConfigs := make(map[string]*portallocator.PortAllocatorConfig)
+	for _, component := range instance.Spec.Components {
+		if portallocator.HasPortAllocatorConfig(&component.Template) {
+			config, err := portallocator.ParsePortAllocatorConfigFromTemplate(&component.Template)
+			if err == nil {
+				componentPortConfigs[component.Name] = config
+			}
+		}
+	}
+
+	// Create port manager if needed
+	var portManager *portallocator.PortManager
+	var err error
+	if len(componentPortConfigs) > 0 {
+		// Use the Instance object directly
+		portManager, err = portallocator.NewPortManager(ctx, c.Client, instance)
+		if err != nil {
+			klog.V(2).InfoS("Failed to create port manager for pod deletion", "instance", klog.KObj(instance), "error", err)
+		}
+	}
+
 	for _, pod := range podsToDelete {
+		// Release dynamic ports for the pod (static ports are not released here)
+		if portManager != nil {
+			componentName := instanceutil.GetPodComponentName(pod)
+			if config, exists := componentPortConfigs[componentName]; exists {
+				if err := portManager.ReleasePodDynamicPorts(ctx, pod, config); err != nil {
+					klog.V(2).InfoS("Failed to release ports for pod", "pod", klog.KObj(pod), "error", err)
+				}
+			}
+		}
+
 		if err := c.Delete(ctx, pod); err != nil {
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedDelete", "failed to delete pod %s: %v", pod.Name, err)
 			return modified, err
