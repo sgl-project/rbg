@@ -32,6 +32,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/history"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 var patchCodec = scheme.Codecs.LegacyCodec(workloadsv1alpha2.SchemeGroupVersion)
@@ -200,9 +201,11 @@ func isInstanceAvailable(instance *workloadsv1alpha2.RoleInstance, minReadySecon
 	return false
 }
 
-// allowsBurst checks if the RoleInstanceSet allows bursting (parallel operations)
+// allowsBurst checks if the RoleInstanceSet allows parallel (burst) instance creation.
+// Parallel is the default policy: returns true unless PodManagementPolicy is explicitly
+// set to OrderedReady.
 func allowsBurst(set *workloadsv1alpha2.RoleInstanceSet) bool {
-	return set.Spec.UpdateStrategy.Type == workloadsv1alpha2.RecreatePodUpdateStrategyType
+	return set.Spec.PodManagementPolicy == constants.ParallelPodManagement
 }
 
 // getMinReadySeconds returns the minReadySeconds for the InstanceSet

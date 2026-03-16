@@ -20,6 +20,7 @@ package v1alpha2
 import (
 	v1 "k8s.io/api/core/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	constants "sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // RoleSpecApplyConfiguration represents a declarative configuration of the RoleSpec type for use
@@ -34,10 +35,11 @@ type RoleSpecApplyConfiguration struct {
 	Dependencies              []string                             `json:"dependencies,omitempty"`
 	Workload                  *WorkloadSpecApplyConfiguration      `json:"workload,omitempty"`
 	PatternApplyConfiguration `json:",inline"`
-	ServicePorts              []v1.ServicePort                  `json:"servicePorts,omitempty"`
-	EngineRuntimes            []EngineRuntimeApplyConfiguration `json:"engineRuntimes,omitempty"`
-	ScalingAdapter            *ScalingAdapterApplyConfiguration `json:"scalingAdapter,omitempty"`
-	MinReadySeconds           *int32                            `json:"minReadySeconds,omitempty"`
+	ServicePorts              []v1.ServicePort                   `json:"servicePorts,omitempty"`
+	EngineRuntimes            []EngineRuntimeApplyConfiguration  `json:"engineRuntimes,omitempty"`
+	ScalingAdapter            *ScalingAdapterApplyConfiguration  `json:"scalingAdapter,omitempty"`
+	MinReadySeconds           *int32                             `json:"minReadySeconds,omitempty"`
+	PodManagementPolicy       *constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -184,5 +186,13 @@ func (b *RoleSpecApplyConfiguration) WithScalingAdapter(value *ScalingAdapterApp
 // If called multiple times, the MinReadySeconds field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithMinReadySeconds(value int32) *RoleSpecApplyConfiguration {
 	b.MinReadySeconds = &value
+	return b
+}
+
+// WithPodManagementPolicy sets the PodManagementPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PodManagementPolicy field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithPodManagementPolicy(value constants.PodManagementPolicyType) *RoleSpecApplyConfiguration {
+	b.PodManagementPolicy = &value
 	return b
 }

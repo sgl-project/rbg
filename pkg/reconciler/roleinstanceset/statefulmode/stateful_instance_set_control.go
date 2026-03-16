@@ -637,7 +637,12 @@ func (ssc *defaultStatefulInstanceSetControl) updateInstancesInSequence(
 	return status, nil
 }
 
-// processReplica processes a single replica instance
+// processReplica processes a single replica instance.
+// When monotonic is true (OrderedReady policy), instances are created one at a time:
+// the loop exits after each creation and waits for the instance to become healthy
+// before proceeding to the next.
+// When monotonic is false (Parallel policy), all pending instances are created in a
+// single reconcile pass and the loop continues without waiting.
 func (ssc *defaultStatefulInstanceSetControl) processReplica(
 	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
@@ -658,14 +663,17 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 		if getInstanceRevision(replicas[i]) == set.Status.CurrentRevision {
 			status.CurrentReplicas++
 		}
-		// if the set does not allow bursting, return immediately
+		// In monotonic (OrderedReady) mode, exit after each creation and wait for
+		// the instance to become healthy before creating the next one.
+		// In non-monotonic (Parallel) mode, continue to create all replicas at once.
 		if monotonic {
 			return true, false, nil
 		}
 		return false, true, nil
 	}
 
-	// If we find a Instance that has not been updated, return immediately
+	// If we find an Instance that has not become healthy yet, block in monotonic
+	// mode so that the next replica is not processed until this one is ready.
 	if !isHealthy(replicas[i]) {
 		klog.V(4).InfoS("InstanceSet waiting for unhealthy Instance to become healthy", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[i]))
 		return monotonic, false, nil

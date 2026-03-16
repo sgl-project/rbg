@@ -173,7 +173,8 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 				WithSelector(metaapplyv1.LabelSelector().WithMatchLabels(maps.Clone(matchLabels))).
 				WithReplicas(*role.Replicas).
 				WithRoleInstanceTemplate(roleInstanceTemplateConfig).
-				WithMinReadySeconds(role.MinReadySeconds),
+				WithMinReadySeconds(role.MinReadySeconds).
+				WithPodManagementPolicy(role.PodManagementPolicy),
 		).
 		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), roleInstanceSetAnnotation)).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), roleInstanceSetLabel)).

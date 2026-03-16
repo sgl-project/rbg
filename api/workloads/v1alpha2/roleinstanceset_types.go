@@ -20,10 +20,19 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 const (
 	DefaultRoleInstanceSetMaxUnavailable = "10%"
+)
+
+// PodManagementPolicyType is an alias for constants.PodManagementPolicyType.
+type PodManagementPolicyType = constants.PodManagementPolicyType
+
+const (
+	OrderedReadyPodManagement = constants.OrderedReadyPodManagement
+	ParallelPodManagement     = constants.ParallelPodManagement
 )
 
 // RoleInstanceSetSpec defines the desired state of RoleInstanceSet
@@ -44,6 +53,14 @@ type RoleInstanceSetSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	RoleInstanceTemplate RoleInstanceTemplate `json:"roleInstanceTemplate"`
+
+	// PodManagementPolicy controls how pods are created during the initial scale-up.
+	// Parallel (default) creates all instances simultaneously.
+	// OrderedReady creates instances one by one, waiting for each to become
+	// ready before creating the next.
+	// +optional
+	// +kubebuilder:default=Parallel
+	PodManagementPolicy PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
 
 	// ScaleStrategy indicates the ScaleStrategy that will be employed to
 	// create and delete RoleInstances in the RoleInstanceSet.

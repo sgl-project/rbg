@@ -39,6 +39,21 @@ const (
 	StatefulPattern InstancePatternType = "Stateful"
 )
 
+// PodManagementPolicyType controls how pods are created during initial scale-up,
+// when replacing pods on nodes, or when scaling down.
+// +kubebuilder:validation:Enum={OrderedReady,Parallel}
+type PodManagementPolicyType string
+
+const (
+	// OrderedReadyPodManagement creates and deletes pods in order, waiting for each
+	// to be ready before creating the next one.
+	OrderedReadyPodManagement PodManagementPolicyType = "OrderedReady"
+
+	// ParallelPodManagement creates and deletes pods simultaneously without waiting
+	// for pods to be ready. This is the default policy.
+	ParallelPodManagement PodManagementPolicyType = "Parallel"
+)
+
 // RoleTemplateType defines supported role template types
 type RoleTemplateType string
 
