@@ -14,7 +14,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const (
@@ -146,7 +146,7 @@ func CalculatePartitionReplicas(partition *intstrutil.IntOrString, replicasPoint
 }
 
 // GetRoleReplicasV2 returns the replicas for a role from a v1alpha2 RoleBasedGroup.
-func GetRoleReplicasV2(rbg *v1alpha2.RoleBasedGroup, roleName string) int32 {
+func GetRoleReplicasV2(rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) int32 {
 	for _, role := range rbg.Spec.Roles {
 		if role.Name == roleName {
 			if role.Replicas != nil {
@@ -252,6 +252,6 @@ func NonZeroValue(value int32) int32 {
 // RoleInMaxSkewCoordinationV2 checks if the given role is part of a MaxSkew coordination
 // in v1alpha2. In v1alpha2, coordination rules are managed via separate CoordinatedPolicy
 // resources, not embedded in the RoleBasedGroup spec, so this always returns false.
-func RoleInMaxSkewCoordinationV2(_ *v1alpha2.RoleBasedGroup, _ string) bool {
+func RoleInMaxSkewCoordinationV2(_ *workloadsv1alpha2.RoleBasedGroup, _ string) bool {
 	return false
 }

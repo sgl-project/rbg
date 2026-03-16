@@ -19,7 +19,7 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	constants "sigs.k8s.io/rbgs/pkg/constants"
+	constants "sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleInstanceSetSpecApplyConfiguration represents a declarative configuration of the RoleInstanceSetSpec type for use

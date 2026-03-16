@@ -15,10 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/pkg/utils/expectations"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
 )
@@ -34,7 +34,7 @@ func NewRoleInstanceEventHandler(c client.Client) handler.EventHandler {
 var _ handler.EventHandler = &roleInstanceEventHandler{}
 
 func (e *roleInstanceEventHandler) Create(ctx context.Context, evt event.TypedCreateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	roleInstance := evt.Object.(*v1alpha2.RoleInstance)
+	roleInstance := evt.Object.(*workloadsv1alpha2.RoleInstance)
 	if roleInstance.DeletionTimestamp != nil {
 		// on a restart of the controller manager, it's possible a new roleInstance shows up in a state that
 		// is already pending deletion. Prevent the roleInstance from being a creation observation.
@@ -76,8 +76,8 @@ func (e *roleInstanceEventHandler) Create(ctx context.Context, evt event.TypedCr
 }
 
 func (e *roleInstanceEventHandler) Update(ctx context.Context, evt event.TypedUpdateEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	oldRoleInstance := evt.ObjectOld.(*v1alpha2.RoleInstance)
-	curRoleInstance := evt.ObjectNew.(*v1alpha2.RoleInstance)
+	oldRoleInstance := evt.ObjectOld.(*workloadsv1alpha2.RoleInstance)
+	curRoleInstance := evt.ObjectNew.(*workloadsv1alpha2.RoleInstance)
 	if curRoleInstance.ResourceVersion == oldRoleInstance.ResourceVersion {
 		// Periodic resync will send update events for all known roleInstances.
 		// Two different versions of the same roleInstances will always have different RVs.
@@ -139,7 +139,7 @@ func (e *roleInstanceEventHandler) Update(ctx context.Context, evt event.TypedUp
 }
 
 func (e *roleInstanceEventHandler) Delete(ctx context.Context, evt event.TypedDeleteEvent[client.Object], q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-	roleInstance, ok := evt.Object.(*v1alpha2.RoleInstance)
+	roleInstance, ok := evt.Object.(*workloadsv1alpha2.RoleInstance)
 	if !ok {
 		klog.Errorf("DeleteEvent parse roleInstance failed, DeleteStateUnknown: %#v, obj: %#v", evt.DeleteStateUnknown, evt.Object)
 		return
@@ -192,13 +192,13 @@ func resolveControllerRef(namespace string, controllerRef *metav1.OwnerReference
 	return nil
 }
 
-func (e *roleInstanceEventHandler) getRelatedRoleInstanceSets(roleInstance *v1alpha2.RoleInstance) []v1alpha2.RoleInstanceSet {
-	setList := v1alpha2.RoleInstanceSetList{}
+func (e *roleInstanceEventHandler) getRelatedRoleInstanceSets(roleInstance *workloadsv1alpha2.RoleInstance) []workloadsv1alpha2.RoleInstanceSet {
+	setList := workloadsv1alpha2.RoleInstanceSetList{}
 	if err := e.List(context.TODO(), &setList, client.InNamespace(roleInstance.Namespace)); err != nil {
 		return nil
 	}
 
-	setMatched := make([]v1alpha2.RoleInstanceSet, 0, 1)
+	setMatched := make([]workloadsv1alpha2.RoleInstanceSet, 0, 1)
 	for _, gs := range setList.Items {
 		coreControl := core.New(&gs)
 		if !coreControl.Selector().Matches(labels.Set(roleInstance.Labels)) {
@@ -217,7 +217,7 @@ func (e *roleInstanceEventHandler) getRelatedRoleInstanceSets(roleInstance *v1al
 	return setMatched
 }
 
-func (e *roleInstanceEventHandler) joinRoleInstanceSetNames(setList []v1alpha2.RoleInstanceSet) string {
+func (e *roleInstanceEventHandler) joinRoleInstanceSetNames(setList []workloadsv1alpha2.RoleInstanceSet) string {
 	names := make([]string, 0, len(setList))
 	for _, set := range setList {
 		names = append(names, set.Name)
@@ -227,7 +227,7 @@ func (e *roleInstanceEventHandler) joinRoleInstanceSetNames(setList []v1alpha2.R
 
 // isStatelessPattern checks if the RoleInstanceSet has Stateless pattern
 func (e *roleInstanceEventHandler) isStatelessPattern(namespace, name string) bool {
-	set := &v1alpha2.RoleInstanceSet{}
+	set := &workloadsv1alpha2.RoleInstanceSet{}
 	if err := e.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: name}, set); err != nil {
 		return false
 	}

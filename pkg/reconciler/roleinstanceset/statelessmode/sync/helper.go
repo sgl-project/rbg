@@ -9,7 +9,8 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/integer"
 
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/specifieddelete"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
@@ -53,7 +54,7 @@ func (e expectationDiffs) isEmpty() bool {
 
 // This is the most important algorithm in instance-set-controller.
 // It calculates the instance numbers to scaling and updating for current InstanceSet.
-func calculateDiffsWithExpectation(set *appsv1alpha2.RoleInstanceSet, instances []*appsv1alpha2.RoleInstance, currentRevision, updateRevision string) (res expectationDiffs) {
+func calculateDiffsWithExpectation(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance, currentRevision, updateRevision string) (res expectationDiffs) {
 	coreControl := core.New(set)
 	replicas := getInstanceSetReplicas(set)
 	var partition, maxSurge, maxUnavailable, scaleMaxUnavailable int
@@ -67,7 +68,7 @@ func calculateDiffsWithExpectation(set *appsv1alpha2.RoleInstanceSet, instances 
 		maxSurge, _ = intstrutil.GetScaledValueFromIntOrPercent(set.Spec.UpdateStrategy.MaxSurge, replicas, true)
 	}
 	maxUnavailable, _ = intstrutil.GetScaledValueFromIntOrPercent(
-		intstrutil.ValueOrDefault(set.Spec.UpdateStrategy.MaxUnavailable, intstrutil.FromString(appsv1alpha2.DefaultRoleInstanceSetMaxUnavailable)), replicas, maxSurge == 0)
+		intstrutil.ValueOrDefault(set.Spec.UpdateStrategy.MaxUnavailable, intstrutil.FromString(workloadsv1alpha2.DefaultRoleInstanceSetMaxUnavailable)), replicas, maxSurge == 0)
 	scaleMaxUnavailable, _ = intstrutil.GetScaledValueFromIntOrPercent(
 		intstrutil.ValueOrDefault(set.Spec.ScaleStrategy.MaxUnavailable, intstrutil.FromInt32(math.MaxInt32)), replicas, true)
 
@@ -95,7 +96,7 @@ func calculateDiffsWithExpectation(set *appsv1alpha2.RoleInstanceSet, instances 
 			newRevisionCount++
 
 			switch state := lifecycle.GetRoleInstanceLifecycleState(instance); state {
-			case appsv1alpha2.RoleInstanceSetLifecycleStatePreparingDelete:
+			case constants.RoleInstanceLifecycleStatePreparingDelete:
 				preDeletingCount++
 			default:
 				newRevisionActiveCount++
@@ -111,7 +112,7 @@ func calculateDiffsWithExpectation(set *appsv1alpha2.RoleInstanceSet, instances 
 			oldRevisionCount++
 
 			switch state := lifecycle.GetRoleInstanceLifecycleState(instance); state {
-			case appsv1alpha2.RoleInstanceSetLifecycleStatePreparingDelete:
+			case constants.RoleInstanceLifecycleStatePreparingDelete:
 				preDeletingCount++
 			default:
 				oldRevisionActiveCount++
@@ -202,14 +203,14 @@ func calculateDiffsWithExpectation(set *appsv1alpha2.RoleInstanceSet, instances 
 	return res
 }
 
-func getInstanceSetReplicas(set *appsv1alpha2.RoleInstanceSet) int {
+func getInstanceSetReplicas(set *workloadsv1alpha2.RoleInstanceSet) int {
 	if set.Spec.Replicas != nil {
 		return int(*set.Spec.Replicas)
 	}
 	return 1
 }
 
-func isSpecifiedDelete(set *appsv1alpha2.RoleInstanceSet, instance *appsv1alpha2.RoleInstance) bool {
+func isSpecifiedDelete(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) bool {
 	if specifieddelete.IsSpecifiedDelete(instance) {
 		return true
 	}
@@ -221,20 +222,20 @@ func isSpecifiedDelete(set *appsv1alpha2.RoleInstanceSet, instance *appsv1alpha2
 	return false
 }
 
-func IsInstanceReady(coreControl core.Control, instance *appsv1alpha2.RoleInstance) bool {
+func IsInstanceReady(coreControl core.Control, instance *workloadsv1alpha2.RoleInstance) bool {
 	return IsInstanceAvailable(coreControl, instance, 0)
 }
 
-func IsInstanceAvailable(coreControl core.Control, instance *appsv1alpha2.RoleInstance, minReadySeconds int32) bool {
+func IsInstanceAvailable(coreControl core.Control, instance *workloadsv1alpha2.RoleInstance, minReadySeconds int32) bool {
 	state := lifecycle.GetRoleInstanceLifecycleState(instance)
-	if state != "" && state != appsv1alpha2.RoleInstanceSetLifecycleStateNormal {
+	if state != "" && state != constants.RoleInstanceLifecycleStateNormal {
 		return false
 	}
 	return coreControl.IsInstanceUpdateReady(instance, minReadySeconds)
 }
 
 // DiffInstanceGroups returns instances in group1 but not in groups2
-func DiffInstanceGroups(group1, group2 []*appsv1alpha2.RoleInstance) (ret []*appsv1alpha2.RoleInstance) {
+func DiffInstanceGroups(group1, group2 []*workloadsv1alpha2.RoleInstance) (ret []*workloadsv1alpha2.RoleInstance) {
 	names2 := sets.NewString()
 	for _, instance := range group2 {
 		names2.Insert(instance.Name)

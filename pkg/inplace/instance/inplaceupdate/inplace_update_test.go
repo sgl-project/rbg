@@ -7,33 +7,33 @@ import (
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/instance"
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // fakeClientAdapter implements clientdapter.Adapter for testing
 type fakeClientAdapter struct {
-	getRoleInstanceFunc          func(namespace, name string) (*appsv1alpha2.RoleInstance, error)
-	updateRoleInstanceFunc       func(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error)
-	updateRoleInstanceStatusFunc func(instance *appsv1alpha2.RoleInstance) error
+	getRoleInstanceFunc          func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error)
+	updateRoleInstanceFunc       func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error)
+	updateRoleInstanceStatusFunc func(instance *workloadsv1alpha2.RoleInstance) error
 }
 
-func (f *fakeClientAdapter) GetRoleInstance(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
+func (f *fakeClientAdapter) GetRoleInstance(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
 	if f.getRoleInstanceFunc != nil {
 		return f.getRoleInstanceFunc(namespace, name)
 	}
 	return nil, errors.New("not implemented")
 }
 
-func (f *fakeClientAdapter) UpdateRoleInstance(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error) {
+func (f *fakeClientAdapter) UpdateRoleInstance(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 	if f.updateRoleInstanceFunc != nil {
 		return f.updateRoleInstanceFunc(instance)
 	}
 	return nil, errors.New("not implemented")
 }
 
-func (f *fakeClientAdapter) UpdateRoleInstanceStatus(instance *appsv1alpha2.RoleInstance) error {
+func (f *fakeClientAdapter) UpdateRoleInstanceStatus(instance *workloadsv1alpha2.RoleInstance) error {
 	if f.updateRoleInstanceStatusFunc != nil {
 		return f.updateRoleInstanceStatusFunc(instance)
 	}
@@ -62,16 +62,16 @@ func (f *fakeRevisionAdapter) WriteRevisionHash(obj metav1.Object, hash string) 
 func TestRealControlRefresh(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		opts     *UpdateOptions
 		adapter  *fakeClientAdapter
 		expected bool
 	}{
 		{
 			name: "instance update not completed",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Generation: 2},
-				Status:     appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Status:     workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
 			},
 			opts:     &UpdateOptions{},
 			adapter:  &fakeClientAdapter{},
@@ -79,9 +79,9 @@ func TestRealControlRefresh(t *testing.T) {
 		},
 		{
 			name: "instance without readiness gate",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
-				Status:     appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Status:     workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
 			},
 			opts:     &UpdateOptions{},
 			adapter:  &fakeClientAdapter{},
@@ -89,23 +89,23 @@ func TestRealControlRefresh(t *testing.T) {
 		},
 		{
 			name: "instance with readiness gate and update completed",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
-				Status:     appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceInPlaceUpdateReady},
+				Status:     workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady},
 					},
 				},
 			},
 			opts: &UpdateOptions{},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceStatusFunc: func(instance *appsv1alpha2.RoleInstance) error {
+				updateRoleInstanceStatusFunc: func(instance *workloadsv1alpha2.RoleInstance) error {
 					return nil
 				},
 			},
@@ -113,18 +113,18 @@ func TestRealControlRefresh(t *testing.T) {
 		},
 		{
 			name: "instance with readiness gate but update status fails",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
-				Status:     appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceInPlaceUpdateReady},
+				Status:     workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady},
 					},
 				},
 			},
 			opts: &UpdateOptions{},
 			adapter: &fakeClientAdapter{
-				updateRoleInstanceStatusFunc: func(instance *appsv1alpha2.RoleInstance) error {
+				updateRoleInstanceStatusFunc: func(instance *workloadsv1alpha2.RoleInstance) error {
 					return errors.New("update failed")
 				},
 			},
@@ -208,7 +208,7 @@ func TestRealControlCanUpdateInPlace(t *testing.T) {
 func TestRealControlUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
-		instance    *appsv1alpha2.RoleInstance
+		instance    *workloadsv1alpha2.RoleInstance
 		oldRevision *apps.ControllerRevision
 		newRevision *apps.ControllerRevision
 		opts        *UpdateOptions
@@ -217,7 +217,7 @@ func TestRealControlUpdate(t *testing.T) {
 	}{
 		{
 			name:        "nil calculate spec",
-			instance:    &appsv1alpha2.RoleInstance{},
+			instance:    &workloadsv1alpha2.RoleInstance{},
 			oldRevision: &apps.ControllerRevision{},
 			newRevision: &apps.ControllerRevision{},
 			opts: &UpdateOptions{
@@ -230,24 +230,24 @@ func TestRealControlUpdate(t *testing.T) {
 		},
 		{
 			name:        "valid calculate spec without readiness gate",
-			instance:    &appsv1alpha2.RoleInstance{},
+			instance:    &workloadsv1alpha2.RoleInstance{},
 			oldRevision: &apps.ControllerRevision{},
 			newRevision: &apps.ControllerRevision{},
 			opts: &UpdateOptions{
 				CalculateSpec: func(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) *UpdateSpec {
 					return &UpdateSpec{Revision: "test"}
 				},
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return instance, nil
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceFunc: func(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error) {
+				updateRoleInstanceFunc: func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 					instance.ResourceVersion = "newVersion"
 					return instance, nil
 				},
@@ -256,10 +256,10 @@ func TestRealControlUpdate(t *testing.T) {
 		},
 		{
 			name: "valid calculate spec with readiness gate",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceInPlaceUpdateReady},
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady},
 					},
 				},
 			},
@@ -269,20 +269,20 @@ func TestRealControlUpdate(t *testing.T) {
 				CalculateSpec: func(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) *UpdateSpec {
 					return &UpdateSpec{Revision: "test"}
 				},
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return instance, nil
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceStatusFunc: func(instance *appsv1alpha2.RoleInstance) error {
+				updateRoleInstanceStatusFunc: func(instance *workloadsv1alpha2.RoleInstance) error {
 					return nil
 				},
-				updateRoleInstanceFunc: func(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error) {
+				updateRoleInstanceFunc: func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 					instance.ResourceVersion = "new-version"
 					return instance, nil
 				},
@@ -291,24 +291,24 @@ func TestRealControlUpdate(t *testing.T) {
 		},
 		{
 			name:        "update instance fails",
-			instance:    &appsv1alpha2.RoleInstance{},
+			instance:    &workloadsv1alpha2.RoleInstance{},
 			oldRevision: &apps.ControllerRevision{},
 			newRevision: &apps.ControllerRevision{},
 			opts: &UpdateOptions{
 				CalculateSpec: func(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) *UpdateSpec {
 					return &UpdateSpec{Revision: "test"}
 				},
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return instance, nil
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceFunc: func(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error) {
+				updateRoleInstanceFunc: func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 					return nil, errors.New("update failed")
 				},
 			},
@@ -357,27 +357,27 @@ func TestRealControlUpdate(t *testing.T) {
 func TestRealControlUpdateCondition(t *testing.T) {
 	tests := []struct {
 		name      string
-		instance  *appsv1alpha2.RoleInstance
-		condition appsv1alpha2.RoleInstanceCondition
+		instance  *workloadsv1alpha2.RoleInstance
+		condition workloadsv1alpha2.RoleInstanceCondition
 		adapter   *fakeClientAdapter
 		expected  bool
 	}{
 		{
 			name: "successful condition update",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
-			condition: appsv1alpha2.RoleInstanceCondition{
-				Type:   appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+			condition: workloadsv1alpha2.RoleInstanceCondition{
+				Type:   workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 				Status: corev1.ConditionTrue,
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceStatusFunc: func(instance *appsv1alpha2.RoleInstance) error {
+				updateRoleInstanceStatusFunc: func(instance *workloadsv1alpha2.RoleInstance) error {
 					return nil
 				},
 			},
@@ -385,15 +385,15 @@ func TestRealControlUpdateCondition(t *testing.T) {
 		},
 		{
 			name: "get instance fails",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
-			condition: appsv1alpha2.RoleInstanceCondition{
-				Type:   appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+			condition: workloadsv1alpha2.RoleInstanceCondition{
+				Type:   workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 				Status: corev1.ConditionTrue,
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
 					return nil, errors.New("get failed")
 				},
 			},
@@ -401,20 +401,20 @@ func TestRealControlUpdateCondition(t *testing.T) {
 		},
 		{
 			name: "update status fails",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
-			condition: appsv1alpha2.RoleInstanceCondition{
-				Type:   appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+			condition: workloadsv1alpha2.RoleInstanceCondition{
+				Type:   workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 				Status: corev1.ConditionTrue,
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceStatusFunc: func(instance *appsv1alpha2.RoleInstance) error {
+				updateRoleInstanceStatusFunc: func(instance *workloadsv1alpha2.RoleInstance) error {
 					return errors.New("update failed")
 				},
 			},
@@ -447,7 +447,7 @@ func TestRealControlUpdateCondition(t *testing.T) {
 func TestRealControlUpdateInstanceInPlace(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		spec     *UpdateSpec
 		opts     *UpdateOptions
 		adapter  *fakeClientAdapter
@@ -455,22 +455,22 @@ func TestRealControlUpdateInstanceInPlace(t *testing.T) {
 	}{
 		{
 			name: "successful in-place update",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
 			spec: &UpdateSpec{Revision: "test-rev"},
 			opts: &UpdateOptions{
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return instance, nil
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceFunc: func(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error) {
+				updateRoleInstanceFunc: func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 					instance.ResourceVersion = "new-version"
 					return instance, nil
 				},
@@ -479,17 +479,17 @@ func TestRealControlUpdateInstanceInPlace(t *testing.T) {
 		},
 		{
 			name: "get instance fails",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
 			spec: &UpdateSpec{Revision: "test-rev"},
 			opts: &UpdateOptions{
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return instance, nil
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
 					return nil, errors.New("get failed")
 				},
 			},
@@ -497,18 +497,18 @@ func TestRealControlUpdateInstanceInPlace(t *testing.T) {
 		},
 		{
 			name: "patch spec to instance fails",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
 			spec: &UpdateSpec{Revision: "test-rev"},
 			opts: &UpdateOptions{
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return nil, errors.New("patch failed")
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
@@ -517,22 +517,22 @@ func TestRealControlUpdateInstanceInPlace(t *testing.T) {
 		},
 		{
 			name: "update instance fails",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 			},
 			spec: &UpdateSpec{Revision: "test-rev"},
 			opts: &UpdateOptions{
-				PatchSpecToRoleInstance: func(instance *appsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*appsv1alpha2.RoleInstance, error) {
+				PatchSpecToRoleInstance: func(instance *workloadsv1alpha2.RoleInstance, spec *UpdateSpec, state *inplaceapi.InPlaceUpdateState) (*workloadsv1alpha2.RoleInstance, error) {
 					return instance, nil
 				},
 			},
 			adapter: &fakeClientAdapter{
-				getRoleInstanceFunc: func(namespace, name string) (*appsv1alpha2.RoleInstance, error) {
-					return &appsv1alpha2.RoleInstance{
+				getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+					return &workloadsv1alpha2.RoleInstance{
 						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 					}, nil
 				},
-				updateRoleInstanceFunc: func(instance *appsv1alpha2.RoleInstance) (*appsv1alpha2.RoleInstance, error) {
+				updateRoleInstanceFunc: func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
 					return nil, errors.New("update failed")
 				},
 			},

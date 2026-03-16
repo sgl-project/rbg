@@ -5,7 +5,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestGenerateScalingAdapterName(t *testing.T) {
@@ -42,13 +42,13 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 	rbgUID := types.UID("test-rbg-uid-123")
 	otherUID := types.UID("other-uid-456")
 
-	testRBG := &workloadsv1alpha.RoleBasedGroup{
+	testRBG := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			UID: rbgUID,
 		},
 	}
 
-	scalingAdapterWithMatchingOwner := &workloadsv1alpha.RoleBasedGroupScalingAdapter{
+	scalingAdapterWithMatchingOwner := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{
 			OwnerReferences: []metav1.OwnerReference{
 				{
@@ -58,7 +58,7 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 		},
 	}
 
-	scalingAdapterWithNonMatchingOwner := &workloadsv1alpha.RoleBasedGroupScalingAdapter{
+	scalingAdapterWithNonMatchingOwner := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{
 			OwnerReferences: []metav1.OwnerReference{
 				{
@@ -68,7 +68,7 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 		},
 	}
 
-	scalingAdapterWithEmptyOwners := &workloadsv1alpha.RoleBasedGroupScalingAdapter{
+	scalingAdapterWithEmptyOwners := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{
 			OwnerReferences: []metav1.OwnerReference{},
 		},
@@ -76,8 +76,8 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		scalingAdapter *workloadsv1alpha.RoleBasedGroupScalingAdapter
-		rbg            *workloadsv1alpha.RoleBasedGroup
+		scalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter
+		rbg            *workloadsv1alpha2.RoleBasedGroup
 		expected       bool
 	}{
 		{
@@ -118,7 +118,7 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 		},
 		{
 			name: "Multiple OwnerReferences with match",
-			scalingAdapter: &workloadsv1alpha.RoleBasedGroupScalingAdapter{
+			scalingAdapter: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 				ObjectMeta: metav1.ObjectMeta{
 					OwnerReferences: []metav1.OwnerReference{
 						{
@@ -135,7 +135,7 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 		},
 		{
 			name: "Multiple OwnerReferences without match",
-			scalingAdapter: &workloadsv1alpha.RoleBasedGroupScalingAdapter{
+			scalingAdapter: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 				ObjectMeta: metav1.ObjectMeta{
 					OwnerReferences: []metav1.OwnerReference{
 						{
@@ -167,7 +167,7 @@ func TestIsScalingAdapterManagedByRBG(t *testing.T) {
 func TestIsScalingAdapterEnable(t *testing.T) {
 	tests := []struct {
 		name     string
-		roleSpec *workloadsv1alpha.RoleSpec
+		roleSpec *workloadsv1alpha2.RoleSpec
 		expected bool
 	}{
 		{
@@ -177,15 +177,15 @@ func TestIsScalingAdapterEnable(t *testing.T) {
 		},
 		{
 			name: "ScalingAdapter is nil",
-			roleSpec: &workloadsv1alpha.RoleSpec{
+			roleSpec: &workloadsv1alpha2.RoleSpec{
 				ScalingAdapter: nil,
 			},
 			expected: false,
 		},
 		{
 			name: "Enable scalingAdapter",
-			roleSpec: &workloadsv1alpha.RoleSpec{
-				ScalingAdapter: &workloadsv1alpha.ScalingAdapter{
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
 					Enable: true,
 				},
 			},
@@ -193,8 +193,8 @@ func TestIsScalingAdapterEnable(t *testing.T) {
 		},
 		{
 			name: "Disable scalingAdapter",
-			roleSpec: &workloadsv1alpha.RoleSpec{
-				ScalingAdapter: &workloadsv1alpha.ScalingAdapter{
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
 					Enable: false,
 				},
 			},

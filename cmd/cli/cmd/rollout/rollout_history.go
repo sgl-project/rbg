@@ -28,10 +28,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
-	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 var rolloutHistoryCmd = &cobra.Command{

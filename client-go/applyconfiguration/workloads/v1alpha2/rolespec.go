@@ -19,8 +19,8 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/api/core/v1"
+	constants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	constants "sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // RoleSpecApplyConfiguration represents a declarative configuration of the RoleSpec type for use

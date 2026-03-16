@@ -2,8 +2,8 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // WithGangScheduling enables kube scheduler-plugins based gang scheduling

@@ -30,8 +30,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/klog/v2"
-
-	appspub "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 )
 
 func SetOptionsDefaults(opts *UpdateOptions) *UpdateOptions {
@@ -144,11 +143,11 @@ func defaultCalculateInPlaceUpdateSpec(oldRevision, newRevision *apps.Controller
 // If the imageID in containerStatuses has not been changed, we assume that kubelet has not updated
 // containers in Pod.
 func DefaultCheckInPlaceUpdateCompleted(pod *v1.Pod) error {
-	if _, isInGraceState := appspub.GetInPlaceUpdateGrace(pod); isInGraceState {
+	if _, isInGraceState := inplaceapi.GetInPlaceUpdateGrace(pod); isInGraceState {
 		return fmt.Errorf("still in grace period of in-place update")
 	}
 
-	runtimeContainerMetaSet, err := appspub.GetRuntimeContainerMetaSet(pod)
+	runtimeContainerMetaSet, err := inplaceapi.GetRuntimeContainerMetaSet(pod)
 	if err != nil {
 		return err
 	}
@@ -160,8 +159,8 @@ func DefaultCheckInPlaceUpdateCompleted(pod *v1.Pod) error {
 		// Do not return error here.
 	}
 
-	inPlaceUpdateState := appspub.InPlaceUpdateState{}
-	if stateStr, ok := appspub.GetInPlaceUpdateState(pod); !ok {
+	inPlaceUpdateState := inplaceapi.InPlaceUpdateState{}
+	if stateStr, ok := inplaceapi.GetInPlaceUpdateState(pod); !ok {
 		return nil
 	} else if err := json.Unmarshal([]byte(stateStr), &inPlaceUpdateState); err != nil {
 		return err
@@ -199,7 +198,7 @@ func DefaultCheckInPlaceUpdateCompleted(pod *v1.Pod) error {
 // 1. all containers in spec.containers should also be in status.containerStatuses and runtime-container-meta
 // 2. all containers in status.containerStatuses and runtime-container-meta should have the same containerID
 // 3. all containers in spec.containers and runtime-container-meta should have the same hashes
-func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *appspub.RuntimeContainerMetaSet) bool {
+func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *inplaceapi.RuntimeContainerMetaSet) bool {
 	for i := range pod.Spec.Containers {
 		containerSpec := &pod.Spec.Containers[i]
 
@@ -215,7 +214,7 @@ func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *apps
 			return false
 		}
 
-		var containerMeta *appspub.RuntimeContainerMeta
+		var containerMeta *inplaceapi.RuntimeContainerMeta
 		for i := range runtimeContainerMetaSet.Containers {
 			if runtimeContainerMetaSet.Containers[i].Name == containerSpec.Name {
 				containerMeta = &runtimeContainerMetaSet.Containers[i]

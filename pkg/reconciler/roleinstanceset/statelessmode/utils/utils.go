@@ -32,14 +32,14 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils/expectations"
 	"sigs.k8s.io/rbgs/pkg/utils/requeueduration"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 )
 
 var (
 	// ControllerKind is GroupVersionKind for RoleInstanceSet.
-	ControllerKind      = v1alpha2.GroupVersion.WithKind("RoleInstanceSet")
+	ControllerKind      = workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")
 	RevisionAdapterImpl = &revisionAdapterImpl{}
 	EqualToRevisionHash = RevisionAdapterImpl.EqualToRevisionHash
 	WriteRevisionHash   = RevisionAdapterImpl.WriteRevisionHash
@@ -78,18 +78,18 @@ func GetShortHash(hash string) string {
 }
 
 // GetControllerKey return key of GroupSet.
-func GetControllerKey(set *v1alpha2.RoleInstanceSet) string {
+func GetControllerKey(set *workloadsv1alpha2.RoleInstanceSet) string {
 	return types.NamespacedName{Namespace: set.Namespace, Name: set.Name}.String()
 }
 
 // GetActiveInstance returns all active podGroups in this namespace.
-func GetActiveInstance(reader client.Reader, set *v1alpha2.RoleInstanceSet, opts *client.ListOptions) ([]*v1alpha2.RoleInstance, error) {
-	setList := &v1alpha2.RoleInstanceList{}
+func GetActiveInstance(reader client.Reader, set *workloadsv1alpha2.RoleInstanceSet, opts *client.ListOptions) ([]*workloadsv1alpha2.RoleInstance, error) {
+	setList := &workloadsv1alpha2.RoleInstanceList{}
 	if err := reader.List(context.TODO(), setList, opts); err != nil {
 		return nil, err
 	}
 
-	activeInstances := make([]*v1alpha2.RoleInstance, 0, len(setList.Items))
+	activeInstances := make([]*workloadsv1alpha2.RoleInstance, 0, len(setList.Items))
 	for i, instance := range setList.Items {
 		if instance.DeletionTimestamp != nil {
 			continue
@@ -114,8 +114,8 @@ func NextRevision(revisions []*apps.ControllerRevision) int64 {
 }
 
 // IsRunningAndReady returns true if podGroup is in the PodGroupRunning Phase, if it is ready.
-func IsRunningAndReady(instance *v1alpha2.RoleInstance) bool {
-	readyCondition := inplaceutil.GetRoleInstanceCondition(instance, v1alpha2.RoleInstanceReady)
+func IsRunningAndReady(instance *workloadsv1alpha2.RoleInstance) bool {
+	readyCondition := inplaceutil.GetRoleInstanceCondition(instance, workloadsv1alpha2.RoleInstanceReady)
 	if readyCondition == nil || readyCondition.Status != corev1.ConditionTrue {
 		return false
 	}
@@ -128,7 +128,7 @@ func IsRunningAndReady(instance *v1alpha2.RoleInstance) bool {
 	return isInstanceAllComponentReady(instance)
 }
 
-func isInstanceAllComponentReady(instance *v1alpha2.RoleInstance) bool {
+func isInstanceAllComponentReady(instance *workloadsv1alpha2.RoleInstance) bool {
 	if len(instance.Spec.Components) != len(instance.Status.ComponentStatuses) {
 		return false
 	}
@@ -149,16 +149,16 @@ func isInstanceAllComponentReady(instance *v1alpha2.RoleInstance) bool {
 }
 
 // IsRunningAndAvailable returns true if podGroup is in the Running Phase, if it is available.
-func IsRunningAndAvailable(instance *v1alpha2.RoleInstance, minReadySeconds int32) bool {
+func IsRunningAndAvailable(instance *workloadsv1alpha2.RoleInstance, minReadySeconds int32) bool {
 	if !IsRunningAndReady(instance) {
 		return false
 	}
-	readyCondition := inplaceutil.GetRoleInstanceCondition(instance, v1alpha2.RoleInstanceReady)
+	readyCondition := inplaceutil.GetRoleInstanceCondition(instance, workloadsv1alpha2.RoleInstanceReady)
 	return time.Since(readyCondition.LastTransitionTime.Time) > time.Duration(minReadySeconds)*time.Second
 }
 
 // SplitInstancesByRevision returns Instances matched and unmatched the given revision
-func SplitInstancesByRevision(instances []*v1alpha2.RoleInstance, rev string) (matched, unmatched []*v1alpha2.RoleInstance) {
+func SplitInstancesByRevision(instances []*workloadsv1alpha2.RoleInstance, rev string) (matched, unmatched []*workloadsv1alpha2.RoleInstance) {
 	for _, g := range instances {
 		if EqualToRevisionHash("", g, rev) {
 			matched = append(matched, g)
@@ -170,13 +170,13 @@ func SplitInstancesByRevision(instances []*v1alpha2.RoleInstance, rev string) (m
 }
 
 // GenSelectorLabel returns a label selector for RoleInstanceSet
-func GenSelectorLabel(set *v1alpha2.RoleInstanceSet) map[string]string {
+func GenSelectorLabel(set *workloadsv1alpha2.RoleInstanceSet) map[string]string {
 	return map[string]string{
 		constants.RoleInstanceOwnerLabelKey: string(set.UID),
 	}
 }
 
-func DumpJSON(instance *v1alpha2.RoleInstance) string {
+func DumpJSON(instance *workloadsv1alpha2.RoleInstance) string {
 	b, err := json.Marshal(instance)
 	if err != nil {
 		return err.Error()

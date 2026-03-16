@@ -13,8 +13,8 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/rbgs/pkg/utils/expectations"
 
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
@@ -30,11 +30,11 @@ const (
 )
 
 func (rc *realControl) Scale(
-	currentSet *appsv1alpha2.RoleInstanceSet,
-	updateSet *appsv1alpha2.RoleInstanceSet,
+	currentSet *workloadsv1alpha2.RoleInstanceSet,
+	updateSet *workloadsv1alpha2.RoleInstanceSet,
 	currentRevision string,
 	updateRevision string,
-	instances []*appsv1alpha2.RoleInstance,
+	instances []*workloadsv1alpha2.RoleInstance,
 ) (bool, error) {
 	if updateSet.Spec.Replicas == nil {
 		return false, fmt.Errorf("spec.Replicas is nil")
@@ -94,7 +94,7 @@ func (rc *realControl) Scale(
 		klog.V(3).Infof("InstanceSet %s try to delete instances specified. Delete ready limit: %d. instances: %v, %v.",
 			controllerKey, diffRes.deleteReadyLimit, instanceutil.GetRoleInstanceName(newInstancesToDelete...).UnsortedList(), instanceutil.GetRoleInstanceName(oldInstancesToDelete...).UnsortedList())
 
-		instancesToDelete = make([]*appsv1alpha2.RoleInstance, 0, len(instancesToDelete))
+		instancesToDelete = make([]*workloadsv1alpha2.RoleInstance, 0, len(instancesToDelete))
 		for _, instance := range newInstancesToDelete {
 			if !IsInstanceReady(coreControl, instance) {
 				instancesToDelete = append(instancesToDelete, instance)
@@ -129,7 +129,7 @@ func (rc *realControl) Scale(
 			controllerKey, -diffRes.scaleNum, -diffRes.scaleNumOldRevision, diffRes.deleteReadyLimit)
 
 		instancesPreparingToDelete := rc.chooseInstancesToDelete(updateSet, -diffRes.scaleNum, -diffRes.scaleNumOldRevision, notUpdatedInstance, updatedInstance)
-		instancesToDelete := make([]*appsv1alpha2.RoleInstance, 0, len(instancesPreparingToDelete))
+		instancesToDelete := make([]*workloadsv1alpha2.RoleInstance, 0, len(instancesPreparingToDelete))
 		for _, instance := range instancesPreparingToDelete {
 			if !IsInstanceReady(coreControl, instance) {
 				instancesToDelete = append(instancesToDelete, instance)
@@ -145,7 +145,7 @@ func (rc *realControl) Scale(
 	return false, nil
 }
 
-func (rc *realControl) managePreparingDelete(set *appsv1alpha2.RoleInstanceSet, instances, instancesInPreDelete []*appsv1alpha2.RoleInstance, numToDelete int) (bool, error) {
+func (rc *realControl) managePreparingDelete(set *workloadsv1alpha2.RoleInstanceSet, instances, instancesInPreDelete []*workloadsv1alpha2.RoleInstance, numToDelete int) (bool, error) {
 	//  We do not allow regret once the instance enter PreparingDelete state if MarkNotReady is set.
 	// Actually, there is a bug cased by this transformation from PreparingDelete to Normal,
 	// i.e., Lifecycle Updated Hook may be lost if the instance was transformed from Updating state
@@ -166,7 +166,7 @@ func (rc *realControl) managePreparingDelete(set *appsv1alpha2.RoleInstanceSet, 
 
 		klog.V(3).Infof("InstanceSet %s patch instance %s lifecycle from PreparingDelete to Normal",
 			utils.GetControllerKey(set), instance.Name)
-		if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, appsv1alpha2.RoleInstanceSetLifecycleStateNormal, false); err != nil {
+		if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStateNormal, false); err != nil {
 			return modified, err
 		} else if updated {
 			modified = true
@@ -179,7 +179,7 @@ func (rc *realControl) managePreparingDelete(set *appsv1alpha2.RoleInstanceSet, 
 
 func (rc *realControl) createInstances(
 	expectedCreations, expectedCurrentCreations int,
-	currentSet, updateSet *appsv1alpha2.RoleInstanceSet,
+	currentSet, updateSet *workloadsv1alpha2.RoleInstanceSet,
 	currentRevision, updateRevision string,
 	availableIDs []string,
 ) (bool, error) {
@@ -191,7 +191,7 @@ func (rc *realControl) createInstances(
 		return false, err
 	}
 
-	instancesCreationChan := make(chan *appsv1alpha2.RoleInstance, len(newInstances))
+	instancesCreationChan := make(chan *workloadsv1alpha2.RoleInstance, len(newInstances))
 	for _, p := range newInstances {
 		utils.ScaleExpectations.ExpectScale(utils.GetControllerKey(updateSet), expectations.Create, p.Name)
 		instancesCreationChan <- p
@@ -206,7 +206,7 @@ func (rc *realControl) createInstances(
 		if utils.EqualToRevisionHash("", instance, currentRevision) {
 			gs = currentSet
 		}
-		lifecycle.SetRoleInstanceLifecycle(appsv1alpha2.RoleInstanceSetLifecycleStateNormal)(instance)
+		lifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceLifecycleStateNormal)(instance)
 
 		var createErr error
 		if createErr = rc.createOneInstance(gs, instance); createErr != nil {
@@ -232,7 +232,7 @@ func (rc *realControl) createInstances(
 	return true, err
 }
 
-func (rc *realControl) createOneInstance(set *appsv1alpha2.RoleInstanceSet, instance *appsv1alpha2.RoleInstance) error {
+func (rc *realControl) createOneInstance(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) error {
 	if err := rc.Create(context.TODO(), instance); err != nil {
 		rc.recorder.Eventf(set, v1.EventTypeWarning, "FailedCreate", "failed to create instance: %v, instance: %v", err, utils.DumpJSON(instance))
 		return err
@@ -242,12 +242,12 @@ func (rc *realControl) createOneInstance(set *appsv1alpha2.RoleInstanceSet, inst
 	return nil
 }
 
-func (rc *realControl) deleteInstances(gs *appsv1alpha2.RoleInstanceSet, instancesToDelete []*appsv1alpha2.RoleInstance) (bool, error) {
+func (rc *realControl) deleteInstances(gs *workloadsv1alpha2.RoleInstanceSet, instancesToDelete []*workloadsv1alpha2.RoleInstance) (bool, error) {
 	var modified bool
 	for _, instance := range instancesToDelete {
 		if gs.Spec.Lifecycle != nil && lifecycle.IsRoleInstanceHooked(gs.Spec.Lifecycle.PreDelete, instance) {
 			markNotReady := gs.Spec.Lifecycle.PreDelete.MarkNotReady
-			if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, appsv1alpha2.RoleInstanceSetLifecycleStatePreparingDelete, markNotReady); err != nil {
+			if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStatePreparingDelete, markNotReady); err != nil {
 				return false, err
 			} else if updated {
 				klog.V(3).Infof("InstanceSet %s scaling update instance %s lifecycle to PreparingDelete",
@@ -271,16 +271,16 @@ func (rc *realControl) deleteInstances(gs *appsv1alpha2.RoleInstanceSet, instanc
 	return modified, nil
 }
 
-func getPlannedDeletedInstances(gs *appsv1alpha2.RoleInstanceSet, instances []*appsv1alpha2.RoleInstance) ([]*appsv1alpha2.RoleInstance, []*appsv1alpha2.RoleInstance, int) {
-	var specifiedToDelete []*appsv1alpha2.RoleInstance
-	var inPreDelete []*appsv1alpha2.RoleInstance
+func getPlannedDeletedInstances(gs *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance) ([]*workloadsv1alpha2.RoleInstance, []*workloadsv1alpha2.RoleInstance, int) {
+	var specifiedToDelete []*workloadsv1alpha2.RoleInstance
+	var inPreDelete []*workloadsv1alpha2.RoleInstance
 	names := sets.NewString()
 	for _, instance := range instances {
 		if isSpecifiedDelete(gs, instance) {
 			names.Insert(instance.Name)
 			specifiedToDelete = append(specifiedToDelete, instance)
 		}
-		if lifecycle.GetRoleInstanceLifecycleState(instance) == appsv1alpha2.RoleInstanceSetLifecycleStatePreparingDelete {
+		if lifecycle.GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingDelete {
 			names.Insert(instance.Name)
 			inPreDelete = append(inPreDelete, instance)
 		}
@@ -292,7 +292,7 @@ func getPlannedDeletedInstances(gs *appsv1alpha2.RoleInstanceSet, instances []*a
 // If there is not enough existing available IDs, then generate ID using rand utility.
 // More details: if template changes more than container image, controller will delete instances during update, and
 // it will keep the pvc to reuse.
-func getOrGenAvailableIDs(num int, instances []*appsv1alpha2.RoleInstance) sets.Set[string] {
+func getOrGenAvailableIDs(num int, instances []*workloadsv1alpha2.RoleInstance) sets.Set[string] {
 	existingIDs := sets.New[string]()
 	availableIDs := sets.New[string]()
 
@@ -325,14 +325,14 @@ func getOrGenInstanceID(existingIDs, availableIDs sets.Set[string]) string {
 	return id
 }
 
-func (rc *realControl) chooseInstancesToDelete(set *appsv1alpha2.RoleInstanceSet, totalDiff int, currentRevDiff int, notUpdatedInstances, updatedInstances []*appsv1alpha2.RoleInstance) []*appsv1alpha2.RoleInstance {
+func (rc *realControl) chooseInstancesToDelete(set *workloadsv1alpha2.RoleInstanceSet, totalDiff int, currentRevDiff int, notUpdatedInstances, updatedInstances []*workloadsv1alpha2.RoleInstance) []*workloadsv1alpha2.RoleInstance {
 	coreControl := core.New(set)
-	choose := func(instances []*appsv1alpha2.RoleInstance, diff int) []*appsv1alpha2.RoleInstance {
+	choose := func(instances []*workloadsv1alpha2.RoleInstance, diff int) []*workloadsv1alpha2.RoleInstance {
 		// No need to sort instances if we are about to delete all of them.
 		if diff < len(instances) {
 			sort.Sort(utils.ActiveInstancesAvailableRank{
 				Instances: instances,
-				AvailableFunc: func(instance *appsv1alpha2.RoleInstance) bool {
+				AvailableFunc: func(instance *workloadsv1alpha2.RoleInstance) bool {
 					return IsInstanceAvailable(coreControl, instance, set.Spec.MinReadySeconds)
 				},
 			})
@@ -343,7 +343,7 @@ func (rc *realControl) chooseInstancesToDelete(set *appsv1alpha2.RoleInstanceSet
 		return instances[:diff]
 	}
 
-	var instancesToDelete []*appsv1alpha2.RoleInstance
+	var instancesToDelete []*workloadsv1alpha2.RoleInstance
 	if currentRevDiff >= totalDiff {
 		instancesToDelete = choose(notUpdatedInstances, totalDiff)
 	} else if currentRevDiff > 0 {

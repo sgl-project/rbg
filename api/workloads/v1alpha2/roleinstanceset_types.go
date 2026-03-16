@@ -20,7 +20,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 const (
@@ -79,19 +79,6 @@ type RoleInstanceSetSpec struct {
 	// Lifecycle defines the lifecycle hooks for RoleInstances pre-delete, in-place update.
 	Lifecycle *RoleInstanceSetLifecycle `json:"lifecycle,omitempty"`
 }
-
-const (
-	RoleInstanceSetLifecycleStateKey     = "lifecycle.workloads.x-k8s.io/state"
-	RoleInstanceSetLifecycleTimestampKey = "lifecycle.workloads.x-k8s.io/timestamp"
-
-	RoleInstanceSetLifecycleStateNormal          RoleInstanceSetLifecycleStateType = "Normal"
-	RoleInstanceSetLifecycleStatePreparingUpdate RoleInstanceSetLifecycleStateType = "PreparingUpdate"
-	RoleInstanceSetLifecycleStateUpdating        RoleInstanceSetLifecycleStateType = "Updating"
-	RoleInstanceSetLifecycleStateUpdated         RoleInstanceSetLifecycleStateType = "Updated"
-	RoleInstanceSetLifecycleStatePreparingDelete RoleInstanceSetLifecycleStateType = "PreparingDelete"
-)
-
-type RoleInstanceSetLifecycleStateType string
 
 // RoleInstanceSetLifecycle contains the hooks for RoleInstance lifecycle.
 type RoleInstanceSetLifecycle struct {

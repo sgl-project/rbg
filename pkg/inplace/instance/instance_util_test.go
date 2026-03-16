@@ -5,23 +5,23 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestIsRoleInstanceReady(t *testing.T) {
 	testCases := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		expected bool
 	}{
 		{
 			name: "Instance is ready",
-			instance: &appsv1alpha2.RoleInstance{
-				Status: appsv1alpha2.RoleInstanceStatus{
-					Conditions: []appsv1alpha2.RoleInstanceCondition{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
 						{
-							Type:   appsv1alpha2.RoleInstanceReady,
+							Type:   workloadsv1alpha2.RoleInstanceReady,
 							Status: corev1.ConditionTrue,
 						},
 					},
@@ -31,20 +31,20 @@ func TestIsRoleInstanceReady(t *testing.T) {
 		},
 		{
 			name: "Instance is not ready, ready condition is null",
-			instance: &appsv1alpha2.RoleInstance{
-				Status: appsv1alpha2.RoleInstanceStatus{
-					Conditions: []appsv1alpha2.RoleInstanceCondition{},
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{},
 				},
 			},
 			expected: false,
 		},
 		{
 			name: "Instance is not ready, ready condition is false",
-			instance: &appsv1alpha2.RoleInstance{
-				Status: appsv1alpha2.RoleInstanceStatus{
-					Conditions: []appsv1alpha2.RoleInstanceCondition{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
 						{
-							Type:   appsv1alpha2.RoleInstanceReady,
+							Type:   workloadsv1alpha2.RoleInstanceReady,
 							Status: corev1.ConditionFalse,
 						},
 					},
@@ -106,19 +106,19 @@ func TestIsMatchComponent(t *testing.T) {
 func TestGetComponentSize(t *testing.T) {
 	testCases := []struct {
 		name      string
-		component appsv1alpha2.RoleInstanceComponent
+		component workloadsv1alpha2.RoleInstanceComponent
 		expected  int32
 	}{
 		{
 			name: "Component with replicas",
-			component: appsv1alpha2.RoleInstanceComponent{
+			component: workloadsv1alpha2.RoleInstanceComponent{
 				Size: func() *int32 { i := int32(3); return &i }(),
 			},
 			expected: 3,
 		},
 		{
 			name: "Component with default replicas",
-			component: appsv1alpha2.RoleInstanceComponent{
+			component: workloadsv1alpha2.RoleInstanceComponent{
 				Size: nil,
 			},
 			expected: 1,

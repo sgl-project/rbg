@@ -8,12 +8,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/instance"
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
-func makeControllerRevisionWithTemplate(t *testing.T, name string, tmpl appsv1alpha2.RoleInstanceTemplate) *apps.ControllerRevision {
+func makeControllerRevisionWithTemplate(t *testing.T, name string, tmpl workloadsv1alpha2.RoleInstanceTemplate) *apps.ControllerRevision {
 	t.Helper()
 	wrapper := map[string]any{
 		"spec": map[string]any{
@@ -46,10 +47,10 @@ func TestSetOptionsDefaults(t *testing.T) {
 		{
 			name: "existing funcs preserved",
 			opts: &UpdateOptions{
-				InjectRoleInstanceIdentity: func(instance *appsv1alpha2.RoleInstance) {},
+				InjectRoleInstanceIdentity: func(instance *workloadsv1alpha2.RoleInstance) {},
 			},
 			expected: &UpdateOptions{
-				InjectRoleInstanceIdentity:       func(instance *appsv1alpha2.RoleInstance) {},
+				InjectRoleInstanceIdentity:       func(instance *workloadsv1alpha2.RoleInstance) {},
 				CalculateSpec:                    defaultCalculateInPlaceUpdateSpec,
 				PatchSpecToRoleInstance:          defaultPatchUpdateSpecToRoleInstance,
 				CheckRoleInstanceUpdateCompleted: DefaultCheckInPlaceUpdateCompleted,
@@ -98,21 +99,21 @@ func TestSetOptionsDefaults(t *testing.T) {
 func TestDefaultPatchUpdateSpecToRoleInstance(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		spec     *UpdateSpec
 		state    *inplaceapi.InPlaceUpdateState
 		expected bool
 	}{
 		{
 			name: "valid patch with new template",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "inst"},
-				Spec:       appsv1alpha2.RoleInstanceSpec{},
+				Spec:       workloadsv1alpha2.RoleInstanceSpec{},
 			},
 			spec: &UpdateSpec{
-				NewTemplate: &appsv1alpha2.RoleInstanceTemplate{
-					RoleInstanceSpec: appsv1alpha2.RoleInstanceSpec{
-						Components: []appsv1alpha2.RoleInstanceComponent{
+				NewTemplate: &workloadsv1alpha2.RoleInstanceTemplate{
+					RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+						Components: []workloadsv1alpha2.RoleInstanceComponent{
 							{Name: "c1", Size: func() *int32 { s := int32(3); return &s }()},
 						},
 					},
@@ -123,9 +124,9 @@ func TestDefaultPatchUpdateSpecToRoleInstance(t *testing.T) {
 		},
 		{
 			name: "nil new template",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "inst"},
-				Spec:       appsv1alpha2.RoleInstanceSpec{},
+				Spec:       workloadsv1alpha2.RoleInstanceSpec{},
 			},
 			spec: &UpdateSpec{
 				NewTemplate: nil,
@@ -156,7 +157,7 @@ func TestDefaultPatchUpdateSpecToRoleInstance(t *testing.T) {
 					t.Errorf("defaultPatchUpdateSpecToRoleInstance() readiness gate not injected")
 				}
 				// Check annotation was set
-				if _, exists := result.Annotations[inplaceapi.InPlaceUpdateStateKey]; !exists {
+				if _, exists := result.Annotations[constants.InPlaceUpdateStateKey]; !exists {
 					t.Errorf("defaultPatchUpdateSpecToRoleInstance() annotation not set")
 				}
 			} else {
@@ -172,14 +173,14 @@ func TestDefaultPatchUpdateSpecToRoleInstance(t *testing.T) {
 func TestDefaultCalculateInPlaceUpdateSpec(t *testing.T) {
 	size1 := int32(1)
 	size2 := int32(1)
-	tmpl1 := appsv1alpha2.RoleInstanceTemplate{
-		RoleInstanceSpec: appsv1alpha2.RoleInstanceSpec{
-			Components: []appsv1alpha2.RoleInstanceComponent{{Name: "a", Size: &size1}},
+	tmpl1 := workloadsv1alpha2.RoleInstanceTemplate{
+		RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "a", Size: &size1}},
 		},
 	}
-	tmpl2 := appsv1alpha2.RoleInstanceTemplate{
-		RoleInstanceSpec: appsv1alpha2.RoleInstanceSpec{
-			Components: []appsv1alpha2.RoleInstanceComponent{{Name: "a", Size: &size2}},
+	tmpl2 := workloadsv1alpha2.RoleInstanceTemplate{
+		RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "a", Size: &size2}},
 		},
 	}
 
@@ -228,9 +229,9 @@ func TestDefaultCalculateInPlaceUpdateSpec(t *testing.T) {
 		{
 			name:        "size changes",
 			oldRevision: oldRev,
-			newRevision: makeControllerRevisionWithTemplate(t, "new2", appsv1alpha2.RoleInstanceTemplate{
-				RoleInstanceSpec: appsv1alpha2.RoleInstanceSpec{
-					Components: []appsv1alpha2.RoleInstanceComponent{
+			newRevision: makeControllerRevisionWithTemplate(t, "new2", workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "a", Size: func() *int32 { s := int32(2); return &s }()},
 					},
 				},
@@ -277,33 +278,33 @@ func TestDefaultCalculateInPlaceUpdateSpec(t *testing.T) {
 func TestDefaultCheckInPlaceUpdateCompleted(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		expected bool
 	}{
 		{
 			name: "component status missing",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					Components: []appsv1alpha2.RoleInstanceComponent{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "c1", Size: func() *int32 { s := int32(1); return &s }()},
 					},
 				},
-				Status: appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Status: workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
 			},
 			expected: false,
 		},
 		{
 			name: "updated replicas not match",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					Components: []appsv1alpha2.RoleInstanceComponent{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "c1", Size: func() *int32 { s := int32(2); return &s }()},
 						{Name: "c2", Size: func() *int32 { s := int32(1); return &s }()},
 					},
 				},
-				Status: appsv1alpha2.RoleInstanceStatus{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
 					ObservedGeneration: 1,
-					ComponentStatuses: []appsv1alpha2.RoleInstanceComponentStatus{
+					ComponentStatuses: []workloadsv1alpha2.RoleInstanceComponentStatus{
 						{Name: "c1", UpdatedReplicas: 2},
 					},
 				},
@@ -312,16 +313,16 @@ func TestDefaultCheckInPlaceUpdateCompleted(t *testing.T) {
 		},
 		{
 			name: "all updated",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					Components: []appsv1alpha2.RoleInstanceComponent{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "c1", Size: func() *int32 { s := int32(2); return &s }()},
 						{Name: "c2", Size: func() *int32 { s := int32(1); return &s }()},
 					},
 				},
-				Status: appsv1alpha2.RoleInstanceStatus{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
 					ObservedGeneration: 1,
-					ComponentStatuses: []appsv1alpha2.RoleInstanceComponentStatus{
+					ComponentStatuses: []workloadsv1alpha2.RoleInstanceComponentStatus{
 						{Name: "c1", UpdatedReplicas: 2},
 						{Name: "c2", UpdatedReplicas: 1},
 					},
@@ -351,22 +352,22 @@ func TestDefaultCheckInPlaceUpdateCompleted(t *testing.T) {
 func TestDefaultCheckInPlaceUpdateCompletedWithGeneration(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		expected bool
 	}{
 		{
 			name: "generation not observed",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Generation: 2},
-				Status:     appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Status:     workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
 			},
 			expected: false,
 		},
 		{
 			name: "generation observed",
-			instance: &appsv1alpha2.RoleInstance{
+			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Generation: 1},
-				Status:     appsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
+				Status:     workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1},
 			},
 			expected: true,
 		},
@@ -392,26 +393,26 @@ func TestDefaultCheckInPlaceUpdateCompletedWithGeneration(t *testing.T) {
 func TestComponentSizeChanges(t *testing.T) {
 	s1 := int32(1)
 	s2 := int32(2)
-	old := []appsv1alpha2.RoleInstanceComponent{
+	old := []workloadsv1alpha2.RoleInstanceComponent{
 		{Name: "a", Size: &s1},
 		{Name: "b", Size: &s1},
 	}
-	same := []appsv1alpha2.RoleInstanceComponent{
+	same := []workloadsv1alpha2.RoleInstanceComponent{
 		{Name: "a", Size: &s1},
 		{Name: "b", Size: &s1},
 	}
-	diffSize := []appsv1alpha2.RoleInstanceComponent{
+	diffSize := []workloadsv1alpha2.RoleInstanceComponent{
 		{Name: "a", Size: &s2},
 		{Name: "b", Size: &s1},
 	}
-	missing := []appsv1alpha2.RoleInstanceComponent{
+	missing := []workloadsv1alpha2.RoleInstanceComponent{
 		{Name: "a", Size: &s1},
 	}
 
 	tests := []struct {
 		name          string
-		oldComponents []appsv1alpha2.RoleInstanceComponent
-		newComponents []appsv1alpha2.RoleInstanceComponent
+		oldComponents []workloadsv1alpha2.RoleInstanceComponent
+		newComponents []workloadsv1alpha2.RoleInstanceComponent
 		expected      bool
 	}{
 		{
@@ -435,7 +436,7 @@ func TestComponentSizeChanges(t *testing.T) {
 		{
 			name:          "different length",
 			oldComponents: old,
-			newComponents: []appsv1alpha2.RoleInstanceComponent{},
+			newComponents: []workloadsv1alpha2.RoleInstanceComponent{},
 			expected:      true,
 		},
 	}
@@ -452,9 +453,9 @@ func TestComponentSizeChanges(t *testing.T) {
 
 func TestGetTemplateFromRevision(t *testing.T) {
 	s := int32(1)
-	tmpl := appsv1alpha2.RoleInstanceTemplate{
-		RoleInstanceSpec: appsv1alpha2.RoleInstanceSpec{
-			Components: []appsv1alpha2.RoleInstanceComponent{
+	tmpl := workloadsv1alpha2.RoleInstanceTemplate{
+		RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
 				{Name: "x", Size: &s},
 			},
 		},
@@ -517,20 +518,20 @@ func TestGetTemplateFromRevision(t *testing.T) {
 func TestInjectRoleInstanceReadinessGate(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		expected int
 	}{
 		{
 			name:     "instance without readiness gates",
-			instance: &appsv1alpha2.RoleInstance{},
+			instance: &workloadsv1alpha2.RoleInstance{},
 			expected: 1,
 		},
 		{
 			name: "instance with existing readiness gate",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceInPlaceUpdateReady},
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady},
 					},
 				},
 			},
@@ -538,10 +539,10 @@ func TestInjectRoleInstanceReadinessGate(t *testing.T) {
 		},
 		{
 			name: "instance with different readiness gate",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceReady},
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceReady},
 					},
 				},
 			},
@@ -555,7 +556,7 @@ func TestInjectRoleInstanceReadinessGate(t *testing.T) {
 
 			count := 0
 			for _, g := range tt.instance.Spec.ReadinessGates {
-				if g.ConditionType == appsv1alpha2.RoleInstanceInPlaceUpdateReady {
+				if g.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
 					count++
 				}
 			}
@@ -569,20 +570,20 @@ func TestInjectRoleInstanceReadinessGate(t *testing.T) {
 func TestContainsReadinessGate(t *testing.T) {
 	tests := []struct {
 		name     string
-		instance *appsv1alpha2.RoleInstance
+		instance *workloadsv1alpha2.RoleInstance
 		expected bool
 	}{
 		{
 			name:     "instance without readiness gates",
-			instance: &appsv1alpha2.RoleInstance{},
+			instance: &workloadsv1alpha2.RoleInstance{},
 			expected: false,
 		},
 		{
 			name: "instance with inplace update readiness gate",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceInPlaceUpdateReady},
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady},
 					},
 				},
 			},
@@ -590,10 +591,10 @@ func TestContainsReadinessGate(t *testing.T) {
 		},
 		{
 			name: "instance with different readiness gate",
-			instance: &appsv1alpha2.RoleInstance{
-				Spec: appsv1alpha2.RoleInstanceSpec{
-					ReadinessGates: []appsv1alpha2.RoleInstanceReadinessGate{
-						{ConditionType: appsv1alpha2.RoleInstanceReady},
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{
+						{ConditionType: workloadsv1alpha2.RoleInstanceReady},
 					},
 				},
 			},
@@ -614,15 +615,15 @@ func TestContainsReadinessGate(t *testing.T) {
 func TestHasEqualCondition(t *testing.T) {
 	tests := []struct {
 		name      string
-		instance  *appsv1alpha2.RoleInstance
-		condition *appsv1alpha2.RoleInstanceCondition
+		instance  *workloadsv1alpha2.RoleInstance
+		condition *workloadsv1alpha2.RoleInstanceCondition
 		expected  bool
 	}{
 		{
 			name:     "instance without conditions",
-			instance: &appsv1alpha2.RoleInstance{},
-			condition: &appsv1alpha2.RoleInstanceCondition{
-				Type:    appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+			instance: &workloadsv1alpha2.RoleInstance{},
+			condition: &workloadsv1alpha2.RoleInstanceCondition{
+				Type:    workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 				Status:  corev1.ConditionTrue,
 				Reason:  "r",
 				Message: "m",
@@ -631,11 +632,11 @@ func TestHasEqualCondition(t *testing.T) {
 		},
 		{
 			name: "instance with matching condition",
-			instance: &appsv1alpha2.RoleInstance{
-				Status: appsv1alpha2.RoleInstanceStatus{
-					Conditions: []appsv1alpha2.RoleInstanceCondition{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
 						{
-							Type:    appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+							Type:    workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 							Status:  corev1.ConditionTrue,
 							Reason:  "r",
 							Message: "m",
@@ -643,8 +644,8 @@ func TestHasEqualCondition(t *testing.T) {
 					},
 				},
 			},
-			condition: &appsv1alpha2.RoleInstanceCondition{
-				Type:    appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+			condition: &workloadsv1alpha2.RoleInstanceCondition{
+				Type:    workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 				Status:  corev1.ConditionTrue,
 				Reason:  "r",
 				Message: "m",
@@ -653,11 +654,11 @@ func TestHasEqualCondition(t *testing.T) {
 		},
 		{
 			name: "instance with different condition",
-			instance: &appsv1alpha2.RoleInstance{
-				Status: appsv1alpha2.RoleInstanceStatus{
-					Conditions: []appsv1alpha2.RoleInstanceCondition{
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
 						{
-							Type:    appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+							Type:    workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 							Status:  corev1.ConditionTrue,
 							Reason:  "r",
 							Message: "m",
@@ -665,8 +666,8 @@ func TestHasEqualCondition(t *testing.T) {
 					},
 				},
 			},
-			condition: &appsv1alpha2.RoleInstanceCondition{
-				Type:    appsv1alpha2.RoleInstanceInPlaceUpdateReady,
+			condition: &workloadsv1alpha2.RoleInstanceCondition{
+				Type:    workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 				Status:  corev1.ConditionTrue,
 				Reason:  "r",
 				Message: "m2",

@@ -13,8 +13,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 
-	appspub "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	util "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	"sigs.k8s.io/rbgs/pkg/utils/revisionadapter"
 )
@@ -129,7 +130,7 @@ func TestCheckInPlaceUpdateCompleted(t *testing.T) {
 					apps.StatefulSetRevisionLabel: "new-revision",
 				},
 				Annotations: map[string]string{
-					appspub.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
+					constants.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
 				},
 			},
 			Status: v1.PodStatus{
@@ -150,7 +151,7 @@ func TestCheckInPlaceUpdateCompleted(t *testing.T) {
 					apps.StatefulSetRevisionLabel: "new-revision",
 				},
 				Annotations: map[string]string{
-					appspub.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
+					constants.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
 				},
 			},
 			Status: v1.PodStatus{
@@ -170,7 +171,7 @@ func TestCheckInPlaceUpdateCompleted(t *testing.T) {
 					apps.StatefulSetRevisionLabel: "new-revision",
 				},
 				Annotations: map[string]string{
-					appspub.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
+					constants.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
 				},
 			},
 			Status: v1.PodStatus{},
@@ -211,11 +212,11 @@ func TestRefresh(t *testing.T) {
 						apps.StatefulSetRevisionLabel: "new-revision",
 					},
 					Annotations: map[string]string{
-						appspub.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
+						constants.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
 					},
 				},
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 			expectedPod: &v1.Pod{
@@ -224,11 +225,11 @@ func TestRefresh(t *testing.T) {
 						apps.StatefulSetRevisionLabel: "new-revision",
 					},
 					Annotations: map[string]string{
-						appspub.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
+						constants.InPlaceUpdateStateKey: `{"revision":"new-revision","lastContainerStatuses":{"c1":{"imageID":"img01"}}}`,
 					},
 				},
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 		},
@@ -236,16 +237,16 @@ func TestRefresh(t *testing.T) {
 			name: "no existing condition",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 			expectedPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{ResourceVersion: "1"},
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 				Status: v1.PodStatus{
-					Conditions: []v1.PodCondition{{Type: appspub.InPlaceUpdateReady, Status: v1.ConditionTrue, LastTransitionTime: aHourAgo}},
+					Conditions: []v1.PodCondition{{Type: constants.InPlaceUpdateReady, Status: v1.ConditionTrue, LastTransitionTime: aHourAgo}},
 				},
 			},
 		},
@@ -253,7 +254,7 @@ func TestRefresh(t *testing.T) {
 			name: "existing condition status is False",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 				Status: v1.PodStatus{
 					Conditions: []v1.PodCondition{
@@ -262,7 +263,7 @@ func TestRefresh(t *testing.T) {
 							Status: v1.ConditionTrue,
 						},
 						{
-							Type:   appspub.InPlaceUpdateReady,
+							Type:   constants.InPlaceUpdateReady,
 							Status: v1.ConditionFalse,
 						},
 					},
@@ -271,7 +272,7 @@ func TestRefresh(t *testing.T) {
 			expectedPod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{ResourceVersion: "1"},
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 				Status: v1.PodStatus{
 					Conditions: []v1.PodCondition{
@@ -280,7 +281,7 @@ func TestRefresh(t *testing.T) {
 							Status: v1.ConditionTrue,
 						},
 						{
-							Type:               appspub.InPlaceUpdateReady,
+							Type:               constants.InPlaceUpdateReady,
 							Status:             v1.ConditionTrue,
 							LastTransitionTime: aHourAgo,
 						},
@@ -292,7 +293,7 @@ func TestRefresh(t *testing.T) {
 			name: "existing condition status is True",
 			pod: &v1.Pod{
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 				Status: v1.PodStatus{
 					Conditions: []v1.PodCondition{
@@ -301,7 +302,7 @@ func TestRefresh(t *testing.T) {
 							Status: v1.ConditionFalse,
 						},
 						{
-							Type:   appspub.InPlaceUpdateReady,
+							Type:   constants.InPlaceUpdateReady,
 							Status: v1.ConditionTrue,
 						},
 					},
@@ -309,7 +310,7 @@ func TestRefresh(t *testing.T) {
 			},
 			expectedPod: &v1.Pod{
 				Spec: v1.PodSpec{
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 				Status: v1.PodStatus{
 					Conditions: []v1.PodCondition{
@@ -318,7 +319,7 @@ func TestRefresh(t *testing.T) {
 							Status: v1.ConditionFalse,
 						},
 						{
-							Type:   appspub.InPlaceUpdateReady,
+							Type:   constants.InPlaceUpdateReady,
 							Status: v1.ConditionTrue,
 						},
 					},
@@ -333,13 +334,13 @@ func TestRefresh(t *testing.T) {
 						apps.StatefulSetRevisionLabel: "new-revision",
 					},
 					Annotations: map[string]string{
-						appspub.InPlaceUpdateStateKey: util.DumpJSON(appspub.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]appspub.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
-						appspub.InPlaceUpdateGraceKey: `{"revision":"new-revision","containerImages":{"main":"img-name02"},"graceSeconds":30}`,
+						constants.InPlaceUpdateStateKey: util.DumpJSON(inplaceapi.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
+						constants.InPlaceUpdateGraceKey: `{"revision":"new-revision","containerImages":{"main":"img-name02"},"graceSeconds":30}`,
 					},
 				},
 				Spec: v1.PodSpec{
 					Containers:     []v1.Container{{Name: "main", Image: "img-name01"}},
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 			expectedPod: &v1.Pod{
@@ -348,13 +349,13 @@ func TestRefresh(t *testing.T) {
 						apps.StatefulSetRevisionLabel: "new-revision",
 					},
 					Annotations: map[string]string{
-						appspub.InPlaceUpdateStateKey: util.DumpJSON(appspub.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]appspub.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
-						appspub.InPlaceUpdateGraceKey: `{"revision":"new-revision","containerImages":{"main":"img-name02"},"graceSeconds":30}`,
+						constants.InPlaceUpdateStateKey: util.DumpJSON(inplaceapi.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
+						constants.InPlaceUpdateGraceKey: `{"revision":"new-revision","containerImages":{"main":"img-name02"},"graceSeconds":30}`,
 					},
 				},
 				Spec: v1.PodSpec{
 					Containers:     []v1.Container{{Name: "main", Image: "img-name01"}},
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 		},
@@ -366,13 +367,13 @@ func TestRefresh(t *testing.T) {
 						apps.StatefulSetRevisionLabel: "new-revision",
 					},
 					Annotations: map[string]string{
-						appspub.InPlaceUpdateStateKey: util.DumpJSON(appspub.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]appspub.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
-						appspub.InPlaceUpdateGraceKey: `{"revision":"new-revision","containerImages":{"main":"img-name02"},"graceSeconds":5}`,
+						constants.InPlaceUpdateStateKey: util.DumpJSON(inplaceapi.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
+						constants.InPlaceUpdateGraceKey: `{"revision":"new-revision","containerImages":{"main":"img-name02"},"graceSeconds":5}`,
 					},
 				},
 				Spec: v1.PodSpec{
 					Containers:     []v1.Container{{Name: "main", Image: "img-name01"}},
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 			expectedPod: &v1.Pod{
@@ -381,13 +382,13 @@ func TestRefresh(t *testing.T) {
 						apps.StatefulSetRevisionLabel: "new-revision",
 					},
 					Annotations: map[string]string{
-						appspub.InPlaceUpdateStateKey: util.DumpJSON(appspub.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]appspub.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
+						constants.InPlaceUpdateStateKey: util.DumpJSON(inplaceapi.InPlaceUpdateState{Revision: "new-revision", UpdateTimestamp: tenSecondsAgo, LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{"c1": {ImageID: "img01"}}}),
 					},
 					ResourceVersion: "1",
 				},
 				Spec: v1.PodSpec{
 					Containers:     []v1.Container{{Name: "main", Image: "img-name02"}},
-					ReadinessGates: []v1.PodReadinessGate{{ConditionType: appspub.InPlaceUpdateReady}},
+					ReadinessGates: []v1.PodReadinessGate{{ConditionType: constants.InPlaceUpdateReady}},
 				},
 			},
 		},

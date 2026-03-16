@@ -22,8 +22,9 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	"k8s.io/klog/v2"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/instance"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	util "sigs.k8s.io/rbgs/pkg/utils"
@@ -69,7 +70,7 @@ func defaultPatchUpdateSpecToRoleInstance(instance *workloadsv1alpha2.RoleInstan
 	klog.V(5).Infof("Decide to in-place update role instance %s/%s with state %v", instance.Namespace, instance.Name, util.DumpJSON(state))
 
 	inPlaceUpdateStateJSON, _ := json.Marshal(state)
-	instance.Annotations[inplaceapi.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
+	instance.Annotations[constants.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
 	return instance, nil
 }
 
