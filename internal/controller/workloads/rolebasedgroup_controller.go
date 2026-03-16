@@ -85,15 +85,19 @@ type RoleBasedGroupReconciler struct {
 	podGroupManager    scheduler.PodGroupManager
 }
 
-func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerPlugin scheduler.SchedulerPluginType) *RoleBasedGroupReconciler {
+func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType) (*RoleBasedGroupReconciler, error) {
+	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, mgr.GetClient())
+	if err != nil {
+		return nil, err
+	}
 	return &RoleBasedGroupReconciler{
 		client:             mgr.GetClient(),
 		apiReader:          mgr.GetAPIReader(),
 		scheme:             mgr.GetScheme(),
 		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
 		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
-		podGroupManager:    scheduler.NewPodGroupManager(schedulerPlugin, mgr.GetClient()),
-	}
+		podGroupManager:    podGroupManager,
+	}, nil
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch;create;update;patch;delete

@@ -103,7 +103,7 @@ func main() {
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
-		schedulerPlugin string
+		schedulerName string
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -139,7 +139,7 @@ func main() {
 	)
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 120*time.Second, "Informer cache sync timeout.")
 	flag.StringVar(
-		&schedulerPlugin, "scheduler-name", string(scheduler.KubeSchedulerPlugin),
+		&schedulerName, "scheduler-name", string(scheduler.KubeSchedulerPlugin),
 		"The scheduler name to use for gang scheduling. Supported values: scheduler-plugins, volcano. "+
 			"Defaults to scheduler-plugins.",
 	)
@@ -290,7 +290,11 @@ func main() {
 		CacheSyncTimeout:        cacheSyncTimeout,
 	}
 
-	rbgReconciler := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerPlugin))
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName))
+	if err != nil {
+		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
+		os.Exit(1)
+	}
 	if err = rbgReconciler.CheckCrdExists(); err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)

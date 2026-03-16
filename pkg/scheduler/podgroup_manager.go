@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
@@ -61,11 +62,15 @@ type PodGroupManager interface {
 }
 
 // NewPodGroupManager returns a PodGroupManager for the given plugin type.
-func NewPodGroupManager(plugin SchedulerPluginType, c client.Client) PodGroupManager {
-	switch plugin {
+// Returns an error if the plugin type is not supported.
+func NewPodGroupManager(schedulerName SchedulerPluginType, c client.Client) (PodGroupManager, error) {
+	switch schedulerName {
+	case KubeSchedulerPlugin:
+		return kubeschedulerplugin.New(c), nil
 	case VolcanoSchedulerPlugin:
-		return volcanoplugin.New(c)
+		return volcanoplugin.New(c), nil
 	default:
-		return kubeschedulerplugin.New(c)
+		return nil, fmt.Errorf("unsupported scheduler-name %q: supported values are %q and %q",
+			schedulerName, KubeSchedulerPlugin, VolcanoSchedulerPlugin)
 	}
 }
