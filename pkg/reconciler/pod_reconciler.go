@@ -14,9 +14,9 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/discovery"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -39,8 +39,8 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	podLabels map[string]string,
 	podTmpls ...corev1.PodTemplateSpec,
 ) (*coreapplyv1.PodTemplateSpecApplyConfiguration, error) {
@@ -56,14 +56,14 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 				return nil, fmt.Errorf("failed to find roleTemplate: %w", err)
 			}
 
-			merged, err := applyStrategicMergePatch(roleTemplate.Template, role.TemplatePatch)
+			merged, err := applyStrategicMergePatch(roleTemplate.Template, *role.GetTemplatePatch())
 			if err != nil {
 				return nil, fmt.Errorf("failed to apply templatePatch: %w", err)
 			}
 			podTemplateSpec = merged
-		} else if role.TemplateSource.Template != nil {
+		} else if role.GetTemplate() != nil {
 			// Traditional mode: use role.Template directly (pointer type after migration)
-			podTemplateSpec = *role.TemplateSource.Template.DeepCopy()
+			podTemplateSpec = *role.GetTemplate().DeepCopy()
 		}
 		// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
 	}
@@ -92,7 +92,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "lws_env") {
+	if utils.ContainsString(r.injectObjects, "lwp_env") {
 		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
@@ -100,11 +100,11 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 
 	// Set Exclusive topology
 	if topologyKey, found := rbg.GetExclusiveKey(); found {
-		if podAnnotations[workloadsv1alpha1.DisableExclusiveKeyAnnotationKey] == "" {
-			podAnnotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = topologyKey
+		if podAnnotations[constants.DisableExclusiveKeyAnnotationKey] == "" {
+			podAnnotations[constants.GroupExclusiveTopologyKey] = topologyKey
 			uniqueKey := rbg.GenGroupUniqueKey()
 			err := setExclusiveAffinities(
-				&podTemplateSpec, uniqueKey, topologyKey, workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+				&podTemplateSpec, uniqueKey, topologyKey, constants.GroupUniqueHashLabelKey,
 			)
 			if err != nil {
 				return nil, err
@@ -122,8 +122,6 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	if err != nil {
 		return nil, err
 	}
-
-	scheduler.InjectPodGroupProtocol(rbg, podTemplateApplyConfiguration)
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
 	return podTemplateApplyConfiguration, nil

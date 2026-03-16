@@ -13,16 +13,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
-func ConstructRoleStatue(rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec, currentReplicas, currentReady, updatedReplicas int32) (workloadsv1alpha1.RoleStatus, bool) {
+func ConstructRoleStatue(rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, currentReplicas, currentReady, updatedReplicas int32) (workloadsv1alpha2.RoleStatus, bool) {
 	updateStatus := false
 	status, found := rbg.GetRoleStatus(role.Name)
 	if !found || status.Replicas != currentReplicas ||
 		status.ReadyReplicas != currentReady ||
 		status.UpdatedReplicas != updatedReplicas {
-		status = workloadsv1alpha1.RoleStatus{
+		status = workloadsv1alpha2.RoleStatus{
 			Name:            role.Name,
 			Replicas:        currentReplicas,
 			ReadyReplicas:   currentReady,
@@ -33,7 +34,7 @@ func ConstructRoleStatue(rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv
 	return status, updateStatus
 }
 
-func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1alpha1.RoleBasedGroup, gvk schema.GroupVersionKind) error {
+func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1alpha2.RoleBasedGroup, gvk schema.GroupVersionKind) error {
 	logger := log.FromContext(ctx)
 
 	objList := &unstructured.UnstructuredList{}
@@ -43,7 +44,7 @@ func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1a
 		ctx, objList, client.InNamespace(rbg.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				constants.GroupNameLabelKey: rbg.Name,
 			},
 		),
 	); err != nil {
@@ -76,7 +77,7 @@ func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1a
 	return nil
 }
 
-func RecreateObj(ctx context.Context, c client.Client, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec, gvk schema.GroupVersionKind) error {
+func RecreateObj(ctx context.Context, c client.Client, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, gvk schema.GroupVersionKind) error {
 	logger := log.FromContext(ctx)
 	if rbg == nil || role == nil {
 		return nil

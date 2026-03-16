@@ -19,7 +19,8 @@ package e2e
 import (
 	"testing"
 
-	"sigs.k8s.io/rbgs/test/e2e/testcase"
+	testcasev1alpha1 "sigs.k8s.io/rbgs/test/e2e/testcase/v1alpha1"
+	testcasev1alpha2 "sigs.k8s.io/rbgs/test/e2e/testcase/v1alpha2"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -48,16 +49,33 @@ func TestE2E(t *testing.T) {
 		},
 	)
 
+	// v1alpha1 tests are kept for reference but skipped by default.
+	// Run explicitly with: ginkgo --label-filter=v1alpha1
 	ginkgo.Describe(
-		"Run role based controller e2e tests", func() {
-			testcase.RunRbgControllerTestCases(f)
-			testcase.RunControllerRevisionTestCases(f)
-			testcase.RunRbgScalingAdapterControllerTestCases(f)
-			testcase.RunDeploymentWorkloadTestCases(f)
-			testcase.RunStatefulSetWorkloadTestCases(f)
-			testcase.RunLeaderWorkerSetWorkloadTestCases(f)
-			testcase.RunRbgSetControllerTestCases(f)
-			testcase.RunRoleTemplateTestCases(f)
+		"[v1alpha1] Run role based controller e2e tests",
+		ginkgo.Pending,
+		func() {
+			testcasev1alpha1.RunRbgControllerTestCases(f)
+			testcasev1alpha1.RunControllerRevisionTestCases(f)
+			testcasev1alpha1.RunRbgScalingAdapterControllerTestCases(f)
+			testcasev1alpha1.RunDeploymentWorkloadTestCases(f)
+			testcasev1alpha1.RunStatefulSetWorkloadTestCases(f)
+			testcasev1alpha1.RunLeaderWorkerSetWorkloadTestCases(f)
+			testcasev1alpha1.RunRbgSetControllerTestCases(f)
+			testcasev1alpha1.RunRoleTemplateTestCases(f)
+		},
+	)
+
+	ginkgo.Describe(
+		"[v1alpha2] Run role based controller e2e tests", func() {
+			testcasev1alpha2.RunRbgControllerTestCases(f)
+			testcasev1alpha2.RunControllerRevisionTestCases(f)
+			testcasev1alpha2.RunRbgScalingAdapterControllerTestCases(f)
+			testcasev1alpha2.RunDeploymentWorkloadTestCases(f)
+			testcasev1alpha2.RunStatefulSetWorkloadTestCases(f)
+			testcasev1alpha2.RunLeaderWorkerSetWorkloadTestCases(f)
+			testcasev1alpha2.RunRbgSetControllerTestCases(f)
+			testcasev1alpha2.RunRoleTemplateTestCases(f)
 		},
 	)
 

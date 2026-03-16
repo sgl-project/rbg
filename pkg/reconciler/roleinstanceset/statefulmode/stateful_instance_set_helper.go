@@ -97,8 +97,8 @@ func getPatch(set *workloadsv1alpha2.RoleInstanceSet) ([]byte, error) {
 		return nil, fmt.Errorf("spec field is not a map[string]interface{}")
 	}
 
-	// Check if instanceTemplate exists and is a map
-	templateInterface, ok := spec["instanceTemplate"]
+	// Check if roleInstanceTemplate exists and is a map
+	templateInterface, ok := spec["roleInstanceTemplate"]
 	if !ok || templateInterface == nil {
 		return nil, fmt.Errorf("instanceTemplate field is missing or nil in InstanceSet spec")
 	}
@@ -107,7 +107,7 @@ func getPatch(set *workloadsv1alpha2.RoleInstanceSet) ([]byte, error) {
 		return nil, fmt.Errorf("instanceTemplate field is not a map[string]interface{}")
 	}
 
-	specCopy["instanceTemplate"] = template
+	specCopy["roleInstanceTemplate"] = template
 	template["$patch"] = "replace"
 	objCopy["spec"] = specCopy
 	patch, err := json.Marshal(objCopy)

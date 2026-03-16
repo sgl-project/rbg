@@ -4,13 +4,13 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	podadapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	podreadiness "sigs.k8s.io/rbgs/pkg/inplace/pod/readiness"
 )
 
 type Interface interface {
-	UpdatePodLifecycle(pg *v1alpha1.Instance, pod *v1.Pod, markNotReady bool) (updated bool, gotPod *v1.Pod, err error)
+	UpdatePodLifecycle(pg *workloadsv1alpha2.RoleInstance, pod *v1.Pod, markNotReady bool) (updated bool, gotPod *v1.Pod, err error)
 }
 
 func New(c client.Client) Interface {
@@ -26,7 +26,7 @@ type realControl struct {
 	podReadinessControl podreadiness.Interface
 }
 
-func (c *realControl) UpdatePodLifecycle(_ *v1alpha1.Instance, pod *v1.Pod, markNotReady bool) (bool, *v1.Pod, error) {
+func (c *realControl) UpdatePodLifecycle(_ *workloadsv1alpha2.RoleInstance, pod *v1.Pod, markNotReady bool) (bool, *v1.Pod, error) {
 	if !c.needUpdatePodStatus(pod, markNotReady) {
 		return false, nil, nil
 	}

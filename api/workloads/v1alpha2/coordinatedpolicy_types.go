@@ -92,11 +92,11 @@ type ScalingCoordinationStrategy struct {
 type ScalingProgression string
 
 const (
-	// OrderScheduledProgression scales replicas in order.
+	// OrderScheduledProgression scales replicas in order based on scheduled.
 	OrderScheduledProgression ScalingProgression = "OrderScheduled"
 
-	// ParallelProgression scales replicas in parallel.
-	ParallelProgression ScalingProgression = "Parallel"
+	// OrderReadyProgression scales replicas in order based on readiness.
+	OrderReadyProgression ScalingProgression = "OrderReady"
 )
 
 // CoordinatedPolicyStatus defines the observed state of CoordinatedPolicy.

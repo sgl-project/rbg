@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // TestConfigBuilder_Build tests the Build method of ConfigBuilder
@@ -22,20 +22,20 @@ func TestConfigBuilder_Build(t *testing.T) {
 	tests := []struct {
 		name     string
 		client   client.Client
-		rbg      *workloadsv1alpha1.RoleBasedGroup
-		role     *workloadsv1alpha1.RoleSpec
+		rbg      *workloadsv1alpha2.RoleBasedGroup
+		role     *workloadsv1alpha2.RoleSpec
 		expected string
 		wantErr  bool
 	}{
 		{
 			name:   "simple cluster config",
 			client: fake.NewClientBuilder().WithScheme(schema).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: &replicas3,
@@ -59,7 +59,7 @@ func TestConfigBuilder_Build(t *testing.T) {
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: &replicas3,
 			},
@@ -106,13 +106,13 @@ roles:
 					},
 				},
 			).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: &replicas3,
@@ -136,7 +136,7 @@ roles:
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: &replicas3,
 			},
@@ -171,13 +171,13 @@ roles:
 		{
 			name:   "role with unnamed ports",
 			client: fake.NewClientBuilder().WithScheme(schema).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "web",
 							Replicas: &replicas1,
@@ -193,7 +193,7 @@ roles:
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "web",
 				Replicas: &replicas1,
 			},
@@ -216,12 +216,12 @@ roles:
 		{
 			name:   "rbg name start with numeric",
 			client: fake.NewClientBuilder().WithScheme(schema).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "1-test-cluster",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha1.RoleSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:     "worker",
 							Replicas: &replicas3,
@@ -245,7 +245,7 @@ roles:
 					},
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: &replicas3,
 			},
@@ -307,9 +307,9 @@ roles:
 func TestConfigBuilder_getRoleNames(t *testing.T) {
 	replicas := int32(1)
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:     "role1",
 					Replicas: &replicas,
@@ -343,12 +343,12 @@ func TestConfigBuilder_buildRolesInfo(t *testing.T) {
 	replicas3 := int32(3)
 	replicas1 := int32(1)
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-cluster",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:     "worker",
 					Replicas: &replicas3,
@@ -374,7 +374,7 @@ func TestConfigBuilder_buildRolesInfo(t *testing.T) {
 	}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	b := &ConfigBuilder{
 		client: fake.NewClientBuilder().WithScheme(scheme).Build(),
@@ -548,13 +548,13 @@ func TestSemanticallyEqualConfigmap(t *testing.T) {
 func TestConfigBuilder_buildInstances(t *testing.T) {
 	replicas := int32(2)
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-cluster",
 		},
 	}
 
-	role := &workloadsv1alpha1.RoleSpec{
+	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "server",
 		Replicas: &replicas,
 		ServicePorts: []corev1.ServicePort{
@@ -571,7 +571,7 @@ func TestConfigBuilder_buildInstances(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	b := &ConfigBuilder{
 		client: fake.NewClientBuilder().WithScheme(scheme).Build(),

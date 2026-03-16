@@ -196,7 +196,7 @@ type RoleSpec struct {
 	// Workload type specification
 	// Deprecated: This field is deprecated and will be removed in future versions.
 	// The underlying workload will use InstanceSet.
-	// +kubebuilder:default={apiVersion:"workloads.x-k8s.io/v1alpha1", kind:"InstanceSet"}
+	// +kubebuilder:default={apiVersion:"workloads.x-k8s.io/v1alpha2", kind:"RoleInstanceSet"}
 	// +optional
 	Workload WorkloadSpec `json:"workload,omitempty"`
 
@@ -204,10 +204,6 @@ type RoleSpec struct {
 	// Either standalonePattern or leaderWorkerPattern can be specified, not both.
 	// +optional
 	Pattern `json:",inline"`
-
-	// Components describe the components that will be created.
-	// +optional
-	Components []InstanceComponent `json:"components,omitempty"`
 
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`
@@ -234,6 +230,10 @@ type Pattern struct {
 	// LeaderWorkerPattern defines a multi-pod pattern with leader and workers.
 	// +optional
 	LeaderWorkerPattern *LeaderWorkerPattern `json:"leaderWorkerPattern,omitempty"`
+
+	// CustomComponentsPattern defines a pattern with custom components.
+	// +optional
+	CustomComponentsPattern *CustomComponentsPattern `json:"customComponentsPattern,omitempty"`
 }
 
 // TemplateSource defines either an inline template or a reference to a RoleTemplate.
@@ -279,6 +279,11 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
+}
+
+type CustomComponentsPattern struct {
+	// +optional
+	Components []InstanceComponent `json:"components,omitempty"`
 }
 
 type WorkloadSpec struct {
@@ -363,6 +368,7 @@ type RoleStatus struct {
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbg}

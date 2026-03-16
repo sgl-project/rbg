@@ -1,4 +1,4 @@
-package testcase
+package v1alpha1
 
 import (
 	"github.com/onsi/ginkgo/v2"
@@ -11,7 +11,7 @@ import (
 
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	testutils "sigs.k8s.io/rbgs/test/utils"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	wrappers "sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
 )
 
 func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {

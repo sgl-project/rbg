@@ -22,23 +22,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/test/wrappers"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	rbgsa := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+	rbgsa := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-adapter",
 			Namespace: "default",
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         "workloads.x-k8s.io/v1alpha1",
+					APIVersion:         "workloads.x-k8s.io/v1alpha2",
 					Kind:               "RoleBasedGroup",
 					Name:               "test-rbg",
 					UID:                "rbg-test-uid",
@@ -46,10 +48,10 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 				},
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
 			// scale replicas from 1 to 3
 			Replicas: ptr.To(int32(3)),
-			ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 				Name: "test-rbg",
 				Role: "test-role",
 			},
@@ -57,9 +59,13 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 	}
 
 	boundedRbgSA := rbgsa.DeepCopy()
-	boundedRbgSA.Status.Phase = workloadsv1alpha1.AdapterPhaseBound
+	boundedRbgSA.Status.Phase = constants.AdapterPhaseBound
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	// Create RBG with StatefulSet workload type to match the test StatefulSet
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
+		}).Obj()
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -67,7 +73,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 			Namespace: "default",
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         "workloads.x-k8s.io/v1alpha1",
+					APIVersion:         "workloads.x-k8s.io/v1alpha2",
 					Kind:               "RoleBasedGroup",
 					Name:               "test-rbg",
 					UID:                "rbg-test-uid",
@@ -79,8 +85,8 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 			Replicas: ptr.To(int32(1)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-					workloadsv1alpha1.SetRoleLabelKey: "test-role",
+					constants.GroupNameLabelKey: "test-rbg",
+					constants.RoleNameLabelKey:  "test-role",
 				},
 			},
 			Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
@@ -93,7 +99,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 		client           client.Client
 		expectError      bool
 		expectRequeue    bool
-		expectedPhase    workloadsv1alpha1.AdapterPhase
+		expectedPhase    constants.AdapterPhase
 		expectedReplicas *int32
 	}{
 		{
@@ -101,7 +107,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 			client:        fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbgsa, rbg, sts).Build(),
 			expectError:   false,
 			expectRequeue: true,
-			expectedPhase: workloadsv1alpha1.AdapterPhaseBound,
+			expectedPhase: constants.AdapterPhaseBound,
 		},
 		{
 			name: "bounded adapter scales role replicas",
@@ -167,7 +173,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 
 				// Check status if expected
 				if tt.expectedPhase != "" {
-					updatedAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
+					updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 					err := tt.client.Get(
 						context.TODO(), types.NamespacedName{
 							Name:      rbgsa.Name,
@@ -179,7 +185,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 				}
 
 				if tt.expectedReplicas != nil {
-					updatedAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
+					updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 					err := tt.client.Get(
 						context.TODO(), types.NamespacedName{
 							Name:      rbgsa.Name,
@@ -197,29 +203,29 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 func TestRoleBasedGroupScalingAdapterReconciler_GetTargetRbgFromAdapter(t *testing.T) {
 	// Create scheme
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
 		name        string
-		adapter     *workloadsv1alpha1.RoleBasedGroupScalingAdapter
-		rbg         *workloadsv1alpha1.RoleBasedGroup
+		adapter     *workloadsv1alpha2.RoleBasedGroupScalingAdapter
+		rbg         *workloadsv1alpha2.RoleBasedGroup
 		expectError bool
 	}{
 		{
 			name: "adapter with valid target RBG should return RBG",
-			adapter: &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+			adapter: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-adapter",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-					ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+				Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+					ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 						Name: "test-rbg",
 					},
 				},
 			},
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
@@ -228,18 +234,18 @@ func TestRoleBasedGroupScalingAdapterReconciler_GetTargetRbgFromAdapter(t *testi
 		},
 		{
 			name: "adapter with invalid target RBG should return error",
-			adapter: &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+			adapter: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-adapter",
 					Namespace: "default",
 				},
-				Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-					ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+				Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+					ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 						Name: "invalid-rbg",
 					},
 				},
 			},
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
@@ -279,19 +285,19 @@ func TestRoleBasedGroupScalingAdapterReconciler_GetTargetRbgFromAdapter(t *testi
 func TestRoleBasedGroupScalingAdapterReconciler_UpdateAdapterOwnerReference(t *testing.T) {
 	// Create scheme
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	// Create test objects
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
-	adapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+	adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-adapter",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-			ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 				Name: "test-rbg",
 				Role: "worker",
 			},
@@ -312,7 +318,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_UpdateAdapterOwnerReference(t *t
 	require.NoError(t, err)
 
 	// Check if owner reference was added
-	updatedAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
+	updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 	err = fakeClient.Get(
 		context.TODO(), types.NamespacedName{
 			Name:      "test-adapter",
@@ -324,7 +330,7 @@ func TestRoleBasedGroupScalingAdapterReconciler_UpdateAdapterOwnerReference(t *t
 	assert.Len(t, updatedAdapter.OwnerReferences, 1)
 	assert.Equal(t, "test-rbg", updatedAdapter.OwnerReferences[0].Name)
 	assert.Equal(t, "RoleBasedGroup", updatedAdapter.OwnerReferences[0].Kind)
-	assert.Equal(t, "workloads.x-k8s.io/v1alpha1", updatedAdapter.OwnerReferences[0].APIVersion)
+	assert.Equal(t, "workloads.x-k8s.io/v1alpha2", updatedAdapter.OwnerReferences[0].APIVersion)
 	assert.Equal(t, "rbg-test-uid", string(updatedAdapter.OwnerReferences[0].UID))
 }
 
@@ -333,26 +339,26 @@ func TestRBGScalingAdapterPredicate(t *testing.T) {
 
 	// Test CreateFunc
 	createEvent := event.CreateEvent{
-		Object: &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+		Object: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 			ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		},
 	}
 	assert.True(t, predicate.CreateFunc(createEvent))
 
 	// Test UpdateFunc with spec change
-	oldAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+	oldAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{Name: "test"},
-		Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-			ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 				Name: "rbg1",
 			},
 		},
 	}
 
-	newAdapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+	newAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{Name: "test"},
-		Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-			ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 				Name: "rbg2",
 			},
 		},
@@ -365,10 +371,10 @@ func TestRBGScalingAdapterPredicate(t *testing.T) {
 	assert.True(t, predicate.UpdateFunc(updateEvent))
 
 	// Test UpdateFunc without spec change
-	newAdapter2 := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+	newAdapter2 := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", ResourceVersion: "2"},
-		Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-			ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 				Name: "rbg1",
 			},
 		},
@@ -382,7 +388,7 @@ func TestRBGScalingAdapterPredicate(t *testing.T) {
 
 	// Test DeleteFunc
 	deleteEvent := event.DeleteEvent{
-		Object: &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+		Object: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 			ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		},
 	}
@@ -390,7 +396,7 @@ func TestRBGScalingAdapterPredicate(t *testing.T) {
 
 	// Test GenericFunc
 	genericEvent := event.GenericEvent{
-		Object: &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+		Object: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 			ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		},
 	}

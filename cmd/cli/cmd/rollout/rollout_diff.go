@@ -26,9 +26,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 var rolloutDiffCmd = &cobra.Command{
@@ -65,7 +65,7 @@ func validateRolloutDiff(args []string) error {
 }
 
 func runRolloutDiff(ctx context.Context, rbgClient versioned.Interface, k8sClient kubernetes.Interface, rbgName, namespace string) error {
-	rbgObject, err := rbgClient.WorkloadsV1alpha1().RoleBasedGroups(namespace).Get(ctx, rbgName, metav1.GetOptions{})
+	rbgObject, err := rbgClient.WorkloadsV1alpha2().RoleBasedGroups(namespace).Get(ctx, rbgName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func runRolloutDiff(ctx context.Context, rbgClient versioned.Interface, k8sClien
 	revisions, err := k8sClient.AppsV1().
 		ControllerRevisions(namespace).
 		List(context.TODO(), metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s", workloadsv1alpha1.SetNameLabelKey, rbgObject.Name),
+			LabelSelector: fmt.Sprintf("%s=%s", constants.GroupNameLabelKey, rbgObject.Name),
 		})
 	if err != nil {
 		return err

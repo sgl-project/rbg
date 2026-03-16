@@ -42,7 +42,7 @@ func MatchComponent(pod *corev1.Pod, componentName string) bool {
 	if pod.Labels == nil {
 		return false
 	}
-	return pod.Labels[constants.RoleInstanceComponentNameKey] == componentName
+	return pod.Labels[constants.ComponentNameLabelKey] == componentName
 }
 
 // IsRoleInstanceReady checks whether the role instance is ready

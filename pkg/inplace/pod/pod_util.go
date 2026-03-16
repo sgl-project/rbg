@@ -27,7 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // InjectInPlaceReadinessGate injects InPlaceUpdateReady into pod.spec.readinessGates
@@ -42,11 +43,11 @@ func InjectInPlaceReadinessGate(pod *v1.Pod) {
 
 func InjectInstancePodReadinessGate(pod *v1.Pod) {
 	for _, r := range pod.Spec.ReadinessGates {
-		if r.ConditionType == v1alpha1.InstancePodReadyConditionType {
+		if r.ConditionType == constants.InstancePodReadyConditionType {
 			return
 		}
 	}
-	pod.Spec.ReadinessGates = append(pod.Spec.ReadinessGates, v1.PodReadinessGate{ConditionType: v1alpha1.InstancePodReadyConditionType})
+	pod.Spec.ReadinessGates = append(pod.Spec.ReadinessGates, v1.PodReadinessGate{ConditionType: constants.InstancePodReadyConditionType})
 }
 
 // ContainsInPlaceReadinessGate checks whether pod.spec.readinessGates contains InPlaceUpdateReady
@@ -169,7 +170,7 @@ func GetShortHash(hash string) string {
 
 func ContainsInstanceReadinessGate(pod *v1.Pod) bool {
 	for _, r := range pod.Spec.ReadinessGates {
-		if string(r.ConditionType) == string(v1alpha1.InstanceInPlaceUpdateReady) {
+		if string(r.ConditionType) == string(workloadsv1alpha2.RoleInstanceInPlaceUpdateReady) {
 			return true
 		}
 	}

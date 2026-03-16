@@ -16,7 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 func TestListRevisions(t *testing.T) {
@@ -406,31 +407,35 @@ func TestListRevisionsAndFindHighestIntegration(t *testing.T) {
 }
 
 func TestGetPatchAndRestore(t *testing.T) {
-	v1 := &workloadsv1alpha1.RoleBasedGroup{
+	v1 := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "role-lws",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:     "role-sts",
 					Replicas: ptr.To(int32(1)),
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						Template: &v1.PodTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Labels: map[string]string{
-									"app": "nginx",
-								},
-							},
-							Spec: v1.PodSpec{
-								Containers: []v1.Container{
-									{
-										Name:  "nginx",
-										Image: "1.0.0",
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &v1.PodTemplateSpec{
+									ObjectMeta: metav1.ObjectMeta{
+										Labels: map[string]string{
+											"app": "nginx",
+										},
+									},
+									Spec: v1.PodSpec{
+										Containers: []v1.Container{
+											{
+												Name:  "nginx",
+												Image: "1.0.0",
+											},
+										},
 									},
 								},
 							},
@@ -440,16 +445,9 @@ func TestGetPatchAndRestore(t *testing.T) {
 				{
 					Name:     "role-lws",
 					Replicas: ptr.To(int32(1)),
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "leaderworkerset.x-k8s.io/v1",
 						Kind:       "LeaderWorkerSet",
-					},
-				},
-			},
-			PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
-				PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
-					KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
-						ScheduleTimeoutSeconds: ptr.To(int32(300)),
 					},
 				},
 			},
@@ -459,7 +457,7 @@ func TestGetPatchAndRestore(t *testing.T) {
 
 	v2 := v1.DeepCopy()
 	v2.Spec.Roles[0].Replicas = ptr.To(int32(2))
-	v2.Spec.Roles[0].Template.Spec.Containers[0].Image = "nginx:1.19.0"
+	v2.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Image = "nginx:1.19.0"
 
 	patchV1ControllerRevision := &appsv1.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{
@@ -471,14 +469,13 @@ func TestGetPatchAndRestore(t *testing.T) {
 	}
 	restoreV1, _ := ApplyRevision(v2, patchV1ControllerRevision)
 	assert.Equal(t, v2.Spec.Roles[0].Replicas, restoreV1.Spec.Roles[0].Replicas)
-	assert.True(t, reflect.DeepEqual(v2.Spec.PodGroupPolicy, restoreV1.Spec.PodGroupPolicy))
 	v1.Spec.Roles[0].Replicas = ptr.To(int32(2))
 	assert.True(t, reflect.DeepEqual(v1.Spec.Roles, restoreV1.Spec.Roles))
 }
 
 func TestCleanExpiredRevision(t *testing.T) {
 	ctx := context.Background()
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -495,7 +492,7 @@ func TestCleanExpiredRevision(t *testing.T) {
 					Namespace:         "default",
 					CreationTimestamp: metav1.Now(),
 					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						constants.GroupNameLabelKey: "test-rbg",
 					},
 				},
 				Revision: int64(i),
@@ -529,7 +526,7 @@ func TestCleanExpiredRevision(t *testing.T) {
 					Namespace:         "default",
 					CreationTimestamp: metav1.Unix(int64(i), 0), // Created in chronological order
 					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						constants.GroupNameLabelKey: "test-rbg",
 					},
 				},
 				Revision: int64(i),
@@ -561,7 +558,7 @@ func TestCleanExpiredRevision(t *testing.T) {
 
 func TestNewRevision(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	ctx := context.Background()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -582,9 +579,9 @@ func TestNewRevision(t *testing.T) {
 		assert.Equal(t, revision1.Data.Raw, revision2.Data.Raw)
 		assert.Equal(t, revision1.Revision, revision2.Revision)
 
-		assert.Contains(t, revision1.Labels, workloadsv1alpha1.SetNameLabelKey)
-		assert.Contains(t, revision1.Labels, workloadsv1alpha1.RevisionLabelKey)
-		assert.Equal(t, rbg.Name, revision1.Labels[workloadsv1alpha1.SetNameLabelKey])
+		assert.Contains(t, revision1.Labels, constants.GroupNameLabelKey)
+		assert.Contains(t, revision1.Labels, constants.GroupRevisionLabelKey)
+		assert.Equal(t, rbg.Name, revision1.Labels[constants.GroupNameLabelKey])
 	}
 }
 
@@ -601,7 +598,7 @@ func TestGetRolesRevisionHash(t *testing.T) {
 
 	t.Run("ConsistentHashForSameRoleContent", func(t *testing.T) {
 		scheme := runtime.NewScheme()
-		_ = workloadsv1alpha1.AddToScheme(scheme)
+		_ = workloadsv1alpha2.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		ctx := context.Background()
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -620,7 +617,7 @@ func TestGetRolesRevisionHash(t *testing.T) {
 		assert.NotEmpty(t, result1["prefill"])
 
 		rbgDiff := getRBG()
-		rbgDiff.Spec.Roles[0].Template.Labels["a"] = "b"
+		rbgDiff.Spec.Roles[0].StandalonePattern.Template.Labels["a"] = "b"
 		revisionDiff, err := NewRevision(ctx, client, rbgDiff, nil)
 		assert.NoError(t, err)
 		resultDiff, err := GetRolesRevisionHash(revisionDiff)
@@ -641,7 +638,7 @@ func TestGetRolesRevisionHash(t *testing.T) {
 
 func TestRoleTemplateUpdatesAffectRevisionAndRoleHash(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	ctx := context.Background()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -677,8 +674,8 @@ func TestRoleTemplateUpdatesAffectRevisionAndRoleHash(t *testing.T) {
 	assert.NotEqual(t, initialHash, hashes2["prefill"], "role hash should change when referenced template changes")
 }
 
-func getRBG() *workloadsv1alpha1.RoleBasedGroup {
-	return &workloadsv1alpha1.RoleBasedGroup{
+func getRBG() *workloadsv1alpha2.RoleBasedGroup {
+	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -691,84 +688,88 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 				"owner":       "test-team",
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:     "router",
 					Replicas: ptr.To(int32(3)),
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "Deployment",
 					},
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						Template: &v1.PodTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Labels: map[string]string{
-									"app": "router",
-								},
-								Annotations: map[string]string{
-									"prometheus.io/scrape": "true",
-									"prometheus.io/port":   "8080",
-								},
-							},
-							Spec: v1.PodSpec{
-								Containers: []v1.Container{
-									{
-										Name:  "router",
-										Image: "nginx:1.21",
-										Ports: []v1.ContainerPort{
-											{
-												Name:          "http",
-												ContainerPort: 80,
-												Protocol:      v1.ProtocolTCP,
-											},
-											{
-												Name:          "https",
-												ContainerPort: 443,
-												Protocol:      v1.ProtocolTCP,
-											},
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &v1.PodTemplateSpec{
+									ObjectMeta: metav1.ObjectMeta{
+										Labels: map[string]string{
+											"app": "router",
 										},
-										Env: []v1.EnvVar{
-											{
-												Name:  "ENV",
-												Value: "production",
-											},
-										},
-										Resources: v1.ResourceRequirements{
-											Limits: v1.ResourceList{
-												v1.ResourceCPU:    resource.MustParse("500m"),
-												v1.ResourceMemory: resource.MustParse("128Mi"),
-											},
-											Requests: v1.ResourceList{
-												v1.ResourceCPU:    resource.MustParse("250m"),
-												v1.ResourceMemory: resource.MustParse("64Mi"),
-											},
+										Annotations: map[string]string{
+											"prometheus.io/scrape": "true",
+											"prometheus.io/port":   "8080",
 										},
 									},
-								},
-								Affinity: &v1.Affinity{
-									PodAntiAffinity: &v1.PodAntiAffinity{
-										PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+									Spec: v1.PodSpec{
+										Containers: []v1.Container{
 											{
-												Weight: 100,
-												PodAffinityTerm: v1.PodAffinityTerm{
-													LabelSelector: &metav1.LabelSelector{
-														MatchLabels: map[string]string{
-															"app": "router",
-														},
+												Name:  "router",
+												Image: "nginx:1.21",
+												Ports: []v1.ContainerPort{
+													{
+														Name:          "http",
+														ContainerPort: 80,
+														Protocol:      v1.ProtocolTCP,
 													},
-													TopologyKey: "kubernetes.io/hostname",
+													{
+														Name:          "https",
+														ContainerPort: 443,
+														Protocol:      v1.ProtocolTCP,
+													},
+												},
+												Env: []v1.EnvVar{
+													{
+														Name:  "ENV",
+														Value: "production",
+													},
+												},
+												Resources: v1.ResourceRequirements{
+													Limits: v1.ResourceList{
+														v1.ResourceCPU:    resource.MustParse("500m"),
+														v1.ResourceMemory: resource.MustParse("128Mi"),
+													},
+													Requests: v1.ResourceList{
+														v1.ResourceCPU:    resource.MustParse("250m"),
+														v1.ResourceMemory: resource.MustParse("64Mi"),
+													},
 												},
 											},
 										},
-									},
-								},
-								Tolerations: []v1.Toleration{
-									{
-										Key:      "dedicated",
-										Operator: v1.TolerationOpEqual,
-										Value:    "router",
-										Effect:   v1.TaintEffectNoSchedule,
+										Affinity: &v1.Affinity{
+											PodAntiAffinity: &v1.PodAntiAffinity{
+												PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+													{
+														Weight: 100,
+														PodAffinityTerm: v1.PodAffinityTerm{
+															LabelSelector: &metav1.LabelSelector{
+																MatchLabels: map[string]string{
+																	"app": "router",
+																},
+															},
+															TopologyKey: "kubernetes.io/hostname",
+														},
+													},
+												},
+											},
+										},
+										Tolerations: []v1.Toleration{
+											{
+												Key:      "dedicated",
+												Operator: v1.TolerationOpEqual,
+												Value:    "router",
+												Effect:   v1.TaintEffectNoSchedule,
+											},
+										},
 									},
 								},
 							},
@@ -778,42 +779,46 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 				{
 					Name:     "decode",
 					Replicas: ptr.To(int32(5)),
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						Template: &v1.PodTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Labels: map[string]string{
-									"app":  "decode",
-									"tier": "backend",
-								},
-							},
-							Spec: v1.PodSpec{
-								Containers: []v1.Container{
-									{
-										Name:  "decode",
-										Image: "busybox:1.35",
-										Command: []string{
-											"sh",
-											"-c",
-											"sleep 300",
-										},
-										Resources: v1.ResourceRequirements{
-											Limits: v1.ResourceList{
-												v1.ResourceCPU:    resource.MustParse("200m"),
-												v1.ResourceMemory: resource.MustParse("64Mi"),
-											},
-											Requests: v1.ResourceList{
-												v1.ResourceCPU:    resource.MustParse("100m"),
-												v1.ResourceMemory: resource.MustParse("32Mi"),
-											},
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &v1.PodTemplateSpec{
+									ObjectMeta: metav1.ObjectMeta{
+										Labels: map[string]string{
+											"app":  "decode",
+											"tier": "backend",
 										},
 									},
-								},
-								NodeSelector: map[string]string{
-									"disktype": "ssd",
+									Spec: v1.PodSpec{
+										Containers: []v1.Container{
+											{
+												Name:  "decode",
+												Image: "busybox:1.35",
+												Command: []string{
+													"sh",
+													"-c",
+													"sleep 300",
+												},
+												Resources: v1.ResourceRequirements{
+													Limits: v1.ResourceList{
+														v1.ResourceCPU:    resource.MustParse("200m"),
+														v1.ResourceMemory: resource.MustParse("64Mi"),
+													},
+													Requests: v1.ResourceList{
+														v1.ResourceCPU:    resource.MustParse("100m"),
+														v1.ResourceMemory: resource.MustParse("32Mi"),
+													},
+												},
+											},
+										},
+										NodeSelector: map[string]string{
+											"disktype": "ssd",
+										},
+									},
 								},
 							},
 						},
@@ -822,80 +827,84 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 				{
 					Name:     "prefill",
 					Replicas: ptr.To(int32(3)),
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "Deployment",
 					},
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						Template: &v1.PodTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Labels: map[string]string{
-									"app":  "prefill",
-									"tier": "backend",
-								},
-								Annotations: map[string]string{
-									"prometheus.io/scrape": "true",
-									"prometheus.io/port":   "8080",
-								},
-							},
-							Spec: v1.PodSpec{
-								Containers: []v1.Container{
-									{
-										Name:  "prefill",
-										Image: "nginx:1.21",
-										Ports: []v1.ContainerPort{
-											{
-												Name:          "http",
-												ContainerPort: 180,
-												Protocol:      v1.ProtocolTCP,
-											},
-											{
-												Name:          "https",
-												ContainerPort: 1443,
-												Protocol:      v1.ProtocolTCP,
-											},
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &v1.PodTemplateSpec{
+									ObjectMeta: metav1.ObjectMeta{
+										Labels: map[string]string{
+											"app":  "prefill",
+											"tier": "backend",
 										},
-										Env: []v1.EnvVar{
-											{
-												Name:  "ENV",
-												Value: "production",
-											},
-										},
-										Resources: v1.ResourceRequirements{
-											Limits: v1.ResourceList{
-												v1.ResourceCPU:    resource.MustParse("500m"),
-												v1.ResourceMemory: resource.MustParse("128Mi"),
-											},
-											Requests: v1.ResourceList{
-												v1.ResourceCPU:    resource.MustParse("250m"),
-												v1.ResourceMemory: resource.MustParse("64Mi"),
-											},
+										Annotations: map[string]string{
+											"prometheus.io/scrape": "true",
+											"prometheus.io/port":   "8080",
 										},
 									},
-								},
-								Affinity: &v1.Affinity{
-									PodAntiAffinity: &v1.PodAntiAffinity{
-										PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+									Spec: v1.PodSpec{
+										Containers: []v1.Container{
 											{
-												Weight: 100,
-												PodAffinityTerm: v1.PodAffinityTerm{
-													LabelSelector: &metav1.LabelSelector{
-														MatchLabels: map[string]string{
-															"app": "prefill",
-														},
+												Name:  "prefill",
+												Image: "nginx:1.21",
+												Ports: []v1.ContainerPort{
+													{
+														Name:          "http",
+														ContainerPort: 180,
+														Protocol:      v1.ProtocolTCP,
 													},
-													TopologyKey: "kubernetes.io/hostname",
+													{
+														Name:          "https",
+														ContainerPort: 1443,
+														Protocol:      v1.ProtocolTCP,
+													},
+												},
+												Env: []v1.EnvVar{
+													{
+														Name:  "ENV",
+														Value: "production",
+													},
+												},
+												Resources: v1.ResourceRequirements{
+													Limits: v1.ResourceList{
+														v1.ResourceCPU:    resource.MustParse("500m"),
+														v1.ResourceMemory: resource.MustParse("128Mi"),
+													},
+													Requests: v1.ResourceList{
+														v1.ResourceCPU:    resource.MustParse("250m"),
+														v1.ResourceMemory: resource.MustParse("64Mi"),
+													},
 												},
 											},
 										},
-									},
-								},
-								Tolerations: []v1.Toleration{
-									{
-										Key:      "dedicated",
-										Operator: v1.TolerationOpEqual,
-										Value:    "prefill",
-										Effect:   v1.TaintEffectNoSchedule,
+										Affinity: &v1.Affinity{
+											PodAntiAffinity: &v1.PodAntiAffinity{
+												PreferredDuringSchedulingIgnoredDuringExecution: []v1.WeightedPodAffinityTerm{
+													{
+														Weight: 100,
+														PodAffinityTerm: v1.PodAffinityTerm{
+															LabelSelector: &metav1.LabelSelector{
+																MatchLabels: map[string]string{
+																	"app": "prefill",
+																},
+															},
+															TopologyKey: "kubernetes.io/hostname",
+														},
+													},
+												},
+											},
+										},
+										Tolerations: []v1.Toleration{
+											{
+												Key:      "dedicated",
+												Operator: v1.TolerationOpEqual,
+												Value:    "prefill",
+												Effect:   v1.TaintEffectNoSchedule,
+											},
+										},
 									},
 								},
 							},
@@ -903,25 +912,18 @@ func getRBG() *workloadsv1alpha1.RoleBasedGroup {
 					},
 				},
 			},
-			PodGroupPolicy: &workloadsv1alpha1.PodGroupPolicy{
-				PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
-					KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{
-						ScheduleTimeoutSeconds: ptr.To(int32(600)),
-					},
-				},
-			},
 		},
 	}
 }
 
-func getRBGWithRoleTemplates() *workloadsv1alpha1.RoleBasedGroup {
-	return &workloadsv1alpha1.RoleBasedGroup{
+func getRBGWithRoleTemplates() *workloadsv1alpha2.RoleBasedGroup {
+	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "template-rbg",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			RoleTemplates: []workloadsv1alpha1.RoleTemplate{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			RoleTemplates: []workloadsv1alpha2.RoleTemplate{
 				{
 					Name: "shared",
 					Template: v1.PodTemplateSpec{
@@ -936,17 +938,23 @@ func getRBGWithRoleTemplates() *workloadsv1alpha1.RoleBasedGroup {
 					},
 				},
 			},
-			Roles: []workloadsv1alpha1.RoleSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:     "prefill",
 					Replicas: ptr.To(int32(1)),
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						TemplateRef: &workloadsv1alpha1.TemplateRef{Name: "shared"},
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								TemplateRef: &workloadsv1alpha2.TemplateRef{
+									Name: "shared",
+									Patch: &runtime.RawExtension{
+										Raw: []byte(`{"spec":{"containers":[{"name":"app","command":["sleep","3600"]}]}}`),
+									},
+								},
+							},
+						},
 					},
-					TemplatePatch: runtime.RawExtension{
-						Raw: []byte(`{"spec":{"containers":[{"name":"app","command":["sleep","3600"]}]}}`),
-					},
-					Workload: workloadsv1alpha1.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},

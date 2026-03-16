@@ -34,11 +34,10 @@ type RoleSpecApplyConfiguration struct {
 	Dependencies              []string                             `json:"dependencies,omitempty"`
 	Workload                  *WorkloadSpecApplyConfiguration      `json:"workload,omitempty"`
 	PatternApplyConfiguration `json:",inline"`
-	Components                []InstanceComponentApplyConfiguration `json:"components,omitempty"`
-	ServicePorts              []v1.ServicePort                      `json:"servicePorts,omitempty"`
-	EngineRuntimes            []EngineRuntimeApplyConfiguration     `json:"engineRuntimes,omitempty"`
-	ScalingAdapter            *ScalingAdapterApplyConfiguration     `json:"scalingAdapter,omitempty"`
-	MinReadySeconds           *int32                                `json:"minReadySeconds,omitempty"`
+	ServicePorts              []v1.ServicePort                  `json:"servicePorts,omitempty"`
+	EngineRuntimes            []EngineRuntimeApplyConfiguration `json:"engineRuntimes,omitempty"`
+	ScalingAdapter            *ScalingAdapterApplyConfiguration `json:"scalingAdapter,omitempty"`
+	MinReadySeconds           *int32                            `json:"minReadySeconds,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -141,16 +140,11 @@ func (b *RoleSpecApplyConfiguration) WithLeaderWorkerPattern(value *LeaderWorker
 	return b
 }
 
-// WithComponents adds the given value to the Components field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the Components field.
-func (b *RoleSpecApplyConfiguration) WithComponents(values ...*InstanceComponentApplyConfiguration) *RoleSpecApplyConfiguration {
-	for i := range values {
-		if values[i] == nil {
-			panic("nil value passed to WithComponents")
-		}
-		b.Components = append(b.Components, *values[i])
-	}
+// WithCustomComponentsPattern sets the CustomComponentsPattern field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CustomComponentsPattern field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithCustomComponentsPattern(value *CustomComponentsPatternApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.PatternApplyConfiguration.CustomComponentsPattern = value
 	return b
 }
 

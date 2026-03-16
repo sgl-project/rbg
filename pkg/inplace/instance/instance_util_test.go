@@ -74,7 +74,7 @@ func TestIsMatchComponent(t *testing.T) {
 		{
 			name: "Pod matches component",
 			podLabels: map[string]string{
-				constants.RoleInstanceComponentNameKey: "web",
+				constants.ComponentNameLabelKey: "web",
 			},
 			componentName: "web",
 			expected:      true,
@@ -82,7 +82,7 @@ func TestIsMatchComponent(t *testing.T) {
 		{
 			name: "Pod does not match component",
 			podLabels: map[string]string{
-				constants.RoleInstanceComponentNameKey: "db",
+				constants.ComponentNameLabelKey: "db",
 			},
 			componentName: "web",
 			expected:      false,

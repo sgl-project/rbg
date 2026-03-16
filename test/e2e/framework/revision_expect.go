@@ -4,8 +4,10 @@ import (
 	"github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/utils"
 )
@@ -31,7 +33,13 @@ func (f *Framework) ExpectRBGRevisionEqual(rbg *v1alpha1.RoleBasedGroup) {
 			current := pkgutils.GetHighestRevision(revisions)
 			gomega.Expect(current).ToNot(gomega.BeNil())
 
-			expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+			// NewRevision requires v1alpha2 RBG (storage version); fetch the stored object.
+			rbgV2 := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, rbgV2); err != nil {
+				logger.Error(err, "failed to get rbg as v1alpha2")
+				return false
+			}
+			expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbgV2, nil)
 			if err != nil {
 				logger.Error(err, "failed to get expect revision")
 				return false

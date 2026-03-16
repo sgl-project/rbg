@@ -37,10 +37,13 @@ rules:
   - apiGroups:
       - workloads.x-k8s.io
     resources:
-      - rolebasedgroupscalingadapters
-      - rolebasedgroups
-      - instancesets
+      - coordinatedpolicies
       - instances
+      - instancesets
+      - rolebasedgroups
+      - rolebasedgroupscalingadapters
+      - roleinstances
+      - roleinstancesets
     verbs:
       - get
       - list
@@ -60,12 +63,13 @@ rules:
   - apiGroups:
       - workloads.x-k8s.io
     resources:
-      - rolebasedgroupsets/status
+      - coordinatedpolicies/status
+      - instances/status
+      - instancesets/status
       - rolebasedgroups/status
       - rolebasedgroupscalingadapters/status
-      - clusterengineruntimeprofiles/status
-      - instancesets/status
-      - instances/status
+      - roleinstances/status
+      - roleinstancesets/status
     verbs:
       - create
       - delete

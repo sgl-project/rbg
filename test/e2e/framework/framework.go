@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/utils"
 )
 
@@ -28,12 +29,14 @@ type Framework struct {
 	Ctx       context.Context
 	Client    client.Client
 	Namespace string
+	debugFn   func()
 }
 
 func NewFramework(development bool) *Framework {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(workloadsv1alpha2.AddToScheme(scheme))
 	utilruntime.Must(lwsv1.AddToScheme(scheme))
 
 	cfg := config.GetConfigOrDie()
@@ -46,6 +49,12 @@ func NewFramework(development bool) *Framework {
 		Ctx:    ctx,
 		Client: runtimeClient,
 	}
+}
+
+// RegisterDebugFn registers a debug function to be called in AfterEach before resources are deleted.
+// Each test case should call this to register its debug dump function.
+func (f *Framework) RegisterDebugFn(fn func()) {
+	f.debugFn = fn
 }
 
 func initLogger(ctx context.Context, development bool) context.Context {
@@ -107,6 +116,28 @@ func (f *Framework) AfterAll() {
 }
 
 func (f *Framework) AfterEach() {
+	logger := log.FromContext(f.Ctx)
+
+	// Run debug function before deleting resources, so debug info can be collected
+	if f.debugFn != nil {
+		f.debugFn()
+		f.debugFn = nil
+	}
+
+	gomega.Expect(
+		f.Client.DeleteAllOf(
+			f.Ctx, &workloadsv1alpha2.RoleBasedGroup{},
+			client.InNamespace(f.Namespace),
+		),
+	).Should(gomega.Succeed())
+
+	gomega.Expect(
+		f.Client.DeleteAllOf(
+			f.Ctx, &workloadsv1alpha2.RoleBasedGroupSet{},
+			client.InNamespace(f.Namespace),
+		),
+	).Should(gomega.Succeed())
+
 	gomega.Expect(
 		f.Client.DeleteAllOf(
 			f.Ctx, &workloadsv1alpha1.RoleBasedGroup{},
@@ -120,4 +151,24 @@ func (f *Framework) AfterEach() {
 			client.InNamespace(f.Namespace),
 		),
 	).Should(gomega.Succeed())
+
+	// Wait for all Pods in the namespace to be fully deleted before next test case
+	gomega.Eventually(
+		func() bool {
+			podList := &v1.PodList{}
+			err := f.Client.List(
+				f.Ctx, podList,
+				client.InNamespace(f.Namespace),
+			)
+			if err != nil {
+				logger.Error(err, "failed to list pods during cleanup")
+				return false
+			}
+			if len(podList.Items) > 0 {
+				logger.V(1).Info("waiting for all pods to be deleted", "remainingPods", len(podList.Items))
+				return false
+			}
+			return true
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue(), "timed out waiting for all pods to be deleted after test case")
 }

@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	applycorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/klog/v2"
-	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha1"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -162,7 +162,7 @@ func buildRouterRoleSpec(baseName, image, modelPath, backend string, plan *Deplo
 		WithName("router").
 		WithDependencies([]string{"prefill", "decode"}...).
 		WithReplicas(1).
-		WithTemplate(podTemplate)
+		WithStandalonePattern(applyconfiguration.StandalonePattern().WithTemplate(podTemplate))
 }
 
 // buildPrefillRoleSpec creates the prefill role spec using builder pattern
@@ -174,7 +174,7 @@ func buildPrefillRoleSpec(image, modelPath, backend string, replicas int, params
 	return applyconfiguration.RoleSpec().
 		WithName("prefill").
 		WithReplicas(int32(replicas)).
-		WithTemplate(podTemplate)
+		WithStandalonePattern(applyconfiguration.StandalonePattern().WithTemplate(podTemplate))
 }
 
 // buildDecodeRoleSpec creates the decode role spec using builder pattern
@@ -186,7 +186,7 @@ func buildDecodeRoleSpec(image, modelPath, backend string, replicas int, params 
 	return applyconfiguration.RoleSpec().
 		WithName("decode").
 		WithReplicas(int32(replicas)).
-		WithTemplate(podTemplate)
+		WithStandalonePattern(applyconfiguration.StandalonePattern().WithTemplate(podTemplate))
 }
 
 // buildWorkerRoleSpec creates the worker role spec for aggregated mode using builder pattern
@@ -198,7 +198,7 @@ func buildWorkerRoleSpec(image, modelPath, backend string, replicas int, params 
 	return applyconfiguration.RoleSpec().
 		WithName("worker").
 		WithReplicas(int32(replicas)).
-		WithTemplate(podTemplate)
+		WithStandalonePattern(applyconfiguration.StandalonePattern().WithTemplate(podTemplate))
 }
 
 // buildWorkerPodTemplate creates a common pod template for worker roles

@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appspub "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	inplaceutils "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	podadapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	"sigs.k8s.io/rbgs/pkg/utils/revisionadapter"
@@ -245,7 +245,7 @@ func (c *realControl) Update(pod *v1.Pod, oldRevision, newRevision *apps.Control
 	// update condition for pod with instance-readiness-gate
 	if inplaceutils.ContainsInstanceReadinessGate(pod) {
 		newCondition := v1.PodCondition{
-			Type:               v1alpha1.InstancePodReadyConditionType,
+			Type:               constants.InstancePodReadyConditionType,
 			LastTransitionTime: c.now(),
 			Status:             v1.ConditionFalse,
 

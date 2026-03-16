@@ -1,4 +1,4 @@
-package wrappers
+package v1alpha1
 
 import (
 	"time"

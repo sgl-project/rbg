@@ -15,31 +15,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/test/wrappers"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func TestPodReconciler_setCondition(t *testing.T) {
+	existingTransitionTime := metav1.Unix(123, 0)
+
 	tests := []struct {
 		name           string
-		initialStatus  workloadsv1alpha1.RoleBasedGroupStatus
+		initialStatus  workloadsv1alpha2.RoleBasedGroupStatus
 		newCondition   metav1.Condition
-		expectedStatus workloadsv1alpha1.RoleBasedGroupStatus
+		expectedStatus workloadsv1alpha2.RoleBasedGroupStatus
 	}{
 		{
 			name: "Add new condition",
-			initialStatus: workloadsv1alpha1.RoleBasedGroupStatus{
+			initialStatus: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{},
 			},
 			newCondition: metav1.Condition{
-				Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+				Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 				Status: metav1.ConditionTrue,
 				Reason: "TestReason",
 			},
-			expectedStatus: workloadsv1alpha1.RoleBasedGroupStatus{
+			expectedStatus: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+						Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 						Status: metav1.ConditionTrue,
 						Reason: "TestReason",
 					},
@@ -48,24 +52,24 @@ func TestPodReconciler_setCondition(t *testing.T) {
 		},
 		{
 			name: "Update existing condition",
-			initialStatus: workloadsv1alpha1.RoleBasedGroupStatus{
+			initialStatus: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+						Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 						Status: metav1.ConditionFalse,
 						Reason: "OldReason",
 					},
 				},
 			},
 			newCondition: metav1.Condition{
-				Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+				Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 				Status: metav1.ConditionTrue,
 				Reason: "NewReason",
 			},
-			expectedStatus: workloadsv1alpha1.RoleBasedGroupStatus{
+			expectedStatus: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+						Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 						Status: metav1.ConditionTrue,
 						Reason: "NewReason",
 					},
@@ -73,27 +77,35 @@ func TestPodReconciler_setCondition(t *testing.T) {
 			},
 		},
 		{
-			name: "No update when status unchanged",
-			initialStatus: workloadsv1alpha1.RoleBasedGroupStatus{
+			name: "Update condition fields when status unchanged",
+			initialStatus: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
-						Status: metav1.ConditionTrue,
-						Reason: "ExistingReason",
+						Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+						Status:             metav1.ConditionTrue,
+						Reason:             "ExistingReason",
+						Message:            "ExistingMessage",
+						ObservedGeneration: 1,
+						LastTransitionTime: existingTransitionTime,
 					},
 				},
 			},
 			newCondition: metav1.Condition{
-				Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
-				Status: metav1.ConditionTrue,
-				Reason: "NewReason",
+				Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+				Status:             metav1.ConditionTrue,
+				Reason:             "NewReason",
+				Message:            "NewMessage",
+				ObservedGeneration: 2,
 			},
-			expectedStatus: workloadsv1alpha1.RoleBasedGroupStatus{
+			expectedStatus: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
-						Status: metav1.ConditionTrue,
-						Reason: "ExistingReason", // Should remain unchanged
+						Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+						Status:             metav1.ConditionTrue,
+						Reason:             "NewReason",
+						Message:            "NewMessage",
+						ObservedGeneration: 2,
+						LastTransitionTime: existingTransitionTime,
 					},
 				},
 			},
@@ -103,7 +115,7 @@ func TestPodReconciler_setCondition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				rbg := &workloadsv1alpha1.RoleBasedGroup{
+				rbg := &workloadsv1alpha2.RoleBasedGroup{
 					Status: tt.initialStatus,
 				}
 
@@ -118,24 +130,64 @@ func TestPodReconciler_setCondition(t *testing.T) {
 					assert.Equal(t, expectedCondition.Type, actualCondition.Type)
 					assert.Equal(t, expectedCondition.Status, actualCondition.Status)
 					assert.Equal(t, expectedCondition.Reason, actualCondition.Reason)
+					assert.Equal(t, expectedCondition.Message, actualCondition.Message)
+					assert.Equal(t, expectedCondition.ObservedGeneration, actualCondition.ObservedGeneration)
+					if !expectedCondition.LastTransitionTime.IsZero() {
+						assert.Equal(t, expectedCondition.LastTransitionTime, actualCondition.LastTransitionTime)
+					}
 				}
 			},
 		)
 	}
 }
 
+func TestToRBGApplyConfigurationForStatus_PreservesObservedGeneration(t *testing.T) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupStatus{
+			ObservedGeneration: 7,
+			Conditions: []metav1.Condition{
+				{
+					Type:               string(workloadsv1alpha2.RoleBasedGroupReady),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: 7,
+				},
+			},
+			RoleStatuses: []workloadsv1alpha2.RoleStatus{
+				{
+					Name:            "worker",
+					Replicas:        1,
+					ReadyReplicas:   1,
+					UpdatedReplicas: 1,
+				},
+			},
+		},
+	}
+
+	cfg := ToRBGApplyConfigurationForStatus(rbg)
+	if assert.NotNil(t, cfg) && assert.NotNil(t, cfg.Status) && assert.NotNil(t, cfg.Status.ObservedGeneration) {
+		assert.Equal(t, int64(7), *cfg.Status.ObservedGeneration)
+	}
+	if assert.Len(t, cfg.Status.Conditions, 1) && assert.NotNil(t, cfg.Status.Conditions[0].ObservedGeneration) {
+		assert.Equal(t, int64(7), *cfg.Status.Conditions[0].ObservedGeneration)
+	}
+}
+
 func TestPodReconciler_restartConditionTrue(t *testing.T) {
 	tests := []struct {
 		name     string
-		status   workloadsv1alpha1.RoleBasedGroupStatus
+		status   workloadsv1alpha2.RoleBasedGroupStatus
 		expected bool
 	}{
 		{
 			name: "Condition true",
-			status: workloadsv1alpha1.RoleBasedGroupStatus{
+			status: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+						Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 						Status: metav1.ConditionTrue,
 					},
 				},
@@ -144,10 +196,10 @@ func TestPodReconciler_restartConditionTrue(t *testing.T) {
 		},
 		{
 			name: "Condition false",
-			status: workloadsv1alpha1.RoleBasedGroupStatus{
+			status: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
-						Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+						Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 						Status: metav1.ConditionFalse,
 					},
 				},
@@ -156,7 +208,7 @@ func TestPodReconciler_restartConditionTrue(t *testing.T) {
 		},
 		{
 			name: "Condition not found",
-			status: workloadsv1alpha1.RoleBasedGroupStatus{
+			status: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{
 					{
 						Type:   "OtherCondition",
@@ -168,7 +220,7 @@ func TestPodReconciler_restartConditionTrue(t *testing.T) {
 		},
 		{
 			name: "Empty conditions",
-			status: workloadsv1alpha1.RoleBasedGroupStatus{
+			status: workloadsv1alpha2.RoleBasedGroupStatus{
 				Conditions: []metav1.Condition{},
 			},
 			expected: false,
@@ -188,7 +240,7 @@ func TestPodReconciler_restartConditionTrue(t *testing.T) {
 func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 	schema := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(schema)
-	_ = workloadsv1alpha1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
 
 	type args struct {
 		ctx context.Context
@@ -197,7 +249,7 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		args     args
-		setupRBG *workloadsv1alpha1.RoleBasedGroup
+		setupRBG *workloadsv1alpha2.RoleBasedGroup
 		want     []reconcile.Request
 	}{
 		{
@@ -214,7 +266,7 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 				ctx: context.TODO(),
 				pod: wrappers.BuildBasicPod().WithLabels(
 					map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "non-existent-rbg",
+						constants.GroupNameLabelKey: "non-existent-rbg",
 					},
 				).Obj(),
 			},
@@ -226,11 +278,11 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 				ctx: context.TODO(),
 				pod: wrappers.BuildBasicPod().WithLabels(
 					map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						constants.GroupNameLabelKey: "test-rbg",
 					},
 				).Obj(),
 			},
-			setupRBG: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			setupRBG: wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
 			want:     []reconcile.Request{},
 		},
 		{
@@ -239,12 +291,12 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 				ctx: context.TODO(),
 				pod: wrappers.BuildBasicPod().WithLabels(
 					map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-						workloadsv1alpha1.SetRoleLabelKey: "non-existent-role",
+						constants.GroupNameLabelKey: "test-rbg",
+						constants.RoleNameLabelKey:  "non-existent-role",
 					},
 				).Obj(),
 			},
-			setupRBG: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			setupRBG: wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
 			want:     []reconcile.Request{},
 		},
 		{
@@ -253,24 +305,24 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 				ctx: context.TODO(),
 				pod: wrappers.BuildDeletingPod().WithLabels(
 					map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-						workloadsv1alpha1.SetRoleLabelKey: "test-role",
+						constants.GroupNameLabelKey: "test-rbg",
+						constants.RoleNameLabelKey:  "test-role",
 					},
 				).Obj(),
 			},
-			setupRBG: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").
+			setupRBG: wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
 				WithRoles(
-					[]workloadsv1alpha1.RoleSpec{
-						wrappers.BuildBasicRole("test-role").
-							WithRestartPolicy(workloadsv1alpha1.RecreateRBGOnPodRestart).
+					[]workloadsv1alpha2.RoleSpec{
+						wrappersv2.BuildStandaloneRole("test-role").
+							WithRestartPolicy(workloadsv1alpha2.RecreateRBGOnPodRestart).
 							Obj(),
 					},
 				).
 				WithStatus(
-					workloadsv1alpha1.RoleBasedGroupStatus{
+					workloadsv1alpha2.RoleBasedGroupStatus{
 						Conditions: []metav1.Condition{
 							{
-								Type:   string(workloadsv1alpha1.RoleBasedGroupRestartInProgress),
+								Type:   string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 								Status: metav1.ConditionTrue,
 							},
 						},
@@ -304,15 +356,15 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 func TestPodReconciler_Reconcile(t *testing.T) {
 	schema := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(schema)
-	_ = workloadsv1alpha1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
 
-	obj := wrappers.BuildBasicRoleBasedGroup(
+	obj := wrappersv2.BuildBasicRoleBasedGroup(
 		"test-rbg", "default",
 	).WithStatus(
-		workloadsv1alpha1.RoleBasedGroupStatus{
+		workloadsv1alpha2.RoleBasedGroupStatus{
 			Conditions: []metav1.Condition{
 				{
-					Type:   string(workloadsv1alpha1.RoleBasedGroupReady),
+					Type:   string(workloadsv1alpha2.RoleBasedGroupReady),
 					Status: metav1.ConditionTrue,
 				},
 			},

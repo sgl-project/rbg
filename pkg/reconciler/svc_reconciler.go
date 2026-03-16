@@ -14,7 +14,8 @@ import (
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -29,7 +30,7 @@ func NewServiceReconciler(client client.Client) *ServiceReconciler {
 }
 
 func (r *ServiceReconciler) reconcileHeadlessService(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling headless service")
@@ -82,13 +83,13 @@ func (r *ServiceReconciler) reconcileHeadlessService(
 
 func (r *ServiceReconciler) constructServiceApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	workload client.Object,
 ) (*coreapplyv1.ServiceApplyConfiguration, error) {
 	selectMap := map[string]string{
-		workloadsv1alpha1.SetNameLabelKey: rbg.Name,
-		workloadsv1alpha1.SetRoleLabelKey: role.Name,
+		constants.GroupNameLabelKey: rbg.Name,
+		constants.RoleNameLabelKey:  role.Name,
 	}
 	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)
 	if err != nil {
@@ -117,17 +118,17 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 
 func (r *ServiceReconciler) getObjectByKind(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 ) (client.Object, error) {
 	workloadName := rbg.GetWorkloadName(role)
 
 	switch role.Workload.String() {
-	case workloadsv1alpha1.InstanceSetWorkloadType:
-		obj := &workloadsv1alpha1.InstanceSet{}
+	case constants.RoleInstanceSetWorkloadType:
+		obj := &workloadsv1alpha2.RoleInstanceSet{}
 		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: rbg.Namespace}, obj)
 		return obj, err
-	case workloadsv1alpha1.StatefulSetWorkloadType:
+	case constants.StatefulSetWorkloadType:
 		obj := &appsv1.StatefulSet{}
 		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: rbg.Namespace}, obj)
 		return obj, err
