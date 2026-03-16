@@ -96,7 +96,7 @@ func calculateDiffsWithExpectation(set *workloadsv1alpha2.RoleInstanceSet, insta
 			newRevisionCount++
 
 			switch state := lifecycle.GetRoleInstanceLifecycleState(instance); state {
-			case constants.RoleInstanceSetLifecycleStatePreparingDelete:
+			case constants.RoleInstanceLifecycleStatePreparingDelete:
 				preDeletingCount++
 			default:
 				newRevisionActiveCount++
@@ -112,7 +112,7 @@ func calculateDiffsWithExpectation(set *workloadsv1alpha2.RoleInstanceSet, insta
 			oldRevisionCount++
 
 			switch state := lifecycle.GetRoleInstanceLifecycleState(instance); state {
-			case constants.RoleInstanceSetLifecycleStatePreparingDelete:
+			case constants.RoleInstanceLifecycleStatePreparingDelete:
 				preDeletingCount++
 			default:
 				oldRevisionActiveCount++
@@ -228,7 +228,7 @@ func IsInstanceReady(coreControl core.Control, instance *workloadsv1alpha2.RoleI
 
 func IsInstanceAvailable(coreControl core.Control, instance *workloadsv1alpha2.RoleInstance, minReadySeconds int32) bool {
 	state := lifecycle.GetRoleInstanceLifecycleState(instance)
-	if state != "" && state != constants.RoleInstanceSetLifecycleStateNormal {
+	if state != "" && state != constants.RoleInstanceLifecycleStateNormal {
 		return false
 	}
 	return coreControl.IsInstanceUpdateReady(instance, minReadySeconds)

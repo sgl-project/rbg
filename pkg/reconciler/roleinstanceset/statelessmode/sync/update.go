@@ -75,12 +75,12 @@ func (rc *realControl) Update(
 		}
 		if waitUpdate {
 			switch lifecycle.GetRoleInstanceLifecycleState(instance) {
-			case constants.RoleInstanceSetLifecycleStatePreparingDelete:
+			case constants.RoleInstanceLifecycleStatePreparingDelete:
 				klog.V(3).Infof("InstanceSet %s/%s find instance %s in state %s, so skip to update it",
 					set.Namespace, set.Name, instance.Name, lifecycle.GetRoleInstanceLifecycleState(instance))
-			case constants.RoleInstanceSetLifecycleStateUpdated:
+			case constants.RoleInstanceLifecycleStateUpdated:
 				klog.V(3).Infof("InstanceSet %s/%s find instance %s in state %s but not in updated revision",
-					set.Namespace, set.Name, instance.Name, constants.RoleInstanceSetLifecycleStateUpdated)
+					set.Namespace, set.Name, instance.Name, constants.RoleInstanceLifecycleStateUpdated)
 				canUpdate = true
 			default:
 				canUpdate = true
@@ -123,21 +123,21 @@ func (rc *realControl) refreshInstanceState(gs *workloadsv1alpha2.RoleInstanceSe
 		return false, 0, res.RefreshErr
 	}
 
-	var state constants.RoleInstanceSetLifecycleStateType
+	var state constants.RoleInstanceLifecycleStateType
 	switch lifecycle.GetRoleInstanceLifecycleState(instance) {
-	case constants.RoleInstanceSetLifecycleStateUpdating:
+	case constants.RoleInstanceLifecycleStateUpdating:
 		if opts.CheckRoleInstanceUpdateCompleted(instance) == nil {
 			if gs.Spec.Lifecycle != nil && !lifecycle.IsRoleInstanceHooked(gs.Spec.Lifecycle.InPlaceUpdate, instance) {
-				state = constants.RoleInstanceSetLifecycleStateUpdated
+				state = constants.RoleInstanceLifecycleStateUpdated
 			} else {
-				state = constants.RoleInstanceSetLifecycleStateNormal
+				state = constants.RoleInstanceLifecycleStateNormal
 			}
 		}
-	case constants.RoleInstanceSetLifecycleStateUpdated:
+	case constants.RoleInstanceLifecycleStateUpdated:
 		if gs.Spec.Lifecycle == nil ||
 			gs.Spec.Lifecycle.InPlaceUpdate == nil ||
 			lifecycle.IsRoleInstanceAllHooked(gs.Spec.Lifecycle.InPlaceUpdate, instance) {
-			state = constants.RoleInstanceSetLifecycleStateNormal
+			state = constants.RoleInstanceLifecycleStateNormal
 		}
 	}
 
@@ -174,20 +174,20 @@ func (rc *realControl) updateInstance(set *workloadsv1alpha2.RoleInstanceSet, co
 
 		if rc.inplaceControl.CanUpdateInPlace(oldRevision, updateRevision, coreControl.GetUpdateOptions()) {
 			switch state := lifecycle.GetRoleInstanceLifecycleState(instance); state {
-			case "", constants.RoleInstanceSetLifecycleStateNormal:
+			case "", constants.RoleInstanceLifecycleStateNormal:
 				var err error
 				var updated bool
 				var gotInstance *workloadsv1alpha2.RoleInstance
 				if set.Spec.Lifecycle != nil && lifecycle.IsRoleInstanceHooked(set.Spec.Lifecycle.InPlaceUpdate, instance) {
 					markNotReady := set.Spec.Lifecycle.InPlaceUpdate.MarkNotReady
-					if updated, gotInstance, err = rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceSetLifecycleStatePreparingUpdate, markNotReady); err == nil && updated {
+					if updated, gotInstance, err = rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStatePreparingUpdate, markNotReady); err == nil && updated {
 						utils.ResourceVersionExpectations.Expect(gotInstance)
 						klog.V(3).Infof("InstanceSet %s update instance %s lifecycle to PreparingUpdate",
 							utils.GetControllerKey(set), instance.Name)
 					}
 					return 0, err
 				}
-			case constants.RoleInstanceSetLifecycleStateUpdated:
+			case constants.RoleInstanceLifecycleStateUpdated:
 				var err error
 				var updated bool
 				var gotInstance *workloadsv1alpha2.RoleInstance
@@ -195,23 +195,23 @@ func (rc *realControl) updateInstance(set *workloadsv1alpha2.RoleInstanceSet, co
 				if set.Spec.Lifecycle != nil {
 					inPlaceUpdateHandler = set.Spec.Lifecycle.InPlaceUpdate
 				}
-				if updated, gotInstance, err = rc.lifecycleControl.UpdateRoleInstanceLifecycleWithHandler(instance, constants.RoleInstanceSetLifecycleStatePreparingUpdate, inPlaceUpdateHandler); err == nil && updated {
+				if updated, gotInstance, err = rc.lifecycleControl.UpdateRoleInstanceLifecycleWithHandler(instance, constants.RoleInstanceLifecycleStatePreparingUpdate, inPlaceUpdateHandler); err == nil && updated {
 					utils.ResourceVersionExpectations.Expect(gotInstance)
 					klog.V(3).Infof("InstanceSet %s update instance %s lifecycle to PreparingUpdate",
 						utils.GetControllerKey(set), instance.Name)
 				}
 				return 0, err
-			case constants.RoleInstanceSetLifecycleStatePreparingUpdate:
+			case constants.RoleInstanceLifecycleStatePreparingUpdate:
 				if set.Spec.Lifecycle != nil && lifecycle.IsRoleInstanceHooked(set.Spec.Lifecycle.InPlaceUpdate, instance) {
 					return 0, nil
 				}
-			case constants.RoleInstanceSetLifecycleStateUpdating:
+			case constants.RoleInstanceLifecycleStateUpdating:
 			default:
 				return 0, fmt.Errorf("not allowed to in-place update instance %s in state %s", instance.Name, state)
 			}
 
 			opts := coreControl.GetUpdateOptions()
-			opts.AdditionalFuncs = append(opts.AdditionalFuncs, lifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceSetLifecycleStateUpdating))
+			opts.AdditionalFuncs = append(opts.AdditionalFuncs, lifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceLifecycleStateUpdating))
 			res := rc.inplaceControl.Update(instance, oldRevision, updateRevision, opts)
 			if res.InPlaceUpdate {
 				if res.UpdateErr == nil {
@@ -249,8 +249,8 @@ func SortUpdateIndexes(coreControl core.Control, strategy workloadsv1alpha2.Role
 
 	// PreparingUpdate first
 	sort.SliceStable(waitUpdateIndexes, func(i, j int) bool {
-		preparingUpdateI := lifecycle.GetRoleInstanceLifecycleState(instances[waitUpdateIndexes[i]]) == constants.RoleInstanceSetLifecycleStatePreparingUpdate
-		preparingUpdateJ := lifecycle.GetRoleInstanceLifecycleState(instances[waitUpdateIndexes[j]]) == constants.RoleInstanceSetLifecycleStatePreparingUpdate
+		preparingUpdateI := lifecycle.GetRoleInstanceLifecycleState(instances[waitUpdateIndexes[i]]) == constants.RoleInstanceLifecycleStatePreparingUpdate
+		preparingUpdateJ := lifecycle.GetRoleInstanceLifecycleState(instances[waitUpdateIndexes[j]]) == constants.RoleInstanceLifecycleStatePreparingUpdate
 		if preparingUpdateI != preparingUpdateJ {
 			return preparingUpdateI
 		}

@@ -166,7 +166,7 @@ func (rc *realControl) managePreparingDelete(set *workloadsv1alpha2.RoleInstance
 
 		klog.V(3).Infof("InstanceSet %s patch instance %s lifecycle from PreparingDelete to Normal",
 			utils.GetControllerKey(set), instance.Name)
-		if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceSetLifecycleStateNormal, false); err != nil {
+		if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStateNormal, false); err != nil {
 			return modified, err
 		} else if updated {
 			modified = true
@@ -206,7 +206,7 @@ func (rc *realControl) createInstances(
 		if utils.EqualToRevisionHash("", instance, currentRevision) {
 			gs = currentSet
 		}
-		lifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceSetLifecycleStateNormal)(instance)
+		lifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceLifecycleStateNormal)(instance)
 
 		var createErr error
 		if createErr = rc.createOneInstance(gs, instance); createErr != nil {
@@ -247,7 +247,7 @@ func (rc *realControl) deleteInstances(gs *workloadsv1alpha2.RoleInstanceSet, in
 	for _, instance := range instancesToDelete {
 		if gs.Spec.Lifecycle != nil && lifecycle.IsRoleInstanceHooked(gs.Spec.Lifecycle.PreDelete, instance) {
 			markNotReady := gs.Spec.Lifecycle.PreDelete.MarkNotReady
-			if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceSetLifecycleStatePreparingDelete, markNotReady); err != nil {
+			if updated, gotInstance, err := rc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStatePreparingDelete, markNotReady); err != nil {
 				return false, err
 			} else if updated {
 				klog.V(3).Infof("InstanceSet %s scaling update instance %s lifecycle to PreparingDelete",
@@ -280,7 +280,7 @@ func getPlannedDeletedInstances(gs *workloadsv1alpha2.RoleInstanceSet, instances
 			names.Insert(instance.Name)
 			specifiedToDelete = append(specifiedToDelete, instance)
 		}
-		if lifecycle.GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceSetLifecycleStatePreparingDelete {
+		if lifecycle.GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingDelete {
 			names.Insert(instance.Name)
 			inPreDelete = append(inPreDelete, instance)
 		}

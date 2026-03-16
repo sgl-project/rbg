@@ -79,15 +79,15 @@ const (
 	LifecyclePreparingDelete LifecycleState = "PreparingDelete"
 )
 
-// RoleInstanceSetLifecycleStateType defines the lifecycle state of a RoleInstance
-type RoleInstanceSetLifecycleStateType string
+// RoleInstanceLifecycleStateType defines the lifecycle state of a RoleInstance
+type RoleInstanceLifecycleStateType string
 
 const (
-	RoleInstanceSetLifecycleStateNormal          RoleInstanceSetLifecycleStateType = "Normal"
-	RoleInstanceSetLifecycleStatePreparingUpdate RoleInstanceSetLifecycleStateType = "PreparingUpdate"
-	RoleInstanceSetLifecycleStateUpdating        RoleInstanceSetLifecycleStateType = "Updating"
-	RoleInstanceSetLifecycleStateUpdated         RoleInstanceSetLifecycleStateType = "Updated"
-	RoleInstanceSetLifecycleStatePreparingDelete RoleInstanceSetLifecycleStateType = "PreparingDelete"
+	RoleInstanceLifecycleStateNormal          RoleInstanceLifecycleStateType = "Normal"
+	RoleInstanceLifecycleStatePreparingUpdate RoleInstanceLifecycleStateType = "PreparingUpdate"
+	RoleInstanceLifecycleStateUpdating        RoleInstanceLifecycleStateType = "Updating"
+	RoleInstanceLifecycleStateUpdated         RoleInstanceLifecycleStateType = "Updated"
+	RoleInstanceLifecycleStatePreparingDelete RoleInstanceLifecycleStateType = "PreparingDelete"
 )
 
 type ComponentType string

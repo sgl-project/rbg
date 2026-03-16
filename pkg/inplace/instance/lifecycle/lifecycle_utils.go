@@ -28,8 +28,8 @@ func newGroupReadinessControl(adp clientdapter.Adapter) readiness.Interface {
 
 // Interface for managing role instances lifecycle.
 type Interface interface {
-	UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceSetLifecycleStateType, markPodNotReady bool) (bool, *workloadsv1alpha2.RoleInstance, error)
-	UpdateRoleInstanceLifecycleWithHandler(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceSetLifecycleStateType, inPlaceUpdateHandler *workloadsv1alpha2.RoleInstanceSetLifecycleHook) (bool, *workloadsv1alpha2.RoleInstance, error)
+	UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType, markPodNotReady bool) (bool, *workloadsv1alpha2.RoleInstance, error)
+	UpdateRoleInstanceLifecycleWithHandler(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType, inPlaceUpdateHandler *workloadsv1alpha2.RoleInstanceSetLifecycleHook) (bool, *workloadsv1alpha2.RoleInstance, error)
 }
 
 type realControl struct {
@@ -45,8 +45,8 @@ func New(c client.Client) Interface {
 	}
 }
 
-func GetRoleInstanceLifecycleState(instance *workloadsv1alpha2.RoleInstance) constants.RoleInstanceSetLifecycleStateType {
-	return constants.RoleInstanceSetLifecycleStateType(instance.Labels[constants.RoleInstanceSetLifecycleStateKey])
+func GetRoleInstanceLifecycleState(instance *workloadsv1alpha2.RoleInstance) constants.RoleInstanceLifecycleStateType {
+	return constants.RoleInstanceLifecycleStateType(instance.Labels[constants.RoleInstanceSetLifecycleStateKey])
 }
 
 func IsHookMarkGroupNotReady(lifecycleHook *workloadsv1alpha2.RoleInstanceSetLifecycleHook) bool {
@@ -63,7 +63,7 @@ func IsLifecycleMarkRoleInstanceNotReady(lifecycle *workloadsv1alpha2.RoleInstan
 	return IsHookMarkGroupNotReady(lifecycle.PreDelete) || IsHookMarkGroupNotReady(lifecycle.InPlaceUpdate)
 }
 
-func SetRoleInstanceLifecycle(state constants.RoleInstanceSetLifecycleStateType) func(instance *workloadsv1alpha2.RoleInstance) {
+func SetRoleInstanceLifecycle(state constants.RoleInstanceLifecycleStateType) func(instance *workloadsv1alpha2.RoleInstance) {
 	return func(instance *workloadsv1alpha2.RoleInstance) {
 		if instance.Labels == nil {
 			instance.Labels = make(map[string]string)
@@ -76,13 +76,13 @@ func SetRoleInstanceLifecycle(state constants.RoleInstanceSetLifecycleStateType)
 	}
 }
 
-func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceSetLifecycleStateType) (err error) {
+func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType) (err error) {
 	switch state {
-	case constants.RoleInstanceSetLifecycleStatePreparingDelete:
+	case constants.RoleInstanceLifecycleStatePreparingDelete:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingDeleteHookKey))
-	case constants.RoleInstanceSetLifecycleStatePreparingUpdate:
+	case constants.RoleInstanceLifecycleStatePreparingUpdate:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
-	case constants.RoleInstanceSetLifecycleStateNormal:
+	case constants.RoleInstanceLifecycleStateNormal:
 		err = c.groupReadinessControl.RemoveNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
 	}
 
@@ -92,7 +92,7 @@ func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alp
 	return
 }
 
-func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceSetLifecycleStateType, markPodNotReady bool) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
+func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType, markPodNotReady bool) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
 	if markPodNotReady {
 		if err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
 			return false, nil, err
@@ -121,7 +121,7 @@ func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.Ro
 	return true, gotPod, err
 }
 
-func (c *realControl) UpdateRoleInstanceLifecycleWithHandler(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceSetLifecycleStateType, inPlaceUpdateHandler *workloadsv1alpha2.RoleInstanceSetLifecycleHook) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
+func (c *realControl) UpdateRoleInstanceLifecycleWithHandler(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType, inPlaceUpdateHandler *workloadsv1alpha2.RoleInstanceSetLifecycleHook) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
 	if inPlaceUpdateHandler == nil || instance == nil {
 		return false, instance, nil
 	}
