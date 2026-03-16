@@ -68,17 +68,6 @@ const (
 	PodTemplateTemplateType RoleTemplateType = "PodTemplate"
 )
 
-// LifecycleState defines lifecycle states
-type LifecycleState string
-
-const (
-	LifecycleNormal          LifecycleState = "Normal"
-	LifecyclePreparingUpdate LifecycleState = "PreparingUpdate"
-	LifecycleUpdating        LifecycleState = "Updating"
-	LifecycleUpdated         LifecycleState = "Updated"
-	LifecyclePreparingDelete LifecycleState = "PreparingDelete"
-)
-
 // RoleInstanceLifecycleStateType defines the lifecycle state of a RoleInstance
 type RoleInstanceLifecycleStateType string
 
