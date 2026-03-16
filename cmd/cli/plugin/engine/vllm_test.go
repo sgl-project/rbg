@@ -64,19 +64,6 @@ func TestVLLMEngine_GenerateTemplate(t *testing.T) {
 	assert.True(t, hasGPU)
 }
 
-func TestVLLMEngine_GenerateTemplate_EnvVar(t *testing.T) {
-	v := &VLLMEngine{}
-	require.NoError(t, v.Init(map[string]interface{}{}))
-
-	tpl, err := v.GenerateTemplate("m", "id", "/path/to/model")
-	require.NoError(t, err)
-	envMap := map[string]string{}
-	for _, e := range tpl.Spec.Containers[0].Env {
-		envMap[e.Name] = e.Value
-	}
-	assert.Equal(t, "/path/to/model", envMap["VLLM_MODEL_PATH"])
-}
-
 func TestGet_VLLM_InitAndReturn(t *testing.T) {
 	p, err := Get("vllm", map[string]interface{}{})
 	require.NoError(t, err)

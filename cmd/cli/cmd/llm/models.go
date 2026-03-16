@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package llm
 
 import (
@@ -81,21 +97,21 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			}
 
 			if !wait {
-				fmt.Printf("Created list job %s in namespace %s\n", created.Name, ns)
+				fmt.Printf("Created model listing job %s in namespace %s\n", created.Name, ns)
 				fmt.Println("Use --wait to wait for completion and see results")
 				return nil
 			}
 
 			// Wait for job completion
 			fmt.Printf("Scanning storage for models")
-			state, _, err := waitForJobCompletionWithProgress(context.Background(), clientset, ns, created.Name, "list job")
+			state, _, err := waitForJobCompletionWithProgress(context.Background(), clientset, ns, created.Name, "model listing")
 			fmt.Println()
 			if err != nil {
 				return err
 			}
 
 			if state == JobStateFailed {
-				return fmt.Errorf("list job failed")
+				return fmt.Errorf("model listing job failed")
 			}
 
 			// Get output from the job's pod
@@ -111,7 +127,7 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&storage, "storage", "", "Storage to use (overrides default)")
-	cmd.Flags().BoolVar(&wait, "wait", true, "Wait for the list job to complete")
+	cmd.Flags().BoolVar(&wait, "wait", true, "Wait for the model listing job to complete")
 
 	return cmd
 }

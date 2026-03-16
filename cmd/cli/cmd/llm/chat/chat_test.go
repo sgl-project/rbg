@@ -26,6 +26,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +55,7 @@ func TestChatClient_NonStreaming_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "my-model")
+	client := newChatClient(srv.URL, "my-model", 5*time.Minute)
 	history := []chatMessage{{Role: "user", Content: "What is the capital of France?"}}
 	reply, err := client.sendNonStreaming(history)
 	require.NoError(t, err)
@@ -67,7 +68,7 @@ func TestChatClient_NonStreaming_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "my-model")
+	client := newChatClient(srv.URL, "my-model", 5*time.Minute)
 	_, err := client.sendNonStreaming([]chatMessage{{Role: "user", Content: "hi"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
@@ -80,7 +81,7 @@ func TestChatClient_NonStreaming_EmptyChoices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "my-model")
+	client := newChatClient(srv.URL, "my-model", 5*time.Minute)
 	_, err := client.sendNonStreaming([]chatMessage{{Role: "user", Content: "hi"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no choices")
@@ -108,7 +109,7 @@ func TestChatClient_Streaming_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "my-model")
+	client := newChatClient(srv.URL, "my-model", 5*time.Minute)
 	var out bytes.Buffer
 	reply, err := client.sendStreaming([]chatMessage{{Role: "user", Content: "hi"}}, &out)
 	require.NoError(t, err)
@@ -122,7 +123,7 @@ func TestChatClient_Streaming_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "my-model")
+	client := newChatClient(srv.URL, "my-model", 5*time.Minute)
 	_, err := client.sendStreaming([]chatMessage{{Role: "user", Content: "hi"}}, &bytes.Buffer{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "400")
@@ -143,7 +144,7 @@ func TestChatClient_Streaming_SkipsNonDataLines(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "my-model")
+	client := newChatClient(srv.URL, "my-model", 5*time.Minute)
 	var out bytes.Buffer
 	reply, err := client.sendStreaming([]chatMessage{{Role: "user", Content: "hi"}}, &out)
 	require.NoError(t, err)
@@ -251,6 +252,14 @@ func TestNewChatCmd_FlagDefaults(t *testing.T) {
 	noStreamFlag := cmd.Flags().Lookup("no-stream")
 	require.NotNil(t, noStreamFlag)
 	assert.Equal(t, "false", noStreamFlag.DefValue)
+
+	requestTimeoutFlag := cmd.Flags().Lookup("request-timeout")
+	require.NotNil(t, requestTimeoutFlag)
+	assert.Equal(t, "5m0s", requestTimeoutFlag.DefValue)
+
+	pfReadyTimeoutFlag := cmd.Flags().Lookup("port-forward-timeout")
+	require.NotNil(t, pfReadyTimeoutFlag)
+	assert.Equal(t, "30s", pfReadyTimeoutFlag.DefValue)
 }
 
 // --- runNonInteractive ---
@@ -266,7 +275,7 @@ func TestRunNonInteractive_NoStream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "m")
+	client := newChatClient(srv.URL, "m", 5*time.Minute)
 	// Redirect stdout to capture output.
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
@@ -309,7 +318,7 @@ func (f *fakeRL) Close() error      { return nil }
 // --- runREPL: exit command ---
 
 func TestRunInteractive_ExitCommand(t *testing.T) {
-	client := newChatClient("http://localhost:1", "m")
+	client := newChatClient("http://localhost:1", "m", 5*time.Minute)
 	rl := newFakeRL("/exit")
 
 	err := runREPL(client, nil, true, rl)
@@ -318,7 +327,7 @@ func TestRunInteractive_ExitCommand(t *testing.T) {
 }
 
 func TestRunInteractive_EOF(t *testing.T) {
-	client := newChatClient("http://localhost:1", "m")
+	client := newChatClient("http://localhost:1", "m", 5*time.Minute)
 	rl := newFakeRL() // no lines → immediate EOF
 
 	err := runREPL(client, nil, true, rl)
@@ -335,7 +344,7 @@ func TestRunInteractive_ErrorDoesNotCorruptHistory(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newChatClient(srv.URL, "m")
+	client := newChatClient(srv.URL, "m", 5*time.Minute)
 	rl := newFakeRL("hello", "/exit")
 
 	history := []chatMessage{}

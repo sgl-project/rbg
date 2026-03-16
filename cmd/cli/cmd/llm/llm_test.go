@@ -20,7 +20,7 @@ func TestNewLLMCmd_HasExpectedSubcommands(t *testing.T) {
 	cf := genericclioptions.NewConfigFlags(true)
 	cmd := NewLLMCmd(cf)
 
-	expected := []string{"config", "generate", "benchmark", "pull", "models", "run", "list"}
+	expected := []string{"config", "generate", "benchmark", "pull", "models", "run", "list", "delete"}
 	names := make([]string, 0, len(cmd.Commands()))
 	for _, sub := range cmd.Commands() {
 		names = append(names, sub.Name())
@@ -34,7 +34,7 @@ func TestNewLLMCmd_HasExpectedSubcommands(t *testing.T) {
 func TestNewLLMCmd_SubcommandCount(t *testing.T) {
 	cf := genericclioptions.NewConfigFlags(true)
 	cmd := NewLLMCmd(cf)
-	assert.Equal(t, 8, len(cmd.Commands()))
+	assert.Equal(t, 9, len(cmd.Commands()))
 }
 
 func TestNewLLMCmd_PullSubcommand_Flags(t *testing.T) {

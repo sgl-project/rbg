@@ -4,7 +4,7 @@
     - name: standard
       description: "Balanced performance and resource usage"
       engine: vllm
-      image: vllm/vllm-openai:latest
+      image: vllm/vllm-openai:nightly
       resources:
         gpu: 1
         cpu: 4
@@ -19,7 +19,7 @@
     - name: throughput
       description: "Maximize throughput, suitable for batch inference"
       engine: vllm
-      image: vllm/vllm-openai:latest
+      image: vllm/vllm-openai:nightly
       resources:
         gpu: 2
         cpu: 8
@@ -48,7 +48,7 @@
     - name: standard
       description: "Standard config for Qwen series"
       engine: vllm
-      image: vllm/vllm-openai:latest
+      image: vllm/vllm-openai:nightly
       resources:
         gpu: 1
         cpu: 4

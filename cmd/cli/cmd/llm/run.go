@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package llm
 
 import (
@@ -13,7 +29,6 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/klog/v2"
 
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	runpkg "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/run"
@@ -52,9 +67,6 @@ type RunParams struct {
 	Engine   string
 	Storage  string
 	Revision string
-	Memory   string
-	GPU      int
-	CPU      int
 	EnvVars  []string
 	ArgsList []string
 }
@@ -152,17 +164,8 @@ func resolveRunContext(name, modelID string, p RunParams, userCfg *cliconfig.Con
 
 	// 6. Apply resource overrides
 	effGPU := modeCfg.Resources.GPU
-	if p.GPU > 0 {
-		effGPU = p.GPU
-	}
 	effCPU := modeCfg.Resources.CPU
-	if p.CPU > 0 {
-		effCPU = p.CPU
-	}
 	effMemory := modeCfg.Resources.Memory
-	if p.Memory != "" {
-		effMemory = p.Memory
-	}
 	if effGPU > 0 {
 		if container.Resources.Limits == nil {
 			container.Resources.Limits = make(corev1.ResourceList)
@@ -209,64 +212,6 @@ func resolveRunContext(name, modelID string, p RunParams, userCfg *cliconfig.Con
 		ResolvedPort:  resolvedPort,
 		StoragePlugin: storagePlugin,
 	}, nil
-}
-
-// generateV1alpha1RBG creates a v1alpha1 RoleBasedGroup from the pod template and configuration.
-// This is the active implementation used for deployment; generateRBG (v1alpha2) is retained for reference.
-func generateV1alpha1RBG(name, namespace, modelID, revision string, replicas int32, rctx *runContext) *workloadsv1alpha1.RoleBasedGroup {
-	// Build metadata annotation as JSON
-	metadata := llmmeta.RunMetadata{
-		ModelID:  modelID,
-		Engine:   rctx.EngineType,
-		Mode:     rctx.ModeName,
-		Revision: revision,
-		Port:     rctx.ResolvedPort,
-	}
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		klog.V(1).Infof("failed to marshal run metadata: %v", err)
-	}
-
-	// Ensure pod template has labels
-	if rctx.PodTemplate.ObjectMeta.Labels == nil {
-		rctx.PodTemplate.ObjectMeta.Labels = make(map[string]string)
-	}
-
-	// Set standard labels on pod template
-	rctx.PodTemplate.ObjectMeta.Labels[llmmeta.RunCommandSourceLabelKey] = llmmeta.RunCommandSourceLabelValue
-
-	// Create the v1alpha1 RoleBasedGroup
-	return &workloadsv1alpha1.RoleBasedGroup{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "workloads.x-k8s.io/v1alpha1",
-			Kind:       "RoleBasedGroup",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels: map[string]string{
-				llmmeta.RunCommandSourceLabelKey: llmmeta.RunCommandSourceLabelValue,
-			},
-			Annotations: map[string]string{
-				llmmeta.RunCommandMetadataAnnotationKey: string(metadataJSON),
-			},
-		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
-				{
-					Name:     "inference",
-					Replicas: &replicas,
-					Workload: workloadsv1alpha1.WorkloadSpec{
-						APIVersion: "workloads.x-k8s.io/v1alpha1",
-						Kind:       "InstanceSet",
-					},
-					TemplateSource: workloadsv1alpha1.TemplateSource{
-						Template: rctx.PodTemplate,
-					},
-				},
-			},
-		},
-	}
 }
 
 // generateRBG creates a v1alpha2 RoleBasedGroup from the pod template and configuration
@@ -321,28 +266,13 @@ func generateRBG(name, namespace, modelID, revision string, replicas int32, rctx
 						},
 					},
 					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "workloads.x-k8s.io/v1alpha1",
-						Kind:       "InstanceSet",
+						APIVersion: "workloads.x-k8s.io/v1alpha2",
+						Kind:       "RoleInstanceSet",
 					},
 				},
 			},
 		},
 	}
-}
-
-// createV1alpha1RBG creates a v1alpha1 RoleBasedGroup in Kubernetes
-func createV1alpha1RBG(ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, namespace string, cf *genericclioptions.ConfigFlags) error {
-	client, err := util.GetRBGClient(cf)
-	if err != nil {
-		return fmt.Errorf("failed to create RBG client: %w", err)
-	}
-
-	_, err = client.WorkloadsV1alpha1().RoleBasedGroups(namespace).Create(ctx, rbg, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to create RoleBasedGroup: %w", err)
-	}
-
-	return nil
 }
 
 // createRBG creates a v1alpha2 RoleBasedGroup in Kubernetes
@@ -365,9 +295,6 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 		replicas int32
 		mode     string
 		engine   string
-		gpu      int
-		cpu      int
-		memory   string
 		envVars  []string
 		argsList []string
 		storage  string
@@ -401,9 +328,6 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				Engine:   engine,
 				Storage:  storage,
 				Revision: revision,
-				Memory:   memory,
-				GPU:      gpu,
-				CPU:      cpu,
 				EnvVars:  envVars,
 				ArgsList: argsList,
 			}, userCfg)
@@ -414,8 +338,8 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			// Get namespace
 			namespace := util.GetNamespace(cf)
 
-			// Generate v1alpha1 RoleBasedGroup
-			rbg := generateV1alpha1RBG(name, namespace, modelID, revision, replicas, rctx)
+			// Generate v1alpha2 RoleBasedGroup
+			rbg := generateRBG(name, namespace, modelID, revision, replicas, rctx)
 
 			if dryRun {
 				fmt.Println("# Generated RoleBasedGroup for Model Serving (DRY RUN)")
@@ -429,7 +353,7 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				fmt.Println("#")
 				fmt.Println("# DRY RUN: No workload will be created")
 				fmt.Println()
-				return printV1alpha1RBG(rbg)
+				return printRBG(rbg)
 			}
 
 			// Print summary
@@ -443,9 +367,9 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			fmt.Printf("# Replicas:  %d\n", replicas)
 			fmt.Println("#")
 
-			// Create the v1alpha1 RoleBasedGroup workload
+			// Create the v1alpha2 RoleBasedGroup workload
 			ctx := context.Background()
-			if err := createV1alpha1RBG(ctx, rbg, namespace, cf); err != nil {
+			if err := createRBG(ctx, rbg, namespace, cf); err != nil {
 				klog.ErrorS(err, "Failed to create RoleBasedGroup")
 				return err
 			}
@@ -458,9 +382,6 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	cmd.Flags().Int32Var(&replicas, "replicas", 1, "Number of replicas")
 	cmd.Flags().StringVar(&mode, "mode", "", "Run mode (default: first mode in model config)")
 	cmd.Flags().StringVar(&engine, "engine", "", "Inference engine override: vllm, sglang (default: from mode config)")
-	cmd.Flags().IntVar(&gpu, "gpu", 0, "GPU count override")
-	cmd.Flags().IntVar(&cpu, "cpu", 0, "CPU count override")
-	cmd.Flags().StringVar(&memory, "memory", "", "Memory override (e.g., 32Gi)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "Environment variables (KEY=VALUE)")
 	cmd.Flags().StringArrayVar(&argsList, "arg", nil, "Additional arguments for the engine")
 	cmd.Flags().StringVar(&storage, "storage", "", "Storage to use (overrides default)")
