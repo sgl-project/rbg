@@ -27,14 +27,6 @@ const (
 	DefaultRoleInstanceSetMaxUnavailable = "10%"
 )
 
-// PodManagementPolicyType is an alias for constants.PodManagementPolicyType.
-type PodManagementPolicyType = constants.PodManagementPolicyType
-
-const (
-	OrderedReadyPodManagement = constants.OrderedReadyPodManagement
-	ParallelPodManagement     = constants.ParallelPodManagement
-)
-
 // RoleInstanceSetSpec defines the desired state of RoleInstanceSet
 type RoleInstanceSetSpec struct {
 	// Replicas is the desired number of replicas of the given Template.
@@ -60,7 +52,7 @@ type RoleInstanceSetSpec struct {
 	// ready before creating the next.
 	// +optional
 	// +kubebuilder:default=Parallel
-	PodManagementPolicy PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+	PodManagementPolicy constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
 
 	// ScaleStrategy indicates the ScaleStrategy that will be employed to
 	// create and delete RoleInstances in the RoleInstanceSet.

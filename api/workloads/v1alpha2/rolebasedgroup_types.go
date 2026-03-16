@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // RoleTemplate defines a reusable Pod template that can be referenced by roles.
@@ -224,7 +225,7 @@ type RoleSpec struct {
 	// OrderedReady creates instances one by one, waiting for each to be ready.
 	// +optional
 	// +kubebuilder:default=Parallel
-	PodManagementPolicy PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+	PodManagementPolicy constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
 }
 
 // Pattern defines the deployment pattern for a role.
