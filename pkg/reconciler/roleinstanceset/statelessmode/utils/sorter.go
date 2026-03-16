@@ -21,11 +21,11 @@ import (
 	"strconv"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 type Ranker interface {
-	GetRank(instance *appsv1alpha2.RoleInstance) float64
+	GetRank(instance *workloadsv1alpha2.RoleInstance) float64
 }
 
 const (
@@ -37,8 +37,8 @@ const (
 
 // ActiveInstancesAvailableRank type allows custom sorting of podGroups so a controller can pick the best ones to delete.
 type ActiveInstancesAvailableRank struct {
-	Instances     []*appsv1alpha2.RoleInstance
-	AvailableFunc func(*appsv1alpha2.RoleInstance) bool
+	Instances     []*workloadsv1alpha2.RoleInstance
+	AvailableFunc func(*workloadsv1alpha2.RoleInstance) bool
 }
 
 func (s ActiveInstancesAvailableRank) Len() int { return len(s.Instances) }

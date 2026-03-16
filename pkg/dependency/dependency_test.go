@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // TestDependencyOrder tests the DependencyOrder function with various dependency scenarios
@@ -105,27 +105,27 @@ func TestDependencyOrder(t *testing.T) {
 
 func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().Build()
 	manager := NewDefaultDependencyManager(scheme, client)
 
 	tests := []struct {
 		name     string
-		rbg      *workloadsv1alpha.RoleBasedGroup
+		rbg      *workloadsv1alpha2.RoleBasedGroup
 		wantErr  bool
-		expected [][]*workloadsv1alpha.RoleSpec
+		expected [][]*workloadsv1alpha2.RoleSpec
 	}{
 		{
 			name:    "empty roles",
-			rbg:     &workloadsv1alpha.RoleBasedGroup{},
+			rbg:     &workloadsv1alpha2.RoleBasedGroup{},
 			wantErr: false,
 		},
 		{
 			name: "no dependency",
-			rbg: &workloadsv1alpha.RoleBasedGroup{
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name: "role1",
 						},
@@ -139,9 +139,9 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 		},
 		{
 			name: "valid dependency",
-			rbg: &workloadsv1alpha.RoleBasedGroup{
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:         "role1",
 							Dependencies: []string{"role2"},
@@ -153,7 +153,7 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			expected: [][]*workloadsv1alpha.RoleSpec{
+			expected: [][]*workloadsv1alpha2.RoleSpec{
 				{
 					{Name: "role2"},
 				},
@@ -164,9 +164,9 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 		},
 		{
 			name: "invalid dependency",
-			rbg: &workloadsv1alpha.RoleBasedGroup{
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:         "role1",
 							Dependencies: []string{"role2"},
@@ -182,9 +182,9 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 		},
 		{
 			name: "same dependency",
-			rbg: &workloadsv1alpha.RoleBasedGroup{
-				Spec: workloadsv1alpha.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha.RoleSpec{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
 						{
 							Name:         "role1",
 							Dependencies: []string{"role3"},
@@ -200,7 +200,7 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 				},
 			},
 			wantErr: false,
-			expected: [][]*workloadsv1alpha.RoleSpec{
+			expected: [][]*workloadsv1alpha2.RoleSpec{
 				{
 					{Name: "role3"},
 				},
@@ -228,7 +228,7 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 
 func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	tests := []struct {
 		name        string
@@ -274,24 +274,24 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 		},
 	}
 
-	rbg := &workloadsv1alpha.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name:         "role1",
 					Dependencies: []string{"role2"},
-					Workload: workloadsv1alpha.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},
 				},
 				{
 					Name: "role2",
-					Workload: workloadsv1alpha.WorkloadSpec{
+					Workload: workloadsv1alpha2.WorkloadSpec{
 						APIVersion: "apps/v1",
 						Kind:       "StatefulSet",
 					},

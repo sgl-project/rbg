@@ -19,9 +19,8 @@ import (
 	"k8s.io/utils/integer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pub "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 var (
@@ -240,7 +239,7 @@ func PodContainsReadinessGate(pod *v1.Pod, gate v1.PodConditionType) bool {
 
 var runtimePodConditions = sets.New[v1.PodConditionType](
 	v1.ContainersReady,
-	pub.InPlaceUpdateReady,
+	constants.InPlaceUpdateReady,
 )
 
 func IsPodRuntimeReady(pod *v1.Pod, minReadySeconds int32) bool {

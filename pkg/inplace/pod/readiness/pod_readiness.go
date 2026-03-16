@@ -4,7 +4,7 @@ import (
 	"sort"
 
 	v1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	podadapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	util "sigs.k8s.io/rbgs/pkg/utils"
 )

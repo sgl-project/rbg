@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils/expectations"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 
-	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/sync"
@@ -76,7 +76,7 @@ func (r *ReconcileInstanceSet) doReconcile(request reconcile.Request) (res recon
 	}()
 
 	// Fetch the requested InstanceSet
-	set := &v1alpha2.RoleInstanceSet{}
+	set := &workloadsv1alpha2.RoleInstanceSet{}
 	err := r.Get(context.TODO(), request.NamespacedName, set)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -153,7 +153,7 @@ func (r *ReconcileInstanceSet) doReconcile(request reconcile.Request) (res recon
 		}
 	}
 
-	newStatus := v1alpha2.RoleInstanceSetStatus{
+	newStatus := workloadsv1alpha2.RoleInstanceSetStatus{
 		ObservedGeneration: set.Generation,
 		CurrentRevision:    currentRevision.Name,
 		UpdateRevision:     updateRevision.Name,
@@ -185,9 +185,9 @@ func (r *ReconcileInstanceSet) doReconcile(request reconcile.Request) (res recon
 }
 
 func (r *ReconcileInstanceSet) syncInstanceSet(
-	set *v1alpha2.RoleInstanceSet, newStatus *v1alpha2.RoleInstanceSetStatus,
+	set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus,
 	currentRevision, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision,
-	filteredInstances []*v1alpha2.RoleInstance,
+	filteredInstances []*workloadsv1alpha2.RoleInstance,
 ) error {
 	if set.DeletionTimestamp != nil {
 		return nil
@@ -209,8 +209,8 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	scaling, scaleErr = r.syncControl.Scale(currentSet, updateSet, currentRevision.Name, updateRevision.Name, filteredInstances)
 	if scaleErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, v1alpha2.RoleInstanceSetCondition{
-			Type:               v1alpha2.RoleInstanceSetConditionFailedScale,
+		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
+			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedScale,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Message:            scaleErr.Error(),
@@ -223,8 +223,8 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	updateErr = r.syncControl.Update(updateSet, currentRevision, updateRevision, revisions, filteredInstances)
 	if updateErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, v1alpha2.RoleInstanceSetCondition{
-			Type:               v1alpha2.RoleInstanceSetConditionFailedUpdate,
+		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
+			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Message:            updateErr.Error(),
@@ -237,7 +237,7 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 	return err
 }
 
-func (r *ReconcileInstanceSet) getActiveRevisions(set *v1alpha2.RoleInstanceSet, revisions []*apps.ControllerRevision) (
+func (r *ReconcileInstanceSet) getActiveRevisions(set *workloadsv1alpha2.RoleInstanceSet, revisions []*apps.ControllerRevision) (
 	*apps.ControllerRevision, *apps.ControllerRevision, int32, error,
 ) {
 	var currentRevision, updateRevision *apps.ControllerRevision
@@ -294,7 +294,7 @@ func (r *ReconcileInstanceSet) getActiveRevisions(set *v1alpha2.RoleInstanceSet,
 	return currentRevision, updateRevision, collisionCount, nil
 }
 
-func (r *ReconcileInstanceSet) getOwnedResource(set *v1alpha2.RoleInstanceSet, selector labels.Selector) ([]*v1alpha2.RoleInstance, error) {
+func (r *ReconcileInstanceSet) getOwnedResource(set *workloadsv1alpha2.RoleInstanceSet, selector labels.Selector) ([]*workloadsv1alpha2.RoleInstance, error) {
 	opts := &client.ListOptions{
 		Namespace:     set.Namespace,
 		LabelSelector: selector,
@@ -303,7 +303,7 @@ func (r *ReconcileInstanceSet) getOwnedResource(set *v1alpha2.RoleInstanceSet, s
 }
 
 // truncateInstancesToDelete truncates any non-live instance names in spec.scaleStrategy.instanceToDelete.
-func (r *ReconcileInstanceSet) truncateInstancesToDelete(set *v1alpha2.RoleInstanceSet, instances []*v1alpha2.RoleInstance) error {
+func (r *ReconcileInstanceSet) truncateInstancesToDelete(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance) error {
 	if len(set.Spec.ScaleStrategy.RoleInstanceToDelete) == 0 {
 		return nil
 	}
@@ -335,8 +335,8 @@ func (r *ReconcileInstanceSet) truncateInstancesToDelete(set *v1alpha2.RoleInsta
 // only RevisionHistoryLimit revisions remain. If the returned error is nil the operation was successful. This method
 // expects that revisions is sorted when supplied.
 func (r *ReconcileInstanceSet) truncateHistory(
-	set *v1alpha2.RoleInstanceSet,
-	instances []*v1alpha2.RoleInstance,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instances []*workloadsv1alpha2.RoleInstance,
 	revisions []*apps.ControllerRevision,
 	current *apps.ControllerRevision,
 	update *apps.ControllerRevision,
@@ -376,7 +376,7 @@ func (r *ReconcileInstanceSet) truncateHistory(
 	return nil
 }
 
-func (r *ReconcileInstanceSet) claimInstances(set *v1alpha2.RoleInstanceSet, instances []*v1alpha2.RoleInstance, selector labels.Selector) ([]*v1alpha2.RoleInstance, error) {
+func (r *ReconcileInstanceSet) claimInstances(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance, selector labels.Selector) ([]*workloadsv1alpha2.RoleInstance, error) {
 	mgr, err := utils.NewRefManager(r, selector, set, r.scheme)
 	if err != nil {
 		return nil, err
@@ -392,9 +392,9 @@ func (r *ReconcileInstanceSet) claimInstances(set *v1alpha2.RoleInstanceSet, ins
 		return nil, err
 	}
 
-	claimedInstances := make([]*v1alpha2.RoleInstance, len(claimed))
+	claimedInstances := make([]*workloadsv1alpha2.RoleInstance, len(claimed))
 	for i, instance := range claimed {
-		claimedInstances[i] = instance.(*v1alpha2.RoleInstance)
+		claimedInstances[i] = instance.(*workloadsv1alpha2.RoleInstance)
 	}
 
 	return claimedInstances, nil

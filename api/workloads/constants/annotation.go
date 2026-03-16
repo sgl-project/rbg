@@ -90,18 +90,22 @@ const (
 
 // Lifecycle management annotations
 const (
-	// LifecycleStateKey identifies the lifecycle state
-	LifecycleStateKey = RBGPrefix + "lifecycle-state"
+	// RoleInstanceSetLifecycleStateKey identifies the lifecycle state of a RoleInstance (stored in labels)
+	RoleInstanceSetLifecycleStateKey = RBGPrefix + "role-instance-lifecycle-state"
 
-	// LifecycleTimestampKey identifies the lifecycle state change timestamp
-	LifecycleTimestampKey = RBGPrefix + "lifecycle-timestamp"
+	// RoleInstanceSetLifecycleTimestampKey identifies the lifecycle state change timestamp of a RoleInstance
+	RoleInstanceSetLifecycleTimestampKey = RBGPrefix + "role-instance-lifecycle-timestamp"
 )
 
 // InPlace update annotations
 const (
 	// InPlaceUpdateStateKey identifies the in-place update state
-	InPlaceUpdateStateKey = RBGPrefix + "inplace-state"
+	InPlaceUpdateStateKey = RBGPrefix + "inplace-update-state"
 
 	// InPlaceUpdateGraceKey identifies the in-place update grace period configuration
-	InPlaceUpdateGraceKey = RBGPrefix + "inplace-grace"
+	InPlaceUpdateGraceKey = RBGPrefix + "inplace-update-grace"
+
+	// RuntimeContainerMetaKey is a key in pod annotations. Some inplace update scene should report the
+	// states of runtime containers into its value, which is a structure JSON of RuntimeContainerMetaSet type.
+	RuntimeContainerMetaKey = "workloads.x-k8s.io/runtime-containers-meta"
 )

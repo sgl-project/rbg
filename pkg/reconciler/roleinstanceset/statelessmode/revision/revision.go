@@ -9,19 +9,19 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/kubernetes/pkg/controller/history"
 
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
 )
 
 var (
-	patchCodec = scheme.Codecs.LegacyCodec(appsv1alpha2.SchemeGroupVersion)
+	patchCodec = scheme.Codecs.LegacyCodec(workloadsv1alpha2.SchemeGroupVersion)
 )
 
 // Interface is a interface to new and apply ControllerRevision.
 type Interface interface {
-	NewRevision(set *appsv1alpha2.RoleInstanceSet, revision int64, collisionCount *int32) (*apps.ControllerRevision, error)
-	ApplyRevision(set *appsv1alpha2.RoleInstanceSet, revision *apps.ControllerRevision) (*appsv1alpha2.RoleInstanceSet, error)
+	NewRevision(set *workloadsv1alpha2.RoleInstanceSet, revision int64, collisionCount *int32) (*apps.ControllerRevision, error)
+	ApplyRevision(set *workloadsv1alpha2.RoleInstanceSet, revision *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstanceSet, error)
 }
 
 // NewRevisionControl create a normal revision control.
@@ -32,7 +32,7 @@ func NewRevisionControl() Interface {
 type realControl struct {
 }
 
-func (c *realControl) NewRevision(set *appsv1alpha2.RoleInstanceSet, revision int64, collisionCount *int32) (*apps.ControllerRevision, error) {
+func (c *realControl) NewRevision(set *workloadsv1alpha2.RoleInstanceSet, revision int64, collisionCount *int32) (*apps.ControllerRevision, error) {
 	coreControl := core.New(set)
 	patch, err := c.getPatch(set, coreControl)
 	if err != nil {
@@ -60,7 +60,7 @@ func (c *realControl) NewRevision(set *appsv1alpha2.RoleInstanceSet, revision in
 // previous version. If the returned error is nil the patch is valid. The current state that we save is just the
 // InstanceTemplate. We can modify this later to encompass more state (or less) and remain compatible with previously
 // recorded patches.
-func (c *realControl) getPatch(set *appsv1alpha2.RoleInstanceSet, coreControl core.Control) ([]byte, error) {
+func (c *realControl) getPatch(set *workloadsv1alpha2.RoleInstanceSet, coreControl core.Control) ([]byte, error) {
 	str, err := runtime.Encode(patchCodec, set)
 	if err != nil {
 		return nil, err
@@ -78,7 +78,7 @@ func (c *realControl) getPatch(set *appsv1alpha2.RoleInstanceSet, coreControl co
 	return patch, err
 }
 
-func (c *realControl) ApplyRevision(set *appsv1alpha2.RoleInstanceSet, revision *apps.ControllerRevision) (*appsv1alpha2.RoleInstanceSet, error) {
+func (c *realControl) ApplyRevision(set *workloadsv1alpha2.RoleInstanceSet, revision *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstanceSet, error) {
 	clone := set.DeepCopy()
 	cloneBytes, err := runtime.Encode(patchCodec, clone)
 	if err != nil {

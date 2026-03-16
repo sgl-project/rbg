@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	inplaceutils "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	clientdapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"

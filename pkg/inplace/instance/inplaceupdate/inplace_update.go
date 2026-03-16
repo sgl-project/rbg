@@ -25,8 +25,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/instance"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/clientdapter"
@@ -176,7 +177,7 @@ func (c *realControl) updateRoleInstanceInPlace(instance *workloadsv1alpha2.Role
 			UpdateTimestamp: metav1.NewTime(time.Now()),
 		}
 		inPlaceUpdateStateJSON, _ := json.Marshal(inPlaceUpdateState)
-		clone.Annotations[inplaceapi.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
+		clone.Annotations[constants.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
 
 		clone, err = opts.PatchSpecToRoleInstance(clone, spec, &inPlaceUpdateState)
 		if err != nil {

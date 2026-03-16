@@ -79,6 +79,17 @@ const (
 	LifecyclePreparingDelete LifecycleState = "PreparingDelete"
 )
 
+// RoleInstanceSetLifecycleStateType defines the lifecycle state of a RoleInstance
+type RoleInstanceSetLifecycleStateType string
+
+const (
+	RoleInstanceSetLifecycleStateNormal          RoleInstanceSetLifecycleStateType = "Normal"
+	RoleInstanceSetLifecycleStatePreparingUpdate RoleInstanceSetLifecycleStateType = "PreparingUpdate"
+	RoleInstanceSetLifecycleStateUpdating        RoleInstanceSetLifecycleStateType = "Updating"
+	RoleInstanceSetLifecycleStateUpdated         RoleInstanceSetLifecycleStateType = "Updated"
+	RoleInstanceSetLifecycleStatePreparingDelete RoleInstanceSetLifecycleStateType = "PreparingDelete"
+)
+
 type ComponentType string
 
 const (
@@ -104,8 +115,6 @@ func GetAnnotationValue(annotations map[string]string, newKey, oldKey string) st
 	return annotations[oldKey]
 }
 
-// ========== Discovery Config Mode ==========
-
 // AdapterPhase defines the phase of a ScalingAdapter
 type AdapterPhase string
 
@@ -114,6 +123,8 @@ const (
 	AdapterPhaseNotBound AdapterPhase = "NotBound"
 	AdapterPhaseBound    AdapterPhase = "Bound"
 )
+
+// ========== Discovery Config Mode ==========
 
 // DiscoveryConfigMode defines the mode for discovery config
 type DiscoveryConfigMode string

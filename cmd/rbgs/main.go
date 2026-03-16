@@ -51,8 +51,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
-	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	"sigs.k8s.io/rbgs/version"

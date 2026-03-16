@@ -30,9 +30,9 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 
-	appspub "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	inplaceutils "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	podadapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 	"sigs.k8s.io/rbgs/pkg/utils/revisionadapter"
@@ -117,7 +117,7 @@ func (c *realControl) Refresh(pod *v1.Pod, opts *UpdateOptions) RefreshResult {
 
 	var delayDuration time.Duration
 	var err error
-	if gracePeriod, _ := appspub.GetInPlaceUpdateGrace(pod); gracePeriod != "" {
+	if gracePeriod, _ := inplaceapi.GetInPlaceUpdateGrace(pod); gracePeriod != "" {
 		if delayDuration, err = c.finishGracePeriod(pod, opts); err != nil {
 			return RefreshResult{RefreshErr: err}
 		}
@@ -144,7 +144,7 @@ func (c *realControl) refreshCondition(pod *v1.Pod, opts *UpdateOptions) error {
 	}
 
 	newCondition := v1.PodCondition{
-		Type:               appspub.InPlaceUpdateReady,
+		Type:               constants.InPlaceUpdateReady,
 		Status:             v1.ConditionTrue,
 		LastTransitionTime: c.now(),
 	}
@@ -176,7 +176,7 @@ func (c *realControl) finishGracePeriod(pod *v1.Pod, opts *UpdateOptions) (time.
 		}
 
 		spec := UpdateSpec{}
-		updateSpecJSON, ok := appspub.GetInPlaceUpdateGrace(clone)
+		updateSpecJSON, ok := inplaceapi.GetInPlaceUpdateGrace(clone)
 		if !ok {
 			return nil
 		}
@@ -185,10 +185,10 @@ func (c *realControl) finishGracePeriod(pod *v1.Pod, opts *UpdateOptions) (time.
 		}
 		graceDuration := time.Second * time.Duration(spec.GraceSeconds)
 
-		updateState := appspub.InPlaceUpdateState{}
-		updateStateJSON, ok := appspub.GetInPlaceUpdateState(clone)
+		updateState := inplaceapi.InPlaceUpdateState{}
+		updateStateJSON, ok := inplaceapi.GetInPlaceUpdateState(clone)
 		if !ok {
-			return fmt.Errorf("pod has %s but %s not found", appspub.InPlaceUpdateGraceKey, appspub.InPlaceUpdateStateKey)
+			return fmt.Errorf("pod has %s but %s not found", constants.InPlaceUpdateGraceKey, constants.InPlaceUpdateStateKey)
 		}
 		if err := json.Unmarshal([]byte(updateStateJSON), &updateState); err != nil {
 			return nil
@@ -196,7 +196,7 @@ func (c *realControl) finishGracePeriod(pod *v1.Pod, opts *UpdateOptions) (time.
 
 		if !c.revisionAdapter.EqualToRevisionHash("", clone, spec.Revision) {
 			// If revision-hash has changed, just drop this GracePeriodSpec and go through the normal update process again.
-			appspub.RemoveInPlaceUpdateGrace(clone)
+			inplaceapi.RemoveInPlaceUpdateGrace(clone)
 		} else {
 			if span := time.Since(updateState.UpdateTimestamp.Time); span < graceDuration {
 				delayDuration = inplaceutils.RoundupSeconds(graceDuration - span)
@@ -206,7 +206,7 @@ func (c *realControl) finishGracePeriod(pod *v1.Pod, opts *UpdateOptions) (time.
 			if clone, err = opts.PatchSpecToPod(clone, &spec); err != nil {
 				return err
 			}
-			appspub.RemoveInPlaceUpdateGrace(clone)
+			inplaceapi.RemoveInPlaceUpdateGrace(clone)
 		}
 
 		return c.podAdapter.UpdatePod(clone)
@@ -232,7 +232,7 @@ func (c *realControl) Update(pod *v1.Pod, oldRevision, newRevision *apps.Control
 	// 2. update condition for pod with readiness-gate
 	if inplaceutils.ContainsInPlaceReadinessGate(pod) {
 		newCondition := v1.PodCondition{
-			Type:               appspub.InPlaceUpdateReady,
+			Type:               constants.InPlaceUpdateReady,
 			LastTransitionTime: c.now(),
 			Status:             v1.ConditionFalse,
 			Reason:             "StartInPlaceUpdate",
@@ -285,29 +285,29 @@ func (c *realControl) updatePodInPlace(pod *v1.Pod, spec *UpdateSpec, opts *Upda
 		}
 
 		// record old containerStatuses
-		inPlaceUpdateState := appspub.InPlaceUpdateState{
+		inPlaceUpdateState := inplaceapi.InPlaceUpdateState{
 			Revision:              spec.Revision,
 			UpdateTimestamp:       c.now(),
-			LastContainerStatuses: make(map[string]appspub.InPlaceUpdateContainerStatus, len(spec.ContainerImages)),
+			LastContainerStatuses: make(map[string]inplaceapi.InPlaceUpdateContainerStatus, len(spec.ContainerImages)),
 		}
 		for _, c := range clone.Status.ContainerStatuses {
 			if _, ok := spec.ContainerImages[c.Name]; ok {
-				inPlaceUpdateState.LastContainerStatuses[c.Name] = appspub.InPlaceUpdateContainerStatus{
+				inPlaceUpdateState.LastContainerStatuses[c.Name] = inplaceapi.InPlaceUpdateContainerStatus{
 					ImageID: c.ImageID,
 				}
 			}
 		}
 		inPlaceUpdateStateJSON, _ := json.Marshal(inPlaceUpdateState)
-		clone.Annotations[appspub.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
+		clone.Annotations[constants.InPlaceUpdateStateKey] = string(inPlaceUpdateStateJSON)
 
 		if spec.GraceSeconds <= 0 {
 			if clone, err = opts.PatchSpecToPod(clone, spec); err != nil {
 				return err
 			}
-			appspub.RemoveInPlaceUpdateGrace(clone)
+			inplaceapi.RemoveInPlaceUpdateGrace(clone)
 		} else {
 			inPlaceUpdateSpecJSON, _ := json.Marshal(spec)
-			clone.Annotations[appspub.InPlaceUpdateGraceKey] = string(inPlaceUpdateSpecJSON)
+			clone.Annotations[constants.InPlaceUpdateGraceKey] = string(inPlaceUpdateSpecJSON)
 		}
 
 		return c.podAdapter.UpdatePod(clone)

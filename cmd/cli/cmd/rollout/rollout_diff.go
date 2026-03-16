@@ -26,9 +26,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
-	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 var rolloutDiffCmd = &cobra.Command{

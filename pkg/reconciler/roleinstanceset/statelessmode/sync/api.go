@@ -5,7 +5,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
@@ -14,19 +14,19 @@ import (
 // Interface for managing instance scaling and updating.
 type Interface interface {
 	Scale(
-		currentSet *appsv1alpha2.RoleInstanceSet,
-		updateSet *appsv1alpha2.RoleInstanceSet,
+		currentSet *workloadsv1alpha2.RoleInstanceSet,
+		updateSet *workloadsv1alpha2.RoleInstanceSet,
 		currentRevision string,
 		updateRevision string,
-		instances []*appsv1alpha2.RoleInstance,
+		instances []*workloadsv1alpha2.RoleInstance,
 	) (bool, error)
 
 	Update(
-		set *appsv1alpha2.RoleInstanceSet,
+		set *workloadsv1alpha2.RoleInstanceSet,
 		currentRevision *apps.ControllerRevision,
 		updateRevision *apps.ControllerRevision,
 		revisions []*apps.ControllerRevision,
-		instances []*appsv1alpha2.RoleInstance,
+		instances []*workloadsv1alpha2.RoleInstance,
 	) error
 }
 

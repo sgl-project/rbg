@@ -19,7 +19,7 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	constants "sigs.k8s.io/rbgs/pkg/constants"
+	constants "sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupScalingAdapterStatusApplyConfiguration represents a declarative configuration of the RoleBasedGroupScalingAdapterStatus type for use

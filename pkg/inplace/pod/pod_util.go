@@ -26,19 +26,18 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/inplaceupdate/pod"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/constants"
 )
 
 // InjectInPlaceReadinessGate injects InPlaceUpdateReady into pod.spec.readinessGates
 func InjectInPlaceReadinessGate(pod *v1.Pod) {
 	for _, r := range pod.Spec.ReadinessGates {
-		if r.ConditionType == inplaceapi.InPlaceUpdateReady {
+		if r.ConditionType == constants.InPlaceUpdateReady {
 			return
 		}
 	}
-	pod.Spec.ReadinessGates = append(pod.Spec.ReadinessGates, v1.PodReadinessGate{ConditionType: inplaceapi.InPlaceUpdateReady})
+	pod.Spec.ReadinessGates = append(pod.Spec.ReadinessGates, v1.PodReadinessGate{ConditionType: constants.InPlaceUpdateReady})
 }
 
 func InjectInstancePodReadinessGate(pod *v1.Pod) {
@@ -53,7 +52,7 @@ func InjectInstancePodReadinessGate(pod *v1.Pod) {
 // ContainsInPlaceReadinessGate checks whether pod.spec.readinessGates contains InPlaceUpdateReady
 func ContainsInPlaceReadinessGate(pod *v1.Pod) bool {
 	for _, r := range pod.Spec.ReadinessGates {
-		if r.ConditionType == inplaceapi.InPlaceUpdateReady {
+		if r.ConditionType == constants.InPlaceUpdateReady {
 			return true
 		}
 	}
@@ -62,7 +61,7 @@ func ContainsInPlaceReadinessGate(pod *v1.Pod) bool {
 
 // GetInPlaceCondition returns the InPlaceUpdateReady condition in Pod.
 func GetInPlaceCondition(pod *v1.Pod) *v1.PodCondition {
-	return GetPodCondition(pod, inplaceapi.InPlaceUpdateReady)
+	return GetPodCondition(pod, constants.InPlaceUpdateReady)
 }
 
 func GetPodCondition(pod *v1.Pod, cType v1.PodConditionType) *v1.PodCondition {

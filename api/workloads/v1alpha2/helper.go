@@ -25,7 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // GetCommonLabelsFromRole returns common labels for a role.

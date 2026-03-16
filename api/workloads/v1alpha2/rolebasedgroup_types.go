@@ -23,7 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"sigs.k8s.io/rbgs/pkg/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleTemplate defines a reusable Pod template that can be referenced by roles.

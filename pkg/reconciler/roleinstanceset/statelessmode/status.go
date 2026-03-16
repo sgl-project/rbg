@@ -8,7 +8,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	appsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/sync"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
@@ -17,7 +17,7 @@ import (
 
 // StatusUpdater is interface for updating InstanceSet status.
 type StatusUpdater interface {
-	UpdateInstanceSetStatus(set *appsv1alpha2.RoleInstanceSet, newStatus *appsv1alpha2.RoleInstanceSetStatus, instances []*appsv1alpha2.RoleInstance) error
+	UpdateInstanceSetStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) error
 }
 
 func newStatusUpdater(c client.Client) StatusUpdater {
@@ -28,7 +28,7 @@ type realStatusUpdater struct {
 	client.Client
 }
 
-func (r *realStatusUpdater) UpdateInstanceSetStatus(set *appsv1alpha2.RoleInstanceSet, newStatus *appsv1alpha2.RoleInstanceSetStatus, instances []*appsv1alpha2.RoleInstance) error {
+func (r *realStatusUpdater) UpdateInstanceSetStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) error {
 	r.calculateStatus(set, newStatus, instances)
 	if r.inconsistentStatus(set, newStatus) {
 		klog.Infof("To update InstanceSet status for  %s/%s, replicas=%d ready=%d available=%d updated=%d updatedReady=%d, revisions current=%s update=%s",
@@ -41,9 +41,9 @@ func (r *realStatusUpdater) UpdateInstanceSetStatus(set *appsv1alpha2.RoleInstan
 	return core.New(set).ExtraStatusCalculation(newStatus, instances)
 }
 
-func (r *realStatusUpdater) updateStatus(set *appsv1alpha2.RoleInstanceSet, newStatus *appsv1alpha2.RoleInstanceSetStatus) error {
+func (r *realStatusUpdater) updateStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		clone := &appsv1alpha2.RoleInstanceSet{}
+		clone := &workloadsv1alpha2.RoleInstanceSet{}
 		if err := r.Get(context.TODO(), types.NamespacedName{Namespace: set.Namespace, Name: set.Name}, clone); err != nil {
 			return err
 		}
@@ -53,7 +53,7 @@ func (r *realStatusUpdater) updateStatus(set *appsv1alpha2.RoleInstanceSet, newS
 	})
 }
 
-func (r *realStatusUpdater) inconsistentStatus(set *appsv1alpha2.RoleInstanceSet, newStatus *appsv1alpha2.RoleInstanceSetStatus) bool {
+func (r *realStatusUpdater) inconsistentStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus) bool {
 	oldStatus := set.Status
 	return newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
 		newStatus.Replicas != oldStatus.Replicas ||
@@ -67,7 +67,7 @@ func (r *realStatusUpdater) inconsistentStatus(set *appsv1alpha2.RoleInstanceSet
 		newStatus.LabelSelector != oldStatus.LabelSelector
 }
 
-func (r *realStatusUpdater) calculateStatus(set *appsv1alpha2.RoleInstanceSet, newStatus *appsv1alpha2.RoleInstanceSetStatus, instances []*appsv1alpha2.RoleInstance) {
+func (r *realStatusUpdater) calculateStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
 	coreControl := core.New(set)
 	for _, instance := range instances {
 		newStatus.Replicas++

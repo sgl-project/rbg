@@ -26,10 +26,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
-	"sigs.k8s.io/rbgs/pkg/constants"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
