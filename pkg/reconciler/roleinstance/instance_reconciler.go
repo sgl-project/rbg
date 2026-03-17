@@ -70,6 +70,12 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
+	// Skip reconcile if the instance is being deleted to avoid StorageError
+	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
+	if instance.DeletionTimestamp != nil {
+		return reconcile.Result{}, nil
+	}
+
 	// TODO(@yangsoon) add a gc manager to handle inActivePods
 	filteredPods, _, err := r.getOwnedPods(ctx, instance)
 	if err != nil {

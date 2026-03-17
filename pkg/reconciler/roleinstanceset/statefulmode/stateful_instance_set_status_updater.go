@@ -55,6 +55,11 @@ func (ssu *realStatefulInstanceSetStatusUpdater) UpdateInstanceSetStatus(
 	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	status *workloadsv1alpha2.RoleInstanceSetStatus) error {
+	// Skip status update if the object is being deleted to avoid StorageError
+	// caused by precondition failures when the object's UID becomes empty during deletion.
+	if set.DeletionTimestamp != nil {
+		return nil
+	}
 	// don't wait due to limited number of clients, but backoff after the default number of steps
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		set.Status = *status
@@ -65,6 +70,10 @@ func (ssu *realStatefulInstanceSetStatusUpdater) UpdateInstanceSetStatus(
 		if updated, err := ssu.setLister.RoleInstanceSets(set.Namespace).Get(set.Name); err == nil {
 			// make a copy so we don't mutate the shared cache
 			set = updated.DeepCopy()
+			// Re-check deletion timestamp after refreshing from lister
+			if set.DeletionTimestamp != nil {
+				return nil
+			}
 		} else {
 			utilruntime.HandleError(fmt.Errorf("error getting updated RoleInstanceSet %s/%s from lister: %v", set.Namespace, set.Name, err))
 		}
