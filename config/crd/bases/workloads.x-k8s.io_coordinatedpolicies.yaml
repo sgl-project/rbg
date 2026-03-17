@@ -108,7 +108,7 @@ spec:
                                 replicas are scheduled during scaling.
                               enum:
                               - OrderScheduled
-                              - Parallel
+                              - OrderReady
                               type: string
                           type: object
                       type: object
