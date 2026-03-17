@@ -35,6 +35,15 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            - --webhook-service-name=webhook-service
+            - --webhook-service-namespace=system
+            - --webhook-cert-secret=rbgs-webhook-cert
+            - --webhook-cert-dir=/tmp/k8s-webhook-server/certs
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           command:
             - /manager
           image: controller:latest
