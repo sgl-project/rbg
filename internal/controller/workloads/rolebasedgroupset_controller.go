@@ -388,7 +388,7 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	return r.needsTemplateAnnotationUpdate(rbgset, rbg)
 }
 
-// needsTemplateLabelUpdate checks if the RBG labels need to be updated to match GroupTemplate.Labels.
+// needsTemplateLabelUpdate checks if the RBG labels need to be updated to match Template.Labels.
 // System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are excluded from comparison.
 func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -412,7 +412,7 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
 	return false
 }
 
-// needsTemplateAnnotationUpdate checks if the RBG annotations need to be updated to match GroupTemplate.Annotations.
+// needsTemplateAnnotationUpdate checks if the RBG annotations need to be updated to match Template.Annotations.
 func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
@@ -478,19 +478,19 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	return utilerrors.NewAggregate(allErrs)
 }
 
-// syncRBGMetadata syncs the labels and annotations from GroupTemplate to the child RBG.
+// syncRBGMetadata syncs the labels and annotations from Template to the child RBG.
 // System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are preserved.
 func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) {
-	// Sync labels: start from system-managed labels, then apply template labels on top.
-	newLabels := map[string]string{
-		constants.GroupSetNameLabelKey:  rbgset.Name,
-		constants.GroupSetIndexLabelKey: rbg.Labels[constants.GroupSetIndexLabelKey],
-	}
+	// Sync labels: merge template labels first, then overwrite with system-managed labels
+	// to ensure system labels cannot be overridden by template labels.
+	newLabels := make(map[string]string, len(rbgset.Spec.GroupTemplate.Labels)+2)
 	for k, v := range rbgset.Spec.GroupTemplate.Labels {
 		newLabels[k] = v
 	}
+	newLabels[constants.GroupSetNameLabelKey] = rbgset.Name
+	newLabels[constants.GroupSetIndexLabelKey] = rbg.Labels[constants.GroupSetIndexLabelKey]
 	rbg.Labels = newLabels
 
 	// Sync annotations: replace with exactly what the template specifies.
@@ -507,14 +507,14 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 
 // newRBGForSet creates a new RoleBasedGroup object based on the set's template.
 func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workloadsv1alpha2.RoleBasedGroup {
-	// Start with system-managed labels, then merge template labels on top.
-	rbgLabels := map[string]string{
-		constants.GroupSetNameLabelKey:  rbgset.Name,
-		constants.GroupSetIndexLabelKey: fmt.Sprintf("%d", index),
-	}
+	// Merge template labels first, then overwrite with system-managed labels to ensure
+	// system labels cannot be overridden by template labels.
+	rbgLabels := make(map[string]string, len(rbgset.Spec.GroupTemplate.Labels)+2)
 	for k, v := range rbgset.Spec.GroupTemplate.Labels {
 		rbgLabels[k] = v
 	}
+	rbgLabels[constants.GroupSetNameLabelKey] = rbgset.Name
+	rbgLabels[constants.GroupSetIndexLabelKey] = fmt.Sprintf("%d", index)
 
 	// Copy annotations from the template.
 	var rbgAnnotations map[string]string

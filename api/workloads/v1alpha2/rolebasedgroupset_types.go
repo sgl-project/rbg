@@ -32,7 +32,7 @@ type RoleBasedGroupTemplateSpec struct {
 
 	// Spec defines the desired behavior of the RoleBasedGroup.
 	// +optional
-	Spec RoleBasedGroupSpec `json:"spec,omitempty"`
+	Spec RoleBasedGroupSpec `json:"spec"`
 }
 
 // RoleBasedGroupSetSpec defines the desired state of RoleBasedGroupSet.
