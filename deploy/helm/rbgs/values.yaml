@@ -5,7 +5,7 @@ replicaCount: 2
 image:
   repository: rolebasedgroup/rbgs-controller
   pullPolicy: IfNotPresent
-  tag: v0.6.0-3a4e178
+  tag: v0.7.0-3a4e178
 
 imagePullSecrets: []
 
@@ -46,7 +46,7 @@ crdUpgrade:
   ttlSecondsAfterFinished: 259200
   # CRD Upgrader image configuration
   repository: rolebasedgroup/rbgs-upgrade-crd
-  tag: v0.6.0-3a4e178
+  tag: v0.7.0-3a4e178
   imagePullPolicy: IfNotPresent
   # Tolerations for CRD Upgrader Job pod
   tolerations:
