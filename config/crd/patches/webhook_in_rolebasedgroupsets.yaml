@@ -1,0 +1,24 @@
+# Enables conversion webhook for RoleBasedGroupSet CRD.
+# Applied by config/crd/kustomization.yaml when [WEBHOOK] sections are uncommented.
+#
+# WARNING: The `namespace: system` and `name: webhook-service` fields below are
+# Kustomize placeholders. They are rewritten at render time by kustomizeconfig.yaml:
+#   - namespace: system   → replaced with the Kustomize `namespace:` value (e.g. rbgs-system)
+#   - name: webhook-service → prefixed with `namePrefix:` (e.g. rbgs-webhook-service)
+# Do NOT apply this file directly; always use `kustomize build config/default`.
+# For Helm deployments the crd-conversion-patch.yaml hook handles the substitution.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rolebasedgroupsets.workloads.x-k8s.io
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      conversionReviewVersions:
+      - v1
+      clientConfig:
+        service:
+          namespace: system
+          name: webhook-service
+          path: /convert

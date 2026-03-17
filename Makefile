@@ -83,7 +83,7 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet ## Run tests.
-	go test $$(go list ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
+	go test $$(go list ./api/... ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
 	go tool cover -func=cover.out | awk '/^total:/ {print $$3}'
 
 .PHONY: test-envtest
@@ -120,7 +120,7 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 # Build docker images
 DOCKER_BUILD := docker-build-controller
-DOCKER_BUILD += docker-build-crd-upgrader
+# DOCKER_BUILD += docker-build-crd-upgrader
 DOCKER_BUILD_BENCHMARK := docker-build-benchmark-dashboard
 DOCKER_BUILD_BENCHMARK += docker-build-benchmark-tool-genai
 
@@ -137,7 +137,9 @@ GOSUMDB    ?=
 DOCKER_BUILD_ARGS := \
 	--build-arg GOPROXY=$(GOPROXY) \
 	--build-arg GOPRIVATE=$(GOPRIVATE) \
-	--build-arg GOSUMDB=$(GOSUMDB)
+	--build-arg GOSUMDB=$(GOSUMDB) \
+	$(if $(TARGETARCH),--build-arg TARGETARCH=$(TARGETARCH)) \
+	$(if $(TARGETOS),--build-arg TARGETOS=$(TARGETOS))
 
 # ldflags
 VERSION_PKG=sigs.k8s.io/rbgs/version
@@ -293,7 +295,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${RBG_CONTROLLER_IMG}:${TAG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/default | $(KUBECTL) apply --server-side -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
