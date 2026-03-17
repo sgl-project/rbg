@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -595,5 +596,130 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "serving-v2hbfa5wai",
+			Namespace: "project-infra",
+		},
+	}
+	role := &workloadsv1alpha2.RoleSpec{
+		Name: "integrate",
+		Workload: workloadsv1alpha2.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleInstanceSet",
+		},
+	}
+	podSpec := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "main",
+					Image: "test-image",
+					Env: []corev1.EnvVar{
+						{
+							Name:  "EXISTING_VAR",
+							Value: "existing-value",
+						},
+						{
+							Name:  constants.EnvRBGLeaderAddress,
+							Value: "stale-leader-address",
+						},
+						{
+							Name:  constants.EnvRBGRoleInstanceName,
+							Value: "stale-instance-name",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	injector := NewDefaultInjector(scheme, fakeClient)
+
+	if err := injector.InjectEnv(context.Background(), podSpec, rbg, role); err != nil {
+		t.Fatalf("InjectEnv() error = %v", err)
+	}
+	if err := injector.InjectLeaderWorkerSetEnv(context.Background(), podSpec, rbg, role); err != nil {
+		t.Fatalf("InjectLeaderWorkerSetEnv() error = %v", err)
+	}
+
+	expectedEnvVars := []corev1.EnvVar{
+		{
+			Name:  "EXISTING_VAR",
+			Value: "existing-value",
+		},
+		{
+			Name: constants.EnvRBGComponentIndex,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIDLabelKey),
+				},
+			},
+		},
+		{
+			Name: constants.EnvRBGComponentName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentNameLabelKey),
+				},
+			},
+		},
+		{
+			Name:  constants.EnvRBGGroupName,
+			Value: rbg.Name,
+		},
+		{
+			Name: constants.EnvRBGRoleIndex,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceIndexLabelKey),
+				},
+			},
+		},
+		{
+			Name: constants.EnvRBGRoleInstanceName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceNameLabelKey),
+				},
+			},
+		},
+		{
+			Name:  constants.EnvRBGRoleName,
+			Value: role.Name,
+		},
+		{
+			Name:  constants.EnvRBGLeaderAddress,
+			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, rbg.GetServiceName(role), rbg.Namespace),
+		},
+		{
+			Name: constants.EnvRBGIndex,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIndexLabelKey),
+				},
+			},
+		},
+		{
+			Name: constants.EnvRBGSize,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentSizeLabelKey),
+				},
+			},
+		},
+	}
+
+	if diff := cmp.Diff(expectedEnvVars, podSpec.Spec.Containers[0].Env); diff != "" {
+		t.Fatalf("Environment variables mismatch (-want +got):\n%s", diff)
 	}
 }

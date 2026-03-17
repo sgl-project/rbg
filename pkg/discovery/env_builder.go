@@ -78,7 +78,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 				Name: constants.EnvRBGRoleIndex,
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
-						FieldPath: "metadata.labels['apps.kubernetes.io/pod-index']",
+						FieldPath: g.roleIndexFieldPath(),
 					},
 				},
 			})
@@ -114,4 +114,12 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 	}
 
 	return envVars
+}
+
+func (g *EnvBuilder) roleIndexFieldPath() string {
+	if g.role != nil && g.role.Workload.String() == constants.RoleInstanceSetWorkloadType {
+		return fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceIndexLabelKey)
+	}
+
+	return "metadata.labels['apps.kubernetes.io/pod-index']"
 }
