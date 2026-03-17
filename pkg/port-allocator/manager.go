@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package port_allocator
 
 import (
@@ -15,22 +31,21 @@ import (
 // PortManager manages port allocation for an Instance
 // It handles both Dynamic and Static port allocation
 // Dynamic ports are always stored in the Instance-level ConfigMap
-// Static ports are stored in the InstanceSet-level ConfigMap if the Instance is managed by an InstanceSet,
-// otherwise they are stored in the Instance-level ConfigMap
+// Static ports are stored in the InstanceSet-level ConfigMap
 type PortManager struct {
 	client   client.Client
 	instance client.Object
-	// instanceCM stores Dynamic ports (always instance-<instance-name>-ports)
+	// instanceCM stores Dynamic ports
+	// Format: instance-<instance-name>-ports
 	instanceCM *corev1.ConfigMap
-	// instanceSetCM stores Static ports (only set if Instance is managed by InstanceSet)
+	// instanceSetCM stores Static ports
 	// Format: instanceset-<instanceset-name>-ports
 	instanceSetCM *corev1.ConfigMap
-	// instanceSetName is the name of the InstanceSet that owns this Instance (empty if standalone)
+	// instanceSetName is the name of the InstanceSet that owns this Instance
 	instanceSetName string
 }
 
 // NewPortManager creates a new PortManager for an Instance
-// It automatically determines the ConfigMap(s) needed based on Instance's OwnerReferences
 func NewPortManager(ctx context.Context, k8sClient client.Client, instance client.Object) (*PortManager, error) {
 	instanceName := instance.GetName()
 	namespace := instance.GetNamespace()
@@ -42,8 +57,7 @@ func NewPortManager(ctx context.Context, k8sClient client.Client, instance clien
 		return nil, fmt.Errorf("failed to get/create instance port ConfigMap: %w", err)
 	}
 
-	// Check if Instance is managed by an InstanceSet
-	instanceSetName := GetInstanceSetOwnerName(instance)
+	instanceSetName := getInstanceSetOwnerName(instance)
 	var instanceSetCM *corev1.ConfigMap
 
 	if instanceSetName != "" {
@@ -65,113 +79,164 @@ func NewPortManager(ctx context.Context, k8sClient client.Client, instance clien
 }
 
 // AllocatePortsForPod allocates both dynamic and static ports for a pod
-// componentName is the component name of the pod, used for static port key
 func (m *PortManager) AllocatePortsForPod(ctx context.Context, pod *corev1.Pod, config *PortAllocatorConfig, componentName string) error {
 	if config == nil {
 		return nil
 	}
 
-	var dynamicPortsToAllocate []PortAllocation
-	var staticPortsToAllocate []PortAllocation
-	var portsToPreAllocate []PortReference
+	staticCM := m.getStaticPortConfigMap()
 
-	// Process Dynamic allocations - stored in instanceCM
-	for _, alloc := range config.GetDynamicAllocations() {
-		key := FormatDynamicPortKey(pod.Name, alloc.Name)
-		if _, exists := GetPortFromConfigMap(m.instanceCM, key); !exists {
-			dynamicPortsToAllocate = append(dynamicPortsToAllocate, alloc)
+	// Collect ports that need allocation
+	dynamicToAlloc := m.collectMissingDynamicPorts(config, pod.Name)
+	staticToAlloc := m.collectMissingStaticPorts(config, componentName, staticCM)
+	refToAlloc := m.collectMissingReferencePorts(config, pod)
+
+	// Allocate and build change maps
+	instanceCMAdds, err := m.allocateDynamicPorts(dynamicToAlloc, pod.Name)
+	if err != nil {
+		return fmt.Errorf("failed to allocate dynamic ports: %w", err)
+	}
+
+	staticCMAdds, err := m.allocateStaticPorts(staticToAlloc, componentName)
+	if err != nil {
+		return fmt.Errorf("failed to allocate static ports: %w", err)
+	}
+
+	refAdds, err := m.allocateReferencePorts(refToAlloc, pod)
+	if err != nil {
+		return fmt.Errorf("failed to allocate reference ports: %w", err)
+	}
+
+	// Merge reference port adds into instanceCMAdds
+	if len(refAdds) > 0 {
+		if instanceCMAdds == nil {
+			instanceCMAdds = refAdds
+		} else {
+			for k, v := range refAdds {
+				instanceCMAdds[k] = v
+			}
 		}
 	}
 
-	// Process Static allocations - stored in instanceSetCM if managed, otherwise instanceCM
-	staticCM := m.getStaticPortConfigMap()
+	// Apply changes to ConfigMaps
+	if err := m.applyConfigMapChanges(ctx, m.instanceCM, instanceCMAdds, nil); err != nil {
+		return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
+	}
+
+	if err := m.applyConfigMapChanges(ctx, staticCM, staticCMAdds, nil); err != nil {
+		return fmt.Errorf("failed to update static port ConfigMap: %w", err)
+	}
+
+	return nil
+}
+
+// collectMissingDynamicPorts returns dynamic port allocations that don't exist in the ConfigMap
+func (m *PortManager) collectMissingDynamicPorts(config *PortAllocatorConfig, podName string) []PortAllocation {
+	var result []PortAllocation
+	for _, alloc := range config.GetDynamicAllocations() {
+		key := FormatDynamicPortKey(podName, alloc.Name)
+		if _, exists := GetPortFromConfigMap(m.instanceCM, key); !exists {
+			result = append(result, alloc)
+		}
+	}
+	return result
+}
+
+// collectMissingStaticPorts returns static port allocations that don't exist in the ConfigMap
+func (m *PortManager) collectMissingStaticPorts(config *PortAllocatorConfig, componentName string, cm *corev1.ConfigMap) []PortAllocation {
+	var result []PortAllocation
 	for _, alloc := range config.GetStaticAllocations() {
 		key := FormatStaticPortKey(componentName, alloc.Name)
-		if _, exists := GetPortFromConfigMap(staticCM, key); !exists {
-			staticPortsToAllocate = append(staticPortsToAllocate, alloc)
+		if _, exists := GetPortFromConfigMap(cm, key); !exists {
+			result = append(result, alloc)
 		}
 	}
+	return result
+}
 
-	// Process References - pre-allocate if not exists (stored in instanceCM as dynamic ports)
+// collectMissingReferencePorts returns reference ports that don't exist in the ConfigMap
+func (m *PortManager) collectMissingReferencePorts(config *PortAllocatorConfig, pod *corev1.Pod) []PortReference {
+	var result []PortReference
 	for _, ref := range config.References {
-		componentName, portName, err := ParseReference(ref.From)
+		compName, portName, err := ParseReference(ref.From)
 		if err != nil {
 			klog.V(2).InfoS("Failed to parse reference", "from", ref.From, "error", err)
 			continue
 		}
 
-		// Build the key for the referenced port
-		// We need to find the pod name for the referenced component
-		refPodName := m.getReferencePodName(pod, componentName)
+		refPodName := m.getReferencePodName(pod, compName)
 		if refPodName == "" {
-			// Cannot determine pod name, skip for now
-			klog.V(2).InfoS("Cannot determine reference pod name", "component", componentName, "pod", klog.KObj(pod))
+			klog.V(2).InfoS("Cannot determine reference pod name", "component", compName, "pod", klog.KObj(pod))
 			continue
 		}
 
 		key := FormatDynamicPortKey(refPodName, portName)
 		if _, exists := GetPortFromConfigMap(m.instanceCM, key); !exists {
-			portsToPreAllocate = append(portsToPreAllocate, ref)
+			result = append(result, ref)
 		}
 	}
+	return result
+}
 
-	// Allocate new dynamic ports
-	if len(dynamicPortsToAllocate) > 0 {
-		allocatedPorts, err := AllocateBatch(int32(len(dynamicPortsToAllocate)))
-		if err != nil {
-			return fmt.Errorf("failed to allocate dynamic ports: %w", err)
-		}
-
-		for i, alloc := range dynamicPortsToAllocate {
-			key := FormatDynamicPortKey(pod.Name, alloc.Name)
-			SetPortInConfigMap(m.instanceCM, key, strconv.Itoa(int(allocatedPorts[i])))
-		}
+// allocateDynamicPorts allocates ports for the given allocations and returns a key->value map
+func (m *PortManager) allocateDynamicPorts(allocs []PortAllocation, podName string) (map[string]string, error) {
+	if len(allocs) == 0 {
+		return nil, nil
 	}
 
-	// Allocate new static ports
-	if len(staticPortsToAllocate) > 0 {
-		allocatedPorts, err := AllocateBatch(int32(len(staticPortsToAllocate)))
-		if err != nil {
-			return fmt.Errorf("failed to allocate static ports: %w", err)
-		}
-
-		for i, alloc := range staticPortsToAllocate {
-			key := FormatStaticPortKey(componentName, alloc.Name)
-			SetPortInConfigMap(staticCM, key, strconv.Itoa(int(allocatedPorts[i])))
-		}
+	ports, err := AllocateBatch(int32(len(allocs)))
+	if err != nil {
+		return nil, err
 	}
 
-	// Pre-allocate reference ports
-	if len(portsToPreAllocate) > 0 {
-		allocatedPorts, err := AllocateBatch(int32(len(portsToPreAllocate)))
-		if err != nil {
-			return fmt.Errorf("failed to allocate reference ports: %w", err)
-		}
+	result := make(map[string]string, len(allocs))
+	for i, alloc := range allocs {
+		key := FormatDynamicPortKey(podName, alloc.Name)
+		result[key] = strconv.Itoa(int(ports[i]))
+	}
+	return result, nil
+}
 
-		for i, ref := range portsToPreAllocate {
-			refComponentName, portName, _ := ParseReference(ref.From)
-			refPodName := m.getReferencePodName(pod, refComponentName)
-			if refPodName != "" {
-				key := FormatDynamicPortKey(refPodName, portName)
-				SetPortInConfigMap(m.instanceCM, key, strconv.Itoa(int(allocatedPorts[i])))
-			}
-		}
+// allocateStaticPorts allocates ports for the given allocations and returns a key->value map
+func (m *PortManager) allocateStaticPorts(allocs []PortAllocation, componentName string) (map[string]string, error) {
+	if len(allocs) == 0 {
+		return nil, nil
 	}
 
-	// Update ConfigMaps if there were changes
-	if len(dynamicPortsToAllocate) > 0 || len(portsToPreAllocate) > 0 {
-		if err := UpdatePortConfigMap(ctx, m.client, m.instanceCM); err != nil {
-			return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
-		}
+	ports, err := AllocateBatch(int32(len(allocs)))
+	if err != nil {
+		return nil, err
 	}
 
-	if len(staticPortsToAllocate) > 0 {
-		if err := UpdatePortConfigMap(ctx, m.client, staticCM); err != nil {
-			return fmt.Errorf("failed to update static port ConfigMap: %w", err)
-		}
+	result := make(map[string]string, len(allocs))
+	for i, alloc := range allocs {
+		key := FormatStaticPortKey(componentName, alloc.Name)
+		result[key] = strconv.Itoa(int(ports[i]))
+	}
+	return result, nil
+}
+
+// allocateReferencePorts allocates ports for the given references and returns a key->value map
+func (m *PortManager) allocateReferencePorts(refs []PortReference, pod *corev1.Pod) (map[string]string, error) {
+	if len(refs) == 0 {
+		return nil, nil
 	}
 
-	return nil
+	ports, err := AllocateBatch(int32(len(refs)))
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(refs))
+	for i, ref := range refs {
+		compName, portName, _ := ParseReference(ref.From)
+		refPodName := m.getReferencePodName(pod, compName)
+		if refPodName != "" {
+			key := FormatDynamicPortKey(refPodName, portName)
+			result[key] = strconv.Itoa(int(ports[i]))
+		}
+	}
+	return result, nil
 }
 
 // InjectPortsIntoPod injects allocated ports into the pod spec
@@ -280,6 +345,8 @@ func (m *PortManager) ReleasePodDynamicPorts(ctx context.Context, pod *corev1.Po
 		return nil
 	}
 
+	// Collect keys to remove and release ports from the in-memory allocator first.
+	keysToRemove := make([]string, 0, len(dynamicAllocations))
 	for _, alloc := range dynamicAllocations {
 		key := FormatDynamicPortKey(pod.Name, alloc.Name)
 		portStr, exists := GetPortFromConfigMap(m.instanceCM, key)
@@ -292,18 +359,23 @@ func (m *PortManager) ReleasePodDynamicPorts(ctx context.Context, pod *corev1.Po
 			continue
 		}
 
-		// Release the port
+		// Release the port from the in-memory allocator (idempotent, safe outside retry).
 		if err := Release(int32(port)); err != nil {
 			klog.V(2).InfoS("Failed to release port", "port", port, "error", err)
 		}
 
-		// Remove from ConfigMap
-		RemovePortFromConfigMap(m.instanceCM, key)
+		keysToRemove = append(keysToRemove, key)
 	}
 
-	// Update ConfigMap
-	if err := UpdatePortConfigMap(ctx, m.client, m.instanceCM); err != nil {
-		return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
+	// Update ConfigMap with retry-on-conflict
+	if len(keysToRemove) > 0 {
+		if err := UpdatePortConfigMap(ctx, m.client, m.instanceCM, func(cm *corev1.ConfigMap) {
+			for _, key := range keysToRemove {
+				RemovePortFromConfigMap(cm, key)
+			}
+		}); err != nil {
+			return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
+		}
 	}
 
 	return nil
@@ -316,104 +388,111 @@ func (m *PortManager) SyncPortAllocations(ctx context.Context, pod *corev1.Pod, 
 		return nil
 	}
 
-	// Build sets of old and new port names
-	oldDynamicPorts := sets.NewString()
-	oldStaticPorts := sets.NewString()
-	newDynamicPorts := sets.NewString()
-	newStaticPorts := sets.NewString()
+	oldDynamic, oldStatic := buildPortNameSets(oldConfig)
+	newDynamic, newStatic := buildPortNameSets(newConfig)
 
-	if oldConfig != nil {
-		for _, alloc := range oldConfig.GetDynamicAllocations() {
-			oldDynamicPorts.Insert(alloc.Name)
-		}
-		for _, alloc := range oldConfig.GetStaticAllocations() {
-			oldStaticPorts.Insert(alloc.Name)
-		}
-	}
-
-	if newConfig != nil {
-		for _, alloc := range newConfig.GetDynamicAllocations() {
-			newDynamicPorts.Insert(alloc.Name)
-		}
-		for _, alloc := range newConfig.GetStaticAllocations() {
-			newStaticPorts.Insert(alloc.Name)
-		}
-	}
-
-	// Find ports to add and remove
-	dynamicToAdd := newDynamicPorts.Difference(oldDynamicPorts)
-	dynamicToRemove := oldDynamicPorts.Difference(newDynamicPorts)
-	staticToAdd := newStaticPorts.Difference(oldStaticPorts)
-	staticToRemove := oldStaticPorts.Difference(newStaticPorts)
+	dynamicToAdd := newDynamic.Difference(oldDynamic)
+	dynamicToRemove := oldDynamic.Difference(newDynamic)
+	staticToAdd := newStatic.Difference(oldStatic)
+	staticToRemove := oldStatic.Difference(newStatic)
 
 	staticCM := m.getStaticPortConfigMap()
 
-	// Allocate new dynamic ports
-	if dynamicToAdd.Len() > 0 {
-		ports, err := AllocateBatch(int32(dynamicToAdd.Len()))
-		if err != nil {
-			return fmt.Errorf("failed to allocate new dynamic ports: %w", err)
-		}
-
-		i := 0
-		for _, name := range dynamicToAdd.List() {
-			key := FormatDynamicPortKey(pod.Name, name)
-			SetPortInConfigMap(m.instanceCM, key, strconv.Itoa(int(ports[i])))
-			i++
-		}
+	instanceCMAdds, err := m.allocatePortsToMap(dynamicToAdd, pod.Name, FormatDynamicPortKey)
+	if err != nil {
+		return fmt.Errorf("failed to allocate new dynamic ports: %w", err)
+	}
+	staticCMAdds, err := m.allocatePortsToMap(staticToAdd, componentName, FormatStaticPortKey)
+	if err != nil {
+		return fmt.Errorf("failed to allocate new static ports: %w", err)
 	}
 
-	// Allocate new static ports
-	if staticToAdd.Len() > 0 {
-		ports, err := AllocateBatch(int32(staticToAdd.Len()))
-		if err != nil {
-			return fmt.Errorf("failed to allocate new static ports: %w", err)
-		}
+	instanceCMRemoves := m.collectPortsToRemove(dynamicToRemove, m.instanceCM, pod.Name, FormatDynamicPortKey)
+	staticCMRemoves := m.collectPortsToRemove(staticToRemove, staticCM, componentName, FormatStaticPortKey)
 
-		i := 0
-		for _, name := range staticToAdd.List() {
-			key := FormatStaticPortKey(componentName, name)
-			SetPortInConfigMap(staticCM, key, strconv.Itoa(int(ports[i])))
-			i++
-		}
+	if err := m.applyConfigMapChanges(ctx, m.instanceCM, instanceCMAdds, instanceCMRemoves); err != nil {
+		return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
 	}
 
-	// Release removed dynamic ports
-	for _, name := range dynamicToRemove.List() {
-		key := FormatDynamicPortKey(pod.Name, name)
-		if portStr, exists := GetPortFromConfigMap(m.instanceCM, key); exists {
-			if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
-				Release(int32(port))
-			}
-			RemovePortFromConfigMap(m.instanceCM, key)
-		}
-	}
-
-	// Release removed static ports
-	for _, name := range staticToRemove.List() {
-		key := FormatStaticPortKey(componentName, name)
-		if portStr, exists := GetPortFromConfigMap(staticCM, key); exists {
-			if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
-				Release(int32(port))
-			}
-			RemovePortFromConfigMap(staticCM, key)
-		}
-	}
-
-	// Update ConfigMaps if there were changes
-	if dynamicToAdd.Len() > 0 || dynamicToRemove.Len() > 0 {
-		if err := UpdatePortConfigMap(ctx, m.client, m.instanceCM); err != nil {
-			return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
-		}
-	}
-
-	if staticToAdd.Len() > 0 || staticToRemove.Len() > 0 {
-		if err := UpdatePortConfigMap(ctx, m.client, staticCM); err != nil {
-			return fmt.Errorf("failed to update static port ConfigMap: %w", err)
-		}
+	if err := m.applyConfigMapChanges(ctx, staticCM, staticCMAdds, staticCMRemoves); err != nil {
+		return fmt.Errorf("failed to update static port ConfigMap: %w", err)
 	}
 
 	return nil
+}
+
+// portKeyFormatter formats a port key given an owner name and port name
+type portKeyFormatter func(ownerName, portName string) string
+
+// buildPortNameSets extracts dynamic and static port name sets from a config
+func buildPortNameSets(config *PortAllocatorConfig) (dynamic, static sets.Set[string]) {
+	dynamic = sets.New[string]()
+	static = sets.New[string]()
+	if config == nil {
+		return
+	}
+	for _, alloc := range config.GetDynamicAllocations() {
+		dynamic.Insert(alloc.Name)
+	}
+	for _, alloc := range config.GetStaticAllocations() {
+		static.Insert(alloc.Name)
+	}
+	return
+}
+
+// allocatePortsToMap allocates ports for the given port names and returns a key->value map
+func (m *PortManager) allocatePortsToMap(portNames sets.Set[string], ownerName string, keyFmt portKeyFormatter) (map[string]string, error) {
+	if portNames.Len() == 0 {
+		return nil, nil
+	}
+
+	ports, err := AllocateBatch(int32(portNames.Len()))
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, portNames.Len())
+	for i, name := range portNames.UnsortedList() {
+		key := keyFmt(ownerName, name)
+		result[key] = strconv.Itoa(int(ports[i]))
+	}
+	return result, nil
+}
+
+// collectPortsToRemove releases ports from the in-memory allocator and returns keys to remove from ConfigMap
+func (m *PortManager) collectPortsToRemove(portNames sets.Set[string], cm *corev1.ConfigMap, ownerName string, keyFmt portKeyFormatter) []string {
+	if portNames.Len() == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, portNames.Len())
+	for _, name := range portNames.UnsortedList() {
+		key := keyFmt(ownerName, name)
+		if portStr, exists := GetPortFromConfigMap(cm, key); exists {
+			if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
+				if err := Release(int32(port)); err != nil {
+					klog.V(2).InfoS("Failed to release port", "port", port, "error", err)
+				}
+			}
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// applyConfigMapChanges applies adds and removes to a ConfigMap with retry-on-conflict
+func (m *PortManager) applyConfigMapChanges(ctx context.Context, cm *corev1.ConfigMap, adds map[string]string, removes []string) error {
+	if len(adds) == 0 && len(removes) == 0 {
+		return nil
+	}
+	return UpdatePortConfigMap(ctx, m.client, cm, func(cm *corev1.ConfigMap) {
+		for k, v := range adds {
+			SetPortInConfigMap(cm, k, v)
+		}
+		for _, key := range removes {
+			RemovePortFromConfigMap(cm, key)
+		}
+	})
 }
 
 // getStaticPortConfigMap returns the ConfigMap for static ports
@@ -485,19 +564,18 @@ func appendOrReplaceEnv(envs []corev1.EnvVar, newEnv corev1.EnvVar) []corev1.Env
 	return append(envs, newEnv)
 }
 
-// GetInstanceSetOwnerName returns the name of the InstanceSet that owns this Instance
-func GetInstanceSetOwnerName(instance client.Object) string {
+// getInstanceSetOwnerName returns the name of the InstanceSet that owns this Instance
+func getInstanceSetOwnerName(instance client.Object) string {
 	if instance == nil {
 		return ""
 	}
 
 	ownerRefs := instance.GetOwnerReferences()
 	for _, ref := range ownerRefs {
-		if ref.Kind == "InstanceSet" && ref.APIVersion == "workloads.x-k8s.io/v1alpha1" {
+		if ref.Kind == "RoleInstanceSet" {
 			return ref.Name
 		}
 	}
-
 	return ""
 }
 

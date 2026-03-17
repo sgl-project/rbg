@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package port_allocator
 
 import (
@@ -260,23 +276,23 @@ func TestGetStaticAllocations(t *testing.T) {
 
 func TestParseReference(t *testing.T) {
 	tests := []struct {
-		name        string
-		from        string
-		expectError bool
-		expectRole  string
-		expectPort  string
+		name            string
+		from            string
+		expectError     bool
+		expectComponent string
+		expectPort      string
 	}{
 		{
-			name:       "valid reference",
-			from:       "leader.leader-port",
-			expectRole: "leader",
-			expectPort: "leader-port",
+			name:            "valid reference",
+			from:            "leader.leader-port",
+			expectComponent: "leader",
+			expectPort:      "leader-port",
 		},
 		{
-			name:       "valid reference with numbers",
-			from:       "worker-0.grpc-port",
-			expectRole: "worker-0",
-			expectPort: "grpc-port",
+			name:            "valid reference with numbers",
+			from:            "worker-0.grpc-port",
+			expectComponent: "worker-0",
+			expectPort:      "grpc-port",
 		},
 		{
 			name:        "empty reference",
@@ -289,7 +305,7 @@ func TestParseReference(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:        "missing role name",
+			name:        "missing component name",
 			from:        ".port",
 			expectError: true,
 		},
@@ -302,12 +318,12 @@ func TestParseReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			role, port, err := ParseReference(tt.from)
+			component, port, err := ParseReference(tt.from)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.expectRole, role)
+				assert.Equal(t, tt.expectComponent, component)
 				assert.Equal(t, tt.expectPort, port)
 			}
 		})
@@ -319,7 +335,7 @@ func TestFormatPortKey(t *testing.T) {
 	dynamicKey := FormatDynamicPortKey("pod-0", "grpc-port")
 	assert.Equal(t, "pod-0.grpc-port", dynamicKey)
 
-	// Test static port key (now uses role name as prefix)
+	// Test static port key (now uses component name as prefix)
 	staticKey := FormatStaticPortKey("leader", "http-port")
 	assert.Equal(t, "leader.http-port", staticKey)
 }

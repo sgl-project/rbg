@@ -55,9 +55,8 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 	set := &v1alpha2.RoleInstanceSet{}
 	if err := r.client.Get(ctx, request.NamespacedName, set); err != nil {
 		if errors.IsNotFound(err) {
-			if cleanupErr := r.cleanupInstanceSetPortsOnDeletion(ctx, request.Namespace, request.Name); cleanupErr != nil {
-				klog.ErrorS(cleanupErr, "Failed to cleanup port ConfigMap for deleted InstanceSet", "instanceSet", request.NamespacedName)
-				// Requeue to retry cleanup
+			if cleanupErr := r.cleanupSubresources(ctx, request.Namespace, request.Name); cleanupErr != nil {
+				klog.ErrorS(cleanupErr, "Failed to cleanup subresources for deleted InstanceSet", "instanceSet", request.NamespacedName)
 				return reconcile.Result{RequeueAfter: 10 * time.Second}, cleanupErr
 			}
 			return reconcile.Result{}, nil
@@ -102,9 +101,9 @@ func (r *RoleInstanceSetReconciler) SetupWithManager(mgr ctrl.Manager, options c
 		Complete(r)
 }
 
-// cleanupInstanceSetPortsOnDeletion handles port release and ConfigMap cleanup when InstanceSet has been deleted
-func (r *RoleInstanceSetReconciler) cleanupInstanceSetPortsOnDeletion(ctx context.Context, namespace, name string) error {
-	// Release all ports and delete the InstanceSet-level ConfigMap
-	cmName := portallocator.GetInstanceSetPortConfigMapName(name)
-	return portallocator.ReleasePortsAndDeleteCM(ctx, r.client, namespace, cmName)
+func (r *RoleInstanceSetReconciler) cleanupSubresources(ctx context.Context, namespace, name string) error {
+	if err := portallocator.CleanupInstanceSetPorts(ctx, r.client, namespace, name); err != nil {
+		return err
+	}
+	return nil
 }

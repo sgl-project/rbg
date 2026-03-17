@@ -47,7 +47,7 @@ If each replica can use different ports, I can complete the deployment with fewe
 
 ### Risks and Mitigations
 
-- The dynamic port allocation feature is only supported in *InstanceSet* mode.
+- The dynamic port allocation feature is only supported in *RoleInstanceSet* mode.
 
 ## Design Details
 When the Role of an RBG resource is InstanceSet, the resource directly associated with the Pod is the Instance resource.
@@ -124,8 +124,8 @@ For example, when using the following configuration:
     - **Static Port** (`WORKER_PORT2`): Shared across Pods, annotated as `test/worker-port2`
     - **Reference Port** (`LEADER_PORT_REF`): Points to leader's Port 1
 ```yaml
-apiVersion: workloads.x-k8s.io/v1alpha1
-kind: Instance
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleInstance
 metadata:
   name: test
   namespace: default
@@ -227,20 +227,14 @@ func GetPortAllocator() PortAllocatorInterface {
 
 #### ConfigMap Naming and Ownership
 
-The port allocation state is stored in ConfigMaps. Dynamic ports and Static ports may be stored in different ConfigMaps depending on the scenario:
+The port allocation state is stored in ConfigMaps. Dynamic ports and Static ports will be stored in different ConfigMaps.
 
-**Dynamic Ports ConfigMap**:
+**Ports ConfigMap**:
 
-| Scenario | ConfigMap Name |
-|----------|---------------|
-| All cases | `instance-<instance-name>-ports` |
-
-**Static Ports ConfigMap**:
-
-| Scenario | ConfigMap Name |
-|----------|---------------|
-| Instance managed by InstanceSet | `instanceset-<instanceset-name>-ports` |
-| Standalone Instance | `instance-<instance-name>-ports` |
+| Port Type | ConfigMap Name                         |
+|-----------|----------------------------------------|
+| Dynamic   | `instance-<instance-name>-ports`       |
+| Static    | `instanceset-<instanceset-name>-ports` |
 
 **ConfigMap Labels**:
 
@@ -251,9 +245,7 @@ port-allocator.workloads.x-k8s.io/managed-by: rbgs-controller-manager
 
 **Key Design Decisions**:
 - All port allocation/release logic is handled in the Instance controller
-- Dynamic ports are always stored in the Instance-level ConfigMap (`instance-<instance-name>-ports`)
-- Static ports are stored in the InstanceSet-level ConfigMap if the Instance is managed by an InstanceSet, allowing ports to be shared across all Instances in the same InstanceSet
-- For standalone Instances, Static ports are stored in the same ConfigMap as Dynamic ports
+- Dynamic ports are always stored in the Instance-level ConfigMap, while static ports are stored in the InstanceSet-level ConfigMap
 - **ConfigMaps do NOT have OwnerReferences** - this is intentional because:
   - Resources don't have finalizers, so when a parent resource is deleted, the ConfigMap would be garbage collected immediately
   - This would prevent the reconciler from reading the ConfigMap to release ports
@@ -280,9 +272,7 @@ All port allocation logic (both Dynamic and Static) is handled in the Instance r
      - Get or create ConfigMap `instance-<instance-name>-ports`
      - Allocate new port if not already allocated for this pod
   3. For **Static ports**:
-     - Check if Instance has an InstanceSet owner:
-       - If yes: Get or create ConfigMap `instanceset-<instanceset-name>-ports`
-       - If no: Use the same ConfigMap as Dynamic ports (`instance-<instance-name>-ports`)
+     - Get or create ConfigMap `instanceset-<instanceset-name>-ports`
      - Check if port already exists in ConfigMap; if not, allocate new port
   4. For each port reference:
      - Check if the referenced port already exists in the Instance-level ConfigMap
@@ -321,10 +311,10 @@ All port allocation logic (both Dynamic and Static) is handled in the Instance r
 
 Since ConfigMaps don't have OwnerReferences, they must be explicitly deleted when the parent resource is deleted:
 
-| Scenario | When to Delete ConfigMap |
-|----------|-------------------------|
-| Instance-level (`instance-<name>-ports`) | When Instance is deleted |
-| InstanceSet-level (`instanceset-<name>-ports`) | When InstanceSet is deleted |
+| Scenario                                        | When to Delete ConfigMap    |
+|-------------------------------------------------|-----------------------------|
+| Instance-level (`instance-<name>-ports`)        | When Instance is deleted    |
+| InstanceSet-level  (`instanceset-<name>-ports`) | When InstanceSet is deleted |
 
 #### Reference Port Resolution
 
@@ -338,7 +328,7 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
    - Always reference the first Pod (id=0) of the target component
 
 **Port Lookup and Pre-allocation**:
-- **Static port reference**: The port must already exist in the appropriate ConfigMap (InstanceSet-level or Instance-level). No pre-allocation needed.
+- **Static port reference**: The port must already exist in ConfigMap. No pre-allocation needed.
 - **Dynamic port reference**:
   1. Look up the key `<target-pod-name>.<port-name>` in the Instance-level ConfigMap
   2. If found, use the existing port value
@@ -364,7 +354,6 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
 
 #### Integration tests
 - End-to-end port allocation flow with Instance controller
-- Port allocation with InstanceSet ownership
 - Port release on Pod deletion
 - Port release on Instance/InstanceSet deletion
 

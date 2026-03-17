@@ -66,9 +66,8 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	if err := r.Get(ctx, request.NamespacedName, instance); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("Instance has been deleted")
-			if cleanupErr := r.cleanupInstancePortsOnDeletion(ctx, request.Namespace, request.Name); cleanupErr != nil {
-				logger.Error(cleanupErr, "Failed to cleanup port ConfigMap for deleted Instance", "instance", request.Name)
-				// Requeue to retry cleanup
+			if cleanupErr := r.cleanupSubresources(ctx, request.Namespace, request.Name); cleanupErr != nil {
+				logger.Error(cleanupErr, "Failed to cleanup subresources for deleted Instance", "instance", request.Name)
 				return reconcile.Result{RequeueAfter: 10 * time.Second}, cleanupErr
 			}
 			return reconcile.Result{}, nil
@@ -182,11 +181,11 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 	}
 }
 
-// cleanupInstancePortsOnDeletion handles port release and ConfigMap cleanup when Instance has been deleted
-func (r *reconciler) cleanupInstancePortsOnDeletion(ctx context.Context, namespace, name string) error {
-	// Release all ports and delete the Instance-level ConfigMap
-	cmName := portallocator.GetInstancePortConfigMapName(name)
-	return portallocator.ReleasePortsAndDeleteCM(ctx, r.Client, namespace, cmName)
+func (r *reconciler) cleanupSubresources(ctx context.Context, namespace, name string) error {
+	if err := portallocator.CleanupInstancePorts(ctx, r.Client, namespace, name); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *reconciler) getOwnedPods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, []*v1.Pod, error) {

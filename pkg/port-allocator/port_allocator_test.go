@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package port_allocator
 
 import (
@@ -12,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // testAllocator is a simple test implementation of PortAllocatorInterface
@@ -57,7 +73,7 @@ func (t *testAllocator) AllocateBatch(num int32) ([]int32, error) {
 // TestDynamicPortAllocationAndRelease tests dynamic port allocation and release
 func TestDynamicPortAllocationAndRelease(t *testing.T) {
 	// Setup test allocator
-	portAllocator = newTestAllocator(30000, 2768)
+	portAllocator = newTestAllocator(31000, 2000)
 
 	// Create a ConfigMap
 	cm := &corev1.ConfigMap{
@@ -411,14 +427,13 @@ func TestPortManager_InstancePortAllocation(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	// Create a standalone Instance (no InstanceSet owner)
-	instance := &workloadsv1alpha1.Instance{
+	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
 		},
-		Spec: workloadsv1alpha1.InstanceSpec{
-			Components: []workloadsv1alpha1.InstanceComponent{
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
 				{
 					Name: "leader",
 					Template: corev1.PodTemplateSpec{
@@ -445,7 +460,7 @@ func TestPortManager_InstancePortAllocation(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
 
 	// Create PortManager
@@ -463,22 +478,21 @@ func TestPortManager_InstancePortAllocation(t *testing.T) {
 	assert.False(t, pm.IsManagedByInstanceSet())
 }
 
-// TestPortManager_InstanceSetOwned tests PortManager with InstanceSet-owned Instance
+// TestPortManager_InstanceSetOwned tests PortManager with Instance
 func TestPortManager_InstanceSetOwned(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	// Create an Instance owned by InstanceSet
-	instance := &workloadsv1alpha1.Instance{
+	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instanceset-leader-0",
 			Namespace: "default",
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: "workloads.x-k8s.io/v1alpha1",
-					Kind:       "InstanceSet",
+					APIVersion: "workloads.x-k8s.io/v1alpha2",
+					Kind:       "RoleInstanceSet",
 					Name:       "test-instanceset",
 					UID:        "test-uid",
 				},
@@ -488,7 +502,7 @@ func TestPortManager_InstanceSetOwned(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
 
 	// Create PortManager
@@ -517,7 +531,7 @@ func TestPortManager_AllocateAndInjectPorts(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	instance := &workloadsv1alpha1.Instance{
+	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
@@ -526,7 +540,7 @@ func TestPortManager_AllocateAndInjectPorts(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
 
 	pm, err := NewPortManager(ctx, k8sClient, instance)
@@ -578,7 +592,7 @@ func TestPortManager_ReleasePodDynamicPorts(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	instance := &workloadsv1alpha1.Instance{
+	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
@@ -587,7 +601,7 @@ func TestPortManager_ReleasePodDynamicPorts(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
 
 	pm, err := NewPortManager(ctx, k8sClient, instance)
@@ -636,66 +650,6 @@ func TestPortManager_ReleasePodDynamicPorts(t *testing.T) {
 	assert.True(t, exists)
 }
 
-// TestGetInstanceSetOwnerName tests extracting InstanceSet owner name
-func TestGetInstanceSetOwnerName(t *testing.T) {
-	tests := []struct {
-		name         string
-		instance     *workloadsv1alpha1.Instance
-		expectedName string
-	}{
-		{
-			name: "with InstanceSet owner",
-			instance: &workloadsv1alpha1.Instance{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-instance",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: "workloads.x-k8s.io/v1alpha1",
-							Kind:       "InstanceSet",
-							Name:       "my-instanceset",
-							UID:        "test-uid",
-						},
-					},
-				},
-			},
-			expectedName: "my-instanceset",
-		},
-		{
-			name: "without owner",
-			instance: &workloadsv1alpha1.Instance{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-instance",
-				},
-			},
-			expectedName: "",
-		},
-		{
-			name: "with different owner kind",
-			instance: &workloadsv1alpha1.Instance{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-instance",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: "workloads.x-k8s.io/v1alpha1",
-							Kind:       "Instance",
-							Name:       "parent-instance",
-							UID:        "test-uid",
-						},
-					},
-				},
-			},
-			expectedName: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			name := GetInstanceSetOwnerName(tt.instance)
-			assert.Equal(t, tt.expectedName, name)
-		})
-	}
-}
-
 // TestPortManager_ReferencePortResolution tests reference port resolution
 func TestPortManager_ReferencePortResolution(t *testing.T) {
 	ctx := context.Background()
@@ -703,7 +657,7 @@ func TestPortManager_ReferencePortResolution(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	instance := &workloadsv1alpha1.Instance{
+	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
@@ -712,7 +666,7 @@ func TestPortManager_ReferencePortResolution(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
 
 	pm, err := NewPortManager(ctx, k8sClient, instance)
@@ -787,7 +741,7 @@ func TestPortManager_SyncPortAllocations(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	instance := &workloadsv1alpha1.Instance{
+	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
@@ -796,7 +750,7 @@ func TestPortManager_SyncPortAllocations(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
 
 	pm, err := NewPortManager(ctx, k8sClient, instance)
@@ -814,7 +768,6 @@ func TestPortManager_SyncPortAllocations(t *testing.T) {
 		},
 	}
 
-	// Old config
 	oldConfig := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
 			{Name: "port1", Env: "PORT1", Policy: Dynamic},
