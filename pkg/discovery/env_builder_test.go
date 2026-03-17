@@ -7,6 +7,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -108,6 +109,63 @@ func TestEnvBuilder_Build(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "RoleInstanceSet role",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-group",
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name: "role-instance-role",
+				Workload: workloadsv1alpha2.WorkloadSpec{
+					APIVersion: "workloads.x-k8s.io/v1alpha2",
+					Kind:       "RoleInstanceSet",
+				},
+			},
+			expected: []corev1.EnvVar{
+				{
+					Name:  "RBG_GROUP_NAME",
+					Value: "test-group",
+				},
+				{
+					Name:  "RBG_ROLE_NAME",
+					Value: "role-instance-role",
+				},
+				{
+					Name: "RBG_ROLE_INDEX",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['rbg.workloads.x-k8s.io/role-instance-index']",
+						},
+					},
+				},
+				{
+					Name: "RBG_ROLE_INSTANCE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['rbg.workloads.x-k8s.io/role-instance-name']",
+						},
+					},
+				},
+				{
+					Name: "RBG_COMPONENT_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['rbg.workloads.x-k8s.io/component-name']",
+						},
+					},
+				},
+				{
+					Name: "RBG_COMPONENT_INDEX",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['rbg.workloads.x-k8s.io/component-id']",
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -175,6 +233,63 @@ func TestEnvBuilder_buildLocalRoleVars(t *testing.T) {
 					ValueFrom: &corev1.EnvVarSource{
 						FieldRef: &corev1.ObjectFieldSelector{
 							FieldPath: "metadata.labels['apps.kubernetes.io/pod-index']",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "RoleInstanceSet role vars",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-group",
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name: "role-instance-role",
+				Workload: workloadsv1alpha2.WorkloadSpec{
+					APIVersion: "workloads.x-k8s.io/v1alpha2",
+					Kind:       "RoleInstanceSet",
+				},
+			},
+			expected: []corev1.EnvVar{
+				{
+					Name:  "RBG_GROUP_NAME",
+					Value: "test-group",
+				},
+				{
+					Name:  "RBG_ROLE_NAME",
+					Value: "role-instance-role",
+				},
+				{
+					Name: "RBG_ROLE_INDEX",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['" + constants.RoleInstanceIndexLabelKey + "']",
+						},
+					},
+				},
+				{
+					Name: "RBG_ROLE_INSTANCE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['" + constants.RoleInstanceNameLabelKey + "']",
+						},
+					},
+				},
+				{
+					Name: "RBG_COMPONENT_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['" + constants.ComponentNameLabelKey + "']",
+						},
+					},
+				},
+				{
+					Name: "RBG_COMPONENT_INDEX",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels['" + constants.ComponentIDLabelKey + "']",
 						},
 					},
 				},

@@ -32,7 +32,9 @@ const (
 // StatefulSet / LeaderWorkerSet specific environment variables
 const (
 	// EnvRBGRoleIndex is the ordered index of Pod in Role
-	// Source: Downward API from metadata.labels['apps.kubernetes.io/pod-index']
+	// Source:
+	// - StatefulSet / LeaderWorkerSet: metadata.labels['apps.kubernetes.io/pod-index']
+	// - RoleInstanceSet: metadata.labels['rbg.workloads.x-k8s.io/role-instance-index']
 	EnvRBGRoleIndex = "RBG_ROLE_INDEX"
 )
 

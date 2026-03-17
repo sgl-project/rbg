@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -118,26 +117,7 @@ func (i *DefaultInjector) InjectEnv(
 
 	for idx := range podSpec.Spec.Containers {
 		container := &podSpec.Spec.Containers[idx]
-		// 1. Convert env to Map to remove duplicates
-		existingEnv := make(map[string]corev1.EnvVar)
-		for _, e := range container.Env {
-			existingEnv[e.Name] = e
-		}
-		for _, newEnv := range envVars {
-			existingEnv[newEnv.Name] = newEnv // Overwrite env.Value if the name exists
-		}
-		// 2. Convert back to slice
-		mergedEnv := make([]corev1.EnvVar, 0, len(existingEnv))
-		for _, env := range existingEnv {
-			mergedEnv = append(mergedEnv, env)
-		}
-		// Avoid sts updates caused by env order changes
-		sort.Slice(
-			mergedEnv, func(i, j int) bool {
-				return mergedEnv[i].Name < mergedEnv[j].Name
-			},
-		)
-		container.Env = mergedEnv
+		container.Env = mergeEnvVars(container.Env, envVars)
 	}
 	return nil
 }
@@ -158,26 +138,7 @@ func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
 	envVars := builder.BuildLwsEnv(svcName)
 	for idx := range podSpec.Spec.Containers {
 		container := &podSpec.Spec.Containers[idx]
-		// 1. Convert env to Map to remove duplicates
-		existingEnv := make(map[string]corev1.EnvVar)
-		for _, e := range container.Env {
-			existingEnv[e.Name] = e
-		}
-		for _, newEnv := range envVars {
-			existingEnv[newEnv.Name] = newEnv // Overwrite env.Value if the name exists
-		}
-		// 2. Convert back to slice
-		mergedEnv := make([]corev1.EnvVar, 0, len(existingEnv))
-		for _, env := range existingEnv {
-			mergedEnv = append(mergedEnv, env)
-		}
-		// Avoid sts updates caused by env order changes
-		sort.Slice(
-			mergedEnv, func(i, j int) bool {
-				return mergedEnv[i].Name < mergedEnv[j].Name
-			},
-		)
-		container.Env = mergedEnv
+		container.Env = mergeEnvVars(container.Env, envVars)
 	}
 
 	return nil
@@ -189,4 +150,46 @@ func (i *DefaultInjector) InjectSidecar(
 ) error {
 	builder := NewSidecarBuilder(i.client, rbg, role)
 	return builder.Build(ctx, podSpec)
+}
+
+func mergeEnvVars(existing, injected []corev1.EnvVar) []corev1.EnvVar {
+	existing = dedupeEnvVarsPreserveLast(existing)
+	injected = dedupeEnvVarsPreserveLast(injected)
+
+	injectedNames := make(map[string]struct{}, len(injected))
+	for _, env := range injected {
+		injectedNames[env.Name] = struct{}{}
+	}
+
+	merged := make([]corev1.EnvVar, 0, len(existing)+len(injected))
+	for _, env := range existing {
+		if _, ok := injectedNames[env.Name]; ok {
+			continue
+		}
+		merged = append(merged, env)
+	}
+
+	return append(merged, injected...)
+}
+
+func dedupeEnvVarsPreserveLast(envs []corev1.EnvVar) []corev1.EnvVar {
+	if len(envs) < 2 {
+		return append([]corev1.EnvVar(nil), envs...)
+	}
+
+	seen := make(map[string]struct{}, len(envs))
+	deduped := make([]corev1.EnvVar, 0, len(envs))
+	for i := len(envs) - 1; i >= 0; i-- {
+		if _, ok := seen[envs[i].Name]; ok {
+			continue
+		}
+		seen[envs[i].Name] = struct{}{}
+		deduped = append(deduped, envs[i])
+	}
+
+	for left, right := 0, len(deduped)-1; left < right; left, right = left+1, right-1 {
+		deduped[left], deduped[right] = deduped[right], deduped[left]
+	}
+
+	return deduped
 }
