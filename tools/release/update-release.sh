@@ -24,13 +24,13 @@ if [ -z "$branch" ]; then
     exit 1
 fi
 
-# Extract version from branch name (supports v prefix and semantic versioning)
-version=$(echo "$branch" | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+.*)/\1/')
+# Extract version from branch name (supports prefixes like chore/, release/, hotfix/, v prefix and semantic versioning)
+version=$(echo "$branch" | sed -E 's|^.*/v?([0-9]+\.[0-9]+\.[0-9].*)|\1|; s/^v?([0-9]+\.[0-9]+\.[0-9]+.*)/\1/')
 
 # Validate the version format
 if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-    echo "Error: Branch '$branch' is not a valid version. Required format: X.Y.Z[-prerelease]"
-    echo "Examples: 0.5.0, 1.2.3-alpha.1, v2.0.0-rc.2"
+    echo "Error: Branch '$branch' does not contain a valid version. Required format: X.Y.Z[-prerelease]"
+    echo "Examples: 0.5.0, release/1.2.3-alpha.1, chore/v2.0.0-rc.2"
     exit 1
 fi
 
@@ -89,6 +89,7 @@ fi
 # Update manifest.yaml used by kubectl
 HELM_CHART_PATH="${CHARTS_DIR}/rbgs"
 MANIFEST_FILE="${MANIFEST_DIR}/manifests.yaml"
+CRD_DIR="config/crd/bases"
 
 # create target dir if not exits
 mkdir -p "$MANIFEST_DIR"
@@ -102,15 +103,17 @@ metadata:
     control-plane: rbgs-controller
   name: rbgs-system"> "$MANIFEST_FILE"
 
-# process crds
-if [ -d "$HELM_CHART_PATH/crds" ]; then
-    echo "Processing CRDs..."
-    for crd_file in "$HELM_CHART_PATH/crds"/*.yaml; do
+# process crds from config/crd/bases
+if [ -d "$CRD_DIR" ]; then
+    echo "Processing CRDs from $CRD_DIR..."
+    for crd_file in "$CRD_DIR"/*.yaml; do
         if [ -f "$crd_file" ]; then
             echo "---" >> "$MANIFEST_FILE"
             cat "$crd_file" >> "$MANIFEST_FILE"
         fi
     done
+else
+    echo "Warning: CRD directory $CRD_DIR not found, skipping CRDs"
 fi
 
 # use helm template to generate manifests
