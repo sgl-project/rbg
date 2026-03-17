@@ -1375,7 +1375,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				{
 					Roles: []string{"prefill", "decode"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("5%")),
 						},
@@ -1383,7 +1383,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				},
 				{
 					Roles: []string{"router", "worker"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("10%")),
 						},
@@ -1415,7 +1415,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				{
 					Roles: []string{"prefill", "decode"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("5%")),
 						},
@@ -1423,7 +1423,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				},
 				{
 					Roles: []string{"prefill", "worker"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("10%")),
 						},
@@ -1455,7 +1455,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				{
 					Roles: []string{"prefill", "decode"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("5%")),
 						},
@@ -1463,7 +1463,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				},
 				{
 					Roles: []string{"decode", "router"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("8%")),
 						},
@@ -1471,7 +1471,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				},
 				{
 					Roles: []string{"router", "worker"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew: ptrToIntStr(intstr.FromString("10%")),
 						},
@@ -1508,7 +1508,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				{
 					Roles: []string{"prefill", "decode"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew:     ptrToIntStr(intstr.FromString("5%")),
 							Progression: workloadsv1alpha2.OrderScheduledProgression,
@@ -1517,7 +1517,7 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				},
 				{
 					Roles: []string{"decode", "router"},
-					Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 							MaxSkew:     ptrToIntStr(intstr.FromString("10%")),
 							Progression: workloadsv1alpha2.OrderScheduledProgression,

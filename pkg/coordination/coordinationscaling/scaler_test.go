@@ -34,7 +34,7 @@ func TestNewCoordinationScaler(t *testing.T) {
 			name: "valid coordination with 5% maxSkew",
 			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 						MaxSkew: ptr.To(intstr.FromString("5%")),
 					},
@@ -51,7 +51,7 @@ func TestNewCoordinationScaler(t *testing.T) {
 			name: "nil scaling strategy",
 			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 					Scaling: nil,
 				},
 			},
@@ -61,7 +61,7 @@ func TestNewCoordinationScaler(t *testing.T) {
 			name: "nil maxSkew uses default 100% (no limit)",
 			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 						MaxSkew: nil,
 					},
@@ -73,7 +73,7 @@ func TestNewCoordinationScaler(t *testing.T) {
 			name: "invalid maxSkew format",
 			coordination: &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: []string{"prefill", "decode"},
-				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 						MaxSkew: ptr.To(intstr.FromString("5")),
 					},
@@ -481,7 +481,7 @@ func TestCalculateTargetReplicas(t *testing.T) {
 
 			coordination := &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: roles,
-				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 						MaxSkew: ptr.To(intstr.FromString(tt.maxSkew)),
 					},
@@ -721,7 +721,7 @@ func TestProgressionStrategy(t *testing.T) {
 
 			coordination := &workloadsv1alpha2.CoordinatedPolicyRule{
 				Roles: roles,
-				Strategies: workloadsv1alpha2.CoordinatedPolicyStrategies{
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
 						MaxSkew:     ptr.To(intstr.FromString(tt.maxSkew)),
 						Progression: tt.progression,

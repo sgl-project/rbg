@@ -20,8 +20,8 @@ package v1alpha2
 // CoordinatedPolicyRuleApplyConfiguration represents a declarative configuration of the CoordinatedPolicyRule type for use
 // with apply.
 type CoordinatedPolicyRuleApplyConfiguration struct {
-	Roles      []string                                       `json:"roles,omitempty"`
-	Strategies *CoordinatedPolicyStrategiesApplyConfiguration `json:"strategies,omitempty"`
+	Roles    []string                                     `json:"roles,omitempty"`
+	Strategy *CoordinatedPolicyStrategyApplyConfiguration `json:"strategy,omitempty"`
 }
 
 // CoordinatedPolicyRuleApplyConfiguration constructs a declarative configuration of the CoordinatedPolicyRule type for use with
@@ -40,10 +40,10 @@ func (b *CoordinatedPolicyRuleApplyConfiguration) WithRoles(values ...string) *C
 	return b
 }
 
-// WithStrategies sets the Strategies field in the declarative configuration to the given value
+// WithStrategy sets the Strategy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Strategies field is set to the value of the last call.
-func (b *CoordinatedPolicyRuleApplyConfiguration) WithStrategies(value *CoordinatedPolicyStrategiesApplyConfiguration) *CoordinatedPolicyRuleApplyConfiguration {
-	b.Strategies = value
+// If called multiple times, the Strategy field is set to the value of the last call.
+func (b *CoordinatedPolicyRuleApplyConfiguration) WithStrategy(value *CoordinatedPolicyStrategyApplyConfiguration) *CoordinatedPolicyRuleApplyConfiguration {
+	b.Strategy = value
 	return b
 }

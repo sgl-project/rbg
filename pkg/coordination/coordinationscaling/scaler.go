@@ -43,14 +43,14 @@ type RoleScalingState struct {
 
 // NewCoordinationScalerFromPolicy creates a new CoordinationScaler instance from v1alpha2 CoordinatedPolicyRule.
 func NewCoordinationScalerFromPolicy(policyRule *workloadsv1alpha2.CoordinatedPolicyRule) (*CoordinationScaler, error) {
-	if policyRule == nil || policyRule.Strategies.Scaling == nil {
+	if policyRule == nil || policyRule.Strategy.Scaling == nil {
 		return nil, fmt.Errorf("invalid policy configuration: scaling strategy is nil")
 	}
 
 	// Use default maxSkew of 100% if not specified (no coordination limit)
 	maxSkewStr := "100%"
-	if policyRule.Strategies.Scaling.MaxSkew != nil {
-		maxSkewStr = policyRule.Strategies.Scaling.MaxSkew.String()
+	if policyRule.Strategy.Scaling.MaxSkew != nil {
+		maxSkewStr = policyRule.Strategy.Scaling.MaxSkew.String()
 	}
 
 	maxSkew, err := parsePercentage(maxSkewStr)
@@ -181,8 +181,8 @@ func (s *CoordinationScaler) GetCoordinationRoles() []string {
 
 // getProgressionType returns the progression type from policy rule.
 func (s *CoordinationScaler) getProgressionType() workloadsv1alpha2.ScalingProgression {
-	if s.policyRule != nil && s.policyRule.Strategies.Scaling != nil {
-		return s.policyRule.Strategies.Scaling.Progression
+	if s.policyRule != nil && s.policyRule.Strategy.Scaling != nil {
+		return s.policyRule.Strategy.Scaling.Progression
 	}
 	return workloadsv1alpha2.OrderScheduledProgression
 }

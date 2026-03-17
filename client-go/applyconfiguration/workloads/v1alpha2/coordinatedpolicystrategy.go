@@ -17,23 +17,23 @@ limitations under the License.
 
 package v1alpha2
 
-// CoordinatedPolicyStrategiesApplyConfiguration represents a declarative configuration of the CoordinatedPolicyStrategies type for use
+// CoordinatedPolicyStrategyApplyConfiguration represents a declarative configuration of the CoordinatedPolicyStrategy type for use
 // with apply.
-type CoordinatedPolicyStrategiesApplyConfiguration struct {
+type CoordinatedPolicyStrategyApplyConfiguration struct {
 	RollingUpdate *RollingUpdateCoordinationStrategyApplyConfiguration `json:"rollingUpdate,omitempty"`
 	Scaling       *ScalingCoordinationStrategyApplyConfiguration       `json:"scaling,omitempty"`
 }
 
-// CoordinatedPolicyStrategiesApplyConfiguration constructs a declarative configuration of the CoordinatedPolicyStrategies type for use with
+// CoordinatedPolicyStrategyApplyConfiguration constructs a declarative configuration of the CoordinatedPolicyStrategy type for use with
 // apply.
-func CoordinatedPolicyStrategies() *CoordinatedPolicyStrategiesApplyConfiguration {
-	return &CoordinatedPolicyStrategiesApplyConfiguration{}
+func CoordinatedPolicyStrategy() *CoordinatedPolicyStrategyApplyConfiguration {
+	return &CoordinatedPolicyStrategyApplyConfiguration{}
 }
 
 // WithRollingUpdate sets the RollingUpdate field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the RollingUpdate field is set to the value of the last call.
-func (b *CoordinatedPolicyStrategiesApplyConfiguration) WithRollingUpdate(value *RollingUpdateCoordinationStrategyApplyConfiguration) *CoordinatedPolicyStrategiesApplyConfiguration {
+func (b *CoordinatedPolicyStrategyApplyConfiguration) WithRollingUpdate(value *RollingUpdateCoordinationStrategyApplyConfiguration) *CoordinatedPolicyStrategyApplyConfiguration {
 	b.RollingUpdate = value
 	return b
 }
@@ -41,7 +41,7 @@ func (b *CoordinatedPolicyStrategiesApplyConfiguration) WithRollingUpdate(value 
 // WithScaling sets the Scaling field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Scaling field is set to the value of the last call.
-func (b *CoordinatedPolicyStrategiesApplyConfiguration) WithScaling(value *ScalingCoordinationStrategyApplyConfiguration) *CoordinatedPolicyStrategiesApplyConfiguration {
+func (b *CoordinatedPolicyStrategyApplyConfiguration) WithScaling(value *ScalingCoordinationStrategyApplyConfiguration) *CoordinatedPolicyStrategyApplyConfiguration {
 	b.Scaling = value
 	return b
 }
