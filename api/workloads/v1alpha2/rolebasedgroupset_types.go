@@ -20,14 +20,29 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// RoleBasedGroupTemplateSpec describes the data a RoleBasedGroup should have when created from a template.
+type RoleBasedGroupTemplateSpec struct {
+	// Map of string keys and values that can be used to organize and categorize objects.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations is an unstructured key value map stored with a resource.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Spec defines the desired behavior of the RoleBasedGroup.
+	// +optional
+	Spec RoleBasedGroupSpec `json:"spec"`
+}
+
 // RoleBasedGroupSetSpec defines the desired state of RoleBasedGroupSet.
 type RoleBasedGroupSetSpec struct {
 	// Replicas is the number of RoleBasedGroup that will be created.
 	// +kubebuilder:default=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Template describes the RoleBasedGroup that will be created.
-	Template RoleBasedGroupSpec `json:"template"`
+	// GroupTemplate describes the RoleBasedGroup that will be created.
+	GroupTemplate RoleBasedGroupTemplateSpec `json:"groupTemplate"`
 }
 
 type RoleBasedGroupSetConditionType string

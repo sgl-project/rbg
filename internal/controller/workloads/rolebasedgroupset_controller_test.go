@@ -48,10 +48,12 @@ func TestRoleBasedGroupSetReconciler_scaleUp(t *testing.T) {
 			UID:       "test-uid",
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-			Template: workloadsv1alpha2.RoleBasedGroupSpec{
-				Roles: []workloadsv1alpha2.RoleSpec{
-					{Name: "role-1"},
-					{Name: "role-2"},
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{Name: "role-1"},
+						{Name: "role-2"},
+					},
 				},
 			},
 		},
@@ -250,9 +252,11 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{
-							{Name: "new-role"},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{
+								{Name: "new-role"},
+							},
 						},
 					},
 				},
@@ -272,16 +276,16 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 			expectedUpdate: true,
 		},
 		{
-			name: "RBG needs update - missing annotation",
+			name: "RBG needs update - template annotation added",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "test-exclusive",
-					},
-				},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{
+							"app.io/env": "prod",
+						},
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
 					},
 				},
 			},
@@ -293,11 +297,115 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 			expectedUpdate: true,
 		},
 		{
-			name: "RBG no update needed - same CoordinationRequirements and PodGroupPolicy",
+			name: "RBG needs update - template annotation removed",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"app.io/env": "prod"},
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG needs update - template label added",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels: map[string]string{"tier": "backend"},
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG needs update - template label removed",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+						"tier":                          "backend", // extra label not in template
+					},
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG no update needed - roles and metadata all match",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels:      map[string]string{"tier": "backend"},
+						Annotations: map[string]string{"app.io/env": "prod"},
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+						"tier":                          "backend",
+					},
+					Annotations: map[string]string{"app.io/env": "prod"},
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+				},
+			},
+			expectedUpdate: false,
+		},
+		{
+			name: "RBG no update needed - empty template metadata",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
 					},
 				},
 			},
@@ -307,21 +415,6 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 				},
 			},
 			expectedUpdate: false,
-		},
-		{
-			name: "RBG no update needed",
-			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
-				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
-					Template: workloadsv1alpha2.RoleBasedGroupSpec{
-						Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
-					},
-				},
-			},
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-					Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
-				},
-			},
 		},
 	}
 
@@ -336,8 +429,8 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 	}
 }
 
-// TestRoleBasedGroupSetReconciler_needsAnnotationUpdate tests the needsAnnotationUpdate method.
-func TestRoleBasedGroupSetReconciler_needsAnnotationUpdate(t *testing.T) {
+// TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate tests the needsTemplateAnnotationUpdate method.
+func TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate(t *testing.T) {
 	tests := []struct {
 		name           string
 		rbgset         *workloadsv1alpha2.RoleBasedGroupSet
@@ -345,23 +438,25 @@ func TestRoleBasedGroupSetReconciler_needsAnnotationUpdate(t *testing.T) {
 		expectedUpdate bool
 	}{
 		{
-			name:   "RBG has annotation, RBGSet doesn't",
-			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{},
+			name: "RBG has annotation, template doesn't",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
 			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone",
-					},
+					Annotations: map[string]string{"app.io/env": "prod"},
 				},
 			},
 			expectedUpdate: true,
 		},
 		{
-			name: "RBGSet has annotation, RBG doesn't",
+			name: "Template has annotation, RBG doesn't",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "test-key",
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{"app.io/env": "prod"},
 					},
 				},
 			},
@@ -371,17 +466,15 @@ func TestRoleBasedGroupSetReconciler_needsAnnotationUpdate(t *testing.T) {
 		{
 			name: "Different annotation values",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "new-value",
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{"app.io/env": "prod"},
 					},
 				},
 			},
 			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "old-value",
-					},
+					Annotations: map[string]string{"app.io/env": "staging"},
 				},
 			},
 			expectedUpdate: true,
@@ -389,16 +482,144 @@ func TestRoleBasedGroupSetReconciler_needsAnnotationUpdate(t *testing.T) {
 		{
 			name: "Same annotation values",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "same-value",
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{"app.io/env": "prod"},
 					},
 				},
 			},
 			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.GroupExclusiveTopologyKey: "same-value",
+					Annotations: map[string]string{"app.io/env": "prod"},
+				},
+			},
+			expectedUpdate: false,
+		},
+		{
+			name: "Both empty",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg:            &workloadsv1alpha2.RoleBasedGroup{},
+			expectedUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				r := &RoleBasedGroupSetReconciler{}
+				result := r.needsTemplateAnnotationUpdate(tt.rbgset, tt.rbg)
+				assert.Equal(t, tt.expectedUpdate, result)
+			},
+		)
+	}
+}
+
+// TestRoleBasedGroupSetReconciler_needsTemplateLabelUpdate tests the needsTemplateLabelUpdate method.
+func TestRoleBasedGroupSetReconciler_needsTemplateLabelUpdate(t *testing.T) {
+	tests := []struct {
+		name           string
+		rbgset         *workloadsv1alpha2.RoleBasedGroupSet
+		rbg            *workloadsv1alpha2.RoleBasedGroup
+		expectedUpdate bool
+	}{
+		{
+			name: "RBG has extra non-system label not in template",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+						"tier":                          "backend",
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "Template has label, RBG doesn't",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels: map[string]string{"tier": "backend"},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "Different label values",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels: map[string]string{"tier": "frontend"},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+						"tier":                          "backend",
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "Labels match, system labels ignored in comparison",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels: map[string]string{"tier": "backend"},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+						"tier":                          "backend",
+					},
+				},
+			},
+			expectedUpdate: false,
+		},
+		{
+			name: "System labels only, no template labels",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
 					},
 				},
 			},
@@ -410,8 +631,205 @@ func TestRoleBasedGroupSetReconciler_needsAnnotationUpdate(t *testing.T) {
 		t.Run(
 			tt.name, func(t *testing.T) {
 				r := &RoleBasedGroupSetReconciler{}
-				result := r.needsAnnotationUpdate(tt.rbgset, tt.rbg)
+				result := r.needsTemplateLabelUpdate(tt.rbgset, tt.rbg)
 				assert.Equal(t, tt.expectedUpdate, result)
+			},
+		)
+	}
+}
+
+// TestNewRBGForSet_MetadataPropagation tests that newRBGForSet correctly propagates
+// groupTemplate.labels and groupTemplate.annotations to the child RBG.
+func TestNewRBGForSet_MetadataPropagation(t *testing.T) {
+	tests := []struct {
+		name                string
+		rbgset              *workloadsv1alpha2.RoleBasedGroupSet
+		index               int
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name: "Template labels and annotations are propagated",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels:      map[string]string{"tier": "backend", "env": "prod"},
+						Annotations: map[string]string{"app.io/config": "v1"},
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			index: 2,
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "2",
+				"tier":                          "backend",
+				"env":                           "prod",
+			},
+			expectedAnnotations: map[string]string{"app.io/config": "v1"},
+		},
+		{
+			name: "Empty template metadata produces only system labels and no annotations",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			index: 0,
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+			},
+			expectedAnnotations: nil,
+		},
+		{
+			name: "Template label does not override system-managed labels",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						// Attempting to override a system label via template is ignored
+						// because system labels are written after template labels.
+						Labels: map[string]string{
+							constants.GroupSetIndexLabelKey: "99",
+							"tier":                          "backend",
+						},
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-1"}},
+						},
+					},
+				},
+			},
+			index: 1,
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "1", // system label wins, index is 1 not 99
+				"tier":                          "backend",
+			},
+			expectedAnnotations: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				rbg := newRBGForSet(tt.rbgset, tt.index)
+				assert.Equal(t, tt.expectedLabels, rbg.Labels)
+				assert.Equal(t, tt.expectedAnnotations, rbg.Annotations)
+				assert.Equal(
+					t,
+					fmt.Sprintf("%s-%d", tt.rbgset.Name, tt.index),
+					rbg.Name,
+				)
+				assert.Equal(t, tt.rbgset.Namespace, rbg.Namespace)
+			},
+		)
+	}
+}
+
+// TestSyncRBGMetadata tests the syncRBGMetadata method.
+func TestSyncRBGMetadata(t *testing.T) {
+	tests := []struct {
+		name                string
+		rbgset              *workloadsv1alpha2.RoleBasedGroupSet
+		rbg                 *workloadsv1alpha2.RoleBasedGroup
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name: "Syncs template labels and annotations, preserves system labels",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels:      map[string]string{"tier": "backend"},
+						Annotations: map[string]string{"app.io/env": "prod"},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "1",
+						"old-label":                     "old-value",
+					},
+					Annotations: map[string]string{"old-annotation": "old-value"},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "1",
+				"tier":                          "backend",
+			},
+			expectedAnnotations: map[string]string{"app.io/env": "prod"},
+		},
+		{
+			name: "Clears annotations when template has none",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{"stale-annotation": "value"},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+			},
+			expectedAnnotations: nil,
+		},
+		{
+			name: "Removes extra non-system labels not in template",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels: map[string]string{"env": "prod"},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+						"stale-label":                   "old",
+					},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+				"env":                           "prod",
+			},
+			expectedAnnotations: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				r := &RoleBasedGroupSetReconciler{}
+				r.syncRBGMetadata(tt.rbgset, tt.rbg)
+				assert.Equal(t, tt.expectedLabels, tt.rbg.Labels)
+				assert.Equal(t, tt.expectedAnnotations, tt.rbg.Annotations)
 			},
 		)
 	}
@@ -424,24 +842,25 @@ func TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	// Setup: 4 RBGs with old role, scale down to 2 with new role
+	// Setup: 4 RBGs with old role, scale down to 2 with new role and updated metadata
 	initialRBGSet := &workloadsv1alpha2.RoleBasedGroupSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbgset",
 			Namespace: "default",
-			Annotations: map[string]string{
-				constants.GroupExclusiveTopologyKey: "new-exclusive",
-			},
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
 			Replicas: ptr.To(int32(2)), // Reduced from 4 to 2
-			Template: workloadsv1alpha2.RoleBasedGroupSpec{
-				Roles: []workloadsv1alpha2.RoleSpec{{Name: "new-role"}},
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Labels:      map[string]string{"env": "prod"},
+				Annotations: map[string]string{constants.GroupExclusiveTopologyKey: "new-exclusive"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{Name: "new-role"}},
+				},
 			},
 		},
 	}
 
-	// Create 4 existing RBGs with old role
+	// Create 4 existing RBGs with old role and stale metadata
 	existingRBGs := []runtime.Object{initialRBGSet}
 	for i := 0; i < 4; i++ {
 		rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -491,10 +910,15 @@ func TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(rbgList.Items))
 
-	// Verify remaining RBGs have updated roles and annotations
+	// Verify remaining RBGs have updated roles, labels, and annotations from groupTemplate
 	for _, rbg := range rbgList.Items {
 		assert.Equal(t, "new-role", rbg.Spec.Roles[0].Name)
+		// Template annotation should be propagated
 		assert.Equal(t, "new-exclusive", rbg.Annotations[constants.GroupExclusiveTopologyKey])
+		// Template label should be propagated
+		assert.Equal(t, "prod", rbg.Labels["env"])
+		// System labels must be preserved
+		assert.Equal(t, "test-rbgset", rbg.Labels[constants.GroupSetNameLabelKey])
 		index := rbg.Labels[constants.GroupSetIndexLabelKey]
 		assert.True(t, index == "0" || index == "1")
 	}
