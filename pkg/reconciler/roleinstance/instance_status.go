@@ -57,28 +57,30 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 //
 // NOTE: Do NOT derive this set from newStatus.Conditions at call time. By the
 // point this function is called, setInstanceConditions has already appended
-// externally-owned conditions (e.g. RoleInstanceCustomReady) copied from the
-// live object into newStatus.Conditions. Deriving the set dynamically would
-// therefore misclassify those external types as controller-owned, silently
-// clobbering concurrent writes from other controllers.
+// externally-owned conditions copied from the live object into newStatus.Conditions.
+// Deriving the set dynamically would therefore misclassify those external types as
+// owned, silently clobbering concurrent writes from other controllers.
 //
-// RoleInstanceInPlaceUpdateReady is written externally by the inplaceupdate
-// controller, but setInstanceConditions always copies it from instance.Status
-// into newStatus via getInstanceInplaceUpdateReadyCondition. It is therefore
-// already present in newStatus.Conditions, so it must be listed here to prevent
-// a duplicate entry being appended from the live clone.
+// The rule for inclusion is:
+//   - Controller-computed types (Ready, AllPodsReady, FailedScale, FailedUpdate) are
+//     always generated fresh each reconcile and must win over the live object.
+//   - RoleInstanceInPlaceUpdateReady and RoleInstanceCustomReady are written by
+//     external controllers, but setInstanceConditions always copies them from
+//     instance.Status into newStatus (via getInstanceInplaceUpdateReadyCondition and
+//     the custom-condition passthrough). They are therefore already present in
+//     newStatus.Conditions, so they must be listed here to prevent a duplicate entry
+//     being appended from the live clone.
 func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
 	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
+		// Computed by this controller on every reconcile.
 		workloadsv1alpha2.RoleInstanceReady,
 		workloadsv1alpha2.RoleInstanceAllPodsReady,
 		workloadsv1alpha2.RoleInstanceFailedScale,
 		workloadsv1alpha2.RoleInstanceFailedUpdate,
-		// RoleInstanceInPlaceUpdateReady is written by the inplaceupdate controller, but
-		// setInstanceConditions always copies it from instance.Status into newStatus via
-		// getInstanceInplaceUpdateReadyCondition. It is therefore already included in
-		// newStatus.Conditions before updateStatus is called, so we must treat it as
-		// owned here to prevent a duplicate entry being appended from the live clone.
+		// Written externally but always copied into newStatus by setInstanceConditions,
+		// so they are already present and must not be appended again from the live clone.
 		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
+		workloadsv1alpha2.RoleInstanceCustomReady,
 	)
 }
 
