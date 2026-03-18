@@ -6,9 +6,12 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -45,6 +48,40 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	}
 	updatePodsConditionErr := r.updatePodsLifeCycle(ctx, instance, pods)
 	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
+}
+
+// controllerOwnedConditionTypes returns the stable set of condition types whose
+// values in newStatus.Conditions take precedence over whatever is in the live object.
+// All other condition types are considered externally-owned and must be carried
+// forward from the freshly-fetched clone on every status update.
+//
+// NOTE: Do NOT derive this set from newStatus.Conditions at call time. By the
+// point this function is called, setInstanceConditions has already appended
+// externally-owned conditions copied from the live object into newStatus.Conditions.
+// Deriving the set dynamically would therefore misclassify those external types as
+// owned, silently clobbering concurrent writes from other controllers.
+//
+// The rule for inclusion is:
+//   - Controller-computed types (Ready, AllPodsReady, FailedScale, FailedUpdate) are
+//     always generated fresh each reconcile and must win over the live object.
+//   - RoleInstanceInPlaceUpdateReady and RoleInstanceCustomReady are written by
+//     external controllers, but setInstanceConditions always copies them from
+//     instance.Status into newStatus (via getInstanceInplaceUpdateReadyCondition and
+//     the custom-condition passthrough). They are therefore already present in
+//     newStatus.Conditions, so they must be listed here to prevent a duplicate entry
+//     being appended from the live clone.
+func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
+	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
+		// Computed by this controller on every reconcile.
+		workloadsv1alpha2.RoleInstanceReady,
+		workloadsv1alpha2.RoleInstanceAllPodsReady,
+		workloadsv1alpha2.RoleInstanceFailedScale,
+		workloadsv1alpha2.RoleInstanceFailedUpdate,
+		// Written externally but always copied into newStatus by setInstanceConditions,
+		// so they are already present and must not be appended again from the live clone.
+		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
+		workloadsv1alpha2.RoleInstanceCustomReady,
+	)
 }
 
 func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
@@ -282,8 +319,32 @@ func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.Role
 }
 
 func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) error {
-	instance.Status = *newStatus
-	return r.Status().Update(ctx, instance)
+	ownedTypes := controllerOwnedConditionTypes()
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		clone := &workloadsv1alpha2.RoleInstance{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
+			if apierrors.IsNotFound(err) {
+				// Instance has been deleted; nothing to update.
+				return nil
+			}
+			return err
+		}
+		// Snapshot the live custom conditions before overwriting clone.Status.
+		// These are conditions not owned by this controller (e.g. RoleInstanceCustomReady
+		// written by readiness/*, RoleInstanceInPlaceUpdateReady written by inplaceupdate/*).
+		// They may have been updated concurrently between when we fetched instance at the
+		// top of Reconcile and now, so we must carry them forward rather than silently
+		// rolling them back via the precomputed newStatus.
+		liveCustomConditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0)
+		for _, c := range clone.Status.Conditions {
+			if !ownedTypes.Has(c.Type) {
+				liveCustomConditions = append(liveCustomConditions, c)
+			}
+		}
+		clone.Status = *newStatus
+		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
+		return r.Status().Update(ctx, clone)
+	})
 }
 
 func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) error {
