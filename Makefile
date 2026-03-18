@@ -128,7 +128,7 @@ copyright-fix: ## Add copyright headers to changed Go files against BASE_REF (de
 
 # Build docker images
 DOCKER_BUILD := docker-build-controller
-# DOCKER_BUILD += docker-build-crd-upgrader
+DOCKER_BUILD += docker-build-crd-upgrader
 DOCKER_BUILD_BENCHMARK := docker-build-benchmark-dashboard
 DOCKER_BUILD_BENCHMARK += docker-build-benchmark-tool-genai
 
