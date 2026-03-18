@@ -7,8 +7,10 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -282,8 +284,14 @@ func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.Role
 }
 
 func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) error {
-	instance.Status = *newStatus
-	return r.Status().Update(ctx, instance)
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		clone := &workloadsv1alpha2.RoleInstance{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
+			return err
+		}
+		clone.Status = *newStatus
+		return r.Status().Update(ctx, clone)
+	})
 }
 
 func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) error {
