@@ -102,15 +102,18 @@ metadata:
     control-plane: rbgs-controller
   name: rbgs-system"> "$MANIFEST_FILE"
 
-# process crds
-if [ -d "$HELM_CHART_PATH/crds" ]; then
-    echo "Processing CRDs..."
-    for crd_file in "$HELM_CHART_PATH/crds"/*.yaml; do
+# process crds from config/crd/bases (authoritative source)
+CRD_BASES_DIR="config/crd/bases"
+if [ -d "$CRD_BASES_DIR" ]; then
+    echo "Processing CRDs from $CRD_BASES_DIR..."
+    for crd_file in "$CRD_BASES_DIR"/*.yaml; do
         if [ -f "$crd_file" ]; then
             echo "---" >> "$MANIFEST_FILE"
             cat "$crd_file" >> "$MANIFEST_FILE"
         fi
     done
+else
+    echo "Warning: CRD directory $CRD_BASES_DIR not found, skipping CRDs"
 fi
 
 # use helm template to generate manifests
