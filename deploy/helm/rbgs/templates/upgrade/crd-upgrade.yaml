@@ -32,6 +32,11 @@ spec:
         - name: rbgs-crds-upgrade
           image: "{{ .Values.crdUpgrade.repository }}:{{ .Values.crdUpgrade.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.crdUpgrade.imagePullPolicy | default "IfNotPresent" }}
+          env:
+            - name: WEBHOOK_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: WEBHOOK_SERVICE
+              value: "rbgs-webhook-service"
       restartPolicy: OnFailure
 ---
 apiVersion: rbac.authorization.k8s.io/v1
