@@ -63,7 +63,7 @@ rolebasedgroup.workloads.x-k8s.io/port-allocator: |
           "name": "grpc",                       // Logical name
           "env": "GRPC_PORT",                   // Env var to inject
           "annotationKey": "test/grpc-port",    // annotationKey to inject
-          "policy": "Dynamic"                   // Dynamic (per-pod) or Static (per-role)
+          "scope": "PodScoped"                  // PodScoped (per-pod) or RoleScoped (per-role)
       }
     ],
     "references": [
@@ -76,13 +76,13 @@ rolebasedgroup.workloads.x-k8s.io/port-allocator: |
 ```
 The JSON field definitions in the annotation are as follows:
 ```go
-type PortPolicy string
+type PortScope string
 
 const (
     // Port is only valid for the current Pod
-    Dynamic PortPolicy = "Dynamic"
+    PodScoped PortScope = "PodScoped"
     // Port is valid for all Pod replicas in the current role
-	Static PortPolicy = "Static"
+    RoleScoped PortScope = "RoleScoped"
 )
 
 type PortAllocatorConfig struct {
@@ -102,9 +102,9 @@ type PortAllocation struct {
 	// AnnotationKey specifies the key of the annotation to be injected into the Pod
 	AnnotationKey string `json:"annotationKey"`
 	// Not Empty
-	// Default is Dynamic
-	// Policy specifies the scope of the port
-    Policy PortPolicy `json:"policy"`
+	// Default is PodScoped
+	// Scope specifies the scope of the port
+    Scope PortScope `json:"scope"`
 }
 
 type PortReference struct {
@@ -120,8 +120,8 @@ For example, when using the following configuration:
 - The leader Pod will be allocated one port
   - Port 1: Injected into the container as the `LEADER_PORT` environment variable.
 - Each worker Pod will be allocated two ports and reference one from the leader Pod:
-    - **Dynamic Port** (`WORKER_PORT1`): Unique per Pod, annotated as `test/worker-port1`
-    - **Static Port** (`WORKER_PORT2`): Shared across Pods, annotated as `test/worker-port2`
+    - **PodScoped Port** (`WORKER_PORT1`): Unique per Pod, annotated as `test/worker-port1`
+    - **RoleScoped Port** (`WORKER_PORT2`): Shared across Pods, annotated as `test/worker-port2`
     - **Reference Port** (`LEADER_PORT_REF`): Points to leader's Port 1
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -144,7 +144,7 @@ spec:
                       "name": "leader-port",
                       "env": "LEADER_PORT",
                       "annotationKey": "test/grpc-port",
-                      "policy": "Dynamic"
+                      "scope": "PodScoped"
                     }
                   ]
               }
@@ -164,13 +164,13 @@ spec:
                       "name": "worker-port1",
                       "env": "WORKER_PORT1",
                       "annotationKey": "test/worker-port1",
-                      "policy": "Dynamic"
+                      "scope": "PodScoped"
                     },
                     {
                       "name": "worker-port2",
                       "env": "WORKER_PORT2",
                       "annotationKey": "test/worker-port2",
-                      "policy": "Static"
+                      "scope": "RoleScoped"
                     }
                   ],
                   "references": [
@@ -227,14 +227,14 @@ func GetPortAllocator() PortAllocatorInterface {
 
 #### ConfigMap Naming and Ownership
 
-The port allocation state is stored in ConfigMaps. Dynamic ports and Static ports will be stored in different ConfigMaps.
+The port allocation state is stored in ConfigMaps. PodScoped ports and RoleScoped ports will be stored in different ConfigMaps.
 
 **Ports ConfigMap**:
 
-| Port Type | ConfigMap Name                         |
-|-----------|----------------------------------------|
-| Dynamic   | `instance-<instance-name>-ports`       |
-| Static    | `instanceset-<instanceset-name>-ports` |
+| Port Type   | ConfigMap Name                         |
+|-------------|----------------------------------------|
+| PodScoped   | `instance-<instance-name>-ports`       |
+| RoleScoped  | `instanceset-<instanceset-name>-ports` |
 
 **ConfigMap Labels**:
 
@@ -245,7 +245,7 @@ port-allocator.workloads.x-k8s.io/managed-by: rbgs-controller-manager
 
 **Key Design Decisions**:
 - All port allocation/release logic is handled in the Instance controller
-- Dynamic ports are always stored in the Instance-level ConfigMap, while static ports are stored in the InstanceSet-level ConfigMap
+- PodScoped ports are always stored in the Instance-level ConfigMap, while RoleScoped ports are stored in the InstanceSet-level ConfigMap
 - **ConfigMaps do NOT have OwnerReferences** - this is intentional because:
   - Resources don't have finalizers, so when a parent resource is deleted, the ConfigMap would be garbage collected immediately
   - This would prevent the reconciler from reading the ConfigMap to release ports
@@ -253,25 +253,25 @@ port-allocator.workloads.x-k8s.io/managed-by: rbgs-controller-manager
 
 #### Port Key Format in ConfigMap
 
-| Port Type | Key Format                     | Example                                 |
-|-----------|--------------------------------|-----------------------------------------|
-| Dynamic   | `<pod-name>.<port-name>`       | `prefill-0-worker-0.grpc-port: "30001"` |
-| Static    | `<component-name>.<port-name>` | `prefill.grpc-port: "30002"`            |
+| Port Type   | Key Format                     | Example                                 |
+|-------------|--------------------------------|-----------------------------------------|
+| PodScoped   | `<pod-name>.<port-name>`       | `prefill-0-worker-0.grpc-port: "30001"` |
+| RoleScoped  | `<component-name>.<port-name>` | `prefill.grpc-port: "30002"`            |
 
-**Static Port Behavior**:
-- Static ports are shared across all Pods within the same Instance (for standalone Instances)
-- When Instance is managed by InstanceSet, Static ports are shared across all Instances with the same component name and port name
+**RoleScoped Port Behavior**:
+- RoleScoped ports are shared across all Pods within the same Instance (for standalone Instances)
+- When Instance is managed by InstanceSet, RoleScoped ports are shared across all Instances with the same component name and port name
 
 #### Instance Reconciler Modifications
 
-All port allocation logic (both Dynamic and Static) is handled in the Instance reconciler:
+All port allocation logic (both PodScoped and RoleScoped) is handled in the Instance reconciler:
 
 - **Pod Creation**:
   1. Parse the port allocator annotation to extract port configurations
-  2. For **Dynamic ports**:
+  2. For **PodScoped ports**:
      - Get or create ConfigMap `instance-<instance-name>-ports`
      - Allocate new port if not already allocated for this pod
-  3. For **Static ports**:
+  3. For **RoleScoped ports**:
      - Get or create ConfigMap `instanceset-<instanceset-name>-ports`
      - Check if port already exists in ConfigMap; if not, allocate new port
   4. For each port reference:
@@ -286,14 +286,14 @@ All port allocation logic (both Dynamic and Static) is handled in the Instance r
 - **Pod Update**:
   1. Compare current ConfigMap data with the new port allocation annotation
   2. **New ports**: Allocate and add to ConfigMap
-  3. **Removed ports**: Release and remove from ConfigMap (both Dynamic and Static ports)
+  3. **Removed ports**: Release and remove from ConfigMap (both PodScoped and RoleScoped ports)
   4. **Modified ports**: Handle as remove + add
   5. Update environment variables and annotations in the Pod spec
 
 - **Pod Deletion** (Instance still exists):
-  1. For **Dynamic ports**: Release all ports associated with the deleted Pod via the `Release` method
-  2. For **Static ports**: Do NOT release (shared across replicas)
-  3. Remove Dynamic port entries from the Instance-level ConfigMap
+  1. For **PodScoped ports**: Release all ports associated with the deleted Pod via the `Release` method
+  2. For **RoleScoped ports**: Do NOT release (shared across replicas)
+  3. Remove PodScoped port entries from the Instance-level ConfigMap
   4. ConfigMap is preserved for future use
 
 - **Instance Deletion**:
@@ -304,7 +304,7 @@ All port allocation logic (both Dynamic and Static) is handled in the Instance r
 - **InstanceSet Deletion**:
   - When the reconciler detects that the InstanceSet resource is deleted:
     1. Get the InstanceSet-level ConfigMap
-    2. Release all Static ports stored in the ConfigMap
+    2. Release all RoleScoped ports stored in the ConfigMap
     3. Delete the ConfigMap
 
 #### ConfigMap Cleanup
@@ -328,8 +328,8 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
    - Always reference the first Pod (id=0) of the target component
 
 **Port Lookup and Pre-allocation**:
-- **Static port reference**: The port must already exist in ConfigMap. No pre-allocation needed.
-- **Dynamic port reference**:
+- **RoleScoped port reference**: The port must already exist in ConfigMap. No pre-allocation needed.
+- **PodScoped port reference**:
   1. Look up the key `<target-pod-name>.<port-name>` in the Instance-level ConfigMap
   2. If found, use the existing port value
   3. If not found, pre-allocate a new port and store it with the key
@@ -346,8 +346,8 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
 
 #### Unit Tests
 - Port allocator config parsing and validation
-- Dynamic port allocation and release
-- Static port allocation and sharing
+- PodScoped port allocation and release
+- RoleScoped port allocation and sharing
 - Reference port pre-allocation
 - ConfigMap key format generation
 - Port update/diff calculation
@@ -358,7 +358,7 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
 - Port release on Instance/InstanceSet deletion
 
 #### End to End Tests
-- Deploy Instance with port allocation and verify injection
+- Deploy RBG with port allocation and verify injection
 - Scale Instance and verify port allocation
-- Deploy InstanceSet with Static ports and verify sharing
+- Deploy InstanceSet with RoleScoped ports and verify sharing
 - Cross-pod reference port resolution

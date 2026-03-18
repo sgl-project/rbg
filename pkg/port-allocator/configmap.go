@@ -41,22 +41,22 @@ const (
 	PortConfigMapLabelValue = "rbgs-controller-manager"
 )
 
-// FormatDynamicPortKey returns the key for dynamic port allocation
+// FormatPodScopedPortKey returns the key for pod-scoped port allocation
 // Format: <pod-name>.<port-name>
-func FormatDynamicPortKey(podName, portName string) string {
+func FormatPodScopedPortKey(podName, portName string) string {
 	return podName + "." + portName
 }
 
-// FormatStaticPortKey returns the key for static port allocation
+// FormatRoleScopedPortKey returns the key for role-scoped port allocation
 // Format: <component-name>.<port-name> (shared across all pods with the same component)
-func FormatStaticPortKey(componentName, portName string) string {
+func FormatRoleScopedPortKey(componentName, portName string) string {
 	return componentName + "." + portName
 }
 
 // ParsePortKey parses a port key and returns the owner name and port name
-// For both dynamic and static ports: returns (ownerName, portName)
-// - Dynamic ports: ownerName is pod name
-// - Static ports: ownerName is component name
+// For both pod-scoped and role-scoped ports: returns (ownerName, portName)
+// - PodScoped ports: ownerName is pod name
+// - RoleScoped ports: ownerName is component name
 func ParsePortKey(key string) (ownerName, portName string, err error) {
 	dotIndex := -1
 	for i, c := range key {

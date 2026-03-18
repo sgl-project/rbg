@@ -52,7 +52,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "valid config with dynamic allocation",
+			name: "valid config with pod-scoped allocation",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pod",
@@ -63,7 +63,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 									"name": "grpc",
 									"env": "GRPC_PORT",
 									"annotationKey": "test/grpc-port",
-									"policy": "Dynamic"
+									"scope": "PodScoped"
 								}
 							]
 						}`,
@@ -76,11 +76,11 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 				assert.Equal(t, "grpc", config.Allocations[0].Name)
 				assert.Equal(t, "GRPC_PORT", config.Allocations[0].Env)
 				assert.Equal(t, "test/grpc-port", config.Allocations[0].AnnotationKey)
-				assert.Equal(t, Dynamic, config.Allocations[0].Policy)
+				assert.Equal(t, PodScoped, config.Allocations[0].Scope)
 			},
 		},
 		{
-			name: "valid config with static allocation",
+			name: "valid config with role-scoped allocation",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pod",
@@ -90,7 +90,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 								{
 									"name": "http",
 									"env": "HTTP_PORT",
-									"policy": "Static"
+									"scope": "RoleScoped"
 								}
 							]
 						}`,
@@ -100,7 +100,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 			checkResult: func(t *testing.T, config *PortAllocatorConfig) {
 				assert.NotNil(t, config)
 				assert.Len(t, config.Allocations, 1)
-				assert.Equal(t, Static, config.Allocations[0].Policy)
+				assert.Equal(t, RoleScoped, config.Allocations[0].Scope)
 			},
 		},
 		{
@@ -114,7 +114,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 								{
 									"name": "worker-port",
 									"env": "WORKER_PORT",
-									"policy": "Dynamic"
+									"scope": "PodScoped"
 								}
 							],
 							"references": [
@@ -157,7 +157,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 							"allocations": [
 								{
 									"env": "GRPC_PORT",
-									"policy": "Dynamic"
+									"scope": "PodScoped"
 								}
 							]
 						}`,
@@ -176,7 +176,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 							"allocations": [
 								{
 									"name": "grpc",
-									"policy": "Dynamic"
+									"scope": "PodScoped"
 								}
 							]
 						}`,
@@ -186,7 +186,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "default policy to Dynamic",
+			name: "default scope to PodScoped",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pod",
@@ -204,11 +204,11 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 			},
 			checkResult: func(t *testing.T, config *PortAllocatorConfig) {
 				assert.NotNil(t, config)
-				assert.Equal(t, Dynamic, config.Allocations[0].Policy)
+				assert.Equal(t, PodScoped, config.Allocations[0].Scope)
 			},
 		},
 		{
-			name: "invalid policy value",
+			name: "invalid scope value",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pod",
@@ -218,7 +218,7 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 								{
 									"name": "grpc",
 									"env": "GRPC_PORT",
-									"policy": "Invalid"
+									"scope": "Invalid"
 								}
 							]
 						}`,
@@ -244,34 +244,34 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 	}
 }
 
-func TestGetDynamicAllocations(t *testing.T) {
+func TestGetPodScopedAllocations(t *testing.T) {
 	config := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "port1", Env: "PORT1", Policy: Dynamic},
-			{Name: "port2", Env: "PORT2", Policy: Static},
-			{Name: "port3", Env: "PORT3", Policy: Dynamic},
+			{Name: "port1", Env: "PORT1", Scope: PodScoped},
+			{Name: "port2", Env: "PORT2", Scope: RoleScoped},
+			{Name: "port3", Env: "PORT3", Scope: PodScoped},
 		},
 	}
 
-	dynamic := config.GetDynamicAllocations()
-	assert.Len(t, dynamic, 2)
-	assert.Equal(t, "port1", dynamic[0].Name)
-	assert.Equal(t, "port3", dynamic[1].Name)
+	podScoped := config.GetPodScopedAllocations()
+	assert.Len(t, podScoped, 2)
+	assert.Equal(t, "port1", podScoped[0].Name)
+	assert.Equal(t, "port3", podScoped[1].Name)
 }
 
-func TestGetStaticAllocations(t *testing.T) {
+func TestGetRoleScopedAllocations(t *testing.T) {
 	config := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "port1", Env: "PORT1", Policy: Dynamic},
-			{Name: "port2", Env: "PORT2", Policy: Static},
-			{Name: "port3", Env: "PORT3", Policy: Static},
+			{Name: "port1", Env: "PORT1", Scope: PodScoped},
+			{Name: "port2", Env: "PORT2", Scope: RoleScoped},
+			{Name: "port3", Env: "PORT3", Scope: RoleScoped},
 		},
 	}
 
-	static := config.GetStaticAllocations()
-	assert.Len(t, static, 2)
-	assert.Equal(t, "port2", static[0].Name)
-	assert.Equal(t, "port3", static[1].Name)
+	roleScoped := config.GetRoleScopedAllocations()
+	assert.Len(t, roleScoped, 2)
+	assert.Equal(t, "port2", roleScoped[0].Name)
+	assert.Equal(t, "port3", roleScoped[1].Name)
 }
 
 func TestParseReference(t *testing.T) {
@@ -331,13 +331,13 @@ func TestParseReference(t *testing.T) {
 }
 
 func TestFormatPortKey(t *testing.T) {
-	// Test dynamic port key
-	dynamicKey := FormatDynamicPortKey("pod-0", "grpc-port")
-	assert.Equal(t, "pod-0.grpc-port", dynamicKey)
+	// Test pod-scoped port key
+	podScopedKey := FormatPodScopedPortKey("pod-0", "grpc-port")
+	assert.Equal(t, "pod-0.grpc-port", podScopedKey)
 
-	// Test static port key (now uses component name as prefix)
-	staticKey := FormatStaticPortKey("leader", "http-port")
-	assert.Equal(t, "leader.http-port", staticKey)
+	// Test role-scoped port key (now uses component name as prefix)
+	roleScopedKey := FormatRoleScopedPortKey("leader", "http-port")
+	assert.Equal(t, "leader.http-port", roleScopedKey)
 }
 
 func TestParsePortKey(t *testing.T) {

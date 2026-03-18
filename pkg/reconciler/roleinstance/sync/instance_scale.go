@@ -212,11 +212,11 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 	}
 
 	for _, pod := range podsToDelete {
-		// Release dynamic ports for the pod (static ports are not released here)
+		// Release pod-scoped ports for the pod (role-scoped ports are not released here)
 		if portManager != nil {
 			componentName := instanceutil.GetPodComponentName(pod)
 			if config, exists := componentPortConfigs[componentName]; exists {
-				if err := portManager.ReleasePodDynamicPorts(ctx, pod, config); err != nil {
+				if err := portManager.ReleasePodScopedPorts(ctx, pod, config); err != nil {
 					klog.V(2).InfoS("Failed to release ports for pod", "pod", klog.KObj(pod), "error", err)
 				}
 			}

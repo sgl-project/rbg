@@ -29,16 +29,16 @@ import (
 )
 
 // PortManager manages port allocation for an Instance
-// It handles both Dynamic and Static port allocation
-// Dynamic ports are always stored in the Instance-level ConfigMap
-// Static ports are stored in the InstanceSet-level ConfigMap
+// It handles both PodScoped and RoleScoped port allocation
+// PodScoped ports are always stored in the Instance-level ConfigMap
+// RoleScoped ports are stored in the InstanceSet-level ConfigMap
 type PortManager struct {
 	client   client.Client
 	instance client.Object
-	// instanceCM stores Dynamic ports
+	// instanceCM stores PodScoped ports
 	// Format: instance-<instance-name>-ports
 	instanceCM *corev1.ConfigMap
-	// instanceSetCM stores Static ports
+	// instanceSetCM stores RoleScoped ports
 	// Format: instanceset-<instanceset-name>-ports
 	instanceSetCM *corev1.ConfigMap
 	// instanceSetName is the name of the InstanceSet that owns this Instance
@@ -50,7 +50,7 @@ func NewPortManager(ctx context.Context, k8sClient client.Client, instance clien
 	instanceName := instance.GetName()
 	namespace := instance.GetNamespace()
 
-	// Get or create the Instance-level ConfigMap for Dynamic ports
+	// Get or create the Instance-level ConfigMap for PodScoped ports
 	instanceCMName := GetInstancePortConfigMapName(instanceName)
 	instanceCM, err := GetOrCreatePortConfigMap(ctx, k8sClient, instanceCMName, namespace)
 	if err != nil {
@@ -61,7 +61,7 @@ func NewPortManager(ctx context.Context, k8sClient client.Client, instance clien
 	var instanceSetCM *corev1.ConfigMap
 
 	if instanceSetName != "" {
-		// Get or create the InstanceSet-level ConfigMap for Static ports
+		// Get or create the InstanceSet-level ConfigMap for RoleScoped ports
 		instanceSetCMName := GetInstanceSetPortConfigMapName(instanceSetName)
 		instanceSetCM, err = GetOrCreatePortConfigMap(ctx, k8sClient, instanceSetCMName, namespace)
 		if err != nil {
@@ -78,28 +78,28 @@ func NewPortManager(ctx context.Context, k8sClient client.Client, instance clien
 	}, nil
 }
 
-// AllocatePortsForPod allocates both dynamic and static ports for a pod
+// AllocatePortsForPod allocates both pod-scoped and role-scoped ports for a pod
 func (m *PortManager) AllocatePortsForPod(ctx context.Context, pod *corev1.Pod, config *PortAllocatorConfig, componentName string) error {
 	if config == nil {
 		return nil
 	}
 
-	staticCM := m.getStaticPortConfigMap()
+	roleScopedCM := m.getRoleScopedPortConfigMap()
 
 	// Collect ports that need allocation
-	dynamicToAlloc := m.collectMissingDynamicPorts(config, pod.Name)
-	staticToAlloc := m.collectMissingStaticPorts(config, componentName, staticCM)
+	podScopedToAlloc := m.collectMissingPodScopedPorts(config, pod.Name)
+	roleScopedToAlloc := m.collectMissingRoleScopedPorts(config, componentName, roleScopedCM)
 	refToAlloc := m.collectMissingReferencePorts(config, pod)
 
 	// Allocate and build change maps
-	instanceCMAdds, err := m.allocateDynamicPorts(dynamicToAlloc, pod.Name)
+	instanceCMAdds, err := m.allocatePodScopedPorts(podScopedToAlloc, pod.Name)
 	if err != nil {
-		return fmt.Errorf("failed to allocate dynamic ports: %w", err)
+		return fmt.Errorf("failed to allocate pod-scoped ports: %w", err)
 	}
 
-	staticCMAdds, err := m.allocateStaticPorts(staticToAlloc, componentName)
+	roleScopedCMAdds, err := m.allocateRoleScopedPorts(roleScopedToAlloc, componentName)
 	if err != nil {
-		return fmt.Errorf("failed to allocate static ports: %w", err)
+		return fmt.Errorf("failed to allocate role-scoped ports: %w", err)
 	}
 
 	refAdds, err := m.allocateReferencePorts(refToAlloc, pod)
@@ -123,18 +123,18 @@ func (m *PortManager) AllocatePortsForPod(ctx context.Context, pod *corev1.Pod, 
 		return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
 	}
 
-	if err := m.applyConfigMapChanges(ctx, staticCM, staticCMAdds, nil); err != nil {
-		return fmt.Errorf("failed to update static port ConfigMap: %w", err)
+	if err := m.applyConfigMapChanges(ctx, roleScopedCM, roleScopedCMAdds, nil); err != nil {
+		return fmt.Errorf("failed to update role-scoped port ConfigMap: %w", err)
 	}
 
 	return nil
 }
 
-// collectMissingDynamicPorts returns dynamic port allocations that don't exist in the ConfigMap
-func (m *PortManager) collectMissingDynamicPorts(config *PortAllocatorConfig, podName string) []PortAllocation {
+// collectMissingPodScopedPorts returns pod-scoped port allocations that don't exist in the ConfigMap
+func (m *PortManager) collectMissingPodScopedPorts(config *PortAllocatorConfig, podName string) []PortAllocation {
 	var result []PortAllocation
-	for _, alloc := range config.GetDynamicAllocations() {
-		key := FormatDynamicPortKey(podName, alloc.Name)
+	for _, alloc := range config.GetPodScopedAllocations() {
+		key := FormatPodScopedPortKey(podName, alloc.Name)
 		if _, exists := GetPortFromConfigMap(m.instanceCM, key); !exists {
 			result = append(result, alloc)
 		}
@@ -142,11 +142,11 @@ func (m *PortManager) collectMissingDynamicPorts(config *PortAllocatorConfig, po
 	return result
 }
 
-// collectMissingStaticPorts returns static port allocations that don't exist in the ConfigMap
-func (m *PortManager) collectMissingStaticPorts(config *PortAllocatorConfig, componentName string, cm *corev1.ConfigMap) []PortAllocation {
+// collectMissingRoleScopedPorts returns role-scoped port allocations that don't exist in the ConfigMap
+func (m *PortManager) collectMissingRoleScopedPorts(config *PortAllocatorConfig, componentName string, cm *corev1.ConfigMap) []PortAllocation {
 	var result []PortAllocation
-	for _, alloc := range config.GetStaticAllocations() {
-		key := FormatStaticPortKey(componentName, alloc.Name)
+	for _, alloc := range config.GetRoleScopedAllocations() {
+		key := FormatRoleScopedPortKey(componentName, alloc.Name)
 		if _, exists := GetPortFromConfigMap(cm, key); !exists {
 			result = append(result, alloc)
 		}
@@ -170,7 +170,7 @@ func (m *PortManager) collectMissingReferencePorts(config *PortAllocatorConfig, 
 			continue
 		}
 
-		key := FormatDynamicPortKey(refPodName, portName)
+		key := FormatPodScopedPortKey(refPodName, portName)
 		if _, exists := GetPortFromConfigMap(m.instanceCM, key); !exists {
 			result = append(result, ref)
 		}
@@ -178,8 +178,8 @@ func (m *PortManager) collectMissingReferencePorts(config *PortAllocatorConfig, 
 	return result
 }
 
-// allocateDynamicPorts allocates ports for the given allocations and returns a key->value map
-func (m *PortManager) allocateDynamicPorts(allocs []PortAllocation, podName string) (map[string]string, error) {
+// allocatePodScopedPorts allocates ports for the given allocations and returns a key->value map
+func (m *PortManager) allocatePodScopedPorts(allocs []PortAllocation, podName string) (map[string]string, error) {
 	if len(allocs) == 0 {
 		return nil, nil
 	}
@@ -191,14 +191,14 @@ func (m *PortManager) allocateDynamicPorts(allocs []PortAllocation, podName stri
 
 	result := make(map[string]string, len(allocs))
 	for i, alloc := range allocs {
-		key := FormatDynamicPortKey(podName, alloc.Name)
+		key := FormatPodScopedPortKey(podName, alloc.Name)
 		result[key] = strconv.Itoa(int(ports[i]))
 	}
 	return result, nil
 }
 
-// allocateStaticPorts allocates ports for the given allocations and returns a key->value map
-func (m *PortManager) allocateStaticPorts(allocs []PortAllocation, componentName string) (map[string]string, error) {
+// allocateRoleScopedPorts allocates ports for the given allocations and returns a key->value map
+func (m *PortManager) allocateRoleScopedPorts(allocs []PortAllocation, componentName string) (map[string]string, error) {
 	if len(allocs) == 0 {
 		return nil, nil
 	}
@@ -210,7 +210,7 @@ func (m *PortManager) allocateStaticPorts(allocs []PortAllocation, componentName
 
 	result := make(map[string]string, len(allocs))
 	for i, alloc := range allocs {
-		key := FormatStaticPortKey(componentName, alloc.Name)
+		key := FormatRoleScopedPortKey(componentName, alloc.Name)
 		result[key] = strconv.Itoa(int(ports[i]))
 	}
 	return result, nil
@@ -232,7 +232,7 @@ func (m *PortManager) allocateReferencePorts(refs []PortReference, pod *corev1.P
 		compName, portName, _ := ParseReference(ref.From)
 		refPodName := m.getReferencePodName(pod, compName)
 		if refPodName != "" {
-			key := FormatDynamicPortKey(refPodName, portName)
+			key := FormatPodScopedPortKey(refPodName, portName)
 			result[key] = strconv.Itoa(int(ports[i]))
 		}
 	}
@@ -240,25 +240,25 @@ func (m *PortManager) allocateReferencePorts(refs []PortReference, pod *corev1.P
 }
 
 // InjectPortsIntoPod injects allocated ports into the pod spec
-// componentName is the component name of the pod, used for static port key
+// componentName is the component name of the pod, used for role-scoped port key
 func (m *PortManager) InjectPortsIntoPod(pod *corev1.Pod, config *PortAllocatorConfig, componentName string) error {
 	if config == nil {
 		return nil
 	}
 
-	staticCM := m.getStaticPortConfigMap()
+	roleScopedCM := m.getRoleScopedPortConfigMap()
 
 	// Process allocations
 	for _, alloc := range config.Allocations {
 		var key string
 		var cm *corev1.ConfigMap
 
-		if alloc.Policy == Dynamic {
-			key = FormatDynamicPortKey(pod.Name, alloc.Name)
+		if alloc.Scope == PodScoped {
+			key = FormatPodScopedPortKey(pod.Name, alloc.Name)
 			cm = m.instanceCM
 		} else {
-			key = FormatStaticPortKey(componentName, alloc.Name)
-			cm = staticCM
+			key = FormatRoleScopedPortKey(componentName, alloc.Name)
+			cm = roleScopedCM
 		}
 
 		portValue, exists := GetPortFromConfigMap(cm, key)
@@ -292,7 +292,7 @@ func (m *PortManager) InjectPortsIntoPod(pod *corev1.Pod, config *PortAllocatorC
 			return fmt.Errorf("cannot determine pod name for reference %s", ref.From)
 		}
 
-		key := FormatDynamicPortKey(refPodName, portName)
+		key := FormatPodScopedPortKey(refPodName, portName)
 		if _, exists := GetPortFromConfigMap(m.instanceCM, key); !exists {
 			return fmt.Errorf("referenced port not found: %s (key: %s)", ref.From, key)
 		}
@@ -333,22 +333,22 @@ func (m *PortManager) injectEnvVar(pod *corev1.Pod, envName, cmName, cmKey strin
 	return nil
 }
 
-// ReleasePodDynamicPorts releases dynamic ports for a deleted pod
-// Static ports are NOT released here (they are shared)
-func (m *PortManager) ReleasePodDynamicPorts(ctx context.Context, pod *corev1.Pod, config *PortAllocatorConfig) error {
+// ReleasePodScopedPorts releases pod-scoped ports for a deleted pod
+// Role-scoped ports are NOT released here (they are shared)
+func (m *PortManager) ReleasePodScopedPorts(ctx context.Context, pod *corev1.Pod, config *PortAllocatorConfig) error {
 	if config == nil {
 		return nil
 	}
 
-	dynamicAllocations := config.GetDynamicAllocations()
-	if len(dynamicAllocations) == 0 {
+	podScopedAllocations := config.GetPodScopedAllocations()
+	if len(podScopedAllocations) == 0 {
 		return nil
 	}
 
 	// Collect keys to remove and release ports from the in-memory allocator first.
-	keysToRemove := make([]string, 0, len(dynamicAllocations))
-	for _, alloc := range dynamicAllocations {
-		key := FormatDynamicPortKey(pod.Name, alloc.Name)
+	keysToRemove := make([]string, 0, len(podScopedAllocations))
+	for _, alloc := range podScopedAllocations {
+		key := FormatPodScopedPortKey(pod.Name, alloc.Name)
 		portStr, exists := GetPortFromConfigMap(m.instanceCM, key)
 		if !exists {
 			continue
@@ -388,34 +388,34 @@ func (m *PortManager) SyncPortAllocations(ctx context.Context, pod *corev1.Pod, 
 		return nil
 	}
 
-	oldDynamic, oldStatic := buildPortNameSets(oldConfig)
-	newDynamic, newStatic := buildPortNameSets(newConfig)
+	oldPodScoped, oldRoleScoped := buildPortNameSets(oldConfig)
+	newPodScoped, newRoleScoped := buildPortNameSets(newConfig)
 
-	dynamicToAdd := newDynamic.Difference(oldDynamic)
-	dynamicToRemove := oldDynamic.Difference(newDynamic)
-	staticToAdd := newStatic.Difference(oldStatic)
-	staticToRemove := oldStatic.Difference(newStatic)
+	podScopedToAdd := newPodScoped.Difference(oldPodScoped)
+	podScopedToRemove := oldPodScoped.Difference(newPodScoped)
+	roleScopedToAdd := newRoleScoped.Difference(oldRoleScoped)
+	roleScopedToRemove := oldRoleScoped.Difference(newRoleScoped)
 
-	staticCM := m.getStaticPortConfigMap()
+	roleScopedCM := m.getRoleScopedPortConfigMap()
 
-	instanceCMAdds, err := m.allocatePortsToMap(dynamicToAdd, pod.Name, FormatDynamicPortKey)
+	instanceCMAdds, err := m.allocatePortsToMap(podScopedToAdd, pod.Name, FormatPodScopedPortKey)
 	if err != nil {
-		return fmt.Errorf("failed to allocate new dynamic ports: %w", err)
+		return fmt.Errorf("failed to allocate new pod-scoped ports: %w", err)
 	}
-	staticCMAdds, err := m.allocatePortsToMap(staticToAdd, componentName, FormatStaticPortKey)
+	roleScopedCMAdds, err := m.allocatePortsToMap(roleScopedToAdd, componentName, FormatRoleScopedPortKey)
 	if err != nil {
-		return fmt.Errorf("failed to allocate new static ports: %w", err)
+		return fmt.Errorf("failed to allocate new role-scoped ports: %w", err)
 	}
 
-	instanceCMRemoves := m.collectPortsToRemove(dynamicToRemove, m.instanceCM, pod.Name, FormatDynamicPortKey)
-	staticCMRemoves := m.collectPortsToRemove(staticToRemove, staticCM, componentName, FormatStaticPortKey)
+	instanceCMRemoves := m.collectPortsToRemove(podScopedToRemove, m.instanceCM, pod.Name, FormatPodScopedPortKey)
+	roleScopedCMRemoves := m.collectPortsToRemove(roleScopedToRemove, roleScopedCM, componentName, FormatRoleScopedPortKey)
 
 	if err := m.applyConfigMapChanges(ctx, m.instanceCM, instanceCMAdds, instanceCMRemoves); err != nil {
 		return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
 	}
 
-	if err := m.applyConfigMapChanges(ctx, staticCM, staticCMAdds, staticCMRemoves); err != nil {
-		return fmt.Errorf("failed to update static port ConfigMap: %w", err)
+	if err := m.applyConfigMapChanges(ctx, roleScopedCM, roleScopedCMAdds, roleScopedCMRemoves); err != nil {
+		return fmt.Errorf("failed to update role-scoped port ConfigMap: %w", err)
 	}
 
 	return nil
@@ -424,18 +424,18 @@ func (m *PortManager) SyncPortAllocations(ctx context.Context, pod *corev1.Pod, 
 // portKeyFormatter formats a port key given an owner name and port name
 type portKeyFormatter func(ownerName, portName string) string
 
-// buildPortNameSets extracts dynamic and static port name sets from a config
-func buildPortNameSets(config *PortAllocatorConfig) (dynamic, static sets.Set[string]) {
-	dynamic = sets.New[string]()
-	static = sets.New[string]()
+// buildPortNameSets extracts pod-scoped and role-scoped port name sets from a config
+func buildPortNameSets(config *PortAllocatorConfig) (podScoped, roleScoped sets.Set[string]) {
+	podScoped = sets.New[string]()
+	roleScoped = sets.New[string]()
 	if config == nil {
 		return
 	}
-	for _, alloc := range config.GetDynamicAllocations() {
-		dynamic.Insert(alloc.Name)
+	for _, alloc := range config.GetPodScopedAllocations() {
+		podScoped.Insert(alloc.Name)
 	}
-	for _, alloc := range config.GetStaticAllocations() {
-		static.Insert(alloc.Name)
+	for _, alloc := range config.GetRoleScopedAllocations() {
+		roleScoped.Insert(alloc.Name)
 	}
 	return
 }
@@ -495,9 +495,9 @@ func (m *PortManager) applyConfigMapChanges(ctx context.Context, cm *corev1.Conf
 	})
 }
 
-// getStaticPortConfigMap returns the ConfigMap for static ports
+// getRoleScopedPortConfigMap returns the ConfigMap for role-scoped ports
 // If Instance is managed by InstanceSet, returns instanceSetCM; otherwise returns instanceCM
-func (m *PortManager) getStaticPortConfigMap() *corev1.ConfigMap {
+func (m *PortManager) getRoleScopedPortConfigMap() *corev1.ConfigMap {
 	if m.instanceSetCM != nil {
 		return m.instanceSetCM
 	}

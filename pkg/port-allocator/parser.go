@@ -83,12 +83,12 @@ func validatePortAllocatorConfig(config *PortAllocatorConfig) error {
 		if config.Allocations[i].Env == "" {
 			return fmt.Errorf("allocations[%d].env is required", i)
 		}
-		if config.Allocations[i].Policy == "" {
-			// Default to Dynamic
-			config.Allocations[i].Policy = Dynamic
+		if config.Allocations[i].Scope == "" {
+			// Default to PodScoped
+			config.Allocations[i].Scope = PodScoped
 		}
-		if config.Allocations[i].Policy != Dynamic && config.Allocations[i].Policy != Static {
-			return fmt.Errorf("allocations[%d].policy must be 'Dynamic' or 'Static', got '%s'", i, config.Allocations[i].Policy)
+		if config.Allocations[i].Scope != PodScoped && config.Allocations[i].Scope != RoleScoped {
+			return fmt.Errorf("allocations[%d].scope must be 'PodScoped' or 'RoleScoped', got '%s'", i, config.Allocations[i].Scope)
 		}
 	}
 
@@ -105,34 +105,34 @@ func validatePortAllocatorConfig(config *PortAllocatorConfig) error {
 	return nil
 }
 
-// GetDynamicAllocations returns all allocations with Dynamic policy
-func (c *PortAllocatorConfig) GetDynamicAllocations() []PortAllocation {
+// GetPodScopedAllocations returns all allocations with PodScoped scope
+func (c *PortAllocatorConfig) GetPodScopedAllocations() []PortAllocation {
 	if c == nil {
 		return nil
 	}
 
-	var dynamic []PortAllocation
+	var podScoped []PortAllocation
 	for _, alloc := range c.Allocations {
-		if alloc.Policy == Dynamic {
-			dynamic = append(dynamic, alloc)
+		if alloc.Scope == PodScoped {
+			podScoped = append(podScoped, alloc)
 		}
 	}
-	return dynamic
+	return podScoped
 }
 
-// GetStaticAllocations returns all allocations with Static policy
-func (c *PortAllocatorConfig) GetStaticAllocations() []PortAllocation {
+// GetRoleScopedAllocations returns all allocations with RoleScoped scope
+func (c *PortAllocatorConfig) GetRoleScopedAllocations() []PortAllocation {
 	if c == nil {
 		return nil
 	}
 
-	var static []PortAllocation
+	var roleScoped []PortAllocation
 	for _, alloc := range c.Allocations {
-		if alloc.Policy == Static {
-			static = append(static, alloc)
+		if alloc.Scope == RoleScoped {
+			roleScoped = append(roleScoped, alloc)
 		}
 	}
-	return static
+	return roleScoped
 }
 
 // HasPortAllocatorConfig checks if the pod template has port allocator config

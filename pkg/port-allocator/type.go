@@ -16,13 +16,13 @@ limitations under the License.
 
 package port_allocator
 
-type PortPolicy string
+type PortScope string
 
 const (
-	// Dynamic Port is only valid for the current Pod
-	Dynamic PortPolicy = "Dynamic"
-	// Static Port is valid for all Pod replicas in the current role
-	Static PortPolicy = "Static"
+	// PodScoped Port is only valid for the current Pod
+	PodScoped PortScope = "PodScoped"
+	// RoleScoped Port is valid for all Pod replicas in the current role
+	RoleScoped PortScope = "RoleScoped"
 )
 
 type PortAllocatorConfig struct {
@@ -42,9 +42,9 @@ type PortAllocation struct {
 	// AnnotationKey specifies the key of the annotation to be injected into the Pod
 	AnnotationKey string `json:"annotationKey"`
 	// Not Empty
-	// Default is Dynamic
-	// Policy specifies the scope of the port
-	Policy PortPolicy `json:"policy"`
+	// Default is PodScoped
+	// Scope specifies the scope of the port
+	Scope PortScope `json:"scope"`
 }
 
 type PortReference struct {

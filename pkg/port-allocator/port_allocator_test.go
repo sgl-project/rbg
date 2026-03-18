@@ -70,8 +70,8 @@ func (t *testAllocator) AllocateBatch(num int32) ([]int32, error) {
 	return result, nil
 }
 
-// TestDynamicPortAllocationAndRelease tests dynamic port allocation and release
-func TestDynamicPortAllocationAndRelease(t *testing.T) {
+// TestPodScopedPortAllocationAndRelease tests pod-scoped port allocation and release
+func TestPodScopedPortAllocationAndRelease(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(31000, 2000)
 
@@ -84,11 +84,11 @@ func TestDynamicPortAllocationAndRelease(t *testing.T) {
 		Data: make(map[string]string),
 	}
 
-	// Test dynamic port allocation
+	// Test pod-scoped port allocation
 	podName := "test-pod-0"
 	allocations := []PortAllocation{
-		{Name: "grpc-port", Env: "GRPC_PORT", Policy: Dynamic},
-		{Name: "http-port", Env: "HTTP_PORT", Policy: Dynamic},
+		{Name: "grpc-port", Env: "GRPC_PORT", Scope: PodScoped},
+		{Name: "http-port", Env: "HTTP_PORT", Scope: PodScoped},
 	}
 
 	// Allocate ports
@@ -96,13 +96,13 @@ func TestDynamicPortAllocationAndRelease(t *testing.T) {
 	require.NoError(t, err)
 
 	for i, alloc := range allocations {
-		key := FormatDynamicPortKey(podName, alloc.Name)
+		key := FormatPodScopedPortKey(podName, alloc.Name)
 		SetPortInConfigMap(cm, key, strconv.Itoa(int(ports[i])))
 	}
 
 	// Verify ports were allocated
-	grpcKey := FormatDynamicPortKey(podName, "grpc-port")
-	httpKey := FormatDynamicPortKey(podName, "http-port")
+	grpcKey := FormatPodScopedPortKey(podName, "grpc-port")
+	httpKey := FormatPodScopedPortKey(podName, "http-port")
 
 	grpcPort, exists := GetPortFromConfigMap(cm, grpcKey)
 	assert.True(t, exists)
@@ -128,12 +128,12 @@ func TestDynamicPortAllocationAndRelease(t *testing.T) {
 	assert.False(t, exists)
 }
 
-// TestStaticPortAllocationAndSharing tests static port allocation and sharing across pods
-func TestStaticPortAllocationAndSharing(t *testing.T) {
+// TestRoleScopedPortAllocationAndSharing tests role-scoped port allocation and sharing across pods
+func TestRoleScopedPortAllocationAndSharing(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
-	// Create a ConfigMap for static ports
+	// Create a ConfigMap for role-scoped ports
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "instanceset-test-instanceset-ports",
@@ -142,37 +142,37 @@ func TestStaticPortAllocationAndSharing(t *testing.T) {
 		Data: make(map[string]string),
 	}
 
-	// Allocate static port for "leader" role
+	// Allocate role-scoped port for "leader" role
 	roleName := "leader"
 	allocations := []PortAllocation{
-		{Name: "http-port", Env: "HTTP_PORT", Policy: Static},
+		{Name: "http-port", Env: "HTTP_PORT", Scope: RoleScoped},
 	}
 
 	ports, err := AllocateBatch(int32(len(allocations)))
 	require.NoError(t, err)
 
 	for i, alloc := range allocations {
-		key := FormatStaticPortKey(roleName, alloc.Name)
+		key := FormatRoleScopedPortKey(roleName, alloc.Name)
 		SetPortInConfigMap(cm, key, strconv.Itoa(int(ports[i])))
 	}
 
 	// Verify port was allocated with role name prefix
-	staticKey := FormatStaticPortKey(roleName, "http-port")
-	staticPort, exists := GetPortFromConfigMap(cm, staticKey)
+	roleScopedKey := FormatRoleScopedPortKey(roleName, "http-port")
+	roleScopedPort, exists := GetPortFromConfigMap(cm, roleScopedKey)
 	assert.True(t, exists)
-	assert.NotEmpty(t, staticPort)
+	assert.NotEmpty(t, roleScopedPort)
 
-	// Simulate multiple pods accessing the same static port
+	// Simulate multiple pods accessing the same role-scoped port
 	// All pods with the same role should see the same port
 	for i := 0; i < 3; i++ {
-		port, exists := GetPortFromConfigMap(cm, staticKey)
+		port, exists := GetPortFromConfigMap(cm, roleScopedKey)
 		assert.True(t, exists)
-		assert.Equal(t, staticPort, port, "All pods should see the same static port")
+		assert.Equal(t, roleScopedPort, port, "All pods should see the same role-scoped port")
 	}
 }
 
-// TestStaticPortPreAllocation tests that static ports are not re-allocated
-func TestStaticPortPreAllocation(t *testing.T) {
+// TestRoleScopedPortPreAllocation tests that role-scoped ports are not re-allocated
+func TestRoleScopedPortPreAllocation(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
@@ -184,9 +184,9 @@ func TestStaticPortPreAllocation(t *testing.T) {
 		Data: make(map[string]string),
 	}
 
-	// Pre-allocate a static port
+	// Pre-allocate a role-scoped port
 	preAllocatedPort := int32(30001)
-	key := FormatStaticPortKey("worker", "data-port")
+	key := FormatRoleScopedPortKey("worker", "data-port")
 	SetPortInConfigMap(cm, key, strconv.Itoa(int(preAllocatedPort)))
 
 	// Verify the port exists and is unchanged
@@ -211,9 +211,9 @@ func TestPortUpdateAndDiff(t *testing.T) {
 	// Initial allocation
 	oldConfig := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "port1", Env: "PORT1", Policy: Dynamic},
-			{Name: "port2", Env: "PORT2", Policy: Dynamic},
-			{Name: "static1", Env: "STATIC1", Policy: Static},
+			{Name: "port1", Env: "PORT1", Scope: PodScoped},
+			{Name: "port2", Env: "PORT2", Scope: PodScoped},
+			{Name: "static1", Env: "STATIC1", Scope: RoleScoped},
 		},
 	}
 
@@ -221,51 +221,51 @@ func TestPortUpdateAndDiff(t *testing.T) {
 	ports, err := AllocateBatch(3)
 	require.NoError(t, err)
 
-	SetPortInConfigMap(cm, FormatDynamicPortKey("test-pod-0", "port1"), strconv.Itoa(int(ports[0])))
-	SetPortInConfigMap(cm, FormatDynamicPortKey("test-pod-0", "port2"), strconv.Itoa(int(ports[1])))
-	SetPortInConfigMap(cm, FormatStaticPortKey("test-role", "static1"), strconv.Itoa(int(ports[2])))
+	SetPortInConfigMap(cm, FormatPodScopedPortKey("test-pod-0", "port1"), strconv.Itoa(int(ports[0])))
+	SetPortInConfigMap(cm, FormatPodScopedPortKey("test-pod-0", "port2"), strconv.Itoa(int(ports[1])))
+	SetPortInConfigMap(cm, FormatRoleScopedPortKey("test-role", "static1"), strconv.Itoa(int(ports[2])))
 
 	// Verify initial ports
-	_, exists1 := GetPortFromConfigMap(cm, FormatDynamicPortKey("test-pod-0", "port1"))
+	_, exists1 := GetPortFromConfigMap(cm, FormatPodScopedPortKey("test-pod-0", "port1"))
 	assert.True(t, exists1)
-	_, exists2 := GetPortFromConfigMap(cm, FormatDynamicPortKey("test-pod-0", "port2"))
+	_, exists2 := GetPortFromConfigMap(cm, FormatPodScopedPortKey("test-pod-0", "port2"))
 	assert.True(t, exists2)
-	_, existsStatic := GetPortFromConfigMap(cm, FormatStaticPortKey("test-role", "static1"))
-	assert.True(t, existsStatic)
+	_, existsRoleScoped := GetPortFromConfigMap(cm, FormatRoleScopedPortKey("test-role", "static1"))
+	assert.True(t, existsRoleScoped)
 
 	// New config with changes
 	newConfig := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "port1", Env: "PORT1", Policy: Dynamic},    // unchanged
-			{Name: "port3", Env: "PORT3", Policy: Dynamic},    // new port
-			{Name: "static1", Env: "STATIC1", Policy: Static}, // unchanged
-			{Name: "static2", Env: "STATIC2", Policy: Static}, // new static port
+			{Name: "port1", Env: "PORT1", Scope: PodScoped},      // unchanged
+			{Name: "port3", Env: "PORT3", Scope: PodScoped},      // new port
+			{Name: "static1", Env: "STATIC1", Scope: RoleScoped}, // unchanged
+			{Name: "static2", Env: "STATIC2", Scope: RoleScoped}, // new role-scoped port
 			// port2 removed
 		},
 	}
 
 	// For this test, we manually verify the diff logic would work
-	oldDynamic := oldConfig.GetDynamicAllocations()
-	newDynamic := newConfig.GetDynamicAllocations()
-	oldStatic := oldConfig.GetStaticAllocations()
-	newStatic := newConfig.GetStaticAllocations()
+	oldPodScoped := oldConfig.GetPodScopedAllocations()
+	newPodScoped := newConfig.GetPodScopedAllocations()
+	oldRoleScoped := oldConfig.GetRoleScopedAllocations()
+	newRoleScoped := newConfig.GetRoleScopedAllocations()
 
-	// Check dynamic ports diff
-	assert.Len(t, oldDynamic, 2)
-	assert.Len(t, newDynamic, 2)
+	// Check pod-scoped ports diff
+	assert.Len(t, oldPodScoped, 2)
+	assert.Len(t, newPodScoped, 2)
 
 	// port1 exists in both
-	assert.Equal(t, "port1", oldDynamic[0].Name)
-	assert.Equal(t, "port1", newDynamic[0].Name)
+	assert.Equal(t, "port1", oldPodScoped[0].Name)
+	assert.Equal(t, "port1", newPodScoped[0].Name)
 
 	// port2 exists in old but not new
-	assert.Equal(t, "port2", oldDynamic[1].Name)
+	assert.Equal(t, "port2", oldPodScoped[1].Name)
 	// port3 exists in new but not old
-	assert.Equal(t, "port3", newDynamic[1].Name)
+	assert.Equal(t, "port3", newPodScoped[1].Name)
 
-	// Check static ports diff
-	assert.Len(t, oldStatic, 1)
-	assert.Len(t, newStatic, 2)
+	// Check role-scoped ports diff
+	assert.Len(t, oldRoleScoped, 1)
+	assert.Len(t, newRoleScoped, 2)
 }
 
 // TestPortAllocationIdempotency tests that allocating same port twice doesn't create duplicates
@@ -287,7 +287,7 @@ func TestPortAllocationIdempotency(t *testing.T) {
 	ports, err := AllocateBatch(1)
 	require.NoError(t, err)
 
-	key := FormatDynamicPortKey(podName, "grpc-port")
+	key := FormatPodScopedPortKey(podName, "grpc-port")
 	SetPortInConfigMap(cm, key, strconv.Itoa(int(ports[0])))
 
 	firstPort, _ := GetPortFromConfigMap(cm, key)
@@ -298,8 +298,8 @@ func TestPortAllocationIdempotency(t *testing.T) {
 	assert.Equal(t, firstPort, secondPort)
 }
 
-// TestMultiplePodsDynamicPorts tests that different pods get different dynamic ports
-func TestMultiplePodsDynamicPorts(t *testing.T) {
+// TestMultiplePodsPodScopedPorts tests that different pods get different pod-scoped ports
+func TestMultiplePodsPodScopedPorts(t *testing.T) {
 	// Setup test allocator
 	portAllocator = newTestAllocator(30000, 2768)
 
@@ -318,7 +318,7 @@ func TestMultiplePodsDynamicPorts(t *testing.T) {
 		ports, err := AllocateBatch(1)
 		require.NoError(t, err)
 
-		key := FormatDynamicPortKey(podName, "grpc-port")
+		key := FormatPodScopedPortKey(podName, "grpc-port")
 		SetPortInConfigMap(cm, key, strconv.Itoa(int(ports[0])))
 
 		port, exists := GetPortFromConfigMap(cm, key)
@@ -441,8 +441,8 @@ func TestPortManager_InstancePortAllocation(t *testing.T) {
 							Annotations: map[string]string{
 								"rolebasedgroup.workloads.x-k8s.io/port-allocator": `{
 									"allocations": [
-										{"name": "grpc-port", "env": "GRPC_PORT", "policy": "Dynamic"},
-										{"name": "http-port", "env": "HTTP_PORT", "policy": "Static"}
+										{"name": "grpc-port", "env": "GRPC_PORT", "scope": "PodScoped"},
+										{"name": "http-port", "env": "HTTP_PORT", "scope": "RoleScoped"}
 									]
 								}`,
 							},
@@ -473,8 +473,8 @@ func TestPortManager_InstancePortAllocation(t *testing.T) {
 	assert.NotNil(t, instanceCM)
 	assert.Equal(t, "instance-test-instance-ports", instanceCM.Name)
 
-	// For standalone Instance, static ports use the same ConfigMap
-	assert.Equal(t, instanceCM, pm.getStaticPortConfigMap())
+	// For standalone Instance, role-scoped ports use the same ConfigMap
+	assert.Equal(t, instanceCM, pm.getRoleScopedPortConfigMap())
 	assert.False(t, pm.IsManagedByInstanceSet())
 }
 
@@ -519,8 +519,8 @@ func TestPortManager_InstanceSetOwned(t *testing.T) {
 	assert.NotNil(t, instanceSetCM)
 	assert.Equal(t, "instanceset-test-instanceset-ports", instanceSetCM.Name)
 
-	// Static ports should use InstanceSet-level ConfigMap
-	assert.Equal(t, instanceSetCM, pm.getStaticPortConfigMap())
+	// Role-scoped ports should use InstanceSet-level ConfigMap
+	assert.Equal(t, instanceSetCM, pm.getRoleScopedPortConfigMap())
 	assert.True(t, pm.IsManagedByInstanceSet())
 }
 
@@ -561,8 +561,8 @@ func TestPortManager_AllocateAndInjectPorts(t *testing.T) {
 
 	config := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "grpc-port", Env: "GRPC_PORT", Policy: Dynamic},
-			{Name: "http-port", Env: "HTTP_PORT", Policy: Static},
+			{Name: "grpc-port", Env: "GRPC_PORT", Scope: PodScoped},
+			{Name: "http-port", Env: "HTTP_PORT", Scope: RoleScoped},
 		},
 	}
 
@@ -572,7 +572,7 @@ func TestPortManager_AllocateAndInjectPorts(t *testing.T) {
 
 	// Verify ports were stored in ConfigMap
 	instanceCM := pm.GetInstanceConfigMap()
-	grpcKey := FormatDynamicPortKey(pod.Name, "grpc-port")
+	grpcKey := FormatPodScopedPortKey(pod.Name, "grpc-port")
 	grpcPort, exists := GetPortFromConfigMap(instanceCM, grpcKey)
 	assert.True(t, exists)
 	assert.NotEmpty(t, grpcPort)
@@ -585,8 +585,8 @@ func TestPortManager_AllocateAndInjectPorts(t *testing.T) {
 	assert.Len(t, pod.Spec.Containers[0].Env, 2)
 }
 
-// TestPortManager_ReleasePodDynamicPorts tests releasing dynamic ports when pod is deleted
-func TestPortManager_ReleasePodDynamicPorts(t *testing.T) {
+// TestPortManager_ReleasePodScopedPorts tests releasing pod-scoped ports when pod is deleted
+func TestPortManager_ReleasePodScopedPorts(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup test allocator
@@ -622,8 +622,8 @@ func TestPortManager_ReleasePodDynamicPorts(t *testing.T) {
 
 	config := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "grpc-port", Env: "GRPC_PORT", Policy: Dynamic},
-			{Name: "http-port", Env: "HTTP_PORT", Policy: Static},
+			{Name: "grpc-port", Env: "GRPC_PORT", Scope: PodScoped},
+			{Name: "http-port", Env: "HTTP_PORT", Scope: RoleScoped},
 		},
 	}
 
@@ -632,21 +632,21 @@ func TestPortManager_ReleasePodDynamicPorts(t *testing.T) {
 
 	// Verify ports exist
 	instanceCM := pm.GetInstanceConfigMap()
-	grpcKey := FormatDynamicPortKey(pod.Name, "grpc-port")
+	grpcKey := FormatPodScopedPortKey(pod.Name, "grpc-port")
 	_, exists := GetPortFromConfigMap(instanceCM, grpcKey)
 	assert.True(t, exists)
 
-	// Release dynamic ports (simulating pod deletion)
-	err = pm.ReleasePodDynamicPorts(ctx, pod, config)
+	// Release pod-scoped ports (simulating pod deletion)
+	err = pm.ReleasePodScopedPorts(ctx, pod, config)
 	require.NoError(t, err)
 
-	// Verify dynamic port was removed
+	// Verify pod-scoped port was removed
 	_, exists = GetPortFromConfigMap(instanceCM, grpcKey)
 	assert.False(t, exists)
 
-	// Static port should still exist
-	staticKey := FormatStaticPortKey("worker", "http-port")
-	_, exists = GetPortFromConfigMap(instanceCM, staticKey)
+	// Role-scoped port should still exist
+	roleScopedKey := FormatRoleScopedPortKey("worker", "http-port")
+	_, exists = GetPortFromConfigMap(instanceCM, roleScopedKey)
 	assert.True(t, exists)
 }
 
@@ -687,7 +687,7 @@ func TestPortManager_ReferencePortResolution(t *testing.T) {
 
 	config := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "worker-port", Env: "WORKER_PORT", Policy: Dynamic},
+			{Name: "worker-port", Env: "WORKER_PORT", Scope: PodScoped},
 		},
 		References: []PortReference{
 			{Env: "LEADER_PORT", From: "leader.leader-port"},
@@ -701,7 +701,7 @@ func TestPortManager_ReferencePortResolution(t *testing.T) {
 	// Verify leader's port was pre-allocated
 	instanceCM := pm.GetInstanceConfigMap()
 	leaderPodName := "test-instance-leader-0" // Derived from worker pod name
-	leaderKey := FormatDynamicPortKey(leaderPodName, "leader-port")
+	leaderKey := FormatPodScopedPortKey(leaderPodName, "leader-port")
 	leaderPort, exists := GetPortFromConfigMap(instanceCM, leaderKey)
 	assert.True(t, exists)
 	assert.NotEmpty(t, leaderPort)
@@ -721,7 +721,7 @@ func TestPortManager_ReferencePortResolution(t *testing.T) {
 
 	leaderConfig := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "leader-port", Env: "LEADER_PORT", Policy: Dynamic},
+			{Name: "leader-port", Env: "LEADER_PORT", Scope: PodScoped},
 		},
 	}
 
@@ -770,8 +770,8 @@ func TestPortManager_SyncPortAllocations(t *testing.T) {
 
 	oldConfig := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "port1", Env: "PORT1", Policy: Dynamic},
-			{Name: "port2", Env: "PORT2", Policy: Dynamic},
+			{Name: "port1", Env: "PORT1", Scope: PodScoped},
+			{Name: "port2", Env: "PORT2", Scope: PodScoped},
 		},
 	}
 
@@ -782,8 +782,8 @@ func TestPortManager_SyncPortAllocations(t *testing.T) {
 	// New config - port2 removed, port3 added
 	newConfig := &PortAllocatorConfig{
 		Allocations: []PortAllocation{
-			{Name: "port1", Env: "PORT1", Policy: Dynamic}, // unchanged
-			{Name: "port3", Env: "PORT3", Policy: Dynamic}, // new
+			{Name: "port1", Env: "PORT1", Scope: PodScoped}, // unchanged
+			{Name: "port3", Env: "PORT3", Scope: PodScoped}, // new
 		},
 	}
 
@@ -793,17 +793,17 @@ func TestPortManager_SyncPortAllocations(t *testing.T) {
 
 	// Verify port1 still exists
 	instanceCM := pm.GetInstanceConfigMap()
-	port1Key := FormatDynamicPortKey(pod.Name, "port1")
+	port1Key := FormatPodScopedPortKey(pod.Name, "port1")
 	_, exists := GetPortFromConfigMap(instanceCM, port1Key)
 	assert.True(t, exists)
 
 	// Verify port2 was removed
-	port2Key := FormatDynamicPortKey(pod.Name, "port2")
+	port2Key := FormatPodScopedPortKey(pod.Name, "port2")
 	_, exists = GetPortFromConfigMap(instanceCM, port2Key)
 	assert.False(t, exists)
 
 	// Verify port3 was added
-	port3Key := FormatDynamicPortKey(pod.Name, "port3")
+	port3Key := FormatPodScopedPortKey(pod.Name, "port3")
 	_, exists = GetPortFromConfigMap(instanceCM, port3Key)
 	assert.True(t, exists)
 }
