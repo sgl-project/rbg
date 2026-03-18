@@ -50,23 +50,35 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
 }
 
-// controllerOwnedConditionTypes returns the stable set of condition types that
-// this controller is solely responsible for managing. All other condition types
-// present on the live object are considered externally-owned and must be
-// preserved on every status update.
+// controllerOwnedConditionTypes returns the stable set of condition types whose
+// values in newStatus.Conditions take precedence over whatever is in the live object.
+// All other condition types are considered externally-owned and must be carried
+// forward from the freshly-fetched clone on every status update.
 //
 // NOTE: Do NOT derive this set from newStatus.Conditions at call time. By the
-// point collectControllerOwnedConditionTypes would be called, setInstanceConditions
-// has already appended externally-owned conditions (e.g. RoleInstanceCustomReady,
-// RoleInstanceInPlaceUpdateReady) that were copied from the live object. Deriving
-// from newStatus.Conditions would therefore misclassify those external types as
-// controller-owned, silently clobbering concurrent writes from other controllers.
+// point this function is called, setInstanceConditions has already appended
+// externally-owned conditions (e.g. RoleInstanceCustomReady) copied from the
+// live object into newStatus.Conditions. Deriving the set dynamically would
+// therefore misclassify those external types as controller-owned, silently
+// clobbering concurrent writes from other controllers.
+//
+// RoleInstanceInPlaceUpdateReady is written externally by the inplaceupdate
+// controller, but setInstanceConditions always copies it from instance.Status
+// into newStatus via getInstanceInplaceUpdateReadyCondition. It is therefore
+// already present in newStatus.Conditions, so it must be listed here to prevent
+// a duplicate entry being appended from the live clone.
 func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
 	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
 		workloadsv1alpha2.RoleInstanceReady,
 		workloadsv1alpha2.RoleInstanceAllPodsReady,
 		workloadsv1alpha2.RoleInstanceFailedScale,
 		workloadsv1alpha2.RoleInstanceFailedUpdate,
+		// RoleInstanceInPlaceUpdateReady is written by the inplaceupdate controller, but
+		// setInstanceConditions always copies it from instance.Status into newStatus via
+		// getInstanceInplaceUpdateReadyCondition. It is therefore already included in
+		// newStatus.Conditions before updateStatus is called, so we must treat it as
+		// owned here to prevent a duplicate entry being appended from the live clone.
+		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 	)
 }
 
