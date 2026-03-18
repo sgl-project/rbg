@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -43,10 +44,25 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	r.calculateStatus(instance, newStatus, conditions, pods)
 	var updateStatusErr error
 	if r.inconsistentStatus(instance, newStatus) {
-		updateStatusErr = r.updateStatus(ctx, instance, newStatus)
+		// Collect the set of condition types owned by this controller so that
+		// updateStatus can merge custom conditions from the freshly-fetched clone
+		// instead of overwriting them with the pre-reconcile snapshot held in newStatus.
+		controllerOwnedTypes := collectControllerOwnedConditionTypes(newStatus)
+		updateStatusErr = r.updateStatus(ctx, instance, newStatus, controllerOwnedTypes)
 	}
 	updatePodsConditionErr := r.updatePodsLifeCycle(ctx, instance, pods)
 	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
+}
+
+// collectControllerOwnedConditionTypes returns the set of condition types that
+// this controller writes into newStatus. All other condition types present on the
+// live object are considered externally-owned and must be preserved on every update.
+func collectControllerOwnedConditionTypes(newStatus *workloadsv1alpha2.RoleInstanceStatus) sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
+	owned := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
+	for _, c := range newStatus.Conditions {
+		owned.Insert(c.Type)
+	}
+	return owned
 }
 
 func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
@@ -283,13 +299,29 @@ func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.Role
 	return false
 }
 
-func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) error {
+func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, controllerOwnedTypes sets.Set[workloadsv1alpha2.RoleInstanceConditionType]) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		clone := &workloadsv1alpha2.RoleInstance{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
+			if apierrors.IsNotFound(err) {
+				// Instance has been deleted; nothing to update.
+				return nil
+			}
 			return err
 		}
+		// Snapshot the live custom conditions before overwriting clone.Status.
+		// These are conditions not owned by this controller (e.g. RoleInstanceCustomReady
+		// written by readiness/*). They may have been updated concurrently between when
+		// we fetched instance at the top of Reconcile and now, so we must carry them
+		// forward rather than silently rolling them back via the precomputed newStatus.
+		liveCustomConditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0)
+		for _, c := range clone.Status.Conditions {
+			if !controllerOwnedTypes.Has(c.Type) {
+				liveCustomConditions = append(liveCustomConditions, c)
+			}
+		}
 		clone.Status = *newStatus
+		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
 		return r.Status().Update(ctx, clone)
 	})
 }
