@@ -8,6 +8,7 @@ on:
 
 env:
   GO_VERSION: 1.24.1
+  MULTIARCH_PLATFORMS: linux/amd64,linux/arm64
 
 permissions:
   contents: read
@@ -26,6 +27,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -47,21 +51,15 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Building version: $TAG (commit: $GIT_SHA)"
 
-      - name: Build Docker images
+      - name: Build and push multi-arch controller and CRD upgrader images
         env:
           TAG: ${{ steps.version.outputs.tag }}
           IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
+          PLATFORMS: ${{ env.MULTIARCH_PLATFORMS }}
         run: |
-          echo "Building images with tag: $TAG"
-          make docker-build
-
-      - name: Push Docker images
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
-        run: |
-          echo "Pushing images with tag: $TAG"
-          make docker-push
+          echo "Building and pushing multi-arch controller and CRD upgrader images with tag: $TAG"
+          echo "Target platforms: $PLATFORMS"
+          make docker-buildx-push
 
       - name: Build and push Patio image
         env:
@@ -89,9 +87,10 @@ jobs:
           echo "- **Git SHA:** ${{ steps.version.outputs.git_sha }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Repository:** ${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Multi-arch platforms:** ${{ env.MULTIARCH_PLATFORMS }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-controller:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-upgrade-crd:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-controller:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-upgrade-crd:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-patio-runtime:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-benchmark-dashboard:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
