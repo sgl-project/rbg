@@ -3,6 +3,7 @@ package statelessmode
 import (
 	"context"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -42,14 +43,29 @@ func (r *realStatusUpdater) UpdateInstanceSetStatus(set *workloadsv1alpha2.RoleI
 }
 
 func (r *realStatusUpdater) updateStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus) error {
+	// Skip status update if the object is being deleted to avoid StorageError
+	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
+	if set.DeletionTimestamp != nil {
+		return nil
+	}
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		clone := &workloadsv1alpha2.RoleInstanceSet{}
 		if err := r.Get(context.TODO(), types.NamespacedName{Namespace: set.Namespace, Name: set.Name}, clone); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
 			return err
 		}
+		// Re-check deletion timestamp after refreshing from API server
+		if clone.DeletionTimestamp != nil {
+			return nil
+		}
+		// Use patch instead of update to avoid overwriting concurrent changes.
+		// base is a deep copy of the object fetched from the API server (before modification),
+		// so the patch only contains the status diff.
+		base := clone.DeepCopy()
 		clone.Status = *newStatus
-		clone.Annotations = set.Annotations
-		return r.Status().Update(context.TODO(), clone)
+		return r.Status().Patch(context.TODO(), clone, client.MergeFrom(base))
 	})
 }
 
