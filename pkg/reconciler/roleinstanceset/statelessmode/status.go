@@ -60,12 +60,8 @@ func (r *realStatusUpdater) updateStatus(set *workloadsv1alpha2.RoleInstanceSet,
 		if clone.DeletionTimestamp != nil {
 			return nil
 		}
-		// Use patch instead of update to avoid overwriting concurrent changes.
-		// base is a deep copy of the object fetched from the API server (before modification),
-		// so the patch only contains the status diff.
-		base := clone.DeepCopy()
 		clone.Status = *newStatus
-		return r.Status().Patch(context.TODO(), clone, client.MergeFrom(base))
+		return r.Status().Update(context.TODO(), clone)
 	})
 }
 
