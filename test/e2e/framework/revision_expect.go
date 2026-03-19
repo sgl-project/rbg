@@ -6,6 +6,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
@@ -18,12 +19,20 @@ func (f *Framework) ExpectRBGRevisionEqual(rbg *v1alpha1.RoleBasedGroup) {
 		func() bool {
 			selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					v1alpha1.SetNameLabelKey: rbg.Name,
+					constants.GroupNameLabelKey: rbg.Name,
 				},
 			})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-			revisions, err := pkgutils.ListRevisions(f.Ctx, f.Client, rbg, selector)
+			// Fetch the live object so parent.GetUID() returns the real API-server-assigned UID,
+			// not the fake UID set in test wrappers (e.g. "rbg-test-uid").
+			liveRbg := &v1alpha1.RoleBasedGroup{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, liveRbg); err != nil {
+				logger.Error(err, "failed to get live rbg for revision check")
+				return false
+			}
+
+			revisions, err := pkgutils.ListRevisions(f.Ctx, f.Client, liveRbg, selector)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			if len(revisions) == 0 {
 				logger.Info("no revision found")
@@ -44,7 +53,7 @@ func (f *Framework) ExpectRBGRevisionEqual(rbg *v1alpha1.RoleBasedGroup) {
 				logger.Error(err, "failed to get expect revision")
 				return false
 			}
-			return current.Labels[v1alpha1.RevisionLabelKey] == expect.Labels[v1alpha1.RevisionLabelKey] &&
+			return current.Labels[constants.GroupRevisionLabelKey] == expect.Labels[constants.GroupRevisionLabelKey] &&
 				pkgutils.EqualRevision(current, expect)
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
@@ -55,12 +64,17 @@ func (f *Framework) ExpectRevisionDeleted(rbg *v1alpha1.RoleBasedGroup) {
 		func() bool {
 			selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					v1alpha1.SetNameLabelKey: rbg.Name,
+					constants.GroupNameLabelKey: rbg.Name,
 				},
 			})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-			revisions, err := pkgutils.ListRevisions(f.Ctx, f.Client, rbg, selector)
+			// Use a bare metav1.Object with just the name/namespace so that a nil UID
+			// matches only unowned revisions — which is fine since we're checking for deletion.
+			liveRbg := &v1alpha1.RoleBasedGroup{}
+			_ = f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, liveRbg)
+
+			revisions, err := pkgutils.ListRevisions(f.Ctx, f.Client, liveRbg, selector)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 			return len(revisions) == 0

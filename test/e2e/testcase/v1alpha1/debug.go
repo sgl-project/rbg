@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 )
@@ -91,7 +92,7 @@ func dumpDebugInfoForRBGSet(f *framework.Framework, rbgset *workloadsv1alpha1.Ro
 	// List all RBGs owned by this RBGSet
 	rbgList := &workloadsv1alpha1.RoleBasedGroupList{}
 	if err := f.Client.List(f.Ctx, rbgList, client.InNamespace(rbgset.Namespace),
-		client.MatchingLabels{workloadsv1alpha1.SetNameLabelKey: rbgset.Name}); err != nil {
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgset.Name}); err != nil {
 		fmt.Printf("[RBGSet] Failed to list RBGs: %v\n", err)
 	} else {
 		fmt.Printf("[RBGSet] Found %d RBGs\n", len(rbgList.Items))
@@ -225,7 +226,7 @@ func dumpRolePods(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup,
 
 	// Try to find pods by different labels based on workload type
 	selectors := []client.MatchingLabels{
-		{workloadsv1alpha1.SetNameLabelKey: rbg.Name, workloadsv1alpha1.SetRoleLabelKey: roleName},
+		{constants.GroupNameLabelKey: rbg.Name, constants.RoleNameLabelKey: roleName},
 		{"leaderworkerset.sigs.k8s.io/name": workloadName},
 		{"app.kubernetes.io/instance": workloadName},
 	}

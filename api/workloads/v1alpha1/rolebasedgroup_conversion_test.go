@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -193,6 +194,244 @@ func TestRoleBasedGroup_ConvertTo_WrongType(t *testing.T) {
 	err := src.ConvertTo(&v2.RoleBasedGroupSet{}) // wrong type
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expected *v1alpha2.RoleBasedGroup")
+}
+
+// TestRoleBasedGroup_ConvertTo_KubeGangScheduling verifies that a v1alpha1 PodGroupPolicy
+// with KubeScheduling is translated into the controller-readable gang-scheduling annotations
+// on the v1alpha2 hub object.
+func TestRoleBasedGroup_ConvertTo_KubeGangScheduling(t *testing.T) {
+	timeout := int32(30)
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{{Name: "w", Replicas: ptr.To(int32(1)), TemplateSource: TemplateSource{Template: podTemplate("app")}}},
+			PodGroupPolicy: &PodGroupPolicy{
+				PodGroupPolicySource: PodGroupPolicySource{
+					KubeScheduling: &KubeSchedulingPodGroupPolicySource{ScheduleTimeoutSeconds: &timeout},
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	// Controller-readable annotations must be set.
+	assert.Equal(t, "true", dst.Annotations[constants.GangSchedulingAnnotationKey])
+	assert.Equal(t, "30", dst.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+	// Round-trip annotation must also be preserved.
+	assert.Contains(t, dst.Annotations, annotationV1alpha1PodGroupPolicy)
+}
+
+// TestRoleBasedGroup_ConvertTo_KubeGangSchedulingNoTimeout verifies that when no timeout
+// is specified, only GangSchedulingAnnotationKey is set (no timeout annotation).
+func TestRoleBasedGroup_ConvertTo_KubeGangSchedulingNoTimeout(t *testing.T) {
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{{Name: "w", Replicas: ptr.To(int32(1)), TemplateSource: TemplateSource{Template: podTemplate("app")}}},
+			PodGroupPolicy: &PodGroupPolicy{
+				PodGroupPolicySource: PodGroupPolicySource{
+					KubeScheduling: &KubeSchedulingPodGroupPolicySource{},
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	assert.Equal(t, "true", dst.Annotations[constants.GangSchedulingAnnotationKey])
+	assert.NotContains(t, dst.Annotations, constants.GangSchedulingScheduleTimeoutSecondsKey)
+}
+
+// TestRoleBasedGroup_ConvertTo_VolcanoGangScheduling verifies that a v1alpha1 PodGroupPolicy
+// with VolcanoScheduling is translated into the appropriate Volcano annotations.
+func TestRoleBasedGroup_ConvertTo_VolcanoGangScheduling(t *testing.T) {
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{{Name: "w", Replicas: ptr.To(int32(1)), TemplateSource: TemplateSource{Template: podTemplate("app")}}},
+			PodGroupPolicy: &PodGroupPolicy{
+				PodGroupPolicySource: PodGroupPolicySource{
+					VolcanoScheduling: &VolcanoSchedulingPodGroupPolicySource{
+						Queue:             "high-priority",
+						PriorityClassName: "system-node-critical",
+					},
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	assert.Equal(t, "true", dst.Annotations[constants.GangSchedulingAnnotationKey])
+	assert.Equal(t, "high-priority", dst.Annotations[constants.GangSchedulingVolcanoQueueKey])
+	assert.Equal(t, "system-node-critical", dst.Annotations[constants.GangSchedulingVolcanoPriorityClassKey])
+}
+
+// TestRoleBasedGroup_ConvertFrom_GangSchedulingAnnotationsRemoved verifies that the
+// translated gang-scheduling annotations are cleaned up when converting back to v1alpha1.
+func TestRoleBasedGroup_ConvertFrom_GangSchedulingAnnotationsRemoved(t *testing.T) {
+	timeout := int32(45)
+	pgp := PodGroupPolicy{
+		PodGroupPolicySource: PodGroupPolicySource{
+			KubeScheduling: &KubeSchedulingPodGroupPolicySource{ScheduleTimeoutSeconds: &timeout},
+		},
+	}
+	pgpJSON, err := json.Marshal(pgp)
+	require.NoError(t, err)
+
+	src := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rbg",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				annotationV1alpha1PodGroupPolicy:                  string(pgpJSON),
+				constants.GangSchedulingAnnotationKey:             "true",
+				constants.GangSchedulingScheduleTimeoutSecondsKey: "45",
+			},
+		},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{{
+				Name:     "w",
+				Replicas: ptr.To(int32(1)),
+				Pattern:  v2.Pattern{StandalonePattern: &v2.StandalonePattern{}},
+			}},
+		},
+	}
+
+	dst := &RoleBasedGroup{}
+	require.NoError(t, dst.ConvertFrom(src))
+
+	// PodGroupPolicy must be restored.
+	require.NotNil(t, dst.Spec.PodGroupPolicy)
+	assert.Equal(t, &timeout, dst.Spec.PodGroupPolicy.KubeScheduling.ScheduleTimeoutSeconds)
+
+	// All conversion-only and translated annotations must be stripped.
+	assert.NotContains(t, dst.Annotations, annotationV1alpha1PodGroupPolicy)
+	assert.NotContains(t, dst.Annotations, constants.GangSchedulingAnnotationKey)
+	assert.NotContains(t, dst.Annotations, constants.GangSchedulingScheduleTimeoutSecondsKey)
+}
+
+// TestRoleBasedGroup_RoundTrip_KubeGangScheduling verifies that kube gang scheduling
+// survives a v1alpha1 → v1alpha2 → v1alpha1 round-trip, and that the hub object
+// carries the controller-readable annotation.
+func TestRoleBasedGroup_RoundTrip_KubeGangScheduling(t *testing.T) {
+	timeout := int32(60)
+	original := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{{Name: "w", Replicas: ptr.To(int32(1)), TemplateSource: TemplateSource{Template: podTemplate("app")}}},
+			PodGroupPolicy: &PodGroupPolicy{
+				PodGroupPolicySource: PodGroupPolicySource{
+					KubeScheduling: &KubeSchedulingPodGroupPolicySource{ScheduleTimeoutSeconds: &timeout},
+				},
+			},
+		},
+	}
+
+	hub := &v2.RoleBasedGroup{}
+	require.NoError(t, original.ConvertTo(hub))
+
+	// Hub must have the controller-readable annotation so the gang-scheduling logic fires.
+	assert.Equal(t, "true", hub.Annotations[constants.GangSchedulingAnnotationKey])
+	assert.Equal(t, "60", hub.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+
+	restored := &RoleBasedGroup{}
+	require.NoError(t, restored.ConvertFrom(hub))
+
+	require.NotNil(t, restored.Spec.PodGroupPolicy)
+	assert.Equal(t, &timeout, restored.Spec.PodGroupPolicy.KubeScheduling.ScheduleTimeoutSeconds)
+	// Translated annotations must not leak into v1alpha1 object.
+	assert.NotContains(t, restored.Annotations, constants.GangSchedulingAnnotationKey)
+	assert.NotContains(t, restored.Annotations, constants.GangSchedulingScheduleTimeoutSecondsKey)
+}
+
+// TestRoleBasedGroup_ConvertTo_ExclusiveTopology verifies that the v1alpha1
+// exclusive-topology annotation is translated to the controller-readable key on the hub.
+func TestRoleBasedGroup_ConvertTo_ExclusiveTopology(t *testing.T) {
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rbg",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				ExclusiveKeyAnnotationKey: "kubernetes.io/hostname",
+			},
+		},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{{Name: "w", Replicas: ptr.To(int32(1)), TemplateSource: TemplateSource{Template: podTemplate("app")}}},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	// Controller-readable key must be present with the correct value.
+	assert.Equal(t, "kubernetes.io/hostname", dst.Annotations[constants.GroupExclusiveTopologyKey])
+	// Original v1alpha1 key is preserved (it lives in ObjectMeta which is copied as-is).
+	assert.Equal(t, "kubernetes.io/hostname", dst.Annotations[ExclusiveKeyAnnotationKey])
+}
+
+// TestRoleBasedGroup_ConvertFrom_ExclusiveTopologyAnnotationRemoved verifies that the
+// translated exclusive-topology annotation is cleaned up when converting back to v1alpha1.
+func TestRoleBasedGroup_ConvertFrom_ExclusiveTopologyAnnotationRemoved(t *testing.T) {
+	src := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rbg",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				ExclusiveKeyAnnotationKey:           "kubernetes.io/hostname",
+				constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname",
+			},
+		},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{{
+				Name:     "w",
+				Replicas: ptr.To(int32(1)),
+				Pattern:  v2.Pattern{StandalonePattern: &v2.StandalonePattern{}},
+			}},
+		},
+	}
+
+	dst := &RoleBasedGroup{}
+	require.NoError(t, dst.ConvertFrom(src))
+
+	// The v1alpha1 exclusive-topology key stays (it's in ObjectMeta from the original source).
+	assert.Equal(t, "kubernetes.io/hostname", dst.Annotations[ExclusiveKeyAnnotationKey])
+	// The translated constants key must be stripped.
+	assert.NotContains(t, dst.Annotations, constants.GroupExclusiveTopologyKey)
+}
+
+// TestRoleBasedGroup_RoundTrip_ExclusiveTopology verifies that the exclusive-topology
+// annotation survives a round-trip and the hub object carries the controller-readable key.
+func TestRoleBasedGroup_RoundTrip_ExclusiveTopology(t *testing.T) {
+	original := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rbg",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				ExclusiveKeyAnnotationKey: "kubernetes.io/hostname",
+			},
+		},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{{Name: "w", Replicas: ptr.To(int32(1)), TemplateSource: TemplateSource{Template: podTemplate("app")}}},
+		},
+	}
+
+	hub := &v2.RoleBasedGroup{}
+	require.NoError(t, original.ConvertTo(hub))
+
+	// Hub must have the controller-readable key.
+	assert.Equal(t, "kubernetes.io/hostname", hub.Annotations[constants.GroupExclusiveTopologyKey])
+
+	restored := &RoleBasedGroup{}
+	require.NoError(t, restored.ConvertFrom(hub))
+
+	// v1alpha1 key preserved, translated key cleaned up.
+	assert.Equal(t, "kubernetes.io/hostname", restored.Annotations[ExclusiveKeyAnnotationKey])
+	assert.NotContains(t, restored.Annotations, constants.GroupExclusiveTopologyKey)
 }
 
 // ── ConvertFrom (v1alpha2 → v1alpha1) ────────────────────────────────────────

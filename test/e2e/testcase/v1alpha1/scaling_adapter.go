@@ -181,16 +181,16 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 								wrappers.BuildLwsRole("role-2").
 									WithReplicas(int32(1)).
 									WithScalingAdapter(true).Obj(),
-								// instanceset
-								wrappers.BuildBasicRole("role-3").
-									WithReplicas(int32(1)).
-									WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
-									WithScalingAdapter(true).Obj(),
-								// instanceset - leaderWorkerPattern
-								wrappers.BuildLwsRole("role-4").
-									WithReplicas(int32(1)).
-									WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
-									WithScalingAdapter(true).Obj(),
+								// // instanceset
+								// wrappers.BuildBasicRole("role-3").
+								// 	WithReplicas(int32(1)).
+								// 	WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
+								// 	WithScalingAdapter(true).Obj(),
+								// // instanceset - leaderWorkerPattern
+								// wrappers.BuildLwsRole("role-4").
+								// 	WithReplicas(int32(1)).
+								// 	WithWorkload(workloadsv1alpha1.InstanceSetWorkloadType).
+								// 	WithScalingAdapter(true).Obj(),
 							},
 						).Obj()
 

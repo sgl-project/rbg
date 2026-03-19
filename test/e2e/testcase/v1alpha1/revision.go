@@ -10,6 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
@@ -50,11 +51,11 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			f.ExpectRbgEqual(rbg)
 
 			// not update
-			roleHashKey0 := fmt.Sprintf(v1alpha1.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[0].Name)
+			roleHashKey0 := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[0].Name)
 			f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[0], map[string]string{
 				roleHashKey0: oldRoleRevisionHash[rbg.Spec.Roles[0].Name],
 			})
-			roleHashKey2 := fmt.Sprintf(v1alpha1.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[2].Name)
+			roleHashKey2 := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[2].Name)
 			f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[2], map[string]string{
 				roleHashKey2: oldRoleRevisionHash[rbg.Spec.Roles[2].Name],
 			})
@@ -65,7 +66,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			newRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(new)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			roleHashKey1 := fmt.Sprintf(v1alpha1.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[1].Name)
+			roleHashKey1 := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[1].Name)
 			f.ExpectWorkloadLabelContains(rbg, rbg.Spec.Roles[1], map[string]string{
 				roleHashKey1: newRoleRevisionHash[rbg.Spec.Roles[1].Name],
 			})

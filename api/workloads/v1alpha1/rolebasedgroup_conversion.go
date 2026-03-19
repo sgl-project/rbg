@@ -19,10 +19,12 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -455,13 +457,37 @@ func preserveV1alpha1Fields(src *RoleBasedGroup, dst *v2.RoleBasedGroup) error {
 		dst.Annotations = map[string]string{}
 	}
 
-	// PodGroupPolicy
+	// Translate v1alpha1 annotation keys to their controller-readable equivalents.
+	// The controller always uses the constants package keys, never the v1alpha1 ones.
+	if val, ok := dst.Annotations[ExclusiveKeyAnnotationKey]; ok {
+		dst.Annotations[constants.GroupExclusiveTopologyKey] = val
+	}
+
+	// PodGroupPolicy: preserve raw for round-trip AND translate to controller-readable annotations.
 	if src.Spec.PodGroupPolicy != nil {
 		data, err := json.Marshal(src.Spec.PodGroupPolicy)
 		if err != nil {
 			return fmt.Errorf("marshalling PodGroupPolicy: %w", err)
 		}
 		dst.Annotations[annotationV1alpha1PodGroupPolicy] = string(data)
+
+		// Translate to the annotation-based gang scheduling that the controller reads.
+		pgp := src.Spec.PodGroupPolicy
+		if pgp.KubeScheduling != nil {
+			dst.Annotations[constants.GangSchedulingAnnotationKey] = "true"
+			if pgp.KubeScheduling.ScheduleTimeoutSeconds != nil {
+				dst.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey] =
+					strconv.Itoa(int(*pgp.KubeScheduling.ScheduleTimeoutSeconds))
+			}
+		} else if pgp.VolcanoScheduling != nil {
+			dst.Annotations[constants.GangSchedulingAnnotationKey] = "true"
+			if pgp.VolcanoScheduling.Queue != "" {
+				dst.Annotations[constants.GangSchedulingVolcanoQueueKey] = pgp.VolcanoScheduling.Queue
+			}
+			if pgp.VolcanoScheduling.PriorityClassName != "" {
+				dst.Annotations[constants.GangSchedulingVolcanoPriorityClassKey] = pgp.VolcanoScheduling.PriorityClassName
+			}
+		}
 	}
 
 	// CoordinationRequirements
@@ -509,6 +535,13 @@ func removeConversionAnnotations(annotations map[string]string) {
 	}
 	delete(annotations, annotationV1alpha1PodGroupPolicy)
 	delete(annotations, annotationV1alpha1Coordination)
+	// Also remove the translated gang-scheduling annotations that were injected by ConvertTo.
+	delete(annotations, constants.GangSchedulingAnnotationKey)
+	delete(annotations, constants.GangSchedulingScheduleTimeoutSecondsKey)
+	delete(annotations, constants.GangSchedulingVolcanoQueueKey)
+	delete(annotations, constants.GangSchedulingVolcanoPriorityClassKey)
+	// Also remove the translated exclusive-topology annotation.
+	delete(annotations, constants.GroupExclusiveTopologyKey)
 }
 
 // copyAnnotations returns a shallow copy of the given annotation map, never nil.

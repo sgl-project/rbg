@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
@@ -166,14 +167,18 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 					// Get initial ControllerRevision number
 					selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+							constants.GroupNameLabelKey: rbg.Name,
 						},
 					})
 					gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 					var initialRevisionNum int64
 					gomega.Eventually(func() bool {
-						revisions, err := utils.ListRevisions(f.Ctx, f.Client, rbg, selector)
+						liveRbg := &workloadsv1alpha1.RoleBasedGroup{}
+						if err := f.Client.Get(f.Ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, liveRbg); err != nil {
+							return false
+						}
+						revisions, err := utils.ListRevisions(f.Ctx, f.Client, liveRbg, selector)
 						if err != nil || len(revisions) == 0 {
 							return false
 						}
@@ -227,7 +232,11 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 
 					// Verify ControllerRevision version incremented
 					gomega.Eventually(func() bool {
-						revisions, err := utils.ListRevisions(f.Ctx, f.Client, rbg, selector)
+						liveRbg := &workloadsv1alpha1.RoleBasedGroup{}
+						if err := f.Client.Get(f.Ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, liveRbg); err != nil {
+							return false
+						}
+						revisions, err := utils.ListRevisions(f.Ctx, f.Client, liveRbg, selector)
 						if err != nil || len(revisions) == 0 {
 							return false
 						}

@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
@@ -54,7 +55,7 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 	for _, role := range rbg.Spec.Roles {
 		wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-		roleHashKey := fmt.Sprintf(v1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+		roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
 
 		gomega.Eventually(
 			func() bool {
@@ -124,7 +125,7 @@ func (f *Framework) ExpectRbgDeleted(rbg *v1alpha1.RoleBasedGroup) {
 			err := f.Client.List(
 				f.Ctx, podList,
 				client.InNamespace(rbg.Namespace),
-				client.MatchingLabels{v1alpha1.SetNameLabelKey: rbg.Name},
+				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name},
 			)
 			if err != nil {
 				logger.Error(err, "failed to list pods")
