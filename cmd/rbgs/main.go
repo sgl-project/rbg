@@ -108,11 +108,6 @@ func main() {
 		cacheSyncTimeout        time.Duration
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
 		schedulerName string
-		// Self-signed webhook cert options
-		webhookServiceName      string
-		webhookServiceNamespace string
-		webhookCertSecretName   string
-		webhookCertDir          string
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -152,15 +147,6 @@ func main() {
 		"The scheduler name to use for gang scheduling. Supported values: scheduler-plugins, volcano. "+
 			"Defaults to scheduler-plugins.",
 	)
-	flag.StringVar(&webhookServiceName, "webhook-service-name", "rbgs-webhook-service",
-		"Name of the Service that fronts the webhook server (used for TLS SAN).")
-	flag.StringVar(&webhookServiceNamespace, "webhook-service-namespace", "",
-		"Namespace of the webhook Service. Defaults to the manager's namespace (POD_NAMESPACE env var).")
-	flag.StringVar(&webhookCertSecretName, "webhook-cert-secret", "rbgs-webhook-cert",
-		"Name of the Secret to store the self-signed webhook TLS certificate.")
-	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/certs",
-		"Directory to write the webhook TLS certificate files (tls.crt, tls.key).")
-
 	flag.Parse()
 	opts := zap.Options{
 		Development: development,
@@ -232,7 +218,7 @@ func main() {
 
 	webhookServer := webhook.NewServer(
 		webhook.Options{
-			CertDir: webhookCertDir,
+			CertDir: rbgwebhook.WebhookCertDir,
 			TLSOpts: webhookTLSOpts,
 		},
 	)
@@ -310,14 +296,12 @@ func main() {
 
 	// ---------------------------------------------------------------------------
 	// Self-signed TLS certificate bootstrap for the conversion webhook.
-	// Generates (or loads) a cert stored in a Secret, writes it to webhookCertDir
+	// Generates (or loads) a cert stored in a Secret, writes it to WebhookCertDir
 	// so the webhook server can serve HTTPS, and patches the caBundle on the CRDs.
 	// ---------------------------------------------------------------------------
+	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
 	if webhookServiceNamespace == "" {
-		webhookServiceNamespace = os.Getenv("POD_NAMESPACE")
-	}
-	if webhookServiceNamespace == "" {
-		setupLog.Info("WARNING: webhook-service-namespace not set and POD_NAMESPACE env not found; caBundle patching may fail")
+		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
 	}
 
 	// Use a direct (non-cached) client for cert bootstrap: mgr.GetClient() uses
@@ -329,13 +313,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	certMgr, err := rbgwebhook.NewCertManager(directClient, webhookCertSecretName, webhookServiceNamespace)
+	certMgr, err := rbgwebhook.NewCertManager(directClient, rbgwebhook.WebhookCertSecretName, webhookServiceNamespace)
 	if err != nil {
 		setupLog.Error(err, "unable to create webhook cert manager")
 		os.Exit(1)
 	}
 
-	caCert, err := certMgr.BuildOrSync(context.Background(), webhookServiceNamespace, webhookServiceName, webhookCertDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	caCert, err := certMgr.BuildOrSync(ctx, webhookServiceNamespace, rbgwebhook.WebhookServiceName, rbgwebhook.WebhookCertDir)
 	if err != nil {
 		setupLog.Error(err, "unable to provision webhook TLS certificate")
 		os.Exit(1)
@@ -343,10 +330,10 @@ func main() {
 
 	// Pass the cert directory to the webhook server so it loads our TLS cert.
 	if len(webhookCertPath) == 0 {
-		webhookCertPath = webhookCertDir
+		webhookCertPath = rbgwebhook.WebhookCertDir
 	}
 
-	if err = certMgr.PatchCRDCABundle(context.Background(), rbgwebhook.ConversionWebhookCRDs(), caCert); err != nil {
+	if err = certMgr.PatchCRDCABundle(ctx, rbgwebhook.ConversionWebhookCRDs(), caCert); err != nil {
 		// Fatal: if the caBundle is not set the API server cannot route conversion
 		// requests to the webhook, causing all v1alpha1<->v1alpha2 conversions to fail.
 		setupLog.Error(err, "unable to patch caBundle on conversion CRDs")

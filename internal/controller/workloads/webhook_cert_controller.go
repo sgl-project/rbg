@@ -44,7 +44,10 @@ type WebhookCertReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
+// Secret access is intentionally namespace-scoped (Role, not ClusterRole) and is managed
+// manually in config/rbac/secret_role.yaml rather than generated from markers below,
+// because kubebuilder markers do not support resourceNames scoping.
+// The controller only needs: create secrets (any name, to bootstrap), get+update rbgs-webhook-cert.
 
 func (r *WebhookCertReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := ctrl.LoggerFrom(ctx).WithName("webhook-cert-reconciler")

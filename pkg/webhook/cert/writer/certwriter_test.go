@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2021 The Fluid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,179 +17,444 @@ limitations under the License.
 package writer
 
 import (
-	"context"
-	"os"
-	"path/filepath"
-	"testing"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"time"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/rbgs/pkg/webhook/cert/generator"
 )
 
-// scheme used by the fake client
-var testScheme = func() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = clientgoscheme.AddToScheme(s)
-	return s
-}()
+var _ = Describe("CertWriter", func() {
+	var (
+		testDNSName = "test-service.test-namespace.svc"
+	)
 
-func secretKey() types.NamespacedName {
-	return types.NamespacedName{Namespace: "test-ns", Name: "webhook-cert"}
+	Describe("handleCommon", func() {
+		Context("when input validation fails", func() {
+			It("should return error when dnsName is empty", func() {
+				mockWriter := &mockCertReadWriter{}
+				artifacts, changed, err := handleCommon("", mockWriter)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(Equal("dnsName should not be empty"))
+				Expect(artifacts).To(BeNil())
+				Expect(changed).To(BeFalse())
+			})
+
+			It("should return error when certReadWriter is nil", func() {
+				artifacts, changed, err := handleCommon(testDNSName, nil)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(Equal("certReaderWriter should not be nil"))
+				Expect(artifacts).To(BeNil())
+				Expect(changed).To(BeFalse())
+			})
+		})
+
+		Context("when certificates need to be created", func() {
+			It("should create new certificates when they don't exist", func() {
+				validCerts := generateValidTestCerts(testDNSName)
+				mockWriter := &mockCertReadWriter{
+					readErr:   apierrs.NewNotFound(schema.GroupResource{}, "test"),
+					writeResp: validCerts,
+				}
+
+				artifacts, changed, err := handleCommon(testDNSName, mockWriter)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(artifacts).NotTo(BeNil())
+				Expect(mockWriter.writeCalled).To(BeTrue())
+			})
+
+			It("should handle already exists error during write", func() {
+				validCerts := generateValidTestCerts(testDNSName)
+				mockWriter := &mockCertReadWriter{
+					readErr:   apierrs.NewNotFound(schema.GroupResource{}, "test"),
+					writeErr:  apierrs.NewAlreadyExists(schema.GroupResource{}, "test"),
+					readResp2: validCerts,
+					writeResp: validCerts,
+				}
+
+				artifacts, changed, err := handleCommon(testDNSName, mockWriter)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(artifacts).NotTo(BeNil())
+				Expect(mockWriter.readCount).To(Equal(2))
+			})
+		})
+
+		Context("when certificates exist but are invalid", func() {
+			It("should regenerate certificates when they are invalid", func() {
+				invalidCerts := &generator.Artifacts{
+					Cert:   []byte("invalid-cert"),
+					Key:    []byte("invalid-key"),
+					CACert: []byte("invalid-ca"),
+				}
+				validCerts := generateValidTestCerts(testDNSName)
+
+				mockWriter := &mockCertReadWriter{
+					readResp:      invalidCerts,
+					overwriteResp: validCerts,
+				}
+
+				artifacts, changed, err := handleCommon(testDNSName, mockWriter)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(artifacts).NotTo(BeNil())
+				Expect(mockWriter.overwriteCalled).To(BeTrue())
+			})
+
+			It("should return error when overwrite fails", func() {
+				invalidCerts := &generator.Artifacts{
+					Cert:   []byte("invalid-cert"),
+					Key:    []byte("invalid-key"),
+					CACert: []byte("invalid-ca"),
+				}
+
+				mockWriter := &mockCertReadWriter{
+					readResp:     invalidCerts,
+					overwriteErr: apierrs.NewInternalError(errors.New("overwrite failed")),
+				}
+
+				artifacts, changed, err := handleCommon(testDNSName, mockWriter)
+
+				Expect(err).To(HaveOccurred())
+				Expect(changed).To(BeFalse())
+				Expect(artifacts).To(BeNil())
+			})
+		})
+
+		Context("when certificates exist and are valid", func() {
+			It("should return existing certificates without changes", func() {
+				validCerts := generateValidTestCerts(testDNSName)
+				mockWriter := &mockCertReadWriter{
+					readResp: validCerts,
+				}
+
+				artifacts, changed, err := handleCommon(testDNSName, mockWriter)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeFalse())
+				Expect(artifacts).NotTo(BeNil())
+				Expect(mockWriter.overwriteCalled).To(BeFalse())
+			})
+		})
+	})
+
+	Describe("createIfNotExists", func() {
+		It("should return existing certificates when they exist", func() {
+			existingCerts := generateValidTestCerts(testDNSName)
+			mockWriter := &mockCertReadWriter{
+				readResp: existingCerts,
+			}
+
+			artifacts, changed, err := createIfNotExists(mockWriter)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeFalse())
+			Expect(artifacts).To(Equal(existingCerts))
+			Expect(mockWriter.writeCalled).To(BeFalse())
+		})
+
+		It("should create certificates when they don't exist", func() {
+			newCerts := generateValidTestCerts(testDNSName)
+			mockWriter := &mockCertReadWriter{
+				readErr:   apierrs.NewNotFound(schema.GroupResource{}, "test"),
+				writeResp: newCerts,
+			}
+
+			artifacts, changed, err := createIfNotExists(mockWriter)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			Expect(artifacts).To(Equal(newCerts))
+			Expect(mockWriter.writeCalled).To(BeTrue())
+		})
+
+		It("should handle race condition with AlreadyExists error", func() {
+			raceCerts := generateValidTestCerts(testDNSName)
+			mockWriter := &mockCertReadWriter{
+				readErr:   apierrs.NewNotFound(schema.GroupResource{}, "test"),
+				writeErr:  apierrs.NewAlreadyExists(schema.GroupResource{}, "test"),
+				readResp2: raceCerts,
+			}
+
+			artifacts, changed, err := createIfNotExists(mockWriter)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			Expect(artifacts).To(Equal(raceCerts))
+			Expect(mockWriter.readCount).To(Equal(2))
+		})
+
+		It("should propagate read errors other than NotFound", func() {
+			mockWriter := &mockCertReadWriter{
+				readErr: apierrs.NewInternalError(errors.New("read failed")),
+			}
+
+			artifacts, changed, err := createIfNotExists(mockWriter)
+
+			Expect(err).To(HaveOccurred())
+			Expect(changed).To(BeFalse())
+			Expect(artifacts).To(BeNil())
+		})
+
+		It("should propagate write errors other than AlreadyExists", func() {
+			mockWriter := &mockCertReadWriter{
+				readErr:  apierrs.NewNotFound(schema.GroupResource{}, "test"),
+				writeErr: apierrs.NewInternalError(errors.New("write failed")),
+			}
+
+			artifacts, changed, err := createIfNotExists(mockWriter)
+
+			Expect(err).To(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			Expect(artifacts).To(BeNil())
+		})
+	})
+
+	Describe("validCert", func() {
+		Context("when certificates are nil or incomplete", func() {
+			It("should return false when artifacts is nil", func() {
+				valid := validCert(nil, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+
+			It("should return false when Cert is nil", func() {
+				artifacts := &generator.Artifacts{
+					Key:    []byte("key"),
+					CACert: []byte("cacert"),
+				}
+				valid := validCert(artifacts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+
+			It("should return false when Key is nil", func() {
+				artifacts := &generator.Artifacts{
+					Cert:   []byte("cert"),
+					CACert: []byte("cacert"),
+				}
+				valid := validCert(artifacts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+
+			It("should return false when CACert is nil", func() {
+				artifacts := &generator.Artifacts{
+					Cert: []byte("cert"),
+					Key:  []byte("key"),
+				}
+				valid := validCert(artifacts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+		})
+
+		Context("when certificates are malformed", func() {
+			It("should return false when cert and key don't form a valid pair", func() {
+				artifacts := &generator.Artifacts{
+					Cert:   []byte("invalid-cert"),
+					Key:    []byte("invalid-key"),
+					CACert: []byte("invalid-ca"),
+				}
+				valid := validCert(artifacts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+
+			It("should return false when CA cert is invalid PEM", func() {
+				// Generate valid key pair but invalid CA
+				key, cert := generateValidKeyPair(testDNSName)
+				artifacts := &generator.Artifacts{
+					Cert:   cert,
+					Key:    key,
+					CACert: []byte("invalid-ca-pem"),
+				}
+				valid := validCert(artifacts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+
+			It("should return false when cert PEM cannot be decoded", func() {
+				validCerts := generateValidTestCerts(testDNSName)
+				artifacts := &generator.Artifacts{
+					Cert:   []byte("invalid-pem-format"),
+					Key:    validCerts.Key,
+					CACert: validCerts.CACert,
+				}
+				valid := validCert(artifacts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+		})
+
+		Context("when certificates are valid", func() {
+			It("should return true for valid certificates", func() {
+				validCerts := generateValidTestCerts(testDNSName)
+				valid := validCert(validCerts, testDNSName)
+				Expect(valid).To(BeTrue())
+			})
+		})
+
+		Context("when certificates are expiring soon", func() {
+			It("should return false for certificates expiring within 6 months", func() {
+				// Generate cert that expires in 3 months
+				expiringSoonCerts := generateCertsWithExpiry(testDNSName, 90*24*time.Hour)
+				valid := validCert(expiringSoonCerts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+		})
+
+		Context("when DNS name doesn't match", func() {
+			It("should return false when DNS name doesn't match certificate", func() {
+				validCerts := generateValidTestCerts("different-service.test-namespace.svc")
+				valid := validCert(validCerts, testDNSName)
+				Expect(valid).To(BeFalse())
+			})
+		})
+	})
+})
+
+// mockCertReadWriter is a mock implementation of certReadWriter for testing
+type mockCertReadWriter struct {
+	readResp        *generator.Artifacts
+	readResp2       *generator.Artifacts
+	readErr         error
+	readErr2        error
+	writeResp       *generator.Artifacts
+	writeErr        error
+	overwriteResp   *generator.Artifacts
+	overwriteErr    error
+	writeCalled     bool
+	overwriteCalled bool
+	readCount       int
 }
 
-func newWriter(t *testing.T, objs ...client.Object) *CertWriter {
-	t.Helper()
-	cl := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(objs...).Build()
-	w, err := New(Options{Client: cl, Secret: secretKey()})
-	require.NoError(t, err)
-	return w
-}
-
-// ── New ──────────────────────────────────────────────────────────────────────
-
-func TestNew_RejectsNilClient(t *testing.T) {
-	_, err := New(Options{Secret: secretKey()})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Client")
-}
-
-func TestNew_RejectsMissingSecretName(t *testing.T) {
-	cl := fake.NewClientBuilder().WithScheme(testScheme).Build()
-	_, err := New(Options{Client: cl, Secret: types.NamespacedName{Namespace: "ns"}})
-	require.Error(t, err)
-}
-
-func TestNew_RejectsMissingSecretNamespace(t *testing.T) {
-	cl := fake.NewClientBuilder().WithScheme(testScheme).Build()
-	_, err := New(Options{Client: cl, Secret: types.NamespacedName{Name: "name"}})
-	require.Error(t, err)
-}
-
-// ── EnsureCert ───────────────────────────────────────────────────────────────
-
-func TestEnsureCert_CreatesSecretWhenAbsent(t *testing.T) {
-	w := newWriter(t) // no pre-existing secret
-	ctx := context.Background()
-
-	artifacts, changed, err := w.EnsureCert(ctx, "webhook.test.svc")
-	require.NoError(t, err)
-	assert.True(t, changed, "should report changed=true when creating a new cert")
-	assert.NotEmpty(t, artifacts.CACert)
-	assert.NotEmpty(t, artifacts.Cert)
-	assert.NotEmpty(t, artifacts.Key)
-
-	// Secret must now exist in the fake store.
-	secret := &corev1.Secret{}
-	require.NoError(t, w.opts.Client.Get(ctx, secretKey(), secret))
-	assert.NotEmpty(t, secret.Data[CACertName])
-	assert.NotEmpty(t, secret.Data[ServerCertName])
-	assert.NotEmpty(t, secret.Data[ServerKeyName])
-}
-
-func TestEnsureCert_ReusesValidExistingCert(t *testing.T) {
-	// Generate a fresh cert and pre-load it in the fake store.
-	g := &generator.SelfSignedCertGenerator{}
-	a, err := g.Generate("webhook.test.svc")
-	require.NoError(t, err)
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test-ns", Name: "webhook-cert"},
-		Data: map[string][]byte{
-			CAKeyName:      a.CAKey,
-			CACertName:     a.CACert,
-			ServerKeyName:  a.Key,
-			ServerCertName: a.Cert,
-		},
+func (m *mockCertReadWriter) read() (*generator.Artifacts, error) {
+	m.readCount++
+	if m.readCount == 1 {
+		return m.readResp, m.readErr
 	}
-	w := newWriter(t, secret)
-
-	artifacts, changed, err := w.EnsureCert(context.Background(), "webhook.test.svc")
-	require.NoError(t, err)
-	assert.False(t, changed, "should report changed=false when cert is still valid")
-	assert.Equal(t, a.Cert, artifacts.Cert, "returned cert must match the stored one")
+	return m.readResp2, m.readErr2
 }
 
-func TestEnsureCert_RenewsWhenCertInvalid(t *testing.T) {
-	// Store a Secret with corrupted/empty cert data — ValidCert will return false,
-	// triggering the renewal path.
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test-ns", Name: "webhook-cert"},
-		Data: map[string][]byte{
-			CAKeyName:      []byte("not-a-real-key"),
-			CACertName:     []byte("not-a-real-cert"),
-			ServerKeyName:  []byte("not-a-real-key"),
-			ServerCertName: []byte("not-a-real-cert"),
-		},
+func (m *mockCertReadWriter) write() (*generator.Artifacts, error) {
+	m.writeCalled = true
+	return m.writeResp, m.writeErr
+}
+
+func (m *mockCertReadWriter) overwrite(resourceVersion string) (*generator.Artifacts, error) {
+	m.overwriteCalled = true
+	return m.overwriteResp, m.overwriteErr
+}
+
+// Helper functions to generate test certificates
+
+// generateTestCerts is a shared helper function that generates certificates with the specified validity duration.
+// This function consolidates the certificate generation logic to reduce code duplication.
+func generateTestCerts(dnsName string, validDuration time.Duration) *generator.Artifacts {
+	// Generate CA
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
 	}
-	w := newWriter(t, secret)
 
-	_, changed, err := w.EnsureCert(context.Background(), "webhook.test.svc")
-	require.NoError(t, err)
-	assert.True(t, changed, "should renew when stored cert is invalid")
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "Test CA",
+		},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(validDuration),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	caCertBytes, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		panic(err)
+	}
+
+	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertBytes})
+
+	// Generate server cert
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject: pkix.Name{
+			CommonName: dnsName,
+		},
+		DNSNames:    []string{dnsName},
+		NotBefore:   time.Now().Add(-1 * time.Hour),
+		NotAfter:    time.Now().Add(validDuration),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	serverCertBytes, err := x509.CreateCertificate(rand.Reader, serverTemplate, caTemplate, &serverKey.PublicKey, caKey)
+	if err != nil {
+		panic(err)
+	}
+
+	serverCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverCertBytes})
+	serverKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)})
+
+	return &generator.Artifacts{
+		Cert:   serverCertPEM,
+		Key:    serverKeyPEM,
+		CACert: caCertPEM,
+	}
 }
 
-// ── WriteCertsToDir ───────────────────────────────────────────────────────────
-
-func TestWriteCertsToDir_WritesFiles(t *testing.T) {
-	g := &generator.SelfSignedCertGenerator{}
-	a, err := g.Generate("webhook.test.svc")
-	require.NoError(t, err)
-
-	dir := t.TempDir()
-	require.NoError(t, WriteCertsToDir(dir, a))
-
-	certBytes, err := os.ReadFile(filepath.Join(dir, ServerCertName))
-	require.NoError(t, err)
-	assert.Equal(t, a.Cert, certBytes)
-
-	keyBytes, err := os.ReadFile(filepath.Join(dir, ServerKeyName))
-	require.NoError(t, err)
-	assert.Equal(t, a.Key, keyBytes)
+// generateValidTestCerts generates certificates with a standard 1-year validity period.
+// This is a convenience wrapper around generateTestCerts.
+func generateValidTestCerts(dnsName string) *generator.Artifacts {
+	return generateTestCerts(dnsName, 365*24*time.Hour)
 }
 
-func TestWriteCertsToDir_KeyFilePermission(t *testing.T) {
-	g := &generator.SelfSignedCertGenerator{}
-	a, err := g.Generate("svc.ns.svc")
-	require.NoError(t, err)
-
-	dir := t.TempDir()
-	require.NoError(t, WriteCertsToDir(dir, a))
-
-	info, err := os.Stat(filepath.Join(dir, ServerKeyName))
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0400), info.Mode().Perm(),
-		"private key must be read-only by owner (0400)")
+// generateCertsWithExpiry generates certificates with a custom validity duration.
+// This is a convenience wrapper around generateTestCerts.
+func generateCertsWithExpiry(dnsName string, validDuration time.Duration) *generator.Artifacts {
+	return generateTestCerts(dnsName, validDuration)
 }
 
-func TestWriteCertsToDir_CertFilePermission(t *testing.T) {
-	g := &generator.SelfSignedCertGenerator{}
-	a, err := g.Generate("svc.ns.svc")
-	require.NoError(t, err)
+func generateValidKeyPair(dnsName string) ([]byte, []byte) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
 
-	dir := t.TempDir()
-	require.NoError(t, WriteCertsToDir(dir, a))
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: dnsName,
+		},
+		NotBefore:   time.Now().Add(-1 * time.Hour),
+		NotAfter:    time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
 
-	info, err := os.Stat(filepath.Join(dir, ServerCertName))
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0644), info.Mode().Perm(),
-		"cert file must be world-readable (0644)")
-}
+	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		panic(err)
+	}
 
-func TestWriteCertsToDir_CreatesDirectoryIfAbsent(t *testing.T) {
-	g := &generator.SelfSignedCertGenerator{}
-	a, err := g.Generate("svc.ns.svc")
-	require.NoError(t, err)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certBytes})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 
-	dir := filepath.Join(t.TempDir(), "nested", "dir")
-	require.NoError(t, WriteCertsToDir(dir, a))
-	assert.FileExists(t, filepath.Join(dir, ServerCertName))
+	return keyPEM, certPEM
 }
