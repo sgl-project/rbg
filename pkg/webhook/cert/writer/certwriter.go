@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2021 The Fluid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,169 +17,123 @@ limitations under the License.
 package writer
 
 import (
-	"context"
-	"fmt"
-	"os"
-	"path/filepath"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	"sigs.k8s.io/rbgs/pkg/webhook/cert/generator"
 )
 
 const (
-	// Secret data keys
-	CAKeyName      = "ca-key.pem"
-	CACertName     = "ca-cert.pem"
-	ServerKeyName  = "tls.key"
-	ServerCertName = "tls.crt"
-
-	// certRenewBefore is how far before expiry we proactively renew.
-	certRenewBefore = 6 * 30 * 24 * time.Hour // ~6 months
+	// CAKeyName is the name of the CA private key
+	CAKeyName = "ca-key.pem"
+	// CACertName is the name of the CA certificate
+	CACertName = "ca-cert.pem"
+	// ServerKeyName is the name of the server private key
+	ServerKeyName  = "key.pem"
+	ServerKeyName2 = "tls.key"
+	// ServerCertName is the name of the serving certificate
+	ServerCertName  = "cert.pem"
+	ServerCertName2 = "tls.crt"
 )
 
-var log = ctrl.Log.WithName("webhook-cert-writer")
+var log = ctrl.Log.WithName("webhookWriter")
 
-// Options configure the cert writer.
-type Options struct {
-	// Client is used to read/write the backing Secret.
-	Client client.Client
-	// Secret identifies the Secret that stores the certificate material.
-	Secret types.NamespacedName
-	// CertGenerator optionally overrides the certificate generator.
-	// Defaults to SelfSignedCertGenerator.
-	CertGenerator generator.CertGenerator
+// CertWriter provides method to handle webhooks.
+type CertWriter interface {
+	// EnsureCert provisions the cert for the webhookClientConfig.
+	EnsureCert(dnsName string) (*generator.Artifacts, bool, error)
 }
 
-// CertWriter provisions and persists TLS certificates.
-type CertWriter struct {
-	opts Options
-}
+// handleCommon ensures the given webhook has a proper certificate.
+// It uses the given certReadWriter to read and (or) write the certificate.
+func handleCommon(dnsName string, ch certReadWriter) (*generator.Artifacts, bool, error) {
+	if len(dnsName) == 0 {
+		return nil, false, errors.New("dnsName should not be empty")
+	}
+	if ch == nil {
+		return nil, false, errors.New("certReaderWriter should not be nil")
+	}
 
-// New creates a CertWriter from the given options.
-func New(opts Options) (*CertWriter, error) {
-	if opts.Client == nil {
-		return nil, fmt.Errorf("opts.Client must not be nil")
-	}
-	if opts.Secret.Name == "" || opts.Secret.Namespace == "" {
-		return nil, fmt.Errorf("opts.Secret must have a name and namespace")
-	}
-	if opts.CertGenerator == nil {
-		opts.CertGenerator = &generator.SelfSignedCertGenerator{}
-	}
-	return &CertWriter{opts: opts}, nil
-}
-
-// EnsureCert returns valid certificate artifacts for dnsName, creating or
-// renewing them as needed. changed is true when new certificates were written.
-func (w *CertWriter) EnsureCert(ctx context.Context, dnsName string) (artifacts *generator.Artifacts, changed bool, err error) {
-	artifacts, err = w.read(ctx)
-	if apierrors.IsNotFound(err) {
-		artifacts, err = w.generate(ctx, dnsName)
-		return artifacts, true, err
-	}
+	certs, changed, err := createIfNotExists(ch)
 	if err != nil {
-		return nil, false, err
+		return nil, changed, err
 	}
 
-	// Reload CA into generator so it signs with the same CA.
-	if artifacts.CAKey != nil && artifacts.CACert != nil {
-		w.opts.CertGenerator.SetCA(artifacts.CAKey, artifacts.CACert)
+	// Recreate the cert if it's invalid.
+	valid := validCert(certs, dnsName)
+	if !valid {
+		log.Info("cert is invalid or expiring, regenerating a new one")
+		certs, err = ch.overwrite(certs.ResourceVersion)
+		if err != nil {
+			return nil, false, err
+		}
+		changed = true
 	}
-
-	// Renew if the cert is invalid or expiring within certRenewBefore.
-	if !generator.ValidCert(artifacts.Key, artifacts.Cert, artifacts.CACert, dnsName, time.Now().Add(certRenewBefore)) {
-		log.Info("webhook cert is invalid or expiring, regenerating", "dnsName", dnsName)
-		artifacts, err = w.generate(ctx, dnsName)
-		return artifacts, true, err
-	}
-
-	return artifacts, false, nil
+	return certs, changed, nil
 }
 
-// WriteCertsToDir writes tls.crt and tls.key into dir so the webhook server can load them.
-func WriteCertsToDir(dir string, artifacts *generator.Artifacts) error {
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return fmt.Errorf("creating cert dir %s: %w", dir, err)
-	}
-	files := map[string][]byte{
-		ServerCertName: artifacts.Cert,
-		ServerKeyName:  artifacts.Key,
-	}
-	for name, data := range files {
-		path := filepath.Join(dir, name)
-		// Private key written read-only by owner (0400); cert may be world-readable (0644).
-		perm := os.FileMode(0644)
-		if name == ServerKeyName {
-			perm = 0400
-		}
-		if err := os.WriteFile(path, data, perm); err != nil {
-			return fmt.Errorf("writing %s: %w", path, err)
+func createIfNotExists(ch certReadWriter) (*generator.Artifacts, bool, error) {
+	// Try to read first
+	certs, err := ch.read()
+	if apierrs.IsNotFound(err) {
+		// Create if not exists
+		certs, err = ch.write()
+		switch {
+		// This may happen if there is another racer.
+		case apierrs.IsAlreadyExists(err):
+			certs, err = ch.read()
+			return certs, true, err
+		default:
+			return certs, true, err
 		}
 	}
-	return nil
+	return certs, false, err
 }
 
-// --------------------------------------------------------------------------
-// internal helpers
-// --------------------------------------------------------------------------
-
-func (w *CertWriter) read(ctx context.Context) (*generator.Artifacts, error) {
-	secret := &corev1.Secret{}
-	if err := w.opts.Client.Get(ctx, w.opts.Secret, secret); err != nil {
-		return nil, err
-	}
-	a := &generator.Artifacts{ResourceVersion: secret.ResourceVersion}
-	if secret.Data != nil {
-		a.CAKey = secret.Data[CAKeyName]
-		a.CACert = secret.Data[CACertName]
-		a.Key = secret.Data[ServerKeyName]
-		a.Cert = secret.Data[ServerCertName]
-	}
-	return a, nil
+// certReadWriter provides methods for reading and writing certificates.
+type certReadWriter interface {
+	// read a webhook name and returns the certs for it.
+	read() (*generator.Artifacts, error)
+	// write the certs and return the certs it wrote.
+	write() (*generator.Artifacts, error)
+	// overwrite the existing certs and return the certs it wrote.
+	overwrite(resourceVersion string) (*generator.Artifacts, error)
 }
 
-func (w *CertWriter) generate(ctx context.Context, dnsName string) (*generator.Artifacts, error) {
-	artifacts, err := w.opts.CertGenerator.Generate(dnsName)
+func validCert(certs *generator.Artifacts, dnsName string) bool {
+	if certs == nil || certs.Cert == nil || certs.Key == nil || certs.CACert == nil {
+		return false
+	}
+
+	// Verify key and cert are valid pair
+	_, err := tls.X509KeyPair(certs.Cert, certs.Key)
 	if err != nil {
-		return nil, fmt.Errorf("generating cert for %s: %w", dnsName, err)
-	}
-	if err := w.upsertSecret(ctx, artifacts); err != nil {
-		return nil, err
-	}
-	return artifacts, nil
-}
-
-func (w *CertWriter) upsertSecret(ctx context.Context, artifacts *generator.Artifacts) error {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: w.opts.Secret.Namespace,
-			Name:      w.opts.Secret.Name,
-		},
-		Data: map[string][]byte{
-			CAKeyName:      artifacts.CAKey,
-			CACertName:     artifacts.CACert,
-			ServerKeyName:  artifacts.Key,
-			ServerCertName: artifacts.Cert,
-		},
+		return false
 	}
 
-	existing := &corev1.Secret{}
-	err := w.opts.Client.Get(ctx, w.opts.Secret, existing)
-	if apierrors.IsNotFound(err) {
-		log.Info("creating webhook cert secret", "secret", w.opts.Secret)
-		return w.opts.Client.Create(ctx, secret)
+	// Verify cert is good for desired DNS name and signed by CA and will be valid for desired period of time.
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certs.CACert) {
+		return false
 	}
+	block, _ := pem.Decode(certs.Cert)
+	if block == nil {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return err
+		return false
 	}
-	secret.ResourceVersion = existing.ResourceVersion
-	log.Info("updating webhook cert secret", "secret", w.opts.Secret)
-	return w.opts.Client.Update(ctx, secret)
+	ops := x509.VerifyOptions{
+		DNSName:     dnsName,
+		Roots:       pool,
+		CurrentTime: time.Now().AddDate(0, 6, 0),
+	}
+	_, err = cert.Verify(ops)
+	return err == nil
 }

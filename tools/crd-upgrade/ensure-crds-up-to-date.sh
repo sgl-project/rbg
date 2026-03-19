@@ -14,17 +14,17 @@ CONVERSION_CRDS=(
 WEBHOOK_NAMESPACE="${WEBHOOK_NAMESPACE:-rbgs-system}"
 WEBHOOK_SERVICE="${WEBHOOK_SERVICE:-rbgs-webhook-service}"
 
-for crdfile in $(find /rbgs/crds/*.yaml);
-do
+while IFS= read -r -d '' crdfile; do
+  cat "$crdfile"
   crdshort=${crdfile#*_}
-  if [[ $(kubectl get --ignore-not-found -f $crdfile | wc -l) -gt 0 ]]; then
+  if [[ $(kubectl get --ignore-not-found -f "$crdfile" | wc -l) -gt 0 ]]; then
     echo "$crdshort found, replacing its crd..."
-    kubectl replace -f $crdfile
+    kubectl replace -f "$crdfile"
   else
     echo "$crdshort not found, creating its crd..."
-    kubectl create -f $crdfile
+    kubectl create -f "$crdfile"
   fi
-done
+done < <(find /rbgs/crds -maxdepth 1 -name '*.yaml' -print0)
 
 # Patch spec.conversion on CRDs that use the conversion webhook.
 # The base CRD files (from controller-gen) do not include spec.conversion;

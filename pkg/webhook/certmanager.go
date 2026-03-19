@@ -29,24 +29,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/rbgs/pkg/webhook/cert/generator"
-	"sigs.k8s.io/rbgs/pkg/webhook/cert/writer"
+	certwriter "sigs.k8s.io/rbgs/pkg/webhook/cert/writer"
 )
 
 var certLog = ctrl.Log.WithName("webhook-cert-manager")
+
+// Fixed deployment constants for the self-signed webhook certificate.
+// These values must match the kustomize/helm deployment manifests.
+const (
+	// WebhookServiceName is the name of the Service that fronts the webhook server.
+	WebhookServiceName = "rbgs-webhook-service"
+	// WebhookCertSecretName is the name of the Secret that stores the TLS certificate.
+	WebhookCertSecretName = "rbgs-webhook-cert"
+	// WebhookCertDir is the directory where TLS certificate files are written for the webhook server.
+	WebhookCertDir = "/tmp/k8s-webhook-server/certs"
+)
 
 // CertManager generates self-signed TLS certificates and keeps CRD conversion
 // webhook caBundle fields up to date.
 type CertManager struct {
 	client     client.Client
-	certWriter *writer.CertWriter
+	certWriter certwriter.CertWriter
 }
 
 // NewCertManager creates a CertManager that stores certificate material in the
 // named Secret and keeps the given CRDs patched with the CA bundle.
 func NewCertManager(c client.Client, secretName, secretNamespace string) (*CertManager, error) {
-	cw, err := writer.New(writer.Options{
+	cw, err := certwriter.NewSecretCertWriter(certwriter.SecretCertWriterOptions{
 		Client: c,
-		Secret: types.NamespacedName{
+		Secret: &types.NamespacedName{
 			Name:      secretName,
 			Namespace: secretNamespace,
 		},
@@ -63,7 +74,7 @@ func (m *CertManager) BuildOrSync(ctx context.Context, namespace, serviceName, c
 	dnsName := generator.ServiceToCommonName(namespace, serviceName)
 	certLog.Info("ensuring webhook TLS certificate", "dnsName", dnsName)
 
-	artifacts, changed, err := m.certWriter.EnsureCert(ctx, dnsName)
+	artifacts, changed, err := m.certWriter.EnsureCert(dnsName)
 	if err != nil {
 		return nil, fmt.Errorf("ensuring webhook cert: %w", err)
 	}
@@ -71,7 +82,7 @@ func (m *CertManager) BuildOrSync(ctx context.Context, namespace, serviceName, c
 		certLog.Info("webhook certificate was created or renewed")
 	}
 
-	if err := writer.WriteCertsToDir(certDir, artifacts); err != nil {
+	if err := certwriter.WriteCertsToDir(certDir, artifacts); err != nil {
 		return nil, fmt.Errorf("writing certs to %s: %w", certDir, err)
 	}
 
