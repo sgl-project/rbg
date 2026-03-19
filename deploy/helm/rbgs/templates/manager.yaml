@@ -26,6 +26,8 @@ spec:
       serviceAccountName: rbgs-controller-sa
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      imagePullSecrets:
+      - name: my-acr-secret
       containers:
         - name: {{ .Chart.Name }}
           args:

@@ -28,6 +28,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: rbgs-crds-upgrade
+      imagePullSecrets:
+      - name: my-acr-secret
       containers:
         - name: rbgs-crds-upgrade
           image: "{{ .Values.crdUpgrade.repository }}:{{ .Values.crdUpgrade.tag | default .Chart.AppVersion }}"

@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/test/utils"
 )
@@ -49,7 +50,7 @@ func (f *Framework) ExpectRbgSetEqual(rbgSet *v1alpha1.RoleBasedGroupSet) {
 
 			// List all child RoleBasedGroup instances associated with this RoleBasedGroupSet.
 			var rbglist v1alpha1.RoleBasedGroupList
-			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, newRbgSet.Name))
+			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", constants.GroupSetNameLabelKey, newRbgSet.Name))
 			err = f.Client.List(
 				f.Ctx, &rbglist, client.InNamespace(newRbgSet.Namespace),
 				client.MatchingLabelsSelector{Selector: selector},
@@ -123,7 +124,7 @@ func (f *Framework) ExpectRbgAnnotation(
 
 	gomega.Eventually(
 		func() bool {
-			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, rbgSet.Name))
+			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", constants.GroupSetNameLabelKey, rbgSet.Name))
 			err := f.Client.List(
 				f.Ctx, &rbglist, client.InNamespace(rbgSet.Namespace),
 				client.MatchingLabelsSelector{Selector: selector},
