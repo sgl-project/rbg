@@ -1,0 +1,70 @@
+- id: "Qwen/Qwen3.5-0.8B"
+  name: "Qwen 3.5 0.8B"
+  modes:
+    - name: standard
+      description: "Balanced performance and resource usage"
+      engine: vllm
+      image: vllm/vllm-openai:nightly
+      resources:
+        gpu: 1
+        cpu: 4
+        memory: 16Gi
+      args:
+        - "--tensor-parallel-size=1"
+        - "--max-model-len=8192"
+      env:
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+
+    - name: throughput
+      description: "Maximize throughput, suitable for batch inference"
+      engine: vllm
+      image: vllm/vllm-openai:nightly
+      resources:
+        gpu: 2
+        cpu: 8
+        memory: 32Gi
+      args:
+        - "--tensor-parallel-size=2"
+        - "--max-model-len=16384"
+        - "--gpu-memory-utilization=0.95"
+        - "--enable-chunked-prefill"
+
+    - name: latency
+      description: "Minimize latency, suitable for real-time inference"
+      engine: sglang
+      image: lmsys/sglang:latest
+      resources:
+        gpu: 1
+        cpu: 4
+        memory: 16Gi
+      args:
+        - "--mem-fraction-static=0.8"
+        - "--max-prefill-tokens=16384"
+
+- id: "Qwen/*"
+  name: "Qwen Series Models"
+  modes:
+    - name: standard
+      description: "Standard config for Qwen series"
+      engine: vllm
+      image: vllm/vllm-openai:nightly
+      resources:
+        gpu: 1
+        cpu: 4
+        memory: 32Gi
+      args:
+        - "--tensor-parallel-size=1"
+
+- id: "*"
+  name: "Default Config"
+  modes:
+    - name: standard
+      description: "Default standard config"
+      engine: vllm
+      image: vllm/vllm-openai:latest
+      resources:
+        gpu: 1
+        cpu: 2
+        memory: 16Gi
+      args: []
