@@ -145,23 +145,38 @@ func HasPortAllocatorConfig(template *corev1.PodTemplateSpec) bool {
 }
 
 // ParseReference parses the "from" field of PortReference
-// Format: "<component_name>.<port_name>"
-func ParseReference(from string) (componentName, portName string, err error) {
+// Format: "<role_name>.<component_name>.<port_name>"
+func ParseReference(from string) (roleName, componentName, portName string, err error) {
 	if from == "" {
-		return "", "", fmt.Errorf("empty reference")
+		return "", "", "", fmt.Errorf("empty reference")
 	}
 
-	dotIndex := -1
+	parts := splitReference(from)
+	if len(parts) != 3 {
+		return "", "", "", fmt.Errorf("invalid reference format '%s', expected '<role_name>.<component_name>.<port_name>'", from)
+	}
+
+	// Validate that no part is empty
+	if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", fmt.Errorf("invalid reference format '%s', all parts must be non-empty", from)
+	}
+
+	return parts[0], parts[1], parts[2], nil
+}
+
+// splitReference splits the reference string by dots
+func splitReference(from string) []string {
+	var parts []string
+	start := 0
 	for i, c := range from {
 		if c == '.' {
-			dotIndex = i
-			break
+			parts = append(parts, from[start:i])
+			start = i + 1
 		}
 	}
-
-	if dotIndex == -1 || dotIndex == 0 || dotIndex == len(from)-1 {
-		return "", "", fmt.Errorf("invalid reference format '%s', expected '<component_name>.<port_name>'", from)
+	// Add the last part
+	if start < len(from) {
+		parts = append(parts, from[start:])
 	}
-
-	return from[:dotIndex], from[dotIndex+1:], nil
+	return parts
 }

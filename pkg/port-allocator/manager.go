@@ -57,7 +57,7 @@ func NewPortManager(ctx context.Context, k8sClient client.Client, instance clien
 		return nil, fmt.Errorf("failed to get/create instance port ConfigMap: %w", err)
 	}
 
-	instanceSetName := getInstanceSetOwnerName(instance)
+	instanceSetName := getInstanceOwnerName(instance)
 	var instanceSetCM *corev1.ConfigMap
 
 	if instanceSetName != "" {
@@ -84,7 +84,7 @@ func (m *PortManager) AllocatePortsForPod(ctx context.Context, pod *corev1.Pod, 
 		return nil
 	}
 
-	roleScopedCM := m.getRoleScopedPortConfigMap()
+	roleScopedCM := m.GetInstanceSetConfigMap()
 
 	// Collect ports that need allocation
 	podScopedToAlloc := m.collectMissingPodScopedPorts(config, pod.Name)
@@ -158,7 +158,7 @@ func (m *PortManager) collectMissingRoleScopedPorts(config *PortAllocatorConfig,
 func (m *PortManager) collectMissingReferencePorts(config *PortAllocatorConfig, pod *corev1.Pod) []PortReference {
 	var result []PortReference
 	for _, ref := range config.References {
-		compName, portName, err := ParseReference(ref.From)
+		_, compName, portName, err := ParseReference(ref.From)
 		if err != nil {
 			klog.V(2).InfoS("Failed to parse reference", "from", ref.From, "error", err)
 			continue
@@ -217,6 +217,7 @@ func (m *PortManager) allocateRoleScopedPorts(allocs []PortAllocation, component
 }
 
 // allocateReferencePorts allocates ports for the given references and returns a key->value map
+// todo: support reference ports from different roles
 func (m *PortManager) allocateReferencePorts(refs []PortReference, pod *corev1.Pod) (map[string]string, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -229,7 +230,7 @@ func (m *PortManager) allocateReferencePorts(refs []PortReference, pod *corev1.P
 
 	result := make(map[string]string, len(refs))
 	for i, ref := range refs {
-		compName, portName, _ := ParseReference(ref.From)
+		_, compName, portName, _ := ParseReference(ref.From)
 		refPodName := m.getReferencePodName(pod, compName)
 		if refPodName != "" {
 			key := FormatPodScopedPortKey(refPodName, portName)
@@ -246,7 +247,7 @@ func (m *PortManager) InjectPortsIntoPod(pod *corev1.Pod, config *PortAllocatorC
 		return nil
 	}
 
-	roleScopedCM := m.getRoleScopedPortConfigMap()
+	roleScopedCM := m.GetInstanceSetConfigMap()
 
 	// Process allocations
 	for _, alloc := range config.Allocations {
@@ -282,7 +283,7 @@ func (m *PortManager) InjectPortsIntoPod(pod *corev1.Pod, config *PortAllocatorC
 
 	// Process references
 	for _, ref := range config.References {
-		refComponentName, portName, err := ParseReference(ref.From)
+		_, refComponentName, portName, err := ParseReference(ref.From)
 		if err != nil {
 			return fmt.Errorf("invalid reference %s: %w", ref.From, err)
 		}
@@ -345,8 +346,15 @@ func (m *PortManager) ReleasePodScopedPorts(ctx context.Context, pod *corev1.Pod
 		return nil
 	}
 
-	// Collect keys to remove and release ports from the in-memory allocator first.
+	// Collect keys and ports to remove.
+	// We store port values to release them AFTER ConfigMap update succeeds.
+	type portInfo struct {
+		key  string
+		port int32
+	}
+	portsToRelease := make([]portInfo, 0, len(podScopedAllocations))
 	keysToRemove := make([]string, 0, len(podScopedAllocations))
+
 	for _, alloc := range podScopedAllocations {
 		key := FormatPodScopedPortKey(pod.Name, alloc.Name)
 		portStr, exists := GetPortFromConfigMap(m.instanceCM, key)
@@ -359,15 +367,12 @@ func (m *PortManager) ReleasePodScopedPorts(ctx context.Context, pod *corev1.Pod
 			continue
 		}
 
-		// Release the port from the in-memory allocator (idempotent, safe outside retry).
-		if err := Release(int32(port)); err != nil {
-			klog.V(2).InfoS("Failed to release port", "port", port, "error", err)
-		}
-
+		portsToRelease = append(portsToRelease, portInfo{key: key, port: int32(port)})
 		keysToRemove = append(keysToRemove, key)
 	}
 
-	// Update ConfigMap with retry-on-conflict
+	// Update ConfigMap first with retry-on-conflict.
+	// Only release ports after ConfigMap update succeeds to avoid race condition.
 	if len(keysToRemove) > 0 {
 		if err := UpdatePortConfigMap(ctx, m.client, m.instanceCM, func(cm *corev1.ConfigMap) {
 			for _, key := range keysToRemove {
@@ -375,6 +380,13 @@ func (m *PortManager) ReleasePodScopedPorts(ctx context.Context, pod *corev1.Pod
 			}
 		}); err != nil {
 			return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
+		}
+
+		// ConfigMap updated successfully, now release ports from the in-memory allocator.
+		for _, pi := range portsToRelease {
+			if err := Release(pi.port); err != nil {
+				klog.V(2).InfoS("Failed to release port", "port", pi.port, "key", pi.key, "error", err)
+			}
 		}
 	}
 
@@ -396,7 +408,7 @@ func (m *PortManager) SyncPortAllocations(ctx context.Context, pod *corev1.Pod, 
 	roleScopedToAdd := newRoleScoped.Difference(oldRoleScoped)
 	roleScopedToRemove := oldRoleScoped.Difference(newRoleScoped)
 
-	roleScopedCM := m.getRoleScopedPortConfigMap()
+	roleScopedCM := m.GetInstanceSetConfigMap()
 
 	instanceCMAdds, err := m.allocatePortsToMap(podScopedToAdd, pod.Name, FormatPodScopedPortKey)
 	if err != nil {
@@ -407,15 +419,29 @@ func (m *PortManager) SyncPortAllocations(ctx context.Context, pod *corev1.Pod, 
 		return fmt.Errorf("failed to allocate new role-scoped ports: %w", err)
 	}
 
-	instanceCMRemoves := m.collectPortsToRemove(podScopedToRemove, m.instanceCM, pod.Name, FormatPodScopedPortKey)
-	roleScopedCMRemoves := m.collectPortsToRemove(roleScopedToRemove, roleScopedCM, componentName, FormatRoleScopedPortKey)
+	// Collect ports to remove without releasing them yet
+	instanceCMRemoves, instancePortsToRelease := m.collectPortsToRemoveInfo(podScopedToRemove, m.instanceCM, pod.Name, FormatPodScopedPortKey)
+	roleScopedCMRemoves, roleScopedPortsToRelease := m.collectPortsToRemoveInfo(roleScopedToRemove, roleScopedCM, componentName, FormatRoleScopedPortKey)
 
+	// Update ConfigMaps first
 	if err := m.applyConfigMapChanges(ctx, m.instanceCM, instanceCMAdds, instanceCMRemoves); err != nil {
 		return fmt.Errorf("failed to update instance port ConfigMap: %w", err)
 	}
 
 	if err := m.applyConfigMapChanges(ctx, roleScopedCM, roleScopedCMAdds, roleScopedCMRemoves); err != nil {
 		return fmt.Errorf("failed to update role-scoped port ConfigMap: %w", err)
+	}
+
+	// Release ports only after ConfigMap updates succeed
+	for _, port := range instancePortsToRelease {
+		if err := Release(port); err != nil {
+			klog.V(2).InfoS("Failed to release port", "port", port, "error", err)
+		}
+	}
+	for _, port := range roleScopedPortsToRelease {
+		if err := Release(port); err != nil {
+			klog.V(2).InfoS("Failed to release port", "port", port, "error", err)
+		}
 	}
 
 	return nil
@@ -459,25 +485,25 @@ func (m *PortManager) allocatePortsToMap(portNames sets.Set[string], ownerName s
 	return result, nil
 }
 
-// collectPortsToRemove releases ports from the in-memory allocator and returns keys to remove from ConfigMap
-func (m *PortManager) collectPortsToRemove(portNames sets.Set[string], cm *corev1.ConfigMap, ownerName string, keyFmt portKeyFormatter) []string {
+// collectPortsToRemoveInfo collects keys and port values to remove from ConfigMap.
+// It does NOT release ports - caller should release them after ConfigMap update succeeds.
+func (m *PortManager) collectPortsToRemoveInfo(portNames sets.Set[string], cm *corev1.ConfigMap, ownerName string, keyFmt portKeyFormatter) (keys []string, ports []int32) {
 	if portNames.Len() == 0 {
-		return nil
+		return nil, nil
 	}
 
-	keys := make([]string, 0, portNames.Len())
+	keys = make([]string, 0, portNames.Len())
+	ports = make([]int32, 0, portNames.Len())
 	for _, name := range portNames.UnsortedList() {
 		key := keyFmt(ownerName, name)
 		if portStr, exists := GetPortFromConfigMap(cm, key); exists {
 			if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
-				if err := Release(int32(port)); err != nil {
-					klog.V(2).InfoS("Failed to release port", "port", port, "error", err)
-				}
+				ports = append(ports, int32(port))
 			}
 			keys = append(keys, key)
 		}
 	}
-	return keys
+	return keys, ports
 }
 
 // applyConfigMapChanges applies adds and removes to a ConfigMap with retry-on-conflict
@@ -495,15 +521,6 @@ func (m *PortManager) applyConfigMapChanges(ctx context.Context, cm *corev1.Conf
 	})
 }
 
-// getRoleScopedPortConfigMap returns the ConfigMap for role-scoped ports
-// If Instance is managed by InstanceSet, returns instanceSetCM; otherwise returns instanceCM
-func (m *PortManager) getRoleScopedPortConfigMap() *corev1.ConfigMap {
-	if m.instanceSetCM != nil {
-		return m.instanceSetCM
-	}
-	return m.instanceCM
-}
-
 // GetInstanceConfigMap returns the Instance-level ConfigMap
 func (m *PortManager) GetInstanceConfigMap() *corev1.ConfigMap {
 	return m.instanceCM
@@ -514,14 +531,9 @@ func (m *PortManager) GetInstanceSetConfigMap() *corev1.ConfigMap {
 	return m.instanceSetCM
 }
 
-// IsManagedByInstanceSet returns true if the Instance is managed by an InstanceSet
-func (m *PortManager) IsManagedByInstanceSet() bool {
-	return m.instanceSetName != ""
-}
-
 // getReferencePodName constructs the pod name for a referenced component
-// Pod name format: <instance-name>-<component-name>-<component-id>
-// e.g., "rbg-instance-0-worker-2" -> prefix "rbg-instance-0", target "rbg-instance-0-leader-0"
+// Pod name format: <prefix>-<component-name>-<component-id>
+// e.g., "rbg-prefill-0-worker-2" -> prefix "rbg-prefill-0", target "rbg-prefill-0-leader-0"
 // The reference always points to the first pod (id=0) of the target component
 func (m *PortManager) getReferencePodName(currentPod *corev1.Pod, componentName string) string {
 	if currentPod == nil {
@@ -564,8 +576,8 @@ func appendOrReplaceEnv(envs []corev1.EnvVar, newEnv corev1.EnvVar) []corev1.Env
 	return append(envs, newEnv)
 }
 
-// getInstanceSetOwnerName returns the name of the InstanceSet that owns this Instance
-func getInstanceSetOwnerName(instance client.Object) string {
+// getInstanceOwnerName returns the name of the InstanceSet that owns this Instance
+func getInstanceOwnerName(instance client.Object) string {
 	if instance == nil {
 		return ""
 	}

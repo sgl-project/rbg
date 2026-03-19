@@ -472,10 +472,6 @@ func TestPortManager_InstancePortAllocation(t *testing.T) {
 	instanceCM := pm.GetInstanceConfigMap()
 	assert.NotNil(t, instanceCM)
 	assert.Equal(t, "instance-test-instance-ports", instanceCM.Name)
-
-	// For standalone Instance, role-scoped ports use the same ConfigMap
-	assert.Equal(t, instanceCM, pm.getRoleScopedPortConfigMap())
-	assert.False(t, pm.IsManagedByInstanceSet())
 }
 
 // TestPortManager_InstanceSetOwned tests PortManager with Instance
@@ -519,9 +515,7 @@ func TestPortManager_InstanceSetOwned(t *testing.T) {
 	assert.NotNil(t, instanceSetCM)
 	assert.Equal(t, "instanceset-test-instanceset-ports", instanceSetCM.Name)
 
-	// Role-scoped ports should use InstanceSet-level ConfigMap
-	assert.Equal(t, instanceSetCM, pm.getRoleScopedPortConfigMap())
-	assert.True(t, pm.IsManagedByInstanceSet())
+	assert.Equal(t, instanceSetCM, pm.GetInstanceSetConfigMap())
 }
 
 // TestPortManager_AllocateAndInjectPorts tests the full allocation and injection flow
@@ -535,6 +529,14 @@ func TestPortManager_AllocateAndInjectPorts(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "workloads.x-k8s.io/v1alpha2",
+					Kind:       "RoleInstanceSet",
+					Name:       "test-instanceset",
+					UID:        "test-uid",
+				},
+			},
 		},
 	}
 
@@ -596,6 +598,14 @@ func TestPortManager_ReleasePodScopedPorts(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-instance",
 			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "workloads.x-k8s.io/v1alpha2",
+					Kind:       "RoleInstanceSet",
+					Name:       "test-instanceset",
+					UID:        "test-uid",
+				},
+			},
 		},
 	}
 
@@ -646,7 +656,8 @@ func TestPortManager_ReleasePodScopedPorts(t *testing.T) {
 
 	// Role-scoped port should still exist
 	roleScopedKey := FormatRoleScopedPortKey("worker", "http-port")
-	_, exists = GetPortFromConfigMap(instanceCM, roleScopedKey)
+	instanceSetCM := pm.GetInstanceSetConfigMap()
+	_, exists = GetPortFromConfigMap(instanceSetCM, roleScopedKey)
 	assert.True(t, exists)
 }
 
@@ -690,7 +701,7 @@ func TestPortManager_ReferencePortResolution(t *testing.T) {
 			{Name: "worker-port", Env: "WORKER_PORT", Scope: PodScoped},
 		},
 		References: []PortReference{
-			{Env: "LEADER_PORT", From: "leader.leader-port"},
+			{Env: "LEADER_PORT", From: "prefill.leader.leader-port"},
 		},
 	}
 

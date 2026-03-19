@@ -90,8 +90,8 @@ func RunPortAllocatorTestCases(f *framework.Framework) {
 			ginkgo.By("Verifying port ConfigMaps are created")
 
 			// Get the actual instance name from pods
-			instanceCMName := verifyInstancePortConfigMapExists(f, rbg)
-			instanceSetCMName := verifyInstanceSetPortConfigMapExists(f, rbg)
+			instanceCMName := verifyInstancePortConfigMapExists(f)
+			instanceSetCMName := verifyInstanceSetPortConfigMapExists(f)
 
 			// Step 6: Verify pods have environment variables injected
 			ginkgo.By("Verifying pods have environment variables injected")
@@ -100,6 +100,59 @@ func RunPortAllocatorTestCases(f *framework.Framework) {
 			// Step 7: Verify ConfigMap data contains expected ports
 			ginkgo.By("Verifying ConfigMap data contains expected ports")
 			verifyConfigMapData(f, instanceCMName, instanceSetCMName)
+		})
+
+		ginkgo.It("should remove RoleScoped port when annotation is updated to remove RoleScoped allocation", func() {
+			// Step 1: Create RBG with port-allocator annotation (including RoleScoped)
+			ginkgo.By("Creating RBG with port-allocator annotation")
+			rbg := buildPortAllocatorTestRBG(f.Namespace, true)
+
+			f.RegisterDebugFn(func() {
+				dumpDebugInfo(f, rbg)
+				dumpPortAllocatorDebugInfo(f, rbg)
+			})
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+
+			// Wait for RBG to be ready
+			f.ExpectRbgV2Equal(rbg)
+
+			// Step 2: Verify ConfigMaps are created and contain expected ports
+			ginkgo.By("Verifying ConfigMaps are created with RoleScoped port")
+			_ = verifyInstancePortConfigMapExists(f)
+			instanceSetCMName := verifyInstanceSetPortConfigMapExists(f)
+
+			// Step 3: Verify leader pod has both PodScoped and RoleScoped env vars
+			ginkgo.By("Verifying leader pod has both PodScoped and RoleScoped env vars")
+			verifyLeaderPodHasEnvVars(f, rbg, []string{"LEADER_PORT", "LEADER_PORT_STATIC"})
+
+			// Step 4: Verify InstanceSet ConfigMap has RoleScoped port
+			ginkgo.By("Verifying InstanceSet ConfigMap has RoleScoped port")
+			verifyInstanceSetConfigMapHasKey(f, instanceSetCMName, "leader.leader-port-static")
+
+			// Step 5: Update RBG to remove RoleScoped allocation from leader
+			ginkgo.By("Updating RBG to remove RoleScoped allocation from leader")
+			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Spec.Roles[0].Pattern.CustomComponentsPattern = &workloadsv1alpha2.CustomComponentsPattern{
+					Components: []workloadsv1alpha2.InstanceComponent{
+						buildLeaderComponentWithOnlyPodScoped(),
+						buildWorkerComponentWithPortAllocator(true),
+					},
+				}
+			})
+
+			// Step 6: Wait for RBG to be ready after update
+			ginkgo.By("Waiting for RBG to be ready after update")
+			f.ExpectRbgV2Equal(rbg)
+
+			// Step 7: Verify InstanceSet ConfigMap no longer has RoleScoped port
+			ginkgo.By("Verifying InstanceSet ConfigMap no longer has RoleScoped port")
+			verifyInstanceSetConfigMapDoesNotHaveKey(f, instanceSetCMName, "leader.leader-port-static")
+
+			// Step 8: Verify leader pod no longer has RoleScoped env var but still has PodScoped
+			ginkgo.By("Verifying leader pod has only PodScoped env var")
+			verifyLeaderPodHasEnvVars(f, rbg, []string{"LEADER_PORT"})
+			verifyLeaderPodDoesNotHaveEnvVars(f, rbg, []string{"LEADER_PORT_STATIC"})
 		})
 	})
 }
@@ -173,7 +226,7 @@ func buildWorkerComponentWithPortAllocator(withAnnotation bool) workloadsv1alpha
 			"references": [
 				{
 					"env": "LEADER_ADDR_PORT",
-					"from": "leader.leader-port"
+					"from": "prefill.leader.leader-port"
 				}
 			]
 		}`,
@@ -187,7 +240,7 @@ func buildWorkerComponentWithPortAllocator(withAnnotation bool) workloadsv1alpha
 	}
 }
 
-func verifyInstancePortConfigMapExists(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) string {
+func verifyInstancePortConfigMapExists(f *framework.Framework) string {
 	logger := log.FromContext(f.Ctx)
 
 	var cmName string
@@ -220,7 +273,7 @@ func verifyInstancePortConfigMapExists(f *framework.Framework, rbg *workloadsv1a
 	return cmName
 }
 
-func verifyInstanceSetPortConfigMapExists(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) string {
+func verifyInstanceSetPortConfigMapExists(f *framework.Framework) string {
 	logger := log.FromContext(f.Ctx)
 
 	var cmName string
@@ -394,4 +447,184 @@ func getMapKeys(m map[string]string) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// buildLeaderComponentWithOnlyPodScoped builds a leader component with only PodScoped allocation
+func buildLeaderComponentWithOnlyPodScoped() workloadsv1alpha2.InstanceComponent {
+	template := wrappersv2.BuildBasicPodTemplateSpec()
+	template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
+	template.Annotations = map[string]string{
+		portAllocatorAnnotationKey: `{
+			"allocations": [
+				{
+					"name": "leader-port",
+					"env": "LEADER_PORT",
+					"annotationKey": "test/grpc-port",
+					"scope": "PodScoped"
+				}
+			]
+		}`,
+	}
+
+	return workloadsv1alpha2.InstanceComponent{
+		Name:     "leader",
+		Size:     ptr.To(int32(1)),
+		Template: template,
+	}
+}
+
+// verifyLeaderPodHasEnvVars verifies that leader pod has the specified environment variables
+func verifyLeaderPodHasEnvVars(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup, expectedEnvVars []string) {
+	logger := log.FromContext(f.Ctx)
+
+	gomega.Eventually(func() bool {
+		podList := &corev1.PodList{}
+		err := f.Client.List(f.Ctx, podList,
+			client.InNamespace(rbg.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey: rbg.Name,
+			},
+		)
+		if err != nil {
+			logger.Error(err, "Failed to list pods")
+			return false
+		}
+
+		// Find leader pod
+		for _, pod := range podList.Items {
+			if containsLeader(pod.Name) {
+				// Check if pod has all expected env vars
+				foundEnvVars := make(map[string]bool)
+				for _, container := range pod.Spec.Containers {
+					for _, envVar := range container.Env {
+						for _, expected := range expectedEnvVars {
+							if envVar.Name == expected {
+								foundEnvVars[expected] = true
+								logger.V(1).Info("Found env var in leader pod", "pod", pod.Name, "env", envVar.Name)
+							}
+						}
+					}
+				}
+
+				// Check if all expected env vars are found
+				allFound := true
+				for _, expected := range expectedEnvVars {
+					if !foundEnvVars[expected] {
+						logger.V(1).Info("Missing expected env var in leader pod", "pod", pod.Name, "env", expected)
+						allFound = false
+					}
+				}
+				return allFound
+			}
+		}
+
+		logger.V(1).Info("Leader pod not found")
+		return false
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+}
+
+// verifyLeaderPodDoesNotHaveEnvVars verifies that leader pod does NOT have the specified environment variables
+func verifyLeaderPodDoesNotHaveEnvVars(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup, unexpectedEnvVars []string) {
+	logger := log.FromContext(f.Ctx)
+
+	gomega.Eventually(func() bool {
+		podList := &corev1.PodList{}
+		err := f.Client.List(f.Ctx, podList,
+			client.InNamespace(rbg.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey: rbg.Name,
+			},
+		)
+		if err != nil {
+			logger.Error(err, "Failed to list pods")
+			return false
+		}
+
+		// Find leader pod
+		for _, pod := range podList.Items {
+			if containsLeader(pod.Name) {
+				// Check if pod has any unexpected env vars
+				for _, container := range pod.Spec.Containers {
+					for _, envVar := range container.Env {
+						for _, unexpected := range unexpectedEnvVars {
+							if envVar.Name == unexpected {
+								logger.V(1).Info("Found unexpected env var in leader pod", "pod", pod.Name, "env", envVar.Name)
+								return false
+							}
+						}
+					}
+				}
+				logger.V(1).Info("Leader pod does not have unexpected env vars", "pod", pod.Name)
+				return true
+			}
+		}
+
+		logger.V(1).Info("Leader pod not found")
+		return false
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+}
+
+// verifyInstanceSetConfigMapHasKey verifies that InstanceSet ConfigMap has the specified key
+func verifyInstanceSetConfigMapHasKey(f *framework.Framework, cmName, expectedKey string) {
+	logger := log.FromContext(f.Ctx)
+
+	gomega.Eventually(func() bool {
+		cm := &corev1.ConfigMap{}
+		err := f.Client.Get(f.Ctx, client.ObjectKey{Name: cmName, Namespace: f.Namespace}, cm)
+		if err != nil {
+			logger.Error(err, "Failed to get instanceset ConfigMap", "name", cmName)
+			return false
+		}
+
+		for key := range cm.Data {
+			if key == expectedKey {
+				logger.V(1).Info("Found expected key in InstanceSet ConfigMap", "key", expectedKey, "value", cm.Data[key])
+				return true
+			}
+		}
+
+		logger.V(1).Info("Key not found in InstanceSet ConfigMap", "key", expectedKey, "data", cm.Data)
+		return false
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+}
+
+// verifyInstanceSetConfigMapDoesNotHaveKey verifies that InstanceSet ConfigMap does NOT have the specified key
+func verifyInstanceSetConfigMapDoesNotHaveKey(f *framework.Framework, cmName, unexpectedKey string) {
+	logger := log.FromContext(f.Ctx)
+
+	gomega.Eventually(func() bool {
+		cm := &corev1.ConfigMap{}
+		err := f.Client.Get(f.Ctx, client.ObjectKey{Name: cmName, Namespace: f.Namespace}, cm)
+		if err != nil {
+			logger.Error(err, "Failed to get instanceset ConfigMap", "name", cmName)
+			return false
+		}
+
+		for key := range cm.Data {
+			if key == unexpectedKey {
+				logger.V(1).Info("Unexpected key still found in InstanceSet ConfigMap", "key", unexpectedKey, "value", cm.Data[key])
+				return false
+			}
+		}
+
+		logger.V(1).Info("Key removed from InstanceSet ConfigMap as expected", "key", unexpectedKey)
+		return true
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+}
+
+// containsLeader checks if pod name contains "leader"
+func containsLeader(podName string) bool {
+	return len(podName) >= 6 && (podName[len(podName)-6:] == "leader" ||
+		(len(podName) > 7 && podName[len(podName)-7:len(podName)-2] == "leader") ||
+		containsSubstring(podName, "-leader-"))
+}
+
+// containsSubstring checks if s contains substr
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

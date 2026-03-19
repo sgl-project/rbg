@@ -48,6 +48,7 @@ If each replica can use different ports, I can complete the deployment with fewe
 ### Risks and Mitigations
 
 - The dynamic port allocation feature is only supported in *RoleInstanceSet* mode.
+- Note that it is not supported to reference ports from different roles currently.
 
 ## Design Details
 When the Role of an RBG resource is InstanceSet, the resource directly associated with the Pod is the Instance resource.
@@ -69,7 +70,7 @@ rolebasedgroup.workloads.x-k8s.io/port-allocator: |
     "references": [
       {
         "env": "LEADER_ADDR_PORT",              // Env var to inject
-        "from": "leader.grpc"                   // Format: "<role_name>.<port_name>"
+        "from": "prefill.leader.grpc"           // Format: "<role_name>.<component_name>.<port_name>"
       }
     ]
   }
@@ -86,104 +87,97 @@ const (
 )
 
 type PortAllocatorConfig struct {
-	// Allocations specifies the ports to be allocated
-    Allocations []PortAllocation `json:"allocations"`
-	// References specifies the ports to be referenced from other pod
-	References []PortReference `json:"references"`
+    // Allocations specifies the ports to be allocated 
+    //Allocations []PortAllocation `json:"allocations"`
+    // References specifies the ports to be referenced from other pod
+    References []PortReference `json:"references"`
 }
 
 type PortAllocation struct {
-	// Not Empty
-	// Name specifies the name of the port
-	Name string `json:"name"`
-	// Not Empty
-	// Env specifies the name of the environment variable to be injected into the container
-	Env string `json:"env"`
-	// AnnotationKey specifies the key of the annotation to be injected into the Pod
-	AnnotationKey string `json:"annotationKey"`
-	// Not Empty
-	// Default is PodScoped
-	// Scope specifies the scope of the port
-    Scope PortScope `json:"scope"`
+    // Not Empty
+    // Name specifies the name of the port
+    Name string `json:"name"`
+    // Not Empty
+    // Env specifies the name of the environment variable to be injected into the container
+    Env string `json:"env"`
+    // AnnotationKey specifies the key of the annotation to be injected into the Pod
+    AnnotationKey string `json:"annotationKey"`
+    // Not Empty
+    // Default is PodScoped
+    // Scope specifies the scope of the port
+	Scope PortScope `json:"scope"`
 }
 
 type PortReference struct {
-	// Not Empty
-	// Env specifies the name of the environment variable to be injected into the container
-	Env string `json:"env"`
-	// Not Empty
-	// From specifies the name of the port to be referenced
-	From string `json:"from"`
+    // Not Empty
+    // Env specifies the name of the environment variable to be injected into the container
+    Env string `json:"env"`
+    // Not Empty
+    // From specifies the name of the port to be referenced
+    From string `json:"from"`
 }
 ```
 For example, when using the following configuration:
-- The leader Pod will be allocated one port
-  - Port 1: Injected into the container as the `LEADER_PORT` environment variable.
-- Each worker Pod will be allocated two ports and reference one from the leader Pod:
-    - **PodScoped Port** (`WORKER_PORT1`): Unique per Pod, annotated as `test/worker-port1`
-    - **RoleScoped Port** (`WORKER_PORT2`): Shared across Pods, annotated as `test/worker-port2`
-    - **Reference Port** (`LEADER_PORT_REF`): Points to leader's Port 1
+- The leader Pod will be allocated one port 
+  - **PodScoped Port** (`LEADER_PORT`): Unique per Pod, annotated as `test/grpc-port1`
+  - **RoleScoped Port** (`LEADER_PORT_STATIC`): Shared across Pods, annotated as `test/grpc-port2`
+- The worker Pod will reference one from the leader Pod:
+  - **Reference Port** (`LEADER_PORT_REF`): Points to leader's Port 1
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
-kind: RoleInstance
+kind: RoleBasedGroup
 metadata:
   name: test
-  namespace: default
 spec:
-  readyPolicy: AllPodReady
-  components:
-    - name: leader
-      size: 1
-      template:
-        metadata:
-          annotations:
-            rolebasedgroup.workloads.x-k8s.io/port-allocator: |
-              {
-                  "allocations": [
+  roles:
+    - name: prefill
+      replicas: 1
+      customComponentsPattern:
+        components:
+          - name: leader
+            size: 1
+            template:
+              metadata:
+                annotations:
+                  rolebasedgroup.workloads.x-k8s.io/port-allocator: |
                     {
-                      "name": "leader-port",
-                      "env": "LEADER_PORT",
-                      "annotationKey": "test/grpc-port",
-                      "scope": "PodScoped"
+                      "allocations": [
+                        {
+                          "name": "leader-port",
+                          "env": "LEADER_PORT",
+                          "annotationKey": "test/grpc-port1",
+                          "scope": "PodScoped"
+                        },
+                        {
+                          "name": "leader-port-static",
+                          "env": "LEADER_PORT_STATIC",
+                          "annotationKey": "test/grpc-port2",
+                          "scope": "RoleScoped"
+                        }
+                      ]
                     }
-                  ]
-              }
-        spec:
-          containers:
-            - name: nginx
-              image: nginx:1.28.0
-    - name: worker
-      size: 2
-      template:
-        metadata:
-          annotations:
-            rolebasedgroup.workloads.x-k8s.io/port-allocator: |
-              {
-                  "allocations": [
+              spec:
+                containers:
+                  - name: main
+                    image: nginx:latest
+          - name: worker
+            size: 1
+            template:
+              metadata:
+                annotations:
+                  rolebasedgroup.workloads.x-k8s.io/port-allocator: |
                     {
-                      "name": "worker-port1",
-                      "env": "WORKER_PORT1",
-                      "annotationKey": "test/worker-port1",
-                      "scope": "PodScoped"
-                    },
-                    {
-                      "name": "worker-port2",
-                      "env": "WORKER_PORT2",
-                      "annotationKey": "test/worker-port2",
-                      "scope": "RoleScoped"
+                      "references": [
+                        {
+                          "env": "LEADER_PORT_REF",
+                          "from": "prefill.leader.leader-port"
+                        }
+                      ]
                     }
-                  ],
-                  "references": [
-                    {
-                      "env": "LEADER_ADDR_PORT",
-                      "from": "leader.leader-port"
-                    }
-                  ]
-              }
-        spec:
-          containers:
-            - name: nginx
-              image: nginx:1.28.0
+              spec:
+                containers:
+                  - name: main
+                    image: nginx:latest
 ```
 ### Port Allocator Interface
 
@@ -200,12 +194,12 @@ type PortAllocator struct {
 }
 
 type PortAllocatorInterface interface {
-	// Start is used to initialize the port allocator when the program starts
-	Start(client client.Client) error
-	// Release releases a port, input the port to release
-	Release(port int32) error
-	// AllocateBatch allocates multiple ports, input the number of ports to allocate, output the list of allocated port numbers
-	AllocateBatch(num int32) ([]int32, error)
+    // Start is used to initialize the port allocator when the program starts
+    Start(client client.Client) error
+    // Release releases a port, input the port to release
+    Release(port int32) error
+    // AllocateBatch allocates multiple ports, input the number of ports to allocate, output the list of allocated port numbers
+    AllocateBatch(num int32) ([]int32, error)
 }
 
 // Singleton pattern, created at program startup based on the port allocation strategy
@@ -213,7 +207,7 @@ var portAllocator *PortAllocator
 
 // GetPortAllocator
 func GetPortAllocator() PortAllocatorInterface {
-	return portAllocator.pa
+    return portAllocator.pa
 }
 ```
 ### Implementation
@@ -253,14 +247,10 @@ port-allocator.workloads.x-k8s.io/managed-by: rbgs-controller-manager
 
 #### Port Key Format in ConfigMap
 
-| Port Type   | Key Format                     | Example                                 |
-|-------------|--------------------------------|-----------------------------------------|
-| PodScoped   | `<pod-name>.<port-name>`       | `prefill-0-worker-0.grpc-port: "30001"` |
-| RoleScoped  | `<component-name>.<port-name>` | `prefill.grpc-port: "30002"`            |
-
-**RoleScoped Port Behavior**:
-- RoleScoped ports are shared across all Pods within the same Instance (for standalone Instances)
-- When Instance is managed by InstanceSet, RoleScoped ports are shared across all Instances with the same component name and port name
+| Port Type   | Key Format                     | Example                                  |
+|-------------|--------------------------------|------------------------------------------|
+| PodScoped   | `<pod-name>.<port-name>`       | `prefill-0-worker-0.grpc-port1: "30001"` |
+| RoleScoped  | `<component-name>.<port-name>` | `leader.grpc-port2: "30002"`             |
 
 #### Instance Reconciler Modifications
 
@@ -318,13 +308,14 @@ Since ConfigMaps don't have OwnerReferences, they must be explicitly deleted whe
 
 #### Reference Port Resolution
 
-When a Pod references a port from another Pod (e.g., `leader.leader-port`), the reconciler needs to determine the target Pod name to look up or pre-allocate the port.
+When a Pod references a port from another Pod (e.g., `prefill.leader.leader-port`), the reconciler needs to determine the target Pod name to look up or pre-allocate the port.
+It is not supported to reference ports from different roles currently.
 
 **Reference Resolution Logic**:
 1. Extract the prefix from the current Pod name (everything before the last two hyphens)
-   - `rbg-instance-0-worker-2` → prefix: `rbg-instance-0`
+   - `rbg-prefill-0-worker-2` → prefix: `rbg-prefill-0`
 2. Construct the target Pod name: `<prefix>-<component-name>-0`
-   - For reference `leader.leader-port`: target Pod is `rbg-instance-0-leader-0`
+   - For reference `prefill.leader.leader-port`: target Pod is `rbg-prefill-0-leader-0`
    - Always reference the first Pod (id=0) of the target component
 
 **Port Lookup and Pre-allocation**:
@@ -336,10 +327,10 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
   4. When the target Pod is later created, it will find and use the pre-allocated port
 
 **Example scenario**:
-- Worker Pod `rbg-instance-0-worker-0` is created first and references `leader.leader-port`
-- The reconciler constructs target Pod name: `rbg-instance-0-leader-0`
-- The reconciler pre-allocates port 30001 with key `rbg-instance-0-leader-0.leader-port`
-- Later, Leader Pod `rbg-instance-0-leader-0` is created
+- Worker Pod `rbg-prefill-0-worker-0` is created first and references `prefill.leader.leader-port`
+- The reconciler constructs target Pod name: `rbg-prefill-0-leader-0`
+- The reconciler pre-allocates port 30001 with key `rbg-prefill-0-leader-0.leader-port`
+- Later, Leader Pod `rbg-prefill-0-leader-0` is created
 - The reconciler finds port 30001 already allocated and uses it
 
 ### Test Plan
@@ -358,7 +349,6 @@ When a Pod references a port from another Pod (e.g., `leader.leader-port`), the 
 - Port release on Instance/InstanceSet deletion
 
 #### End to End Tests
-- Deploy RBG with port allocation and verify injection
-- Scale Instance and verify port allocation
-- Deploy InstanceSet with RoleScoped ports and verify sharing
-- Cross-pod reference port resolution
+- Deploy RBG without port allocation, verify no ConfigMap created
+- Update existing RBG to enable port allocation, verify ConfigMaps created, ports allocated and injected into pods
+- Update existing RBG to remove role-scoped port, verify port released and ConfigMap updated

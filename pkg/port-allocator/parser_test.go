@@ -279,18 +279,21 @@ func TestParseReference(t *testing.T) {
 		name            string
 		from            string
 		expectError     bool
+		expectRole      string
 		expectComponent string
 		expectPort      string
 	}{
 		{
 			name:            "valid reference",
-			from:            "leader.leader-port",
+			from:            "prefill.leader.leader-port",
+			expectRole:      "prefill",
 			expectComponent: "leader",
 			expectPort:      "leader-port",
 		},
 		{
 			name:            "valid reference with numbers",
-			from:            "worker-0.grpc-port",
+			from:            "prefill.worker-0.grpc-port",
+			expectRole:      "prefill",
 			expectComponent: "worker-0",
 			expectPort:      "grpc-port",
 		},
@@ -301,12 +304,17 @@ func TestParseReference(t *testing.T) {
 		},
 		{
 			name:        "missing port name",
-			from:        "leader.",
+			from:        "prefill.leader.",
 			expectError: true,
 		},
 		{
 			name:        "missing component name",
-			from:        ".port",
+			from:        "prefill..port",
+			expectError: true,
+		},
+		{
+			name:        "missing role name",
+			from:        ".leader.port",
 			expectError: true,
 		},
 		{
@@ -314,15 +322,21 @@ func TestParseReference(t *testing.T) {
 			from:        "leaderport",
 			expectError: true,
 		},
+		{
+			name:        "only two parts",
+			from:        "leader.port",
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			component, port, err := ParseReference(tt.from)
+			role, component, port, err := ParseReference(tt.from)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+				assert.Equal(t, tt.expectRole, role)
 				assert.Equal(t, tt.expectComponent, component)
 				assert.Equal(t, tt.expectPort, port)
 			}
