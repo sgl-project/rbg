@@ -201,10 +201,10 @@ func (ssc *defaultStatefulInstanceSetControl) truncateHistory(
 	}
 	historyLen := len(history)
 	// Check if RevisionHistoryLimit is set
-	if set.Spec.RevisionHistoryLimit == nil {
-		return nil
+	historyLimit := 10
+	if set.Spec.RevisionHistoryLimit != nil {
+		historyLimit = int(*set.Spec.RevisionHistoryLimit)
 	}
-	historyLimit := int(*set.Spec.RevisionHistoryLimit)
 	if historyLen <= historyLimit {
 		return nil
 	}
