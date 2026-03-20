@@ -442,33 +442,14 @@ func generateRandomSuffix(length int) string {
 // getModelPath determines the model path based on HuggingFace ID or model name
 // Returns /models/{subpath}/ where subpath is the last valid segment after path resolution
 func getModelPath(modelName string) string {
-	// Split by / and simulate path resolution using a stack
-	// Using filepath.Abs() and returning the last segment is a more concise approach, but it accesses the local filesystem and may have security implications.
-	parts := strings.Split(modelName, "/")
-
-	var stack []string
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			// Skip empty and current directory
-			continue
-		case "..":
-			// Pop from stack if not empty
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-		default:
-			// Push normal segment
-			stack = append(stack, part)
-		}
-	}
-
-	if len(stack) == 0 {
-		return "/models/default/"
+	// Get the base name of the model, handling path separators.
+	subPath := GetModelBaseName(modelName)
+	if subPath == "" {
+		subPath = "default"
 	}
 
 	// Return the last segment in the resolved path
-	return fmt.Sprintf("/models/%s/", stack[len(stack)-1])
+	return fmt.Sprintf("/models/%s/", subPath)
 }
 
 // getImage selects the appropriate container image

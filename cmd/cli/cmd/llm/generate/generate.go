@@ -2,6 +2,7 @@ package generate
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -252,31 +253,10 @@ func displayResults(config *TaskConfig, disaggPlan, aggPlan *DeploymentPlan, dis
 
 // normalizeModelName converts model name to a valid Kubernetes resource name
 func normalizeModelName(name string) string {
-	// Split by / and find the last valid segment
-	// Using filepath.Abs() and returning the last segment is a more concise approach, but it accesses the local filesystem and may have security implications.
-	parts := strings.Split(name, "/")
-
-	var stack []string
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			// Skip empty and current directory
-			continue
-		case "..":
-			// Pop from stack if not empty
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-		default:
-			// Push normal segment
-			stack = append(stack, part)
-		}
-	}
-
-	if len(stack) == 0 {
+	// Get the base name of the model, handling path separators.
+	name = GetModelBaseName(name)
+	if name == "" {
 		name = "rbg"
-	} else {
-		name = stack[len(stack)-1]
 	}
 
 	// Convert to lowercase and replace underscores/dots with hyphens
@@ -292,4 +272,13 @@ func normalizeModelName(name string) string {
 		}
 	}
 	return sb.String()
+}
+
+// In a shared utility file
+func GetModelBaseName(modelName string) string {
+	baseName := path.Base(path.Clean(modelName))
+	if baseName == "." || baseName == "/" || baseName == "" {
+		return "" // Or some other indicator for "not found"
+	}
+	return baseName
 }
