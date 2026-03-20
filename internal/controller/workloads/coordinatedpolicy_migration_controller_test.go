@@ -36,6 +36,13 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
+const (
+	// defaultNamespace is the default namespace used in tests.
+	defaultNamespace = "default"
+	// maxSkew10Percent is a common MaxSkew value used in tests.
+	maxSkew10Percent = "10%"
+)
+
 func init() {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 }
@@ -57,12 +64,12 @@ func coordAnnotation(t *testing.T, coords []workloadsv1alpha1.Coordination) stri
 }
 
 // newRBGWithCoordAnnotation builds a v1alpha2 RoleBasedGroup carrying the migration annotation.
-func newRBGWithCoordAnnotation(name, ns string, coords []workloadsv1alpha1.Coordination, t *testing.T) *workloadsv1alpha2.RoleBasedGroup {
+func newRBGWithCoordAnnotation(name string, coords []workloadsv1alpha1.Coordination, t *testing.T) *workloadsv1alpha2.RoleBasedGroup {
 	t.Helper()
 	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: ns,
+			Namespace: defaultNamespace,
 			Annotations: map[string]string{
 				annotationCoordMigration: coordAnnotation(t, coords),
 			},
@@ -74,18 +81,17 @@ func newRBGWithCoordAnnotation(name, ns string, coords []workloadsv1alpha1.Coord
 // ── EnsureV1alpha1CoordinatedPolicy: create path ──────────────────────────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_CreatesPolicy(t *testing.T) {
-	ns := "default"
 	coords := []workloadsv1alpha1.Coordination{
 		{Name: "c1", Roles: []string{"prefill", "decode"}},
 	}
-	rbg := newRBGWithCoordAnnotation("my-rbg", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("my-rbg", coords, t)
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
 
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "my-rbg", Namespace: ns}, policy))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "my-rbg", Namespace: defaultNamespace}, policy))
 	require.Len(t, policy.Spec.Policies, 1)
 	assert.Equal(t, []string{"prefill", "decode"}, policy.Spec.Policies[0].Roles)
 
@@ -96,15 +102,14 @@ func TestEnsureV1alpha1CoordinatedPolicy_CreatesPolicy(t *testing.T) {
 
 	// Annotation must still be present — it is never removed.
 	updatedRBG := &workloadsv1alpha2.RoleBasedGroup{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "my-rbg", Namespace: ns}, updatedRBG))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "my-rbg", Namespace: defaultNamespace}, updatedRBG))
 	assert.Contains(t, updatedRBG.Annotations, annotationCoordMigration)
 }
 
 // ── EnsureV1alpha1CoordinatedPolicy: RollingUpdate strategy conversion ────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_RollingUpdateStrategy(t *testing.T) {
-	ns := "default"
-	maxSkew := "10%"
+	maxSkew := maxSkew10Percent
 	partition := "20%"
 	maxUnavail := "5%"
 	coords := []workloadsv1alpha1.Coordination{
@@ -120,27 +125,26 @@ func TestEnsureV1alpha1CoordinatedPolicy_RollingUpdateStrategy(t *testing.T) {
 			},
 		},
 	}
-	rbg := newRBGWithCoordAnnotation("rbg-ru", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("rbg-ru", coords, t)
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-ru", Namespace: ns}, policy))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-ru", Namespace: defaultNamespace}, policy))
 	require.Len(t, policy.Spec.Policies, 1)
 
-	strat := policy.Spec.Policies[0].Strategy
-	require.NotNil(t, strat.RollingUpdate)
-	assert.Equal(t, intstr.FromString("10%"), *strat.RollingUpdate.MaxSkew)
-	assert.Equal(t, intstr.FromString("20%"), *strat.RollingUpdate.Partition)
-	assert.Equal(t, intstr.FromString("5%"), *strat.RollingUpdate.MaxUnavailable)
-	assert.Nil(t, strat.Scaling)
+	strategy := policy.Spec.Policies[0].Strategy
+	require.NotNil(t, strategy.RollingUpdate)
+	assert.Equal(t, intstr.FromString(maxSkew10Percent), *strategy.RollingUpdate.MaxSkew)
+	assert.Equal(t, intstr.FromString("20%"), *strategy.RollingUpdate.Partition)
+	assert.Equal(t, intstr.FromString("5%"), *strategy.RollingUpdate.MaxUnavailable)
+	assert.Nil(t, strategy.Scaling)
 }
 
 // ── EnsureV1alpha1CoordinatedPolicy: Scaling strategy conversion ──────────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_ScalingStrategy_OrderScheduled(t *testing.T) {
-	ns := "default"
 	maxSkew := "5%"
 	prog := workloadsv1alpha1.OrderScheduled
 	coords := []workloadsv1alpha1.Coordination{
@@ -155,23 +159,22 @@ func TestEnsureV1alpha1CoordinatedPolicy_ScalingStrategy_OrderScheduled(t *testi
 			},
 		},
 	}
-	rbg := newRBGWithCoordAnnotation("rbg-sc", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("rbg-sc", coords, t)
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-sc", Namespace: ns}, policy))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-sc", Namespace: defaultNamespace}, policy))
 
-	strat := policy.Spec.Policies[0].Strategy
-	require.NotNil(t, strat.Scaling)
-	assert.Equal(t, intstr.FromString("5%"), *strat.Scaling.MaxSkew)
-	assert.Equal(t, workloadsv1alpha2.OrderScheduledProgression, strat.Scaling.Progression)
-	assert.Nil(t, strat.RollingUpdate)
+	strategy := policy.Spec.Policies[0].Strategy
+	require.NotNil(t, strategy.Scaling)
+	assert.Equal(t, intstr.FromString("5%"), *strategy.Scaling.MaxSkew)
+	assert.Equal(t, workloadsv1alpha2.OrderScheduledProgression, strategy.Scaling.Progression)
+	assert.Nil(t, strategy.RollingUpdate)
 }
 
 func TestEnsureV1alpha1CoordinatedPolicy_ScalingStrategy_OrderReady(t *testing.T) {
-	ns := "default"
 	prog := workloadsv1alpha1.OrderReady
 	coords := []workloadsv1alpha1.Coordination{
 		{
@@ -182,13 +185,13 @@ func TestEnsureV1alpha1CoordinatedPolicy_ScalingStrategy_OrderReady(t *testing.T
 			},
 		},
 	}
-	rbg := newRBGWithCoordAnnotation("rbg-ready", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("rbg-ready", coords, t)
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-ready", Namespace: ns}, policy))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-ready", Namespace: defaultNamespace}, policy))
 	// OrderReady has no equivalent in v1alpha2; progression is dropped (empty).
 	assert.Equal(t, workloadsv1alpha2.ScalingProgression(""), policy.Spec.Policies[0].Strategy.Scaling.Progression)
 }
@@ -196,8 +199,7 @@ func TestEnsureV1alpha1CoordinatedPolicy_ScalingStrategy_OrderReady(t *testing.T
 // ── EnsureV1alpha1CoordinatedPolicy: multiple coordination rules ──────────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_MultipleRules(t *testing.T) {
-	ns := "default"
-	maxSkew := "10%"
+	maxSkew := maxSkew10Percent
 	coords := []workloadsv1alpha1.Coordination{
 		{Name: "ru", Roles: []string{"a", "b"}, Strategy: &workloadsv1alpha1.CoordinationStrategy{
 			RollingUpdate: &workloadsv1alpha1.CoordinationRollingUpdate{MaxSkew: &maxSkew},
@@ -206,13 +208,13 @@ func TestEnsureV1alpha1CoordinatedPolicy_MultipleRules(t *testing.T) {
 			Scaling: &workloadsv1alpha1.CoordinationScaling{MaxSkew: ptr.To("5%")},
 		}},
 	}
-	rbg := newRBGWithCoordAnnotation("rbg-multi", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("rbg-multi", coords, t)
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-multi", Namespace: ns}, policy))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-multi", Namespace: defaultNamespace}, policy))
 	require.Len(t, policy.Spec.Policies, 2)
 	assert.Equal(t, []string{"a", "b"}, policy.Spec.Policies[0].Roles)
 	assert.Equal(t, []string{"c"}, policy.Spec.Policies[1].Roles)
@@ -221,15 +223,14 @@ func TestEnsureV1alpha1CoordinatedPolicy_MultipleRules(t *testing.T) {
 // ── EnsureV1alpha1CoordinatedPolicy: idempotency (update path) ───────────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_UpdatesExistingPolicy(t *testing.T) {
-	ns := "default"
 	coords := []workloadsv1alpha1.Coordination{
 		{Name: "c1", Roles: []string{"new-role"}},
 	}
-	rbg := newRBGWithCoordAnnotation("rbg-upd", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("rbg-upd", coords, t)
 
 	// Pre-create a stale CoordinatedPolicy with different content.
 	stale := &workloadsv1alpha2.CoordinatedPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "rbg-upd", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg-upd", Namespace: defaultNamespace},
 		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
 			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{
 				{Roles: []string{"old-role"}, Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{}},
@@ -241,7 +242,7 @@ func TestEnsureV1alpha1CoordinatedPolicy_UpdatesExistingPolicy(t *testing.T) {
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	updated := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-upd", Namespace: ns}, updated))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-upd", Namespace: defaultNamespace}, updated))
 	require.Len(t, updated.Spec.Policies, 1)
 	assert.Equal(t, []string{"new-role"}, updated.Spec.Policies[0].Roles, "stale policy must be overwritten")
 }
@@ -249,9 +250,8 @@ func TestEnsureV1alpha1CoordinatedPolicy_UpdatesExistingPolicy(t *testing.T) {
 // ── EnsureV1alpha1CoordinatedPolicy: no annotation → no-op ───────────────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_NoAnnotation_Noop(t *testing.T) {
-	ns := "default"
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: "clean-rbg", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: "clean-rbg", Namespace: defaultNamespace},
 	}
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
@@ -266,17 +266,16 @@ func TestEnsureV1alpha1CoordinatedPolicy_NoAnnotation_Noop(t *testing.T) {
 // ── EnsureV1alpha1CoordinatedPolicy: nil strategy → empty strategies ──────────
 
 func TestEnsureV1alpha1CoordinatedPolicy_NilStrategy(t *testing.T) {
-	ns := "default"
 	coords := []workloadsv1alpha1.Coordination{
 		{Name: "c-nil", Roles: []string{"role-a"}},
 	}
-	rbg := newRBGWithCoordAnnotation("rbg-nil", ns, coords, t)
+	rbg := newRBGWithCoordAnnotation("rbg-nil", coords, t)
 
 	fc := fake.NewClientBuilder().WithScheme(buildMigrationScheme(t)).WithObjects(rbg).Build()
 	require.NoError(t, EnsureV1alpha1CoordinatedPolicy(context.Background(), fc, rbg))
 
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
-	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-nil", Namespace: ns}, policy))
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "rbg-nil", Namespace: defaultNamespace}, policy))
 	require.Len(t, policy.Spec.Policies, 1)
 	assert.Nil(t, policy.Spec.Policies[0].Strategy.RollingUpdate)
 	assert.Nil(t, policy.Spec.Policies[0].Strategy.Scaling)
@@ -290,7 +289,7 @@ func TestConvertCoordinationStrategyApplyConfiguration_Nil(t *testing.T) {
 }
 
 func TestConvertCoordinationStrategyApplyConfiguration_RollingUpdate(t *testing.T) {
-	maxSkew := "10%"
+	maxSkew := maxSkew10Percent
 	partition := "50%"
 	maxUnavail := "5%"
 	src := &workloadsv1alpha1.CoordinationStrategy{
@@ -304,7 +303,7 @@ func TestConvertCoordinationStrategyApplyConfiguration_RollingUpdate(t *testing.
 	got := convertCoordinationStrategyApplyConfiguration(src)
 	require.NotNil(t, got)
 	require.NotNil(t, got.RollingUpdate)
-	assert.Equal(t, intstr.FromString("10%"), *got.RollingUpdate.MaxSkew)
+	assert.Equal(t, intstr.FromString(maxSkew10Percent), *got.RollingUpdate.MaxSkew)
 	assert.Equal(t, intstr.FromString("50%"), *got.RollingUpdate.Partition)
 	assert.Equal(t, intstr.FromString("5%"), *got.RollingUpdate.MaxUnavailable)
 	assert.Nil(t, got.Scaling)
