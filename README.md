@@ -78,7 +78,7 @@ You can see our documentation at [docs](doc/TOC.md) for more in-depth installati
 
 ## Contributing
 
-We welcome contributions through issues and PRs! See [CONTRIBUTING.md](CONTRIBUTING.md).
+We welcome contributions through issues and PRs! See [CONTRIBUTING.md](CONTRIBUTING.md). For Go code changes in a PR, you can run `make copyright-check` to verify headers or `make copyright-fix` to add missing ones.
 
 ### Community, discussion, contribution, and support
 

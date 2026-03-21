@@ -65,10 +65,8 @@ if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
   exit 1
 fi
 
-MERGE_BASE="$(git merge-base HEAD "$BASE_REF")"
-
 mapfile -d '' GO_FILES < <(
-  git diff --name-only -z --diff-filter=AM "$MERGE_BASE"...HEAD -- '*.go'
+  git diff --name-only -z --diff-filter=AM "$(git merge-base HEAD "$BASE_REF")"...HEAD -- '*.go'
 )
 
 if [[ ${#GO_FILES[@]} -eq 0 ]]; then
