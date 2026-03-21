@@ -1,0 +1,80 @@
+name: Copyright Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions: read-all
+
+jobs:
+  copyright-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Determine base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD^1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check copyright headers for changed Go files
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+        run: |
+          set -euo pipefail
+
+          if [ "$BASE_REF" != "HEAD^1" ]; then
+            git fetch origin "${{ github.base_ref }}:${{ github.base_ref }}" || true
+            git fetch origin "${{ github.base_ref }}" || true
+          fi
+
+          MERGE_BASE="$(git merge-base HEAD "$BASE_REF")"
+          CHANGED_GO_FILES="$(git diff --name-only --diff-filter=AM "$MERGE_BASE"...HEAD -- '*.go')"
+
+          if [ -z "$CHANGED_GO_FILES" ]; then
+            echo "No added/modified Go files found."
+            exit 0
+          fi
+
+          echo "Changed Go files:"
+          echo "$CHANGED_GO_FILES"
+
+          MISSING_HEADERS=""
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            if python3 - "$file" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+text = p.read_text(encoding='utf-8')
+head = text[:800]
+if 'Copyright' in head and 'Licensed under the Apache License, Version 2.0' in head:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+            then
+              echo "OK   $file"
+            else
+              echo "MISS $file"
+              MISSING_HEADERS+="$file"$'\n'
+            fi
+          done <<< "$CHANGED_GO_FILES"
+
+          if [ -n "$MISSING_HEADERS" ]; then
+            echo
+            echo "The following Go files are missing copyright headers:"
+            echo "$MISSING_HEADERS"
+            echo "Run ./tools/add-copyright-to-pr-go-files.sh and commit the result."
+            exit 1
+          fi
+
+          echo "All changed Go files contain copyright headers."
