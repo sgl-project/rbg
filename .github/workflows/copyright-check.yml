@@ -1,0 +1,38 @@
+name: Copyright Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions: read-all
+
+jobs:
+  copyright-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Determine base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD^1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check copyright headers for changed Go files
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$BASE_REF" != "HEAD^1" ]; then
+            git fetch origin "${{ github.base_ref }}:${{ github.base_ref }}" || true
+            git fetch origin "${{ github.base_ref }}" || true
+          fi
+          ./tools/check-copyright-on-pr-go-files.sh --base-ref "$BASE_REF"
