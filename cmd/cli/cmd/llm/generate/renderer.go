@@ -70,7 +70,7 @@ func renderDisaggYAML(plan *DeploymentPlan) (string, error) {
 
 	// Get base name for the deployment
 	baseName := getDeployName(plan.ModelName, plan.BackendName, "pd")
-	modelPath := getModelPath(plan.ModelName, plan.HuggingFaceID)
+	modelPath := getModelPath(plan.ModelName)
 	image := getImage(plan.BackendName)
 
 	// Build RoleBasedGroup using builder pattern
@@ -98,7 +98,7 @@ func renderAggYAML(plan *DeploymentPlan) (string, error) {
 	aggParams := GetWorkerParams(config.Params.Agg)
 
 	baseName := getDeployName(plan.ModelName, plan.BackendName, "agg")
-	modelPath := getModelPath(plan.ModelName, plan.HuggingFaceID)
+	modelPath := getModelPath(plan.ModelName)
 	image := getImage(plan.BackendName)
 
 	// Build RoleBasedGroup using builder pattern
@@ -456,16 +456,16 @@ func generateRandomSuffix(length int) string {
 }
 
 // getModelPath determines the model path based on HuggingFace ID or model name
-func getModelPath(modelName, hfID string) string {
-	if hfID != "" {
-		// Use HuggingFace ID if provided
-		parts := strings.Split(hfID, "/")
-		if len(parts) > 0 {
-			return fmt.Sprintf("/models/%s/", parts[len(parts)-1])
-		}
+// Returns /models/{subpath}/ where subpath is the last valid segment after path resolution
+func getModelPath(modelName string) string {
+	// Get the base name of the model, handling path separators.
+	subPath := GetModelBaseName(modelName)
+	if subPath == "" {
+		subPath = "default"
 	}
-	// Fallback to model name
-	return fmt.Sprintf("/models/%s/", modelName)
+
+	// Return the last segment in the resolved path
+	return fmt.Sprintf("/models/%s/", subPath)
 }
 
 // getImage selects the appropriate container image

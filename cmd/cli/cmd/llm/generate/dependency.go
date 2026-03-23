@@ -63,7 +63,7 @@ func CheckAIConfiguratorAvailabilityWithVersion() error {
 	}
 
 	// Extract version number from output using regex
-	// Expected format: "aiconfigurator 0.5.0" or just "0.5.0"
+	// Expected format: "aiconfigurator 0.7.0" or just "0.7.0"
 	outputStr := string(output)
 	klog.V(2).Infof("aiconfigurator version output: %s", outputStr)
 
@@ -78,9 +78,9 @@ func CheckAIConfiguratorAvailabilityWithVersion() error {
 	versionStr := matches[1]
 	klog.Infof("Found aiconfigurator version: %s", versionStr)
 
-	// Check if version >= 0.5.0
-	if err := checkMinVersion(versionStr, "0.5.0"); err != nil {
-		return fmt.Errorf("aiconfigurator version %s is too old (minimum required: 0.5.0)\n\n"+
+	// Check if version >= 0.7.0
+	if err := checkMinVersion(versionStr, "0.7.0"); err != nil {
+		return fmt.Errorf("aiconfigurator version %s is too old (minimum required: 0.7.0)\n\n"+
 			"Please upgrade using:\n"+
 			"  pip install --upgrade aiconfigurator", versionStr)
 	}
