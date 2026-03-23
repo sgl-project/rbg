@@ -68,6 +68,9 @@ type RoleInstanceSetSpec struct {
 	// be maintained in the RoleInstanceSet's revision history. The revision history
 	// consists of all revisions not represented by a currently applied
 	// RoleInstanceSetSpec version. The default value is 10.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=0
+	// +optional
 	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
 
 	// Minimum number of seconds for which a newly created RoleInstances should be ready
