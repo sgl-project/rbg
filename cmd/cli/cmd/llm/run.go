@@ -308,15 +308,44 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <name> <model-id> [flags]",
 		Short: "Run a model as an inference service",
-		Long:  `Deploy a model as an inference service on Kubernetes using RoleBasedGroup.`,
+		Long: `Deploy a model as an inference service on Kubernetes using RoleBasedGroup.
+
+This command creates a RoleBasedGroup resource that deploys an LLM model for inference.
+It supports various inference engines (vLLM, SGLang) and deployment modes optimized
+for different use cases (latency, throughput, etc.).
+
+The command will:
+  1. Load the model configuration from the built-in models database
+  2. Generate a pod template using the specified inference engine
+  3. Create a RoleBasedGroup resource in the cluster
+
+Prerequisites:
+  - The model should be available in storage (use 'kubectl rbg llm pull' first)
+  - Storage must be configured (use 'kubectl rbg llm config add-storage')
+
+Examples:
+  # Quick start with default config
+  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B
+
+  # Use a specific mode
+  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --mode throughput
+
+  # Override engine
+  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --mode custom --engine sglang
+
+  # Run with multiple replicas
+  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --replicas 3
+
+  # Dry run to preview the generated configuration
+  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --dry-run`,
 		Example: `  # Quick start with default config
   kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B
 
   # Use a specific mode
   kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --mode throughput
 
-  # Override resources
-  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --mode custom --engine sglang --gpu 2 --memory 64Gi`,
+  # Override engine
+  kubectl rbg llm run my-qwen Qwen/Qwen3.5-0.8B --mode custom --engine sglang`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -340,20 +369,6 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 
 			// Get namespace
 			namespace := util.GetNamespace(cf)
-
-			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
-			if rctx.StoragePlugin != nil && rctx.StorageName != "" {
-				ctrlClient, err := util.GetControllerRuntimeClient(cf)
-				if err != nil {
-					return fmt.Errorf("failed to create controller client: %w", err)
-				}
-				if err := rctx.StoragePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
-					StorageName: rctx.StorageName,
-					Namespace:   namespace,
-				}); err != nil {
-					return fmt.Errorf("failed to prepare storage: %w", err)
-				}
-			}
 
 			// Generate v1alpha2 RoleBasedGroup
 			rbg := generateRBG(name, namespace, modelID, revision, replicas, rctx)
@@ -383,6 +398,20 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			fmt.Printf("# Engine:    %s\n", rctx.EngineType)
 			fmt.Printf("# Replicas:  %d\n", replicas)
 			fmt.Println("#")
+
+			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
+			if rctx.StoragePlugin != nil && rctx.StorageName != "" {
+				ctrlClient, err := util.GetControllerRuntimeClient(cf)
+				if err != nil {
+					return fmt.Errorf("failed to create controller client: %w", err)
+				}
+				if err := rctx.StoragePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
+					StorageName: rctx.StorageName,
+					Namespace:   namespace,
+				}); err != nil {
+					return fmt.Errorf("failed to prepare storage: %w", err)
+				}
+			}
 
 			// Create the v1alpha2 RoleBasedGroup workload
 			ctx := context.Background()

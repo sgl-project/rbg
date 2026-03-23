@@ -35,6 +35,22 @@ func newAddStorageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add-storage NAME",
 		Short: "Add a storage configuration",
+		Long: `Add a new storage configuration for model storage.
+
+Storage defines where models are stored and accessed by inference engines.
+Currently supported storage types:
+  - pvc: Kubernetes PersistentVolumeClaim
+  - oss: Alibaba Cloud Object Storage Service
+
+Examples:
+  # Add a PVC storage with command-line flags
+  kubectl rbg llm config add-storage my-pvc --type pvc --config claimName=model-pvc
+
+  # Add an OSS storage with command-line flags
+  kubectl rbg llm config add-storage my-oss --type oss --config endpoint=oss-cn-hangzhou.aliyuncs.com --config bucket=my-bucket
+
+  # Add storage interactively
+  kubectl rbg llm config add-storage my-pvc -i`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'add-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config add-storage NAME [-i]\n\nSee 'kubectl rbg llm config add-storage -h' for examples.")
@@ -94,6 +110,15 @@ func newGetStoragesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get-storages",
 		Short: "List all storage configurations",
+		Long: `List all configured storage backends.
+
+Displays a table showing:
+  - NAME: The name of the storage configuration
+  - TYPE: The storage type (e.g., pvc)
+  - CURRENT: Indicates the currently active storage with "*"
+
+Example:
+  kubectl rbg llm config get-storages`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -118,6 +143,12 @@ func newUseStorageCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use-storage NAME",
 		Short: "Set the current storage",
+		Long: `Set the specified storage as the current active storage.
+
+The active storage is used by default when deploying models.
+
+Example:
+  kubectl rbg llm config use-storage my-pvc`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'use-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config use-storage NAME\n\nSee 'kubectl rbg llm config use-storage -h' for examples.")
@@ -151,6 +182,12 @@ func newSetStorageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set-storage NAME",
 		Short: "Update a storage configuration",
+		Long: `Update an existing storage configuration.
+
+Modify the configuration parameters of a previously added storage.
+
+Example:
+  kubectl rbg llm config set-storage my-pvc --config claimName=new-model-pvc`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'set-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config set-storage NAME [--config key=value]\n\nSee 'kubectl rbg llm config set-storage -h' for examples.")
@@ -192,6 +229,12 @@ func newDeleteStorageCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete-storage NAME",
 		Short: "Delete a storage configuration",
+		Long: `Delete a storage configuration from the config.
+
+Note: Cannot delete the currently active storage. Switch to another storage first.
+
+Example:
+  kubectl rbg llm config delete-storage my-pvc`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'delete-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config delete-storage NAME\n\nSee 'kubectl rbg llm config delete-storage -h' for examples.")

@@ -17,15 +17,10 @@ limitations under the License.
 package llm
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	"sigs.k8s.io/yaml"
-
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func listPrintTable(cmd *cobra.Command, services []serviceInfo, showNamespace bool) {
@@ -50,22 +45,4 @@ func listPrintTable(cmd *cobra.Command, services []serviceInfo, showNamespace bo
 				svc.Name, svc.Model, svc.Engine, svc.Mode, svc.Revision, svc.Replicas, svc.Status)
 		}
 	}
-}
-
-func listPrintJSON(_ *cobra.Command, rbgList *workloadsv1alpha2.RoleBasedGroupList) error {
-	out, err := json.MarshalIndent(rbgList, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal to JSON: %w", err)
-	}
-	_, err = fmt.Fprintf(os.Stdout, "%s\n", out)
-	return err
-}
-
-func listPrintYAML(_ *cobra.Command, rbgList *workloadsv1alpha2.RoleBasedGroupList) error {
-	out, err := yaml.Marshal(rbgList)
-	if err != nil {
-		return fmt.Errorf("failed to marshal to YAML: %w", err)
-	}
-	_, err = os.Stdout.Write(out)
-	return err
 }

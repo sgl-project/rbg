@@ -37,13 +37,27 @@ import (
 func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	var (
 		storage string
-		wait    bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "models",
 		Short: "List downloaded models in storage",
-		Long:  `List all downloaded models from the configured storage`,
+		Long: `List all downloaded models from the configured storage.
+
+This command creates a Kubernetes Job that scans the configured storage and lists
+all models that have been downloaded using 'kubectl rbg llm pull'. It displays
+the model ID, revision, and download timestamp for each model found.
+
+The command requires:
+  - A configured storage (use 'kubectl rbg llm config add-storage' to configure)
+
+Examples:
+  # List models in the default storage
+  kubectl rbg llm models
+
+  # List models in a specific storage
+  kubectl rbg llm models --storage my-pvc
+`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -105,12 +119,6 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				return fmt.Errorf("failed to create job: %w", err)
 			}
 
-			if !wait {
-				fmt.Printf("Created model listing job %s in namespace %s\n", created.Name, ns)
-				fmt.Println("Use --wait to wait for completion and see results")
-				return nil
-			}
-
 			// Wait for job completion
 			fmt.Printf("Scanning storage for models")
 			state, _, err := waitForJobCompletionWithProgress(context.Background(), clientset, ns, created.Name, "model listing")
@@ -136,7 +144,6 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&storage, "storage", "", "Storage to use (overrides default)")
-	cmd.Flags().BoolVar(&wait, "wait", true, "Wait for the model listing job to complete")
 
 	return cmd
 }

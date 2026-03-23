@@ -354,7 +354,7 @@ func runBenchmark(ctx context.Context, rbgName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create rbg client: %w", err)
 	}
-	if _, err := rbgClient.WorkloadsV1alpha1().RoleBasedGroups(ns).Get(ctx, rbgName, metav1.GetOptions{}); err != nil {
+	if _, err := rbgClient.WorkloadsV1alpha2().RoleBasedGroups(ns).Get(ctx, rbgName, metav1.GetOptions{}); err != nil {
 		return err
 	}
 

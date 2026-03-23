@@ -70,7 +70,6 @@ func TestNewLLMCmd_ModelsSubcommand_Flags(t *testing.T) {
 	require.NotNil(t, modelsCmd)
 
 	assert.NotNil(t, modelsCmd.Flags().Lookup("storage"))
-	assert.NotNil(t, modelsCmd.Flags().Lookup("wait"))
 }
 
 func TestNewLLMCmd_RunSubcommand_Flags(t *testing.T) {

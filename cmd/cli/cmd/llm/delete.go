@@ -24,20 +24,31 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
 
 func newDeleteCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
-	var (
-		allNamespaces bool
-		allServices   bool
-	)
-
 	cmd := &cobra.Command{
 		Use:   "delete [name...] [flags]",
 		Short: "Delete LLM inference services created by the CLI",
-		Long:  `Delete RoleBasedGroup resources created by 'kubectl rbg llm run'.`,
+		Long: `Delete RoleBasedGroup resources created by 'kubectl rbg llm run'.
+
+This command deletes LLM inference services that were created using the CLI.
+It can delete services by name, or delete all CLI-managed services at once.
+
+The command filters RoleBasedGroups by the CLI source label to only delete resources
+managed by the kubectl-rbg CLI tool.
+
+Examples:
+  # Delete a specific service by name
+  kubectl rbg llm delete my-qwen
+
+  # Delete multiple services by name
+  kubectl rbg llm delete my-qwen my-llama
+
+  # Delete a service in a specific namespace
+  kubectl rbg llm delete my-qwen -n kubeai
+`,
 		Example: `  # Delete a specific service by name
   kubectl rbg llm delete my-qwen
 
@@ -46,14 +57,9 @@ func newDeleteCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 
   # Delete a service in a specific namespace
   kubectl rbg llm delete my-qwen -n kubeai
-
-  # Delete all CLI-managed services in the current namespace
-  kubectl rbg llm delete --all
-
-  # Delete all CLI-managed services across all namespaces
-  kubectl rbg llm delete --all -A`,
+`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !allServices && len(args) == 0 {
+			if len(args) == 0 {
 				return fmt.Errorf("at least one service name is required, or use --all to delete all services")
 			}
 
@@ -62,44 +68,9 @@ func newDeleteCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				return fmt.Errorf("unable to connect to Kubernetes cluster: %w", err)
 			}
 
-			var namespace string
-			if allNamespaces {
-				namespace = ""
-			} else {
-				namespace = util.GetNamespace(cf)
-			}
+			namespace := util.GetNamespace(cf)
 
 			ctx := context.Background()
-
-			if allServices {
-				listOpts := metav1.ListOptions{
-					LabelSelector: llmmeta.RunCommandSourceLabelKey + "=" + llmmeta.RunCommandSourceLabelValue,
-				}
-				rbgList, err := client.WorkloadsV1alpha2().RoleBasedGroups(namespace).List(ctx, listOpts)
-				if err != nil {
-					return fmt.Errorf("failed to list RoleBasedGroups: %w", err)
-				}
-
-				if len(rbgList.Items) == 0 {
-					fmt.Println("No CLI-managed LLM services found.")
-					return nil
-				}
-
-				var errCount int
-				for i := range rbgList.Items {
-					rbg := &rbgList.Items[i]
-					if err := client.WorkloadsV1alpha2().RoleBasedGroups(rbg.Namespace).Delete(ctx, rbg.Name, metav1.DeleteOptions{}); err != nil {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error: failed to delete %s/%s: %v\n", rbg.Namespace, rbg.Name, err)
-						errCount++
-					} else {
-						fmt.Printf("rolebasedgroup.workloads.x-k8s.io \"%s\" deleted\n", rbg.Name)
-					}
-				}
-				if errCount > 0 {
-					return fmt.Errorf("%d deletion(s) failed", errCount)
-				}
-				return nil
-			}
 
 			// Delete by name(s)
 			var errCount int
@@ -121,9 +92,6 @@ func newDeleteCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			return nil
 		},
 	}
-
-	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "Delete services across all namespaces (used with --all)")
-	cmd.Flags().BoolVar(&allServices, "all", false, "Delete all CLI-managed LLM services")
 
 	return cmd
 }

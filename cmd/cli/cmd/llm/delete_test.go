@@ -40,15 +40,6 @@ func TestNewDeleteCmd_UseAndShort(t *testing.T) {
 func TestNewDeleteCmd_Flags(t *testing.T) {
 	cf := genericclioptions.NewConfigFlags(true)
 	cmd := newDeleteCmd(cf)
-
-	allNsFlag := cmd.Flags().Lookup("all-namespaces")
-	require.NotNil(t, allNsFlag)
-	assert.Equal(t, "false", allNsFlag.DefValue)
-
-	allFlag := cmd.Flags().Lookup("all")
-	require.NotNil(t, allFlag)
-	assert.Equal(t, "false", allFlag.DefValue)
-
 	assert.Nil(t, cmd.Flags().Lookup("yes"), "yes flag should not exist after confirm removal")
 }
 

@@ -48,8 +48,29 @@ func newPullCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pull MODEL_ID",
 		Short: "Pull a model from source to storage",
-		Long:  `Download a model from the configured source to the configured storage`,
-		Args:  cobra.ExactArgs(1),
+		Long: `Download a model from the configured source to the configured storage.
+
+This command creates a Kubernetes Job that downloads the specified model from a source
+(e.g., HuggingFace, ModelScope) to the configured storage (e.g., PVC). The model can
+then be used by inference services created with 'kubectl rbg llm run'.
+
+The command requires:
+  - A configured source (use 'kubectl rbg llm config add-source' to configure)
+  - A configured storage (use 'kubectl rbg llm config add-storage' to configure)
+
+Examples:
+  # Pull a model with default settings
+  kubectl rbg llm pull Qwen/Qwen3.5-0.8B
+
+  # Pull a specific revision of a model
+  kubectl rbg llm pull Qwen/Qwen3.5-0.8B --revision v1.0
+
+  # Pull using a specific source and storage
+  kubectl rbg llm pull Qwen/Qwen3.5-0.8B --source huggingface --storage model-pvc
+
+  # Pull without waiting for completion
+  kubectl rbg llm pull Qwen/Qwen3.5-0.8B --wait=false`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			modelID := args[0]
 

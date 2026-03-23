@@ -34,6 +34,16 @@ func newViewCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "view",
 		Short: "View current configuration",
+		Long: `Display the current LLM configuration.
+
+Shows:
+  - Active storage configuration with its settings
+  - Active source configuration with its settings
+
+Sensitive fields (like API tokens) are masked for security.
+
+Example:
+  kubectl rbg llm config view`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -204,6 +214,16 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize LLM configuration",
+		Long: `Initialize the LLM configuration with an interactive wizard.
+
+This command guides you through setting up:
+  1. Storage configuration - where models are stored
+  2. Source configuration - where models are downloaded from
+
+The wizard will prompt for required configuration values interactively.
+
+Example:
+  kubectl rbg llm config init`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Check if config file already exists
 			configPath := config.GetConfigPath()

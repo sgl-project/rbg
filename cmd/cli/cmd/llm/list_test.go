@@ -47,10 +47,6 @@ func TestNewListCmd_Flags(t *testing.T) {
 	allNsFlag := cmd.Flags().Lookup("all-namespaces")
 	require.NotNil(t, allNsFlag)
 	assert.Equal(t, "false", allNsFlag.DefValue)
-
-	outputFlag := cmd.Flags().Lookup("output")
-	require.NotNil(t, outputFlag)
-	assert.Equal(t, "table", outputFlag.DefValue)
 }
 
 func TestNewListCmd_NoArgs(t *testing.T) {

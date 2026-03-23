@@ -47,14 +47,21 @@ type serviceInfo struct {
 func newListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	var (
 		allNamespaces bool
-		output        string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "list [flags]",
 		Short: "List LLM inference services created by the CLI",
-		Long:  `List RoleBasedGroup resources created by 'kubectl rbg llm run'.`,
-		Example: `  # List services in current namespace
+		Long: `List RoleBasedGroup resources created by 'kubectl rbg llm run'.
+
+This command displays all LLM inference services that were created using the CLI.
+It shows information such as the service name, model, engine, mode, replicas, and status.
+
+The command filters RoleBasedGroups by the CLI source label to only show resources
+managed by the kubectl-rbg CLI tool.
+
+Examples:
+  # List services in current namespace
   kubectl rbg llm list
 
   # List services in all namespaces
@@ -63,8 +70,16 @@ func newListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
   # List services in a specific namespace
   kubectl rbg llm list -n kubeai
 
-  # Output as JSON
-  kubectl rbg llm list -o json
+  # Filter by label selector
+  kubectl rbg llm list -l app.kubernetes.io/name=my-qwen`,
+		Example: `  # List services in current namespace
+  kubectl rbg llm list
+
+  # List services in all namespaces
+  kubectl rbg llm list -A
+
+  # List services in a specific namespace
+  kubectl rbg llm list -n kubeai
 
   # Filter by label selector
   kubectl rbg llm list -l app.kubernetes.io/name=my-qwen`,
@@ -91,22 +106,14 @@ func newListCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				return fmt.Errorf("failed to list RoleBasedGroups: %w", err)
 			}
 
-			switch output {
-			case "json":
-				return listPrintJSON(cmd, rbgList)
-			case "yaml":
-				return listPrintYAML(cmd, rbgList)
-			default:
-				services := extractServiceInfos(rbgList)
-				listPrintTable(cmd, services, allNamespaces)
-			}
+			services := extractServiceInfos(rbgList)
+			listPrintTable(cmd, services, allNamespaces)
 
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "List services across all namespaces")
-	cmd.Flags().StringVarP(&output, "output", "o", "table", "Output format: table, json, yaml")
 
 	return cmd
 }

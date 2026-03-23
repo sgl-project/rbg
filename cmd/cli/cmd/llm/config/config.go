@@ -25,7 +25,31 @@ func NewConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage LLM configuration",
-		Long:  `Configure storage, source, and engine settings for LLM deployment`,
+		Long: `The config command manages LLM deployment configurations including storage,
+model sources, and inference engines.
+
+This command provides subcommands for:
+  - Storage management: Configure where models are stored (PVC, etc.)
+  - Source management: Configure model download sources (HuggingFace, ModelScope, etc.)
+  - Engine management: Customize inference engine settings (optional)
+
+Examples:
+  # Initialize configuration interactively
+  kubectl rbg llm config init
+
+  # View current configuration
+  kubectl rbg llm config view
+
+  # Add a new storage configuration
+  kubectl rbg llm config add-storage my-pvc --type pvc --config claimName=model-pvc
+
+  # Add a new model source
+  kubectl rbg llm config add-source huggingface --type huggingface --config token=hf_xxx
+
+  # List all configurations
+  kubectl rbg llm config get-storages
+  kubectl rbg llm config get-sources
+  kubectl rbg llm config get-engines`,
 	}
 
 	// Add subcommands

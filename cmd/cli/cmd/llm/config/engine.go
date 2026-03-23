@@ -32,6 +32,17 @@ func newSetEngineCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set-engine ENGINE_TYPE",
 		Short: "Customize engine configuration (optional — engines work with defaults without this)",
+		Long: `Customize an inference engine configuration.
+
+This command is optional - engines work with sensible defaults without explicit configuration.
+Use this command only when you need to customize engine-specific parameters.
+
+Currently supported engine types:
+  - sglang: SGLang inference engine
+  - vllm: vLLM inference engine
+
+Example:
+  kubectl rbg llm config set-engine sglang --config defaultPort=8000`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'set-engine' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config set-engine ENGINE_TYPE [--config key=value]\n\nSee 'kubectl rbg llm config set-engine -h' for examples.")
@@ -79,6 +90,13 @@ func newGetEnginesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get-engines",
 		Short: "List customized engine configurations",
+		Long: `List all engines with custom configurations.
+
+This shows only engines that have been explicitly configured via 'set-engine'.
+Engines not listed here use their default settings.
+
+Example:
+  kubectl rbg llm config get-engines`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -99,6 +117,10 @@ func newResetEngineCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reset-engine ENGINE_TYPE",
 		Short: "Remove custom engine configuration, reverting to defaults",
+		Long: `Remove custom configuration for an engine, reverting to default settings.
+
+Example:
+  kubectl rbg llm config reset-engine sglang`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'reset-engine' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config reset-engine ENGINE_TYPE\n\nSee 'kubectl rbg llm config reset-engine -h' for examples.")
