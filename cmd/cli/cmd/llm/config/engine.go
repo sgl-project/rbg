@@ -34,7 +34,7 @@ func newSetEngineCmd() *cobra.Command {
 		Short: "Customize engine configuration (optional — engines work with defaults without this)",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config set-engine ENGINE_TYPE [--config key=value]\n\nExample:\n  kubectl rbg llm config set-engine vllm --config image=vllm/vllm-openai:latest")
+				return fmt.Errorf("'set-engine' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config set-engine ENGINE_TYPE [--config key=value]\n\nSee 'kubectl rbg llm config set-engine -h' for examples.")
 			}
 			return nil
 		},
@@ -101,7 +101,7 @@ func newResetEngineCmd() *cobra.Command {
 		Short: "Remove custom engine configuration, reverting to defaults",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config reset-engine ENGINE_TYPE\n\nExample:\n  kubectl rbg llm config reset-engine vllm")
+				return fmt.Errorf("'reset-engine' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config reset-engine ENGINE_TYPE\n\nSee 'kubectl rbg llm config reset-engine -h' for examples.")
 			}
 			return nil
 		},

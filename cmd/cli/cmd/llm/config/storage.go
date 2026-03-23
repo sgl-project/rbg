@@ -37,7 +37,7 @@ func newAddStorageCmd() *cobra.Command {
 		Short: "Add a storage configuration",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config add-storage NAME [-i]\n\nExample:\n  kubectl rbg llm config add-storage my-oss -i")
+				return fmt.Errorf("'add-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config add-storage NAME [-i]\n\nSee 'kubectl rbg llm config add-storage -h' for examples.")
 			}
 			return nil
 		},
@@ -120,7 +120,7 @@ func newUseStorageCmd() *cobra.Command {
 		Short: "Set the current storage",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config use-storage NAME\n\nExample:\n  kubectl rbg llm config use-storage my-oss")
+				return fmt.Errorf("'use-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config use-storage NAME\n\nSee 'kubectl rbg llm config use-storage -h' for examples.")
 			}
 			return nil
 		},
@@ -153,7 +153,7 @@ func newSetStorageCmd() *cobra.Command {
 		Short: "Update a storage configuration",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config set-storage NAME --config key=value\n\nExample:\n  kubectl rbg llm config set-storage my-pvc --config pvcName=new-pvc")
+				return fmt.Errorf("'set-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config set-storage NAME [--config key=value]\n\nSee 'kubectl rbg llm config set-storage -h' for examples.")
 			}
 			return nil
 		},
@@ -194,7 +194,7 @@ func newDeleteStorageCmd() *cobra.Command {
 		Short: "Delete a storage configuration",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
-				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config delete-storage NAME\n\nExample:\n  kubectl rbg llm config delete-storage my-oss")
+				return fmt.Errorf("'delete-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config delete-storage NAME\n\nSee 'kubectl rbg llm config delete-storage -h' for examples.")
 			}
 			return nil
 		},
