@@ -116,6 +116,14 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: copyright-check
+copyright-check: ## Check copyright headers on changed Go files against BASE_REF (default: origin/main).
+	./tools/check-copyright-on-pr-go-files.sh --base-ref "$${BASE_REF:-origin/main}"
+
+.PHONY: copyright-fix
+copyright-fix: ## Add copyright headers to changed Go files against BASE_REF (default: origin/main).
+	./tools/add-copyright-to-pr-go-files.sh --base-ref "$${BASE_REF:-origin/main}"
+
 ##@ Build
 
 # Build docker images

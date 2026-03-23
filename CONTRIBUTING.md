@@ -141,6 +141,7 @@ Once you've done your work on developing RGB, you are now ready to submit a PR t
    - PR titles are descriptive but concise.
    - Follow the [PR Template](.github/PULL_REQUEST_TEMPLATE.md).
    - Ensure all CI tests pass.
+   - For PRs that add or modify Go files, ensure the changed files contain the standard Apache 2.0 copyright header. You can check this locally with `make copyright-check`, or automatically add missing headers with `make copyright-fix`.
 
 ---
 
