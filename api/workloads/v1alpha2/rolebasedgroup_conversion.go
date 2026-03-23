@@ -16,5 +16,9 @@ limitations under the License.
 
 package v1alpha2
 
-// Hub marks this type as a conversion hub.
+// Hub marks RoleBasedGroup as the conversion hub.
+// All other versions (e.g. v1alpha1) implement ConvertTo/ConvertFrom targeting this type.
 func (*RoleBasedGroup) Hub() {}
+
+// Hub marks RoleBasedGroupSet as the conversion hub.
+func (*RoleBasedGroupSet) Hub() {}

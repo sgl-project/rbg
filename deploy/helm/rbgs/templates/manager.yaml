@@ -33,6 +33,11 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           command:
             - /manager
           securityContext:

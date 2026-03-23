@@ -190,25 +190,31 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 5: Calculate coordination strategies for scaling and rolling update
+	// Step 5: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
+	// When v1alpha1 support is removed, delete this step and coordinatedpolicy_migration_controller.go.
+	if err := EnsureV1alpha1CoordinatedPolicy(ctx, r.client, rbg); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 6: Calculate coordination strategies for scaling and rolling update
 	// Coordination configuration is now fetched from CoordinatedPolicy CR with the same name/namespace.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Reconcile PodGroup for gang scheduling (annotation-driven).
+	// Step 7: Reconcile PodGroup for gang scheduling (annotation-driven).
 	if err := r.reconcilePodGroup(ctx, rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Reconcile roles, do create/update actions for roles.
+	// Step 8: Reconcile roles, do create/update actions for roles.
 	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 8: Cleanup orphaned resources
+	// Step 9: Cleanup orphaned resources
 	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}

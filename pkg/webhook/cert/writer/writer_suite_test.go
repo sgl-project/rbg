@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,22 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package writer
 
 import (
-	ctrl "sigs.k8s.io/controller-runtime"
+	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-// SetupWebhookWithManager sets up the conversion webhook for RoleBasedGroup with the Manager.
-func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(r).
-		Complete()
-}
-
-// SetupWebhookWithManager sets up the conversion webhook for RoleBasedGroupSet with the Manager.
-func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(r).
-		Complete()
+func TestWriter(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Writer Suite")
 }

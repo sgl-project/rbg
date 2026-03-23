@@ -82,7 +82,7 @@ func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbg
 	podList := &v1.PodList{}
 	if err := rclient.List(
 		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
-			workloadsv1alpha1.SetNameLabelKey: rbgName,
+			constants.GroupNameLabelKey: rbgName,
 		},
 	); err != nil {
 		logger.V(1).Error(err, "list pod error")
