@@ -415,11 +415,9 @@ func appendParallelizationParams(args []string, params WorkerParams) []string {
 // getDeployName generates a deploy name with a random suffix to avoid conflicts
 // The suffix is a 5-character lowercase hex string that complies with DNS naming rules
 func getDeployName(modelName, backend, suffix string) string {
-	// Convert model name to lowercase and replace underscores
-	name := strings.ToLower(strings.ReplaceAll(modelName, "_", "-"))
 	// Generate a random 5-character suffix (DNS-safe: lowercase letters and numbers)
 	randomSuffix := generateRandomSuffix(5)
-	return fmt.Sprintf("%s-%s-%s-%s", name, backend, suffix, randomSuffix)
+	return fmt.Sprintf("%s-%s-%s-%s", normalizeModelName(modelName), backend, suffix, randomSuffix)
 }
 
 // generateRandomSuffix generates a random lowercase hex string of specified length
@@ -442,14 +440,8 @@ func generateRandomSuffix(length int) string {
 // getModelPath determines the model path based on HuggingFace ID or model name
 // Returns /models/{subpath}/ where subpath is the last valid segment after path resolution
 func getModelPath(modelName string) string {
-	// Get the base name of the model, handling path separators.
-	subPath := GetModelBaseName(modelName)
-	if subPath == "" {
-		subPath = "default"
-	}
-
 	// Return the last segment in the resolved path
-	return fmt.Sprintf("/models/%s/", subPath)
+	return fmt.Sprintf("/models/%s/", normalizeModelName(modelName))
 }
 
 // getImage selects the appropriate container image

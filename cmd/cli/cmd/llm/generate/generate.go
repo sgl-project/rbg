@@ -260,6 +260,7 @@ func normalizeModelName(name string) string {
 	}
 
 	// Convert to lowercase and replace underscores/dots with hyphens
+	// Preserve existing hyphens as they are valid in DNS labels
 	var sb strings.Builder
 	sb.Grow(len(name))
 	for _, c := range name {
@@ -267,17 +268,16 @@ func normalizeModelName(name string) string {
 			sb.WriteRune(c)
 		} else if c >= 'A' && c <= 'Z' {
 			sb.WriteRune(c + 32) // Convert to lowercase
-		} else if c == '_' || c == '.' {
+		} else if c == '_' || c == '.' || c == '-' {
 			sb.WriteRune('-')
 		}
 	}
 	return sb.String()
 }
 
-// In a shared utility file
 func GetModelBaseName(modelName string) string {
-	baseName := path.Base(path.Clean(modelName))
-	if baseName == "." || baseName == "/" || baseName == "" {
+	baseName := filepath.Base(path.Clean(modelName))
+	if baseName == "." || baseName == string(filepath.Separator) || baseName == "" {
 		return "" // Or some other indicator for "not found"
 	}
 	return baseName
