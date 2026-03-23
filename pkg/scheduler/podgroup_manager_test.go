@@ -255,3 +255,61 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 		)
 	}
 }
+
+func TestVolcanoPodGroupScheduler_ReconcileCopiesVolcanoAnnotationsOnCreate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = volcanoschedulingv1beta1.AddToScheme(scheme)
+	_ = apiextensionsv1.AddToScheme(scheme)
+
+	rbgName := "test-rbg"
+	rbgNamespace := "default"
+	rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+		WithAnnotations(
+			map[string]string{
+				constants.GangSchedulingAnnotationKey:   "true",
+				constants.GangSchedulingVolcanoQueueKey: "gpu-queue",
+				"custom.io/ignored":                     "ignored",
+				"volcano.sh/preemptable":                "true",
+				"volcano.sh/cooldown-time":              "600s",
+			},
+		).Obj()
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: VolcanoPodGroupCrdName},
+			Status: apiextensionsv1.CustomResourceDefinitionStatus{
+				Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+					{
+						Type:   apiextensionsv1.Established,
+						Status: apiextensionsv1.ConditionTrue,
+					},
+				},
+			},
+		},
+	).Build()
+
+	mgr, err := NewPodGroupManager(VolcanoSchedulerPlugin, client)
+	require.NoError(t, err)
+
+	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
+	runtimeController := builder.TypedBuilder[reconcile.Request]{}
+	watchedWorkload := sync.Map{}
+
+	err = mgr.ReconcilePodGroup(ctx, rbg, &runtimeController, &watchedWorkload, apiReader)
+	require.NoError(t, err)
+
+	pg := &volcanoschedulingv1beta1.PodGroup{}
+	err = client.Get(context.Background(), types.NamespacedName{Name: rbgName, Namespace: rbgNamespace}, pg)
+	require.NoError(t, err)
+
+	assert.Equal(
+		t,
+		map[string]string{
+			"volcano.sh/preemptable":   "true",
+			"volcano.sh/cooldown-time": "600s",
+		},
+		pg.Annotations,
+	)
+}
