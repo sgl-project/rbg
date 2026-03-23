@@ -78,6 +78,7 @@ type runContext struct {
 	ModeName      string
 	ResolvedPort  int32
 	StoragePlugin storageplugin.Plugin
+	StorageName   string
 }
 
 // resolveRunContext performs all pure data resolution for the run command:
@@ -116,8 +117,9 @@ func resolveRunContext(name, modelID string, p RunParams, userCfg *cliconfig.Con
 	// 3. Resolve storage plugin and model path
 	var modelPath string
 	var storagePlugin storageplugin.Plugin
+	var storageName string
 	if userCfg != nil {
-		storageName := userCfg.CurrentStorage
+		storageName = userCfg.CurrentStorage
 		if p.Storage != "" {
 			storageName = p.Storage
 		}
@@ -211,6 +213,7 @@ func resolveRunContext(name, modelID string, p RunParams, userCfg *cliconfig.Con
 		ModeName:      modeCfg.Name,
 		ResolvedPort:  resolvedPort,
 		StoragePlugin: storagePlugin,
+		StorageName:   storageName,
 	}, nil
 }
 
@@ -337,6 +340,20 @@ func newRunCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 
 			// Get namespace
 			namespace := util.GetNamespace(cf)
+
+			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
+			if rctx.StoragePlugin != nil && rctx.StorageName != "" {
+				ctrlClient, err := util.GetControllerRuntimeClient(cf)
+				if err != nil {
+					return fmt.Errorf("failed to create controller client: %w", err)
+				}
+				if err := rctx.StoragePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
+					StorageName: rctx.StorageName,
+					Namespace:   namespace,
+				}); err != nil {
+					return fmt.Errorf("failed to prepare storage: %w", err)
+				}
+			}
 
 			// Generate v1alpha2 RoleBasedGroup
 			rbg := generateRBG(name, namespace, modelID, revision, replicas, rctx)

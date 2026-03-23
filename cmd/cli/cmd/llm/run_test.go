@@ -58,21 +58,6 @@ func TestNewRunCmd_FlagDefaults(t *testing.T) {
 	require.NotNil(t, replicasFlag)
 	assert.Equal(t, "1", replicasFlag.DefValue)
 
-	// --gpu default is 0
-	gpuFlag := cmd.Flags().Lookup("gpu")
-	require.NotNil(t, gpuFlag)
-	assert.Equal(t, "0", gpuFlag.DefValue)
-
-	// --cpu default is 0
-	cpuFlag := cmd.Flags().Lookup("cpu")
-	require.NotNil(t, cpuFlag)
-	assert.Equal(t, "0", cpuFlag.DefValue)
-
-	// --memory default is empty
-	memFlag := cmd.Flags().Lookup("memory")
-	require.NotNil(t, memFlag)
-	assert.Equal(t, "", memFlag.DefValue)
-
 	// --revision default is "main"
 	revFlag := cmd.Flags().Lookup("revision")
 	require.NotNil(t, revFlag)

@@ -65,7 +65,7 @@ func (p *PVCStorage) Exists(modelID string) (bool, error) {
 }
 
 // PreMount prepares the storage before mounting (e.g., creating PVC)
-func (p *PVCStorage) PreMount(c client.Client, modelID string, revision string) error {
+func (p *PVCStorage) PreMount(c client.Client, opts PreMountOptions) error {
 	// PVC should be created separately or already exist
 	return nil
 }

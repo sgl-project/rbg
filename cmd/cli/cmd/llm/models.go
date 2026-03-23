@@ -79,6 +79,18 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				return fmt.Errorf("failed to create kubernetes clientset: %w", err)
 			}
 
+			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
+			ctrlClient, err := util.GetControllerRuntimeClient(cf)
+			if err != nil {
+				return fmt.Errorf("failed to create controller client: %w", err)
+			}
+			if err := storagePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
+				StorageName: storageName,
+				Namespace:   ns,
+			}); err != nil {
+				return fmt.Errorf("failed to prepare storage: %w", err)
+			}
+
 			// Create a job to scan storage and list models
 			job, err := buildListModelsJob(storagePlugin.MountPath())
 			if err != nil {

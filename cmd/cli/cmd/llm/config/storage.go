@@ -46,6 +46,7 @@ func newAddStorageCmd() *cobra.Command {
 				configMap[k] = v
 			}
 
+			// TODO: interactive config
 			if err := storageplugin.ValidateConfig(storageType, configMap); err != nil {
 				return err
 			}

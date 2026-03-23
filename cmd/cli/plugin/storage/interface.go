@@ -34,6 +34,14 @@ type ModelInfo struct {
 	DownloadedAt string `json:"downloadedAt,omitempty"`
 }
 
+// PreMountOptions contains options for the PreMount operation.
+type PreMountOptions struct {
+	// StorageName is the name from the storage configuration, used for naming resources.
+	StorageName string
+	// Namespace is the target namespace for the resources.
+	Namespace string
+}
+
 // Plugin defines the interface for storage backends.
 type Plugin interface {
 	Name() string
@@ -48,7 +56,7 @@ type Plugin interface {
 	Exists(modelID string) (bool, error)
 
 	// PreMount is called before mounting, e.g. to create a PVC/PV.
-	PreMount(client client.Client, modelID string, revision string) error
+	PreMount(client client.Client, opts PreMountOptions) error
 
 	// MountStorage modifies the PodTemplateSpec to add volumes and mounts.
 	// The volume is mounted at the path returned by MountPath().

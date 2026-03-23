@@ -154,6 +154,7 @@ func configureStorage(reader *bufio.Reader) (string, map[string]interface{}, err
 		return "", nil, fmt.Errorf("failed to get storage plugin fields for type: %s", storageType)
 	}
 
+	// TODO: Mask sensitive fields, like oss akSecret
 	config := make(map[string]interface{})
 	fmt.Printf("\nConfiguring %s storage:\n", storageType)
 	for _, field := range fields {

@@ -107,6 +107,21 @@ func newPullCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			mountPath := storagePlugin.MountPath()
 			modelPath := mountPath + "/" + sanitizeModelID(modelID) + "/" + sanitizeModelID(revision)
 
+			// Get namespace early for PreMount
+			ns := util.GetNamespace(cf)
+
+			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
+			ctrlClient, err := util.GetControllerRuntimeClient(cf)
+			if err != nil {
+				return fmt.Errorf("failed to create controller client: %w", err)
+			}
+			if err := storagePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
+				StorageName: storageName,
+				Namespace:   ns,
+			}); err != nil {
+				return fmt.Errorf("failed to prepare storage: %w", err)
+			}
+
 			// Generate download template with revision support
 			podTemplate, err := sourcePlugin.GenerateTemplateWithRevision(modelID, modelPath, revision)
 			if err != nil {
@@ -142,9 +157,7 @@ func newPullCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				return fmt.Errorf("failed to build job: %w", err)
 			}
 
-			// Get namespace and create client
-			ns := util.GetNamespace(cf)
-
+			// Create k8s clientset
 			clientset, err := util.GetK8SClientSet(cf)
 			if err != nil {
 				return fmt.Errorf("failed to create kubernetes clientset: %w", err)

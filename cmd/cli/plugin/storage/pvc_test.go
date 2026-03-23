@@ -56,7 +56,10 @@ func TestPVCStorage_Exists(t *testing.T) {
 
 func TestPVCStorage_PreMount(t *testing.T) {
 	p := &PVCStorage{pvcName: "my-pvc"}
-	err := p.PreMount(nil, "org/model", "main")
+	err := p.PreMount(nil, PreMountOptions{
+		StorageName: "my-storage",
+		Namespace:   "default",
+	})
 	assert.NoError(t, err)
 }
 

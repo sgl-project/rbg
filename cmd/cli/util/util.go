@@ -26,6 +26,8 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	rbgclient "sigs.k8s.io/rbgs/client-go/clientset/versioned"
 )
@@ -80,4 +82,18 @@ func GetRBGObjectByDynamicClient(ctx context.Context, name, namespace string, dy
 		return nil, fmt.Errorf("failed to get RoleBasedGroup: %w", err)
 	}
 	return resource, nil
+}
+
+// GetControllerRuntimeClient returns a controller-runtime client for Kubernetes operations
+func GetControllerRuntimeClient(cf *genericclioptions.ConfigFlags) (client.Client, error) {
+	config, err := cf.ToRESTConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get kubeconfig: %w", err)
+	}
+	return client.New(config, client.Options{})
+}
+
+// GetRESTConfig returns the REST config from kubeconfig
+func GetRESTConfig(cf *genericclioptions.ConfigFlags) (*rest.Config, error) {
+	return cf.ToRESTConfig()
 }
