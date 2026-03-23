@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	DefaultRoleInstanceSetMaxUnavailable = "10%"
+	DefaultRoleInstanceSetMaxUnavailable       = "10%"
+	DefaultRoleInstanceSetRevisionHistoryLimit = 10
 )
 
 // RoleInstanceSetSpec defines the desired state of RoleInstanceSet

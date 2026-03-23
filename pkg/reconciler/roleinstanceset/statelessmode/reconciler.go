@@ -357,39 +357,25 @@ func (r *ReconcileInstanceSet) truncateHistory(
 	current *apps.ControllerRevision,
 	update *apps.ControllerRevision,
 ) error {
-	noLiveRevisions := make([]*apps.ControllerRevision, 0, len(revisions))
-
-	// collect live revisions and historic revisions
-	for i := range revisions {
-		if revisions[i].Name != current.Name && revisions[i].Name != update.Name {
-			var found bool
-			for _, instance := range instances {
-				if utils.EqualToRevisionHash("", instance, revisions[i].Name) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				noLiveRevisions = append(noLiveRevisions, revisions[i])
-			}
-		}
+	live := map[string]bool{}
+	for i := range instances {
+		live[utils.GetShortHash(instances[i].GetLabels()[apps.ControllerRevisionHashLabelKey])] = true
 	}
-	historyLen := len(noLiveRevisions)
-	historyLimit := 10
+	historyLimit := workloadsv1alpha2.DefaultRoleInstanceSetRevisionHistoryLimit
 	if set.Spec.RevisionHistoryLimit != nil {
 		historyLimit = int(*set.Spec.RevisionHistoryLimit)
 	}
-	if historyLen <= historyLimit {
-		return nil
-	}
-	// delete any non-live history to maintain the revision limit.
-	noLiveRevisions = noLiveRevisions[:(historyLen - historyLimit)]
-	for i := 0; i < len(noLiveRevisions); i++ {
-		if err := r.controllerHistory.DeleteControllerRevision(noLiveRevisions[i]); err != nil {
-			return err
-		}
-	}
-	return nil
+
+	return historyutil.TruncateControllerRevisions(
+		revisions,
+		current,
+		update,
+		historyLimit,
+		func(revisionName string) bool {
+			return live[utils.GetShortHash(revisionName)]
+		},
+		r.controllerHistory.DeleteControllerRevision,
+	)
 }
 
 func (r *ReconcileInstanceSet) claimInstances(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance, selector labels.Selector) ([]*workloadsv1alpha2.RoleInstance, error) {
