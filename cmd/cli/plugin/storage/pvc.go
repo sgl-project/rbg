@@ -20,7 +20,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
@@ -64,14 +63,9 @@ func (p *PVCStorage) Exists(modelID string) (bool, error) {
 	return false, nil
 }
 
-// PreMount prepares the storage before mounting (e.g., creating PVC)
-func (p *PVCStorage) PreMount(c client.Client, opts PreMountOptions) error {
-	// PVC should be created separately or already exist
-	return nil
-}
-
-// MountStorage mounts the storage to the pod template.
-func (p *PVCStorage) MountStorage(podTemplate *corev1.PodTemplateSpec) error {
+// MountStorage mounts the pre-existing PVC to the pod template.
+// PVC must be created separately before running the workload; this plugin does not provision it.
+func (p *PVCStorage) MountStorage(podTemplate *corev1.PodTemplateSpec, _ MountOptions) error {
 	pvcName := p.pvcName
 	mountPath := p.MountPath()
 

@@ -191,14 +191,7 @@ func resolveRunContext(name, modelID string, p RunParams, userCfg *cliconfig.Con
 		podTemplate.ObjectMeta.Labels = make(map[string]string)
 	}
 
-	// 7. Mount storage
-	if storagePlugin != nil {
-		if err := storagePlugin.MountStorage(podTemplate); err != nil {
-			return nil, fmt.Errorf("failed to mount storage: %w", err)
-		}
-	}
-
-	// 8. Extract resolved port from the generated template (ground truth for what is deployed)
+	// 7. Extract resolved port from the generated template (ground truth for what is deployed)
 	var resolvedPort int32
 	for _, cp := range podTemplate.Spec.Containers[0].Ports {
 		if cp.Name == "http" {
@@ -370,7 +363,26 @@ Examples:
 			// Get namespace
 			namespace := util.GetNamespace(cf)
 
-			// Generate v1alpha2 RoleBasedGroup
+			// Mount storage: in dry-run mode, only add volumes/mounts without provisioning K8s resources
+			if rctx.StoragePlugin != nil && rctx.StorageName != "" {
+				mountOpts := storageplugin.MountOptions{
+					StorageName: rctx.StorageName,
+					Namespace:   namespace,
+					DryRun:      dryRun,
+				}
+				if !dryRun {
+					c, err := util.GetControllerRuntimeClient(cf)
+					if err != nil {
+						return fmt.Errorf("failed to create controller client: %w", err)
+					}
+					mountOpts.Client = c
+				}
+				if err := rctx.StoragePlugin.MountStorage(rctx.PodTemplate, mountOpts); err != nil {
+					return fmt.Errorf("failed to mount storage: %w", err)
+				}
+			}
+
+			// Generate RoleBasedGroup from the (now fully configured) pod template
 			rbg := generateRBG(name, namespace, modelID, revision, replicas, rctx)
 
 			if dryRun {
@@ -398,20 +410,6 @@ Examples:
 			fmt.Printf("# Engine:    %s\n", rctx.EngineType)
 			fmt.Printf("# Replicas:  %d\n", replicas)
 			fmt.Println("#")
-
-			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
-			if rctx.StoragePlugin != nil && rctx.StorageName != "" {
-				ctrlClient, err := util.GetControllerRuntimeClient(cf)
-				if err != nil {
-					return fmt.Errorf("failed to create controller client: %w", err)
-				}
-				if err := rctx.StoragePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
-					StorageName: rctx.StorageName,
-					Namespace:   namespace,
-				}); err != nil {
-					return fmt.Errorf("failed to prepare storage: %w", err)
-				}
-			}
 
 			// Create the v1alpha2 RoleBasedGroup workload
 			ctx := context.Background()

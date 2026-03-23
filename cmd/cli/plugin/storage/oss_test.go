@@ -140,7 +140,18 @@ func TestOSSStorage_Exists(t *testing.T) {
 }
 
 func TestOSSStorage_MountStorage_AddsVolumeAndMount(t *testing.T) {
-	p := &OSSStorage{storageName: "test-oss"}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	p := &OSSStorage{
+		storageSize: "100Gi",
+		url:         "oss-cn-hangzhou.aliyuncs.com",
+		bucket:      "test-bucket",
+		subpath:     "models",
+		akId:        "test-ak-id",
+		akSecret:    "test-ak-secret",
+	}
 
 	tpl := &corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
@@ -150,7 +161,11 @@ func TestOSSStorage_MountStorage_AddsVolumeAndMount(t *testing.T) {
 		},
 	}
 
-	err := p.MountStorage(tpl)
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
+		StorageName: "test-oss",
+		Namespace:   "default",
+	})
 	require.NoError(t, err)
 
 	require.Len(t, tpl.Spec.Volumes, 1)
@@ -166,44 +181,6 @@ func TestOSSStorage_MountStorage_AddsVolumeAndMount(t *testing.T) {
 }
 
 func TestOSSStorage_MountStorage_MultipleContainers(t *testing.T) {
-	p := &OSSStorage{storageName: "test-oss"}
-
-	tpl := &corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{Name: "c1"},
-				{Name: "c2"},
-			},
-		},
-	}
-
-	require.NoError(t, p.MountStorage(tpl))
-	for _, c := range tpl.Spec.Containers {
-		require.Len(t, c.VolumeMounts, 1)
-		assert.Equal(t, "model-storage", c.VolumeMounts[0].Name)
-	}
-}
-
-func TestOSSStorage_MountStorage_InitContainers(t *testing.T) {
-	p := &OSSStorage{storageName: "test-oss"}
-
-	tpl := &corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{
-			InitContainers: []corev1.Container{
-				{Name: "init"},
-			},
-			Containers: []corev1.Container{
-				{Name: "main"},
-			},
-		},
-	}
-
-	require.NoError(t, p.MountStorage(tpl))
-	require.Len(t, tpl.Spec.InitContainers[0].VolumeMounts, 1)
-	assert.Equal(t, "/models", tpl.Spec.InitContainers[0].VolumeMounts[0].MountPath)
-}
-
-func TestOSSStorage_PreMount_CreatesResources(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -217,7 +194,71 @@ func TestOSSStorage_PreMount_CreatesResources(t *testing.T) {
 		akSecret:    "test-ak-secret",
 	}
 
-	err := p.PreMount(fakeClient, PreMountOptions{
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "c1"},
+				{Name: "c2"},
+			},
+		},
+	}
+
+	require.NoError(t, p.MountStorage(tpl, MountOptions{Client: fakeClient, StorageName: "test-oss", Namespace: "default"}))
+	for _, c := range tpl.Spec.Containers {
+		require.Len(t, c.VolumeMounts, 1)
+		assert.Equal(t, "model-storage", c.VolumeMounts[0].Name)
+	}
+}
+
+func TestOSSStorage_MountStorage_InitContainers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	p := &OSSStorage{
+		storageSize: "100Gi",
+		url:         "oss-cn-hangzhou.aliyuncs.com",
+		bucket:      "test-bucket",
+		subpath:     "models",
+		akId:        "test-ak-id",
+		akSecret:    "test-ak-secret",
+	}
+
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{
+				{Name: "init"},
+			},
+			Containers: []corev1.Container{
+				{Name: "main"},
+			},
+		},
+	}
+
+	require.NoError(t, p.MountStorage(tpl, MountOptions{Client: fakeClient, StorageName: "test-oss", Namespace: "default"}))
+	require.Len(t, tpl.Spec.InitContainers[0].VolumeMounts, 1)
+	assert.Equal(t, "/models", tpl.Spec.InitContainers[0].VolumeMounts[0].MountPath)
+}
+
+func TestOSSStorage_MountStorage_CreatesResources(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	p := &OSSStorage{
+		storageSize: "100Gi",
+		url:         "oss-cn-hangzhou.aliyuncs.com",
+		bucket:      "test-bucket",
+		subpath:     "models",
+		akId:        "test-ak-id",
+		akSecret:    "test-ak-secret",
+	}
+
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})
@@ -249,11 +290,12 @@ func TestOSSStorage_PreMount_CreatesResources(t *testing.T) {
 	assert.Equal(t, "test-oss", pvc.Spec.VolumeName)
 	assert.Equal(t, "oss", *pvc.Spec.StorageClassName)
 
-	// Verify storageName was set for MountStorage
-	assert.Equal(t, "test-oss", p.storageName)
+	// Verify volume was added to pod template
+	require.Len(t, tpl.Spec.Volumes, 1)
+	assert.Equal(t, "test-oss", tpl.Spec.Volumes[0].VolumeSource.PersistentVolumeClaim.ClaimName)
 }
 
-func TestOSSStorage_PreMount_VerifiesExistingSecret(t *testing.T) {
+func TestOSSStorage_MountStorage_VerifiesExistingSecret(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -281,14 +323,18 @@ func TestOSSStorage_PreMount_VerifiesExistingSecret(t *testing.T) {
 		akSecret:    "test-ak-secret",
 	}
 
-	err := p.PreMount(fakeClient, PreMountOptions{
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})
 	require.NoError(t, err)
 }
 
-func TestOSSStorage_PreMount_FailsOnDifferentSecret(t *testing.T) {
+func TestOSSStorage_MountStorage_FailsOnDifferentSecret(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -316,7 +362,11 @@ func TestOSSStorage_PreMount_FailsOnDifferentSecret(t *testing.T) {
 		akSecret:    "test-ak-secret",
 	}
 
-	err := p.PreMount(fakeClient, PreMountOptions{
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})
@@ -324,7 +374,7 @@ func TestOSSStorage_PreMount_FailsOnDifferentSecret(t *testing.T) {
 	assert.Contains(t, err.Error(), "different akId")
 }
 
-func TestOSSStorage_PreMount_VerifiesExistingPV(t *testing.T) {
+func TestOSSStorage_MountStorage_VerifiesExistingPV(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -370,16 +420,20 @@ func TestOSSStorage_PreMount_VerifiesExistingPV(t *testing.T) {
 		akSecret:    "test-ak-secret",
 	}
 
-	// PreMount should succeed because PV exists with correct config
-	// But Secret doesn't exist, so it will be created first
-	err := p.PreMount(fakeClient, PreMountOptions{
+	// MountStorage should succeed because PV exists with correct config
+	// Secret doesn't exist so it will be created first
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})
 	require.NoError(t, err)
 }
 
-func TestOSSStorage_PreMount_VerifiesExistingPVC(t *testing.T) {
+func TestOSSStorage_MountStorage_VerifiesExistingPVC(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -447,15 +501,19 @@ func TestOSSStorage_PreMount_VerifiesExistingPVC(t *testing.T) {
 		akSecret:    "test-ak-secret",
 	}
 
-	// PreMount should succeed because all resources exist with correct config
-	err := p.PreMount(fakeClient, PreMountOptions{
+	// MountStorage should succeed because all resources exist with correct config
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})
 	require.NoError(t, err)
 }
 
-func TestOSSStorage_PreMount_FailsOnDifferentPVC(t *testing.T) {
+func TestOSSStorage_MountStorage_FailsOnDifferentPVC(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -521,7 +579,11 @@ func TestOSSStorage_PreMount_FailsOnDifferentPVC(t *testing.T) {
 		akSecret:    "test-ak-secret",
 	}
 
-	err := p.PreMount(fakeClient, PreMountOptions{
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      fakeClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})
@@ -585,7 +647,7 @@ func (e *errorClient) Get(ctx context.Context, key types.NamespacedName, obj cli
 	return e.err
 }
 
-func TestOSSStorage_PreMount_ClientError(t *testing.T) {
+func TestOSSStorage_MountStorage_ClientError(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -600,7 +662,11 @@ func TestOSSStorage_PreMount_ClientError(t *testing.T) {
 
 	// Use a mock client that returns a non-NotFound error
 	mockClient := &errorClient{err: errors.NewInternalError(fmt.Errorf("internal error"))}
-	err := p.PreMount(mockClient, PreMountOptions{
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	err := p.MountStorage(tpl, MountOptions{
+		Client:      mockClient,
 		StorageName: "test-oss",
 		Namespace:   "default",
 	})

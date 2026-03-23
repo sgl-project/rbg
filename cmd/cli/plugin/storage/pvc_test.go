@@ -54,15 +54,6 @@ func TestPVCStorage_Exists(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestPVCStorage_PreMount(t *testing.T) {
-	p := &PVCStorage{pvcName: "my-pvc"}
-	err := p.PreMount(nil, PreMountOptions{
-		StorageName: "my-storage",
-		Namespace:   "default",
-	})
-	assert.NoError(t, err)
-}
-
 func TestPVCStorage_MountStorage_AddsVolumeAndMount(t *testing.T) {
 	p := &PVCStorage{pvcName: "my-pvc"}
 
@@ -74,7 +65,7 @@ func TestPVCStorage_MountStorage_AddsVolumeAndMount(t *testing.T) {
 		},
 	}
 
-	err := p.MountStorage(tpl)
+	err := p.MountStorage(tpl, MountOptions{})
 	require.NoError(t, err)
 
 	require.Len(t, tpl.Spec.Volumes, 1)
@@ -101,7 +92,7 @@ func TestPVCStorage_MountStorage_MultipleContainers(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, p.MountStorage(tpl))
+	require.NoError(t, p.MountStorage(tpl, MountOptions{}))
 	for _, c := range tpl.Spec.Containers {
 		require.Len(t, c.VolumeMounts, 1)
 		assert.Equal(t, "model-storage", c.VolumeMounts[0].Name)
@@ -122,7 +113,7 @@ func TestPVCStorage_MountStorage_InitContainers(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, p.MountStorage(tpl))
+	require.NoError(t, p.MountStorage(tpl, MountOptions{}))
 	require.Len(t, tpl.Spec.InitContainers[0].VolumeMounts, 1)
 	assert.Equal(t, "/models", tpl.Spec.InitContainers[0].VolumeMounts[0].MountPath)
 }

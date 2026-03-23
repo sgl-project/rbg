@@ -93,24 +93,20 @@ Examples:
 				return fmt.Errorf("failed to create kubernetes clientset: %w", err)
 			}
 
-			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
+			// Create a job to scan storage and list models
+			job := buildListModelsJob(storagePlugin.MountPath())
+
+			// Mount storage (provisions resources for OSS and adds volumes/mounts)
 			ctrlClient, err := util.GetControllerRuntimeClient(cf)
 			if err != nil {
 				return fmt.Errorf("failed to create controller client: %w", err)
 			}
-			if err := storagePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
+			podTemplate := &job.Spec.Template
+			if err := storagePlugin.MountStorage(podTemplate, storageplugin.MountOptions{
+				Client:      ctrlClient,
 				StorageName: storageName,
 				Namespace:   ns,
 			}); err != nil {
-				return fmt.Errorf("failed to prepare storage: %w", err)
-			}
-
-			// Create a job to scan storage and list models
-			job := buildListModelsJob(storagePlugin.MountPath())
-
-			// Mount storage to the job
-			podTemplate := &job.Spec.Template
-			if err := storagePlugin.MountStorage(podTemplate); err != nil {
 				return fmt.Errorf("failed to mount storage: %w", err)
 			}
 

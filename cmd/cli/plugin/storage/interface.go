@@ -24,6 +24,21 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
+// MountOptions contains options passed to MountStorage, including both
+// mount configuration and pre-mount resource provisioning parameters.
+type MountOptions struct {
+	// Client is the controller-runtime client used to create/verify Kubernetes resources
+	// (e.g., Secret, PV, PVC). May be nil for storage backends that don't need it (e.g., PVC).
+	Client client.Client
+	// StorageName is the name from the storage configuration, used for naming resources.
+	StorageName string
+	// Namespace is the target namespace for the resources.
+	Namespace string
+	// DryRun skips Kubernetes resource provisioning (Secret, PV, PVC creation) while
+	// still adding volumes and mounts to the pod template for preview purposes.
+	DryRun bool
+}
+
 // ModelInfo contains information about a downloaded model.
 type ModelInfo struct {
 	// ModelID is the original model identifier (e.g., "organization/model-name")
@@ -32,14 +47,6 @@ type ModelInfo struct {
 	Revision string `json:"revision"`
 	// DownloadedAt is the timestamp when the model was downloaded (optional)
 	DownloadedAt string `json:"downloadedAt,omitempty"`
-}
-
-// PreMountOptions contains options for the PreMount operation.
-type PreMountOptions struct {
-	// StorageName is the name from the storage configuration, used for naming resources.
-	StorageName string
-	// Namespace is the target namespace for the resources.
-	Namespace string
 }
 
 // Plugin defines the interface for storage backends.
@@ -55,12 +62,10 @@ type Plugin interface {
 	// Exists checks if the model already exists in storage.
 	Exists(modelID string) (bool, error)
 
-	// PreMount is called before mounting, e.g. to create a PVC/PV.
-	PreMount(client client.Client, opts PreMountOptions) error
-
-	// MountStorage modifies the PodTemplateSpec to add volumes and mounts.
+	// MountStorage provisions any required Kubernetes resources (e.g., Secret, PV, PVC)
+	// and modifies the PodTemplateSpec to add volumes and mounts.
 	// The volume is mounted at the path returned by MountPath().
-	MountStorage(podTemplate *corev1.PodTemplateSpec) error
+	MountStorage(podTemplate *corev1.PodTemplateSpec, opts MountOptions) error
 
 	// MountPath returns the base path where storage is mounted in the container.
 	// The full model path is constructed by the caller as: MountPath() + "/" + sanitized(modelID)

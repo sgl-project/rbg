@@ -39,8 +39,6 @@ func init() {
 
 // OSSStorage implements the StoragePlugin interface for Alibaba Cloud OSS storage
 type OSSStorage struct {
-	// storageName is set during PreMount, used for PVC name in MountStorage
-	storageName string
 	// config fields
 	storageSize string
 	url         string
@@ -103,27 +101,24 @@ func (o *OSSStorage) Exists(modelID string) (bool, error) {
 }
 
 // PreMount creates Secret, PV and PVC resources if they don't exist
-func (o *OSSStorage) PreMount(c client.Client, opts PreMountOptions) error {
-	// Store storageName for use in MountStorage
-	o.storageName = opts.StorageName
-
+func (o *OSSStorage) preMount(c client.Client, storageName, namespace string) error {
 	ctx := context.Background()
-	secretName := o.secretName(opts.StorageName)
-	pvName := opts.StorageName
-	pvcName := opts.StorageName
+	secretName := o.secretName(storageName)
+	pvName := storageName
+	pvcName := storageName
 
 	// Step 1: Create or verify Secret
-	if err := o.createOrVerifySecret(ctx, c, secretName, opts.Namespace); err != nil {
+	if err := o.createOrVerifySecret(ctx, c, secretName, namespace); err != nil {
 		return fmt.Errorf("failed to create/verify secret: %w", err)
 	}
 
 	// Step 2: Create or verify PV
-	if err := o.createOrVerifyPV(ctx, c, pvName, secretName, opts.Namespace); err != nil {
+	if err := o.createOrVerifyPV(ctx, c, pvName, secretName, namespace); err != nil {
 		return fmt.Errorf("failed to create/verify PV: %w", err)
 	}
 
 	// Step 3: Create or verify PVC
-	if err := o.createOrVerifyPVC(ctx, c, pvcName, pvName, opts.Namespace); err != nil {
+	if err := o.createOrVerifyPVC(ctx, c, pvcName, pvName, namespace); err != nil {
 		return fmt.Errorf("failed to create/verify PVC: %w", err)
 	}
 
@@ -312,9 +307,16 @@ func (o *OSSStorage) verifyPVC(pvc *corev1.PersistentVolumeClaim, pvName string)
 	return nil
 }
 
-// MountStorage mounts the storage to the pod template
-func (o *OSSStorage) MountStorage(podTemplate *corev1.PodTemplateSpec) error {
-	pvcName := o.storageName
+// MountStorage provisions required resources (Secret, PV, PVC) and mounts the storage to the pod template
+func (o *OSSStorage) MountStorage(podTemplate *corev1.PodTemplateSpec, opts MountOptions) error {
+	// Provision Kubernetes resources (Secret, PV, PVC) unless dry-run or no client
+	if !opts.DryRun && opts.Client != nil && opts.StorageName != "" {
+		if err := o.preMount(opts.Client, opts.StorageName, opts.Namespace); err != nil {
+			return fmt.Errorf("failed to prepare storage resources: %w", err)
+		}
+	}
+
+	pvcName := opts.StorageName
 	mountPath := o.MountPath()
 
 	// Add volume

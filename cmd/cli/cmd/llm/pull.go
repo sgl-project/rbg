@@ -128,20 +128,8 @@ Examples:
 			mountPath := storagePlugin.MountPath()
 			modelPath := mountPath + "/" + sanitizeModelID(modelID) + "/" + sanitizeModelID(revision)
 
-			// Get namespace early for PreMount
+			// Get namespace
 			ns := util.GetNamespace(cf)
-
-			// PreMount: create any required resources (e.g., PV, PVC, Secret for OSS)
-			ctrlClient, err := util.GetControllerRuntimeClient(cf)
-			if err != nil {
-				return fmt.Errorf("failed to create controller client: %w", err)
-			}
-			if err := storagePlugin.PreMount(ctrlClient, storageplugin.PreMountOptions{
-				StorageName: storageName,
-				Namespace:   ns,
-			}); err != nil {
-				return fmt.Errorf("failed to prepare storage: %w", err)
-			}
 
 			// Generate download template with revision support
 			podTemplate, err := sourcePlugin.GenerateTemplateWithRevision(modelID, modelPath, revision)
@@ -152,8 +140,16 @@ Examples:
 			// Inject metadata saving logic - wraps the original command to save model info after download
 			injectMetadataSave(podTemplate, modelID, revision, modelPath)
 
-			// Mount storage
-			if err := storagePlugin.MountStorage(podTemplate); err != nil {
+			// Mount storage (provisions resources for OSS and adds volumes/mounts)
+			ctrlClient, err := util.GetControllerRuntimeClient(cf)
+			if err != nil {
+				return fmt.Errorf("failed to create controller client: %w", err)
+			}
+			if err := storagePlugin.MountStorage(podTemplate, storageplugin.MountOptions{
+				Client:      ctrlClient,
+				StorageName: storageName,
+				Namespace:   ns,
+			}); err != nil {
 				return fmt.Errorf("failed to mount storage: %w", err)
 			}
 
