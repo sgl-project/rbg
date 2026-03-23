@@ -273,18 +273,18 @@ func runInteractive(client *chatClient, history []chatMessage, stream bool) erro
 
 // runREPL is the testable core of the interactive session.
 func runREPL(client *chatClient, history []chatMessage, stream bool, rl lineReader) error {
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 	out := rl.Stdout()
 
-	fmt.Fprintln(out, "Interactive chat session started. Type '/exit' or press Ctrl+C to quit.")
-	fmt.Fprintln(out, strings.Repeat("─", 50))
+	_, _ = fmt.Fprintln(out, "Interactive chat session started. Type '/exit' or press Ctrl+C to quit.")
+	_, _ = fmt.Fprintln(out, strings.Repeat("─", 50))
 
 	for {
 		input, err := rl.Readline()
 		if err != nil {
 			// io.EOF = Ctrl+D, readline.ErrInterrupt = Ctrl+C
 			if err == io.EOF || err == readline.ErrInterrupt {
-				fmt.Fprintln(out, "\nSession ended.")
+				_, _ = fmt.Fprintln(out, "\nSession ended.")
 				return nil
 			}
 			return err
@@ -294,13 +294,13 @@ func runREPL(client *chatClient, history []chatMessage, stream bool, rl lineRead
 			continue
 		}
 		if strings.EqualFold(input, "/exit") || strings.EqualFold(input, "exit") {
-			fmt.Fprintln(out, "Session ended.")
+			_, _ = fmt.Fprintln(out, "Session ended.")
 			return nil
 		}
 
 		history = append(history, chatMessage{Role: "user", Content: input})
 
-		fmt.Fprint(out, "Assistant: ")
+		_, _ = fmt.Fprint(out, "Assistant: ")
 		var reply string
 		var rerr error
 		if stream {
@@ -312,13 +312,13 @@ func runREPL(client *chatClient, history []chatMessage, stream bool, rl lineRead
 			defer s.stopSpinner()
 			reply, rerr = client.sendNonStreaming(history)
 			if rerr == nil {
-				fmt.Fprint(out, reply)
+				_, _ = fmt.Fprint(out, reply)
 			}
 		}
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 
 		if rerr != nil {
-			fmt.Fprintf(out, "Error: %v\n", rerr)
+			_, _ = fmt.Fprintf(out, "Error: %v\n", rerr)
 			// Remove the failed user turn so the conversation stays consistent.
 			history = history[:len(history)-1]
 			continue

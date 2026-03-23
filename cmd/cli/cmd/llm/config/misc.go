@@ -142,25 +142,25 @@ func selectPlugin(reader *bufio.Reader, pluginType string, availableNames []stri
 	return availableNames[0]
 }
 
-// configureStorage interactively configures storage
-func configureStorage(reader *bufio.Reader) (string, map[string]interface{}, error) {
-	fmt.Println("\n=== Configure Storage ===")
+// configurePlugin interactively configures a plugin
+func configurePlugin(reader *bufio.Reader, pluginType string, getNames func() []string, getFields func(string) []util.ConfigField) (string, map[string]interface{}, error) {
+	fmt.Printf("\n=== Configure %s ===\n", pluginType)
 
-	// Select storage type
-	storageTypes := storageplugin.RegisteredNames()
-	if len(storageTypes) == 0 {
-		return "", nil, fmt.Errorf("no storage types available")
+	// Select plugin type
+	names := getNames()
+	if len(names) == 0 {
+		return "", nil, fmt.Errorf("no %s types available", pluginType)
 	}
-	storageType := selectPlugin(reader, "storage", storageTypes)
+	selectedType := selectPlugin(reader, pluginType, names)
 
-	// Get config fields for selected type (without initializing, just to get fields)
-	fields := storageplugin.GetFields(storageType)
+	// Get config fields for selected type
+	fields := getFields(selectedType)
 	if fields == nil {
-		return "", nil, fmt.Errorf("failed to get storage plugin fields for type: %s", storageType)
+		return "", nil, fmt.Errorf("failed to get %s plugin fields for type: %s", pluginType, selectedType)
 	}
 
 	config := make(map[string]interface{})
-	fmt.Printf("\nConfiguring %s storage:\n", storageType)
+	fmt.Printf("\nConfiguring %s %s:\n", selectedType, pluginType)
 	for _, field := range fields {
 		prompt := fmt.Sprintf("  %s", field.Key)
 		if !field.Required {
@@ -187,55 +187,17 @@ func configureStorage(reader *bufio.Reader) (string, map[string]interface{}, err
 		}
 	}
 
-	return storageType, config, nil
+	return selectedType, config, nil
+}
+
+// configureStorage interactively configures storage
+func configureStorage(reader *bufio.Reader) (string, map[string]interface{}, error) {
+	return configurePlugin(reader, "Storage", storageplugin.RegisteredNames, storageplugin.GetFields)
 }
 
 // configureSource interactively configures source
 func configureSource(reader *bufio.Reader) (string, map[string]interface{}, error) {
-	fmt.Println("\n=== Configure Model Source ===")
-
-	// Select source type
-	sourceTypes := sourceplugin.RegisteredNames()
-	if len(sourceTypes) == 0 {
-		return "", nil, fmt.Errorf("no source types available")
-	}
-	sourceType := selectPlugin(reader, "source", sourceTypes)
-
-	// Get config fields for selected type (without initializing, just to get fields)
-	fields := sourceplugin.GetFields(sourceType)
-	if fields == nil {
-		return "", nil, fmt.Errorf("failed to get source plugin fields for type: %s", sourceType)
-	}
-
-	config := make(map[string]interface{})
-	fmt.Printf("\nConfiguring %s source:\n", sourceType)
-	for _, field := range fields {
-		prompt := fmt.Sprintf("  %s", field.Key)
-		if !field.Required {
-			prompt += " [optional]"
-		}
-		prompt += fmt.Sprintf(" (%s)", field.Description)
-
-		var value string
-		if field.Masked != util.MaskNone {
-			value = util.ReadMaskedLine(prompt, "", field.Masked)
-		} else {
-			value = util.ReadLine(reader, prompt, "")
-		}
-		for value == "" && field.Required {
-			fmt.Println("  This field is required, please enter a value")
-			if field.Masked != util.MaskNone {
-				value = util.ReadMaskedLine(prompt, "", field.Masked)
-			} else {
-				value = util.ReadLine(reader, prompt, "")
-			}
-		}
-		if value != "" {
-			config[field.Key] = value
-		}
-	}
-
-	return sourceType, config, nil
+	return configurePlugin(reader, "Model Source", sourceplugin.RegisteredNames, sourceplugin.GetFields)
 }
 
 func newInitCmd() *cobra.Command {
@@ -281,8 +243,8 @@ func newInitCmd() *cobra.Command {
 				CurrentSource:  sourceType,
 			}
 
-			cfg.AddStorage(storageType, storageType, storageConfig)
-			cfg.AddSource(sourceType, sourceType, sourceConfig)
+			_ = cfg.AddStorage(storageType, storageType, storageConfig)
+			_ = cfg.AddSource(sourceType, sourceType, sourceConfig)
 
 			if err := cfg.Save(); err != nil {
 				return fmt.Errorf("failed to save configuration: %w", err)

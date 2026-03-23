@@ -30,23 +30,23 @@ import (
 
 func listPrintTable(cmd *cobra.Command, services []serviceInfo, showNamespace bool) {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
-	defer w.Flush()
+	defer func() { _ = w.Flush() }()
 
 	if len(services) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No resources found.")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No resources found.")
 		return
 	}
 
 	if showNamespace {
-		fmt.Fprintln(w, "NAME\tNAMESPACE\tMODEL\tENGINE\tMODE\tREVISION\tREPLICAS\tSTATUS")
+		_, _ = fmt.Fprintln(w, "NAME\tNAMESPACE\tMODEL\tENGINE\tMODE\tREVISION\tREPLICAS\tSTATUS")
 		for _, svc := range services {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 				svc.Name, svc.Namespace, svc.Model, svc.Engine, svc.Mode, svc.Revision, svc.Replicas, svc.Status)
 		}
 	} else {
-		fmt.Fprintln(w, "NAME\tMODEL\tENGINE\tMODE\tREVISION\tREPLICAS\tSTATUS")
+		_, _ = fmt.Fprintln(w, "NAME\tMODEL\tENGINE\tMODE\tREVISION\tREPLICAS\tSTATUS")
 		for _, svc := range services {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 				svc.Name, svc.Model, svc.Engine, svc.Mode, svc.Revision, svc.Replicas, svc.Status)
 		}
 	}

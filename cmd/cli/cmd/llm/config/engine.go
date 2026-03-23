@@ -86,9 +86,9 @@ func newGetEnginesCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "TYPE")
+			_, _ = fmt.Fprintln(w, "TYPE")
 			for _, e := range cfg.Engines {
-				fmt.Fprintf(w, "%s\n", e.Type)
+				_, _ = fmt.Fprintf(w, "%s\n", e.Type)
 			}
 			return w.Flush()
 		},

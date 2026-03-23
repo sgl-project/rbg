@@ -101,13 +101,13 @@ func newGetStoragesCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tTYPE\tCURRENT")
+			_, _ = fmt.Fprintln(w, "NAME\tTYPE\tCURRENT")
 			for _, s := range cfg.Storages {
 				current := ""
 				if s.Name == cfg.CurrentStorage {
 					current = "*"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, s.Type, current)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, s.Type, current)
 			}
 			return w.Flush()
 		},

@@ -26,20 +26,17 @@ func TestInt64Ptr(t *testing.T) {
 // --- buildListModelsJob ---
 
 func TestBuildListModelsJob_NamePrefix(t *testing.T) {
-	job, err := buildListModelsJob("/models")
-	require.NoError(t, err)
+	job := buildListModelsJob("/models")
 	assert.True(t, strings.HasPrefix(job.Name, "list-models-"), "job name should start with list-models-")
 }
 
 func TestBuildListModelsJob_Labels(t *testing.T) {
-	job, err := buildListModelsJob("/models")
-	require.NoError(t, err)
+	job := buildListModelsJob("/models")
 	assert.Equal(t, "true", job.Labels["rbg-list-job"])
 }
 
 func TestBuildListModelsJob_ContainerSpec(t *testing.T) {
-	job, err := buildListModelsJob("/data/models")
-	require.NoError(t, err)
+	job := buildListModelsJob("/data/models")
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	c := job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "scanner", c.Name)
@@ -48,22 +45,19 @@ func TestBuildListModelsJob_ContainerSpec(t *testing.T) {
 }
 
 func TestBuildListModelsJob_ScriptContainsMountPath(t *testing.T) {
-	job, err := buildListModelsJob("/custom/path")
-	require.NoError(t, err)
+	job := buildListModelsJob("/custom/path")
 	args := job.Spec.Template.Spec.Containers[0].Args
 	require.Len(t, args, 1)
 	assert.Contains(t, args[0], "/custom/path")
 }
 
 func TestBuildListModelsJob_RestartPolicy(t *testing.T) {
-	job, err := buildListModelsJob("/models")
-	require.NoError(t, err)
+	job := buildListModelsJob("/models")
 	assert.Equal(t, corev1.RestartPolicyNever, job.Spec.Template.Spec.RestartPolicy)
 }
 
 func TestBuildListModelsJob_Limits(t *testing.T) {
-	job, err := buildListModelsJob("/models")
-	require.NoError(t, err)
+	job := buildListModelsJob("/models")
 	assert.Equal(t, int32(2), *job.Spec.BackoffLimit)
 	assert.Equal(t, int64(300), *job.Spec.ActiveDeadlineSeconds)
 	assert.Equal(t, int32(60), *job.Spec.TTLSecondsAfterFinished)

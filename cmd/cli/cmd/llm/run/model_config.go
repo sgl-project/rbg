@@ -118,7 +118,7 @@ func FindModeConfig(mc *ModelConfig, mode string) (*ModeConfig, error) {
 		return &mc.Modes[0], nil
 	}
 
-	var modeNames []string
+	modeNames := make([]string, 0, len(mc.Modes))
 	for i := range mc.Modes {
 		m := &mc.Modes[i]
 		if m.Name == mode {

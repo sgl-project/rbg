@@ -29,8 +29,10 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
+const ossStorageType = "oss"
+
 func init() {
-	Register("oss", func() Plugin {
+	Register(ossStorageType, func() Plugin {
 		return &OSSStorage{}
 	})
 }
@@ -50,7 +52,7 @@ type OSSStorage struct {
 
 // Name returns the plugin name
 func (o *OSSStorage) Name() string {
-	return "oss"
+	return ossStorageType
 }
 
 // ConfigFields returns the config fields this plugin accepts
@@ -229,7 +231,7 @@ func (o *OSSStorage) createOrVerifyPV(ctx context.Context, c client.Client, pvNa
 				},
 			},
 			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
-			StorageClassName:              "oss",
+			StorageClassName:              ossStorageType,
 			VolumeMode:                    func() *corev1.PersistentVolumeMode { v := corev1.PersistentVolumeFilesystem; return &v }(),
 		},
 	}
@@ -293,7 +295,7 @@ func (o *OSSStorage) createOrVerifyPVC(ctx context.Context, c client.Client, pvc
 					"alicloud-pvname": pvName,
 				},
 			},
-			StorageClassName: func() *string { s := "oss"; return &s }(),
+			StorageClassName: func() *string { s := ossStorageType; return &s }(),
 			VolumeMode:       func() *corev1.PersistentVolumeMode { v := corev1.PersistentVolumeFilesystem; return &v }(),
 			VolumeName:       pvName,
 		},

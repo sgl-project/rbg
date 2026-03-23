@@ -30,6 +30,8 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
 
+const unknownValue = "unknown"
+
 // serviceInfo represents a single LLM service entry for display
 type serviceInfo struct {
 	Name      string
@@ -128,16 +130,16 @@ func extractServiceInfos(rbgList *workloadsv1alpha2.RoleBasedGroupList) []servic
 				info.Mode = meta.Mode
 				info.Revision = meta.Revision
 			} else {
-				info.Model = "unknown"
-				info.Engine = "unknown"
-				info.Mode = "unknown"
-				info.Revision = "unknown"
+				info.Model = unknownValue
+				info.Engine = unknownValue
+				info.Mode = unknownValue
+				info.Revision = unknownValue
 			}
 		} else {
-			info.Model = "unknown"
-			info.Engine = "unknown"
-			info.Mode = "unknown"
-			info.Revision = "unknown"
+			info.Model = unknownValue
+			info.Engine = unknownValue
+			info.Mode = unknownValue
+			info.Revision = unknownValue
 		}
 
 		if len(rbg.Spec.Roles) > 0 && rbg.Spec.Roles[0].Replicas != nil {
@@ -154,5 +156,5 @@ func extractRBGStatus(rbg *workloadsv1alpha2.RoleBasedGroup) string {
 	if len(rbg.Status.Conditions) == 0 {
 		return "Pending"
 	}
-	return string(rbg.Status.Conditions[0].Type)
+	return rbg.Status.Conditions[0].Type
 }

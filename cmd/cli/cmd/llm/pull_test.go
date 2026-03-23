@@ -50,23 +50,20 @@ func TestBuildPullJob_NameContainsModelID(t *testing.T) {
 			Containers: []corev1.Container{{Name: "dl"}},
 		},
 	}
-	job, err := buildPullJob("org/llama", tpl)
-	require.NoError(t, err)
+	job := buildPullJob("org/llama", tpl)
 	assert.True(t, strings.HasPrefix(job.Name, "pull-org-llama-"), "job name should contain sanitized model ID")
 }
 
 func TestBuildPullJob_Labels(t *testing.T) {
 	tpl := &corev1.PodTemplateSpec{}
-	job, err := buildPullJob("org/model", tpl)
-	require.NoError(t, err)
+	job := buildPullJob("org/model", tpl)
 	assert.Equal(t, "true", job.Labels["rbg-pull-job"])
 	assert.Equal(t, "org-model", job.Labels["rbg-model-id"])
 }
 
 func TestBuildPullJob_Limits(t *testing.T) {
 	tpl := &corev1.PodTemplateSpec{}
-	job, err := buildPullJob("m", tpl)
-	require.NoError(t, err)
+	job := buildPullJob("m", tpl)
 	assert.Equal(t, int32(3), *job.Spec.BackoffLimit)
 	assert.Equal(t, int64(7200), *job.Spec.ActiveDeadlineSeconds)
 	assert.Equal(t, int32(86400), *job.Spec.TTLSecondsAfterFinished)
@@ -80,8 +77,7 @@ func TestBuildPullJob_InheritsSpec(t *testing.T) {
 			},
 		},
 	}
-	job, err := buildPullJob("org/model", tpl)
-	require.NoError(t, err)
+	job := buildPullJob("org/model", tpl)
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)
 	assert.Equal(t, "downloader", job.Spec.Template.Spec.Containers[0].Name)
 }

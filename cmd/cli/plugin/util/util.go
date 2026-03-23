@@ -84,7 +84,7 @@ func ReadLine(reader *bufio.Reader, prompt string, defaultValue string) string {
 	} else {
 		fmt.Printf("%s: ", prompt)
 	}
-	fmt.Fprint(os.Stdout) // Flush the prompt
+	_ = os.Stdout.Sync() // Flush the prompt
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		// EOF or error, return default
@@ -105,7 +105,7 @@ func ReadMaskedLine(prompt string, defaultValue string, maskType MaskType) strin
 	} else {
 		fmt.Printf("%s: ", prompt)
 	}
-	fmt.Fprint(os.Stdout) // Flush the prompt
+	_ = os.Stdout.Sync() // Flush the prompt
 
 	// Check if stdin is a terminal
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -127,7 +127,7 @@ func ReadMaskedLine(prompt string, defaultValue string, maskType MaskType) strin
 	if err != nil {
 		return defaultValue
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
 	var input strings.Builder
 	buf := make([]byte, 1)
@@ -164,7 +164,7 @@ func ReadMaskedLine(prompt string, defaultValue string, maskType MaskType) strin
 		case 3: // Ctrl+C
 			fmt.Print("\r\n")
 			// Restore terminal state before exit
-			term.Restore(int(os.Stdin.Fd()), oldState)
+			_ = term.Restore(int(os.Stdin.Fd()), oldState)
 			// Exit with SIGINT exit code (128 + signal number)
 			os.Exit(128 + int(syscall.SIGINT))
 		default:

@@ -152,10 +152,7 @@ func newPullCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			}
 
 			// Create the Job
-			job, err := buildPullJob(modelID, podTemplate)
-			if err != nil {
-				return fmt.Errorf("failed to build job: %w", err)
-			}
+			job := buildPullJob(modelID, podTemplate)
 
 			// Create k8s clientset
 			clientset, err := util.GetK8SClientSet(cf)
@@ -201,7 +198,7 @@ func newPullCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 }
 
 // buildPullJob creates a Job from the pod template
-func buildPullJob(modelID string, podTemplate *corev1.PodTemplateSpec) (*batchv1.Job, error) {
+func buildPullJob(modelID string, podTemplate *corev1.PodTemplateSpec) *batchv1.Job {
 	timestamp := time.Now().Unix()
 	sanitizedID := sanitizeModelID(modelID)
 	jobName := fmt.Sprintf("pull-%s-%d", sanitizedID, timestamp)
@@ -232,7 +229,7 @@ func buildPullJob(modelID string, podTemplate *corev1.PodTemplateSpec) (*batchv1
 				Spec: podTemplate.Spec,
 			},
 		},
-	}, nil
+	}
 }
 
 // waitForJobCompletionWithProgress waits for job completion with animated progress indicator

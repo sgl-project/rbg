@@ -89,7 +89,7 @@ func newDeleteCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				for i := range rbgList.Items {
 					rbg := &rbgList.Items[i]
 					if err := client.WorkloadsV1alpha2().RoleBasedGroups(rbg.Namespace).Delete(ctx, rbg.Name, metav1.DeleteOptions{}); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "error: failed to delete %s/%s: %v\n", rbg.Namespace, rbg.Name, err)
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error: failed to delete %s/%s: %v\n", rbg.Namespace, rbg.Name, err)
 						errCount++
 					} else {
 						fmt.Printf("rolebasedgroup.workloads.x-k8s.io \"%s\" deleted\n", rbg.Name)
@@ -109,7 +109,7 @@ func newDeleteCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 					ns = util.GetNamespace(cf)
 				}
 				if err := client.WorkloadsV1alpha2().RoleBasedGroups(ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "error: failed to delete %s/%s: %v\n", ns, name, err)
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error: failed to delete %s/%s: %v\n", ns, name, err)
 					errCount++
 				} else {
 					fmt.Printf("rolebasedgroups.workloads.x-k8s.io \"%s\" deleted\n", name)

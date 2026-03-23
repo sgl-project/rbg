@@ -100,12 +100,12 @@ func TestChatClient_Streaming_Success(t *testing.T) {
 				},
 			}
 			data, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 		}
-		fmt.Fprintln(w, "data: [DONE]")
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
 	}))
 	defer srv.Close()
 
@@ -132,15 +132,15 @@ func TestChatClient_Streaming_HTTPError(t *testing.T) {
 func TestChatClient_Streaming_SkipsNonDataLines(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintln(w, ": keep-alive") // comment line — must be skipped
-		fmt.Fprintln(w, "event: delta") // event line — must be skipped
+		_, _ = fmt.Fprintln(w, ": keep-alive") // comment line — must be skipped
+		_, _ = fmt.Fprintln(w, "event: delta") // event line — must be skipped
 		data, _ := json.Marshal(map[string]interface{}{
 			"choices": []map[string]interface{}{
 				{"delta": map[string]string{"content": "ok"}},
 			},
 		})
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		fmt.Fprintln(w, "data: [DONE]")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
 	}))
 	defer srv.Close()
 
@@ -283,7 +283,7 @@ func TestRunNonInteractive_NoStream(t *testing.T) {
 
 	err := runNonInteractive(client, nil, "answer?", false)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(r)

@@ -76,7 +76,7 @@ func (c *chatClient) sendNonStreaming(history []chatMessage) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("HTTP request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -114,7 +114,7 @@ func (c *chatClient) sendStreaming(history []chatMessage, out io.Writer) (string
 	if err != nil {
 		return "", fmt.Errorf("HTTP request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -146,7 +146,7 @@ func (c *chatClient) sendStreaming(history []chatMessage, out io.Writer) (string
 		if len(chunk.Choices) > 0 {
 			token := chunk.Choices[0].Delta.Content
 			sb.WriteString(token)
-			fmt.Fprint(out, token)
+			_, _ = fmt.Fprint(out, token)
 		}
 	}
 	if err := scanner.Err(); err != nil {

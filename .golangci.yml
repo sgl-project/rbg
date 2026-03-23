@@ -15,6 +15,9 @@ issues:
     - path: "test/*"
       linters:
         - dupl
+    - path: "cmd/cli/cmd/llm/config/*"
+      linters:
+        - dupl
 
 linters:
   disable-all: true

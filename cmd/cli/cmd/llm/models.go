@@ -92,10 +92,7 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 			}
 
 			// Create a job to scan storage and list models
-			job, err := buildListModelsJob(storagePlugin.MountPath())
-			if err != nil {
-				return fmt.Errorf("failed to build list models job: %w", err)
-			}
+			job := buildListModelsJob(storagePlugin.MountPath())
 
 			// Mount storage to the job
 			podTemplate := &job.Spec.Template
@@ -145,7 +142,7 @@ func newModelsCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 }
 
 // buildListModelsJob creates a Job to scan storage and list models
-func buildListModelsJob(mountPath string) (*batchv1.Job, error) {
+func buildListModelsJob(mountPath string) *batchv1.Job {
 	timestamp := time.Now().Unix()
 	jobName := fmt.Sprintf("list-models-%d", timestamp)
 
@@ -231,7 +228,7 @@ cat "$OUTPUT_FILE"
 				},
 			},
 		},
-	}, nil
+	}
 }
 
 // getJobOutput retrieves the output from the job's pod
