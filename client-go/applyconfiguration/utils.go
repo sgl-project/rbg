@@ -109,8 +109,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.RoleBasedGroupSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupStatus"):
 		return &workloadsv1alpha1.RoleBasedGroupStatusApplyConfiguration{}
-	case v1alpha1.SchemeGroupVersion.WithKind("RoleBasedGroupTemplateSpec"):
-		return &workloadsv1alpha1.RoleBasedGroupTemplateSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleSpec"):
 		return &workloadsv1alpha1.RoleSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RoleStatus"):
