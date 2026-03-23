@@ -42,7 +42,7 @@ func (h *HuggingFaceSource) Name() string {
 // ConfigFields returns the config fields this plugin accepts
 func (h *HuggingFaceSource) ConfigFields() []util.ConfigField {
 	return []util.ConfigField{
-		{Key: "token", Description: "HuggingFace API token (required for private models)", Required: false},
+		{Key: "token", Description: "HuggingFace API token (required for private models)", Required: false, Masked: util.MaskAll},
 		{Key: "tokenSecret", Description: "Name of Kubernetes Secret containing HF_TOKEN (takes precedence over token)", Required: false},
 		{Key: "mirror", Description: "mirror URL for HuggingFace (e.g. https://hf-mirror.com)", Required: false},
 	}

@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/config"
 	sourceplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/source"
 	storageplugin "sigs.k8s.io/rbgs/cmd/cli/plugin/storage"
+	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
 func newViewCmd() *cobra.Command {
@@ -48,8 +49,20 @@ func newViewCmd() *cobra.Command {
 					fmt.Printf("  Type: %s\n", s.Type)
 					if len(s.Config) > 0 {
 						fmt.Println("  Config:")
+						// Get field definitions to check for masked fields
+						fields := storageplugin.GetFields(s.Type)
+						maskedFields := make(map[string]bool)
+						for _, f := range fields {
+							if f.Masked == util.MaskPrevious || f.Masked == util.MaskAll {
+								maskedFields[f.Key] = true
+							}
+						}
 						for k, v := range s.Config {
-							fmt.Printf("    %s: %v\n", k, v)
+							if maskedFields[k] {
+								fmt.Printf("    %s: %s\n", k, util.MaskedDisplay())
+							} else {
+								fmt.Printf("    %s: %v\n", k, v)
+							}
 						}
 					}
 				}
@@ -64,8 +77,20 @@ func newViewCmd() *cobra.Command {
 					fmt.Printf("  Type: %s\n", s.Type)
 					if len(s.Config) > 0 {
 						fmt.Println("  Config:")
+						// Get field definitions to check for masked fields
+						fields := sourceplugin.GetFields(s.Type)
+						maskedFields := make(map[string]bool)
+						for _, f := range fields {
+							if f.Masked == util.MaskPrevious || f.Masked == util.MaskAll {
+								maskedFields[f.Key] = true
+							}
+						}
 						for k, v := range s.Config {
-							fmt.Printf("    %s: %v\n", k, v)
+							if maskedFields[k] {
+								fmt.Printf("    %s: %s\n", k, util.MaskedDisplay())
+							} else {
+								fmt.Printf("    %s: %v\n", k, v)
+							}
 						}
 					}
 				}
@@ -77,26 +102,6 @@ func newViewCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// readLine reads a line from stdin with prompt
-func readLine(reader *bufio.Reader, prompt string, defaultValue string) string {
-	if defaultValue != "" {
-		fmt.Printf("%s [%s]: ", prompt, defaultValue)
-	} else {
-		fmt.Printf("%s: ", prompt)
-	}
-	fmt.Fprint(os.Stdout) // Flush the prompt
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		// EOF or error, return default
-		return defaultValue
-	}
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return defaultValue
-	}
-	return line
 }
 
 // selectPlugin prompts user to select a plugin type from available options
@@ -154,7 +159,6 @@ func configureStorage(reader *bufio.Reader) (string, map[string]interface{}, err
 		return "", nil, fmt.Errorf("failed to get storage plugin fields for type: %s", storageType)
 	}
 
-	// TODO: Mask sensitive fields, like oss akSecret
 	config := make(map[string]interface{})
 	fmt.Printf("\nConfiguring %s storage:\n", storageType)
 	for _, field := range fields {
@@ -163,10 +167,20 @@ func configureStorage(reader *bufio.Reader) (string, map[string]interface{}, err
 			prompt += " [optional]"
 		}
 		prompt += fmt.Sprintf(" (%s)", field.Description)
-		value := readLine(reader, prompt, "")
+
+		var value string
+		if field.Masked != util.MaskNone {
+			value = util.ReadMaskedLine(prompt, "", field.Masked)
+		} else {
+			value = util.ReadLine(reader, prompt, "")
+		}
 		for value == "" && field.Required {
 			fmt.Println("  This field is required, please enter a value")
-			value = readLine(reader, prompt, "")
+			if field.Masked != util.MaskNone {
+				value = util.ReadMaskedLine(prompt, "", field.Masked)
+			} else {
+				value = util.ReadLine(reader, prompt, "")
+			}
 		}
 		if value != "" {
 			config[field.Key] = value
@@ -201,10 +215,20 @@ func configureSource(reader *bufio.Reader) (string, map[string]interface{}, erro
 			prompt += " [optional]"
 		}
 		prompt += fmt.Sprintf(" (%s)", field.Description)
-		value := readLine(reader, prompt, "")
+
+		var value string
+		if field.Masked != util.MaskNone {
+			value = util.ReadMaskedLine(prompt, "", field.Masked)
+		} else {
+			value = util.ReadLine(reader, prompt, "")
+		}
 		for value == "" && field.Required {
 			fmt.Println("  This field is required, please enter a value")
-			value = readLine(reader, prompt, "")
+			if field.Masked != util.MaskNone {
+				value = util.ReadMaskedLine(prompt, "", field.Masked)
+			} else {
+				value = util.ReadLine(reader, prompt, "")
+			}
 		}
 		if value != "" {
 			config[field.Key] = value

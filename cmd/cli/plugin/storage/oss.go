@@ -61,7 +61,7 @@ func (o *OSSStorage) ConfigFields() []util.ConfigField {
 		{Key: "bucket", Description: "OSS bucket name", Required: true},
 		{Key: "subpath", Description: "subpath within the bucket", Required: false},
 		{Key: "akId", Description: "Alibaba Cloud AccessKey ID", Required: true},
-		{Key: "akSecret", Description: "Alibaba Cloud AccessKey Secret", Required: true},
+		{Key: "akSecret", Description: "Alibaba Cloud AccessKey Secret", Required: true, Masked: util.MaskAll},
 	}
 }
 
@@ -80,6 +80,9 @@ func (o *OSSStorage) Init(config map[string]interface{}) error {
 	}
 	// subpath is optional
 	o.subpath, _ = config["subpath"].(string)
+	if o.subpath == "" {
+		o.subpath = "/"
+	}
 
 	if o.akId, ok = config["akId"].(string); !ok || o.akId == "" {
 		return fmt.Errorf("akId is required in storage config for oss type")

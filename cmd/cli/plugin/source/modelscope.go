@@ -41,7 +41,7 @@ func (m *ModelScopeSource) Name() string {
 // ConfigFields returns the config fields this plugin accepts
 func (m *ModelScopeSource) ConfigFields() []util.ConfigField {
 	return []util.ConfigField{
-		{Key: "token", Description: "ModelScope API token (required for private models)", Required: false},
+		{Key: "token", Description: "ModelScope API token (required for private models)", Required: false, Masked: util.MaskAll},
 		{Key: "tokenSecret", Description: "Name of Kubernetes Secret containing MODELSCOPE_TOKEN (takes precedence over token)", Required: false},
 	}
 }

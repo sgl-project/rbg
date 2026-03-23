@@ -17,6 +17,7 @@ limitations under the License.
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -29,11 +30,17 @@ import (
 func newAddSourceCmd() *cobra.Command {
 	var sourceType string
 	var configFlags map[string]string
+	var interactive bool
 
 	cmd := &cobra.Command{
 		Use:   "add-source NAME",
 		Short: "Add a source configuration",
-		Args:  cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config add-source NAME [-i]\n\nExample:\n  kubectl rbg llm config add-source my-hf -i")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := config.Load()
@@ -41,9 +48,21 @@ func newAddSourceCmd() *cobra.Command {
 				return err
 			}
 
-			configMap := make(map[string]interface{})
-			for k, v := range configFlags {
-				configMap[k] = v
+			var configMap map[string]interface{}
+
+			if interactive {
+				// Interactive mode
+				reader := bufio.NewReader(os.Stdin)
+				sourceType, configMap, err = configureSource(reader)
+				if err != nil {
+					return err
+				}
+			} else {
+				// Command-line mode
+				configMap = make(map[string]interface{})
+				for k, v := range configFlags {
+					configMap[k] = v
+				}
 			}
 
 			if err := sourceplugin.ValidateConfig(sourceType, configMap); err != nil {
@@ -66,6 +85,7 @@ func newAddSourceCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sourceType, "type", "huggingface", "Source type (huggingface, modelscope)")
 	configFlags = make(map[string]string)
 	cmd.Flags().StringToStringVar(&configFlags, "config", nil, "Source configuration key=value pairs")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Interactive configuration mode")
 
 	return cmd
 }
@@ -98,7 +118,12 @@ func newUseSourceCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use-source NAME",
 		Short: "Set the current source",
-		Args:  cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config use-source NAME\n\nExample:\n  kubectl rbg llm config use-source my-hf")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := config.Load()
@@ -126,7 +151,12 @@ func newSetSourceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set-source NAME",
 		Short: "Update a source configuration",
-		Args:  cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config set-source NAME --config key=value\n\nExample:\n  kubectl rbg llm config set-source my-hf --config token=new-token")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := config.Load()
@@ -162,7 +192,12 @@ func newDeleteSourceCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete-source NAME",
 		Short: "Delete a source configuration",
-		Args:  cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("requires exactly one argument\n\nUsage: kubectl rbg llm config delete-source NAME\n\nExample:\n  kubectl rbg llm config delete-source my-hf")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := config.Load()

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
 func TestNewViewCmd(t *testing.T) {
@@ -73,7 +74,7 @@ func TestReadLine(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			reader := bufio.NewReader(strings.NewReader(tc.input))
-			result := readLine(reader, "prompt", tc.defaultValue)
+			result := util.ReadLine(reader, "prompt", tc.defaultValue)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
@@ -81,7 +82,7 @@ func TestReadLine(t *testing.T) {
 
 func TestReadLine_EOF(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader(""))
-	result := readLine(reader, "prompt", "default")
+	result := util.ReadLine(reader, "prompt", "default")
 	assert.Equal(t, "default", result)
 }
 

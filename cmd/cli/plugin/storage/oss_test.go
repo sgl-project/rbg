@@ -124,7 +124,7 @@ func TestOSSStorage_Init_OK_WithoutSubpath(t *testing.T) {
 	p := &OSSStorage{}
 	err := p.Init(config)
 	require.NoError(t, err)
-	assert.Equal(t, "", p.subpath)
+	assert.Equal(t, "/", p.subpath)
 }
 
 func TestOSSStorage_MountPath(t *testing.T) {
