@@ -1,0 +1,17 @@
+title: Pod Port Allocation
+kep-number: 171
+authors:
+  - "@shangsimou"
+  - "@noobdream2568"
+status: provisional
+creation-date: 2026-03-03
+reviewers:
+  - "@cheyang"
+approvers:
+
+stage: alpha
+
+latest-milestone: "v0.7.0"
+
+milestone:
+  alpha: "v0.7.0"
