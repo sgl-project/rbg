@@ -41,7 +41,7 @@ spec:
                   port: 8080
     - name: mooncake-store
       replicas: 3
-      dependencies: [ "mooncake-master" ]
+      dependencies: ["mooncake-master"]
       annotations:
         instance.rolebasedgroup.workloads.x-k8s.io/pattern: Stateless
       workload:
@@ -81,7 +81,7 @@ spec:
                   memory: "50Gi"
                   rdma/hca: 1
     - name: router
-      dependencies: [ "prefill", "decode" ]
+      dependencies: ["prefill", "decode"]
       replicas: 1
       template:
         spec:
@@ -103,7 +103,7 @@ spec:
                 - "8000"
     - name: prefill
       replicas: 1
-      dependencies: [ "mooncake-master" ]
+      dependencies: ["mooncake-master"]
       template:
         spec:
           volumes:
@@ -182,7 +182,7 @@ spec:
                   name: dshm
     - name: decode
       replicas: 1
-      dependencies: [ "mooncake-master" ]
+      dependencies: ["mooncake-master"]
       template:
         spec:
           volumes:

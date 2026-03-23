@@ -51,6 +51,11 @@ jobs:
           git status --porcelain
           if [ -z "`git status --porcelain`" ]; then echo "Generate validation passed."; else echo "Generate validation failed. Please use 'make generate' to keep generated code latest"; exit 1; fi
 
+      - name: YAML lint check
+        run: |
+          pip install yamllint
+          yamllint -c .yamllint.yml config/ deploy/ examples/
+
       - name: Code check
         run: |
           make fmt vet lint
