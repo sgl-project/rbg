@@ -45,6 +45,12 @@ jobs:
           git status --porcelain
           if [ -z "`git status --porcelain`" ]; then echo "CRD validation passed."; else echo "CRD validation failed. Please use 'make update-crd' to keep CRDs latest"; exit 1; fi      
 
+      - name: Generate validation check
+        run: |
+          make generate
+          git status --porcelain
+          if [ -z "`git status --porcelain`" ]; then echo "Generate validation passed."; else echo "Generate validation failed. Please use 'make generate' to keep generated code latest"; exit 1; fi
+
       - name: Code check
         run: |
           make fmt vet lint
