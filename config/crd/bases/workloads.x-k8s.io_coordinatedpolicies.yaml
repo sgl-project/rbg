@@ -51,6 +51,10 @@ spec:
                   description: CoordinatedPolicyRule defines the coordination policy
                     rule for a set of roles.
                   properties:
+                    name:
+                      description: Name specifies the name of this policy rule.
+                      minLength: 1
+                      type: string
                     roles:
                       description: Roles specifies the names of the roles that this
                         policy applies to.
@@ -113,11 +117,15 @@ spec:
                           type: object
                       type: object
                   required:
+                  - name
                   - roles
                   - strategy
                   type: object
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
             - policies
             type: object

@@ -26,11 +26,18 @@ type CoordinatedPolicySpec struct {
 	// Policies define the coordination policies for roles.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:Required
+	// +listType=map
+	// +listMapKey=name
 	Policies []CoordinatedPolicyRule `json:"policies"`
 }
 
 // CoordinatedPolicyRule defines the coordination policy rule for a set of roles.
 type CoordinatedPolicyRule struct {
+	// Name specifies the name of this policy rule.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
 	// Roles specifies the names of the roles that this policy applies to.
 	// TODO: Add validation to detect conflicts when the same role appears in multiple policies.
 	// +kubebuilder:validation:MinItems=1
