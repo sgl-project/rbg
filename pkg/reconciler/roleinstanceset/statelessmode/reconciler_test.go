@@ -17,6 +17,7 @@ limitations under the License.
 package statelessmode
 
 import (
+	"fmt"
 	"testing"
 
 	apps "k8s.io/api/apps/v1"
@@ -60,6 +61,34 @@ func TestTruncateHistoryKeepsLiveShortHashRevision(t *testing.T) {
 	history := reconciler.controllerHistory.(*fakeStatelessHistory)
 	if len(history.deleted) != 0 {
 		t.Fatalf("deleted revisions = %v, want none", history.deleted)
+	}
+}
+
+func TestTruncateHistoryUsesDefaultLimitWhenRevisionHistoryLimitIsNil(t *testing.T) {
+	set := &workloadsv1alpha2.RoleInstanceSet{}
+	revisions := make([]*apps.ControllerRevision, 0, 13)
+	for i := 1; i <= 13; i++ {
+		revisions = append(revisions, newStatelessRevision(fmt.Sprintf("instanceset-rev-%d", i), int64(i)))
+	}
+
+	reconciler := &ReconcileInstanceSet{
+		controllerHistory: &fakeStatelessHistory{},
+	}
+
+	err := reconciler.truncateHistory(set, nil, revisions, revisions[11], revisions[12])
+	if err != nil {
+		t.Fatalf("truncateHistory() error = %v", err)
+	}
+
+	history := reconciler.controllerHistory.(*fakeStatelessHistory)
+	want := []string{"instanceset-rev-1"}
+	if len(history.deleted) != len(want) {
+		t.Fatalf("deleted revisions = %v, want %v", history.deleted, want)
+	}
+	for i := range want {
+		if history.deleted[i] != want[i] {
+			t.Fatalf("deleted[%d] = %q, want %q", i, history.deleted[i], want[i])
+		}
 	}
 }
 

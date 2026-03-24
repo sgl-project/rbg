@@ -125,6 +125,50 @@ func TestTruncateControllerRevisionsHandlesNilCurrentAndUpdate(t *testing.T) {
 	}
 }
 
+func TestTruncateControllerRevisionsReturnsErrorOnNegativeHistoryLimit(t *testing.T) {
+	revisions := []*apps.ControllerRevision{
+		newRevision("rev-1", 1),
+	}
+
+	err := TruncateControllerRevisions(
+		revisions,
+		nil,
+		nil,
+		-1,
+		nil,
+		func(*apps.ControllerRevision) error {
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected error for negative historyLimit")
+	}
+	if err.Error() != "historyLimit must be non-negative: -1" {
+		t.Fatalf("error = %q, want %q", err.Error(), "historyLimit must be non-negative: -1")
+	}
+}
+
+func TestTruncateControllerRevisionsReturnsErrorOnNilDeleteRevision(t *testing.T) {
+	revisions := []*apps.ControllerRevision{
+		newRevision("rev-1", 1),
+	}
+
+	err := TruncateControllerRevisions(
+		revisions,
+		nil,
+		nil,
+		0,
+		nil,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected error for nil deleteRevision")
+	}
+	if err.Error() != "deleteRevision must not be nil" {
+		t.Fatalf("error = %q, want %q", err.Error(), "deleteRevision must not be nil")
+	}
+}
+
 func newRevision(name string, revision int64) *apps.ControllerRevision {
 	return &apps.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{Name: name},

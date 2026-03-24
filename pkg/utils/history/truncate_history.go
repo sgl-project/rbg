@@ -16,7 +16,11 @@ limitations under the License.
 
 package history
 
-import apps "k8s.io/api/apps/v1"
+import (
+	"fmt"
+
+	apps "k8s.io/api/apps/v1"
+)
 
 // TruncateControllerRevisions deletes the oldest non-live revisions until the
 // number of retained non-live revisions is within historyLimit.
@@ -30,6 +34,13 @@ func TruncateControllerRevisions(
 	isRevisionInUse func(string) bool,
 	deleteRevision func(*apps.ControllerRevision) error,
 ) error {
+	if historyLimit < 0 {
+		return fmt.Errorf("historyLimit must be non-negative: %d", historyLimit)
+	}
+	if deleteRevision == nil {
+		return fmt.Errorf("deleteRevision must not be nil")
+	}
+
 	nonLiveRevisions := make([]*apps.ControllerRevision, 0, len(revisions))
 
 	for i := range revisions {
