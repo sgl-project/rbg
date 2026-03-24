@@ -24,6 +24,6 @@ spec:
             containers:
               - name: nginx
                 image: nginx:latest
-                command: [ "/bin/sh", "-c", "sleep 100d" ]
+                command: ["/bin/sh", "-c", "sleep 100d"]
                 ports:
                   - containerPort: 8080

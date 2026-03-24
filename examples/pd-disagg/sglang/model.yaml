@@ -14,7 +14,7 @@ metadata:
     alicloud-pvname: llm-model
 spec:
   capacity:
-    storage: 30Gi 
+    storage: 30Gi
   accessModes:
     - ReadOnlyMany
   persistentVolumeReclaimPolicy: Retain

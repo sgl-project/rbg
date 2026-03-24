@@ -55,8 +55,8 @@ spec:
             - command:
                 - sh
                 - -c
-                - >- 
-                  python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3 --tp-size 1 
+                - >-
+                  python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3 --tp-size 1
                   --skip-tokenizer-init --disaggregation-mode prefill --disaggregation-transfer-backend nixl
               env:
                 - name: DYNAMO_PORT

@@ -27,5 +27,3 @@ spec:
                 image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                 ports:
                   - containerPort: 8080
-
-

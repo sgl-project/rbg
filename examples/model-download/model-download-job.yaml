@@ -10,18 +10,18 @@ metadata:
   namespace: default
   name: model-download-role
 rules:
-  - apiGroups: [ "" ]
-    resources: [ "secrets" ]
-    resourceNames: [ "model-download-oss-secret" ]
-    verbs: [ "get","patch" ]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["model-download-oss-secret"]
+    verbs: ["get", "patch"]
   # The specific name of a Secret is not known during the authorization check for its creation.
   # Therefore, specifying resourceName in an access control policy will have no effect for 'create' operations.
-  - apiGroups: [ "" ]
-    resources: [ "secrets" ]
-    verbs: [ "create" ]
-  - apiGroups: [ "data.fluid.io" ]
-    resources: [ "jindoruntimes","datasets" ]
-    verbs: [ "create","get","patch" ]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: ["data.fluid.io"]
+    resources: ["jindoruntimes", "datasets"]
+    verbs: ["create", "get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

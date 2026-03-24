@@ -66,7 +66,10 @@ spec:
           command:
           - sh
           - -c
-          - python3 -m sglang.launch_server --model-path /models/Qwen3-32B/ --enable-metrics --disaggregation-mode prefill --port 8000 --disaggregation-bootstrap-port 34000 --host 0.0.0.0 --enable-torch-compile --tp-size 2 
+          - >-
+            python3 -m sglang.launch_server --model-path /models/Qwen3-32B/ --enable-metrics
+            --disaggregation-mode prefill --port 8000 --disaggregation-bootstrap-port 34000
+            --host 0.0.0.0 --enable-torch-compile --tp-size 2
           ports:
           - containerPort: 8000
           - containerPort: 34000
@@ -128,7 +131,10 @@ spec:
           command:
           - sh
           - -c
-          - python3 -m sglang.launch_server --model-path /models/Qwen3-32B/ --enable-metrics --disaggregation-mode decode --port 8000 --host 0.0.0.0 --mem-fraction-static 0.9 --tp-size 2 
+          - >-
+            python3 -m sglang.launch_server --model-path /models/Qwen3-32B/
+            --enable-metrics --disaggregation-mode decode --port 8000 --host 0.0.0.0
+            --mem-fraction-static 0.9 --tp-size 2
           ports:
           - containerPort: 8000
           readinessProbe:

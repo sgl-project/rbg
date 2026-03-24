@@ -6,7 +6,7 @@ spec:
   roles:
     - name: leader
       replicas: 1
-      workload: { }
+      workload: {}
       template:
         spec:
           containers:
@@ -17,7 +17,7 @@ spec:
 
     - name: worker
       replicas: 3
-      dependencies: [ "leader" ] # Specify the startup order of roles; worker roles are created only after the leader role is ready.
+      dependencies: ["leader"] # Specify the startup order of roles; worker roles are created only after the leader role is ready.
       workload:
         apiVersion: apps/v1
         kind: Deployment
@@ -28,4 +28,3 @@ spec:
               image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
               ports:
                 - containerPort: 8080
-
