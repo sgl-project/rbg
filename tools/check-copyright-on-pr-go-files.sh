@@ -56,7 +56,7 @@ fi
 MERGE_BASE="$(git merge-base HEAD "$BASE_REF")"
 
 mapfile -d '' GO_FILES < <(
-  git diff --name-only -z --diff-filter=AM "$MERGE_BASE"...HEAD -- '*.go'
+  git diff --name-only -z --diff-filter=AM "$MERGE_BASE"...HEAD -- '*.go' ':(exclude)vendor/'
 )
 
 if [[ ${#GO_FILES[@]} -eq 0 ]]; then
