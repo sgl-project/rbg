@@ -6,7 +6,7 @@ spec:
   roles:
     - name: leader
       replicas: 1
-      workload: { }
+      workload: {}
       template:
         spec:
           containers:
