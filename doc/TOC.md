@@ -30,8 +30,8 @@
       - [Others](../examples/multi-nodes/vllm.yaml)
 
     - PD-Disagg
-      - [sglang](../examples/inference/pd-disagg/sglang/sgl.md)
-      - [Others](../examples/inference/pd-disagg/dynamo/README.md)
+      - [SGLang PD-Disagg](../examples/inference/)
+      - [Others](../examples/inference/others/)
 
   - Advanced Features
     - Multi-roles
