@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -126,7 +127,7 @@ Examples:
 
 			// Get mount path and construct model path
 			mountPath := storagePlugin.MountPath()
-			modelPath := mountPath + "/" + sanitizeModelID(modelID) + "/" + sanitizeModelID(revision)
+			modelPath := filepath.Join(mountPath, sanitizeModelID(modelID), sanitizeModelID(revision))
 
 			// Get namespace
 			ns := util.GetNamespace(cf)

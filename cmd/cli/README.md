@@ -25,7 +25,7 @@ This will guide you through configuring:
 Download a model to storage:
 
 ```bash
-kubectl rbg llm run pull Qwen/Qwen3.5-0.8B
+kubectl rbg llm pull Qwen/Qwen3.5-0.8B
 ```
 
 ### 3. Run an LLM Service

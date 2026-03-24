@@ -19,7 +19,7 @@ package run
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 
 	"sigs.k8s.io/yaml"
 )
@@ -91,7 +91,7 @@ func FindModelConfig(models []ModelConfig, modelID string) (*ModelConfig, error)
 			defaultMatch = mc
 			continue
 		}
-		if matched, _ := filepath.Match(mc.ID, modelID); matched {
+		if matched, _ := path.Match(mc.ID, modelID); matched {
 			if wildcardMatch == nil {
 				wildcardMatch = mc
 			}

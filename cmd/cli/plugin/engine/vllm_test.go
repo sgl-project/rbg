@@ -59,9 +59,6 @@ func TestVLLMEngine_GenerateTemplate(t *testing.T) {
 	require.Len(t, c.Ports, 1)
 	assert.Equal(t, int32(8000), c.Ports[0].ContainerPort)
 	assert.Equal(t, "http", c.Ports[0].Name)
-
-	_, hasGPU := c.Resources.Limits["nvidia.com/gpu"]
-	assert.True(t, hasGPU)
 }
 
 func TestGet_VLLM_InitAndReturn(t *testing.T) {

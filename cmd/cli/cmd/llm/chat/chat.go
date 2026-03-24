@@ -27,6 +27,8 @@ import (
 	"sync"
 	"time"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -34,10 +36,14 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	"sigs.k8s.io/rbgs/api/workloads/constants"
 	llmmeta "sigs.k8s.io/rbgs/cmd/cli/cmd/llm/metadata"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
+
+func init() {
+	// Seed the random number generator for non-cryptographic use
+	rand.Seed(time.Now().UnixNano())
+}
 
 // spinner writes an animated thinking indicator to stderr while a goroutine is
 // running. Call stop() to clear the line and unblock.
@@ -309,8 +315,8 @@ func runREPL(client *chatClient, history []chatMessage, stream bool, rl lineRead
 		} else {
 			// Non-streaming: show a spinner while the model is thinking.
 			s := startSpinner("Thinking…")
-			defer s.stopSpinner()
 			reply, rerr = client.sendNonStreaming(history)
+			s.stopSpinner()
 			if rerr == nil {
 				_, _ = fmt.Fprint(out, reply)
 			}

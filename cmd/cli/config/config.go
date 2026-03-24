@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -61,7 +62,17 @@ type EngineConfig struct {
 	Config map[string]interface{} `yaml:"config,omitempty"`
 }
 
-var instance *Config
+var (
+	instance     *Config
+	instanceLock sync.RWMutex
+)
+
+// Reset clears the cached config instance. This is primarily for testing.
+func Reset() {
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+	instance = nil
+}
 
 // GetConfigPath returns the path to the config file
 func GetConfigPath() string {
@@ -75,16 +86,31 @@ func GetConfigPath() string {
 	return filepath.Join(home, DefaultConfigDir, DefaultConfigFile)
 }
 
-// Load loads the configuration from file
+// Load loads the configuration from file. It caches the result for subsequent calls.
+// Use Reset() to clear the cache (primarily for testing).
 func Load() (*Config, error) {
-	if instance == nil {
-		instance = &Config{
-			APIVersion: "rbg/v1alpha1",
-			Kind:       "Config",
-		}
-		if err := instance.loadFromFile(); err != nil {
-			return nil, err
-		}
+	instanceLock.RLock()
+	if instance != nil {
+		defer instanceLock.RUnlock()
+		return instance, nil
+	}
+	instanceLock.RUnlock()
+
+	instanceLock.Lock()
+	defer instanceLock.Unlock()
+
+	// Double check after acquiring write lock
+	if instance != nil {
+		return instance, nil
+	}
+
+	instance = &Config{
+		APIVersion: "rbg/v1alpha1",
+		Kind:       "Config",
+	}
+	if err := instance.loadFromFile(); err != nil {
+		instance = nil
+		return nil, err
 	}
 	return instance, nil
 }
@@ -168,6 +194,9 @@ func (c *Config) GetStorage(name string) (*StorageConfig, error) {
 func (c *Config) UpdateStorage(name string, cfg map[string]interface{}) error {
 	for i := range c.Storages {
 		if c.Storages[i].Name == name {
+			if c.Storages[i].Config == nil {
+				c.Storages[i].Config = make(map[string]interface{})
+			}
 			for k, v := range cfg {
 				c.Storages[i].Config[k] = v
 			}
@@ -234,6 +263,9 @@ func (c *Config) GetSource(name string) (*SourceConfig, error) {
 func (c *Config) UpdateSource(name string, cfg map[string]interface{}) error {
 	for i := range c.Sources {
 		if c.Sources[i].Name == name {
+			if c.Sources[i].Config == nil {
+				c.Sources[i].Config = make(map[string]interface{})
+			}
 			for k, v := range cfg {
 				c.Sources[i].Config[k] = v
 			}

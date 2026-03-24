@@ -18,7 +18,6 @@ package engine
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
@@ -68,9 +67,10 @@ func (s *SGLangEngine) GenerateTemplate(name string, modelID string, modelPath s
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name:    "sglang",
-					Image:   s.Image,
-					Command: []string{"python", "-m", "sglang.launch_server"},
+					Name:            "sglang",
+					Image:           s.Image,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Command:         []string{"python", "-m", "sglang.launch_server"},
 					Args: []string{
 						"--model-path",
 						modelPath,
@@ -87,11 +87,6 @@ func (s *SGLangEngine) GenerateTemplate(name string, modelID string, modelPath s
 						{
 							Name:  "SGLANG_MODEL_PATH",
 							Value: modelPath,
-						},
-					},
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{
-							corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
 						},
 					},
 				},

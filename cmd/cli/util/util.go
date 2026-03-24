@@ -68,7 +68,7 @@ func GetRBGObjectByDynamicClient(ctx context.Context, name, namespace string, dy
 	// Define GVR
 	gvr := schema.GroupVersionResource{
 		Group:    "workloads.x-k8s.io",
-		Version:  "v1alpha1",
+		Version:  "v1alpha2",
 		Resource: "rolebasedgroups",
 	}
 

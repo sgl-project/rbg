@@ -18,7 +18,6 @@ package engine
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/rbgs/cmd/cli/plugin/util"
 )
 
@@ -68,8 +67,9 @@ func (v *VLLMEngine) GenerateTemplate(name string, modelID string, modelPath str
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name:  "vllm",
-					Image: v.Image,
+					Name:            "vllm",
+					Image:           v.Image,
+					ImagePullPolicy: corev1.PullIfNotPresent,
 					Args: []string{
 						"--model",
 						modelPath,
@@ -80,11 +80,6 @@ func (v *VLLMEngine) GenerateTemplate(name string, modelID string, modelPath str
 						{
 							Name:          "http",
 							ContainerPort: v.Port,
-						},
-					},
-					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{
-							corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
 						},
 					},
 				},

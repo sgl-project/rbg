@@ -58,20 +58,7 @@ This command displays all LLM inference services that were created using the CLI
 It shows information such as the service name, model, engine, mode, replicas, and status.
 
 The command filters RoleBasedGroups by the CLI source label to only show resources
-managed by the kubectl-rbg CLI tool.
-
-Examples:
-  # List services in current namespace
-  kubectl rbg llm list
-
-  # List services in all namespaces
-  kubectl rbg llm list -A
-
-  # List services in a specific namespace
-  kubectl rbg llm list -n kubeai
-
-  # Filter by label selector
-  kubectl rbg llm list -l app.kubernetes.io/name=my-qwen`,
+managed by the kubectl-rbg CLI tool.`,
 		Example: `  # List services in current namespace
   kubectl rbg llm list
 

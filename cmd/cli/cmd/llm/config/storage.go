@@ -42,12 +42,23 @@ Currently supported storage types:
   - pvc: Kubernetes PersistentVolumeClaim
   - oss: Alibaba Cloud Object Storage Service
 
+PVC configuration fields:
+  - pvcName: name of the pre-existing PersistentVolumeClaim to bind to (required)
+
+OSS configuration fields:
+  - storageSize: storage size for the PV (e.g., 100Gi) (required)
+  - url: OSS endpoint URL (e.g., oss-cn-hangzhou.aliyuncs.com) (required)
+  - bucket: OSS bucket name (required)
+  - subpath: subpath within the bucket (optional)
+  - akId: Alibaba Cloud AccessKey ID (required)
+  - akSecret: Alibaba Cloud AccessKey Secret (required)
+
 Examples:
   # Add a PVC storage with command-line flags
-  kubectl rbg llm config add-storage my-pvc --type pvc --config claimName=model-pvc
+  kubectl rbg llm config add-storage my-pvc --type pvc --config pvcName=model-pvc
 
   # Add an OSS storage with command-line flags
-  kubectl rbg llm config add-storage my-oss --type oss --config endpoint=oss-cn-hangzhou.aliyuncs.com --config bucket=my-bucket
+  kubectl rbg llm config add-storage my-oss --type oss --config url=oss-cn-hangzhou.aliyuncs.com --config bucket=my-bucket --config storageSize=100Gi --config akId=MY_ACCESS_KEY_ID --config akSecret=MY_ACCESS_KEY_SECRET
 
   # Add storage interactively
   kubectl rbg llm config add-storage my-pvc -i`,
@@ -187,7 +198,7 @@ func newSetStorageCmd() *cobra.Command {
 Modify the configuration parameters of a previously added storage.
 
 Example:
-  kubectl rbg llm config set-storage my-pvc --config claimName=new-model-pvc`,
+  kubectl rbg llm config set-storage my-pvc --config pvcName=new-model-pvc`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("'set-storage' requires exactly 1 argument\n\nUsage:\n  kubectl rbg llm config set-storage NAME [--config key=value]\n\nSee 'kubectl rbg llm config set-storage -h' for examples.")

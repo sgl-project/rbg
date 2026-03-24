@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -127,7 +128,7 @@ func resolveRunContext(name, modelID string, p RunParams, userCfg *cliconfig.Con
 			if storageCfg, err := userCfg.GetStorage(storageName); err == nil {
 				if sp, err := storageplugin.Get(storageCfg.Type, storageCfg.Config); err == nil {
 					storagePlugin = sp
-					modelPath = sp.MountPath() + "/" + sanitizeModelID(modelID) + "/" + sanitizeModelID(p.Revision)
+					modelPath = filepath.Join(sp.MountPath(), sanitizeModelID(modelID), sanitizeModelID(p.Revision))
 				}
 			}
 		}
@@ -345,7 +346,10 @@ Examples:
 			modelID := args[1]
 
 			// Load user config (best-effort — optional for engine and storage resolution)
-			userCfg, _ := cliconfig.Load()
+			userCfg, cfgErr := cliconfig.Load()
+			if cfgErr != nil {
+				klog.V(1).Infof("Warning: failed to load user config: %v", cfgErr)
+			}
 
 			// Resolve all pure data: model/mode/engine/storage/template/port
 			rctx, err := resolveRunContext(name, modelID, RunParams{

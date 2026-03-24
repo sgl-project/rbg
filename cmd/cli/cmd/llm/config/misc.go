@@ -263,8 +263,12 @@ Example:
 				CurrentSource:  sourceType,
 			}
 
-			_ = cfg.AddStorage(storageType, storageType, storageConfig)
-			_ = cfg.AddSource(sourceType, sourceType, sourceConfig)
+			if err := cfg.AddStorage(storageType, storageType, storageConfig); err != nil {
+				return fmt.Errorf("failed to add storage configuration: %w", err)
+			}
+			if err := cfg.AddSource(sourceType, sourceType, sourceConfig); err != nil {
+				return fmt.Errorf("failed to add source configuration: %w", err)
+			}
 
 			if err := cfg.Save(); err != nil {
 				return fmt.Errorf("failed to save configuration: %w", err)
