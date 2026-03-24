@@ -92,26 +92,22 @@ func buildAIConfiguratorCommand(config *TaskConfig) []string {
 	// Required parameters
 	args = append(args, "--model", config.ModelName)
 	args = append(args, "--system", config.SystemName)
-	args = append(args, "--total_gpus", strconv.Itoa(config.TotalGPUs))
+	args = append(args, "--total-gpus", strconv.Itoa(config.TotalGPUs))
 	args = append(args, "--backend", config.BackendName)
 	args = append(args, "--isl", strconv.Itoa(config.ISL))
 	args = append(args, "--osl", strconv.Itoa(config.OSL))
 	args = append(args, "--ttft", strconv.FormatFloat(config.TTFT, 'f', -1, 64))
 	args = append(args, "--tpot", strconv.FormatFloat(config.TPOT, 'f', -1, 64))
-	args = append(args, "--save_dir", config.SaveDir)
-	args = append(args, "--database_mode", config.DatabaseMode)
+	args = append(args, "--save-dir", config.SaveDir)
+	args = append(args, "--database-mode", config.DatabaseMode)
 
 	// Optional parameters
-	if config.HuggingFaceID != "" {
-		args = append(args, "--hf_id", config.HuggingFaceID)
-	}
-
 	if config.DecodeSystemName != "" && config.DecodeSystemName != config.SystemName {
-		args = append(args, "--decode_system", config.DecodeSystemName)
+		args = append(args, "--decode-system", config.DecodeSystemName)
 	}
 
 	if config.BackendVersion != "" && config.BackendVersion != "latest" {
-		args = append(args, "--backend_version", config.BackendVersion)
+		args = append(args, "--backend-version", config.BackendVersion)
 	}
 
 	if config.Prefix > 0 {
@@ -119,7 +115,7 @@ func buildAIConfiguratorCommand(config *TaskConfig) []string {
 	}
 
 	if config.RequestLatency > 0 {
-		args = append(args, "--request_latency", strconv.FormatFloat(config.RequestLatency, 'f', -1, 64))
+		args = append(args, "--request-latency", strconv.FormatFloat(config.RequestLatency, 'f', -1, 64))
 	}
 
 	// Add extra arguments

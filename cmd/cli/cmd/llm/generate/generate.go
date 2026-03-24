@@ -18,6 +18,7 @@ package generate
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -50,7 +51,7 @@ deployment configurations for AI model serving. It supports both Prefill-Decode
 disaggregated mode and aggregated mode deployments.
 
 Example:
-  kubectl-rbg llm generate --configurator-tool aiconfigurator --model QWEN3_32B --system h200_sxm --total-gpus 8 \
+  kubectl-rbg llm generate --configurator-tool aiconfigurator --model Qwen/Qwen3.5-9B --system h200_sxm --total-gpus 8 \
     --backend sglang --isl 4000 --osl 1000 --ttft 1000 --tpot 10 --save-dir /tmp/rbg-llm-generate-output
 
 This will:
@@ -77,7 +78,6 @@ This will:
 	cmd.Flags().Float64Var(&config.RequestLatency, "request-latency", -1, "End-to-end request latency target in milliseconds (alternative to --ttft and --tpot)")
 
 	// Core optional parameters
-	cmd.Flags().StringVar(&config.HuggingFaceID, "hf-id", "", "HuggingFace model ID (e.g., Qwen/Qwen2.5-7B)")
 	cmd.Flags().StringVar(&config.DecodeSystemName, "decode-system", "", "GPU system for decode workers (defaults to --system)")
 	cmd.Flags().StringVar(&config.BackendName, "backend", BackendSGLang, "Inference backend")
 	cmd.Flags().StringVar(&config.BackendVersion, "backend-version", "", "Backend version")
@@ -146,21 +146,19 @@ func runRecommender(config *TaskConfig) error {
 
 	// Create deployment plans
 	disaggPlan := &DeploymentPlan{
-		Mode:          DeploymentModeDisagg,
-		Config:        disaggConfig,
-		OutputPath:    filepath.Join(config.SaveDir, fmt.Sprintf("%s-%s-disagg.yaml", normalizeModelName(config.ModelName), config.BackendName)),
-		ModelName:     config.ModelName,
-		BackendName:   config.BackendName,
-		HuggingFaceID: config.HuggingFaceID,
+		Mode:        DeploymentModeDisagg,
+		Config:      disaggConfig,
+		OutputPath:  filepath.Join(config.SaveDir, fmt.Sprintf("%s-%s-disagg.yaml", normalizeModelName(config.ModelName), config.BackendName)),
+		ModelName:   config.ModelName,
+		BackendName: config.BackendName,
 	}
 
 	aggPlan := &DeploymentPlan{
-		Mode:          DeploymentModeAgg,
-		Config:        aggConfig,
-		OutputPath:    filepath.Join(config.SaveDir, fmt.Sprintf("%s-%s-agg.yaml", normalizeModelName(config.ModelName), config.BackendName)),
-		ModelName:     config.ModelName,
-		BackendName:   config.BackendName,
-		HuggingFaceID: config.HuggingFaceID,
+		Mode:        DeploymentModeAgg,
+		Config:      aggConfig,
+		OutputPath:  filepath.Join(config.SaveDir, fmt.Sprintf("%s-%s-agg.yaml", normalizeModelName(config.ModelName), config.BackendName)),
+		ModelName:   config.ModelName,
+		BackendName: config.BackendName,
 	}
 
 	// Render YAML files
@@ -271,7 +269,14 @@ func displayResults(config *TaskConfig, disaggPlan, aggPlan *DeploymentPlan, dis
 
 // normalizeModelName converts model name to a valid Kubernetes resource name
 func normalizeModelName(name string) string {
+	// Get the base name of the model, handling path separators.
+	name = GetModelBaseName(name)
+	if name == "" {
+		name = "rbg"
+	}
+
 	// Convert to lowercase and replace underscores/dots with hyphens
+	// Preserve existing hyphens as they are valid in DNS labels
 	var sb strings.Builder
 	sb.Grow(len(name))
 	for _, c := range name {
@@ -279,9 +284,17 @@ func normalizeModelName(name string) string {
 			sb.WriteRune(c)
 		} else if c >= 'A' && c <= 'Z' {
 			sb.WriteRune(c + 32) // Convert to lowercase
-		} else if c == '_' || c == '.' {
+		} else if c == '_' || c == '.' || c == '-' {
 			sb.WriteRune('-')
 		}
 	}
 	return sb.String()
+}
+
+func GetModelBaseName(modelName string) string {
+	baseName := filepath.Base(path.Clean(modelName))
+	if baseName == "." || baseName == string(filepath.Separator) || baseName == "" {
+		return "" // Or some other indicator for "not found"
+	}
+	return baseName
 }
