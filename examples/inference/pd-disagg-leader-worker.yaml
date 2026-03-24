@@ -3,8 +3,25 @@
 # requires multiple GPUs (1 leader + N workers per instance).
 #
 # Architecture:
+#   - router: SGLang frontend router for request routing and dispatching
 #   - prefill: 2 instances, each with 1 leader + 3 workers (8x GPU total)
 #   - decode: 4 instances, each with 1 leader + 1 worker (8x GPU total)
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation)
+#
+# Features demonstrated:
+#   - LeaderWorkerPattern for distributed inference deployment
+#   - scalingAdapter for HPA integration
+#   - rolloutStrategy with InPlaceIfPossible
+#
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.9-cu124 (or later)
+#   - GPU nodes with CUDA support
 ---
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
@@ -14,31 +31,47 @@ metadata:
   labels:
     app: llm-inference-tp
     deployment-type: pd-disaggregated-tensor-parallel
+    model: qwen-0.6b
 spec:
-  roleTemplates:
-    - name: inference-base
-      template:
-        metadata:
-          labels:
-            app: llm-inference-tp
-        spec:
-          containers:
-            - name: vllm
-              image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
-              ports:
-                - name: http
-                  containerPort: 8080
-              resources:
-                requests:
-                  nvidia.com/gpu: "1"
-                limits:
-                  nvidia.com/gpu: "1"
-
   roles:
+    # Router: SGLang frontend that routes requests to prefill/decode engines
+    - name: router
+      replicas: 1
+      dependencies: ["prefill", "decode"]
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+              role: router
+          spec:
+            containers:
+              - name: router
+                image: lmsysorg/sglang:v0.5.9-cu124
+                command:
+                  - python3
+                  - -m
+                  - sglang.srt.disaggregation.mini_lb
+                  - --prefill
+                  - "http://pd-disagg-lws-prefill-0.s-pd-disagg-lws-prefill:8001"
+                  - --decode
+                  - "http://pd-disagg-lws-decode-0.s-pd-disagg-lws-decode:8001"
+                  - --prefill-bootstrap-ports
+                  - "34000"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                ports:
+                  - name: http
+                    containerPort: 8000
+                  - name: metrics
+                    containerPort: 9090
+
     # Prefill: 2 instances, tensor parallel size = 4 (1 leader + 3 workers)
     - name: prefill
       replicas: 2
-      restartPolicy: RecreateRoleInstanceOnPodRestart
+      restartPolicy: RecreateRBGOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -46,36 +79,52 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 4   # 1 leader + 3 workers per instance
-        templateRef:
-          name: inference-base
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+          spec:
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang:v0.5.9-cu124
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8001"
+                  - --disaggregation-mode
+                  - "prefill"
+                  - --tp-size
+                  - "4"
+                  - --dist-init-addr $(RBG_LWP_LEADER_ADDRESS)
+                  - --nnodes $(RBG_LWP_GROUP_SIZE)
+                  - --node-rank $(RBG_LWP_WORKER_INDEX)
+                ports:
+                  - name: grpc
+                    containerPort: 8001
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
         leaderTemplatePatch:
           metadata:
             labels:
               role: leader
-          spec:
-            containers:
-              - name: vllm
-                env:
-                  - name: ROLE
-                    value: leader
-                  - name: TENSOR_PARALLEL_SIZE
-                    value: "4"
         workerTemplatePatch:
           metadata:
             labels:
               role: worker
-          spec:
-            containers:
-              - name: vllm
-                env:
-                  - name: ROLE
-                    value: worker
 
     # Decode: 4 instances, tensor parallel size = 2 (1 leader + 1 worker)
     - name: decode
       replicas: 4
-      dependencies: ["prefill"]
-      restartPolicy: RecreateRoleInstanceOnPodRestart
+      restartPolicy: RecreateRBGOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -83,27 +132,44 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
-        templateRef:
-          name: inference-base
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+          spec:
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang:v0.5.9-cu124
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8001"
+                  - --disaggregation-mode
+                  - "decode"
+                  - --tp-size
+                  - "2"
+                  - --dist-init-addr $(RBG_LWP_LEADER_ADDRESS)
+                  - --nnodes $(RBG_LWP_GROUP_SIZE)
+                  - --node-rank $(RBG_LWP_WORKER_INDEX)
+                ports:
+                  - name: grpc
+                    containerPort: 8001
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
         leaderTemplatePatch:
           metadata:
             labels:
               role: leader
-          spec:
-            containers:
-              - name: vllm
-                env:
-                  - name: ROLE
-                    value: leader
-                  - name: TENSOR_PARALLEL_SIZE
-                    value: "2"
         workerTemplatePatch:
           metadata:
             labels:
               role: worker
-          spec:
-            containers:
-              - name: vllm
-                env:
-                  - name: ROLE
-                    value: worker

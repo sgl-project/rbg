@@ -50,6 +50,10 @@ spec:
 
 ---
 # Step 2: Create RoleBasedGroupScalingAdapter for the prefill role
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroupScalingAdapter
 metadata:
@@ -62,6 +66,10 @@ spec:
 
 ---
 # Step 3: Create RoleBasedGroupScalingAdapter for the decode role
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroupScalingAdapter
 metadata:

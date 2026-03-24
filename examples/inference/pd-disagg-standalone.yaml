@@ -17,6 +17,11 @@
 #   - CoordinatedPolicy for coordinated scaling
 #   - rolloutStrategy with InPlaceIfPossible
 #
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
+#
 # Prerequisites:
 #   - SGLang docker image: lmsysorg/sglang:v0.5.9-cu124 (or later)
 #   - GPU nodes with CUDA support
@@ -38,11 +43,6 @@ spec:
     # Uses --disaggregation-mode=router for PD disaggregation
     - name: router
       replicas: 1
-      servicePorts:
-        - name: http
-          port: 80
-          targetPort: 8000
-          protocol: TCP
       standalonePattern:
         template:
           metadata:
@@ -56,19 +56,17 @@ spec:
                 command:
                   - python3
                   - -m
-                  - sglang.launch_server
-                  - --model-path
-                  - "Qwen/Qwen3-0.6B"
+                  - sglang.srt.disaggregation.mini_lb
+                  - --prefill
+                  - "http://sglang-pd-inference-prefill-0.s-sglang-pd-inference-prefill:8001"
+                  - --decode
+                  - "http://sglang-pd-inference-decode-0.s-sglang-pd-inference-decode:8002"
+                  - --prefill-bootstrap-ports
+                  - "34000"
                   - --host
                   - "0.0.0.0"
                   - --port
                   - "8000"
-                  - --disaggregation-mode
-                  - "router"
-                  - --prefill
-                  - "sglang-pd-inference-prefill-0.sglang-pd-inference-prefill:8001"
-                  - --decode
-                  - "sglang-pd-inference-decode-0.sglang-pd-inference-decode:8002"
                 ports:
                   - name: http
                     containerPort: 8000
@@ -98,10 +96,7 @@ spec:
     # Uses --disaggregation-mode=prefill for PD disaggregation
     - name: prefill
       replicas: 1
-      dependencies: ["router"]  # start after router is ready
-      restartPolicy: RecreateRoleInstanceOnPodRestart
-      scalingAdapter:
-        enable: true
+      restartPolicy: RecreateRBGOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -109,11 +104,6 @@ spec:
           maxUnavailable: 1
           inPlaceUpdateStrategy:
             gracePeriodSeconds: 30
-      servicePorts:
-        - name: grpc
-          port: 8001
-          targetPort: 8001
-          protocol: TCP
       standalonePattern:
         template:
           metadata:
@@ -143,11 +133,6 @@ spec:
                     containerPort: 8001
                   - name: metrics
                     containerPort: 9090
-                env:
-                  - name: ROLE
-                    value: prefill
-                  - name: SGLANG_DISAGGREGATION_MODE
-                    value: "prefill"
                 resources:
                   requests:
                     cpu: "4"
@@ -174,22 +159,7 @@ spec:
     # Uses --disaggregation-mode=decode for PD disaggregation
     - name: decode
       replicas: 1
-      dependencies: ["prefill"]  # start after prefill is ready
-      restartPolicy: RecreateRoleInstanceOnPodRestart
-      scalingAdapter:
-        enable: true
-      rolloutStrategy:
-        type: RollingUpdate
-        rollingUpdate:
-          type: InPlaceIfPossible
-          maxUnavailable: 1
-          inPlaceUpdateStrategy:
-            gracePeriodSeconds: 30
-      servicePorts:
-        - name: grpc
-          port: 8002
-          targetPort: 8002
-          protocol: TCP
+      restartPolicy: RecreateRBGOnPodRestart
       standalonePattern:
         template:
           metadata:
@@ -219,11 +189,6 @@ spec:
                     containerPort: 8002
                   - name: metrics
                     containerPort: 9090
-                env:
-                  - name: ROLE
-                    value: decode
-                  - name: SGLANG_DISAGGREGATION_MODE
-                    value: "decode"
                 resources:
                   requests:
                     cpu: "4"
@@ -245,21 +210,3 @@ spec:
                     port: 8002
                   initialDelaySeconds: 120
                   periodSeconds: 30
-
----
-# CoordinatedPolicy: coordinate scale-out between prefill and decode
-# Ensures they scale proportionally for PD disaggregated inference
-apiVersion: workloads.x-k8s.io/v1alpha2
-kind: CoordinatedPolicy
-metadata:
-  name: sglang-pd-scaling-policy
-  namespace: default
-spec:
-  policies:
-    - roles:
-        - prefill
-        - decode
-      strategy:
-        scaling:
-          maxSkew: "10%"
-          progression: OrderScheduled

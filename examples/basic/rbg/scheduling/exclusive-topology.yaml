@@ -15,9 +15,9 @@ spec:
       standalonePattern:
         template:
           # To disable exclusive topology for this specific role, add:
-          # metadata:
-          #   annotations:
-          #     rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology: "true"
+          metadata:
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology: "true"
           spec:
             containers:
               - name: nginx-frontend

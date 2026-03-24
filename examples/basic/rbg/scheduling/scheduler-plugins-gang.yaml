@@ -13,9 +13,9 @@ kind: RoleBasedGroup
 metadata:
   name: scheduler-plugins-gang
   namespace: default
-  # annotations:
-  #   rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
-  #   rbg.workloads.x-k8s.io/group-gang-scheduling-timeout: "120"
+  annotations:
+     rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
+    #rbg.workloads.x-k8s.io/group-gang-scheduling-timeout: "120"
 spec:
   roles:
     - name: prefill

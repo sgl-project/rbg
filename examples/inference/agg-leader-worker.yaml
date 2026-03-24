@@ -1,0 +1,89 @@
+# Example: Aggregated with LeaderWorker pattern (v1alpha2)
+# Uses leaderWorkerPattern for tensor-parallel inference where each instance
+# requires multiple GPUs (1 leader + N workers per instance).
+#
+# Architecture:
+#   - backend: 2 instances, each with 1 leader + 3 workers (8x GPU total)
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing)
+#
+# Features demonstrated:
+#   - LeaderWorkerPattern for distributed inference deployment
+#   - scalingAdapter for HPA integration
+#   - rolloutStrategy with InPlaceIfPossible
+#
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.9-cu124 (or later)
+#   - GPU nodes with CUDA support
+#   - Model weights mounted at /models or use HuggingFace download
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: agg-lwd
+  namespace: default
+  labels:
+    app: llm-inference-tp
+    deployment-type: aggregated-tensor-parallel
+    model: qwen-0.6b
+spec:
+  roles:
+    # Backend: 2 instances, tensor parallel size = 4 (1 leader + 3 workers)
+    - name: backend
+      replicas: 2
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      leaderWorkerPattern:
+        size: 4   # 1 leader + 3 workers per instance
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+          spec:
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang:v0.5.9-cu124
+                spec:
+                  containers:
+                    - name: sglang
+                      command:
+                        - python3
+                        - -m
+                        - sglang.launch_server
+                        - --model-path
+                        - "Qwen/Qwen3-0.6B"
+                        - --host
+                        - "0.0.0.0"
+                        - --port
+                        - "8001"
+                        - --tp-size
+                        - "4"
+                        - --dist-init-addr $(RBG_LWP_LEADER_ADDRESS)
+                        - --nnodes $(RBG_LWP_GROUP_SIZE)
+                        - --node-rank $(RBG_LWP_WORKER_INDEX)
+                ports:
+                  - name: grpc
+                    containerPort: 8001
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+        leaderTemplatePatch:
+          metadata:
+            labels:
+              role: leader
+        workerTemplatePatch:
+          metadata:
+            labels:
+              role: worker

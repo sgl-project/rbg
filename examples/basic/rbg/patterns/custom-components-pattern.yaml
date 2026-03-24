@@ -18,12 +18,12 @@ spec:
       # customComponentsPattern: define heterogeneous components per instance
       customComponentsPattern:
         components:
-          - name: prefill-component
+          - name: custom-component-1
             size: 1
             template:
               spec:
                 containers:
-                  - name: prefill
+                  - name: worker
                     image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                     ports:
                       - containerPort: 8080
@@ -31,12 +31,12 @@ spec:
                       requests:
                         cpu: "2"
                         memory: "4Gi"
-          - name: decode-component
+          - name: custom-component-2
             size: 2
             template:
               spec:
                 containers:
-                  - name: decode
+                  - name: worker
                     image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                     ports:
                       - containerPort: 8081
@@ -44,12 +44,12 @@ spec:
                       requests:
                         cpu: "4"
                         memory: "8Gi"
-          - name: router-component
+          - name: custom-component-3
             size: 1
             template:
               spec:
                 containers:
-                  - name: router
+                  - name: worker
                     image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                     ports:
                       - containerPort: 80

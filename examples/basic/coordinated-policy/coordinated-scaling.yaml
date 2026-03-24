@@ -53,7 +53,8 @@ metadata:
   namespace: default
 spec:
   policies:
-    - roles:
+    - name: prefill-decode-scaling
+      roles:
         - prefill
         - decode
       strategy:
@@ -75,15 +76,13 @@ metadata:
   namespace: default
 spec:
   roles:
-    - name: frontend
+    - name: prefill
       replicas: 50
-      scalingAdapter:
-        enable: true
       standalonePattern:
         template:
           spec:
             containers:
-              - name: frontend
+              - name: prefill
                 image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                 ports:
                   - containerPort: 80
@@ -94,15 +93,13 @@ spec:
                   periodSeconds: 3
                   initialDelaySeconds: 10
 
-    - name: backend
+    - name: decode
       replicas: 30
-      scalingAdapter:
-        enable: true
       standalonePattern:
         template:
           spec:
             containers:
-              - name: backend
+              - name: decode
                 image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                 ports:
                   - containerPort: 8080
@@ -121,12 +118,13 @@ metadata:
   namespace: default
 spec:
   policies:
-    - roles:
-        - frontend
-        - backend
+    - name: prefill-decode-scaling
+      roles:
+        - prefill
+        - decode
       strategy:
         scaling:
           # Small maxSkew for careful, incremental scale-out
           maxSkew: "5%"
           # OrderReady: wait for all pods in batch to be ready before next batch
-          progression: OrderScheduled
+          progression: OrderReady
