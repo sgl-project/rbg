@@ -17,8 +17,8 @@ metadata:
   namespace: default
   annotations:
     rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
-   #rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue: "default"
-   #rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority: "high-priority"
+    # rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue: "default"
+    # rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority: "high-priority"
 spec:
   roles:
     - name: prefill

@@ -58,7 +58,7 @@ spec:
                 - name: MOONCAKE_TE_META_DATA_SERVER
                   value: "http://s-sglang-pd-with-mooncake-demo-mooncake-master:8080/metadata"
                 - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
-                  value: "45gb" #Configure the cache size per replica on demand.
+                  value: "45gb"  # Configure the cache size per replica on demand.
                 - name: MOONCAKE_LOCAL_BUFFER_SIZE
                   value: "0"
                 - name: MOONCAKE_PROTOCOL
@@ -111,7 +111,7 @@ spec:
                 - name: MOONCAKE_DEVICE
                   value: ""
                 - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
-                  value: "10gb" #Configure the cache size per replica on demand.
+                  value: "10gb"  # Configure the cache size per replica on demand.
                 - name: MOONCAKE_LOCAL_BUFFER_SIZE
                   value: "16777216"
                 - name: MC_MS_AUTO_DISC
