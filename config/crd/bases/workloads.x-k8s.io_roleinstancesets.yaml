@@ -136,10 +136,12 @@ spec:
                 format: int32
                 type: integer
               revisionHistoryLimit:
+                default: 10
                 description: |-
                   RevisionHistoryLimit is the maximum number of revisions that will
                   be maintained in the RoleInstanceSet's revision history.
                 format: int32
+                minimum: 0
                 type: integer
               roleInstanceTemplate:
                 description: RoleInstanceTemplate describes the data a role instance

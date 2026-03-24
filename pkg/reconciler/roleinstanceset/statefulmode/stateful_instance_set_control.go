@@ -37,6 +37,7 @@ import (
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/utils"
+	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 )
 
 const (
@@ -181,41 +182,26 @@ func (ssc *defaultStatefulInstanceSetControl) truncateHistory(
 	revisions []*apps.ControllerRevision,
 	current *apps.ControllerRevision,
 	update *apps.ControllerRevision) error {
-	history := make([]*apps.ControllerRevision, 0, len(revisions))
-	// mark all live revisions
 	live := map[string]bool{}
-	if current != nil {
-		live[current.Name] = true
-	}
-	if update != nil {
-		live[update.Name] = true
-	}
 	for i := range instances {
 		live[getInstanceRevision(instances[i])] = true
 	}
-	// collect live revisions and historic revisions
-	for i := range revisions {
-		if !live[revisions[i].Name] {
-			history = append(history, revisions[i])
-		}
+
+	historyLimit := workloadsv1alpha2.DefaultRoleInstanceSetRevisionHistoryLimit
+	if set.Spec.RevisionHistoryLimit != nil {
+		historyLimit = int(*set.Spec.RevisionHistoryLimit)
 	}
-	historyLen := len(history)
-	// Check if RevisionHistoryLimit is set
-	if set.Spec.RevisionHistoryLimit == nil {
-		return nil
-	}
-	historyLimit := int(*set.Spec.RevisionHistoryLimit)
-	if historyLen <= historyLimit {
-		return nil
-	}
-	// delete any non-live history to maintain the revision limit.
-	history = history[:(historyLen - historyLimit)]
-	for i := 0; i < len(history); i++ {
-		if err := ssc.controllerHistory.DeleteControllerRevision(history[i]); err != nil {
-			return err
-		}
-	}
-	return nil
+
+	return historyutil.TruncateControllerRevisions(
+		revisions,
+		current,
+		update,
+		historyLimit,
+		func(revisionName string) bool {
+			return live[revisionName]
+		},
+		ssc.controllerHistory.DeleteControllerRevision,
+	)
 }
 
 // getInstanceSetRevisions returns the current and update ControllerRevisions for set

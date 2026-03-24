@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	DefaultRoleInstanceSetMaxUnavailable = "10%"
+	DefaultRoleInstanceSetMaxUnavailable       = "10%"
+	DefaultRoleInstanceSetRevisionHistoryLimit = 10
 )
 
 // RoleInstanceSetSpec defines the desired state of RoleInstanceSet
@@ -68,6 +69,9 @@ type RoleInstanceSetSpec struct {
 	// be maintained in the RoleInstanceSet's revision history. The revision history
 	// consists of all revisions not represented by a currently applied
 	// RoleInstanceSetSpec version. The default value is 10.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=0
+	// +optional
 	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty"`
 
 	// Minimum number of seconds for which a newly created RoleInstances should be ready
