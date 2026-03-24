@@ -40,11 +40,6 @@ import (
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 )
 
-func init() {
-	// Seed the random number generator for non-cryptographic use
-	rand.Seed(time.Now().UnixNano())
-}
-
 // spinner writes an animated thinking indicator to stderr while a goroutine is
 // running. Call stop() to clear the line and unblock.
 type spinner struct {
