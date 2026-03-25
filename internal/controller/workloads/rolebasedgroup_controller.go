@@ -757,11 +757,29 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
-	// update rbg status
-	// The SSA patch with FieldManager="rbg" and Force=true includes all conditions. Since
-	// setRestartCondition uses UpdateStatus (not SSA), there is no field-manager conflict:
-	// the UpdateStatus write from pod_controller will be reflected in the next reconcile's
-	// informer cache read, and the RBG controller will preserve it faithfully.
+	// CRITICAL: Fetch the latest RBG from API server to preserve conditions set by other controllers.
+	// The pod controller uses UpdateStatus to set RestartInProgress, which may not be reflected
+	// in the informer cache yet. Without this, SSA with Force=true would overwrite those conditions.
+	latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
+		logger := log.FromContext(ctx)
+		logger.Error(err, "Failed to get latest RBG from API server for status update")
+		return err
+	}
+
+	// Preserve RestartInProgress condition if it exists in the latest RBG from API server.
+	// This condition is managed by the pod controller and should not be overwritten by RBG controller.
+	if restartCond := apimeta.FindStatusCondition(
+		latestRBG.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+	); restartCond != nil {
+		apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
+	}
+
+	// update rbg status using SSA patch.
+	// IMPORTANT: We must preserve the RestartInProgress condition managed by pod controller.
+	// The above code fetches the latest RBG from API server (bypassing informer cache) and
+	// preserves any RestartInProgress condition. This prevents SSA with Force=true from
+	// overwriting conditions set by other controllers due to informer cache latency.
 	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)

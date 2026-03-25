@@ -4,6 +4,3 @@ resources:
   - service_account.yaml
   - secret_role.yaml
   - secret_role_binding.yaml
-
-
-
