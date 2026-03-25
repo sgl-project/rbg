@@ -102,7 +102,7 @@ test-coverage-html: test
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
 test-e2e:  ## Run the e2e tests.
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
