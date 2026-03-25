@@ -47,7 +47,8 @@ func NewStatusCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 		Args:               cobra.ExactArgs(1),
 		FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(context.TODO(), args[0])
+			ctx := context.Background()
+			return runStatus(ctx, args[0])
 		},
 	}
 	statusOpts.cf = cf
@@ -55,11 +56,11 @@ func NewStatusCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 	return statusCmd
 }
 
-func runStatus(_ context.Context, rbg string) error {
-	return runWithClient(nil, rbg, nil)
+func runStatus(ctx context.Context, rbg string) error {
+	return runWithClient(ctx, nil, rbg, nil)
 }
 
-func runWithClient(_ *cobra.Command, name string, dynamicClient dynamic.Interface) error {
+func runWithClient(ctx context.Context, _ *cobra.Command, name string, dynamicClient dynamic.Interface) error {
 	var err error
 	// Create a dynamic client if not provided
 	if dynamicClient == nil {
@@ -70,7 +71,7 @@ func runWithClient(_ *cobra.Command, name string, dynamicClient dynamic.Interfac
 	}
 
 	// Fetch the resource object
-	resource, err := util.GetRBGObjectByDynamicClient(context.TODO(), name, util.GetNamespace(statusOpts.cf), dynamicClient)
+	resource, err := util.GetRBGObjectByDynamicClient(ctx, name, util.GetNamespace(statusOpts.cf), dynamicClient)
 	if err != nil {
 		return fmt.Errorf("failed to get RoleBasedGroup: %w", err)
 	}

@@ -1,0 +1,73 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package config
+
+import (
+	"github.com/spf13/cobra"
+)
+
+// NewConfigCmd creates the config command
+func NewConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage LLM configuration",
+		Long: `The config command manages LLM deployment configurations including storage,
+model sources, and inference engines.
+
+This command provides subcommands for:
+  - Storage management: Configure where models are stored (PVC, etc.)
+  - Source management: Configure model download sources (HuggingFace, ModelScope, etc.)
+  - Engine management: Customize inference engine settings (optional)
+
+Examples:
+  # Initialize configuration interactively
+  kubectl rbg llm config init
+
+  # View current configuration
+  kubectl rbg llm config view
+
+  # Add a new storage configuration
+  kubectl rbg llm config add-storage my-pvc --type pvc --config claimName=model-pvc
+
+  # Add a new model source
+  kubectl rbg llm config add-source huggingface --type huggingface --config token=hf_xxx
+
+  # List all configurations
+  kubectl rbg llm config get-storages
+  kubectl rbg llm config get-sources
+  kubectl rbg llm config get-engines`,
+	}
+
+	// Add subcommands
+	cmd.AddCommand(newAddStorageCmd())
+	cmd.AddCommand(newAddSourceCmd())
+	cmd.AddCommand(newGetStoragesCmd())
+	cmd.AddCommand(newGetSourcesCmd())
+	cmd.AddCommand(newGetEnginesCmd())
+	cmd.AddCommand(newUseStorageCmd())
+	cmd.AddCommand(newUseSourceCmd())
+	cmd.AddCommand(newSetStorageCmd())
+	cmd.AddCommand(newSetSourceCmd())
+	cmd.AddCommand(newSetEngineCmd())
+	cmd.AddCommand(newDeleteStorageCmd())
+	cmd.AddCommand(newDeleteSourceCmd())
+	cmd.AddCommand(newResetEngineCmd())
+	cmd.AddCommand(newViewCmd())
+	cmd.AddCommand(newInitCmd())
+
+	return cmd
+}

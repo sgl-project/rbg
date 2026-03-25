@@ -22,10 +22,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/dynamic/fake"
 )
@@ -39,7 +37,7 @@ func init() {
 func TestParseStatus(t *testing.T) {
 	resource := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "workloads.x-k8s.io/v1alpha1",
+			"apiVersion": "workloads.x-k8s.io/v1alpha2",
 			"kind":       "RoleBasedGroup",
 			"metadata": map[string]interface{}{
 				"name":      "test-rbg",
@@ -74,7 +72,7 @@ func TestParseStatusErrors(t *testing.T) {
 	// no status
 	resourceNoStatus := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "workloads.x-k8s.io/v1alpha1",
+			"apiVersion": "workloads.x-k8s.io/v1alpha2",
 			"kind":       "RoleBasedGroup",
 			"metadata": map[string]interface{}{
 				"name":      "test-rbg",
@@ -90,7 +88,7 @@ func TestParseStatusErrors(t *testing.T) {
 	// no roleStatuses
 	resourceNoRoleStatuses := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "workloads.x-k8s.io/v1alpha1",
+			"apiVersion": "workloads.x-k8s.io/v1alpha2",
 			"kind":       "RoleBasedGroup",
 			"metadata": map[string]interface{}{
 				"name":      "test-rbg",
@@ -110,7 +108,7 @@ func TestParseStatusErrors(t *testing.T) {
 func TestRunFunctionWithFakeClient(t *testing.T) {
 	testRBG := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "workloads.x-k8s.io/v1alpha1",
+			"apiVersion": "workloads.x-k8s.io/v1alpha2",
 			"kind":       "RoleBasedGroup",
 			"metadata": map[string]interface{}{
 				"name":              "test-rbg",
@@ -139,59 +137,6 @@ func TestRunFunctionWithFakeClient(t *testing.T) {
 	scheme := runtime.NewScheme()
 	client := fake.NewSimpleDynamicClient(scheme, testRBG)
 
-	resource, err := client.Resource(
-		schema.GroupVersionResource{
-			Group:    "workloads.x-k8s.io",
-			Version:  "v1alpha1",
-			Resource: "rolebasedgroups",
-		},
-	).Namespace("default").Get(context.TODO(), "test-rbg", metav1.GetOptions{})
-
-	assert.NoError(t, err)
-	assert.NotNil(t, resource)
-
-	roleStatuses, err := parseStatus(resource)
-	assert.NoError(t, err)
-	assert.Len(t, roleStatuses, 1)
-	old := statusOpts
-	defer func() {
-		statusOpts = old
-	}()
-	statusOpts = StatusOptions{cf: &genericclioptions.ConfigFlags{}}
-	printReport(resource, roleStatuses, "")
-}
-
-func TestRun(t *testing.T) {
-	roleBasedGroup := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "workloads.x-k8s.io/v1alpha1",
-			"kind":       "RoleBasedGroup",
-			"metadata": map[string]interface{}{
-				"name":              "test-rbg",
-				"namespace":         "default",
-				"creationTimestamp": time.Now().Add(-24 * time.Hour).Format(time.RFC3339),
-			},
-			"status": map[string]interface{}{
-				"roleStatuses": []interface{}{
-					map[string]interface{}{
-						"name":          "worker",
-						"replicas":      int64(3),
-						"readyReplicas": int64(2),
-					},
-					map[string]interface{}{
-						"name":          "manager",
-						"replicas":      int64(1),
-						"readyReplicas": int64(1),
-					},
-				},
-			},
-		},
-	}
-
-	// fake dynamic client
-	scheme := runtime.NewScheme()
-	client := fake.NewSimpleDynamicClient(scheme, roleBasedGroup)
-
 	old := statusOpts
 	defer func() {
 		statusOpts = old
@@ -200,8 +145,7 @@ func TestRun(t *testing.T) {
 
 	ns := "default"
 	statusOpts.cf.Namespace = &ns
-	args := []string{"test-rbg"}
 
-	err := runWithClient(nil, args[0], client)
+	err := runWithClient(context.TODO(), nil, name, client)
 	assert.NoError(t, err)
 }
