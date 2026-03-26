@@ -115,10 +115,11 @@ func UpdatePodReadyCondition(pod *v1.Pod) {
 	if len(unreadyMessages) != 0 {
 		unreadyMessage := strings.Join(unreadyMessages, ", ")
 		newPodReady = v1.PodCondition{
-			Type:    v1.PodReady,
-			Status:  v1.ConditionFalse,
-			Reason:  "ReadinessGatesNotReady",
-			Message: unreadyMessage,
+			Type:               v1.PodReady,
+			Status:             v1.ConditionFalse,
+			Reason:             "ReadinessGatesNotReady",
+			Message:            unreadyMessage,
+			LastTransitionTime: metav1.Now(),
 		}
 	}
 

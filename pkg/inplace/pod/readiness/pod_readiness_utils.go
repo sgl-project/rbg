@@ -96,6 +96,8 @@ func removeNotReadyKey(adp podadapter.Adapter, pod *v1.Pod, msg Message, condTyp
 		}
 		condition.Message = messages.dump()
 		condition.LastTransitionTime = metav1.Now()
+		// Re-evaluate pod Ready condition after updating readiness gate
+		util.UpdatePodReadyCondition(newPod)
 		if err = adp.UpdatePodStatus(newPod); err != nil {
 			return err
 		}
