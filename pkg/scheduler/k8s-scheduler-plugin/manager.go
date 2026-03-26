@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
@@ -42,6 +43,9 @@ import (
 const (
 	// CrdName is the CRD name for the kube scheduler-plugins PodGroup.
 	CrdName = "podgroups.scheduling.x-k8s.io"
+
+	// inheritSchedulingPolicyAnnotations is the PodGroup annotation prefix inherited from the workload.
+	inheritSchedulingPolicyAnnotations = "scheduling.x-k8s.io/"
 
 	// LabelKey is the pod label key used to associate a pod with a PodGroup.
 	LabelKey = "pod-group.scheduling.sigs.k8s.io/name"
@@ -113,6 +117,7 @@ func getScheduleTimeoutSeconds(rbg *workloadsv1alpha2.RoleBasedGroup) *int32 {
 func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
 	gvk := utils.GetRbgGVK()
+	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, inheritSchedulingPolicyAnnotations)
 	podGroup := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbg.Name,
@@ -120,6 +125,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(rbg, gvk),
 			},
+			Annotations: desiredAnnotations,
 		},
 		Spec: schedv1alpha1.PodGroupSpec{
 			MinMember:              int32(rbg.GetGroupSize()),

@@ -21,7 +21,6 @@ package volcano
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
@@ -99,7 +99,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 	logger := log.FromContext(ctx)
 	queue := rbg.Annotations[constants.GangSchedulingVolcanoQueueKey]
 	priorityClassName := rbg.Annotations[constants.GangSchedulingVolcanoPriorityClassKey]
-	desiredAnnotations := inheritVolcanoAnnotations(rbg)
+	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, volcanoschedulingv1beta1.AnnotationPrefix)
 
 	podGroup := &volcanoschedulingv1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -179,17 +179,4 @@ func (m *PodGroupManager) deletePodGroup(
 	}
 
 	return nil
-}
-
-func inheritVolcanoAnnotations(rbg *workloadsv1alpha2.RoleBasedGroup) map[string]string {
-	res := map[string]string{}
-	for k, v := range rbg.Annotations {
-		if strings.HasPrefix(k, volcanoschedulingv1beta1.AnnotationPrefix) {
-			res[k] = v
-		}
-	}
-	if len(res) == 0 {
-		return nil
-	}
-	return res
 }

@@ -35,8 +35,8 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	_ = apiextensionsv1.AddToScheme(scheme)
 
 	gvk := utils.GetRbgGVK()
-	rbgName := "test-rbg"
-	rbgNamespace := "default"
+	rbgName := "test-rbg"     //nolint:goconst
+	rbgNamespace := "default" //nolint:goconst
 	podGroup := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbgName,
@@ -309,6 +309,64 @@ func TestVolcanoPodGroupScheduler_ReconcileCopiesVolcanoAnnotationsOnCreate(t *t
 		map[string]string{
 			"volcano.sh/preemptable":   "true",
 			"volcano.sh/cooldown-time": "600s",
+		},
+		pg.Annotations,
+	)
+}
+
+func TestKubePodGroupScheduler_ReconcileCopiesSchedulerPluginAnnotationsOnCreate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = schedv1alpha1.AddToScheme(scheme)
+	_ = apiextensionsv1.AddToScheme(scheme)
+
+	rbgName := "test-rbg"
+	rbgNamespace := "default"
+	rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
+		WithAnnotations(
+			map[string]string{
+				constants.GangSchedulingAnnotationKey:             "true",
+				constants.GangSchedulingScheduleTimeoutSecondsKey: "30",
+				"custom.io/ignored":                               "ignored",
+				"scheduling.x-k8s.io/queue":                       "gpu-queue",
+				"scheduling.x-k8s.io/profile":                     "high-priority",
+			},
+		).Obj()
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: KubePodGroupCrdName},
+			Status: apiextensionsv1.CustomResourceDefinitionStatus{
+				Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{
+					{
+						Type:   apiextensionsv1.Established,
+						Status: apiextensionsv1.ConditionTrue,
+					},
+				},
+			},
+		},
+	).Build()
+
+	mgr, err := NewPodGroupManager(KubeSchedulerPlugin, client)
+	require.NoError(t, err)
+
+	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
+	runtimeController := builder.TypedBuilder[reconcile.Request]{}
+	watchedWorkload := sync.Map{}
+
+	err = mgr.ReconcilePodGroup(ctx, rbg, &runtimeController, &watchedWorkload, apiReader)
+	require.NoError(t, err)
+
+	pg := &schedv1alpha1.PodGroup{}
+	err = client.Get(context.Background(), types.NamespacedName{Name: rbgName, Namespace: rbgNamespace}, pg)
+	require.NoError(t, err)
+
+	assert.Equal(
+		t,
+		map[string]string{
+			"scheduling.x-k8s.io/queue":   "gpu-queue",
+			"scheduling.x-k8s.io/profile": "high-priority",
 		},
 		pg.Annotations,
 	)
