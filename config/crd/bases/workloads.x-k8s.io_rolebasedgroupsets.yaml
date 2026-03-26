@@ -41492,11 +41492,11 @@ spec:
                                 The underlying workload will use InstanceSet.
                               properties:
                                 apiVersion:
-                                  default: workloads.x-k8s.io/v1alpha1
+                                  default: workloads.x-k8s.io/v1alpha2
                                   pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/v[0-9]+((alpha|beta)[0-9]+)?$
                                   type: string
                                 kind:
-                                  default: InstanceSet
+                                  default: RoleInstanceSet
                                   type: string
                               type: object
                           required:

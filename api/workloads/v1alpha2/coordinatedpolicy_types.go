@@ -99,7 +99,7 @@ type ScalingCoordinationStrategy struct {
 type ScalingProgression string
 
 const (
-	// OrderScheduledProgression scales replicas in order based on scheduled.
+	// OrderScheduledProgression scales replicas in order based on scheduling status.
 	OrderScheduledProgression ScalingProgression = "OrderScheduled"
 
 	// OrderReadyProgression scales replicas in order based on readiness.

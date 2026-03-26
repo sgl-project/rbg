@@ -297,11 +297,11 @@ type CustomComponentsPattern struct {
 type WorkloadSpec struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/v[0-9]+((alpha|beta)[0-9]+)?$`
-	// +kubebuilder:default="workloads.x-k8s.io/v1alpha1"
+	// +kubebuilder:default="workloads.x-k8s.io/v1alpha2"
 	APIVersion string `json:"apiVersion"`
 
 	// +optional
-	// +kubebuilder:default="InstanceSet"
+	// +kubebuilder:default="RoleInstanceSet"
 	Kind string `json:"kind"`
 }
 
