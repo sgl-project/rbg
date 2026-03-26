@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
@@ -98,6 +99,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 	logger := log.FromContext(ctx)
 	queue := rbg.Annotations[constants.GangSchedulingVolcanoQueueKey]
 	priorityClassName := rbg.Annotations[constants.GangSchedulingVolcanoPriorityClassKey]
+	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, volcanoschedulingv1beta1.AnnotationPrefix)
 
 	podGroup := &volcanoschedulingv1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -106,6 +108,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(rbg, utils.GetRbgGVK()),
 			},
+			Annotations: desiredAnnotations,
 		},
 		Spec: volcanoschedulingv1beta1.PodGroupSpec{
 			MinMember:         int32(rbg.GetGroupSize()),
