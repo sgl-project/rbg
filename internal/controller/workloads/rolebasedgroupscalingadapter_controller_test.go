@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,21 +110,34 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 		},
 	}
 
+	// Create an adapter referencing a role that doesn't exist in the RBG, to test the unbound (10s) requeue path
+	unboundRbgSA := rbgsa.DeepCopy()
+	unboundRbgSA.Spec.ScaleTargetRef.Role = "non-existent-role"
+
 	// Define test cases
 	tests := []struct {
-		name             string
-		client           client.Client
-		expectError      bool
-		expectRequeue    bool
-		expectedPhase    constants.AdapterPhase
-		expectedReplicas *int32
+		name                 string
+		client               client.Client
+		expectError          bool
+		expectRequeue        bool
+		expectedRequeueAfter time.Duration
+		expectedPhase        constants.AdapterPhase
+		expectedReplicas     *int32
 	}{
 		{
-			name:          "adapter bound successfully",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbgsa, rbg, sts).Build(),
-			expectError:   false,
-			expectRequeue: true,
-			expectedPhase: constants.AdapterPhaseBound,
+			name:                 "adapter bound successfully",
+			client:               fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbgsa, rbg, sts).Build(),
+			expectError:          false,
+			expectRequeue:        true,
+			expectedRequeueAfter: 1 * time.Second,
+			expectedPhase:        constants.AdapterPhaseBound,
+		},
+		{
+			name:                 "unbound adapter with missing role requeues after 10s",
+			client:               fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(unboundRbgSA, rbg, sts).Build(),
+			expectError:          false,
+			expectRequeue:        true,
+			expectedRequeueAfter: 10 * time.Second,
 		},
 		{
 			name: "bounded adapter scales role replicas",
@@ -182,6 +196,10 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 
 				if tt.expectRequeue {
 					assert.True(t, result.RequeueAfter > 0)
+					if tt.expectedRequeueAfter > 0 {
+						assert.Equal(t, tt.expectedRequeueAfter, result.RequeueAfter,
+							"expected RequeueAfter to be %v, got %v", tt.expectedRequeueAfter, result.RequeueAfter)
+					}
 				} else {
 					assert.False(t, result.RequeueAfter > 0)
 					assert.Equal(t, int64(0), int64(result.RequeueAfter))

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -131,7 +132,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			}
 		}
 		// TODO: currently reconcile unbound adapter by a default reconcile interval, need to implement a rbg event-driven manager
-		return ctrl.Result{RequeueAfter: 10}, nil
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	// add owner reference
@@ -139,7 +140,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		if err := r.UpdateAdapterOwnerReference(ctx, rbgScalingAdapter, rbg); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: 1}, nil
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	// check scale target exist succeed, init adapter status with phase bound, selector and initial replicas
@@ -182,7 +183,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			rbgScalingAdapter, corev1.EventTypeNormal, SuccessfulBound,
 			"Succeed to find scale target role [%s] of rbg [%s]", targetRoleName, rbgName,
 		)
-		return ctrl.Result{RequeueAfter: 1}, nil
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	desiredReplicas, currentReplicas := rbgScalingAdapter.Spec.Replicas, targetRole.Replicas
