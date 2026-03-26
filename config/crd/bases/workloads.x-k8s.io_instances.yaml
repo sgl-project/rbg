@@ -49,7 +49,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: InstanceSpec defines the desired state ofInstance
+            description: InstanceSpec defines the desired state of Instance
             properties:
               components:
                 description: Components is a list of components, each of which specifies
@@ -140,7 +140,7 @@ spec:
             - components
             type: object
           status:
-            description: InstanceStatus defines the observed state ofInstance
+            description: InstanceStatus defines the observed state of Instance
             properties:
               collisionCount:
                 description: CollisionCount is the count of hash collisions for the
@@ -166,8 +166,8 @@ spec:
                       format: int32
                       type: integer
                     replicas:
-                      description: Size is the number of Pod for Instance that match
-                        the component.
+                      description: Replicas is the number of Pod for Instance that
+                        match the component.
                       format: int32
                       type: integer
                     scheduledReplicas:
