@@ -342,6 +342,12 @@ type ScalingAdapter struct {
 	// +optional
 	// +kubebuilder:default=false
 	Enable bool `json:"enable,omitempty"`
+
+	// Labels are additional labels to apply to the auto-created
+	// RoleBasedGroupScalingAdapter resource. Controller-managed labels
+	// (group-name, role-name) take precedence and cannot be overridden.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // RoleBasedGroupStatus defines the observed state of RoleBasedGroup.

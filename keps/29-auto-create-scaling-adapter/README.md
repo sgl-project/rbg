@@ -117,7 +117,10 @@ type RoleSpec struct {
 type ScalingAdapter struct {
     // Enable indicates that if scalingAdapter need to be auto-created and referenced with a corresponding role in rbg
     // +kubebuilder:default=false
-    Enable bool 'json:"enable,omitempty'
+    Enable bool   `json:"enable,omitempty"`
+    // Labels are additional labels to apply to the auto-created RBGSA.
+    // Controller-managed labels (group-name, role-name) take precedence.
+    Labels map[string]string `json:"labels,omitempty"`
 }
 ```
 
@@ -138,7 +141,8 @@ spec:
     replicas: 1
     scalingAdapter:
       enable: true
-      # in the future, support advanced options here
+      labels:
+        custom-label/key: custom-value
     template:
       ...
   - name: role-2
@@ -157,6 +161,10 @@ apiVersion: workloads.x-k8s.io/v1alpha1
 kind: RoleBasedGroupScalingAdapter
 metadata:
   name: $RBG_NAME-$ROLE_NAME
+  labels:
+    custom-label/key: custom-value        # from scalingAdapter.labels
+    workloads.x-k8s.io/group-name: $RBG_NAME  # controller-managed
+    workloads.x-k8s.io/role-name: $ROLE_NAME   # controller-managed
   ownerReferences:
   - apiVersion: workloads.x-k8s.io/v1alpha1
     blockOwnerDeletion: true
@@ -168,6 +176,10 @@ spec:
     name: $RBG_NAME
     role: $ROLE_NAME
 ```
+
+User-specified labels from `scalingAdapter.labels` are merged into the RBGSA's
+`metadata.labels`. Controller-managed labels (`group-name`, `role-name`) always
+take precedence and cannot be overridden by user labels.
 
 Users can directly adjust the replicas of an RBG Role workload that has a created ScalingAdapter through the scale operation.
 
