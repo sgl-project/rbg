@@ -26,6 +26,11 @@ import (
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
+const (
+	rbgName      = "test-rbg"
+	rbgNamespace = "default"
+)
+
 func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	// Define test scheme
 	scheme := runtime.NewScheme()
@@ -35,8 +40,6 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	_ = apiextensionsv1.AddToScheme(scheme)
 
 	gvk := utils.GetRbgGVK()
-	rbgName := "test-rbg"     //nolint:goconst
-	rbgNamespace := "default" //nolint:goconst
 	podGroup := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbgName,
@@ -262,8 +265,6 @@ func TestVolcanoPodGroupScheduler_ReconcileCopiesVolcanoAnnotationsOnCreate(t *t
 	_ = volcanoschedulingv1beta1.AddToScheme(scheme)
 	_ = apiextensionsv1.AddToScheme(scheme)
 
-	rbgName := "test-rbg"
-	rbgNamespace := "default"
 	rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
 		WithAnnotations(
 			map[string]string{
@@ -320,8 +321,6 @@ func TestKubePodGroupScheduler_ReconcileCopiesSchedulerPluginAnnotationsOnCreate
 	_ = schedv1alpha1.AddToScheme(scheme)
 	_ = apiextensionsv1.AddToScheme(scheme)
 
-	rbgName := "test-rbg"
-	rbgNamespace := "default"
 	rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, rbgNamespace).
 		WithAnnotations(
 			map[string]string{
@@ -379,8 +378,6 @@ func TestVolcanoPodGroupScheduler_ReconcileKeepsAnnotationsOnUpdate(t *testing.T
 	_ = apiextensionsv1.AddToScheme(scheme)
 
 	gvk := utils.GetRbgGVK()
-	rbgName := "test-rbg"
-	rbgNamespace := "default"
 
 	existingPodGroup := &volcanoschedulingv1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
