@@ -778,8 +778,24 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 					}, adapter,
 				)
 
-				if tt.expectCreate && err != nil {
-					t.Errorf("Expected scaling adapter to be created, but got error: %v", err)
+				if tt.expectCreate {
+					if err != nil {
+						t.Errorf("Expected scaling adapter to be created, but got error: %v", err)
+					} else {
+						// Verify the adapter has an owner reference to the RBG,
+						// which is required for .Owns() watch to trigger reconciliation.
+						if len(adapter.OwnerReferences) == 0 {
+							t.Error("Expected adapter to have owner references, got none")
+						} else {
+							ownerRef := adapter.OwnerReferences[0]
+							if ownerRef.Name != rbg.Name {
+								t.Errorf("Expected owner ref name %q, got %q", rbg.Name, ownerRef.Name)
+							}
+							if ownerRef.UID != rbg.UID {
+								t.Errorf("Expected owner ref UID %q, got %q", rbg.UID, ownerRef.UID)
+							}
+						}
+					}
 				}
 
 				if tt.expectDelete && err == nil {
