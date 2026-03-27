@@ -3,7 +3,7 @@
 # requires multiple GPUs (1 leader + N workers per instance).
 #
 # Architecture:
-#   - router: SGLang frontend router for request routing and dispatching
+#   - router: SGLang Model Gateway (SMG) for request routing and dispatching
 #   - prefill: 2 instances, each with 1 leader + 3 workers (8x GPU total)
 #   - decode: 4 instances, each with 1 leader + 1 worker (8x GPU total)
 #
@@ -21,23 +21,22 @@
 #
 # Prerequisites:
 #   - SGLang docker image: lmsysorg/sglang:v0.5.9-cu124 (or later)
+#   - SGLang Router docker image: lmsysorg/sglang-router:v0.2.4 (or later)
 #   - GPU nodes with CUDA support
 ---
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
   name: pd-disagg-lws
-  namespace: default
   labels:
     app: llm-inference-tp
     deployment-type: pd-disaggregated-tensor-parallel
     model: qwen-0.6b
 spec:
   roles:
-    # Router: SGLang frontend that routes requests to prefill/decode engines
+    # Router: SGLang Model Gateway (SMG) for PD disaggregation
     - name: router
       replicas: 1
-      dependencies: ["prefill", "decode"]
       standalonePattern:
         template:
           metadata:
@@ -47,17 +46,16 @@ spec:
           spec:
             containers:
               - name: router
-                image: lmsysorg/sglang:v0.5.9-cu124
+                image: lmsysorg/sglang-router:v0.2.4
                 command:
                   - python3
                   - -m
-                  - sglang.srt.disaggregation.mini_lb
+                  - sglang_router.launch_router
+                  - --pd-disaggregation
                   - --prefill
-                  - "http://pd-disagg-lws-prefill-0.s-pd-disagg-lws-prefill:8001"
+                  - "http://pd-disagg-lws-prefill-0.s-pd-disagg-lws-prefill:8000"
                   - --decode
-                  - "http://pd-disagg-lws-decode-0.s-pd-disagg-lws-decode:8001"
-                  - --prefill-bootstrap-ports
-                  - "34000"
+                  - "http://pd-disagg-lws-decode-0.s-pd-disagg-lws-decode:8000"
                   - --host
                   - "0.0.0.0"
                   - --port
@@ -71,7 +69,7 @@ spec:
     # Prefill: 2 instances, tensor parallel size = 4 (1 leader + 3 workers)
     - name: prefill
       replicas: 2
-      restartPolicy: RecreateRBGOnPodRestart
+      restartPolicy: None
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -84,9 +82,14 @@ spec:
             labels:
               app: llm-inference-tp
           spec:
+            volumes:
+              - name: dshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 30Gi
             containers:
               - name: sglang
-                image: lmsysorg/sglang:v0.5.9-cu124
+                image: lmsysorg/sglang
                 command:
                   - python3
                   - -m
@@ -96,22 +99,28 @@ spec:
                   - --host
                   - "0.0.0.0"
                   - --port
-                  - "8001"
+                  - "8000"
                   - --disaggregation-mode
                   - "prefill"
                   - --tp-size
                   - "4"
-                  - --dist-init-addr $(RBG_LWP_LEADER_ADDRESS)
-                  - --nnodes $(RBG_LWP_GROUP_SIZE)
-                  - --node-rank $(RBG_LWP_WORKER_INDEX)
+                  - --dist-init-addr
+                  - $(RBG_LWP_LEADER_ADDRESS):6379
+                  - --nnodes
+                  - $(RBG_LWP_GROUP_SIZE)
+                  - --node-rank
+                  - $(RBG_LWP_WORKER_INDEX)
                 ports:
                   - name: grpc
-                    containerPort: 8001
+                    containerPort: 8000
                 resources:
                   requests:
                     nvidia.com/gpu: "1"
                   limits:
                     nvidia.com/gpu: "1"
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
         leaderTemplatePatch:
           metadata:
             labels:
@@ -124,7 +133,7 @@ spec:
     # Decode: 4 instances, tensor parallel size = 2 (1 leader + 1 worker)
     - name: decode
       replicas: 4
-      restartPolicy: RecreateRBGOnPodRestart
+      restartPolicy: None
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -137,9 +146,14 @@ spec:
             labels:
               app: llm-inference-tp
           spec:
+            volumes:
+              - name: dshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 30Gi
             containers:
               - name: sglang
-                image: lmsysorg/sglang:v0.5.9-cu124
+                image: lmsysorg/sglang
                 command:
                   - python3
                   - -m
@@ -149,22 +163,28 @@ spec:
                   - --host
                   - "0.0.0.0"
                   - --port
-                  - "8001"
+                  - "8000"
                   - --disaggregation-mode
                   - "decode"
                   - --tp-size
                   - "2"
-                  - --dist-init-addr $(RBG_LWP_LEADER_ADDRESS)
-                  - --nnodes $(RBG_LWP_GROUP_SIZE)
-                  - --node-rank $(RBG_LWP_WORKER_INDEX)
+                  - --dist-init-addr
+                  - $(RBG_LWP_LEADER_ADDRESS):6379
+                  - --nnodes
+                  - $(RBG_LWP_GROUP_SIZE)
+                  - --node-rank
+                  - $(RBG_LWP_WORKER_INDEX)
                 ports:
                   - name: grpc
-                    containerPort: 8001
+                    containerPort: 8000
                 resources:
                   requests:
                     nvidia.com/gpu: "1"
                   limits:
                     nvidia.com/gpu: "1"
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
         leaderTemplatePatch:
           metadata:
             labels:

@@ -27,7 +27,6 @@ apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
   name: sglang-agg-inference
-  namespace: default
   labels:
     app: sglang-inference
     deployment-type: aggregated
@@ -56,7 +55,7 @@ spec:
           spec:
             containers:
               - name: backend
-                image: lmsysorg/sglang:v0.5.9-cu124
+                image: lmsysorg/sglang:v0.5.9
                 command:
                   - python3
                   - -m
@@ -83,6 +82,14 @@ spec:
                     cpu: "8"
                     memory: "16Gi"
                     nvidia.com/gpu: "1"
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
+            volumes:
+              - name: dshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 30Gi
                 readinessProbe:
                   httpGet:
                     path: /health
