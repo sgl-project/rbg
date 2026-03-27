@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
@@ -102,6 +103,9 @@ func main() {
 		// Controller runtime options
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
+		portAllocateStrategy    string
+		startPort               int
+		portRange               int
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
 		schedulerName string
 	)
@@ -138,6 +142,9 @@ func main() {
 		"The number of worker threads used by the the RBGS controller.",
 	)
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 120*time.Second, "Informer cache sync timeout.")
+	flag.StringVar(&portAllocateStrategy, "port-allocate-strategy", "random", "The strategy to allocate ports.")
+	flag.IntVar(&startPort, "start-port", 30000, "The start port to allocate.")
+	flag.IntVar(&portRange, "port-range", 5000, "The range of ports to allocate.")
 	flag.StringVar(
 		&schedulerName, "scheduler-name", string(scheduler.KubeSchedulerPlugin),
 		"The scheduler name to use for gang scheduling. Supported values: scheduler-plugins, volcano. "+
@@ -383,6 +390,11 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	if err := portallocator.SetupPortAllocator(startPort, portRange, portAllocateStrategy, mgr.GetClient()); err != nil {
+		setupLog.Error(err, "unable to initialize port allocator")
 		os.Exit(1)
 	}
 

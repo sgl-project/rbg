@@ -33,6 +33,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
 )
 
@@ -121,6 +122,8 @@ func (c *commonControl) injectNewVersionedInstances(instance *workloadsv1alpha2.
 
 	// inject spec
 	inplaceupdate.InjectVersionedRoleInstanceSpec(instance)
+
+	portallocator.AllocatePortsForInstance(instance, set)
 }
 
 func (c *commonControl) IsInstanceUpdatePaused(instance *workloadsv1alpha2.RoleInstance) bool {
