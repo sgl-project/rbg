@@ -56,10 +56,16 @@ func (alloc *PortAllocator) startPortAllocator() error {
 }
 
 func Release(port int32) error {
+	if portAllocator == nil {
+		return fmt.Errorf("port allocator is not enabled")
+	}
 	return portAllocator.pa.Release(port)
 }
 
 func AllocateBatch(num int32) ([]int32, error) {
+	if portAllocator == nil {
+		return nil, fmt.Errorf("port allocator is not enabled")
+	}
 	return portAllocator.pa.AllocateBatch(num)
 }
 

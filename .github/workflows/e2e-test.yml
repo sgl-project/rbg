@@ -142,6 +142,7 @@ jobs:
             --namespace rbgs-system \
             --set image.tag=e2e-test \
             --set crdUpgrade.tag=e2e-test \
+            --set portAllocator.enabled=true \
             --wait
           kubectl get deploy -n rbgs-system
 

@@ -106,6 +106,7 @@ func main() {
 		portAllocateStrategy    string
 		startPort               int
 		portRange               int
+		enablePortAllocator     bool
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
 		schedulerName string
 	)
@@ -142,6 +143,7 @@ func main() {
 		"The number of worker threads used by the the RBGS controller.",
 	)
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 120*time.Second, "Informer cache sync timeout.")
+	flag.BoolVar(&enablePortAllocator, "enable-port-allocator", false, "Enable the port allocator.")
 	flag.StringVar(&portAllocateStrategy, "port-allocate-strategy", "random", "The strategy to allocate ports.")
 	flag.IntVar(&startPort, "start-port", 30000, "The start port to allocate.")
 	flag.IntVar(&portRange, "port-range", 5000, "The range of ports to allocate.")
@@ -393,9 +395,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := portallocator.SetupPortAllocator(startPort, portRange, portAllocateStrategy, mgr.GetClient()); err != nil {
-		setupLog.Error(err, "unable to initialize port allocator")
-		os.Exit(1)
+	if enablePortAllocator {
+		if err := portallocator.SetupPortAllocator(startPort, portRange, portAllocateStrategy, mgr.GetClient()); err != nil {
+			setupLog.Error(err, "unable to initialize port allocator")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("starting manager")
