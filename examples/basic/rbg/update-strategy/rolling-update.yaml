@@ -1,0 +1,75 @@
+# Example: Rolling update strategy for RoleBasedGroup (v1alpha2)
+# Demonstrates RollingUpdate with different update types:
+# - RecreatePod: delete old pod and create new one
+# - InPlaceIfPossible: try in-place update first, recreate if not possible (default)
+# - InPlaceOnly: only use in-place update, fail if not possible
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: rolling-update-demo
+  namespace: default
+spec:
+  roles:
+    # InPlaceIfPossible: prefer in-place update to minimize disruption
+    - name: prefill
+      replicas: 4
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          maxSurge: 0
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 10
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: nginx
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 80
+
+    # InPlaceOnly: strictly in-place update only
+    - name: decode
+      replicas: 4
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceOnly
+          maxUnavailable: 2
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: nginx
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+
+    # RecreatePod: delete and recreate pods (default Kubernetes behavior)
+    - name: router
+      replicas: 2
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: RecreatePod
+          maxUnavailable: 1
+          maxSurge: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: nginx
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 9090

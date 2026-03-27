@@ -1,0 +1,39 @@
+# Example: RoleBasedGroupSet with exclusive topology (v1alpha2)
+# Each RoleBasedGroup replica is scheduled on a different set of nodes.
+# The exclusive-topology annotation ensures topology isolation between group replicas.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroupSet
+metadata:
+  name: rbgs-exclusive
+  namespace: default
+spec:
+  replicas: 3
+  groupTemplate:
+    metadata:
+      labels:
+        app: inference-cluster
+      annotations:
+        rolebasedgroup.workloads.x-k8s.io/group-exclusive-topology: "kubernetes.io/hostname"
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          standalonePattern:
+            template:
+              spec:
+                containers:
+                  - name: prefill
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 8080
+
+        - name: decode
+          replicas: 2
+          standalonePattern:
+            template:
+              spec:
+                containers:
+                  - name: decode
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 8081

@@ -1,0 +1,103 @@
+# Example: RoleBasedGroupScalingAdapter with HPA (v1alpha2)
+# RoleBasedGroupScalingAdapter bridges HPA and RoleBasedGroup role scaling.
+# Enable scalingAdapter on the role, then create an adapter pointing to that role.
+# Finally, create an HPA targeting the adapter's scale subresource.
+---
+# Step 1: Create RoleBasedGroup with scalingAdapter enabled on the target role
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: inference-cluster
+  namespace: default
+spec:
+  roles:
+    - name: prefill
+      replicas: 2
+      # Enable scalingAdapter to allow HPA to control this role's replicas
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                resources:
+                  requests:
+                    cpu: "1"
+                    memory: "2Gi"
+
+    - name: decode
+      replicas: 4
+      dependencies: ["prefill"]
+      # Enable scalingAdapter to allow HPA to control this role's replicas
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: "4Gi"
+
+---
+# Step 2: Create RoleBasedGroupScalingAdapter for the prefill role
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroupScalingAdapter
+metadata:
+  name: prefill-scaling-adapter
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: inference-cluster  # Name of the RoleBasedGroup
+    role: prefill             # Name of the role to scale
+
+---
+# Step 3: Create RoleBasedGroupScalingAdapter for the decode role
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroupScalingAdapter
+metadata:
+  name: decode-scaling-adapter
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: inference-cluster
+    role: decode
+
+---
+# Step 4: Create HPA targeting the prefill scaling adapter
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: prefill-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: workloads.x-k8s.io/v1alpha2
+    kind: RoleBasedGroupScalingAdapter
+    name: prefill-scaling-adapter
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80

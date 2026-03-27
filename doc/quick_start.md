@@ -62,5 +62,5 @@ Deploying PD-disagg inference service with RBG.
 
 ![rbg-pd](./img/rbg-pd.jpg)
 
-- [SGLang PD-Disagg](../examples/pd-disagg/sglang/sgl.md)
-- [Others](../examples/pd-disagg/dynamo/README.md)
+- [sglang](../examples/inference/)
+- [Others](../examples/inference/others)

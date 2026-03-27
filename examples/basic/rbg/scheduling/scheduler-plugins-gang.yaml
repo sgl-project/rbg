@@ -1,0 +1,51 @@
+# Example: Gang scheduling with Kubernetes scheduler-plugins (v1alpha2)
+# scheduler-plugins PodGroup ensures co-scheduling: the group is scheduled only
+# when a minimum number of pods can be scheduled simultaneously.
+#
+# NOTE: scheduler-plugins is the default gang scheduling implementation.
+# No special controller configuration is required (--scheduler-name defaults to scheduler-plugins).
+#
+# Optional annotations for scheduler-plugins PodGroup configuration:
+#   rbg.workloads.x-k8s.io/group-gang-scheduling: "true"           # Required: enables gang scheduling
+#   rbg.workloads.x-k8s.io/group-gang-scheduling-timeout: "120"    # Optional: schedule timeout in seconds (default: 60)
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: scheduler-plugins-gang
+  namespace: default
+  annotations:
+    rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
+    # rbg.workloads.x-k8s.io/group-gang-scheduling-timeout: "120"
+spec:
+  roles:
+    - name: prefill
+      replicas: 2
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+
+    - name: decode
+      replicas: 4
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"

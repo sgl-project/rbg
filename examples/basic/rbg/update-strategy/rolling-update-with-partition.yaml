@@ -1,0 +1,52 @@
+# Example: Rolling update with partition control (v1alpha2)
+# Partition allows you to control how many replicas are updated at a time.
+# Only replicas with ordinal >= partition will be updated to the new version.
+# This enables canary deployments: update a subset first, then gradually increase.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: rolling-update-with-partition
+  namespace: default
+spec:
+  roles:
+    # Only replicas with ordinal >= 2 will be updated (replicas 0,1 stay on old version)
+    - name: prefill
+      replicas: 4
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          partition: 2  # Update only last 2 replicas first (canary)
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v2  # Change this to trigger a new rollout
+          spec:
+            containers:
+              - name: nginx
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 80
+
+    # Paused update: no replicas will be updated until paused is set to false
+    - name: decode
+      replicas: 4
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          paused: true  # Pause the rollout manually
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v2
+          spec:
+            containers:
+              - name: nginx
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080

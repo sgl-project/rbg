@@ -28,7 +28,7 @@ Common topology keys include:
 
 ## Example: RoleBasedGroup with Exclusive Topology
 
-The [rbg-with-exclusive-topology example](../../examples/basics/exclusive-topology.yaml) demonstrates how to use
+The [rbg-with-exclusive-topology example](../../examples/basic/rbg/scheduling/exclusive-topology.yaml) demonstrates how to use
 exclusive topology with a RoleBasedGroup, ensuring all roles are scheduled on the same node.  
 In this example, all pods (leader, worker, and lws) will be scheduled on the same node due to the
 `kubernetes.io/hostname` topology key.
@@ -36,7 +36,7 @@ In this example, all pods (leader, worker, and lws) will be scheduled on the sam
 ## Example: RoleBasedGroupSet with Exclusive Topology
 
 RoleBasedGroupSet extends the exclusive topology feature to multiple groups, where each group is scheduled exclusively
-on a topology domain. See example [rbgs-exclusive-topology.yaml](../../examples/rbgs/exclusive-topology.yaml).
+on a topology domain. See example [rbgs-exclusive-topology.yaml](../../examples/basic/rbgs/rbgs-exclusive-topology.yaml).
 
 In this example:
 

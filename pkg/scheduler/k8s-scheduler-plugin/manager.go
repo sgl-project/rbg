@@ -16,6 +16,11 @@ limitations under the License.
 
 // Package kubeschedulerplugin implements the PodGroupManager interface for
 // the Kubernetes scheduler-plugins PodGroup (scheduling.x-k8s.io).
+//
+// This is the default gang scheduling implementation. The controller uses
+// scheduler-plugins by default (--scheduler-name=scheduler-plugins), but can
+// be configured to use Volcano instead via the --scheduler-name flag or
+// schedulerName Helm value.
 package kubeschedulerplugin
 
 import (

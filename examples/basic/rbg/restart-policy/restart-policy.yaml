@@ -1,0 +1,60 @@
+# Example: RoleBasedGroup with restart policies (v1alpha2)
+# Demonstrates different restart policy configurations for roles.
+# - RecreateRBGOnPodRestart: Recreate the entire RBG when any pod restarts
+# - RecreateRoleInstanceOnPodRestart: Recreate only the affected role instance
+# - None: No automatic restart action (follow default pod restart behavior)
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: restart-policy-demo
+  namespace: default
+spec:
+  roles:
+    # RecreateRBGOnPodRestart: critical role that should trigger full group restart
+    - name: driver
+      restartPolicy: RecreateRBGOnPodRestart
+      replicas: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: driver
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 80
+
+    # RecreateRoleInstanceOnPodRestart: recreate only this instance on pod restart
+    - name: worker
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      replicas: 3
+      dependencies: ["driver"]
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: worker
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+
+    # None: no restart action, rely on default pod restart behavior
+    - name: monitor
+      restartPolicy: None
+      replicas: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: monitor
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 9090
