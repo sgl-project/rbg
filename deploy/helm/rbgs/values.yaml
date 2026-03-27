@@ -53,3 +53,8 @@ crdUpgrade:
     - operator: Exists
   # Node selector for CRD Upgrader Job pod
   nodeSelector: {}
+
+portAllocator:
+  strategy: random
+  startPort: 30000
+  portRange: 5000

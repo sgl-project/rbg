@@ -32,6 +32,9 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            - --port-allocate-strategy={{ .Values.portAllocator.strategy | default "random" }}
+            - --start-port={{ .Values.portAllocator.startPort | default 30000 }}
+            - --port-range={{ .Values.portAllocator.portRange | default 5000 }}
             - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
           command:
             - /manager
