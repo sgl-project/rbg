@@ -54,7 +54,13 @@ crdUpgrade:
   # Node selector for CRD Upgrader Job pod
   nodeSelector: {}
 
+# Port allocator configuration for dynamic port allocation to pods.
 portAllocator:
+  # Whether to enable the port allocator feature.
+  enabled: false
+  # Port allocation strategy. Supported values: random.
   strategy: random
+  # The starting port number of the allocatable port range.
   startPort: 30000
+  # The size of the allocatable port range.
   portRange: 5000

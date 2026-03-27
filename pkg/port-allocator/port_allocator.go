@@ -17,6 +17,7 @@ limitations under the License.
 package port_allocator
 
 import (
+	"errors"
 	"fmt"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +25,10 @@ import (
 
 // AllocateStrategy program startup flags
 type AllocateStrategy string
+
+// ErrPortAllocatorDisabled is returned when the port allocator is not enabled.
+// Callers can use errors.Is() to check for this specific condition.
+var ErrPortAllocatorDisabled = errors.New("port allocator is not enabled")
 
 // Singleton pattern, created at program startup based on the port allocation strategy
 var portAllocator *PortAllocator
@@ -56,10 +61,16 @@ func (alloc *PortAllocator) startPortAllocator() error {
 }
 
 func Release(port int32) error {
+	if portAllocator == nil {
+		return ErrPortAllocatorDisabled
+	}
 	return portAllocator.pa.Release(port)
 }
 
 func AllocateBatch(num int32) ([]int32, error) {
+	if portAllocator == nil {
+		return nil, ErrPortAllocatorDisabled
+	}
 	return portAllocator.pa.AllocateBatch(num)
 }
 
