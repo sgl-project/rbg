@@ -886,6 +886,7 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&workloadsv1alpha2.RoleInstanceSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&corev1.Service{}).
+		Owns(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.MatchEveryOwner, builder.WithPredicates(RBGScalingAdapterPredicate())).
 		Named("workloads-rolebasedgroup")
 
 	err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName)

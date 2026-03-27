@@ -703,6 +703,10 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleBasedGroup",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -778,8 +782,29 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 					}, adapter,
 				)
 
-				if tt.expectCreate && err != nil {
-					t.Errorf("Expected scaling adapter to be created, but got error: %v", err)
+				if tt.expectCreate {
+					if err != nil {
+						t.Errorf("Expected scaling adapter to be created, but got error: %v", err)
+					} else {
+						// Verify the adapter has an owner reference to the RBG,
+						// which is required for .Owns() watch to trigger reconciliation.
+						var found bool
+						for _, ref := range adapter.OwnerReferences {
+							if ref.Name == rbg.Name && ref.UID == rbg.UID {
+								found = true
+								if ref.APIVersion != rbg.APIVersion {
+									t.Errorf("Expected owner ref APIVersion %q, got %q", rbg.APIVersion, ref.APIVersion)
+								}
+								if ref.Kind != rbg.Kind {
+									t.Errorf("Expected owner ref Kind %q, got %q", rbg.Kind, ref.Kind)
+								}
+								break
+							}
+						}
+						if !found {
+							t.Errorf("Expected owner reference with Name=%q UID=%q, got %v", rbg.Name, rbg.UID, adapter.OwnerReferences)
+						}
+					}
 				}
 
 				if tt.expectDelete && err == nil {
