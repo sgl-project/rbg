@@ -1321,7 +1321,7 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 	if in.ScalingAdapter != nil {
 		in, out := &in.ScalingAdapter, &out.ScalingAdapter
 		*out = new(ScalingAdapter)
-		**out = **in
+		(*in).DeepCopyInto(*out)
 	}
 }
 
