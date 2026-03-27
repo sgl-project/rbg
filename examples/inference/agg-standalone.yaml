@@ -68,6 +68,7 @@ spec:
                   - --port
                   - "8001"
                   - --tp-size
+                  - "1"
                 ports:
                   - name: grpc
                     containerPort: 8001
