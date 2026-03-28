@@ -190,25 +190,31 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 5: Calculate coordination strategies for scaling and rolling update
+	// Step 5: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
+	// When v1alpha1 support is removed, delete this step and coordinatedpolicy_migration_controller.go.
+	if err := EnsureV1alpha1CoordinatedPolicy(ctx, r.client, rbg); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 6: Calculate coordination strategies for scaling and rolling update
 	// Coordination configuration is now fetched from CoordinatedPolicy CR with the same name/namespace.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Reconcile PodGroup for gang scheduling (annotation-driven).
+	// Step 7: Reconcile PodGroup for gang scheduling (annotation-driven).
 	if err := r.reconcilePodGroup(ctx, rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Reconcile roles, do create/update actions for roles.
+	// Step 8: Reconcile roles, do create/update actions for roles.
 	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 8: Cleanup orphaned resources
+	// Step 9: Cleanup orphaned resources
 	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -751,11 +757,29 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
-	// update rbg status
-	// The SSA patch with FieldManager="rbg" and Force=true includes all conditions. Since
-	// setRestartCondition uses UpdateStatus (not SSA), there is no field-manager conflict:
-	// the UpdateStatus write from pod_controller will be reflected in the next reconcile's
-	// informer cache read, and the RBG controller will preserve it faithfully.
+	// CRITICAL: Fetch the latest RBG from API server to preserve conditions set by other controllers.
+	// The pod controller uses UpdateStatus to set RestartInProgress, which may not be reflected
+	// in the informer cache yet. Without this, SSA with Force=true would overwrite those conditions.
+	latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
+		logger := log.FromContext(ctx)
+		logger.Error(err, "Failed to get latest RBG from API server for status update")
+		return err
+	}
+
+	// Preserve RestartInProgress condition if it exists in the latest RBG from API server.
+	// This condition is managed by the pod controller and should not be overwritten by RBG controller.
+	if restartCond := apimeta.FindStatusCondition(
+		latestRBG.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+	); restartCond != nil {
+		apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
+	}
+
+	// update rbg status using SSA patch.
+	// IMPORTANT: We must preserve the RestartInProgress condition managed by pod controller.
+	// The above code fetches the latest RBG from API server (bypassing informer cache) and
+	// preserves any RestartInProgress condition. This prevents SSA with Force=true from
+	// overwriting conditions set by other controllers due to informer cache latency.
 	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)

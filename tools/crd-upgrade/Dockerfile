@@ -7,10 +7,18 @@ COPY ./config/crd/bases /rbgs/crds
 COPY ./tools/crd-upgrade/ensure-crds-up-to-date.sh /rbgs/ensure-crds-up-to-date.sh
 
 # Install necessary tools
+#
+# Use chinese mirror:
+# RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+#     apk add --update --no-cache bash curl && \
+#     chmod +x /rbgs/ensure-crds-up-to-date.sh
 RUN apk add --update --no-cache bash curl && \
     chmod +x /rbgs/ensure-crds-up-to-date.sh
 
-# Install kubectl with checksum verification (supports multi-arch via TARGETARCH)
+# Install kubectl (use Aliyun mirror for CN network environment)
+#
+# Install via chinese mirror:
+# RUN apk add --no-cache kubectl --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community
 ARG KUBECTL_VERSION=v1.31.0
 ARG TARGETARCH=amd64
 RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \

@@ -53,7 +53,6 @@ func TestE2E(t *testing.T) {
 	// Run explicitly with: ginkgo --label-filter=v1alpha1
 	ginkgo.Describe(
 		"[v1alpha1] Run role based controller e2e tests",
-		ginkgo.Pending,
 		func() {
 			testcasev1alpha1.RunRbgControllerTestCases(f)
 			testcasev1alpha1.RunControllerRevisionTestCases(f)

@@ -36,6 +36,11 @@ spec:
             - --start-port={{ .Values.portAllocator.startPort | default 30000 }}
             - --port-range={{ .Values.portAllocator.portRange | default 5000 }}
             - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           command:
             - /manager
           securityContext:

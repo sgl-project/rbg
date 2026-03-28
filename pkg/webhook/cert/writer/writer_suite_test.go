@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The RBG Authors.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,11 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package writer
 
-// Hub marks RoleBasedGroup as the conversion hub.
-// All other versions (e.g. v1alpha1) implement ConvertTo/ConvertFrom targeting this type.
-func (*RoleBasedGroup) Hub() {}
+import (
+	"testing"
 
-// Hub marks RoleBasedGroupSet as the conversion hub.
-func (*RoleBasedGroupSet) Hub() {}
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+func TestWriter(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Writer Suite")
+}
