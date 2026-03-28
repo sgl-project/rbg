@@ -83,6 +83,9 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 		WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
 		}).Obj()
+	rbg.Status.RoleStatuses = []workloadsv1alpha2.RoleStatus{
+		{Name: "test-role", ReadyReplicas: 2, Replicas: 3},
+	}
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -114,23 +117,44 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 	unboundRbgSA := rbgsa.DeepCopy()
 	unboundRbgSA.Spec.ScaleTargetRef.Role = "non-existent-role"
 
+	// RBG without roleStatuses for "test-role" (Gap 1: bind path without roleStatus)
+	rbgNoRoleStatuses := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
+		}).Obj()
+	// no roleStatuses set
+
+	unboundAdapterForNoRoleStatus := rbgsa.DeepCopy()
+
 	// Define test cases
 	tests := []struct {
-		name                 string
-		client               client.Client
-		expectError          bool
-		expectRequeue        bool
-		expectedRequeueAfter time.Duration
-		expectedPhase        constants.AdapterPhase
-		expectedReplicas     *int32
+		name                   string
+		client                 client.Client
+		expectError            bool
+		expectRequeue          bool
+		expectedRequeueAfter   time.Duration
+		expectedPhase          constants.AdapterPhase
+		expectedReplicas       *int32
+		expectedReadyReplicas  *int32
+		expectNilReadyReplicas bool
 	}{
 		{
-			name:                 "adapter bound successfully",
-			client:               fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbgsa, rbg, sts).Build(),
-			expectError:          false,
-			expectRequeue:        true,
-			expectedRequeueAfter: 1 * time.Second,
-			expectedPhase:        constants.AdapterPhaseBound,
+			name:                  "adapter bound successfully",
+			client:                fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbgsa, rbg, sts).Build(),
+			expectError:           false,
+			expectRequeue:         true,
+			expectedRequeueAfter:  1 * time.Second,
+			expectedPhase:         constants.AdapterPhaseBound,
+			expectedReadyReplicas: ptr.To(int32(2)),
+		},
+		{
+			name:                   "adapter bound without roleStatus leaves readyReplicas nil",
+			client:                 fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(unboundAdapterForNoRoleStatus, rbgNoRoleStatuses, sts).Build(),
+			expectError:            false,
+			expectRequeue:          true,
+			expectedRequeueAfter:   1 * time.Second,
+			expectedPhase:          constants.AdapterPhaseBound,
+			expectNilReadyReplicas: true,
 		},
 		{
 			name:                 "unbound adapter with missing role requeues after 10s",
@@ -228,6 +252,30 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 					)
 					require.NoError(t, err)
 					assert.Equal(t, tt.expectedReplicas, updatedAdapter.Status.Replicas)
+				}
+
+				if tt.expectedReadyReplicas != nil {
+					updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+					err := tt.client.Get(
+						context.TODO(), types.NamespacedName{
+							Name:      rbgsa.Name,
+							Namespace: rbgsa.Namespace,
+						}, updatedAdapter,
+					)
+					require.NoError(t, err)
+					assert.Equal(t, tt.expectedReadyReplicas, updatedAdapter.Status.ReadyReplicas)
+				}
+
+				if tt.expectNilReadyReplicas {
+					updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+					err := tt.client.Get(
+						context.TODO(), types.NamespacedName{
+							Name:      rbgsa.Name,
+							Namespace: rbgsa.Namespace,
+						}, updatedAdapter,
+					)
+					require.NoError(t, err)
+					assert.Nil(t, updatedAdapter.Status.ReadyReplicas)
 				}
 			},
 		)
@@ -435,4 +483,482 @@ func TestRBGScalingAdapterPredicate(t *testing.T) {
 		},
 	}
 	assert.False(t, predicate.GenericFunc(genericEvent))
+}
+
+func TestRoleBasedGroupScalingAdapterReconciler_ReadyReplicasSync(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
+		}).Obj()
+	rbg.Status.RoleStatuses = []workloadsv1alpha2.RoleStatus{
+		{Name: "test-role", ReadyReplicas: 3, Replicas: 5},
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-test-role",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "workloads.x-k8s.io/v1alpha2",
+					Kind:               "RoleBasedGroup",
+					Name:               "test-rbg",
+					UID:                "rbg-test-uid",
+					BlockOwnerDeletion: ptr.To(true),
+				},
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(5)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					constants.GroupNameLabelKey: "test-rbg",
+					constants.RoleNameLabelKey:  "test-role",
+				},
+			},
+			Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+		},
+	}
+
+	baseBoundAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-adapter",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "workloads.x-k8s.io/v1alpha2",
+					Kind:               "RoleBasedGroup",
+					Name:               "test-rbg",
+					UID:                "rbg-test-uid",
+					BlockOwnerDeletion: ptr.To(true),
+				},
+			},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			Replicas: ptr.To(int32(1)), // match role replicas to avoid triggering scale path
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "test-rbg",
+				Role: "test-role",
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus{
+			Phase: constants.AdapterPhaseBound,
+		},
+	}
+
+	tests := []struct {
+		name                   string
+		adapterReadyReplicas   *int32
+		expectedReadyReplicas  int32
+		expectNilReadyReplicas bool
+		clearRoleStatuses      bool
+		clientOverride         client.Client
+		expectError            bool
+	}{
+		{
+			name:                  "sync readyReplicas from nil to 3",
+			adapterReadyReplicas:  nil,
+			expectedReadyReplicas: 3,
+		},
+		{
+			name:                  "update readyReplicas from 1 to 3",
+			adapterReadyReplicas:  ptr.To(int32(1)),
+			expectedReadyReplicas: 3,
+		},
+		{
+			name:                  "no update when readyReplicas already 3",
+			adapterReadyReplicas:  ptr.To(int32(3)),
+			expectedReadyReplicas: 3,
+		},
+		{
+			// Gap 3: roleStatus not found — readyReplicas stays unchanged
+			name:                   "roleStatus not found skips readyReplicas update",
+			adapterReadyReplicas:   ptr.To(int32(5)),
+			expectNilReadyReplicas: false,
+			expectedReadyReplicas:  5,
+			clearRoleStatuses:      true,
+		},
+		{
+			// Gap 2: patch failure returns error
+			name:                 "patch error on readyReplicas sync returns error",
+			adapterReadyReplicas: nil,
+			expectError:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := baseBoundAdapter.DeepCopy()
+			adapter.Status.ReadyReplicas = tt.adapterReadyReplicas
+
+			// Use a RBG with no roleStatus for the clearRoleStatuses test
+			testRBG := rbg
+			if tt.clearRoleStatuses {
+				noStatusRBG := rbg.DeepCopy()
+				noStatusRBG.Status.RoleStatuses = nil
+				testRBG = noStatusRBG
+			}
+
+			var fakeClient client.Client
+			if tt.clientOverride != nil {
+				fakeClient = tt.clientOverride
+			} else if tt.expectError {
+				fakeClient = fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithRuntimeObjects(adapter, testRBG, sts).
+					WithInterceptorFuncs(interceptor.Funcs{
+						SubResourcePatch: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+							return fmt.Errorf("simulated patch error")
+						},
+					}).
+					Build()
+			} else {
+				fakeClient = fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithRuntimeObjects(adapter, testRBG, sts).
+					Build()
+			}
+
+			reconciler := &RoleBasedGroupScalingAdapterReconciler{
+				client:   fakeClient,
+				recorder: record.NewFakeRecorder(100),
+			}
+
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      adapter.Name,
+					Namespace: adapter.Namespace,
+				},
+			}
+
+			logger := zap.New().WithValues("env", "unit-test")
+			ctx := ctrl.LoggerInto(context.TODO(), logger)
+			_, err := reconciler.Reconcile(ctx, req)
+
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+			err = fakeClient.Get(context.TODO(), types.NamespacedName{
+				Name:      adapter.Name,
+				Namespace: adapter.Namespace,
+			}, updatedAdapter)
+			require.NoError(t, err)
+
+			if tt.expectNilReadyReplicas {
+				assert.Nil(t, updatedAdapter.Status.ReadyReplicas)
+			} else {
+				require.NotNil(t, updatedAdapter.Status.ReadyReplicas)
+				assert.Equal(t, tt.expectedReadyReplicas, *updatedAdapter.Status.ReadyReplicas)
+			}
+		})
+	}
+}
+
+// Gap 4: readyReplicas sync + scale in the same reconcile
+func TestReadyReplicasSyncWithScale(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
+		}).Obj()
+	rbg.Status.RoleStatuses = []workloadsv1alpha2.RoleStatus{
+		{Name: "test-role", ReadyReplicas: 3, Replicas: 1},
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-test-role",
+			Namespace: "default",
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					constants.GroupNameLabelKey: "test-rbg",
+					constants.RoleNameLabelKey:  "test-role",
+				},
+			},
+			Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+		},
+	}
+
+	adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-adapter",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "workloads.x-k8s.io/v1alpha2",
+					Kind:               "RoleBasedGroup",
+					Name:               "test-rbg",
+					UID:                "rbg-test-uid",
+					BlockOwnerDeletion: ptr.To(true),
+				},
+			},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			Replicas: ptr.To(int32(5)), // differs from role replicas=1 → triggers scale
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "test-rbg",
+				Role: "test-role",
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus{
+			Phase: constants.AdapterPhaseBound,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(adapter, rbg, sts).
+		Build()
+
+	reconciler := &RoleBasedGroupScalingAdapterReconciler{
+		client:   fakeClient,
+		recorder: record.NewFakeRecorder(100),
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      adapter.Name,
+			Namespace: adapter.Namespace,
+		},
+	}
+
+	logger := zap.New().WithValues("env", "unit-test")
+	ctx := ctrl.LoggerInto(context.TODO(), logger)
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	updatedAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+	err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      adapter.Name,
+		Namespace: adapter.Namespace,
+	}, updatedAdapter)
+	require.NoError(t, err)
+
+	// Both readyReplicas synced AND scale path executed
+	require.NotNil(t, updatedAdapter.Status.ReadyReplicas, "readyReplicas should be preserved after scale")
+	assert.Equal(t, int32(3), *updatedAdapter.Status.ReadyReplicas)
+	require.NotNil(t, updatedAdapter.Status.Replicas, "status.Replicas should reflect scaled value")
+	assert.Equal(t, int32(5), *updatedAdapter.Status.Replicas)
+	assert.Equal(t, constants.AdapterPhaseBound, updatedAdapter.Status.Phase, "phase should be preserved after readyReplicas sync")
+}
+
+// Gaps 5-8: mapRBGToScalingAdapters
+func TestMapRBGToScalingAdapters(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+
+	matchingAdapter1 := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "adapter-1",
+			Namespace: "default",
+			Labels:    map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "test-rbg",
+				Role: "role-a",
+			},
+		},
+	}
+
+	matchingAdapter2 := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "adapter-2",
+			Namespace: "default",
+			Labels:    map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "test-rbg",
+				Role: "role-b",
+			},
+		},
+	}
+
+	nonMatchingAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "adapter-other",
+			Namespace: "default",
+			Labels:    map[string]string{constants.GroupNameLabelKey: "other-rbg"},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "other-rbg",
+				Role: "role-x",
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		obj              client.Object
+		clientBuilder    func() client.Client
+		expectedRequests int
+	}{
+		{
+			name: "maps RBG to matching adapters",
+			obj:  rbg,
+			clientBuilder: func() client.Client {
+				return fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(rbg, matchingAdapter1, matchingAdapter2, nonMatchingAdapter).
+					Build()
+			},
+			expectedRequests: 2,
+		},
+		{
+			name: "returns nil for non-RBG object",
+			obj:  &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a-pod", Namespace: "default"}},
+			clientBuilder: func() client.Client {
+				return fake.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedRequests: 0,
+		},
+		{
+			name: "returns nil on List error",
+			obj:  rbg,
+			clientBuilder: func() client.Client {
+				return fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithInterceptorFuncs(interceptor.Funcs{
+						List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+							return fmt.Errorf("simulated list error")
+						},
+					}).
+					Build()
+			},
+			expectedRequests: 0,
+		},
+		{
+			name: "returns nil when no adapters exist",
+			obj:  rbg,
+			clientBuilder: func() client.Client {
+				return fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(rbg).
+					Build()
+			},
+			expectedRequests: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := tt.clientBuilder()
+			reconciler := &RoleBasedGroupScalingAdapterReconciler{
+				client: fakeClient,
+			}
+
+			logger := zap.New().WithValues("env", "unit-test")
+			ctx := ctrl.LoggerInto(context.TODO(), logger)
+			requests := reconciler.mapRBGToScalingAdapters(ctx, tt.obj)
+
+			assert.Len(t, requests, tt.expectedRequests)
+		})
+	}
+}
+
+// Gaps 9-11: RBG watch predicate
+func TestRBGRoleStatusPredicate(t *testing.T) {
+	pred := RBGRoleStatusPredicate()
+
+	t.Run("UpdateFunc", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			event    event.UpdateEvent
+			expected bool
+		}{
+			{
+				name: "returns true when RoleStatuses change",
+				event: event.UpdateEvent{
+					ObjectOld: &workloadsv1alpha2.RoleBasedGroup{
+						Status: workloadsv1alpha2.RoleBasedGroupStatus{
+							RoleStatuses: []workloadsv1alpha2.RoleStatus{
+								{Name: "role-a", ReadyReplicas: 2},
+							},
+						},
+					},
+					ObjectNew: &workloadsv1alpha2.RoleBasedGroup{
+						Status: workloadsv1alpha2.RoleBasedGroupStatus{
+							RoleStatuses: []workloadsv1alpha2.RoleStatus{
+								{Name: "role-a", ReadyReplicas: 3},
+							},
+						},
+					},
+				},
+				expected: true,
+			},
+			{
+				name: "returns false when RoleStatuses unchanged",
+				event: event.UpdateEvent{
+					ObjectOld: &workloadsv1alpha2.RoleBasedGroup{
+						Status: workloadsv1alpha2.RoleBasedGroupStatus{
+							RoleStatuses: []workloadsv1alpha2.RoleStatus{
+								{Name: "role-a", ReadyReplicas: 2},
+							},
+						},
+					},
+					ObjectNew: &workloadsv1alpha2.RoleBasedGroup{
+						Status: workloadsv1alpha2.RoleBasedGroupStatus{
+							RoleStatuses: []workloadsv1alpha2.RoleStatus{
+								{Name: "role-a", ReadyReplicas: 2},
+							},
+						},
+					},
+				},
+				expected: false,
+			},
+			{
+				name: "returns false for non-RBG types",
+				event: event.UpdateEvent{
+					ObjectOld: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old"}},
+					ObjectNew: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "new"}},
+				},
+				expected: false,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				assert.Equal(t, tt.expected, pred.UpdateFunc(tt.event))
+			})
+		}
+	})
+
+	t.Run("CreateFunc", func(t *testing.T) {
+		assert.False(t, pred.CreateFunc(event.CreateEvent{
+			Object: &workloadsv1alpha2.RoleBasedGroup{},
+		}))
+	})
+
+	t.Run("DeleteFunc", func(t *testing.T) {
+		assert.False(t, pred.DeleteFunc(event.DeleteEvent{
+			Object: &workloadsv1alpha2.RoleBasedGroup{},
+		}))
+	})
+
+	t.Run("GenericFunc", func(t *testing.T) {
+		assert.False(t, pred.GenericFunc(event.GenericEvent{
+			Object: &workloadsv1alpha2.RoleBasedGroup{},
+		}))
+	})
 }

@@ -171,5 +171,17 @@ func expectRbgV2ScalingAdapterEqual(
 		return fmt.Errorf("ScalingAdapter.Status.Phase %s is not AdapterPhaseBound", rbgSa.Status.Phase)
 	}
 
+	// Validate readyReplicas matches RBG role status
+	roleStatus, found := rbg.GetRoleStatus(role.Name)
+	if found {
+		if rbgSa.Status.ReadyReplicas == nil {
+			return fmt.Errorf("ScalingAdapter.Status.ReadyReplicas is nil, expected %d", roleStatus.ReadyReplicas)
+		}
+		if *rbgSa.Status.ReadyReplicas != roleStatus.ReadyReplicas {
+			return fmt.Errorf("ScalingAdapter.Status.ReadyReplicas %d != RoleStatus.ReadyReplicas %d",
+				*rbgSa.Status.ReadyReplicas, roleStatus.ReadyReplicas)
+		}
+	}
+
 	return nil
 }

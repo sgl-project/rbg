@@ -34,13 +34,16 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
@@ -168,6 +171,10 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		if targetRole.Replicas != nil {
 			status = status.WithReplicas(*targetRole.Replicas)
 		}
+		roleStatus, found := rbg.GetRoleStatus(targetRoleName)
+		if found {
+			status = status.WithReadyReplicas(roleStatus.ReadyReplicas)
+		}
 		rbgScalingAdapterStatusApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 			WithStatus(
 				status.WithPhase(constants.AdapterPhaseBound).WithSelector(selector),
@@ -184,6 +191,23 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			"Succeed to find scale target role [%s] of rbg [%s]", targetRoleName, rbgName,
 		)
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+	}
+
+	// Sync readyReplicas from RBG role status
+	roleStatus, found := rbg.GetRoleStatus(targetRoleName)
+	if found {
+		if rbgScalingAdapter.Status.ReadyReplicas == nil || *rbgScalingAdapter.Status.ReadyReplicas != roleStatus.ReadyReplicas {
+			rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
+				WithStatus(
+					ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false).
+						WithReadyReplicas(roleStatus.ReadyReplicas),
+				)
+			if err := utils.PatchObjectApplyConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus); err != nil {
+				logger.Error(err, "Failed to update readyReplicas")
+				return ctrl.Result{}, err
+			}
+			rbgScalingAdapter.Status.ReadyReplicas = ptr.To(roleStatus.ReadyReplicas)
+		}
 	}
 
 	desiredReplicas, currentReplicas := rbgScalingAdapter.Spec.Replicas, targetRole.Replicas
@@ -274,6 +298,9 @@ func ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(status workloadsv1al
 	if status.Replicas != nil {
 		statusApplyConfig = statusApplyConfig.WithReplicas(*status.Replicas)
 	}
+	if status.ReadyReplicas != nil {
+		statusApplyConfig = statusApplyConfig.WithReadyReplicas(*status.ReadyReplicas)
+	}
 	if status.LastScaleTime != nil {
 		statusApplyConfig = statusApplyConfig.WithLastScaleTime(*status.LastScaleTime)
 	}
@@ -288,8 +315,40 @@ func (r *RoleBasedGroupScalingAdapterReconciler) SetupWithManager(mgr ctrl.Manag
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.WithPredicates(RBGScalingAdapterPredicate())).
+		Watches(
+			&workloadsv1alpha2.RoleBasedGroup{},
+			handler.EnqueueRequestsFromMapFunc(r.mapRBGToScalingAdapters),
+			builder.WithPredicates(RBGRoleStatusPredicate()),
+		).
 		Named("workloads-rolebasedgroup-scalingadapter").
 		Complete(r)
+}
+
+func (r *RoleBasedGroupScalingAdapterReconciler) mapRBGToScalingAdapters(ctx context.Context, obj client.Object) []reconcile.Request {
+	rbg, ok := obj.(*workloadsv1alpha2.RoleBasedGroup)
+	if !ok {
+		return nil
+	}
+
+	adapterList := &workloadsv1alpha2.RoleBasedGroupScalingAdapterList{}
+	if err := r.client.List(ctx, adapterList,
+		client.InNamespace(rbg.Namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list scaling adapters for RBG", "rbg", klog.KObj(rbg))
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(adapterList.Items))
+	for _, adapter := range adapterList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      adapter.Name,
+				Namespace: adapter.Namespace,
+			},
+		})
+	}
+	return requests
 }
 
 // CheckCrdExists checks if the specified Custom Resource Definition (CRD) exists in the Kubernetes cluster.
@@ -333,6 +392,28 @@ func RBGScalingAdapterPredicate() predicate.Funcs {
 				ctrl.Log.Info("enqueue: rbg scalingAdapter delete event", "rbg", klog.KObj(e.Object))
 				return true
 			}
+			return false
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return false
+		},
+	}
+}
+
+func RBGRoleStatusPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return false
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldRBG, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
+			newRBG, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
+			if ok1 && ok2 {
+				return !reflect.DeepEqual(oldRBG.Status.RoleStatuses, newRBG.Status.RoleStatuses)
+			}
+			return false
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
 			return false
 		},
 		GenericFunc: func(e event.GenericEvent) bool {

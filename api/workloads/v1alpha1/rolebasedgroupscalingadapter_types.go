@@ -38,6 +38,9 @@ type RoleBasedGroupScalingAdapterStatus struct {
 	// Selector is a label query used to filter and identify a set of resources targeted for metrics collection.
 	Selector string `json:"selector,omitempty"`
 
+	// ReadyReplicas is the number of ready replicas for the role targeted by this adapter.
+	ReadyReplicas *int32 `json:"readyReplicas,omitempty"`
+
 	// LastScaleTime is the last time the RoleBasedGroupScalingAdapter scaled the number of pods,
 	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
 }
@@ -54,6 +57,7 @@ type AdapterScaleTargetRef struct {
 // +kubebuilder:resource:shortName={rbgsa}
 // +kubebuilder:printcolumn:name="PHASE",type="string",JSONPath=".status.phase",description="The current phase of the adapter"
 // +kubebuilder:printcolumn:name="REPLICAS",type="integer",JSONPath=".status.replicas",description="The current number of replicas"
+// +kubebuilder:printcolumn:name="READY_REPLICAS",type="integer",JSONPath=".status.readyReplicas",description="The number of ready replicas"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="Time since creation."
 
 // RoleBasedGroupScalingAdapter is the Schema for the rolebasedgroupscalingadapters API.

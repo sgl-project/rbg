@@ -25,6 +25,10 @@ spec:
       jsonPath: .status.replicas
       name: REPLICAS
       type: integer
+    - description: The number of ready replicas
+      jsonPath: .status.readyReplicas
+      name: READY_REPLICAS
+      type: integer
     - description: Time since creation.
       jsonPath: .metadata.creationTimestamp
       name: AGE
@@ -86,6 +90,11 @@ spec:
               phase:
                 description: Phase indicates the current phase of the RoleBasedGroupScalingAdapter.
                 type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of ready replicas for the
+                  role targeted by this adapter.
+                format: int32
+                type: integer
               replicas:
                 description: Replicas is the current effective number of target RoleBasedGroupRole.
                 format: int32
@@ -112,6 +121,10 @@ spec:
     - description: The current number of replicas
       jsonPath: .status.replicas
       name: REPLICAS
+      type: integer
+    - description: The number of ready replicas
+      jsonPath: .status.readyReplicas
+      name: READY_REPLICAS
       type: integer
     - description: Time since creation.
       jsonPath: .metadata.creationTimestamp
@@ -174,6 +187,11 @@ spec:
               phase:
                 description: Phase indicates the current phase of the RoleBasedGroupScalingAdapter.
                 type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of ready replicas for the
+                  role targeted by this adapter.
+                format: int32
+                type: integer
               replicas:
                 description: Replicas is the current effective number of target RoleBasedGroupRole.
                 format: int32

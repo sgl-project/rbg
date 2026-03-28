@@ -598,6 +598,11 @@ func (in *RoleBasedGroupScalingAdapterStatus) DeepCopyInto(out *RoleBasedGroupSc
 		*out = new(int32)
 		**out = **in
 	}
+	if in.ReadyReplicas != nil {
+		in, out := &in.ReadyReplicas, &out.ReadyReplicas
+		*out = new(int32)
+		**out = **in
+	}
 	if in.LastScaleTime != nil {
 		in, out := &in.LastScaleTime, &out.LastScaleTime
 		*out = (*in).DeepCopy()
