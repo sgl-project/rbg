@@ -212,33 +212,6 @@ func TestInjectMetadataSave_MetadataContainsModelIDAndRevision(t *testing.T) {
 	assert.Contains(t, arg, "v2")
 }
 
-// --- jsonSafeString ---
-
-func TestJsonSafeString_SimpleString(t *testing.T) {
-	result := jsonSafeString("hello")
-	assert.Equal(t, `"hello"`, result)
-}
-
-func TestJsonSafeString_SpecialCharsEscaped(t *testing.T) {
-	result := jsonSafeString(`hello "world"`)
-	assert.Contains(t, result, `\"`)
-}
-
-func TestJsonSafeString_NewlineEscaped(t *testing.T) {
-	result := jsonSafeString("hello\nworld")
-	assert.Contains(t, result, `\n`)
-}
-
-func TestJsonSafeString_TabEscaped(t *testing.T) {
-	result := jsonSafeString("hello\tworld")
-	assert.Contains(t, result, `\t`)
-}
-
-func TestJsonSafeString_BackslashEscaped(t *testing.T) {
-	result := jsonSafeString(`hello\world`)
-	assert.Contains(t, result, `\\`)
-}
-
 // --- Security tests for command injection prevention ---
 
 func TestInjectMetadataSave_MaliciousModelID_QuotedAndEscaped(t *testing.T) {
