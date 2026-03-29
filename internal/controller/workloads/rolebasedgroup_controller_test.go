@@ -815,6 +815,209 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 	}
 }
 
+func TestRoleBasedGroupReconciler_ReconcileScalingAdapter_Labels(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+
+	tests := []struct {
+		name       string
+		roleSpec   *workloadsv1alpha2.RoleSpec
+		wantLabels map[string]string
+	}{
+		{
+			name: "user labels merged with controller labels",
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				Name: "engine",
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+					Enable: true,
+					Labels: map[string]string{
+						"kwota.meta.com/quota-allocation":      "my-qa",
+						"kwota.meta.com/workload-variant":      "gb200",
+						"kwota.meta.com/workload-variant-type": "Standalone",
+					},
+				},
+			},
+			wantLabels: map[string]string{
+				"kwota.meta.com/quota-allocation":      "my-qa",
+				"kwota.meta.com/workload-variant":      "gb200",
+				"kwota.meta.com/workload-variant-type": "Standalone",
+				constants.GroupNameLabelKey:             "test-rbg",
+				constants.RoleNameLabelKey:              "engine",
+			},
+		},
+		{
+			name: "controller labels take precedence over user labels",
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				Name: "engine",
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+					Enable: true,
+					Labels: map[string]string{
+						constants.GroupNameLabelKey: "user-override-attempt",
+						constants.RoleNameLabelKey:  "user-override-attempt",
+						"custom-label":             "custom-value",
+					},
+				},
+			},
+			wantLabels: map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "engine",
+				"custom-label":             "custom-value",
+			},
+		},
+		{
+			name: "no user labels - only controller labels",
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				Name: "engine",
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+					Enable: true,
+				},
+			},
+			wantLabels: map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "engine",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(rbg.DeepCopy()).
+				Build()
+
+			r := &RoleBasedGroupReconciler{
+				client:    fakeClient,
+				apiReader: fakeClient,
+				scheme:    testScheme,
+			}
+
+			err := r.ReconcileScalingAdapter(context.Background(), rbg, tt.roleSpec)
+			if err != nil {
+				t.Fatalf("ReconcileScalingAdapter() unexpected error: %v", err)
+			}
+
+			adapterName := scale.GenerateScalingAdapterName(rbg.Name, tt.roleSpec.Name)
+			adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+			if err := fakeClient.Get(context.Background(), types.NamespacedName{
+				Name: adapterName, Namespace: rbg.Namespace,
+			}, adapter); err != nil {
+				t.Fatalf("expected RBGSA to exist: %v", err)
+			}
+
+			if len(adapter.Labels) != len(tt.wantLabels) {
+				t.Errorf("expected %d labels, got %d: %v", len(tt.wantLabels), len(adapter.Labels), adapter.Labels)
+			}
+			for k, want := range tt.wantLabels {
+				if got := adapter.Labels[k]; got != want {
+					t.Errorf("label %q: expected %q, got %q", k, want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRoleBasedGroupReconciler_ReconcileScalingAdapter_LabelUpdate(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+
+	roleName := "engine"
+	adapterName := scale.GenerateScalingAdapterName(rbg.Name, roleName)
+
+	// Pre-existing RBGSA with only controller labels (no user labels).
+	existingAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adapterName,
+			Namespace: rbg.Namespace,
+			Labels: map[string]string{
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.RoleNameLabelKey:  roleName,
+			},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: rbg.Name,
+				Role: roleName,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(rbg.DeepCopy(), existingAdapter).
+		Build()
+
+	r := &RoleBasedGroupReconciler{
+		client:    fakeClient,
+		apiReader: fakeClient,
+		scheme:    testScheme,
+	}
+
+	// Reconcile with new user labels — should update the existing adapter.
+	roleSpec := &workloadsv1alpha2.RoleSpec{
+		Name: roleName,
+		ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+			Enable: true,
+			Labels: map[string]string{
+				"kwota.meta.com/quota-allocation": "my-qa",
+				"kwota.meta.com/workload-variant": "gb200",
+			},
+		},
+	}
+
+	err := r.ReconcileScalingAdapter(context.Background(), rbg, roleSpec)
+	if err != nil {
+		t.Fatalf("ReconcileScalingAdapter() unexpected error: %v", err)
+	}
+
+	// Verify labels were updated on the existing adapter.
+	updated := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: adapterName, Namespace: rbg.Namespace,
+	}, updated); err != nil {
+		t.Fatalf("expected RBGSA to exist: %v", err)
+	}
+
+	wantLabels := map[string]string{
+		"kwota.meta.com/quota-allocation": "my-qa",
+		"kwota.meta.com/workload-variant": "gb200",
+		constants.GroupNameLabelKey:        rbg.Name,
+		constants.RoleNameLabelKey:         roleName,
+	}
+	if len(updated.Labels) != len(wantLabels) {
+		t.Errorf("expected %d labels, got %d: %v", len(wantLabels), len(updated.Labels), updated.Labels)
+	}
+	for k, want := range wantLabels {
+		if got := updated.Labels[k]; got != want {
+			t.Errorf("label %q: expected %q, got %q", k, want, got)
+		}
+	}
+
+	// Reconcile again with same labels — should be a no-op (no update).
+	err = r.ReconcileScalingAdapter(context.Background(), rbg, roleSpec)
+	if err != nil {
+		t.Fatalf("second ReconcileScalingAdapter() unexpected error: %v", err)
+	}
+}
+
 func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)

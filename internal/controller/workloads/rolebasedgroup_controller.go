@@ -20,6 +20,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sort"
@@ -762,6 +763,18 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 
 }
 
+// buildScalingAdapterLabels merges user-specified labels from scalingAdapter.labels
+// with controller-managed labels. Controller labels take precedence.
+func buildScalingAdapterLabels(roleSpec *workloadsv1alpha2.RoleSpec, rbgName, roleName string) map[string]string {
+	merged := make(map[string]string)
+	if roleSpec.ScalingAdapter != nil {
+		maps.Copy(merged, roleSpec.ScalingAdapter.Labels)
+	}
+	merged[constants.GroupNameLabelKey] = rbgName
+	merged[constants.RoleNameLabelKey] = roleName
+	return merged
+}
+
 func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleSpec *workloadsv1alpha2.RoleSpec,
 ) error {
@@ -774,10 +787,16 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 	)
 	if err == nil {
 		// scalingAdapter exists
-		// clean scalingAdapter when user update rbg.spec.role.scalingAdapter.enable to false
 		if !scale.IsScalingAdapterEnable(roleSpec) {
 			logger.Info("delete scalingAdapter", "scalingAdapter", rbgScalingAdapter.Name)
 			return r.client.Delete(ctx, rbgScalingAdapter)
+		}
+		// Ensure labels are up to date.
+		desiredLabels := buildScalingAdapterLabels(roleSpec, rbg.Name, roleName)
+		if !maps.Equal(rbgScalingAdapter.Labels, desiredLabels) {
+			logger.Info("updating scalingAdapter labels", "scalingAdapter", rbgScalingAdapter.Name)
+			rbgScalingAdapter.Labels = desiredLabels
+			return r.client.Update(ctx, rbgScalingAdapter)
 		}
 		return nil
 	} else if !apierrors.IsNotFound(err) {
@@ -802,10 +821,7 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 					BlockOwnerDeletion: ptr.To(true),
 				},
 			},
-			Labels: map[string]string{
-				constants.GroupNameLabelKey: rbg.Name,
-				constants.RoleNameLabelKey:  roleName,
-			},
+			Labels: buildScalingAdapterLabels(roleSpec, rbg.Name, roleName),
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
 			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
