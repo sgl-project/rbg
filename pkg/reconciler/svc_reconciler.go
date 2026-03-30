@@ -115,7 +115,8 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 	serviceConfig := coreapplyv1.Service(svcName, rbg.Namespace).
 		WithSpec(
 			coreapplyv1.ServiceSpec().
-				WithClusterIP("None").
+				WithType(corev1.ServiceTypeClusterIP).
+				WithClusterIP(corev1.ClusterIPNone).
 				WithSelector(selectMap).
 				WithPublishNotReadyAddresses(true),
 		).
