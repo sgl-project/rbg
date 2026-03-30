@@ -529,12 +529,6 @@ func (s *Server) isPathSafe(path string) bool {
 	// Clean the path to resolve .. and . segments
 	cleanPath := filepath.Clean(path)
 
-	// Reject if cleaning changed the path significantly (e.g., contained ..)
-	// This prevents path traversal attacks
-	if strings.Contains(cleanPath, "..") {
-		return false
-	}
-
 	// Get absolute paths
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
