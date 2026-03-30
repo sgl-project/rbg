@@ -101,6 +101,12 @@ func (s *Server) handleExperimentRoutes(w http.ResponseWriter, r *http.Request) 
 
 	experimentName := parts[0]
 
+	// Validate experiment name to prevent path traversal
+	if !isValidName(experimentName) {
+		s.writeError(w, http.StatusBadRequest, "Invalid experiment name")
+		return
+	}
+
 	if len(parts) == 1 {
 		// GET /api/experiments/{name}
 		s.handleGetExperiment(w, r, experimentName)
@@ -171,6 +177,12 @@ func (s *Server) handleGetResult(w http.ResponseWriter, r *http.Request, experim
 		return
 	}
 
+	// Validate inputs to prevent path traversal
+	if !isValidName(experimentName) || !isValidName(fileName) {
+		s.writeError(w, http.StatusBadRequest, "Invalid experiment name or filename")
+		return
+	}
+
 	filePath := filepath.Join(s.dataDir, experimentName, fileName)
 
 	// Security check: ensure the path is within dataDir
@@ -198,6 +210,12 @@ func (s *Server) handleGetResult(w http.ResponseWriter, r *http.Request, experim
 func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request, experimentName, fileName string) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Validate inputs to prevent path traversal
+	if !isValidName(experimentName) || !isValidName(fileName) {
+		s.writeError(w, http.StatusBadRequest, "Invalid experiment name or filename")
 		return
 	}
 
@@ -356,7 +374,18 @@ func (s *Server) listExperiments() ([]Experiment, error) {
 
 // getExperiment returns details of a specific experiment.
 func (s *Server) getExperiment(name string) (*Experiment, error) {
+	// Validate name to prevent path traversal
+	if !isValidName(name) {
+		return nil, os.ErrNotExist
+	}
+
 	expDir := filepath.Join(s.dataDir, name)
+
+	// Security check: ensure the path is within dataDir
+	if !s.isPathSafe(expDir) {
+		return nil, os.ErrNotExist
+	}
+
 	info, err := os.Stat(expDir)
 	if err != nil {
 		return nil, err
@@ -404,7 +433,18 @@ func (s *Server) getExperiment(name string) (*Experiment, error) {
 
 // getResultSummaries returns summaries of all result files in an experiment.
 func (s *Server) getResultSummaries(experimentName string) ([]ResultSummary, error) {
+	// Validate name to prevent path traversal
+	if !isValidName(experimentName) {
+		return nil, os.ErrNotExist
+	}
+
 	expDir := filepath.Join(s.dataDir, experimentName)
+
+	// Security check: ensure the path is within dataDir
+	if !s.isPathSafe(expDir) {
+		return nil, os.ErrNotExist
+	}
+
 	entries, err := os.ReadDir(expDir)
 	if err != nil {
 		return nil, err
@@ -467,9 +507,30 @@ func (s *Server) getResultSummaries(experimentName string) ([]ResultSummary, err
 	return summaries, nil
 }
 
+// isValidName checks if the name contains only safe characters.
+// Allows: alphanumeric, hyphen, underscore, dot
+// Rejects: path separators, parent directory references, etc.
+func isValidName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	// Only allow safe characters: alphanumeric, hyphen, underscore, dot
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 // isPathSafe checks if the given path is within the data directory.
 func (s *Server) isPathSafe(path string) bool {
-	absPath, err := filepath.Abs(path)
+	// Clean the path to resolve .. and . segments
+	cleanPath := filepath.Clean(path)
+
+	// Get absolute paths
+	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
 		return false
 	}
@@ -477,7 +538,11 @@ func (s *Server) isPathSafe(path string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.HasPrefix(absPath, absDataDir)
+
+	// Ensure the path has the dataDir as a prefix with separator
+	// This prevents partial directory name matching
+	dataDirPrefix := absDataDir + string(filepath.Separator)
+	return strings.HasPrefix(absPath+string(filepath.Separator), dataDirPrefix)
 }
 
 // writeJSON writes a JSON response.

@@ -355,11 +355,21 @@ func injectMetadataSave(podTemplate *corev1.PodTemplateSpec, modelID, revision, 
 	// Build the metadata JSON using proper JSON encoding to prevent injection
 	// Note: downloadedAt is generated inside the container after download completes
 	// to ensure accurate timing, not at CLI execution time
-	// modelID and revision are JSON-escaped to prevent injection
-	modelIDEscaped := jsonSafeString(modelID)
-	revisionEscaped := jsonSafeString(revision)
-	metadataJSON := fmt.Sprintf(`{"modelID":%s,"revision":%s,"downloadedAt":"%s"}`,
-		modelIDEscaped, revisionEscaped, timestampCmd)
+	metadata := struct {
+		ModelID      string `json:"modelID"`
+		Revision     string `json:"revision"`
+		DownloadedAt string `json:"downloadedAt"`
+	}{
+		ModelID:      modelID,
+		Revision:     revision,
+		DownloadedAt: timestampCmd,
+	}
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		// This should never happen with simple string fields, but handle defensively
+		metadataBytes = []byte(`{}`)
+	}
+	metadataJSON := string(metadataBytes)
 
 	// Case 1: Container already uses /bin/sh -c, directly append to the command
 	if len(container.Command) >= 2 && container.Command[0] == "/bin/sh" && container.Command[1] == "-c" {
@@ -394,13 +404,6 @@ func injectMetadataSave(podTemplate *corev1.PodTemplateSpec, modelID, revision, 
 
 	container.Command = []string{"/bin/sh", "-c"}
 	container.Args = []string{wrappedCmd}
-}
-
-// jsonSafeString escapes a string for safe inclusion in JSON.
-// It returns the string wrapped in quotes with all special characters properly escaped.
-func jsonSafeString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }
 
 // shellEscape properly escapes a string for safe use in shell commands.
