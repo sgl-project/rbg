@@ -40,6 +40,7 @@ type testAllocator struct {
 
 func newTestAllocator(startPort, portRange int32) *PortAllocator {
 	return &PortAllocator{
+		enabled: true,
 		pa: &testAllocator{
 			startPort: startPort,
 			portRange: portRange,
