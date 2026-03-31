@@ -184,34 +184,11 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 		return nil, constructErr
 	}
 
-	// Allocate RoleScoped ports and add to annotations
+	// Allocate RoleScoped ports and add to annotations.
 	// todo: Move this to RoleInstanceSet mutating webhook. Handle it only when created, not updated
-	for _, component := range roleInstanceTemplateConfig.Components {
-		if !portallocator.HasPortAllocatorConfigFromAnnotations(component.Template.Annotations) {
-			continue
-		}
-
-		config, err := portallocator.ParsePortAllocatorConfigFromAnnotations(component.Template.Annotations)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse port allocator config for component %s: %w", *component.Name, err)
-		}
-
-		needCreate := old.Name == ""
-		if needCreate {
-			// Allocate RoleScoped ports for this component
-			portAnnotations, err := portallocator.AllocateRoleScopedPorts(config, *component.Name)
-			if err != nil {
-				return nil, fmt.Errorf("failed to allocate role-scoped ports for component %s: %w", *component.Name, err)
-			}
-			for k, v := range portAnnotations {
-				roleInstanceSetAnnotation[k] = v
-			}
-		} else {
-			// Directly copy from old roleInstanceSet annotations to avoid reallocating
-			portAnnotations := portallocator.CollectRoleScopedPortsFromInstanceSet(old.Annotations, *component.Name, config)
-			for k, v := range portAnnotations {
-				roleInstanceSetAnnotation[k] = v
-			}
+	if portallocator.IsEnabled() {
+		if err := allocateRoleScopedPortAnnotations(roleInstanceTemplateConfig.Components, old, roleInstanceSetAnnotation); err != nil {
+			return nil, err
 		}
 	}
 
@@ -491,4 +468,42 @@ func (r *RoleInstanceSetReconciler) RecreateWorkload(
 		Group:   "workloads.x-k8s.io",
 		Version: "v1alpha2",
 		Kind:    "RoleInstanceSet"})
+}
+
+// allocateRoleScopedPortAnnotations allocates or copies RoleScoped port annotations for all components.
+// This function should only be called when the port allocator is enabled.
+func allocateRoleScopedPortAnnotations(
+	components []workloadsv1alpha2client.RoleInstanceComponentApplyConfiguration,
+	old *workloadsv1alpha2.RoleInstanceSet,
+	annotations map[string]string,
+) error {
+	for _, component := range components {
+		if !portallocator.HasPortAllocatorConfigFromAnnotations(component.Template.Annotations) {
+			continue
+		}
+
+		config, err := portallocator.ParsePortAllocatorConfigFromAnnotations(component.Template.Annotations)
+		if err != nil {
+			return fmt.Errorf("failed to parse port allocator config for component %s: %w", *component.Name, err)
+		}
+
+		needCreate := old.Name == ""
+		if needCreate {
+			// Allocate RoleScoped ports for this component.
+			portAnnotations, err := portallocator.AllocateRoleScopedPorts(config, *component.Name)
+			if err != nil {
+				return fmt.Errorf("failed to allocate role-scoped ports for component %s: %w", *component.Name, err)
+			}
+			for k, v := range portAnnotations {
+				annotations[k] = v
+			}
+		} else {
+			// Directly copy from old roleInstanceSet annotations to avoid reallocating.
+			portAnnotations := portallocator.CollectRoleScopedPortsFromInstanceSet(old.Annotations, *component.Name, config)
+			for k, v := range portAnnotations {
+				annotations[k] = v
+			}
+		}
+	}
+	return nil
 }

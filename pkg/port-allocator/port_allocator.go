@@ -30,12 +30,15 @@ type AllocateStrategy string
 // Callers can use errors.Is() to check for this specific condition.
 var ErrPortAllocatorDisabled = errors.New("port allocator is not enabled")
 
-// Singleton pattern, created at program startup based on the port allocation strategy
-var portAllocator *PortAllocator
+// Singleton pattern, always initialized to ensure IsEnabled() can be queried safely.
+var portAllocator = &PortAllocator{
+	enabled: false,
+}
 
 var paFactory = make(map[AllocateStrategy]func(startPort, portRange int32) (PortAllocatorInterface, error))
 
 type PortAllocator struct {
+	enabled  bool
 	strategy AllocateStrategy
 	pa       PortAllocatorInterface
 	client   client.Client
@@ -55,20 +58,23 @@ func Register(strategy AllocateStrategy, factory func(startPort, portRange int32
 	paFactory[strategy] = factory
 }
 
-// startPortAllocator start the port allocator
-func (alloc *PortAllocator) startPortAllocator() error {
-	return alloc.pa.Start(alloc.client)
+// IsEnabled returns true if the port allocator is enabled.
+func IsEnabled() bool {
+	if portAllocator == nil {
+		return false
+	}
+	return portAllocator.enabled
 }
 
 func Release(port int32) error {
-	if portAllocator == nil {
+	if portAllocator == nil || !IsEnabled() {
 		return ErrPortAllocatorDisabled
 	}
 	return portAllocator.pa.Release(port)
 }
 
 func AllocateBatch(num int32) ([]int32, error) {
-	if portAllocator == nil {
+	if portAllocator == nil || !IsEnabled() {
 		return nil, ErrPortAllocatorDisabled
 	}
 	return portAllocator.pa.AllocateBatch(num)
@@ -79,33 +85,46 @@ func HasPolicy(policy AllocateStrategy) bool {
 	return ok
 }
 
-// SetupPortAllocator instantiates the global singleton port allocator with specified port allocating strategy
-func SetupPortAllocator(startPort int, portRange int, allocateStrategy string, client client.Client) error {
-	if !HasPolicy(AllocateStrategy(allocateStrategy)) {
-		return fmt.Errorf("don't have such port allocator strategy %s", allocateStrategy)
-	}
-	portAllocator = &PortAllocator{
-		strategy: AllocateStrategy(allocateStrategy),
-		client:   client,
+// SetupPortAllocator initializes the global singleton port allocator.
+// The enabled flag controls whether the allocator is active.
+// The allocator object is always initialized so that IsEnabled() can be queried safely.
+func SetupPortAllocator(startPort int, portRange int, allocateStrategy string, enabled bool, client client.Client) error {
+	if !enabled {
+		return nil
 	}
 
-	if err := portAllocator.createAndRestorePortAllocator(int32(startPort), int32(portRange)); err != nil {
-		return fmt.Errorf("failed to create port allocator: %v", err)
+	if err := portAllocator.configure(client, AllocateStrategy(allocateStrategy), int32(startPort), int32(portRange)); err != nil {
+		return fmt.Errorf("failed to configure port allocator: %w", err)
 	}
 
-	if err := portAllocator.startPortAllocator(); err != nil {
-		return fmt.Errorf("failed to start port allocator: %v", err)
+	if err := portAllocator.start(); err != nil {
+		return fmt.Errorf("failed to start port allocator: %w", err)
 	}
 
 	return nil
 }
 
-// createAndRestorePortAllocator creates and restores the port allocator
-func (alloc *PortAllocator) createAndRestorePortAllocator(startPort, portRange int32) (err error) {
-	f, ok := paFactory[alloc.strategy]
+// configure sets up the port allocator with the given strategy and port range.
+// It sets enabled=true only after successful configuration.
+func (alloc *PortAllocator) configure(client client.Client, strategy AllocateStrategy, startPort, portRange int32) error {
+	factory, ok := paFactory[strategy]
 	if !ok {
-		return fmt.Errorf("unsupported port allocator policy: %s", alloc.strategy)
+		return fmt.Errorf("unsupported port allocator strategy: %s", strategy)
 	}
-	alloc.pa, err = f(startPort, portRange)
-	return err
+
+	alloc.client = client
+	alloc.strategy = strategy
+
+	pa, err := factory(startPort, portRange)
+	if err != nil {
+		return fmt.Errorf("failed to create port allocator instance: %w", err)
+	}
+	alloc.pa = pa
+	alloc.enabled = true
+	return nil
+}
+
+// start initializes the underlying port allocator.
+func (alloc *PortAllocator) start() error {
+	return alloc.pa.Start(alloc.client)
 }

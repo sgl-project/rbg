@@ -395,11 +395,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if enablePortAllocator {
-		if err := portallocator.SetupPortAllocator(startPort, portRange, portAllocateStrategy, mgr.GetClient()); err != nil {
-			setupLog.Error(err, "unable to initialize port allocator")
-			os.Exit(1)
-		}
+	if err := portallocator.SetupPortAllocator(startPort, portRange, portAllocateStrategy, enablePortAllocator, mgr.GetClient()); err != nil {
+		setupLog.Error(err, "unable to initialize port allocator")
+		os.Exit(1)
 	}
 
 	setupLog.Info("starting manager")
