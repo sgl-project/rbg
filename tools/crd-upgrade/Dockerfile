@@ -12,9 +12,10 @@ RUN apk add --update --no-cache bash curl && \
 
 # Install kubectl with checksum verification (supports multi-arch via TARGETARCH)
 ARG KUBECTL_VERSION=v1.31.0
-ARG TARGETARCH=amd64
-RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
-    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" && \
+ARG TARGETARCH
+RUN ARCH="${TARGETARCH:-amd64}" && \
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" && \
     echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c && \
     mv kubectl /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl && \
