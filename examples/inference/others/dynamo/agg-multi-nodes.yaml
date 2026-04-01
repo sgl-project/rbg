@@ -4,7 +4,7 @@
 #
 # Architecture:
 #   - processor: Dynamo frontend for request routing and HTTP API
-#   - backend: 1 instance with 1 leader + 1 worker (2x GPU total)
+#   - backend: 1 instance with 1 leader + 1 worker (2x GPU, tp-size=2)
 #
 # Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing)
 #
@@ -13,6 +13,7 @@
 #   - RoleTemplates for reducing configuration duplication
 #   - NVIDIA Dynamo SGLang runtime with distributed coordination
 #   - rolloutStrategy with InPlaceIfPossible
+#   - Multi-node tensor parallel via --dist-init-addr, --nnodes, --node-rank
 #
 # Prerequisites:
 #   - NVIDIA Dynamo SGLang runtime image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
@@ -24,7 +25,7 @@
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
-  name: dynamo-agg-lwd
+  name: dynamo-agg-multi-nodes-inference
   labels:
     app: dynamo-llm-inference
     deployment-type: aggregated-tensor-parallel
@@ -43,35 +44,14 @@ spec:
             - name: sglang
               image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
               env:
-                - name: DYNAMO_PORT
-                  value: "8000"
-                - name: DYNAMO_NAME
-                  value: dynamo-agg-lwd
+                - name: DYN_NAMESPACE
+                  value: default
                 - name: DYNAMO_NAMESPACE
                   value: default
                 - name: ETCD_ENDPOINTS
                   value: http://etcd:2379
                 - name: NATS_SERVER
                   value: nats://nats:4222
-                - name: DYNAMO_RP_TIMEOUT
-                  value: "60"
-              ports:
-                - name: http
-                  containerPort: 8000
-                - name: metrics
-                  containerPort: 9090
-              readinessProbe:
-                httpGet:
-                  path: /health
-                  port: 8000
-                initialDelaySeconds: 60
-                periodSeconds: 10
-              livenessProbe:
-                httpGet:
-                  path: /health
-                  port: 8000
-                initialDelaySeconds: 120
-                periodSeconds: 30
 
   roles:
     # Processor: Dynamo frontend for request routing and HTTP API
@@ -85,9 +65,29 @@ spec:
               containers:
                 - name: sglang
                   command:
-                    - sh
-                    - -c
-                    - python -m dynamo.frontend --http-port 8000
+                    - python3
+                    - -m
+                    - dynamo.frontend
+                  args:
+                    - --http-port
+                    - "8000"
+                  ports:
+                    - name: http
+                      containerPort: 8000
+                    - name: metrics
+                      containerPort: 9090
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 120
+                    periodSeconds: 30
                   resources:
                     requests:
                       cpu: "2"
@@ -100,6 +100,8 @@ spec:
     - name: backend
       replicas: 1
       restartPolicy: None
+      scalingAdapter:
+        enable: true
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -119,12 +121,25 @@ spec:
               containers:
                 - name: sglang
                   command:
-                    - sh
-                    - -c
-                    - |-
-                      python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3
-                      --tp-size 2 --dist-init-addr $(RBG_LWP_LEADER_ADDRESS):6379
-                      --nnodes $(RBG_LWP_GROUP_SIZE) --node-rank $(RBG_LWP_WORKER_INDEX)
+                    - python3
+                    - -m
+                    - dynamo.sglang
+                  args:
+                    - --model-path
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tp-size
+                    - "2"
+                    - --trust-remote-code
+                    - --host
+                    - 0.0.0.0
+                    - --dist-init-addr
+                    - $(RBG_LWP_LEADER_ADDRESS):6379
+                    - --nnodes
+                    - $(RBG_LWP_GROUP_SIZE)
+                    - --node-rank
+                    - $(RBG_LWP_WORKER_INDEX)
                   resources:
                     requests:
                       cpu: "4"
@@ -137,3 +152,18 @@ spec:
                   volumeMounts:
                     - name: dshm
                       mountPath: /dev/shm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamo-agg-multi-nodes-service
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    rolebasedgroup.workloads.x-k8s.io/name: dynamo-agg-multi-nodes-inference
+    rolebasedgroup.workloads.x-k8s.io/role: processor

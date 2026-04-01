@@ -1,0 +1,225 @@
+# Example: PD-Disaggregated LLM Inference with NVIDIA Dynamo SGLang Runtime (v1alpha2)
+# This example demonstrates a complete Prefill-Decode disaggregated deployment
+# using NVIDIA Dynamo SGLang runtime with Qwen 0.6B model.
+#
+# Architecture:
+#   - processor: Dynamo frontend for request routing and HTTP API
+#   - prefill: SGLang prefill engine (tp-size=1, with rolloutStrategy)
+#   - decode: SGLang decode engine (tp-size=1)
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation)
+#
+# Features demonstrated:
+#   - NVIDIA Dynamo SGLang runtime with PD disaggregation
+#   - standalonePattern for independent pod-per-instance deployment
+#   - RoleTemplates for reducing configuration duplication
+#   - rolloutStrategy with InPlaceIfPossible (prefill only)
+#
+# Prerequisites:
+#   - NVIDIA Dynamo SGLang runtime image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
+#   - GPU nodes with CUDA support
+#   - ETCD and NATS services deployed (required for Dynamo runtime)
+#   - Model weights mounted at /models or use HuggingFace download
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: dynamo-pd-inference
+  labels:
+    app: dynamo-sglang-inference
+    deployment-type: pd-disaggregated
+    model: qwen-0.6b
+    runtime: dynamo-sglang
+spec:
+  # Define reusable templates shared by multiple roles
+  roleTemplates:
+    - name: dynamo-base
+      template:
+        metadata:
+          labels:
+            app: dynamo-sglang-inference
+        spec:
+          containers:
+            - name: sglang
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
+              env:
+                - name: DYN_NAMESPACE
+                  value: default
+                - name: DYNAMO_NAMESPACE
+                  value: default
+                - name: ETCD_ENDPOINTS
+                  value: http://etcd:2379
+                - name: NATS_SERVER
+                  value: nats://nats:4222
+
+  roles:
+    # Processor: Dynamo frontend for request routing and HTTP API
+    - name: processor
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - dynamo.frontend
+                  args:
+                    - --http-port
+                    - "8000"
+                  ports:
+                    - name: http
+                      containerPort: 8000
+                    - name: metrics
+                      containerPort: 9090
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 120
+                    periodSeconds: 30
+                  resources:
+                    requests:
+                      cpu: "2"
+                      memory: "8Gi"
+                    limits:
+                      cpu: "4"
+                      memory: "16Gi"
+
+    # Prefill: SGLang prefill engine (tp-size=1, with rolloutStrategy)
+    # Uses --disaggregation-mode=prefill for PD disaggregation
+    - name: prefill
+      replicas: 1
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      scalingAdapter:
+        enable: true
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 30
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              volumes:
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - dynamo.sglang
+                  args:
+                    - --model-path
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tp-size
+                    - "1"
+                    - --trust-remote-code
+                    - --skip-tokenizer-init
+                    - --disaggregation-mode
+                    - prefill
+                    - --disaggregation-transfer-backend
+                    - nixl
+                    - --disaggregation-bootstrap-port
+                    - "30001"
+                    - --host
+                    - 0.0.0.0
+                  resources:
+                    requests:
+                      cpu: "4"
+                      memory: "16Gi"
+                      nvidia.com/gpu: "1"
+                    limits:
+                      cpu: "8"
+                      memory: "32Gi"
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - name: dshm
+                      mountPath: /dev/shm
+
+    # Decode: SGLang decode engine (tp-size=1)
+    # Uses --disaggregation-mode=decode for PD disaggregation
+    - name: decode
+      replicas: 1
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              volumes:
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - dynamo.sglang
+                  args:
+                    - --model-path
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tp-size
+                    - "1"
+                    - --trust-remote-code
+                    - --skip-tokenizer-init
+                    - --disaggregation-mode
+                    - decode
+                    - --disaggregation-transfer-backend
+                    - nixl
+                    - --disaggregation-bootstrap-port
+                    - "30001"
+                    - --host
+                    - 0.0.0.0
+                  resources:
+                    requests:
+                      cpu: "4"
+                      memory: "16Gi"
+                      nvidia.com/gpu: "1"
+                    limits:
+                      cpu: "8"
+                      memory: "32Gi"
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - name: dshm
+                      mountPath: /dev/shm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamo-pd-inference-service
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    rolebasedgroup.workloads.x-k8s.io/name: dynamo-pd-inference
+    rolebasedgroup.workloads.x-k8s.io/role: processor

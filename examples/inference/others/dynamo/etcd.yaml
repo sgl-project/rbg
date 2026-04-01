@@ -33,8 +33,7 @@ spec:
     spec:
       containers:
         - name: etcd
-          # image: bitnami/etcd:3.5.19
-          image: ac2-registry.cn-hangzhou.cr.aliyuncs.com/ac2/etcd:3.6.1
+          image: bitnami/etcd:3.5.19
           volumeMounts:
             - name: data
               mountPath: /var/lib/etcd

@@ -34,8 +34,7 @@ spec:
     spec:
       containers:
         - name: nats
-          # image: nats:latest
-          image: ac2-registry.cn-hangzhou.cr.aliyuncs.com/ac2/nats:2.11.5
+          image: nats:latest
           args:
             - -js
             - --trace
