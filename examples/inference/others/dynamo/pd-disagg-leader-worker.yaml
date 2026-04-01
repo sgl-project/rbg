@@ -1,0 +1,187 @@
+# Example: PD-Disaggregated with LeaderWorker pattern (v1alpha2) - NVIDIA Dynamo SGLang Runtime
+# Uses leaderWorkerPattern for tensor-parallel inference where each instance
+# requires multiple GPUs (1 leader + N workers per instance).
+#
+# Architecture:
+#   - processor: Dynamo frontend for request routing and HTTP API
+#   - prefill: 2 instances, each with 1 leader + 3 workers (8x GPU total)
+#   - decode: 4 instances, each with 1 leader + 1 worker (8x GPU total)
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation)
+#
+# Features demonstrated:
+#   - LeaderWorkerPattern for distributed inference deployment
+#   - RoleTemplates for reducing configuration duplication
+#   - NVIDIA Dynamo SGLang runtime with PD disaggregation
+#   - rolloutStrategy with InPlaceIfPossible
+#
+# Prerequisites:
+#   - NVIDIA Dynamo SGLang runtime image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
+#   - GPU nodes with CUDA support
+#   - ETCD and NATS services deployed (required for Dynamo runtime)
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: dynamo-pd-disagg-lws
+  labels:
+    app: dynamo-llm-inference-tp
+    deployment-type: pd-disaggregated-tensor-parallel
+    model: qwen-0.6b
+    runtime: dynamo-sglang
+spec:
+  # Define reusable templates shared by multiple roles
+  roleTemplates:
+    - name: dynamo-base
+      template:
+        metadata:
+          labels:
+            app: dynamo-llm-inference-tp
+        spec:
+          containers:
+            - name: sglang
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
+              env:
+                - name: DYNAMO_PORT
+                  value: "8000"
+                - name: DYNAMO_NAME
+                  value: dynamo-pd-disagg-lws
+                - name: DYNAMO_NAMESPACE
+                  value: default
+                - name: ETCD_ENDPOINTS
+                  value: http://etcd:2379
+                - name: NATS_SERVER
+                  value: nats://nats:4222
+                - name: DYNAMO_RP_TIMEOUT
+                  value: "60"
+              ports:
+                - name: grpc
+                  containerPort: 8000
+
+  roles:
+    # Processor: Dynamo frontend for request routing and HTTP API
+    - name: processor
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - sh
+                    - -c
+                    - python -m dynamo.frontend --http-port 8000
+                  ports:
+                    - name: http
+                      containerPort: 8000
+                    - name: metrics
+                      containerPort: 9090
+                  resources:
+                    requests:
+                      cpu: "2"
+                      memory: "8Gi"
+                    limits:
+                      cpu: "4"
+                      memory: "16Gi"
+
+    # Prefill: 2 instances, tensor parallel size = 4 (1 leader + 3 workers)
+    - name: prefill
+      replicas: 2
+      restartPolicy: None
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      leaderWorkerPattern:
+        size: 4   # 1 leader + 3 workers per instance
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              volumes:
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  command:
+                    - sh
+                    - -c
+                    - |-
+                      python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3
+                      --tp-size 4 --skip-tokenizer-init --disaggregation-mode prefill --disaggregation-transfer-backend nixl
+                      --dist-init-addr $(RBG_LWP_LEADER_ADDRESS):6379 --nnodes $(RBG_LWP_GROUP_SIZE) --node-rank $(RBG_LWP_WORKER_INDEX)
+                  resources:
+                    requests:
+                      cpu: "4"
+                      memory: "16Gi"
+                      nvidia.com/gpu: "1"
+                    limits:
+                      cpu: "8"
+                      memory: "32Gi"
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - name: dshm
+                      mountPath: /dev/shm
+        leaderTemplatePatch:
+          metadata:
+            labels:
+              role: leader
+        workerTemplatePatch:
+          metadata:
+            labels:
+              role: worker
+
+    # Decode: 4 instances, tensor parallel size = 2 (1 leader + 1 worker)
+    - name: decode
+      replicas: 4
+      restartPolicy: None
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      leaderWorkerPattern:
+        size: 2   # 1 leader + 1 worker per instance
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              volumes:
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  command:
+                    - sh
+                    - -c
+                    - |-
+                      python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3
+                      --tp-size 2 --skip-tokenizer-init --disaggregation-mode decode --disaggregation-transfer-backend nixl
+                      --dist-init-addr $(RBG_LWP_LEADER_ADDRESS):6379 --nnodes $(RBG_LWP_GROUP_SIZE) --node-rank $(RBG_LWP_WORKER_INDEX)
+                  resources:
+                    requests:
+                      cpu: "4"
+                      memory: "16Gi"
+                      nvidia.com/gpu: "1"
+                    limits:
+                      cpu: "8"
+                      memory: "32Gi"
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - name: dshm
+                      mountPath: /dev/shm
+        leaderTemplatePatch:
+          metadata:
+            labels:
+              role: leader
+        workerTemplatePatch:
+          metadata:
+            labels:
+              role: worker
