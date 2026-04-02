@@ -34,7 +34,7 @@ spec:
     spec:
       containers:
         - name: nats
-          image: nats:latest
+          image: nats:2.11.5
           args:
             - -js
             - --trace

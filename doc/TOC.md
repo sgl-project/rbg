@@ -31,7 +31,7 @@
 
     - PD-Disagg
       - [SGLang PD-Disagg](../examples/inference/)
-      - [Others](../examples/inference/others/)
+      - [Others](../examples/inference/ecosystem/)
 
   - Advanced Features
     - Multi-roles

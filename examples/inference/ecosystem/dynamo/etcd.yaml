@@ -1,3 +1,9 @@
+# WARNING: This manifest is for demo/development use only.
+#
+# This configuration enables unauthenticated etcd access with ALLOW_NONE_AUTHENTICATION=yes.
+# DO NOT use this in production or any environment exposed to untrusted networks.
+# For production deployments, configure proper etcd authentication and TLS.
+#
 apiVersion: v1
 kind: Service
 metadata:
@@ -45,5 +51,3 @@ spec:
       volumes:
         - name: data
           emptyDir: {}
-
-
