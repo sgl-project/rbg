@@ -259,13 +259,10 @@ docker-push-benchmark: ${DOCKER_PUSH_BENCHMARK}
 PLATFORMS ?= linux/amd64,linux/arm64
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross if not already present
-	awk '/^FROM[[:space:]]+/ && !/^[[:space:]]*FROM[[:space:]]+--platform/ {sub(/^FROM/, "FROM --platform=$${BUILDPLATFORM}")} {print}' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name rbgs-builder
 	$(CONTAINER_TOOL) buildx use rbgs-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) -f Dockerfile .
 	- $(CONTAINER_TOOL) buildx rm rbgs-builder
-	rm Dockerfile.cross
 
 .PHONY: docker-buildx-push-crd-upgrader
 docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-platform support
