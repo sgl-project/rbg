@@ -272,14 +272,14 @@ docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-
 	- $(CONTAINER_TOOL) buildx rm rbgs-crd-builder
 
 .PHONY: docker-buildx-push-patio
-docker-buildx-push-patio:
+docker-buildx-push-patio: ## Build and push patio image for cross-platform support
 	- $(CONTAINER_TOOL) buildx create --name rbgs-patio-builder
 	$(CONTAINER_TOOL) buildx use rbgs-patio-builder
 	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${PATIO_IMG}:${TAG} $(DOCKER_BUILD_ARGS) -f ${PATIO_DOCKERFILE} .
 	- $(CONTAINER_TOOL) buildx rm rbgs-patio-builder
 
 .PHONY: docker-buildx-push
-docker-buildx-push: docker-buildx docker-buildx-push-crd-upgrader docker-buildx-push-patio ## Build and push multi-arch controller and CRD upgrader images
+docker-buildx-push: docker-buildx docker-buildx-push-crd-upgrader docker-buildx-push-patio ## Build and push multi-arch controller, CRD upgrader, and patio images
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
