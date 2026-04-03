@@ -1,7 +1,4 @@
-FROM --platform=$BUILDPLATFORM registry-cn-hangzhou.ack.aliyuncs.com/dev/python:3.12-alpine3.21
-
-ARG TARGETOS
-ARG TARGETARCH
+FROM registry-cn-hangzhou.ack.aliyuncs.com/dev/python:3.12-alpine3.21
 
 WORKDIR /app
 COPY python/patio /app/patio
