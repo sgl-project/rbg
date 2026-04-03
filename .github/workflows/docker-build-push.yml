@@ -61,15 +61,6 @@ jobs:
           echo "Target platforms: $PLATFORMS"
           make docker-buildx-push
 
-      - name: Build and push Patio image
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
-        run: |
-          echo "Building and pushing Patio image with tag: $TAG"
-          make docker-build-patio
-          make docker-push-patio
-
       - name: Build and push Benchmark Dashboard image
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -92,5 +83,5 @@ jobs:
           echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-controller:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-upgrade-crd:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-patio-runtime:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-patio-runtime:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-benchmark-dashboard:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY

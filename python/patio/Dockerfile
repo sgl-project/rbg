@@ -1,4 +1,4 @@
-FROM --platform=${BUILDPLATFORM} registry-cn-hangzhou.ack.aliyuncs.com/dev/python:3.12-alpine3.21
+FROM --platform=$BUILDPLATFORM registry-cn-hangzhou.ack.aliyuncs.com/dev/python:3.12-alpine3.21
 
 ARG TARGETOS
 ARG TARGETARCH
