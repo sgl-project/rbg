@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"maps"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -316,33 +315,11 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 		return fmt.Errorf("leaderWorkerPattern is nil")
 	}
 
-	// Resolve baseTemplate: supports both inline template and templateRef
-	// 1. If templateRef is set, find the roleTemplate and apply templatePatch
-	// 2. Otherwise, use inline template directly
-	var baseTemplate corev1.PodTemplateSpec
-	if role.UsesRoleTemplate() {
-		// Template mode: find template and apply patch
-		roleTemplate, err := rbg.FindRoleTemplate(role.GetEffectiveTemplateName())
-		if err != nil {
-			logger.Error(err, "failed to find roleTemplate", "rbg", keyOfRbg(rbg))
-			return fmt.Errorf("failed to find roleTemplate: %w", err)
-		}
-		// Handle nil templatePatch
-		var templatePatch runtime.RawExtension
-		if role.GetTemplatePatch() != nil {
-			templatePatch = *role.GetTemplatePatch()
-		}
-		merged, err := applyStrategicMergePatch(roleTemplate.Template, templatePatch)
-		if err != nil {
-			logger.Error(err, "failed to apply templatePatch", "rbg", keyOfRbg(rbg))
-			return fmt.Errorf("failed to apply templatePatch: %w", err)
-		}
-		baseTemplate = merged
-	} else if role.GetTemplate() != nil {
-		// Traditional mode: use role.Template directly
-		baseTemplate = *role.GetTemplate()
-	} else {
-		return fmt.Errorf("role %s has no template or templateRef set", role.Name)
+	// Resolve baseTemplate using shared helper (supports both templateRef and inline template)
+	baseTemplate, err := role.GetResolvedTemplate(rbg)
+	if err != nil {
+		logger.Error(err, "failed to resolve base template", "rbg", keyOfRbg(rbg))
+		return err
 	}
 
 	// Handle nil patches by using empty RawExtension
@@ -354,7 +331,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 		workerPatch = *lwp.WorkerTemplatePatch
 	}
 
-	leaderTemp, err := applyStrategicMergePatch(baseTemplate, leaderPatch)
+	leaderTemp, err := applyStrategicMergePatch(*baseTemplate.DeepCopy(), leaderPatch)
 	if err != nil {
 		logger.Error(err, "patch leader podTemplate failed", "rbg", keyOfRbg(rbg))
 		return err
@@ -372,7 +349,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	// workerTemplate
-	workerTemp, err := applyStrategicMergePatch(baseTemplate, workerPatch)
+	workerTemp, err := applyStrategicMergePatch(*baseTemplate.DeepCopy(), workerPatch)
 	if err != nil {
 		logger.Error(err, "patch worker podTemplate failed", "rbg", keyOfRbg(rbg))
 		return err

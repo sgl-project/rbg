@@ -112,6 +112,15 @@ func validateRoleTemplateFields(
 			)
 		}
 
+		// LeaderWorkerSet workload does not support templateRef.
+		// Only RoleInstanceSet with LeaderWorkerPattern supports templateRef.
+		if role.Workload.Kind == "LeaderWorkerSet" {
+			return fmt.Errorf(
+				"spec.roles[%d].templateRef: not supported for LeaderWorkerSet workloads (use RoleInstanceSet with LeaderWorkerPattern instead)",
+				index,
+			)
+		}
+
 		// Cross-resource check: referenced template must exist.
 		templateRef := role.GetTemplateRef()
 		if !validTemplateNames[templateRef.Name] {

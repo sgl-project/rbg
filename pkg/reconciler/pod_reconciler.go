@@ -72,24 +72,12 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	if len(podTmpls) > 0 {
 		podTemplateSpec = podTmpls[0]
 	} else {
-		// KEP-8: Resolve role template (supports both traditional mode and templateRef)
-		if role.UsesRoleTemplate() {
-			// Template mode: find template and apply patch
-			roleTemplate, err := rbg.FindRoleTemplate(role.GetEffectiveTemplateName())
-			if err != nil {
-				return nil, fmt.Errorf("failed to find roleTemplate: %w", err)
-			}
-
-			merged, err := applyStrategicMergePatch(roleTemplate.Template, *role.GetTemplatePatch())
-			if err != nil {
-				return nil, fmt.Errorf("failed to apply templatePatch: %w", err)
-			}
-			podTemplateSpec = merged
-		} else if role.GetTemplate() != nil {
-			// Traditional mode: use role.Template directly (pointer type after migration)
-			podTemplateSpec = *role.GetTemplate().DeepCopy()
+		// KEP-8: Resolve role template using shared helper (supports both templateRef and inline template)
+		resolvedTemplate, err := role.GetResolvedTemplate(rbg)
+		if err != nil {
+			return nil, err
 		}
-		// else: podTemplateSpec stays as zero value, same behavior as before when Template was a value type
+		podTemplateSpec = resolvedTemplate
 	}
 	podAnnotations := podTemplateSpec.Annotations
 	if podAnnotations == nil {

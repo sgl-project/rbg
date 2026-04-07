@@ -19,12 +19,14 @@ package v1alpha2
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
@@ -267,6 +269,66 @@ func (r *RoleSpec) GetLeaderWorkerSize() *int32 {
 // HasTemplate returns true if the role has either an inline template or a template reference.
 func (r *RoleSpec) HasTemplate() bool {
 	return r.GetTemplate() != nil || r.GetTemplateRef() != nil
+}
+
+// GetResolvedTemplate resolves the base template for a role.
+// It handles both templateRef mode (find RoleTemplate and apply patch) and inline template mode.
+// Returns a deep-copied PodTemplateSpec to prevent mutations to the original source.
+// This method is used by both PodReconciler and RoleInstanceSetReconciler to ensure consistent behavior.
+func (r *RoleSpec) GetResolvedTemplate(rbg *RoleBasedGroup) (corev1.PodTemplateSpec, error) {
+	if r.UsesRoleTemplate() {
+		// Template mode: find template and apply patch
+		roleTemplate, err := rbg.FindRoleTemplate(r.GetEffectiveTemplateName())
+		if err != nil {
+			return corev1.PodTemplateSpec{}, fmt.Errorf("failed to find roleTemplate: %w", err)
+		}
+
+		// Get template patch (may be nil)
+		templatePatch := r.GetTemplatePatch()
+
+		// Apply strategic merge patch
+		merged, err := applyStrategicMergePatch(roleTemplate.Template, templatePatch)
+		if err != nil {
+			return corev1.PodTemplateSpec{}, fmt.Errorf("failed to apply templatePatch: %w", err)
+		}
+		return merged, nil
+	} else if r.GetTemplate() != nil {
+		// Traditional mode: use role.Template directly (return deep copy)
+		return *r.GetTemplate().DeepCopy(), nil
+	}
+
+	return corev1.PodTemplateSpec{}, fmt.Errorf("role %s has no template or templateRef set", r.Name)
+}
+
+// applyStrategicMergePatch applies a strategic merge patch to a PodTemplateSpec.
+// If the patch is nil or empty, returns a deep copy of the base template.
+// This ensures the returned value is always independent of the source.
+func applyStrategicMergePatch(base corev1.PodTemplateSpec, patch *runtime.RawExtension) (corev1.PodTemplateSpec, error) {
+	// Always return a deep copy to ensure isolation
+	result := *base.DeepCopy()
+
+	if patch == nil || len(patch.Raw) == 0 {
+		return result, nil
+	}
+
+	// For non-empty patches, we need to apply the patch
+	// Since strategic merge patch requires the patch bytes, we marshal and unmarshal
+	baseBytes, err := json.Marshal(result)
+	if err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to marshal base template: %w", err)
+	}
+
+	mergedBytes, err := strategicpatch.StrategicMergePatch(baseBytes, patch.Raw, &corev1.PodTemplateSpec{})
+	if err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to merge patch: %w", err)
+	}
+
+	merged := &corev1.PodTemplateSpec{}
+	if err := json.Unmarshal(mergedBytes, merged); err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to unmarshal merged template: %w", err)
+	}
+
+	return *merged, nil
 }
 
 // GetDiscoveryConfigMode returns the discovery config mode from annotations.
