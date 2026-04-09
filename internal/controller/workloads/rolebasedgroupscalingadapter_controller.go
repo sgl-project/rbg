@@ -119,7 +119,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	// check scale target exist failed, update phase to unbound
 	if getTargetRoleErr != nil {
 		r.recorder.Eventf(
-			rbgScalingAdapter, corev1.EventTypeNormal, FailedGetRBGRole,
+			rbgScalingAdapter, corev1.EventTypeWarning, FailedGetRBGRole,
 			"Failed to get scale target role: %v", getTargetRoleErr,
 		)
 		if rbgScalingAdapter.Status.Phase != constants.AdapterPhaseNotBound {
@@ -128,7 +128,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			if err := utils.PatchObjectApplyConfiguration(
 				ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 			); err != nil {
-				logger.Error(err, "Failed to update status for %s", rbgScalingAdapterName)
+				logger.Error(err, "Failed to update status", "rbgScalingAdapterName", rbgScalingAdapterName)
 			}
 		}
 		// TODO: currently reconcile unbound adapter by a default reconcile interval, need to implement a rbg event-driven manager
@@ -198,7 +198,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	// scale role
 	if err := r.updateRoleReplicas(ctx, rbg, targetRoleName, desiredReplicas); err != nil {
 		r.recorder.Eventf(
-			rbgScalingAdapter, corev1.EventTypeNormal, FailedScale,
+			rbgScalingAdapter, corev1.EventTypeWarning, FailedScale,
 			"Failed to scale target role [%s] of rbg [%s] from %v to %v replicas: %v",
 			targetRoleName, rbgName, *currentReplicas, *desiredReplicas, err,
 		)
@@ -211,7 +211,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	if err := utils.PatchObjectApplyConfiguration(
 		ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 	); err != nil {
-		logger.Error(err, "Failed to update status for %s", rbgScalingAdapterName)
+		logger.Error(err, "Failed to update status", "rbgScalingAdapterName", rbgScalingAdapterName)
 		return ctrl.Result{}, err
 	}
 
