@@ -18,11 +18,12 @@ package workloads
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
 
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +51,10 @@ import (
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
+
+// errSelectorNotReady indicates the workload's status selector has not been populated yet.
+// This is a transient condition that resolves once the workload controller reconciles.
+var errSelectorNotReady = errors.New("selector not ready")
 
 // RoleBasedGroupScalingAdapterReconciler reconciles a RoleBasedGroupScalingAdapter object
 type RoleBasedGroupScalingAdapterReconciler struct {
@@ -103,11 +108,11 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	)
 	rbg, err := r.GetTargetRbgFromAdapter(ctx, rbgScalingAdapter)
 	if err != nil {
-		getTargetRoleErr = errors.Wrapf(err, "Failed to get rbg %s:", rbgName)
+		getTargetRoleErr = pkgerrors.Wrapf(err, "Failed to get rbg %s:", rbgName)
 	} else {
 		targetRole, err = rbg.GetRole(targetRoleName)
 		if err != nil {
-			getTargetRoleErr = errors.Wrapf(err, "Failed to get role %s in rbg %s:", targetRoleName, rbgName)
+			getTargetRoleErr = pkgerrors.Wrapf(err, "Failed to get role %s in rbg %s:", targetRoleName, rbgName)
 		}
 	}
 
@@ -162,8 +167,18 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 			return ctrl.Result{}, err
 		}
 
-		selector, err := r.extractLabelSelectorDefault(rbg, targetRole)
+		selector, err := r.extractLabelSelectorDefault(ctx, rbg, targetRole)
 		if err != nil {
+			if errors.Is(err, errSelectorNotReady) {
+				r.recorder.Eventf(
+					rbgScalingAdapter, corev1.EventTypeWarning, SelectorNotReady,
+					"Waiting for workload %s selector to be populated, will retry",
+					rbg.GetWorkloadName(targetRole),
+				)
+				logger.Info("Waiting for workload selector to be populated, will retry",
+					"workload", rbg.GetWorkloadName(targetRole))
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
 			return ctrl.Result{}, err
 		}
 
@@ -464,6 +479,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) updateRoleReplicas(
 
 // extractLabelSelectorDefault extracts a LabelSelector string from the given role's scale subresource.
 func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
+	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (string, error) {
 	apiVersion, kind := role.Workload.APIVersion, role.Workload.Kind
@@ -473,27 +489,21 @@ func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
 		return "", err
 	}
 
-	gvk := schema.GroupVersionKind{
-		Group:   targetGV.Group,
-		Version: targetGV.Version,
-		Kind:    kind,
-	}
-
 	// Get the scale subresource
 	scaleObj := &unstructured.Unstructured{}
 	scaleObj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   gvk.Group,
-		Version: gvk.Version,
+		Group:   targetGV.Group,
+		Version: targetGV.Version,
 		Kind:    kind,
 	})
 	scaleObj.SetNamespace(rbg.Namespace)
 	scaleObj.SetName(rbg.GetWorkloadName(role))
 
 	if err := r.client.Get(
-		context.TODO(),
+		ctx,
 		client.ObjectKey{Namespace: rbg.Namespace, Name: rbg.GetWorkloadName(role)}, scaleObj,
 	); err != nil {
-		return "", fmt.Errorf("failed to get workload: %v", err)
+		return "", fmt.Errorf("failed to get workload: %w", err)
 	}
 
 	// Try to get selector from status
@@ -505,10 +515,18 @@ func (r *RoleBasedGroupScalingAdapterReconciler) extractLabelSelectorDefault(
 	}
 	selectorStr, _, err := unstructured.NestedString(scaleObj.Object, "status", selectorField)
 	if err != nil {
-		return "", fmt.Errorf("failed to get selectore field in status: %v", err)
+		return "", fmt.Errorf("failed to get selector field in status: %w", err)
 	}
 
+	// Only RoleInstanceSet+LWP needs a non-empty selector guard: we must append
+	// the component-index label, and an empty base would produce a leading comma.
+	// Other workload types (StatefulSet, Deployment) may legitimately have an empty
+	// status.labelSelector since it is not part of their upstream API.
 	if kind == "RoleInstanceSet" && role.IsLeaderWorkerPattern() {
+		if selectorStr == "" {
+			return "", fmt.Errorf("workload %s status.%s is empty: %w",
+				rbg.GetWorkloadName(role), selectorField, errSelectorNotReady)
+		}
 		selectorStr += fmt.Sprintf(",%s=0", constants.ComponentIndexLabelKey)
 	}
 
