@@ -95,8 +95,6 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					scheme: scheme,
 					client: client,
 				}
-
-				expectedRevisionHash := "revision-hash-value"
 				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
@@ -1068,6 +1066,22 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	rbg := &workloadsv1alpha2.RoleBasedGroup{

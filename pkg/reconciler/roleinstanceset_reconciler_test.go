@@ -194,7 +194,6 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_WithTemplateRef(t *testin
 
 			// Test reconciliation
 			ctx := context.Background()
-			expectedRevisionHash := "revision-hash-value"
 			err := reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
 
 			if tt.expectError {

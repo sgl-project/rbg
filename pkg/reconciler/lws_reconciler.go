@@ -18,7 +18,6 @@ package reconciler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -27,7 +26,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 
 	corev1 "k8s.io/api/core/v1"
@@ -511,25 +509,6 @@ func leaderWorkerTemplateEqual(oldLwt, newLwt lwsv1.LeaderWorkerTemplate) (bool,
 		)
 	}
 	return true, nil
-}
-
-func patchPodTemplate(template *corev1.PodTemplateSpec, patch *runtime.RawExtension) (*corev1.PodTemplateSpec, error) {
-	if template == nil {
-		template = &corev1.PodTemplateSpec{}
-	}
-	if patch == nil || patch.Raw == nil {
-		return template, nil
-	}
-	tempBytes, _ := json.Marshal(template)
-	modified, err := strategicpatch.StrategicMergePatch(tempBytes, patch.Raw, &corev1.PodTemplateSpec{})
-	if err != nil {
-		return template, err
-	}
-	newTemp := &corev1.PodTemplateSpec{}
-	if err = json.Unmarshal(modified, newTemp); err != nil {
-		return template, err
-	}
-	return newTemp, nil
 }
 
 func keyOfRbg(rbg *workloadsv1alpha2.RoleBasedGroup) string {

@@ -55,6 +55,22 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 			APIVersion: "apps/v1",
 			Kind:       "Deployment",
 		},
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -604,6 +620,22 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 			APIVersion: "apps/v1",
 			Kind:       "Deployment",
 		},
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -690,6 +722,22 @@ func TestConstructDeploymentApplyConfiguration_LabelsAndAnnotations(t *testing.T
 		Workload: workloadsv1alpha2.WorkloadSpec{
 			APIVersion: "apps/v1",
 			Kind:       "Deployment",
+		},
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 

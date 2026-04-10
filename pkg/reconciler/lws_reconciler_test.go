@@ -62,7 +62,6 @@ func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
 
 	// Test successful reconciliation
 	ctx := context.Background()
-	expectedRevisionHash := "revision-hash-value"
 	err := reconciler.Reconciler(ctx, rbg, &lwsRole, nil, expectedRevisionHash)
 	assert.NoError(t, err)
 
