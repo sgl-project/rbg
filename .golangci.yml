@@ -40,7 +40,6 @@ linters:
     - staticcheck
     - typecheck
     - unconvert
-    - unparam
     - unused
 
 linters-settings:
