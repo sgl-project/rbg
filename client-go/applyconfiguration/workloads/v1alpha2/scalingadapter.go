@@ -17,11 +17,15 @@ limitations under the License.
 
 package v1alpha2
 
+import (
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+)
+
 // ScalingAdapterApplyConfiguration represents a declarative configuration of the ScalingAdapter type for use
 // with apply.
 type ScalingAdapterApplyConfiguration struct {
-	Enable *bool             `json:"enable,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Enable          *bool                                  `json:"enable,omitempty"`
+	ScaleDownPolicy *workloadsv1alpha2.ScaleDownPolicyType `json:"scaleDownPolicy,omitempty"`
 }
 
 // ScalingAdapterApplyConfiguration constructs a declarative configuration of the ScalingAdapter type for use with
@@ -38,16 +42,10 @@ func (b *ScalingAdapterApplyConfiguration) WithEnable(value bool) *ScalingAdapte
 	return b
 }
 
-// WithLabels puts the entries into the Labels field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, the entries provided by each call will be put on the Labels field,
-// overwriting an existing map entries in Labels field with the same key.
-func (b *ScalingAdapterApplyConfiguration) WithLabels(entries map[string]string) *ScalingAdapterApplyConfiguration {
-	if b.Labels == nil && len(entries) > 0 {
-		b.Labels = make(map[string]string, len(entries))
-	}
-	for k, v := range entries {
-		b.Labels[k] = v
-	}
+// WithScaleDownPolicy sets the ScaleDownPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ScaleDownPolicy field is set to the value of the last call.
+func (b *ScalingAdapterApplyConfiguration) WithScaleDownPolicy(value workloadsv1alpha2.ScaleDownPolicyType) *ScalingAdapterApplyConfiguration {
+	b.ScaleDownPolicy = &value
 	return b
 }

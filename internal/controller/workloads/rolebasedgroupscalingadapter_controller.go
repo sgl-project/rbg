@@ -228,7 +228,9 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	// StatefulSet/LWS delete pods from highest ordinals on scale-down, which are
 	// the already-updated pods (ordinal >= partition). Deferring scale-down until
 	// the rollout completes prevents rollout progress destruction.
-	if *desiredReplicas < *currentReplicas && workloadsv1alpha2.IsStatefulRole(targetRole) {
+	if *desiredReplicas < *currentReplicas &&
+		workloadsv1alpha2.IsStatefulRole(targetRole) &&
+		shouldDeferScaleDown(targetRole) {
 		roleStatus, found := rbg.GetRoleStatus(targetRoleName)
 		if found && roleStatus.UpdatedReplicas < roleStatus.Replicas {
 			msg := fmt.Sprintf(
@@ -307,6 +309,15 @@ func (r *RoleBasedGroupScalingAdapterReconciler) patchAdapterStatus(
 	applyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 		WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false))
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, applyConfig, utils.PatchStatus)
+}
+
+// shouldDeferScaleDown returns true if the role's ScaleDownPolicy is
+// DeferDuringRollout (or unset, which defaults to DeferDuringRollout).
+func shouldDeferScaleDown(role *workloadsv1alpha2.RoleSpec) bool {
+	if role.ScalingAdapter == nil || role.ScalingAdapter.ScaleDownPolicy == nil {
+		return true // default: defer during rollout
+	}
+	return *role.ScalingAdapter.ScaleDownPolicy == workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout
 }
 
 // clearScaleDownDeferredCondition removes the ScaleDownDeferred condition if present

@@ -84,19 +84,23 @@ func buildBoundRBGSA(desiredReplicas int32) *workloadsv1alpha2.RoleBasedGroupSca
 }
 
 // buildRBGWithRoleAndStatus creates an RBG with a single role of the given workload type
-// and optional role status.
+// and optional role status. scaleDownPolicy can be nil (default: DeferDuringRollout).
 func buildRBGWithRoleAndStatus(
 	workloadAPIVersion, workloadKind string,
 	roleReplicas int32,
 	roleStatuses []workloadsv1alpha2.RoleStatus,
+	scaleDownPolicy *workloadsv1alpha2.ScaleDownPolicyType,
 ) *workloadsv1alpha2.RoleBasedGroup {
+	role := wrappersv2.BuildStandaloneRole("worker").
+		WithWorkload(workloadAPIVersion, workloadKind).
+		WithReplicas(roleReplicas).
+		WithScalingAdapter(true)
+	roleSpec := role.Obj()
+	if scaleDownPolicy != nil {
+		roleSpec.ScalingAdapter.ScaleDownPolicy = scaleDownPolicy
+	}
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
-		WithRoles([]workloadsv1alpha2.RoleSpec{
-			wrappersv2.BuildStandaloneRole("worker").
-				WithWorkload(workloadAPIVersion, workloadKind).
-				WithReplicas(roleReplicas).
-				Obj(),
-		}).Obj()
+		WithRoles([]workloadsv1alpha2.RoleSpec{roleSpec}).Obj()
 	if len(roleStatuses) > 0 {
 		rbg.Status.RoleStatuses = roleStatuses
 	}
@@ -177,6 +181,7 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 		rbgsa              *workloadsv1alpha2.RoleBasedGroupScalingAdapter
 		workloadAPIVersion string
 		workloadKind       string
+		scaleDownPolicy    *workloadsv1alpha2.ScaleDownPolicyType
 		roleReplicas       int32
 		roleStatuses       []workloadsv1alpha2.RoleStatus
 		// Expectations
@@ -321,11 +326,40 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			expectConditionSet: true,
 			expectWarningEvent: true,
 		},
+		{
+			name:               "scale-down during rollout with Unrestricted policy proceeds",
+			rbgsa:              buildBoundRBGSA(6),
+			workloadAPIVersion: "apps/v1",
+			workloadKind:       "StatefulSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyUnrestricted),
+			roleReplicas:       10,
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
+			},
+			expectDeferred:       false,
+			expectScaleProceeds:  true,
+			expectRBGReplicasSet: ptr.To(int32(6)),
+		},
+		{
+			name:               "scale-down during rollout with explicit DeferDuringRollout policy is deferred",
+			rbgsa:              buildBoundRBGSA(6),
+			workloadAPIVersion: "apps/v1",
+			workloadKind:       "StatefulSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
+			roleReplicas:       10,
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
+			},
+			expectDeferred:     true,
+			expectRequeueAfter: 30 * time.Second,
+			expectConditionSet: true,
+			expectWarningEvent: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rbg := buildRBGWithRoleAndStatus(tt.workloadAPIVersion, tt.workloadKind, tt.roleReplicas, tt.roleStatuses)
+			rbg := buildRBGWithRoleAndStatus(tt.workloadAPIVersion, tt.workloadKind, tt.roleReplicas, tt.roleStatuses, tt.scaleDownPolicy)
 			sts := buildSTS(tt.roleReplicas)
 
 			fakeClient := fake.NewClientBuilder().
@@ -410,7 +444,7 @@ func TestScaleDownDeferredConditionLifecycle(t *testing.T) {
 		rbg := buildRBGWithRoleAndStatus("apps/v1", "StatefulSet", 10,
 			[]workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 10, UpdatedReplicas: 10},
-			})
+			}, nil)
 		sts := buildSTS(10)
 
 		fakeClient := fake.NewClientBuilder().
@@ -450,7 +484,7 @@ func TestScaleDownDeferredConditionLifecycle(t *testing.T) {
 		rbg := buildRBGWithRoleAndStatus("apps/v1", "StatefulSet", 10,
 			[]workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
-			})
+			}, nil)
 		sts := buildSTS(10)
 
 		fakeClient := fake.NewClientBuilder().
@@ -490,7 +524,7 @@ func TestScaleDownDeferredConditionLifecycle(t *testing.T) {
 		rbg := buildRBGWithRoleAndStatus("apps/v1", "StatefulSet", 10,
 			[]workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
-			})
+			}, nil)
 		sts := buildSTS(10)
 
 		fakeClient := fake.NewClientBuilder().
@@ -532,7 +566,7 @@ func TestScaleDownDeferredConditionLifecycle(t *testing.T) {
 		rbg := buildRBGWithRoleAndStatus("apps/v1", "StatefulSet", 10,
 			[]workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
-			})
+			}, nil)
 		sts := buildSTS(10)
 
 		fakeClient := fake.NewClientBuilder().

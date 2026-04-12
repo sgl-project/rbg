@@ -32891,14 +32891,15 @@ spec:
                           description: Enable indicates whether the ScalingAdapter
                             is enabled for the Role.
                           type: boolean
-                        labels:
-                          additionalProperties:
-                            type: string
+                        scaleDownPolicy:
                           description: |-
-                            Labels are additional labels to apply to the auto-created
-                            RoleBasedGroupScalingAdapter resource. Controller-managed labels
-                            (group-name, role-name) take precedence and cannot be overridden.
-                          type: object
+                            ScaleDownPolicy controls scale-down behavior during rolling updates.
+                            "DeferDuringRollout" defers scale-down for partition-based workloads
+                            while a rolling update is in progress.
+                          enum:
+                          - DeferDuringRollout
+                          - Unrestricted
+                          type: string
                       type: object
                     servicePorts:
                       items:
