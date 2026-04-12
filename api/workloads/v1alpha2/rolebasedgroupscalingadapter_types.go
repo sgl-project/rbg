@@ -30,6 +30,12 @@ type RoleBasedGroupScalingAdapterSpec struct {
 	ScaleTargetRef *AdapterScaleTargetRef `json:"scaleTargetRef"`
 }
 
+// AdapterConditionScaleDownDeferred indicates that a scale-down request is being
+// held because a partition-based rolling update is in progress for the target role.
+// This condition is only present when gating is active; it is removed when scaling
+// proceeds normally.
+const AdapterConditionScaleDownDeferred = "ScaleDownDeferred"
+
 // RoleBasedGroupScalingAdapterStatus shows the current state of a RoleBasedGroupScalingAdapter.
 type RoleBasedGroupScalingAdapterStatus struct {
 	// Phase indicates the current phase of the RoleBasedGroupScalingAdapter.
@@ -46,6 +52,10 @@ type RoleBasedGroupScalingAdapterStatus struct {
 
 	// LastScaleTime is the last time the RoleBasedGroupScalingAdapter scaled the number of pods,
 	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
+	// Conditions represent the latest available observations of the adapter's state.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type AdapterScaleTargetRef struct {

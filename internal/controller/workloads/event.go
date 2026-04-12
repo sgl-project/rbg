@@ -46,4 +46,7 @@ const (
 	FailedScale                = "FailedScale"
 	FailedGetRBGRole           = "FailedGetRBGRole"
 	FailedGetRBGScalingAdapter = "FailedGetRBGScalingAdapter"
+	// ScaleDownDeferred is emitted when a scale-down request is held because
+	// a partition-based rolling update is in progress for the target role.
+	ScaleDownDeferred = "ScaleDownDeferred"
 )

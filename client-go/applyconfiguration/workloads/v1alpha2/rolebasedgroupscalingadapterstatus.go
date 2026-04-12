@@ -19,17 +19,19 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	constants "sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupScalingAdapterStatusApplyConfiguration represents a declarative configuration of the RoleBasedGroupScalingAdapterStatus type for use
 // with apply.
 type RoleBasedGroupScalingAdapterStatusApplyConfiguration struct {
-	Phase         *constants.AdapterPhase `json:"phase,omitempty"`
-	Replicas      *int32                  `json:"replicas,omitempty"`
-	Selector      *string                 `json:"selector,omitempty"`
-	ReadyReplicas *int32                  `json:"readyReplicas,omitempty"`
-	LastScaleTime *v1.Time                `json:"lastScaleTime,omitempty"`
+	Phase         *constants.AdapterPhase              `json:"phase,omitempty"`
+	Replicas      *int32                               `json:"replicas,omitempty"`
+	Selector      *string                              `json:"selector,omitempty"`
+	ReadyReplicas *int32                               `json:"readyReplicas,omitempty"`
+	LastScaleTime *v1.Time                             `json:"lastScaleTime,omitempty"`
+	Conditions    []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // RoleBasedGroupScalingAdapterStatusApplyConfiguration constructs a declarative configuration of the RoleBasedGroupScalingAdapterStatus type for use with
@@ -75,5 +77,18 @@ func (b *RoleBasedGroupScalingAdapterStatusApplyConfiguration) WithReadyReplicas
 // If called multiple times, the LastScaleTime field is set to the value of the last call.
 func (b *RoleBasedGroupScalingAdapterStatusApplyConfiguration) WithLastScaleTime(value v1.Time) *RoleBasedGroupScalingAdapterStatusApplyConfiguration {
 	b.LastScaleTime = &value
+	return b
+}
+
+// WithConditions adds the given value to the Conditions field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Conditions field.
+func (b *RoleBasedGroupScalingAdapterStatusApplyConfiguration) WithConditions(values ...*metav1.ConditionApplyConfiguration) *RoleBasedGroupScalingAdapterStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConditions")
+		}
+		b.Conditions = append(b.Conditions, *values[i])
+	}
 	return b
 }
