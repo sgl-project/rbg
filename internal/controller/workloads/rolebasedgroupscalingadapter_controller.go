@@ -312,10 +312,11 @@ func (r *RoleBasedGroupScalingAdapterReconciler) patchAdapterStatus(
 }
 
 // shouldDeferScaleDown returns true if the role's ScaleDownPolicy is
-// DeferDuringRollout (or unset, which defaults to DeferDuringRollout).
+// explicitly set to DeferDuringRollout. When unset, defaults to Unrestricted
+// (same behavior as before this feature was introduced).
 func shouldDeferScaleDown(role *workloadsv1alpha2.RoleSpec) bool {
 	if role.ScalingAdapter == nil || role.ScalingAdapter.ScaleDownPolicy == nil {
-		return true // default: defer during rollout
+		return false // default: unrestricted (backward compatible)
 	}
 	return *role.ScalingAdapter.ScaleDownPolicy == workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout
 }

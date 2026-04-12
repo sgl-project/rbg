@@ -193,10 +193,11 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 		expectRBGReplicasSet *int32 // if scale proceeds, the RBG role should have this replicas value
 	}{
 		{
-			name:               "scale-down during rollout on StatefulSet is deferred",
+			name:               "scale-down during rollout on StatefulSet with DeferDuringRollout is deferred",
 			rbgsa:              buildBoundRBGSA(6), // HPA wants 6, current is 10
 			workloadAPIVersion: "apps/v1",
 			workloadKind:       "StatefulSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
@@ -207,10 +208,11 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			expectWarningEvent: true,
 		},
 		{
-			name:               "scale-down during rollout on LeaderWorkerSet is deferred",
+			name:               "scale-down during rollout on LeaderWorkerSet with DeferDuringRollout is deferred",
 			rbgsa:              buildBoundRBGSA(6),
 			workloadAPIVersion: "leaderworkerset.x-k8s.io/v1",
 			workloadKind:       "LeaderWorkerSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
@@ -221,10 +223,11 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			expectWarningEvent: true,
 		},
 		{
-			name:               "scale-down during rollout on Deployment proceeds (not partition-based)",
+			name:               "scale-down during rollout on Deployment with DeferDuringRollout proceeds (not partition-based)",
 			rbgsa:              buildBoundRBGSA(6),
 			workloadAPIVersion: "apps/v1",
 			workloadKind:       "Deployment",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
@@ -234,10 +237,11 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			expectRBGReplicasSet: ptr.To(int32(6)),
 		},
 		{
-			name:               "scale-down during rollout on RoleInstanceSet (stateful default) is deferred",
+			name:               "scale-down during rollout on RoleInstanceSet with DeferDuringRollout is deferred",
 			rbgsa:              buildBoundRBGSA(6),
 			workloadAPIVersion: "workloads.x-k8s.io/v1alpha2",
 			workloadKind:       "RoleInstanceSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
@@ -246,6 +250,19 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			expectRequeueAfter: 30 * time.Second,
 			expectConditionSet: true,
 			expectWarningEvent: true,
+		},
+		{
+			name:               "scale-down during rollout with default policy (nil) proceeds (backward compatible)",
+			rbgsa:              buildBoundRBGSA(6),
+			workloadAPIVersion: "apps/v1",
+			workloadKind:       "StatefulSet",
+			roleReplicas:       10,
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
+			},
+			expectDeferred:       false,
+			expectScaleProceeds:  true,
+			expectRBGReplicasSet: ptr.To(int32(6)),
 		},
 		{
 			name:               "scale-down when no rollout in progress proceeds normally",
@@ -289,6 +306,7 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			rbgsa:              buildBoundRBGSA(6),
 			workloadAPIVersion: "apps/v1",
 			workloadKind:       "StatefulSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 0, UpdatedReplicas: 0},
@@ -303,6 +321,7 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			rbgsa:              buildBoundRBGSA(6),
 			workloadAPIVersion: "apps/v1",
 			workloadKind:       "StatefulSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 12, ReadyReplicas: 10, UpdatedReplicas: 8},
@@ -317,6 +336,7 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			rbgsa:              buildBoundRBGSA(0),
 			workloadAPIVersion: "apps/v1",
 			workloadKind:       "StatefulSet",
+			scaleDownPolicy:    ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout),
 			roleReplicas:       10,
 			roleStatuses: []workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
@@ -524,7 +544,7 @@ func TestScaleDownDeferredConditionLifecycle(t *testing.T) {
 		rbg := buildRBGWithRoleAndStatus("apps/v1", "StatefulSet", 10,
 			[]workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
-			}, nil)
+			}, ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout))
 		sts := buildSTS(10)
 
 		fakeClient := fake.NewClientBuilder().
@@ -566,7 +586,7 @@ func TestScaleDownDeferredConditionLifecycle(t *testing.T) {
 		rbg := buildRBGWithRoleAndStatus("apps/v1", "StatefulSet", 10,
 			[]workloadsv1alpha2.RoleStatus{
 				{Name: "worker", Replicas: 10, ReadyReplicas: 7, UpdatedReplicas: 3},
-			}, nil)
+			}, ptr.To(workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout))
 		sts := buildSTS(10)
 
 		fakeClient := fake.NewClientBuilder().
