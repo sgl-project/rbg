@@ -105,14 +105,6 @@ jobs:
           path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
           fetch-depth: 0
 
-      - name: Test Preparation
-        run: |
-          arch=$(go env GOARCH)
-          os=$(go env GOOS)
-          curl -L https://github.com/kubernetes-sigs/kubebuilder/releases/download/v2.3.1/kubebuilder_2.3.1_${os}_${arch}.tar.gz | tar -xz -C /tmp/
-          sudo mv /tmp/kubebuilder_2.3.1_${os}_${arch} /usr/local/kubebuilder
-          export PATH=$PATH:/usr/local/kubebuilder/bin
-
       - name: Run Unit Tests
         run: |
           make test
