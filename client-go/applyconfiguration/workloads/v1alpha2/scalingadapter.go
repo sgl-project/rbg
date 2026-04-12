@@ -25,6 +25,7 @@ import (
 // with apply.
 type ScalingAdapterApplyConfiguration struct {
 	Enable          *bool                                  `json:"enable,omitempty"`
+	Labels          map[string]string                      `json:"labels,omitempty"`
 	ScaleDownPolicy *workloadsv1alpha2.ScaleDownPolicyType `json:"scaleDownPolicy,omitempty"`
 }
 
@@ -39,6 +40,20 @@ func ScalingAdapter() *ScalingAdapterApplyConfiguration {
 // If called multiple times, the Enable field is set to the value of the last call.
 func (b *ScalingAdapterApplyConfiguration) WithEnable(value bool) *ScalingAdapterApplyConfiguration {
 	b.Enable = &value
+	return b
+}
+
+// WithLabels puts the entries into the Labels field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Labels field,
+// overwriting an existing map entries in Labels field with the same key.
+func (b *ScalingAdapterApplyConfiguration) WithLabels(entries map[string]string) *ScalingAdapterApplyConfiguration {
+	if b.Labels == nil && len(entries) > 0 {
+		b.Labels = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.Labels[k] = v
+	}
 	return b
 }
 

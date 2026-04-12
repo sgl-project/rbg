@@ -71,7 +71,7 @@ spec:
 
 For partition-based workloads (StatefulSet, LeaderWorkerSet), rolling updates proceed from the highest ordinals down — pods with ordinal >= partition run the new template. However, StatefulSet also deletes from the highest ordinals on scale-down. This means **scale-down during a rollout kills the already-updated pods first**, resetting rollout progress to zero.
 
-```
+```text
 Before scale-down:  replicas=10, partition=7
                     Pods:  [0  1  2  3  4  5  6 | 7  8  9]
                             ── old template ──   ─ new ─

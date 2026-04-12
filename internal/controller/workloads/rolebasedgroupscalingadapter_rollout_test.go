@@ -291,12 +291,12 @@ func TestScaleDownDeferredDuringRollout(t *testing.T) {
 			expectRBGReplicasSet: ptr.To(int32(15)),
 		},
 		{
-			name:               "scale-down with role status not found proceeds (don't block on missing status)",
-			rbgsa:              buildBoundRBGSA(6),
-			workloadAPIVersion: "apps/v1",
-			workloadKind:       "StatefulSet",
-			roleReplicas:       10,
-			roleStatuses:       nil, // no role statuses
+			name:                 "scale-down with role status not found proceeds (don't block on missing status)",
+			rbgsa:                buildBoundRBGSA(6),
+			workloadAPIVersion:   "apps/v1",
+			workloadKind:         "StatefulSet",
+			roleReplicas:         10,
+			roleStatuses:         nil, // no role statuses
 			expectDeferred:       false,
 			expectScaleProceeds:  true,
 			expectRBGReplicasSet: ptr.To(int32(6)),

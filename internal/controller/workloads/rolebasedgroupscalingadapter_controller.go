@@ -24,8 +24,8 @@ import (
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -228,40 +228,11 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	// StatefulSet/LWS delete pods from highest ordinals on scale-down, which are
 	// the already-updated pods (ordinal >= partition). Deferring scale-down until
 	// the rollout completes prevents rollout progress destruction.
-	if *desiredReplicas < *currentReplicas &&
-		workloadsv1alpha2.IsStatefulRole(targetRole) &&
-		shouldDeferScaleDown(targetRole) {
-		roleStatus, found := rbg.GetRoleStatus(targetRoleName)
-		if found && roleStatus.UpdatedReplicas < roleStatus.Replicas {
-			msg := fmt.Sprintf(
-				"Scale-down to %d replicas deferred (current: %d): partition-based rolling update in progress for role %s (updated %d/%d)",
-				*desiredReplicas, *currentReplicas, targetRoleName,
-				roleStatus.UpdatedReplicas, roleStatus.Replicas)
-
-			logger.Info("Deferring scale-down during partition-based rollout",
-				"desired", *desiredReplicas, "current", *currentReplicas,
-				"updatedReplicas", roleStatus.UpdatedReplicas, "replicas", roleStatus.Replicas)
-
-			// Only emit the event on first deferral, not on every requeue.
-			isFirstDeferral := apimeta.FindStatusCondition(rbgScalingAdapter.Status.Conditions,
-				workloadsv1alpha2.AdapterConditionScaleDownDeferred) == nil
-
-			apimeta.SetStatusCondition(&rbgScalingAdapter.Status.Conditions, metav1.Condition{
-				Type:               workloadsv1alpha2.AdapterConditionScaleDownDeferred,
-				Status:             metav1.ConditionTrue,
-				Reason:             "RollingUpdateInProgress",
-				ObservedGeneration: rbgScalingAdapter.Generation,
-				Message:            msg,
-			})
-			if err := r.patchAdapterStatus(ctx, rbgScalingAdapter); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			if isFirstDeferral {
-				r.recorder.Eventf(rbgScalingAdapter, corev1.EventTypeWarning, ScaleDownDeferred, msg)
-			}
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-		}
+	if deferred, result, err := r.deferScaleDownIfNeeded(
+		ctx, rbgScalingAdapter, rbg, targetRole, targetRoleName,
+		*desiredReplicas, *currentReplicas,
+	); deferred || err != nil {
+		return result, err
 	}
 
 	// Clear condition in memory; the SSA status patch below persists the change
@@ -269,36 +240,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	apimeta.RemoveStatusCondition(&rbgScalingAdapter.Status.Conditions,
 		workloadsv1alpha2.AdapterConditionScaleDownDeferred)
 
-	logger.Info("Start scaling", "desired replicas", *desiredReplicas, "current replicas", *currentReplicas)
-
-	// scale role
-	if err := r.updateRoleReplicas(ctx, rbg, targetRoleName, desiredReplicas); err != nil {
-		r.recorder.Eventf(
-			rbgScalingAdapter, corev1.EventTypeWarning, FailedScale,
-			"Failed to scale target role [%s] of rbg [%s] from %v to %v replicas: %v",
-			targetRoleName, rbgName, *currentReplicas, *desiredReplicas, err,
-		)
-		return ctrl.Result{}, err
-	}
-	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
-		WithStatus(
-			ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, true).WithReplicas(*desiredReplicas),
-		)
-	if err := utils.PatchObjectApplyConfiguration(
-		ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
-	); err != nil {
-		logger.Error(err, "Failed to update status", "rbgScalingAdapterName", rbgScalingAdapterName)
-		return ctrl.Result{}, err
-	}
-
-	logger.Info("Scale successfully", "old replicas", *currentReplicas, "new replicas", *desiredReplicas)
-	r.recorder.Eventf(
-		rbgScalingAdapter, corev1.EventTypeNormal, SuccessfulScale,
-		"Succeed to scale target role [%s] of rbg [%s] from %v to %v replicas",
-		targetRoleName, rbgName, *currentReplicas, *desiredReplicas,
-	)
-
-	return ctrl.Result{}, nil
+	return r.scaleRole(ctx, rbgScalingAdapter, rbg, targetRoleName, *desiredReplicas, *currentReplicas)
 }
 
 // patchAdapterStatus persists the RBGSA status using SSA, consistent with all
@@ -333,6 +275,101 @@ func (r *RoleBasedGroupScalingAdapterReconciler) clearScaleDownDeferredCondition
 	apimeta.RemoveStatusCondition(&rbgScalingAdapter.Status.Conditions,
 		workloadsv1alpha2.AdapterConditionScaleDownDeferred)
 	return r.patchAdapterStatus(ctx, rbgScalingAdapter)
+}
+
+// deferScaleDownIfNeeded checks whether a scale-down should be deferred because
+// a partition-based rolling update is in progress. Returns (true, result, nil)
+// if the scale-down was deferred, (false, {}, nil) if it should proceed.
+func (r *RoleBasedGroupScalingAdapterReconciler) deferScaleDownIfNeeded(
+	ctx context.Context,
+	rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	targetRole *workloadsv1alpha2.RoleSpec,
+	targetRoleName string,
+	desiredReplicas, currentReplicas int32,
+) (bool, ctrl.Result, error) {
+	if desiredReplicas >= currentReplicas ||
+		!workloadsv1alpha2.IsStatefulRole(targetRole) ||
+		!shouldDeferScaleDown(targetRole) {
+		return false, ctrl.Result{}, nil
+	}
+
+	roleStatus, found := rbg.GetRoleStatus(targetRoleName)
+	if !found || roleStatus.UpdatedReplicas >= roleStatus.Replicas {
+		return false, ctrl.Result{}, nil
+	}
+
+	logger := log.FromContext(ctx)
+	msg := fmt.Sprintf(
+		"Scale-down to %d replicas deferred (current: %d): partition-based rolling update in progress for role %s (updated %d/%d)",
+		desiredReplicas, currentReplicas, targetRoleName,
+		roleStatus.UpdatedReplicas, roleStatus.Replicas)
+
+	logger.Info("Deferring scale-down during partition-based rollout",
+		"desired", desiredReplicas, "current", currentReplicas,
+		"updatedReplicas", roleStatus.UpdatedReplicas, "replicas", roleStatus.Replicas)
+
+	// Only emit the event on first deferral, not on every requeue.
+	isFirstDeferral := apimeta.FindStatusCondition(rbgScalingAdapter.Status.Conditions,
+		workloadsv1alpha2.AdapterConditionScaleDownDeferred) == nil
+
+	apimeta.SetStatusCondition(&rbgScalingAdapter.Status.Conditions, metav1.Condition{
+		Type:               workloadsv1alpha2.AdapterConditionScaleDownDeferred,
+		Status:             metav1.ConditionTrue,
+		Reason:             "RollingUpdateInProgress",
+		ObservedGeneration: rbgScalingAdapter.Generation,
+		Message:            msg,
+	})
+	if err := r.patchAdapterStatus(ctx, rbgScalingAdapter); err != nil {
+		return true, ctrl.Result{}, err
+	}
+
+	if isFirstDeferral {
+		r.recorder.Eventf(rbgScalingAdapter, corev1.EventTypeWarning, ScaleDownDeferred, msg)
+	}
+	return true, ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// scaleRole performs the actual replica update on the RBG and patches the RBGSA status.
+func (r *RoleBasedGroupScalingAdapterReconciler) scaleRole(
+	ctx context.Context,
+	rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	targetRoleName string,
+	desiredReplicas, currentReplicas int32,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	rbgName := rbg.Name
+
+	logger.Info("Start scaling", "desired replicas", desiredReplicas, "current replicas", currentReplicas)
+
+	if err := r.updateRoleReplicas(ctx, rbg, targetRoleName, &desiredReplicas); err != nil {
+		r.recorder.Eventf(
+			rbgScalingAdapter, corev1.EventTypeWarning, FailedScale,
+			"Failed to scale target role [%s] of rbg [%s] from %v to %v replicas: %v",
+			targetRoleName, rbgName, currentReplicas, desiredReplicas, err,
+		)
+		return ctrl.Result{}, err
+	}
+	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
+		WithStatus(
+			ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, true).WithReplicas(desiredReplicas),
+		)
+	if err := utils.PatchObjectApplyConfiguration(
+		ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
+	); err != nil {
+		logger.Error(err, "Failed to update status for %s", rbgScalingAdapter.Name)
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Scale successfully", "old replicas", currentReplicas, "new replicas", desiredReplicas)
+	r.recorder.Eventf(
+		rbgScalingAdapter, corev1.EventTypeNormal, SuccessfulScale,
+		"Succeed to scale target role [%s] of rbg [%s] from %v to %v replicas",
+		targetRoleName, rbgName, currentReplicas, desiredReplicas,
+	)
+
+	return ctrl.Result{}, nil
 }
 
 func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
