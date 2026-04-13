@@ -23,3 +23,4 @@ fixes #XXXX
 - [ ] Format your code `make fmt`.
 - [ ] Add unit tests or integration tests.
 - [ ] Update the documentation related to the change.
+- [ ] All commits are signed with DCO (`git commit -s`). See [Developer Certificate of Origin (DCO)](CONTRIBUTING.md#developer-certificate-of-origin-dco).
