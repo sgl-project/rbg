@@ -1,0 +1,252 @@
+# Example: PD-Disaggregated LLM Inference with SGLang and Mooncake Transfer Backend (v1alpha2)
+# This example demonstrates a Prefill-Decode disaggregated deployment using
+# SGLang runtime with Mooncake as the KV transfer backend.
+#
+# Architecture:
+#   - router: SGLang Router for request routing between prefill and decode
+#   - prefill: SGLang prefill engine with Mooncake transfer backend
+#   - decode: SGLang decode engine
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation, downloaded from HuggingFace)
+#
+# Features demonstrated:
+#   - PD disaggregation architecture with separate prefill and decode roles
+#   - standalonePattern for all roles
+#   - RoleTemplates for reducing configuration duplication
+#   - Mooncake transfer backend for KV cache transfer between prefill and decode
+#   - rolloutStrategy with InPlaceIfPossible for zero-downtime updates
+#
+# In-place upgrade notes:
+#   - InPlaceIfPossible enables hot update without pod recreation when only
+#     container image or resource limits change
+#   - gracePeriodSeconds defines the waiting time before forced update
+#   - restartPolicy: RecreateRoleInstanceOnPodRestart ensures instance state
+#     consistency when pod restarts
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.5 (or later)
+#   - GPU nodes with CUDA support
+#   - Internet access for downloading model from HuggingFace
+#   - External Mooncake service deployed (see mooncake-store/standalone-mooncake-store.yaml)
+#
+# Note: This example uses an external Mooncake service for KV transfer.
+# Deploy the standalone Mooncake service first before deploying this RBG.
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: sglang-pd-with-mooncake-te
+  labels:
+    app: sglang-inference
+    deployment-type: pd-disaggregated-mooncake-te
+    model: qwen-0.6b
+spec:
+  # Define reusable templates shared by multiple roles
+  roleTemplates:
+    - name: sglang-base
+      template:
+        metadata:
+          labels:
+            app: sglang-inference
+        spec:
+          containers:
+            - name: sglang
+              image: lmsysorg/sglang:v0.5.5
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+
+  roles:
+    # Router: SGLang Router for PD disaggregation request routing
+    - name: router
+      replicas: 1
+      dependencies: ["prefill", "decode"]
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: router
+                image: lmsysorg/sglang-router:v0.2.4
+                command:
+                  - python3
+                  - -m
+                  - sglang_router.launch_router
+                  - --pd-disaggregation
+                  # Prefill endpoint
+                  - --prefill
+                  - "http://sglang-pd-with-mooncake-te-prefill-0.s-sglang-pd-with-mooncake-te-prefill:8000"
+                  # Decode endpoint
+                  - --decode
+                  - "http://sglang-pd-with-mooncake-te-decode-0.s-sglang-pd-with-mooncake-te-decode:8000"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                ports:
+                  - name: http
+                    containerPort: 8000
+                  - name: metrics
+                    containerPort: 9090
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: "4Gi"
+                  limits:
+                    cpu: "4"
+                    memory: "8Gi"
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  initialDelaySeconds: 60
+                  periodSeconds: 10
+
+    # Prefill: SGLang prefill engine with Mooncake transfer backend
+    - name: prefill
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              volumes:
+                # Shared memory for intermediate computations
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tp-size
+                    - "1"
+                    - --trust-remote-code
+                    - --enable-metrics
+                    - --port
+                    - "8000"
+                    - --host
+                    - $(POD_IP)
+                    # PD disaggregation mode
+                    - --disaggregation-mode
+                    - prefill
+                    # Mooncake transfer backend for KV transfer
+                    - --disaggregation-transfer-backend
+                    - mooncake
+                  ports:
+                    - containerPort: 8000
+                      name: http
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 180
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 5
+                    successThreshold: 1
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                    requests:
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: dshm
+
+    # Decode: SGLang decode engine
+    - name: decode
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              volumes:
+                # Shared memory for intermediate computations
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tp-size
+                    - "1"
+                    - --trust-remote-code
+                    - --enable-metrics
+                    - --port
+                    - "8000"
+                    - --host
+                    - $(POD_IP)
+                    # PD disaggregation mode
+                    - --disaggregation-mode
+                    - decode
+                  ports:
+                    - containerPort: 8000
+                      name: http
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 180
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 5
+                    successThreshold: 1
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                    requests:
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: dshm
+
+---
+# Service for accessing the inference endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-pd-with-mooncake-te
+  labels:
+    app: sglang-inference
+    role: router
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    rbg.workloads.x-k8s.io/group-name: sglang-pd-with-mooncake-te
+    rbg.workloads.x-k8s.io/role-name: router

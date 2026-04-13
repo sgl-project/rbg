@@ -1,0 +1,247 @@
+# Example: PD-Disaggregated LLM Inference with vLLM and Mooncake Transfer Backend (v1alpha2)
+# This example demonstrates a Prefill-Decode disaggregated deployment using
+# vLLM runtime with Mooncake as the KV transfer backend.
+#
+# Architecture:
+#   - router: vLLM Router (NIXL-based) for request routing between prefill and decode
+#   - prefill: vLLM prefill engine with Mooncake transfer backend
+#   - decode: vLLM decode engine
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation, downloaded from HuggingFace)
+#
+# Features demonstrated:
+#   - PD disaggregation architecture with separate prefill and decode roles
+#   - standalonePattern for all roles
+#   - RoleTemplates for reducing configuration duplication
+#   - Mooncake transfer backend for KV cache transfer between prefill and decode
+#
+# Prerequisites:
+#   - vLLM docker image: vllm/vllm-openai:latest (or later)
+#   - GPU nodes with CUDA support
+#   - Internet access for downloading model from HuggingFace
+#   - External Mooncake service deployed (see mooncake-store/standalone-mooncake-store.yaml)
+#
+# Note: This example uses an external Mooncake service for KV transfer.
+# Deploy the standalone Mooncake service first before deploying this RBG.
+#
+# vLLM PD disaggregation notes:
+#   - vLLM uses kv_transfer_config for KV transfer configuration
+#   - kv_producer: prefill instance that processes prompts and produces KV cache
+#   - kv_consumer: decode instance that consumes KV cache and generates tokens
+#   - kv_connector: MooncakeConnector for KV transfer via Mooncake
+#   - kv_role valid values: 'kv_producer', 'kv_consumer', 'kv_both'
+#
+# Environment variables:
+#   - VLLM_MOONCAKE_BOOTSTRAP_PORT: Port for Mooncake bootstrap server (default: 8998)
+#     Required only for prefiller instances
+#   - VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: Timeout for releasing KV cache (default: 480s)
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: vllm-pd-with-mooncake-te
+  labels:
+    app: vllm-inference
+    deployment-type: pd-disaggregated-mooncake-te
+    model: qwen-0.6b
+spec:
+  # Define reusable templates shared by multiple roles
+  roleTemplates:
+    - name: vllm-base
+      template:
+        metadata:
+          labels:
+            app: vllm-inference
+        spec:
+          containers:
+            - name: vllm
+              image: vllm/vllm-openai:latest
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+
+  roles:
+    # Router: SGLang Model Gateway (SMG) for PD disaggregation request routing
+    # SMG supports vLLM workers in HTTP mode with PD disaggregation
+    # Reference: https://lightseek.org/smg/
+    - name: router
+      replicas: 1
+      dependencies: ["prefill", "decode"]
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: router
+                image: lmsysorg/sglang-router:v0.2.4
+                command:
+                  - python3
+                  - -m
+                  - sglang_router.launch_router
+                  - --pd-disaggregation
+                  # Prefill endpoint
+                  - --prefill
+                  - "http://vllm-pd-with-mooncake-te-prefill-0.s-vllm-pd-with-mooncake-te-prefill:8000"
+                  # Decode endpoint
+                  - --decode
+                  - "http://vllm-pd-with-mooncake-te-decode-0.s-vllm-pd-with-mooncake-te-decode:8000"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                ports:
+                  - name: http
+                    containerPort: 8000
+                  - name: metrics
+                    containerPort: 9090
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: "4Gi"
+                  limits:
+                    cpu: "4"
+                    memory: "8Gi"
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8000
+                  initialDelaySeconds: 60
+                  periodSeconds: 10
+
+    # Prefill: vLLM prefill engine with Mooncake transfer backend
+    - name: prefill
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: vllm-base
+          patch:
+            spec:
+              volumes:
+                # Shared memory for intermediate computations
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: vllm
+                  command:
+                    - vllm
+                    - serve
+                  args:
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tensor-parallel-size
+                    - "1"
+                    - --trust-remote-code
+                    - --port
+                    - "8000"
+                    # PD disaggregation mode: prefill (kv_producer produces KV cache)
+                    - --kv-transfer-config
+                    - '{"kv_connector":"MooncakeConnector","kv_role":"kv_producer"}'
+                  ports:
+                    - containerPort: 8000
+                      name: http
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 180
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 5
+                    successThreshold: 1
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                    requests:
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: dshm
+
+    # Decode: vLLM decode engine
+    - name: decode
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: vllm-base
+          patch:
+            spec:
+              volumes:
+                # Shared memory for intermediate computations
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: vllm
+                  command:
+                    - vllm
+                    - serve
+                  args:
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tensor-parallel-size
+                    - "1"
+                    - --trust-remote-code
+                    - --port
+                    - "8000"
+                    # PD disaggregation mode: decode (kv_consumer consumes KV cache)
+                    - --kv-transfer-config
+                    - '{"kv_connector":"MooncakeConnector","kv_role":"kv_consumer"}'
+                  ports:
+                    - containerPort: 8000
+                      name: http
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 180
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 5
+                    successThreshold: 1
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                    requests:
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: dshm
+
+---
+# Service for accessing the inference endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-pd-with-mooncake-te
+  labels:
+    app: vllm-inference
+    role: router
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    rbg.workloads.x-k8s.io/group-name: vllm-pd-with-mooncake-te
+    rbg.workloads.x-k8s.io/role-name: router

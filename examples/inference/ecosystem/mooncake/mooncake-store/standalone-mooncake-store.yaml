@@ -1,0 +1,183 @@
+# Example: Standalone Mooncake KV Cache Service (v1alpha2)
+# This example deploys a standalone Mooncake cluster that can be shared
+# by multiple RoleBasedGroup inference deployments.
+#
+# Architecture:
+#   - mooncake-master: Mooncake metadata server for KV cache management
+#   - mooncake-store: Distributed KV cache storage nodes (stateless)
+#
+# Features demonstrated:
+#   - standalonePattern for all roles
+#   - RoleTemplates for reducing configuration duplication
+#   - rolloutStrategy with InPlaceIfPossible for zero-downtime updates
+#
+# In-place upgrade notes:
+#   - InPlaceIfPossible enables hot update without pod recreation when only
+#     container image or resource limits change
+#   - gracePeriodSeconds defines the waiting time before forced update
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.5 (or later)
+#   - No GPU required for mooncake-master and mooncake-store
+#
+# How to use this Mooncake service in your RoleBasedGroup:
+#   1. Deploy this standalone mooncake service first
+#   2. In your inference RBG, configure the following environment variables:
+#      - MOONCAKE_MASTER: "s-<rbg-name>-mooncake-master:50051"
+#        Example: "s-mooncake-service-mooncake-master:50051"
+#      - MOONCAKE_TE_META_DATA_SERVER: "http://s-<rbg-name>-mooncake-master:8080/metadata"
+#        Example: "http://s-mooncake-service-mooncake-master:8080/metadata"
+#   3. Enable hierarchical cache in SGLang:
+#      - --enable-hierarchical-cache
+#      - --hicache-storage-backend mooncake
+#   4. Set MOONCAKE_PROTOCOL (tcp or rdma) and cache sizes as needed
+#
+# Example inference RBG configuration:
+#   env:
+#     - name: MOONCAKE_MASTER
+#       value: "s-mooncake-service-mooncake-master:50051"
+#     - name: MOONCAKE_TE_META_DATA_SERVER
+#       value: "http://s-mooncake-service-mooncake-master:8080/metadata"
+#     - name: MOONCAKE_PROTOCOL
+#       value: "tcp"
+#   args:
+#     - --enable-hierarchical-cache
+#     - --hicache-storage-backend
+#     - mooncake
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: mooncake-service
+  labels:
+    app: mooncake-kv-cache
+    deployment-type: standalone-mooncake
+spec:
+  # Define reusable templates shared by multiple roles
+  roleTemplates:
+    - name: sglang-base
+      template:
+        spec:
+          containers:
+            - name: sglang
+              image: lmsysorg/sglang:v0.5.5
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+
+  roles:
+    # Mooncake Master: Metadata server for KV cache management
+    - name: mooncake-master
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - mooncake_master
+                  args:
+                    - --rpc_address
+                    - $(POD_IP)
+                    - --rpc_port
+                    - "50051"
+                    - --http_metadata_server_host
+                    - $(POD_IP)
+                    - --http_metadata_server_port
+                    - "8080"
+                    - --enable_http_metadata_server
+                    - --metrics_port
+                    - "9003"
+                  ports:
+                    - containerPort: 8080
+                      name: http
+                    - containerPort: 50051
+                      name: rpc
+                  readinessProbe:
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    tcpSocket:
+                      port: 8080
+
+    # Mooncake Store: Distributed KV cache storage nodes
+    - name: mooncake-store
+      replicas: 3
+      dependencies: ["mooncake-master"]
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 30
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  env:
+                    # Mooncake master connection
+                    - name: MOONCAKE_MASTER
+                      value: "s-mooncake-service-mooncake-master:50051"
+                    - name: MOONCAKE_TE_META_DATA_SERVER
+                      value: "http://s-mooncake-service-mooncake-master:8080/metadata"
+                    # Cache configuration
+                    - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+                      value: "10gb"
+                    - name: MOONCAKE_LOCAL_BUFFER_SIZE
+                      value: "0"
+                    # Network protocol (tcp, rdma)
+                    - name: MOONCAKE_PROTOCOL
+                      value: "tcp"
+                  command:
+                    - python3
+                    - -m
+                    - mooncake.mooncake_store_service
+                  args:
+                    - --port
+                    - "8088"
+                  ports:
+                    - containerPort: 8088
+                      name: http
+                  readinessProbe:
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    tcpSocket:
+                      port: 8088
+                  resources:
+                    limits:
+                      memory: "16Gi"
+                    requests:
+                      memory: "16Gi"
+
+---
+# Service for Mooncake Master RPC endpoint
+# Other RBGs connect to this service for KV cache operations
+apiVersion: v1
+kind: Service
+metadata:
+  name: mooncake-service-master
+  labels:
+    app: mooncake-kv-cache
+    role: mooncake-master
+spec:
+  type: ClusterIP
+  ports:
+    - name: rpc
+      port: 50051
+      protocol: TCP
+      targetPort: 50051
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    rbg.workloads.x-k8s.io/group-name: mooncake-service
+    rbg.workloads.x-k8s.io/role-name: mooncake-master

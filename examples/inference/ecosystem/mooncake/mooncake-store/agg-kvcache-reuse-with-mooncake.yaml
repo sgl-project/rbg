@@ -1,0 +1,255 @@
+# Example: Aggregated LLM Inference with SGLang and Mooncake KV Cache (v1alpha2)
+# This example demonstrates a complete aggregated deployment using SGLang runtime
+# with Mooncake as the distributed KV cache backend.
+#
+# Architecture:
+#   - mooncake-master: Mooncake metadata server for KV cache management
+#   - mooncake-store: Distributed KV cache storage nodes (stateless)
+#   - worker: SGLang inference engine with hierarchical cache enabled
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing, downloaded from HuggingFace)
+#
+# Features demonstrated:
+#   - standalonePattern for all roles
+#   - RoleTemplates for reducing configuration duplication
+#   - Mooncake integration with hierarchical cache
+#   - rolloutStrategy with InPlaceIfPossible for zero-downtime updates
+#
+# In-place upgrade notes:
+#   - InPlaceIfPossible enables hot update without pod recreation when only
+#     container image or resource limits change
+#   - gracePeriodSeconds defines the waiting time before forced update
+#   - restartPolicy: RecreateRoleInstanceOnPodRestart ensures instance state
+#     consistency when pod restarts
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.5 (or later)
+#   - GPU nodes with CUDA support
+#   - Internet access for downloading model from HuggingFace
+#
+# Note: This is the v1alpha2 API version of the deprecated v1alpha1 example.
+# The main differences are:
+#   - Uses standalonePattern instead of inline template
+#   - Uses RoleTemplates for shared configuration
+#   - Uses RoleInstanceSet workload type (default)
+#   - Updated label selectors to v1alpha2 format
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: sglang-agg-with-mooncake
+  labels:
+    app: sglang-inference
+    deployment-type: aggregated-mooncake
+    model: qwen-0.6b
+spec:
+  # Define reusable templates shared by multiple roles
+  roleTemplates:
+    - name: sglang-base
+      template:
+        spec:
+          containers:
+            - name: sglang
+              image: lmsysorg/sglang:v0.5.5
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+
+  roles:
+    # Mooncake Master: Metadata server for KV cache management
+    - name: mooncake-master
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - mooncake_master
+                  args:
+                    - --rpc_address
+                    - $(POD_IP)
+                    - --rpc_port
+                    - "50051"
+                    - --http_metadata_server_host
+                    - $(POD_IP)
+                    - --http_metadata_server_port
+                    - "8080"
+                    - --enable_http_metadata_server
+                    - --metrics_port
+                    - "9003"
+                  ports:
+                    - containerPort: 8080
+                      name: http
+                    - containerPort: 50051
+                      name: rpc
+                  readinessProbe:
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    tcpSocket:
+                      port: 8080
+
+    # Mooncake Store: Distributed KV cache storage nodes
+    - name: mooncake-store
+      replicas: 3
+      dependencies: ["mooncake-master"]
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 30
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  env:
+                    # Mooncake master connection
+                    - name: MOONCAKE_MASTER
+                      value: "s-sglang-agg-with-mooncake-mooncake-master:50051"
+                    - name: MOONCAKE_TE_META_DATA_SERVER
+                      value: "http://s-sglang-agg-with-mooncake-mooncake-master:8080/metadata"
+                    # Cache configuration
+                    - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+                      value: "10gb"
+                    - name: MOONCAKE_LOCAL_BUFFER_SIZE
+                      value: "0"
+                    # Network protocol (tcp, rdma)
+                    - name: MOONCAKE_PROTOCOL
+                      value: "tcp"
+#                    - name: MOONCAKE_DEVICE
+#                      value: ""
+                  command:
+                    - python3
+                    - -m
+                    - mooncake.mooncake_store_service
+                  args:
+                    - --port
+                    - "8088"
+                  ports:
+                    - containerPort: 8088
+                      name: http
+                  readinessProbe:
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    tcpSocket:
+                      port: 8088
+                  resources:
+                    limits:
+                      memory: "16Gi"
+                    requests:
+                      memory: "16Gi"
+
+    # Worker: SGLang inference engine with Mooncake hierarchical cache
+    - name: worker
+      replicas: 1
+      dependencies: ["mooncake-master"]
+      restartPolicy: RecreateRoleInstanceOnPodRestart
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        templateRef:
+          name: sglang-base
+          patch:
+            spec:
+              volumes:
+                # Shared memory for intermediate computations
+                - name: dshm
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 30Gi
+              containers:
+                - name: sglang
+                  env:
+                    # Mooncake connection settings
+                    - name: MOONCAKE_MASTER
+                      value: "s-sglang-agg-with-mooncake-mooncake-master:50051"
+                    - name: MOONCAKE_TE_META_DATA_SERVER
+                      value: "http://s-sglang-agg-with-mooncake-mooncake-master:8080/metadata"
+                    # Network protocol (tcp, rdma)
+                    - name: MOONCAKE_PROTOCOL
+                      value: "tcp"
+#                    - name: MOONCAKE_DEVICE
+#                      value: ""
+                    # Cache configuration
+                    - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+                      value: "5gb"
+                    - name: MOONCAKE_LOCAL_BUFFER_SIZE
+                      value: "16777216"
+                    - name: MC_MS_AUTO_DISC
+                      value: "0"
+                  command:
+                    - python3
+                    - -m
+                    - sglang.launch_server
+                    - --model-path
+                    - Qwen/Qwen3-0.6B
+                    - --served-model-name
+                    - qwen3
+                    - --tp-size
+                    - "1"
+                    - --trust-remote-code
+                    - --enable-metrics
+                    - --port
+                    - "8000"
+                    - --host
+                    - $(POD_IP)
+                    # Enable hierarchical cache with Mooncake backend
+                    - --enable-hierarchical-cache
+                    - --hicache-storage-backend
+                    - mooncake
+                  ports:
+                    - containerPort: 8000
+                      name: http
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 180
+                    periodSeconds: 30
+                    timeoutSeconds: 10
+                    failureThreshold: 5
+                    successThreshold: 1
+                  resources:
+                    limits:
+                      nvidia.com/gpu: "1"
+                    requests:
+                      nvidia.com/gpu: "1"
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: dshm
+
+---
+# Service for accessing the inference endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-agg-with-mooncake
+  labels:
+    app: sglang-inference
+    role: worker
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    rbg.workloads.x-k8s.io/group-name: sglang-agg-with-mooncake
+    rbg.workloads.x-k8s.io/role-name: worker
