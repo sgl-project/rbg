@@ -162,6 +162,9 @@ func (c *realControl) groupComponentControllerRevision(ctx context.Context, oldR
 }
 
 func (c *realControl) splitComponentControllerRevision(revision *apps.ControllerRevision) (map[string]*componentRevision, error) {
+	if revision == nil {
+		return nil, fmt.Errorf("cannot split nil ControllerRevision")
+	}
 	var raw map[string]interface{}
 	if err := json.Unmarshal(revision.Data.Raw, &raw); err != nil {
 		return nil, err
