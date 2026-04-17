@@ -1,4 +1,4 @@
-# KEP-NNNN: Enhanced Headless Service Policy for RoleBasedGroup
+# KEP-275: Enhanced Per-Replica Headless Service Policy for RoleBasedGroup
 
 <!-- toc -->
 - [Release Signoff Checklist](#release-signoff-checklist)
@@ -86,23 +86,20 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
-This KEP proposes a new role-level networking field,`networking.headlessServicePolicy`, with three supported policies:
+This KEP proposes a new role-level networking field,`NetworkConfig.SubdomainPolicy`, with two supported policies:
 
-- `SharedFull`
-- `SharedLeaderOnly`
-- `PerReplicaFull`
+- `Shared`
+- `UniquePerReplica`
 
 
-RBG currently creates one headless Service per role. That works for simple cases, but it is noy enough for some distributed inference runtimes.
+RBG currently creates one headless Service per role. That works for simple cases, but it is noy enough for some large scale cases.
 
 In particular, `RoleInstanceSet + leaderWorkerPattern` has two practical needs that are not supported by the current controller:
 
-1. Some runtimes, such as `sglang` in cross-node DP headless mode, only want leader Pods to be target by shared role Service. 
-Follower Pods may run only a dummy API server and should not be treated as real serving endpoints.
+1. We would like to have segregated service for each replica to avert using native round robin load balance algorithms to enhance serving.
 2. At larger scale, a single shared headless Service can become a bottleneck to aggregate every Pod of the role. 
 Setting one headless Service per replica as `leaderworkerset` does so that each replica has its own DNS domain.
 
-This KEP intentionally does not include `PerReplicaLeaderOnly`. That behavior is useful, but it introduces another service identity mode and a complex larger rollout reconcile.
 
 ## Motivation
 
@@ -112,47 +109,53 @@ Currently, one role corresponds to one headless Service.
 - `RoleInstanceSet` writes a static `ServiceName` for the leader component in leader-worker mode.
 
 
-For `sglang`, follower nodes in headless multi-node DP do not expose a fully operational API server. Sending requests to every Pod in the role would lead to failure.
+As for some gateway, informers would discover service by label, and redirect requests to each service instead of pods.
 
 At larger scale, it is often more natural to treat each replica as its own DNS boundary. One headless Service per `RoleInstance` makes that possible.
 
 More importantly, direct Pod DNS access through headless Services depends on the Pod `subdomain` matching the governing Service name.
-This means `PerReplicaFull` cannot be handled by extra Services only. It changes the actual network identity used by the Pods,
+This means `UniquePerReplica` cannot be handled by extra Services only. It changes the actual network identity used by the Pods,
 so this KEP must define rollout behavior and compatibility carefully.
 
 ### Goals
 
 1. Introduce a clear API for selecting the headless Service topology of a role while keeping current behavior as the default.
-2. Support a shared leader-only Service for `RoleInstanceSet + leaderWorkerPattern`.
-3. Support one headless Service per `RoleInstance` in the same `Roleinstanceset`.
+2. Keep a shared Service for `RoleInstanceSet + leaderWorkerPattern`.
+3. Support one headless Service per `RoleInstance` in the same `Roleinstanceset` when using `StatefulPattern`.
+
 
 ### Non-Goals
 
-1. Supporting `Deployment`, `StatefulSet`, `LeaderWorkerSet`, or other role pattern.
-2. Supporting `standalonePattern` or `customComponentsPattern`.
-3. Introducing `PerReplicaLeaderOnly` in this KEP.
+
+1. Supporting `standalonePattern` or `customComponentsPattern`.
+2. Supporting `Deployment`, `StatefulSet`, `LeaderWorkerSet`, or other role pattern.
+3. Introducing `LeaderOnly`  service in this KEP.
 4. Keeping every policy transition non-rolling. Transitions which change Pod DNS identity must rollout.
 
 ## Proposal
 
 Add a new optional networking field in `RoleSpec` which contains there types:
-- `SharedFull` Default value. Keeps the current model: one shared headless Service for the role, selecting all Pods in the role.
-- `SharedLeaderOnly` keeps one shared headless Service for the role, but it selects only leader Pods.
-- `PerReplicaFull` One headless Service per `RoleInstance`, and each Service selects all Pods in that replica. No leader worker separation.
+- `Shared` Default value. Keeps the current model: one shared headless Service for the role, selecting all Pods in the role.
+- `UniquePerReplica` create separated headless Service for the role, and it selects only Pods in that replicas, 
+while each replica get its own subdomain. This policy is only for `StatefulPattern`
+
 
 
 ### User Stories (Optional)
 
 #### Story 1
 
-When using `sglang` or `vllm` in headless mode across nodes, I want the requests target to the shared role svc to only route to leader Pods.
-So that followers that only run a dummy API server would not serve requests.
+When using `sglang` or `vllm` to serve large models, I want the requests target to the certain service instead of random one,
+and the algorithm may be `cache aware` or `least running length`, which is not supported through k8s native kube-proxy service.
 
 #### Story 2
 
 I have a large cluster. The replica is so large that the `CoreDNS` may fail to solve. I want each replica to have its own headless Service 
 so that DNS and endpoints can be looked up safely instead of be choped by connections.
 
+#### Story 3
+I was using `LeaderWorkerSet` and I want to migrate to `RoleBasedGroup` using stateful pattern of `RoleInstanceSet` workload while not change any API field, 
+and I prefer smooth migration to `RoleBaseGroup` and not change API.
 
 ## Design Details
 
@@ -163,65 +166,54 @@ Adding `RoleSpec` with a role-level networking configuration
 ```go
 type RoleSpec struct {
     // +optional
-    Networking *RoleNetworking `json:"networking,omitempty"`
+    NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 }
 
-type RoleNetworking struct {
-    // HeadlessServicePolicy controls the canonical headless Service topology for the role.
-    // +optional
-    // +kubebuilder:default=SharedFull
-    HeadlessServicePolicy HeadlessServicePolicy `json:"headlessServicePolicy,omitempty"`
+type NetworkConfig struct {
+    // SubdomainPolicy determines the policy that will be used when creating
+    // the headless service, defaults to shared
+    // +kubebuilder:validation:Enum={Shared,UniquePerReplica}
+    SubdomainPolicy *SubdomainPolicy `json:"subdomainPolicy"`
 }
 
-type HeadlessServicePolicy string
+type SubdomainPolicy string
 
 const (
-    // Default behavior. One shared headless Service selects every Pod in the role.
-    HeadlessServiceSharedFull HeadlessServicePolicy = "SharedFull"
+    // replica 0: my-rbg-0-0.my-rbg, my-rbg-0-1.my-rbg
+    // replica 1: my-rbg-1-0.my-rbg, my-rbg-1-1.my-rbg
+    SubdomainShared SubdomainPolicy = "Shared"
 
-    // One shared headless Service selects only leader Pods.
-    HeadlessServiceSharedLeaderOnly HeadlessServicePolicy = "SharedLeaderOnly"
 
-    // One headless Service is created for each RoleInstance. Each such Service
-    // selects all Pods in that replica and becomes the governing service name
-    // for the Pods in that instance.
-    HeadlessServicePerReplicaFull HeadlessServicePolicy = "PerReplicaFull"
+    // replica 0: my-rbg-0-0.my-rbg-0, my-rbg-0-0.my-rbg-0
+    // replica 1: my-rbg-1-0.my-rbg-1, my-rbg-1-1.my-rbg-1
+    SubdomainUniquePerReplica SubdomainPolicy = "UniquePerReplica"
 )
 ```
 
 Default:
-- If the field is empty, the policy defaults to `SharedFull`.
-- Non-default policies are valid only for stateful `RoleInstanceSet + leaderWorkerPattern`.
-- Unsupported combinations must be rejected rather than silently ignored.
+- If the field is empty, the policy defaults to `Shared`.
+
 
 ### Behavior by Policy
 
-#### `SharedFull`
+#### `Shared`
 
 This is current behavior and remains the default.
 - One shared headless Service for one role and includes all role Pods.
 - Existing workloads require no spec changes and see no behavioral change.
 
-#### `SharedLeaderOnly`
-- One shared headless Service exists for the role and includes only leader Pods.
-- Follower Pods are no longer available through the shared Service and shared service name remains the same as `SharedFull`.
-
-
-#### `PerReplicaFull`
-- One headless Service is created for each `RoleInstance`.
-- Each per-instance Service selects all Pods that belong to that replica.
-Because the Service name changes, this policy changes Pod subdomain and requires rollout-aware handling after update.
-
+#### `UniquePerReplica`
+- One unique headless Service for Pod in each replica within the same role.
 
 
 ### Service Naming and Owner Reference
 
-#### Shared policies
+#### `Shared`
 - Service name continues to use the existing shared naming convention.
 - The shared Service is owned by the `RoleInstanceSet`.
-- Changing between these two policies does not change the Service name of the Pods.
+- transitions between `Shared` and `UniquePerReplica` change the governing service name of Pods
 
-#### `PerReplicaFull`
+#### `UniquePerReplica`
 - Each per-instance Service name is equal to the `RoleInstance` name.
 - The per-instance Service is owned by that `RoleInstance`.
 - The selector matches the instance identity label, and include group and role labels for safety.
@@ -229,21 +221,12 @@ Because the Service name changes, this policy changes Pod subdomain and requires
 
 ### Rollout and Transition Behavior
 
-#### Shared-to-shared transition
 
-`SharedFull <-> SharedLeaderOnly`
+There are 2 scenarios
 
-This transition changes which Pods are selected by the shared Service, but it does not change the shared Service name. 
+`Shared -> UniquePerReplica`  
+`UniquePerReplica -> Shared`  
 
-This can be reconciled by updating the Service selector only. The controller may handle this transition in place without recreating Pods and Pods' DNS identity remains stable.
-
-#### Transitions involving `PerReplicaFull`
-There are 4 scenarios
-
-`SharedFull -> PerReplicaFull`  
-`SharedLeaderOnly -> PerReplicaFull`  
-`PerReplicaFull -> SharedFull`  
-`PerReplicaFull -> SharedLeaderOnly`
 
 These require a `RoleInstanceSet` rollout. Transition rules:
 
@@ -256,17 +239,23 @@ These require a `RoleInstanceSet` rollout. Transition rules:
 
 Current discovery and environment injection assume one role-level service name.
 
-- leader address environment construction
 - discovery ConfigMap generation
+- environment variables that contain service-based addresses
 - any helper that derives a service name from a role alone
 
-Shared policies remain role-scoped for discovery.
+Under `Shared`, discovery remains role-scoped. Pods keep using the shared headless Service name, and direct Pod DNS names keep the existing shape:
 
-`PerReplicaFull` becomes instance-scoped for service identity. For leader-worker roles, leader-oriented addresses should resolve against the instance service name. 
-Concretely, the leader address shape becomes: `<role-instance-name>-0.<role-instance-name>`
+`<pod-name>.<shared-service-name>`
+
+Under `UniquePerReplica`, discovery becomes replica-scoped. Each `RoleInstance` uses its own governing Service name, so direct Pod DNS names change to:
+
+`<pod-name>.<role-instance-name>`
+
+Because of this, `UniquePerReplica` is not just an additive Service creation policy. It changes the service name used by Pods, 
+so discovery artifacts and environment variables that embed service addresses must be generated according to the active `SubdomainPolicy`.
 
 
-Only `RoleInstanceSet` with stateful `leaderWorkerPattern` can use policy field. Everything else remains at the default behavior and must reject non-default policies.
+Only `RoleInstanceSet` with stateful `leaderWorkerPattern` can use policy field.
 
 
 ### Test Plan
@@ -278,26 +267,24 @@ necessary to implement this enhancement.
 
 ##### Unit tests
 
-- API defaulting for `SharedFull`
-- Shared Service selector generation for `SharedFull` and `SharedLeaderOnly`
-- Per replica Service name for `PerReplicaFull`
-- `RoleInstance` spec generation to ensure all components receive the correct `ServiceName` under `PerReplicaFull`
-- Cleanup logic for old shared or per-instance Services after rollout
+- API defaulting for `Shared`
+- Per replica Service name for `UniquePerReplica`
+- Role instance component ServiceName propagation under `UniquePerReplica`
+- Cleanup of old services after transition
 
 ##### Integration tests
 
-- `SharedLeaderOnly` creates one shared headless Service and its selector matches only leader Pods
-- `PerReplicaFull` creates one headless Service per `RoleInstance`
-- In `PerReplicaFull`, Pods can be resolved correct
-- `SharedFull -> PerReplicaFull` transition creates the target Services first, rolls instances
-- `PerReplicaFull -> SharedFull` and `PerReplicaFull -> SharedLeaderOnly` restore the shared Service topology and remove obsolete per-instance Services
+- `Shared` creates one headless Service per role
+- `UniquePerReplica` creates one headless Service per replica
+- pods resolve correctly under shared subdomain
+- pods resolve correctly under replica-specific subdomain
+- `Shared` -> `UniquePerReplica` triggers rollout and converges
+- `UniquePerReplica` -> `Shared` triggers rollout and converges
 
 ##### e2e tests
 
-- A leader-worker role using `SharedLeaderOnly` does not expose worker Pods through the shared Service
-- A multi-replica role using `PerReplicaFull` gets one Service per replica and each Service contains only that replica's Pods
-- A rollout from any other policy to `PerReplicaFull` DNS identity transitions from shared-service to instance-service
-
+- direct DNS resolution works in both policies
+- policy transitions preserve availability according to rollout strategy
 
 
 ## Production Readiness Review Questionnaire
@@ -307,11 +294,11 @@ necessary to implement this enhancement.
 
 ###### Does enabling the feature change any default behavior?
 
-No. The default remains `SharedFull`.
+No. The default remains `Shared`.
 
 ###### Can the feature be disabled once it has been enabled?
 
-Yes. Users can set the policy back to `SharedFull`.
+Yes. Users can set the policy back to `Shared`.
 
 
 ###### Are there any tests for feature enablement/disablement?
@@ -321,14 +308,10 @@ Yes.
 
 ## Drawbacks
 
-- The feature adds another policy dimension to role networking and `PerReplicaFull` increases Service object count.
+- The feature adds another policy dimension to role networking and `UniquePerReplica` increases Service object count.
 - The rollout matrix becomes more complex because some transitions need Pods to restart while other would not
 
 ## Alternatives
-### Add `PerReplicaLeaderOnly`
-
-This would be closer to some `sglang` deployment scenario, but it would create many svc. This KEP leaves it for future work.
 
 ### Make per-replica Services smooth to avoid restart
-Pods must use that service name as their `subdomain`. That means `PerReplicaFull` must lead to service recreation and Pod spec change.
-
+Pods must use that service name as their `subdomain`. That means `UniquePerReplica` must lead to service recreation and Pod spec change.
