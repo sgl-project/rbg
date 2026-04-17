@@ -22,14 +22,17 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
+	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
 // fakeInplaceControl implements inplaceupdate.Interface for testing.
@@ -117,13 +120,18 @@ func TestUpdatePod(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-pod",
-					Namespace: "default",
+					Name:            "test-pod",
+					Namespace:       "default",
+					UID:             types.UID(tt.name),
+					ResourceVersion: "1",
 					Labels: map[string]string{
 						apps.ControllerRevisionHashLabelKey: tt.podRevisionHash,
 					},
 				},
 			}
+			t.Cleanup(func() {
+				instanceutil.ResourceVersionExpectations.Delete(pod)
+			})
 			updateRevision := &apps.ControllerRevision{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "rev-def456",
@@ -162,7 +170,10 @@ func TestUpdatePod(t *testing.T) {
 			// Check if pod was deleted
 			gotPod := &v1.Pod{}
 			getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(pod), gotPod)
-			podDeleted := getErr != nil
+			podDeleted := apierrors.IsNotFound(getErr)
+			if getErr != nil && !podDeleted {
+				t.Fatalf("unexpected error getting pod: %v", getErr)
+			}
 			if podDeleted != tt.expectPodDeleted {
 				t.Errorf("expected pod deleted=%v, got deleted=%v (err=%v)", tt.expectPodDeleted, podDeleted, getErr)
 			}

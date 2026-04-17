@@ -19,6 +19,7 @@ package inplaceupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,9 @@ import (
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
+
+// ErrNilControllerRevision is returned when a nil revision is split.
+var ErrNilControllerRevision = errors.New("cannot split nil ControllerRevision")
 
 // Interface for managing pods in-place update.
 type Interface interface {
@@ -163,7 +167,7 @@ func (c *realControl) groupComponentControllerRevision(ctx context.Context, oldR
 
 func (c *realControl) splitComponentControllerRevision(revision *apps.ControllerRevision) (map[string]*componentRevision, error) {
 	if revision == nil {
-		return nil, fmt.Errorf("cannot split nil ControllerRevision")
+		return nil, ErrNilControllerRevision
 	}
 	var raw map[string]interface{}
 	if err := json.Unmarshal(revision.Data.Raw, &raw); err != nil {

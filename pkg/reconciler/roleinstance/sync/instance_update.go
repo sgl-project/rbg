@@ -73,10 +73,11 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 		}
 	}
 	if oldRevision == nil {
-		logger.Info("Pod references a ControllerRevision that no longer exists, falling back to ReCreate",
-			"pod", klog.KObj(pod))
+		logger.Info("No matching ControllerRevision found for pod, falling back to ReCreate",
+			"pod", klog.KObj(pod),
+			"revisionHash", pod.Labels[apps.ControllerRevisionHashLabelKey])
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "RevisionNotFound",
-			"pod %s references a garbage-collected revision, falling back to recreate", pod.Name)
+			"no matching revision found for pod %s, falling back to recreate", pod.Name)
 		if err := c.Delete(ctx, pod); err != nil {
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
 				"failed to delete pod %s for update: %v", pod.Name, err)

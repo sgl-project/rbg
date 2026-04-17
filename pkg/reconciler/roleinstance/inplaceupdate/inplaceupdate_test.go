@@ -17,6 +17,7 @@ limitations under the License.
 package inplaceupdate
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -26,7 +27,7 @@ func TestSplitComponentControllerRevisionNilInput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil revision, got nil")
 	}
-	if err.Error() != "cannot split nil ControllerRevision" {
-		t.Fatalf("unexpected error message: %s", err.Error())
+	if !errors.Is(err, ErrNilControllerRevision) {
+		t.Fatalf("expected ErrNilControllerRevision, got %v", err)
 	}
 }
