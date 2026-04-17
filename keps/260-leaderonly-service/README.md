@@ -1,71 +1,5 @@
-<!--
-**Note:** When your KEP is complete, all of these comment blocks should be removed.
 
-Follow the guidelines of the [documentation style guide].
-In particular, wrap lines to a reasonable length, to make it
-easier for reviewers to cite specific portions, and to minimize diff churn on
-updates.
-
-[documentation style guide]: https://github.com/kubernetes/community/blob/master/contributors/guide/style-guide.md
-
-To get started with this template:
-
-- [ ] **Pick a hosting SIG.**
-  Make sure that the problem space is something the SIG is interested in taking
-  up. KEPs should not be checked in without a sponsoring SIG.
-- [ ] **Create an issue in kubernetes/enhancements**
-  When filing an enhancement tracking issue, please make sure to complete all
-  fields in that template. One of the fields asks for a link to the KEP. You
-  can leave that blank until this KEP is filed, and then go back to the
-  enhancement and add the link.
-- [ ] **Make a copy of this template directory.**
-  Copy this template into the owning SIG's directory and name it
-  `NNNN-short-descriptive-title`, where `NNNN` is the issue number (with no
-  leading-zero padding) assigned to your enhancement above.
-- [ ] **Fill out as much of the kep.yaml file as you can.**
-  At minimum, you should fill in the "Title", "Authors", "Owning-sig",
-  "Status", and date-related fields.
-- [ ] **Fill out this file as best you can.**
-  At minimum, you should fill in the "Summary" and "Motivation" sections.
-  These should be easy if you've preflighted the idea of the KEP with the
-  appropriate SIG(s).
-- [ ] **Create a PR for this KEP.**
-  Assign it to people in the SIG who are sponsoring this process.
-- [ ] **Merge early and iterate.**
-  Avoid getting hung up on specific details and instead aim to get the goals of
-  the KEP clarified and merged quickly. The best way to do this is to just
-  start with the high-level sections and fill out details incrementally in
-  subsequent PRs.
-
-Just because a KEP is merged does not mean it is complete or approved. Any KEP
-marked as `provisional` is a working document and subject to change. You can
-denote sections that are under active debate as follows:
-
-```
-<<[UNRESOLVED optional short context or usernames ]>>
-Stuff that is being argued.
-<<[/UNRESOLVED]>>
-```
-
-When editing KEPS, aim for tightly-scoped, single-topic PRs to keep discussions
-focused. If you disagree with what is already in a document, open a new PR
-with suggested changes.
-
-One KEP corresponds to one "feature" or "enhancement" for its whole lifecycle.
-You do not need a new KEP to move from beta to GA, for example. If
-new details emerge that belong in the KEP, edit the KEP. Once a feature has become
-"implemented", major changes should get new KEPs.
-
-The canonical place for the latest set of instructions (and the likely source
-of this file) is [here](/keps/NNNN-kep-template/README.md).
-
-**Note:** Any PRs to move a KEP to `implementable`, or significant changes once
-it is marked `implementable`, must be approved by each of the KEP approvers.
-If none of those approvers are still appropriate, then changes to that list
-should be approved by the remaining approvers and/or the owning SIG (or
-SIG Architecture for cross-cutting KEPs).
--->
-# KEP-NNNN: Your short, descriptive title
+# KEP-260: Leader-Only Shared Service for RoleBasedGroup
 
 <!--
 This is the title of your KEP. Keep it short, simple, and descriptive. A good
@@ -161,6 +95,15 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
+This KEP proposes a new role-level networking field,`NetworkConfig.TargetPolicy`, to control which Pods are selected by the existing shared headless Service of a role.
+
+The new field has two values:
+
+- `Full`
+- `LeaderOnly`
+
+`Full` keeps the current behavior and remains the default. `LeaderOnly` preserves the existing shared Service name, 
+but changes the Service selector so that only leader Pods are targeted by that Service.
 
 
 ## Motivation
@@ -197,14 +140,18 @@ This makes `LeaderOnly` a selector policy, not a service identity policy.
 
 ## Proposal
 
-<!--
-This is where we get down to the specifics of what the proposal actually is.
-This should have enough detail that reviewers can understand exactly what
-you're proposing, but should not include things like API designs or
-implementation. What is the desired outcome and how do we measure success?.
-The "Design Details" section below is for the real
-nitty-gritty.
--->
+Add an optional `TargetPolicy` field under `RoleSpec.NetworkConfig`.
+
+- `Full` keeps the current shared headless Service behavior. The Service continues to select every Pod in the role.
+- `LeaderOnly` keeps the same shared headless Service object and the same Service name, but narrows its selector so that only leader Pods are exposed
+
+The feature is intended for `RoleInstanceSet + leaderWorkerPattern`, where the role has a clear leader component and 
+where only leader Pods should serve requests.
+
+Switching between `Full` and `LeaderOnly` is an in-place Service update:
+
+- no Pod restart nor `RoleInstanceSet` rollout
+- no Pod DNS identity change nor Service rename
 
 ### User Stories (Optional)
 
@@ -222,9 +169,11 @@ This lets the gateway keep using Service-level discovery without routing request
 #### Story 3
 As a platform engineer, although we do supports pod level model gateway, e.g. `sgalng model gateway`, we still need a backup in case of gateway absent.
 However, I can not control user behavior, and once they use `sglang` engine or `vllm` in headless mode to serve model across nodes, I need to
-adopt service by manul and not automatic.
+adopt service by manul instead of automatically.
 
 ## Design Details
+
+### API
 
 ```go
 
@@ -237,7 +186,7 @@ type NetworkConfig struct {
     // TargetPolicy determines the policy that will be used when creating
     // the headless service, defaults to `Full`
     // +kubebuilder:validation:Enum={Full,LeaderOnly}
-    TargetPolicy *TargetPolicy `json:"targetPolicy"`
+    TargetPolicy *TargetPolicy `json:"targetPolicy,omitempty"`
 }
 
 type TargetPolicy string
@@ -245,47 +194,104 @@ type TargetPolicy string
 const (
     // all pods would be routed to
     TargetFull TargetPolicy = "Full"
-	
+
     // the headless service would only target at the leaders
     TargetLeaderOnly TargetPolicy = "LeaderOnly"
 )
 ```
 
+Default:
+
+- If the field is unset, the policy defaults to `Full`.
+
+### Behavior
+
+#### `Full`
+
+This is the current behavior and remains the default.
+
+- one shared headless Service is created for the role and the Service selector includes leader and worker Pods
+
+#### `LeaderOnly`
+
+This policy keeps the shared Service model but narrows the endpoint set.
+
+- the shared Service selector includes only leader Pods, and worker Pods are no longer exposed through the shared Service
+- Pod `ServiceName`, `subdomain`, and FQDN remain unchanged
+
+### Supported Pattern
+
+The supported scope of this KEP is:
+
+- `RoleInstanceSet + leaderWorkerPattern`
+
+Unsupported combinations should reject `LeaderOnly` instead of silently falling back to `Full`.
+
+### Rollout and Transition Behavior
+
+`Full -> LeaderOnly` and `LeaderOnly -> Full` should be handled by updating the shared Service selector in place.
+
+These transitions do not require:
+
+- Pod recreation or `RoleInstanceSet` rollout
+- Service renaming or DNS identity updates
+
+
+
+### Discovery and Environment Variables
+
+Discovery artifacts and environment variables remain stable because the shared Service name does not change.
+
+In particular:
+
+- `RBG_LEADER_ADDRESS` keeps the same address shape, and direct Pod DNS names remain unchanged
+- config generation that derives addresses from the shared Service name does not need a new naming mode
+
+The only behavior change is that worker Pods no longer targeted at in the shared Service endpoints when `LeaderOnly` is enabled.
+
 ### Test Plan
-
-
-
-[ ] I/we understand the owners of the involved components may require updates to
-existing tests to make this code solid enough prior to committing the changes necessary
-to implement this enhancement.
-
-##### Prerequisite testing updates
-
-
 
 ##### Unit tests
 
+- API defaulting for `Full`
+- Validation for unsupported combinations using `LeaderOnly`
+- Shared Service selector generation for `Full` and `LeaderOnly`
 
 
 ##### Integration tests
 
+- `Full` creates one shared headless Service per role and includes leader and worker Pods
+- `LeaderOnly` creates one shared headless Service per role and includes only leader Pods
+- `Full <-> LeaderOnly` updates the shared Service in place
 
 ##### e2e tests
 
+- In leader-worker mode, `LeaderOnly` prevents worker Pods from appearing in the shared Service endpoints
+- Switching between `Full` and `LeaderOnly` preserves availability and does not recreate Pods
 
 
-### Upgrade / Downgrade Strategy
+## Production Readiness Review Questionnaire
 
-User can choose target policy of network. Once changed, the controller would update the service with corresponding target selector. 
-
+### Feature Enablement and Rollback
 
 ###### Does enabling the feature change any default behavior?
 
-No.
+No. The default remains `Full`.
 
+###### Can the feature be disabled once it has been enabled?
 
-## Drawbacks
+Yes. Users can switch the policy back to `Full`.
 
+###### Are there any tests for feature enablement/disablement?
+
+Yes. Unit and integration tests should cover both `Full` and `LeaderOnly`, and the transition in both directions.
 
 
 ## Alternatives
+
+
+### Let users create custom Services outside RBG
+
+This is possible, but it pushes a runtime-specific correctness problem to every user and makes the platform behavior inconsistent across workloads.
+
+
