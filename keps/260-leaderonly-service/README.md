@@ -113,10 +113,10 @@ RBG currently creates one shared headless Service per role, and the Service sele
 That behavior is acceptable when every Pod behind the Service is a real serving endpoint. But it would make requests for large EP inference engine
 which only leader Pods are expected to accept requests abnormal
 
-This problem occurs with runtimes such as `sglang`. In cross-nodes engine, follower Pods only run a dummy API server and
-exposing those Pods by the role level Service makes requests routed to the dummy API servers.
+This problem occurs with runtimes such as `sglang`. In a cross-node engine, follower Pods may only run a dummy API server,
+and exposing those Pods through the role level Service causes requests routed to the dummy API servers.
 
-The problem here is different from the per-replica headless Service problem. This KEP aim to keeping the role shared headless Service and controlling which Pods are targeted at.
+The problem here is different from the per-replica headless Service problem. This KEP aims to keep the role shared headless Service while controlling which Pods are targeted by it.
 
 
 - the shared Service name does not change, and the controller only needs to update Service selectors
@@ -167,9 +167,9 @@ This lets the gateway keep using Service-level discovery without routing request
 
 
 #### Story 3
-As a platform engineer, although we do supports pod level model gateway, e.g. `sgalng model gateway`, we still need a backup in case of gateway absent.
-However, I can not control user behavior, and once they use `sglang` engine or `vllm` in headless mode to serve model across nodes, I need to
-adopt service by manul instead of automatically.
+As a platform engineer, although we do support a pod-level model gateway, e.g. `sgalng model gateway`, we still need a fallback in case the gateway is absent.
+However, I cannot control user behavior, and once they use the `sglang` engine or `vllm` in headless mode to serve a model across nodes, I need to
+configure service manually instead of automatically.
 
 ## Design Details
 
@@ -177,26 +177,19 @@ adopt service by manul instead of automatically.
 
 ```go
 
-type RoleSpec struct {
+type LeaderWorkerPattern struct {
     // +optional
-    NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+	SharedServiceSelection  *SharedServiceSelectionPolicy  `json:"sharedServiceSelection,omitempty"`
 }
 
-type NetworkConfig struct {
-    // TargetPolicy determines the policy that will be used when creating
-    // the headless service, defaults to `Full`
-    // +kubebuilder:validation:Enum={Full,LeaderOnly}
-    TargetPolicy *TargetPolicy `json:"targetPolicy,omitempty"`
-}
-
-type TargetPolicy string
+type SharedServiceSelectionPolicy  string
 
 const (
     // all pods would be routed to
-    TargetFull TargetPolicy = "Full"
+    SharedServiceSelectionAll               SharedServiceSelectionPolicy = "All"
 
     // the headless service would only target at the leaders
-    TargetLeaderOnly TargetPolicy = "LeaderOnly"
+    SharedServiceSelectionLeaderOnly        SharedServiceSelectionPolicy = "LeaderOnly"
 )
 ```
 
@@ -247,7 +240,7 @@ In particular:
 - `RBG_LEADER_ADDRESS` keeps the same address shape, and direct Pod DNS names remain unchanged
 - config generation that derives addresses from the shared Service name does not need a new naming mode
 
-The only behavior change is that worker Pods no longer targeted at in the shared Service endpoints when `LeaderOnly` is enabled.
+The only behavior change is that worker Pods are no longer targeted by in the shared Service endpoints when `LeaderOnly` is enabled.
 
 ### Test Plan
 
