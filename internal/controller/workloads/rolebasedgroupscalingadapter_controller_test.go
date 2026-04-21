@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/wrappers"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
@@ -117,7 +119,6 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 	unboundRbgSA := rbgsa.DeepCopy()
 	unboundRbgSA.Spec.ScaleTargetRef.Role = "non-existent-role"
 
-	// RBG without roleStatuses for "test-role" (Gap 1: bind path without roleStatus)
 	rbgNoRoleStatuses := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
 		WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
@@ -148,13 +149,13 @@ func TestRoleBasedGroupScalingAdapterReconciler_Reconcile(t *testing.T) {
 			expectedReadyReplicas: ptr.To(int32(2)),
 		},
 		{
-			name:                   "adapter bound without roleStatus leaves readyReplicas nil",
-			client:                 fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(unboundAdapterForNoRoleStatus, rbgNoRoleStatuses, sts).Build(),
-			expectError:            false,
-			expectRequeue:          true,
-			expectedRequeueAfter:   1 * time.Second,
-			expectedPhase:          constants.AdapterPhaseBound,
-			expectNilReadyReplicas: true,
+			name:                  "adapter bound without roleStatus initializes readyReplicas to 0",
+			client:                fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(unboundAdapterForNoRoleStatus, rbgNoRoleStatuses, sts).Build(),
+			expectError:           false,
+			expectRequeue:         true,
+			expectedRequeueAfter:  1 * time.Second,
+			expectedPhase:         constants.AdapterPhaseBound,
+			expectedReadyReplicas: ptr.To(int32(0)),
 		},
 		{
 			name:                 "unbound adapter with missing role requeues after 10s",
@@ -576,7 +577,6 @@ func TestRoleBasedGroupScalingAdapterReconciler_ReadyReplicasSync(t *testing.T) 
 			expectedReadyReplicas: 3,
 		},
 		{
-			// Gap 3: roleStatus not found — readyReplicas stays unchanged
 			name:                   "roleStatus not found skips readyReplicas update",
 			adapterReadyReplicas:   ptr.To(int32(5)),
 			expectNilReadyReplicas: false,
@@ -584,7 +584,6 @@ func TestRoleBasedGroupScalingAdapterReconciler_ReadyReplicasSync(t *testing.T) 
 			clearRoleStatuses:      true,
 		},
 		{
-			// Gap 2: patch failure returns error
 			name:                 "patch error on readyReplicas sync returns error",
 			adapterReadyReplicas: nil,
 			expectError:          true,
@@ -663,7 +662,6 @@ func TestRoleBasedGroupScalingAdapterReconciler_ReadyReplicasSync(t *testing.T) 
 	}
 }
 
-// Gap 4: readyReplicas sync + scale in the same reconcile
 func TestReadyReplicasSyncWithScale(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha2.AddToScheme(scheme)
@@ -758,7 +756,158 @@ func TestReadyReplicasSyncWithScale(t *testing.T) {
 	assert.Equal(t, constants.AdapterPhaseBound, updatedAdapter.Status.Phase, "phase should be preserved after readyReplicas sync")
 }
 
-// Gaps 5-8: mapRBGToScalingAdapters
+func TestScaleStatusPatchPreservesReadyReplicasFromLatestAdapter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj(),
+		}).Obj()
+	// No roleStatuses: this forces reconcile to rely on the adapter's current status
+	// when building the scale status patch.
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-test-role",
+			Namespace: "default",
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					constants.GroupNameLabelKey: "test-rbg",
+					constants.RoleNameLabelKey:  "test-role",
+				},
+			},
+			Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+		},
+	}
+
+	latestAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-adapter",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "workloads.x-k8s.io/v1alpha2",
+					Kind:               "RoleBasedGroup",
+					Name:               "test-rbg",
+					UID:                "rbg-test-uid",
+					BlockOwnerDeletion: ptr.To(true),
+				},
+			},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			Replicas: ptr.To(int32(5)),
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "test-rbg",
+				Role: "test-role",
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus{
+			Phase:         constants.AdapterPhaseBound,
+			Replicas:      ptr.To(int32(1)),
+			ReadyReplicas: ptr.To(int32(1)),
+			Selector:      "app=test",
+		},
+	}
+
+	staleAdapter := latestAdapter.DeepCopy()
+	staleAdapter.Status.ReadyReplicas = nil
+
+	var patchedReadyReplicas *int32
+	cachedClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(latestAdapter.DeepCopy(), rbg.DeepCopy(), sts.DeepCopy()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				adapter, ok := obj.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
+				if ok && key.Name == staleAdapter.Name && key.Namespace == staleAdapter.Namespace {
+					staleAdapter.DeepCopyInto(adapter)
+					return nil
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			SubResourcePatch: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				if subResourceName == "status" {
+					if obj.GetName() == latestAdapter.Name && obj.GetNamespace() == latestAdapter.Namespace {
+						patchData, err := patch.Data(obj)
+						require.NoError(t, err)
+
+						var payload map[string]any
+						require.NoError(t, json.Unmarshal(patchData, &payload))
+
+						statusPayload, ok := payload["status"].(map[string]any)
+						require.True(t, ok, "expected status payload in apply patch")
+
+						rawReadyReplicas, ok := statusPayload["readyReplicas"]
+						require.True(t, ok, "expected readyReplicas to be preserved in status patch")
+
+						readyReplicasValue, ok := rawReadyReplicas.(float64)
+						require.True(t, ok, "expected numeric readyReplicas in status patch")
+						patchedReadyReplicas = ptr.To(int32(readyReplicasValue))
+					}
+				}
+				return nil
+			},
+		}).
+		Build()
+
+	apiReader := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(latestAdapter.DeepCopy(), rbg.DeepCopy(), sts.DeepCopy()).
+		Build()
+
+	reconciler := &RoleBasedGroupScalingAdapterReconciler{
+		client:    cachedClient,
+		apiReader: apiReader,
+		recorder:  record.NewFakeRecorder(100),
+	}
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      latestAdapter.Name,
+			Namespace: latestAdapter.Namespace,
+		},
+	}
+
+	logger := zap.New().WithValues("env", "unit-test")
+	ctx := ctrl.LoggerInto(context.TODO(), logger)
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NotNil(t, patchedReadyReplicas, "expected scale status patch to preserve readyReplicas")
+	assert.Equal(t, int32(1), *patchedReadyReplicas)
+}
+
+func TestToRoleBasedGroupScalingAdapterStatusPatchApplyConfiguration_ExcludesSpec(t *testing.T) {
+	adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-adapter",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			Replicas: ptr.To(int32(5)),
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: "test-rbg",
+				Role: "test-role",
+			},
+		},
+	}
+
+	applyConfig := ToRoleBasedGroupScalingAdapterStatusPatchApplyConfiguration(adapter).
+		WithStatus(applyconfiguration.RoleBasedGroupScalingAdapterStatus().WithPhase(constants.AdapterPhaseBound))
+
+	unstructuredConfig, err := runtime.DefaultUnstructuredConverter.ToUnstructured(applyConfig)
+	require.NoError(t, err)
+
+	_, hasSpec := unstructuredConfig["spec"]
+	assert.False(t, hasSpec, "status patch apply configuration should not include spec")
+}
+
 func TestMapRBGToScalingAdapters(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha2.AddToScheme(scheme)
@@ -877,7 +1026,6 @@ func TestMapRBGToScalingAdapters(t *testing.T) {
 	}
 }
 
-// Gaps 9-11: RBG watch predicate
 func TestRBGRoleStatusPredicate(t *testing.T) {
 	pred := RBGRoleStatusPredicate()
 
