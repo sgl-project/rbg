@@ -43,9 +43,8 @@ func TestEnvBuilder_Build(t *testing.T) {
 			},
 			role: &workloadsv1alpha2.RoleSpec{
 				Name: "stateful-role",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "apps/v1",
-					Kind:       "StatefulSet",
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
 				},
 			},
 			expected: []corev1.EnvVar{
@@ -76,9 +75,8 @@ func TestEnvBuilder_Build(t *testing.T) {
 			},
 			role: &workloadsv1alpha2.RoleSpec{
 				Name: "lws-role",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "leaderworkerset.x-k8s.io/v1",
-					Kind:       "LeaderWorkerSet",
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
 				},
 			},
 			expected: []corev1.EnvVar{
@@ -109,9 +107,8 @@ func TestEnvBuilder_Build(t *testing.T) {
 			},
 			role: &workloadsv1alpha2.RoleSpec{
 				Name: "deployment-role",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 				},
 			},
 			expected: []corev1.EnvVar{
@@ -134,9 +131,8 @@ func TestEnvBuilder_Build(t *testing.T) {
 			},
 			role: &workloadsv1alpha2.RoleSpec{
 				Name: "role-instance-role",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "workloads.x-k8s.io/v1alpha2",
-					Kind:       "RoleInstanceSet",
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
 				},
 			},
 			expected: []corev1.EnvVar{
@@ -230,9 +226,8 @@ func TestEnvBuilder_buildLocalRoleVars(t *testing.T) {
 			},
 			role: &workloadsv1alpha2.RoleSpec{
 				Name: "stateful-role",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "apps/v1",
-					Kind:       "StatefulSet",
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
 				},
 			},
 			expected: []corev1.EnvVar{
@@ -263,9 +258,8 @@ func TestEnvBuilder_buildLocalRoleVars(t *testing.T) {
 			},
 			role: &workloadsv1alpha2.RoleSpec{
 				Name: "role-instance-role",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "workloads.x-k8s.io/v1alpha2",
-					Kind:       "RoleInstanceSet",
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
 				},
 			},
 			expected: []corev1.EnvVar{

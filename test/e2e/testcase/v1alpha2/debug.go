@@ -57,7 +57,7 @@ func dumpDebugInfo(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup
 		workloadName := rbg.GetWorkloadName(&role)
 		fmt.Printf("\n--- Role: %s, Workload: %s ---\n", role.Name, workloadName)
 
-		switch role.Workload.String() {
+		switch role.GetWorkloadType() {
 		case constants.DeploymentWorkloadType:
 			dumpV2DeploymentWorkload(f, rbg.Namespace, workloadName)
 		case constants.StatefulSetWorkloadType:

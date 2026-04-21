@@ -105,7 +105,8 @@ func validateRoleTemplateFields(
 		}
 
 		// Defense-in-depth: CRD validates this, but controller validates as well.
-		if role.Workload.Kind == "InstanceSet" {
+		workloadSpec := role.GetWorkloadSpec()
+		if workloadSpec.Kind == "InstanceSet" {
 			return fmt.Errorf(
 				"spec.roles[%d].templateRef: not supported for InstanceSet workloads",
 				index,
@@ -114,7 +115,7 @@ func validateRoleTemplateFields(
 
 		// LeaderWorkerSet workload does not support templateRef.
 		// Only RoleInstanceSet with LeaderWorkerPattern supports templateRef.
-		if role.Workload.Kind == "LeaderWorkerSet" {
+		if workloadSpec.Kind == "LeaderWorkerSet" {
 			return fmt.Errorf(
 				"spec.roles[%d].templateRef: not supported for LeaderWorkerSet workloads (use RoleInstanceSet with LeaderWorkerPattern instead)",
 				index,

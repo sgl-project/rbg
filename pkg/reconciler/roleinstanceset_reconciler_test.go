@@ -150,10 +150,7 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_WithTemplateRef(t *testin
 			roleWrapper := &wrappersv2.LeaderWorkerRoleWrapper{}
 			roleWrapper.Name = "test-lwp-role"
 			roleWrapper.Replicas = ptr.To(int32(1))
-			roleWrapper.Workload = workloadsv1alpha2.WorkloadSpec{
-				APIVersion: "workloads.x-k8s.io/v1alpha2",
-				Kind:       "RoleInstanceSet",
-			}
+			roleWrapper.WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet")
 			roleWrapper.LeaderWorkerPattern = &workloadsv1alpha2.LeaderWorkerPattern{
 				Size:                ptr.To(int32(2)),
 				LeaderTemplatePatch: tt.leaderPatch,
@@ -244,10 +241,7 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_TemplateIsolation(t *test
 	roleWrapper := &wrappersv2.LeaderWorkerRoleWrapper{}
 	roleWrapper.Name = "isolation-test-role"
 	roleWrapper.Replicas = ptr.To(int32(1))
-	roleWrapper.Workload = workloadsv1alpha2.WorkloadSpec{
-		APIVersion: "workloads.x-k8s.io/v1alpha2",
-		Kind:       "RoleInstanceSet",
-	}
+	roleWrapper.WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet")
 	roleWrapper.LeaderWorkerPattern = &workloadsv1alpha2.LeaderWorkerPattern{
 		Size:                ptr.To(int32(2)),
 		LeaderTemplatePatch: emptyPatch,
@@ -350,10 +344,7 @@ func TestRoleInstanceSetReconciler_ValidateRoleTemplateReferences(t *testing.T) 
 			roleWrapper := &wrappersv2.LeaderWorkerRoleWrapper{}
 			roleWrapper.Name = "validation-test-role"
 			roleWrapper.Replicas = ptr.To(int32(1))
-			roleWrapper.Workload = workloadsv1alpha2.WorkloadSpec{
-				APIVersion: "workloads.x-k8s.io/v1alpha2",
-				Kind:       tt.workloadKind,
-			}
+			roleWrapper.WithWorkload("workloads.x-k8s.io/v1alpha2", tt.workloadKind)
 			roleWrapper.LeaderWorkerPattern = &workloadsv1alpha2.LeaderWorkerPattern{
 				Size: ptr.To(int32(2)),
 			}

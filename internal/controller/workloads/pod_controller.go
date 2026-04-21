@@ -98,7 +98,7 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha2.R
 		var errs error
 
 		for _, role := range roleList {
-			recon, err := reconciler.NewWorkloadReconciler(role.Workload, r.scheme, r.client)
+			recon, err := reconciler.NewWorkloadReconciler(role.GetWorkloadSpec(), r.scheme, r.client)
 			if err != nil {
 				errs = errors.Join(errs, err)
 				continue

@@ -18,6 +18,7 @@ package v1alpha2
 
 import (
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -194,13 +195,6 @@ type RoleSpec struct {
 	// +optional
 	Dependencies []string `json:"dependencies,omitempty"`
 
-	// Workload type specification
-	// Deprecated: This field is deprecated and will be removed in future versions.
-	// The underlying workload will use InstanceSet.
-	// +kubebuilder:default={apiVersion:"workloads.x-k8s.io/v1alpha2", kind:"RoleInstanceSet"}
-	// +optional
-	Workload WorkloadSpec `json:"workload,omitempty"`
-
 	// Pattern defines the deployment pattern for this role (inline).
 	// Either standalonePattern or leaderWorkerPattern can be specified, not both.
 	// +optional
@@ -226,6 +220,36 @@ type RoleSpec struct {
 	// +optional
 	// +kubebuilder:default=Parallel
 	PodManagementPolicy constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+}
+
+// GetWorkloadType returns the workload type for this role.
+// It reads from the annotation if set, otherwise returns the default (RoleInstanceSet).
+// Format: "apiVersion/kind" e.g., "apps/v1/StatefulSet"
+func (r *RoleSpec) GetWorkloadType() string {
+	if r.Annotations != nil {
+		if wt := r.Annotations[constants.RoleWorkloadTypeAnnotationKey]; wt != "" {
+			return wt
+		}
+	}
+	return constants.RoleInstanceSetWorkloadType // default
+}
+
+// GetWorkloadSpec returns WorkloadSpec based on annotation or default.
+func (r *RoleSpec) GetWorkloadSpec() WorkloadSpec {
+	wt := r.GetWorkloadType()
+	// Parse "apiVersion/kind" format
+	idx := strings.LastIndex(wt, "/")
+	if idx > 0 {
+		return WorkloadSpec{
+			APIVersion: wt[:idx],
+			Kind:       wt[idx+1:],
+		}
+	}
+	// Return default if parsing fails
+	return WorkloadSpec{
+		APIVersion: "workloads.x-k8s.io/v1alpha2",
+		Kind:       "RoleInstanceSet",
+	}
 }
 
 // Pattern defines the deployment pattern for a role.

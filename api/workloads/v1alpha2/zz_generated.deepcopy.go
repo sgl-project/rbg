@@ -1307,7 +1307,6 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
-	out.Workload = in.Workload
 	in.Pattern.DeepCopyInto(&out.Pattern)
 	if in.ServicePorts != nil {
 		in, out := &in.ServicePorts, &out.ServicePorts

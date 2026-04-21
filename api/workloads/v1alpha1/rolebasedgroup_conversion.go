@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
@@ -133,10 +134,14 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	dst.ScalingAdapter = convertScalingAdapterV1alpha1ToV2(src.ScalingAdapter)
 	dst.EngineRuntimes = convertEngineRuntimesV1alpha1ToV2(src.EngineRuntimes)
 
-	// Workload – deprecated in v2 but carry it over; v2 defaults differ so we set explicitly.
-	dst.Workload = v2.WorkloadSpec{
-		APIVersion: src.Workload.APIVersion,
-		Kind:       src.Workload.Kind,
+	// Workload – preserved via role annotation instead of field in v1alpha2.
+	// This allows v1alpha1 RBGs to continue using their configured workload type.
+	if src.Workload.APIVersion != "" && src.Workload.Kind != "" {
+		if dst.Annotations == nil {
+			dst.Annotations = make(map[string]string)
+		}
+		workloadType := fmt.Sprintf("%s/%s", src.Workload.APIVersion, src.Workload.Kind)
+		dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
 	}
 
 	// RolloutStrategy
@@ -310,10 +315,17 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.ScalingAdapter = convertScalingAdapterV2ToV1alpha1(src.ScalingAdapter)
 	dst.EngineRuntimes = convertEngineRuntimesV2ToV1alpha1(src.EngineRuntimes)
 
-	// Workload
-	dst.Workload = WorkloadSpec{
-		APIVersion: src.Workload.APIVersion,
-		Kind:       src.Workload.Kind,
+	// Workload – restore from annotation if present
+	if src.Annotations != nil {
+		workloadType := src.Annotations[constants.RoleWorkloadTypeAnnotationKey]
+		if workloadType != "" {
+			// Parse "apiVersion/kind" format
+			idx := strings.LastIndex(workloadType, "/")
+			if idx > 0 {
+				dst.Workload.APIVersion = workloadType[:idx]
+				dst.Workload.Kind = workloadType[idx+1:]
+			}
+		}
 	}
 
 	// RolloutStrategy

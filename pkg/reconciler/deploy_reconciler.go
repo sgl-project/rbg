@@ -295,7 +295,7 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 		}
 		found := false
 		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == "Deployment" && rbg.GetWorkloadName(&role) == deploy.Name {
+			if role.GetWorkloadSpec().Kind == "Deployment" && rbg.GetWorkloadName(&role) == deploy.Name {
 				found = true
 				break
 			}

@@ -58,6 +58,14 @@ const (
 	// RoleDisableExclusiveKey can be set to "true" on a Role template
 	// to skip exclusive-topology affinity injection for that role.
 	RoleDisableExclusiveKey = RBGPrefix + "role-disable-exclusive"
+
+	// RoleWorkloadTypeAnnotationKey specifies the workload type for a role.
+	// This is primarily used by the conversion webhook when converting v1alpha1
+	// RoleBasedGroups that had workload field set. New v1alpha2 RBGs should
+	// not use this annotation as the default (RoleInstanceSet) is appropriate.
+	// Format: "apiVersion/kind" e.g., "apps/v1/StatefulSet"
+	// Example: rbg.workloads.x-k8s.io/role-workload-type: "apps/v1/StatefulSet"
+	RoleWorkloadTypeAnnotationKey = RBGPrefix + "role-workload-type"
 )
 
 // RoleInstance level annotations

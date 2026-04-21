@@ -33,7 +33,6 @@ type RoleSpecApplyConfiguration struct {
 	RolloutStrategy           *RolloutStrategyApplyConfiguration   `json:"rolloutStrategy,omitempty"`
 	RestartPolicy             *workloadsv1alpha2.RestartPolicyType `json:"restartPolicy,omitempty"`
 	Dependencies              []string                             `json:"dependencies,omitempty"`
-	Workload                  *WorkloadSpecApplyConfiguration      `json:"workload,omitempty"`
 	PatternApplyConfiguration `json:",inline"`
 	ServicePorts              []v1.ServicePort                   `json:"servicePorts,omitempty"`
 	EngineRuntimes            []EngineRuntimeApplyConfiguration  `json:"engineRuntimes,omitempty"`
@@ -115,14 +114,6 @@ func (b *RoleSpecApplyConfiguration) WithDependencies(values ...string) *RoleSpe
 	for i := range values {
 		b.Dependencies = append(b.Dependencies, values[i])
 	}
-	return b
-}
-
-// WithWorkload sets the Workload field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Workload field is set to the value of the last call.
-func (b *RoleSpecApplyConfiguration) WithWorkload(value *WorkloadSpecApplyConfiguration) *RoleSpecApplyConfiguration {
-	b.Workload = value
 	return b
 }
 

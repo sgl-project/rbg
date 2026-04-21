@@ -405,10 +405,10 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 			rbg: func() *workloadsv1alpha2.RoleBasedGroup {
 				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
-				rbg.Spec.Roles[0].Workload = workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
+				if rbg.Spec.Roles[0].Annotations == nil {
+					rbg.Spec.Roles[0].Annotations = make(map[string]string)
 				}
+				rbg.Spec.Roles[0].Annotations[constants.RoleWorkloadTypeAnnotationKey] = "apps/v1/Deployment"
 				return rbg
 			}(),
 			initialPodSpec: &corev1.PodTemplateSpec{
@@ -484,6 +484,9 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(3)),
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+							},
 						},
 					},
 				},
@@ -491,6 +494,9 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: ptr.To(int32(3)),
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+				},
 			},
 			// Container without the expected environment variables
 			initialPodSpec: &corev1.PodTemplateSpec{
@@ -536,6 +542,9 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(3)),
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+							},
 						},
 					},
 				},
@@ -543,6 +552,9 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "worker",
 				Replicas: ptr.To(int32(3)),
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+				},
 			},
 			// Container with existing environment variables
 			initialPodSpec: &corev1.PodTemplateSpec{
@@ -628,9 +640,8 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 	}
 	role := &workloadsv1alpha2.RoleSpec{
 		Name: "integrate",
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "workloads.x-k8s.io/v1alpha2",
-			Kind:       "RoleInstanceSet",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
 		},
 	}
 	podSpec := &corev1.PodTemplateSpec{

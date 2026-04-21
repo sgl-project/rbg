@@ -51,9 +51,8 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 		Pattern: workloadsv1alpha2.Pattern{
 			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
@@ -207,9 +206,8 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 	}
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -325,9 +323,8 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 	}
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -447,9 +444,8 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 	}
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -616,9 +612,8 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 		Pattern: workloadsv1alpha2.Pattern{
 			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
@@ -719,9 +714,8 @@ func TestConstructDeploymentApplyConfiguration_LabelsAndAnnotations(t *testing.T
 	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 		Pattern: workloadsv1alpha2.Pattern{
 			StandalonePattern: &workloadsv1alpha2.StandalonePattern{

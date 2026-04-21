@@ -432,10 +432,6 @@ func TestGetPatchAndRestore(t *testing.T) {
 				{
 					Name:     "role-sts",
 					Replicas: ptr.To(int32(1)),
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "apps/v1",
-						Kind:       "StatefulSet",
-					},
 					Pattern: workloadsv1alpha2.Pattern{
 						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
 							TemplateSource: workloadsv1alpha2.TemplateSource{
@@ -461,10 +457,6 @@ func TestGetPatchAndRestore(t *testing.T) {
 				{
 					Name:     "role-lws",
 					Replicas: ptr.To(int32(1)),
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "leaderworkerset.x-k8s.io/v1",
-						Kind:       "LeaderWorkerSet",
-					},
 				},
 			},
 		},
@@ -709,10 +701,6 @@ func getRBG() *workloadsv1alpha2.RoleBasedGroup {
 				{
 					Name:     "router",
 					Replicas: ptr.To(int32(3)),
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
-					},
 					Pattern: workloadsv1alpha2.Pattern{
 						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
 							TemplateSource: workloadsv1alpha2.TemplateSource{
@@ -795,10 +783,6 @@ func getRBG() *workloadsv1alpha2.RoleBasedGroup {
 				{
 					Name:     "decode",
 					Replicas: ptr.To(int32(5)),
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "apps/v1",
-						Kind:       "StatefulSet",
-					},
 					Pattern: workloadsv1alpha2.Pattern{
 						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
 							TemplateSource: workloadsv1alpha2.TemplateSource{
@@ -843,10 +827,6 @@ func getRBG() *workloadsv1alpha2.RoleBasedGroup {
 				{
 					Name:     "prefill",
 					Replicas: ptr.To(int32(3)),
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
-					},
 					Pattern: workloadsv1alpha2.Pattern{
 						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
 							TemplateSource: workloadsv1alpha2.TemplateSource{
@@ -969,10 +949,6 @@ func getRBGWithRoleTemplates() *workloadsv1alpha2.RoleBasedGroup {
 								},
 							},
 						},
-					},
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "apps/v1",
-						Kind:       "StatefulSet",
 					},
 				},
 			},

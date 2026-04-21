@@ -387,7 +387,7 @@ func IsStatefulRole(role *RoleSpec) bool {
 	if role == nil {
 		return false
 	}
-	switch role.Workload.String() {
+	switch role.GetWorkloadType() {
 	case constants.DeploymentWorkloadType:
 		return false
 	case constants.StatefulSetWorkloadType, constants.LeaderWorkerSetWorkloadType, "":

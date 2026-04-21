@@ -235,8 +235,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.TemplateRefApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("TemplateSource"):
 		return &workloadsv1alpha2.TemplateSourceApplyConfiguration{}
-	case v1alpha2.SchemeGroupVersion.WithKind("WorkloadSpec"):
-		return &workloadsv1alpha2.WorkloadSpecApplyConfiguration{}
 
 	}
 	return nil

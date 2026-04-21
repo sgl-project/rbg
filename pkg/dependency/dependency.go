@@ -100,7 +100,7 @@ func (m *DefaultDependencyManager) CheckDependencyReady(
 		if err != nil {
 			return false, err
 		}
-		r, err := reconciler.NewWorkloadReconciler(depRole.Workload, m.scheme, m.client)
+		r, err := reconciler.NewWorkloadReconciler(depRole.GetWorkloadSpec(), m.scheme, m.client)
 		if err != nil {
 			return false, err
 		}

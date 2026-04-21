@@ -76,10 +76,6 @@ func buildPortAllocatorTestRBG(namespace string) *workloadsv1alpha2.RoleBasedGro
 		WithRoles([]workloadsv1alpha2.RoleSpec{
 			{
 				Name: "prefill",
-				Workload: workloadsv1alpha2.WorkloadSpec{
-					APIVersion: "workloads.x-k8s.io/v1alpha2",
-					Kind:       "RoleInstanceSet",
-				},
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
 						Components: []workloadsv1alpha2.InstanceComponent{

@@ -212,5 +212,5 @@ func (f *Framework) ExpectWorkloadV2ExclusiveTopology(
 
 // workloadTypeFromRoleV2 maps a v1alpha2 RoleSpec to the corresponding workload type string.
 func workloadTypeFromRoleV2(role workloadsv1alpha2.RoleSpec) string {
-	return role.Workload.String()
+	return role.GetWorkloadType()
 }

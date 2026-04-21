@@ -100,7 +100,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 			})
 	}
 
-	if g.role.Workload.Kind == "RoleInstanceSet" {
+	if g.role.GetWorkloadSpec().Kind == "RoleInstanceSet" {
 		envVars = append(envVars,
 			corev1.EnvVar{
 				Name: constants.EnvRBGRoleInstanceName,
@@ -133,7 +133,7 @@ func (g *EnvBuilder) buildLocalRoleVars() []corev1.EnvVar {
 }
 
 func (g *EnvBuilder) roleIndexFieldPath() string {
-	if g.role != nil && g.role.Workload.String() == constants.RoleInstanceSetWorkloadType {
+	if g.role != nil && g.role.GetWorkloadType() == constants.RoleInstanceSetWorkloadType {
 		return fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceIndexLabelKey)
 	}
 

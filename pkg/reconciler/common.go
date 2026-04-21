@@ -73,7 +73,7 @@ func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1a
 		}
 		found := false
 		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == obj.GetObjectKind().GroupVersionKind().Kind && rbg.GetWorkloadName(&role) == obj.GetName() {
+			if role.GetWorkloadSpec().Kind == obj.GetObjectKind().GroupVersionKind().Kind && rbg.GetWorkloadName(&role) == obj.GetName() {
 				found = true
 				break
 			}

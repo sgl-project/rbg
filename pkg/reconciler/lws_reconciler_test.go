@@ -235,9 +235,8 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 				{
 					Name:     "role1",
 					Replicas: ptr.To(int32(2)),
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "leaderworkerset.x-k8s.io/v1",
-						Kind:       "LeaderWorkerSet",
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
 					},
 					Pattern: workloadsv1alpha2.Pattern{
 						LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{

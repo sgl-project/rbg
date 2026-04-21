@@ -112,9 +112,8 @@ func TestCleanupOrphanedObjs(t *testing.T) {
 			Roles: []workloadsv1alpha2.RoleSpec{
 				{
 					Name: "valid-role",
-					Workload: workloadsv1alpha2.WorkloadSpec{
-						APIVersion: "workloads.x-k8s.io/v1alpha1",
-						Kind:       "InstanceSet",
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha1/InstanceSet",
 					},
 				},
 			},

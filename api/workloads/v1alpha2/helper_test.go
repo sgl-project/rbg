@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // TestRoleSpec_GetResolvedTemplate tests the GetResolvedTemplate method
@@ -364,6 +365,153 @@ func Test_applyStrategicMergePatch(t *testing.T) {
 			if tt.verifyEnv != nil {
 				tt.verifyEnv(t, result.Spec.Containers[0].Env)
 			}
+		})
+	}
+}
+
+// TestRoleSpec_GetWorkloadType tests the GetWorkloadType method
+// which returns the workload type from annotation or defaults to RoleInstanceSet.
+func TestRoleSpec_GetWorkloadType(t *testing.T) {
+	tests := []struct {
+		name         string
+		annotations  map[string]string
+		expectedType string
+	}{
+		{
+			name:         "no annotation - defaults to RoleInstanceSet",
+			annotations:  nil,
+			expectedType: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:         "empty annotations - defaults to RoleInstanceSet",
+			annotations:  map[string]string{},
+			expectedType: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name: "annotation set to StatefulSet",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+			},
+			expectedType: "apps/v1/StatefulSet",
+		},
+		{
+			name: "annotation set to Deployment",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
+			},
+			expectedType: "apps/v1/Deployment",
+		},
+		{
+			name: "annotation set to LeaderWorkerSet",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
+			},
+			expectedType: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
+		},
+		{
+			name: "annotation set to RoleInstanceSet",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
+			},
+			expectedType: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
+		},
+		{
+			name: "other annotation present but not workload type - defaults to RoleInstanceSet",
+			annotations: map[string]string{
+				"other-annotation": "some-value",
+			},
+			expectedType: constants.RoleInstanceSetWorkloadType,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := &RoleSpec{
+				Name:        "test-role",
+				Annotations: tt.annotations,
+			}
+
+			result := role.GetWorkloadType()
+			assert.Equal(t, tt.expectedType, result)
+		})
+	}
+}
+
+// TestRoleSpec_GetWorkloadSpec tests the GetWorkloadSpec method
+// which parses the workload type annotation and returns WorkloadSpec.
+func TestRoleSpec_GetWorkloadSpec(t *testing.T) {
+	tests := []struct {
+		name               string
+		annotations        map[string]string
+		expectedAPIVersion string
+		expectedKind       string
+	}{
+		{
+			name:               "no annotation - defaults to RoleInstanceSet",
+			annotations:        nil,
+			expectedAPIVersion: "workloads.x-k8s.io/v1alpha2",
+			expectedKind:       "RoleInstanceSet",
+		},
+		{
+			name: "annotation set to StatefulSet",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+			},
+			expectedAPIVersion: "apps/v1",
+			expectedKind:       "StatefulSet",
+		},
+		{
+			name: "annotation set to Deployment",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
+			},
+			expectedAPIVersion: "apps/v1",
+			expectedKind:       "Deployment",
+		},
+		{
+			name: "annotation set to LeaderWorkerSet",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
+			},
+			expectedAPIVersion: "leaderworkerset.x-k8s.io/v1",
+			expectedKind:       "LeaderWorkerSet",
+		},
+		{
+			name: "annotation set to RoleInstanceSet",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
+			},
+			expectedAPIVersion: "workloads.x-k8s.io/v1alpha2",
+			expectedKind:       "RoleInstanceSet",
+		},
+		{
+			name: "malformed annotation without slash - returns RoleInstanceSet defaults",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "malformed-value",
+			},
+			expectedAPIVersion: "workloads.x-k8s.io/v1alpha2",
+			expectedKind:       "RoleInstanceSet",
+		},
+		{
+			name: "empty annotation value - returns RoleInstanceSet defaults",
+			annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "",
+			},
+			expectedAPIVersion: "workloads.x-k8s.io/v1alpha2",
+			expectedKind:       "RoleInstanceSet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := &RoleSpec{
+				Name:        "test-role",
+				Annotations: tt.annotations,
+			}
+
+			result := role.GetWorkloadSpec()
+			assert.Equal(t, tt.expectedAPIVersion, result.APIVersion)
+			assert.Equal(t, tt.expectedKind, result.Kind)
 		})
 	}
 }

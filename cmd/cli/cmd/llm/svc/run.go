@@ -224,11 +224,6 @@ func assembleRBG(name, namespace string, pattern *workloadsv1alpha2.Pattern, met
 		Name:     "inference",
 		Replicas: &replicas,
 		Pattern:  *pattern,
-		// TODO: Remove workload field after PR #261
-		Workload: workloadsv1alpha2.WorkloadSpec{
-			APIVersion: "workloads.x-k8s.io/v1alpha2",
-			Kind:       "RoleInstanceSet",
-		},
 	}
 
 	return &workloadsv1alpha2.RoleBasedGroup{

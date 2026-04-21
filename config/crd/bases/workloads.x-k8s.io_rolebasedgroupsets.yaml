@@ -41490,23 +41490,6 @@ spec:
                               x-kubernetes-validations:
                               - message: template and templateRef are mutually exclusive
                                 rule: '!(has(self.template) && has(self.templateRef))'
-                            workload:
-                              default:
-                                apiVersion: workloads.x-k8s.io/v1alpha2
-                                kind: RoleInstanceSet
-                              description: |-
-                                Workload type specification
-                                Deprecated: This field is deprecated and will be removed in future versions.
-                                The underlying workload will use InstanceSet.
-                              properties:
-                                apiVersion:
-                                  default: workloads.x-k8s.io/v1alpha2
-                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/v[0-9]+((alpha|beta)[0-9]+)?$
-                                  type: string
-                                kind:
-                                  default: RoleInstanceSet
-                                  type: string
-                              type: object
                           required:
                           - name
                           - replicas
