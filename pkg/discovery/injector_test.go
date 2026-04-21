@@ -581,10 +581,6 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 			// Expected environment variables - existing ones preserved, RBG ones overwritten
 			expectedEnvVars: []corev1.EnvVar{
 				{
-					Name:  "EXISTING_VAR",
-					Value: "existing-value",
-				},
-				{
 					Name:  "RBG_GROUP_NAME",
 					Value: "test-rbg",
 				},
@@ -599,6 +595,10 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 				{
 					Name:  "RBG_ROLE_NAME",
 					Value: "worker",
+				},
+				{
+					Name:  "EXISTING_VAR",
+					Value: "existing-value",
 				},
 			},
 		},
@@ -624,6 +624,80 @@ func TestDefaultInjector_InjectEnv(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+func TestDefaultInjector_InjectEnv_UserEnvReferenceRBGVarsOrder(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To(int32(3)),
+				},
+			},
+		},
+	}
+	role := &workloadsv1alpha2.RoleSpec{
+		Name:     "worker",
+		Replicas: ptr.To(int32(3)),
+		Workload: workloadsv1alpha2.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleInstanceSet",
+		},
+	}
+	podSpec := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "main",
+					Image: "test-image",
+					Env: []corev1.EnvVar{
+						{
+							Name:  "DP_ADDRESS",
+							Value: "$(RBG_ROLE_INSTANCE_NAME)-0.s-rbg.default",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	injector := NewDefaultInjector(scheme, fakeClient)
+
+	if err := injector.InjectEnv(context.Background(), podSpec, rbg, role); err != nil {
+		t.Fatalf("InjectEnv() error = %v", err)
+	}
+
+	rbgRoleInstanceNameIndex := -1
+	dpAddressIndex := -1
+	for i, envVar := range podSpec.Spec.Containers[0].Env {
+		switch envVar.Name {
+		case constants.EnvRBGRoleInstanceName:
+			rbgRoleInstanceNameIndex = i
+		case "DP_ADDRESS":
+			dpAddressIndex = i
+		}
+	}
+
+	if rbgRoleInstanceNameIndex == -1 {
+		t.Fatalf("%s not found in merged env vars", constants.EnvRBGRoleInstanceName)
+	}
+	if dpAddressIndex == -1 {
+		t.Fatal("DP_ADDRESS not found in merged env vars")
+	}
+	if dpAddressIndex <= rbgRoleInstanceNameIndex {
+		t.Fatalf("DP_ADDRESS must be after %s for Kubernetes env expansion, got DP_ADDRESS index %d and %s index %d",
+			constants.EnvRBGRoleInstanceName, dpAddressIndex, constants.EnvRBGRoleInstanceName, rbgRoleInstanceNameIndex)
 	}
 }
 
@@ -681,8 +755,24 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 
 	expectedEnvVars := []corev1.EnvVar{
 		{
-			Name:  "EXISTING_VAR",
-			Value: "existing-value",
+			Name:  constants.EnvRBGLeaderAddress,
+			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, rbg.GetServiceName(role), rbg.Namespace),
+		},
+		{
+			Name: constants.EnvRBGIndex,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIndexLabelKey),
+				},
+			},
+		},
+		{
+			Name: constants.EnvRBGSize,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentSizeLabelKey),
+				},
+			},
 		},
 		{
 			Name: constants.EnvRBGComponentIndex,
@@ -725,24 +815,8 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 			Value: role.Name,
 		},
 		{
-			Name:  constants.EnvRBGLeaderAddress,
-			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, rbg.GetServiceName(role), rbg.Namespace),
-		},
-		{
-			Name: constants.EnvRBGIndex,
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIndexLabelKey),
-				},
-			},
-		},
-		{
-			Name: constants.EnvRBGSize,
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentSizeLabelKey),
-				},
-			},
+			Name:  "EXISTING_VAR",
+			Value: "existing-value",
 		},
 	}
 

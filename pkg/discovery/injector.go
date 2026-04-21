@@ -185,7 +185,7 @@ func mergeEnvVars(existing, injected []corev1.EnvVar) []corev1.EnvVar {
 		merged = append(merged, env)
 	}
 
-	return append(merged, injected...)
+	return append(injected, merged...)
 }
 
 func dedupeEnvVarsPreserveLast(envs []corev1.EnvVar) []corev1.EnvVar {
