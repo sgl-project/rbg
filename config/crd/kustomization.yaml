@@ -2,13 +2,15 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/workloads.x-k8s.io_rolebasedgroups.yaml
-- bases/workloads.x-k8s.io_rolebasedgroupsets.yaml
 - bases/workloads.x-k8s.io_clusterengineruntimeprofiles.yaml
+- bases/workloads.x-k8s.io_coordinatedpolicies.yaml
+- bases/workloads.x-k8s.io_instances.yaml
+- bases/workloads.x-k8s.io_instancesets.yaml
+- bases/workloads.x-k8s.io_rolebasedgroups.yaml
 - bases/workloads.x-k8s.io_rolebasedgroupscalingadapters.yaml
+- bases/workloads.x-k8s.io_rolebasedgroupsets.yaml
 - bases/workloads.x-k8s.io_roleinstances.yaml
 - bases/workloads.x-k8s.io_roleinstancesets.yaml
-- bases/workloads.x-k8s.io_coordinatedpolicies.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

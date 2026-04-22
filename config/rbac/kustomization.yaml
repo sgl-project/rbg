@@ -1,5 +1,5 @@
 resources:
-  - rbgs_controller_role.yaml
+  - role.yaml
   - role_binding.yaml
   - service_account.yaml
   - secret_role.yaml
