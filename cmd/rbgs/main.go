@@ -68,6 +68,20 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+// WebhookMode constants control which webhooks are enabled.
+// Currently supported values: "all", "none".
+// This may be extended in the future to allow enabling individual webhook
+// types (e.g. "admission", "conversion", "validating") for fine-grained debugging.
+const (
+	WebhookModeAll  = "all"
+	WebhookModeNone = "none"
+)
+
+// webhooksEnabled returns true if the given webhook mode enables webhooks.
+func webhooksEnabled(mode string) bool {
+	return mode == WebhookModeAll
+}
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(apiextv1.AddToScheme(scheme))
@@ -103,7 +117,7 @@ func main() {
 		enableHTTP2                                      bool
 		tlsOpts                                          []func(*tls.Config)
 		development                                      bool
-		devMode                                          bool
+		webhookMode                                      string
 		// Controller runtime options
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
@@ -139,7 +153,12 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers",
 	)
 	flag.BoolVar(&development, "development", false, "Enable development mode for controller manager.")
-	flag.BoolVar(&devMode, "dev", false, "Enable dev mode for local debugging: disables webhook, cert manager, leader election and uses insecure metrics.")
+	flag.StringVar(
+		&webhookMode, "enable-webhooks", WebhookModeAll,
+		"Control which webhooks are enabled. Supported values: "+WebhookModeAll+", "+WebhookModeNone+". "+
+			"Use "+WebhookModeNone+" to disable all webhooks (cert bootstrap, conversion, admission) for local debugging. "+
+			"May be extended in the future to allow enabling individual webhook types (e.g. admission, conversion, validating).",
+	)
 	flag.IntVar(
 		&maxConcurrentReconciles, "max-concurrent-reconciles", 10,
 		"The number of worker threads used by the the RBGS controller.",
@@ -199,7 +218,7 @@ func main() {
 	// Webhook TLS options
 	webhookTLSOpts := tlsOpts
 
-	webhookServer := newWebhookServer(devMode, webhookTLSOpts)
+	webhookServer := newWebhookServer(webhookMode, webhookTLSOpts)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -252,7 +271,7 @@ func main() {
 	}
 
 	mgr, err := ctrl.NewManager(
-		ctrl.GetConfigOrDie(), newManagerOptions(devMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
+		ctrl.GetConfigOrDie(), newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -268,17 +287,17 @@ func main() {
 	// Self-signed TLS certificate bootstrap for the conversion webhook.
 	// Generates (or loads) a cert stored in a Secret, writes it to WebhookCertDir
 	// so the webhook server can serve HTTPS, and patches the caBundle on the CRDs.
-	// Skipped in dev mode.
+	// Skipped when webhooks are disabled.
 	// ---------------------------------------------------------------------------
 	var webhookResult *webhookBootstrapResult
-	if !devMode {
+	if webhooksEnabled(webhookMode) {
 		webhookResult, err = bootstrapWebhookCerts(mgr)
 		if err != nil {
 			setupLog.Error(err, "unable to bootstrap webhook certs")
 			os.Exit(1)
 		}
 	} else {
-		setupLog.Info("Running in dev mode: webhook, cert manager and conversion webhooks are disabled")
+		setupLog.Info("Webhooks are disabled: cert bootstrap, conversion and admission webhooks will not be started")
 	}
 
 	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName))
@@ -353,8 +372,8 @@ func main() {
 
 	// Webhook cert controller: watches the conversion-webhook CRDs and keeps
 	// caBundle in sync with the self-signed CA certificate.
-	// Skipped in dev mode.
-	if !devMode {
+	// Skipped when webhooks are disabled.
+	if webhooksEnabled(webhookMode) {
 		if err = setupWebhookCertController(mgr, webhookResult, options); err != nil {
 			setupLog.Error(err, "unable to create webhook cert controller")
 			os.Exit(1)
@@ -398,9 +417,9 @@ type webhookBootstrapResult struct {
 }
 
 // newWebhookServer creates a webhook server with the given TLS options.
-// Returns nil when devMode is true.
-func newWebhookServer(devMode bool, tlsOpts []func(*tls.Config)) webhook.Server {
-	if devMode {
+// Returns nil when webhooks are disabled (enable-webhooks=none).
+func newWebhookServer(webhookMode string, tlsOpts []func(*tls.Config)) webhook.Server {
+	if !webhooksEnabled(webhookMode) {
 		return nil
 	}
 	return webhook.NewServer(webhook.Options{
@@ -410,8 +429,9 @@ func newWebhookServer(devMode bool, tlsOpts []func(*tls.Config)) webhook.Server 
 }
 
 // newManagerOptions builds the controller-runtime manager options.
-// In dev mode, webhook server and leader election are disabled.
-func newManagerOptions(devMode bool, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool) ctrl.Options {
+// When webhooks are disabled (enable-webhooks=none), webhook server and leader
+// election are disabled, and metrics are served insecurely.
+func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool) ctrl.Options {
 	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOpts,
@@ -421,7 +441,7 @@ func newManagerOptions(devMode bool, webhookServer webhook.Server, metricsOpts m
 		LeaderElectionID:       constants.ControllerName,
 		Cache:                  cacheOptions(),
 	}
-	if devMode {
+	if !webhooksEnabled(webhookMode) {
 		opts.WebhookServer = nil
 		opts.LeaderElection = false
 		opts.Metrics.SecureServing = false
