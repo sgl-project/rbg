@@ -18,10 +18,12 @@ package discovery
 
 import (
 	"context"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -168,6 +170,16 @@ func (i *DefaultInjector) InjectSidecar(
 	return builder.Build(ctx, podSpec)
 }
 
+// mergeEnvVars deduplicates both slices (preserving last occurrence per name),
+// drops names in `existing` that are being re-injected, then returns them in
+// this order to make Kubernetes $(VAR) expansion work across multi-phase injection:
+//
+//  1. existing RBG_* (non-LWP) vars — injected in earlier phases, may be
+//     referenced by the new batch (e.g. RBG_ROLE_INSTANCE_NAME)
+//  2. injected vars (this batch)
+//  3. existing RBG_LWP_* vars — may reference (1); kept after injected so
+//     if (2) overrides an LWP var the new one wins
+//  4. user vars — may reference any of (1)/(2)/(3)
 func mergeEnvVars(existing, injected []corev1.EnvVar) []corev1.EnvVar {
 	existing = dedupeEnvVarsPreserveLast(existing)
 	injected = dedupeEnvVarsPreserveLast(injected)
@@ -204,11 +216,11 @@ func mergeEnvVars(existing, injected []corev1.EnvVar) []corev1.EnvVar {
 }
 
 func isRBGInjectedEnvVar(name string) bool {
-	return len(name) >= 4 && name[:4] == "RBG_"
+	return strings.HasPrefix(name, constants.EnvRBGPrefix) // "RBG_"
 }
 
 func isRBGLWPEnvVar(name string) bool {
-	return len(name) >= 8 && name[:8] == "RBG_LWP_"
+	return strings.HasPrefix(name, constants.EnvRBGLWPPrefix) // "RBG_LWP_"
 }
 
 func dedupeEnvVarsPreserveLast(envs []corev1.EnvVar) []corev1.EnvVar {
