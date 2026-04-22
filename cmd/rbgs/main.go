@@ -103,6 +103,7 @@ func main() {
 		enableHTTP2                                      bool
 		tlsOpts                                          []func(*tls.Config)
 		development                                      bool
+		devMode                                          bool
 		// Controller runtime options
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
@@ -138,6 +139,7 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers",
 	)
 	flag.BoolVar(&development, "development", false, "Enable development mode for controller manager.")
+	flag.BoolVar(&devMode, "dev", false, "Enable dev mode for local debugging: disables webhook, cert manager, leader election and uses insecure metrics.")
 	flag.IntVar(
 		&maxConcurrentReconciles, "max-concurrent-reconciles", 10,
 		"The number of worker threads used by the the RBGS controller.",
@@ -197,12 +199,7 @@ func main() {
 	// Webhook TLS options
 	webhookTLSOpts := tlsOpts
 
-	webhookServer := webhook.NewServer(
-		webhook.Options{
-			CertDir: rbgwebhook.WebhookCertDir,
-			TLSOpts: webhookTLSOpts,
-		},
-	)
+	webhookServer := newWebhookServer(devMode, webhookTLSOpts)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -255,15 +252,7 @@ func main() {
 	}
 
 	mgr, err := ctrl.NewManager(
-		ctrl.GetConfigOrDie(), ctrl.Options{
-			Scheme:                 scheme,
-			Metrics:                metricsServerOptions,
-			WebhookServer:          webhookServer,
-			HealthProbeBindAddress: probeAddr,
-			LeaderElection:         enableLeaderElection,
-			LeaderElectionID:       constants.ControllerName,
-			Cache:                  cacheOptions(),
-		},
+		ctrl.GetConfigOrDie(), newManagerOptions(devMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -279,51 +268,17 @@ func main() {
 	// Self-signed TLS certificate bootstrap for the conversion webhook.
 	// Generates (or loads) a cert stored in a Secret, writes it to WebhookCertDir
 	// so the webhook server can serve HTTPS, and patches the caBundle on the CRDs.
+	// Skipped in dev mode.
 	// ---------------------------------------------------------------------------
-	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
-	if webhookServiceNamespace == "" {
-		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
-	}
-
-	// Use a direct (non-cached) client for cert bootstrap: mgr.GetClient() uses
-	// the informer cache which is not started until mgr.Start(), so it cannot
-	// serve reads at this point in startup.
-	directClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
-	if err != nil {
-		setupLog.Error(err, "unable to create direct client for cert bootstrap")
-		os.Exit(1)
-	}
-
-	certMgr, err := rbgwebhook.NewCertManager(directClient, rbgwebhook.WebhookCertSecretName, webhookServiceNamespace)
-	if err != nil {
-		setupLog.Error(err, "unable to create webhook cert manager")
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	caCert, err := certMgr.BuildOrSync(ctx, webhookServiceNamespace, rbgwebhook.WebhookServiceName, rbgwebhook.WebhookCertDir)
-	if err != nil {
-		setupLog.Error(err, "unable to provision webhook TLS certificate")
-		os.Exit(1)
-	}
-
-	if err = certMgr.PatchCRDCABundle(ctx, rbgwebhook.ConversionWebhookCRDs(), caCert); err != nil {
-		// Fatal: if the caBundle is not set the API server cannot route conversion
-		// requests to the webhook, causing all v1alpha1<->v1alpha2 conversions to fail.
-		setupLog.Error(err, "unable to patch caBundle on conversion CRDs")
-		os.Exit(1)
-	}
-
-	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
-	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create conversion webhook", "webhook", "RoleBasedGroup")
-		os.Exit(1)
-	}
-	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create conversion webhook", "webhook", "RoleBasedGroupSet")
-		os.Exit(1)
+	var webhookResult *webhookBootstrapResult
+	if !devMode {
+		webhookResult, err = bootstrapWebhookCerts(mgr)
+		if err != nil {
+			setupLog.Error(err, "unable to bootstrap webhook certs")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("Running in dev mode: webhook, cert manager and conversion webhooks are disabled")
 	}
 
 	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName))
@@ -398,15 +353,12 @@ func main() {
 
 	// Webhook cert controller: watches the conversion-webhook CRDs and keeps
 	// caBundle in sync with the self-signed CA certificate.
-	webhookCertReconciler := &workloadscontroller.WebhookCertReconciler{
-		Client:      mgr.GetClient(),
-		CertManager: certMgr,
-		CACert:      caCert,
-		CRDNames:    rbgwebhook.ConversionWebhookCRDs(),
-	}
-	if err = webhookCertReconciler.SetupWithManager(mgr, options); err != nil {
-		setupLog.Error(err, "unable to create webhook cert controller")
-		os.Exit(1)
+	// Skipped in dev mode.
+	if !devMode {
+		if err = setupWebhookCertController(mgr, webhookResult, options); err != nil {
+			setupLog.Error(err, "unable to create webhook cert controller")
+			os.Exit(1)
+		}
 	}
 
 	// +kubebuilder:scaffold:builder
@@ -437,6 +389,100 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// webhookBootstrapResult holds the result of webhook cert bootstrap.
+type webhookBootstrapResult struct {
+	certMgr *rbgwebhook.CertManager
+	caCert  []byte
+}
+
+// newWebhookServer creates a webhook server with the given TLS options.
+// Returns nil when devMode is true.
+func newWebhookServer(devMode bool, tlsOpts []func(*tls.Config)) webhook.Server {
+	if devMode {
+		return nil
+	}
+	return webhook.NewServer(webhook.Options{
+		CertDir: rbgwebhook.WebhookCertDir,
+		TLSOpts: tlsOpts,
+	})
+}
+
+// newManagerOptions builds the controller-runtime manager options.
+// In dev mode, webhook server and leader election are disabled.
+func newManagerOptions(devMode bool, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool) ctrl.Options {
+	opts := ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsOpts,
+		WebhookServer:          webhookServer,
+		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       constants.ControllerName,
+		Cache:                  cacheOptions(),
+	}
+	if devMode {
+		opts.WebhookServer = nil
+		opts.LeaderElection = false
+	}
+	return opts
+}
+
+// bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
+// conversion webhook, patches the caBundle on CRDs, and registers conversion
+// webhooks with the manager. This should only be called when webhook is enabled.
+func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
+	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
+	if webhookServiceNamespace == "" {
+		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
+	}
+
+	// Use a direct (non-cached) client for cert bootstrap: mgr.GetClient() uses
+	// the informer cache which is not started until mgr.Start(), so it cannot
+	// serve reads at this point in startup.
+	directClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("unable to create direct client for cert bootstrap: %w", err)
+	}
+
+	certMgr, err := rbgwebhook.NewCertManager(directClient, rbgwebhook.WebhookCertSecretName, webhookServiceNamespace)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create webhook cert manager: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	caCert, err := certMgr.BuildOrSync(ctx, webhookServiceNamespace, rbgwebhook.WebhookServiceName, rbgwebhook.WebhookCertDir)
+	if err != nil {
+		return nil, fmt.Errorf("unable to provision webhook TLS certificate: %w", err)
+	}
+
+	if err = certMgr.PatchCRDCABundle(ctx, rbgwebhook.ConversionWebhookCRDs(), caCert); err != nil {
+		return nil, fmt.Errorf("unable to patch caBundle on conversion CRDs: %w", err)
+	}
+
+	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
+	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroup: %w", err)
+	}
+	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroupSet: %w", err)
+	}
+
+	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil
+}
+
+// setupWebhookCertController sets up the webhook cert controller that watches
+// the conversion-webhook CRDs and keeps caBundle in sync with the self-signed CA certificate.
+func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult, options controller.Options) error {
+	webhookCertReconciler := &workloadscontroller.WebhookCertReconciler{
+		Client:      mgr.GetClient(),
+		CertManager: result.certMgr,
+		CACert:      result.caCert,
+		CRDNames:    rbgwebhook.ConversionWebhookCRDs(),
+	}
+	return webhookCertReconciler.SetupWithManager(mgr, options)
 }
 
 func cacheOptions() cache.Options {
