@@ -86,6 +86,11 @@ spec:
               phase:
                 description: Phase indicates the current phase of the RoleBasedGroupScalingAdapter.
                 type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of ready replicas for the
+                  role targeted by this adapter.
+                format: int32
+                type: integer
               replicas:
                 description: Replicas is the current effective number of target RoleBasedGroupRole.
                 format: int32

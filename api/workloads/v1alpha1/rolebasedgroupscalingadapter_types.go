@@ -38,6 +38,9 @@ type RoleBasedGroupScalingAdapterStatus struct {
 	// Selector is a label query used to filter and identify a set of resources targeted for metrics collection.
 	Selector string `json:"selector,omitempty"`
 
+	// ReadyReplicas is the number of ready replicas for the role targeted by this adapter.
+	ReadyReplicas *int32 `json:"readyReplicas,omitempty"`
+
 	// LastScaleTime is the last time the RoleBasedGroupScalingAdapter scaled the number of pods,
 	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
 }

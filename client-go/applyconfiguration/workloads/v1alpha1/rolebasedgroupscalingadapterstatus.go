@@ -28,6 +28,7 @@ type RoleBasedGroupScalingAdapterStatusApplyConfiguration struct {
 	Phase         *workloadsv1alpha1.AdapterPhase `json:"phase,omitempty"`
 	Replicas      *int32                          `json:"replicas,omitempty"`
 	Selector      *string                         `json:"selector,omitempty"`
+	ReadyReplicas *int32                          `json:"readyReplicas,omitempty"`
 	LastScaleTime *v1.Time                        `json:"lastScaleTime,omitempty"`
 }
 
@@ -58,6 +59,14 @@ func (b *RoleBasedGroupScalingAdapterStatusApplyConfiguration) WithReplicas(valu
 // If called multiple times, the Selector field is set to the value of the last call.
 func (b *RoleBasedGroupScalingAdapterStatusApplyConfiguration) WithSelector(value string) *RoleBasedGroupScalingAdapterStatusApplyConfiguration {
 	b.Selector = &value
+	return b
+}
+
+// WithReadyReplicas sets the ReadyReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ReadyReplicas field is set to the value of the last call.
+func (b *RoleBasedGroupScalingAdapterStatusApplyConfiguration) WithReadyReplicas(value int32) *RoleBasedGroupScalingAdapterStatusApplyConfiguration {
+	b.ReadyReplicas = &value
 	return b
 }
 
