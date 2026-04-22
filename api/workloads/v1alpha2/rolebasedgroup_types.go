@@ -225,7 +225,12 @@ type RoleSpec struct {
 // GetWorkloadType returns the workload type for this role.
 // It reads from the annotation if set, otherwise returns the default (RoleInstanceSet).
 // Format: "apiVersion/kind" e.g., "apps/v1/StatefulSet"
+// Note: apiVersion may contain "/" (e.g. "leaderworkerset.x-k8s.io/v1"), so parsing
+// must use strings.LastIndex to correctly split the last "/" as the apiVersion/kind delimiter.
 func (r *RoleSpec) GetWorkloadType() string {
+	if r == nil {
+		return constants.RoleInstanceSetWorkloadType
+	}
 	if r.Annotations != nil {
 		if wt := r.Annotations[constants.RoleWorkloadTypeAnnotationKey]; wt != "" {
 			return wt
@@ -237,7 +242,8 @@ func (r *RoleSpec) GetWorkloadType() string {
 // GetWorkloadSpec returns WorkloadSpec based on annotation or default.
 func (r *RoleSpec) GetWorkloadSpec() WorkloadSpec {
 	wt := r.GetWorkloadType()
-	// Parse "apiVersion/kind" format
+	// Parse "apiVersion/kind" format.
+	// Use LastIndex because apiVersion itself contains "/" (e.g. "apps/v1").
 	idx := strings.LastIndex(wt, "/")
 	if idx > 0 {
 		return WorkloadSpec{
@@ -245,11 +251,17 @@ func (r *RoleSpec) GetWorkloadSpec() WorkloadSpec {
 			Kind:       wt[idx+1:],
 		}
 	}
-	// Return default if parsing fails
-	return WorkloadSpec{
-		APIVersion: "workloads.x-k8s.io/v1alpha2",
-		Kind:       "RoleInstanceSet",
+	// Fallback: derive default from the canonical constant to avoid drift.
+	defaultWT := constants.RoleInstanceSetWorkloadType
+	idx = strings.LastIndex(defaultWT, "/")
+	if idx > 0 {
+		return WorkloadSpec{
+			APIVersion: defaultWT[:idx],
+			Kind:       defaultWT[idx+1:],
+		}
 	}
+	// Defensive fallback if the default constant is ever malformed.
+	return WorkloadSpec{}
 }
 
 // Pattern defines the deployment pattern for a role.

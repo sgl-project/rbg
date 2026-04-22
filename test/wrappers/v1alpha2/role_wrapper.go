@@ -106,7 +106,7 @@ func (rw *StandaloneRoleWrapper) WithPatchRef(name string, patch *runtime.RawExt
 }
 
 // BuildStandaloneRole creates a basic standalone role.
-// Sets the Workload to RoleInstanceSet (the v1alpha2 default stateful workload type).
+// The default workload type for v1alpha2 is RoleInstanceSet (no annotation needed).
 func BuildStandaloneRole(name string) *StandaloneRoleWrapper {
 	template := BuildBasicPodTemplateSpec()
 	return &StandaloneRoleWrapper{
@@ -189,7 +189,8 @@ func (rw *LeaderWorkerRoleWrapper) WithWorkload(apiVersion, kind string) *Leader
 }
 
 // BuildLeaderWorkerRole creates a basic leader-worker role.
-// Sets the Workload to LeaderWorkerSet.
+// Uses LeaderWorkerPattern; the workload type defaults to RoleInstanceSet in v1alpha2
+// (LeaderWorkerSet is only set if explicitly configured via WithWorkload annotation).
 func BuildLeaderWorkerRole(name string) *LeaderWorkerRoleWrapper {
 	template := BuildBasicPodTemplateSpec()
 	return &LeaderWorkerRoleWrapper{

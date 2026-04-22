@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -814,6 +815,196 @@ func TestRoleBasedGroup_RoundTrip_CoordinationFullStrategy(t *testing.T) {
 
 	// Annotations must be cleaned up on the v1alpha1 object.
 	assert.NotContains(t, restored.Annotations, annotationV1alpha1Coordination)
+}
+
+// TestRoleBasedGroup_RoundTrip_WorkloadAnnotation verifies that the Workload field
+// survives a v1alpha1 → v1alpha2 → v1alpha1 round-trip via the role annotation.
+func TestRoleBasedGroup_RoundTrip_WorkloadAnnotation(t *testing.T) {
+	tests := []struct {
+		name     string
+		workload WorkloadSpec
+	}{
+		{
+			name:     "StatefulSet",
+			workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "StatefulSet"},
+		},
+		{
+			name:     "Deployment",
+			workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "Deployment"},
+		},
+		{
+			name:     "LeaderWorkerSet",
+			workload: WorkloadSpec{APIVersion: "leaderworkerset.x-k8s.io/v1", Kind: "LeaderWorkerSet"},
+		},
+		{
+			name:     "InstanceSet (v1alpha1)",
+			workload: WorkloadSpec{APIVersion: "workloads.x-k8s.io/v1alpha1", Kind: "InstanceSet"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := &RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							TemplateSource: TemplateSource{
+								Template: podTemplate("app"),
+							},
+							Workload: tt.workload,
+						},
+					},
+				},
+			}
+
+			hub := &v2.RoleBasedGroup{}
+			require.NoError(t, original.ConvertTo(hub))
+
+			// Verify the annotation is set on the v1alpha2 role
+			require.Len(t, hub.Spec.Roles, 1)
+			role := hub.Spec.Roles[0]
+			assert.Equal(t, fmt.Sprintf("%s/%s", tt.workload.APIVersion, tt.workload.Kind),
+				role.Annotations[constants.RoleWorkloadTypeAnnotationKey])
+
+			restored := &RoleBasedGroup{}
+			require.NoError(t, restored.ConvertFrom(hub))
+
+			// Verify Workload is correctly restored
+			require.Len(t, restored.Spec.Roles, 1)
+			r := restored.Spec.Roles[0]
+			assert.Equal(t, tt.workload.APIVersion, r.Workload.APIVersion)
+			assert.Equal(t, tt.workload.Kind, r.Workload.Kind)
+		})
+	}
+}
+
+// TestRoleBasedGroup_ConvertFrom_WorkloadDefaultFallback verifies that when a
+// v1alpha2 RoleSpec has no workload-type annotation, the v1alpha1 Workload field
+// is populated with the default (RoleInstanceSet) instead of being left empty.
+func TestRoleBasedGroup_ConvertFrom_WorkloadDefaultFallback(t *testing.T) {
+	src := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					Pattern: v2.Pattern{
+						StandalonePattern: &v2.StandalonePattern{
+							TemplateSource: v2.TemplateSource{
+								Template: podTemplate("app"),
+							},
+						},
+					},
+					// No annotations set — should fallback to default RoleInstanceSet
+				},
+			},
+		},
+	}
+
+	dst := &RoleBasedGroup{}
+	require.NoError(t, dst.ConvertFrom(src))
+
+	require.Len(t, dst.Spec.Roles, 1)
+	role := dst.Spec.Roles[0]
+	// Workload should be populated with the default, not left empty
+	assert.NotEmpty(t, role.Workload.APIVersion, "Workload.APIVersion should not be empty")
+	assert.NotEmpty(t, role.Workload.Kind, "Workload.Kind should not be empty")
+	assert.Equal(t, "RoleInstanceSet", role.Workload.Kind)
+}
+
+// TestRoleBasedGroup_ConvertTo_WorkloadAnnotationPreserved verifies that the
+// workload-type annotation is correctly set on the v1alpha2 role when converting
+// from v1alpha1, and that empty Workload fields do not set the annotation.
+func TestRoleBasedGroup_ConvertTo_WorkloadAnnotationPreserved(t *testing.T) {
+	t.Run("non-empty workload sets annotation", func(t *testing.T) {
+		src := &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{
+				Roles: []RoleSpec{
+					{
+						Name:     "worker",
+						Replicas: ptr.To(int32(1)),
+						TemplateSource: TemplateSource{
+							Template: podTemplate("app"),
+						},
+						Workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "StatefulSet"},
+					},
+				},
+			},
+		}
+
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, src.ConvertTo(dst))
+
+		require.Len(t, dst.Spec.Roles, 1)
+		role := dst.Spec.Roles[0]
+		assert.Equal(t, "apps/v1/StatefulSet", role.Annotations[constants.RoleWorkloadTypeAnnotationKey])
+	})
+
+	t.Run("empty workload does not set annotation", func(t *testing.T) {
+		src := &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{
+				Roles: []RoleSpec{
+					{
+						Name:     "worker",
+						Replicas: ptr.To(int32(1)),
+						TemplateSource: TemplateSource{
+							Template: podTemplate("app"),
+						},
+						// Workload is zero-value — annotation should not be set
+					},
+				},
+			},
+		}
+
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, src.ConvertTo(dst))
+
+		require.Len(t, dst.Spec.Roles, 1)
+		role := dst.Spec.Roles[0]
+		_, hasAnnotation := role.Annotations[constants.RoleWorkloadTypeAnnotationKey]
+		assert.False(t, hasAnnotation, "annotation should not be set for empty workload")
+	})
+}
+
+// TestRoleBasedGroup_ConvertFrom_MalformedWorkloadAnnotation verifies that a
+// malformed workload-type annotation falls back to the default WorkloadSpec.
+func TestRoleBasedGroup_ConvertFrom_MalformedWorkloadAnnotation(t *testing.T) {
+	src := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: "malformed-no-slash",
+					},
+					Pattern: v2.Pattern{
+						StandalonePattern: &v2.StandalonePattern{
+							TemplateSource: v2.TemplateSource{
+								Template: podTemplate("app"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	dst := &RoleBasedGroup{}
+	require.NoError(t, dst.ConvertFrom(src))
+
+	require.Len(t, dst.Spec.Roles, 1)
+	role := dst.Spec.Roles[0]
+	// Should fall back to the default (from src.GetWorkloadSpec())
+	assert.NotEmpty(t, role.Workload.APIVersion)
+	assert.NotEmpty(t, role.Workload.Kind)
 }
 
 func TestRoleBasedGroup_RoundTrip_RoleTemplates(t *testing.T) {

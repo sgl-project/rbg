@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -305,7 +306,7 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 					Name:     "role2",
 					Replicas: ptr.To(int32(2)),
 					Annotations: map[string]string{
-						"rbg.workloads.x-k8s.io/role-workload-type": "apps/v1/StatefulSet",
+						constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
 					},
 				},
 			},

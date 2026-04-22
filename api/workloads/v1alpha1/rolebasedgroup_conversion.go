@@ -125,7 +125,9 @@ func convertSpecV1alpha1ToV2(src *RoleBasedGroupSpec, dst *v2.RoleBasedGroupSpec
 func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	dst.Name = src.Name
 	dst.Labels = src.Labels
-	dst.Annotations = src.Annotations
+	// Deep-copy annotations to avoid mutating the apiserver-provided source object
+	// when writing conversion-only keys (e.g. RoleWorkloadTypeAnnotationKey).
+	dst.Annotations = copyAnnotations(src.Annotations)
 	dst.Replicas = src.Replicas
 	dst.RestartPolicy = v2.RestartPolicyType(src.RestartPolicy)
 	dst.Dependencies = src.Dependencies
@@ -135,7 +137,9 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	dst.EngineRuntimes = convertEngineRuntimesV1alpha1ToV2(src.EngineRuntimes)
 
 	// Workload – preserved via role annotation instead of field in v1alpha2.
-	// This allows v1alpha1 RBGs to continue using their configured workload type.
+	// This annotation is for conversion compatibility only; it is not propagated
+	// to downstream workloads (filtered out by GetCommonAnnotationsFromRole).
+	// New v1alpha2 RBGs should NOT set this annotation.
 	if src.Workload.APIVersion != "" && src.Workload.Kind != "" {
 		if dst.Annotations == nil {
 			dst.Annotations = make(map[string]string)
@@ -315,17 +319,26 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.ScalingAdapter = convertScalingAdapterV2ToV1alpha1(src.ScalingAdapter)
 	dst.EngineRuntimes = convertEngineRuntimesV2ToV1alpha1(src.EngineRuntimes)
 
-	// Workload – restore from annotation if present
+	// Workload – restore from annotation if present, otherwise default from the
+	// v1alpha2 role so v1alpha1 always has workload apiVersion/kind populated.
+	workloadSet := false
 	if src.Annotations != nil {
 		workloadType := src.Annotations[constants.RoleWorkloadTypeAnnotationKey]
 		if workloadType != "" {
-			// Parse "apiVersion/kind" format
+			// Parse "apiVersion/kind" format. Use LastIndex because apiVersion
+			// itself contains "/" (e.g. "leaderworkerset.x-k8s.io/v1").
 			idx := strings.LastIndex(workloadType, "/")
 			if idx > 0 {
 				dst.Workload.APIVersion = workloadType[:idx]
 				dst.Workload.Kind = workloadType[idx+1:]
+				workloadSet = true
 			}
 		}
+	}
+	if !workloadSet {
+		ws := src.GetWorkloadSpec()
+		dst.Workload.APIVersion = ws.APIVersion
+		dst.Workload.Kind = ws.Kind
 	}
 
 	// RolloutStrategy

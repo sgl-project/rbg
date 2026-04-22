@@ -42,10 +42,21 @@ func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]st
 }
 
 // GetCommonAnnotationsFromRole returns common annotations for a role.
+// Internal control-plane annotations (e.g. RoleWorkloadTypeAnnotationKey) are
+// filtered out to prevent them from leaking into downstream workload/Pod metadata.
 func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[string]string {
-	return map[string]string{
+	annotations := map[string]string{
 		constants.RoleSizeAnnotationKey: fmt.Sprintf("%d", *role.Replicas),
 	}
+	// Propagate role annotations, but filter out internal-only keys that
+	// must not appear on downstream Pods/STS/Deployments.
+	for k, v := range role.Annotations {
+		if k == constants.RoleWorkloadTypeAnnotationKey {
+			continue
+		}
+		annotations[k] = v
+	}
+	return annotations
 }
 
 // GetGroupSize returns the total number of pods in the group.

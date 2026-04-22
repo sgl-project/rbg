@@ -65,6 +65,9 @@ const (
 	// not use this annotation as the default (RoleInstanceSet) is appropriate.
 	// Format: "apiVersion/kind" e.g., "apps/v1/StatefulSet"
 	// Example: rbg.workloads.x-k8s.io/role-workload-type: "apps/v1/StatefulSet"
+	// WARNING: apiVersion may contain "/" (e.g. "leaderworkerset.x-k8s.io/v1"),
+	// so parsing must use strings.LastIndex to correctly split at the last "/"
+	// as the apiVersion/kind delimiter. Do NOT use strings.Split.
 	RoleWorkloadTypeAnnotationKey = RBGPrefix + "role-workload-type"
 )
 
