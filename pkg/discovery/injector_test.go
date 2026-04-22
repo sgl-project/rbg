@@ -839,3 +839,245 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 		t.Fatalf("Environment variables mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestMergeEnvVars(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []corev1.EnvVar
+		injected []corev1.EnvVar
+		expected []corev1.EnvVar
+	}{
+		{
+			name:     "both empty",
+			existing: nil,
+			injected: nil,
+			expected: []corev1.EnvVar{},
+		},
+		{
+			name:     "existing empty, injected has RBG vars",
+			existing: nil,
+			injected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "test"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "test"},
+			},
+		},
+		{
+			name: "injected empty, existing has user vars",
+			existing: []corev1.EnvVar{
+				{Name: "MY_VAR", Value: "my-value"},
+			},
+			injected: nil,
+			expected: []corev1.EnvVar{
+				{Name: "MY_VAR", Value: "my-value"},
+			},
+		},
+		{
+			name: "injected overrides existing RBG var",
+			existing: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "old"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "new"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "new"},
+			},
+		},
+		{
+			name: "injected overrides existing user var with same name",
+			existing: []corev1.EnvVar{
+				{Name: "MY_VAR", Value: "old"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "MY_VAR", Value: "new"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "MY_VAR", Value: "new"},
+			},
+		},
+		{
+			name: "base RBG vars before injected LWP vars before user vars",
+			existing: []corev1.EnvVar{
+				{Name: "USER_VAR", Value: "user"},
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "RBG_ROLE_NAME", Value: "worker"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+				{Name: "RBG_LWP_GROUP_SIZE", Value: "3"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "RBG_ROLE_NAME", Value: "worker"},
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+				{Name: "RBG_LWP_GROUP_SIZE", Value: "3"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+		},
+		{
+			name: "existing LWP vars placed after injected vars when not overridden",
+			existing: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "stale-address"},
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_LWP_GROUP_SIZE", Value: "3"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "RBG_LWP_GROUP_SIZE", Value: "3"},
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "stale-address"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+		},
+		{
+			name: "two-phase injection: base RBG before LWP so $(VAR) expansion works",
+			existing: []corev1.EnvVar{
+				{Name: "RBG_ROLE_INSTANCE_NAME", Value: "instance-0"},
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_ROLE_INSTANCE_NAME", Value: "instance-0"},
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+		},
+		{
+			name: "injected overrides existing LWP var while keeping other existing LWP vars",
+			existing: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "stale"},
+				{Name: "RBG_LWP_GROUP_SIZE", Value: "2"},
+				{Name: "RBG_ROLE_NAME", Value: "worker"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_ROLE_NAME", Value: "worker"},
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+				{Name: "RBG_LWP_GROUP_SIZE", Value: "2"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+		},
+		{
+			name: "user var referencing RBG base var is placed after it",
+			existing: []corev1.EnvVar{
+				{Name: "DP_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_ROLE_INSTANCE_NAME", Value: "instance-0"},
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_ROLE_INSTANCE_NAME", Value: "instance-0"},
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "DP_ADDRESS", Value: "$(RBG_ROLE_INSTANCE_NAME)-0.svc.ns"},
+			},
+		},
+		{
+			name: "user var referencing LWP var is placed after it",
+			existing: []corev1.EnvVar{
+				{Name: "MY_LEADER", Value: "$(RBG_LWP_LEADER_ADDRESS)/path"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "leader-0.svc.ns"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_LWP_LEADER_ADDRESS", Value: "leader-0.svc.ns"},
+				{Name: "MY_LEADER", Value: "$(RBG_LWP_LEADER_ADDRESS)/path"},
+			},
+		},
+		{
+			name: "duplicate in existing is deduplicated preserving last",
+			existing: []corev1.EnvVar{
+				{Name: "USER_VAR", Value: "first"},
+				{Name: "USER_VAR", Value: "second"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "my-rbg"},
+				{Name: "USER_VAR", Value: "second"},
+			},
+		},
+		{
+			name: "duplicate in injected is deduplicated preserving last",
+			existing: []corev1.EnvVar{
+				{Name: "USER_VAR", Value: "user"},
+			},
+			injected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "first"},
+				{Name: "RBG_GROUP_NAME", Value: "second"},
+			},
+			expected: []corev1.EnvVar{
+				{Name: "RBG_GROUP_NAME", Value: "second"},
+				{Name: "USER_VAR", Value: "user"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mergeEnvVars(tt.existing, tt.injected)
+			if diff := cmp.Diff(tt.expected, result); diff != "" {
+				t.Errorf("mergeEnvVars mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestIsRBGInjectedEnvVar(t *testing.T) {
+	tests := []struct {
+		name     string
+		envName  string
+		expected bool
+	}{
+		{name: "RBG prefix", envName: "RBG_GROUP_NAME", expected: true},
+		{name: "RBG_LWP prefix", envName: "RBG_LWP_LEADER_ADDRESS", expected: true},
+		{name: "short name less than 4 chars", envName: "RBG", expected: false},
+		{name: "non-RBG prefix", envName: "MY_VAR", expected: false},
+		{name: "empty string", envName: "", expected: false},
+		{name: "similar but not RBG prefix", envName: "XRBG_VAR", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRBGInjectedEnvVar(tt.envName); got != tt.expected {
+				t.Errorf("isRBGInjectedEnvVar(%q) = %v, want %v", tt.envName, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsRBGLWPEnvVar(t *testing.T) {
+	tests := []struct {
+		name     string
+		envName  string
+		expected bool
+	}{
+		{name: "RBG_LWP prefix", envName: "RBG_LWP_LEADER_ADDRESS", expected: true},
+		{name: "RBG_LWP another", envName: "RBG_LWP_GROUP_SIZE", expected: true},
+		{name: "RBG prefix only", envName: "RBG_GROUP_NAME", expected: false},
+		{name: "short name less than 8 chars", envName: "RBG_LWP", expected: false},
+		{name: "non-RBG prefix", envName: "MY_VAR", expected: false},
+		{name: "empty string", envName: "", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRBGLWPEnvVar(tt.envName); got != tt.expected {
+				t.Errorf("isRBGLWPEnvVar(%q) = %v, want %v", tt.envName, got, tt.expected)
+			}
+		})
+	}
+}
