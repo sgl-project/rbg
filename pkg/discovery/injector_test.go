@@ -649,10 +649,6 @@ func TestDefaultInjector_InjectEnv_UserEnvReferenceRBGVarsOrder(t *testing.T) {
 	role := &workloadsv1alpha2.RoleSpec{
 		Name:     "worker",
 		Replicas: ptr.To(int32(3)),
-		// Workload: workloadsv1alpha2.WorkloadSpec{
-		// 	APIVersion: "workloads.x-k8s.io/v1alpha2",
-		// 	Kind:       "RoleInstanceSet",
-		// },
 	}
 	podSpec := &corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
