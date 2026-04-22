@@ -185,6 +185,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 								wrappersv2.BuildStandaloneRole("prefill").
 									WithReplicas(int32(1)).Obj(),
 								wrappersv2.BuildLeaderWorkerRole("decode").
+									WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 									WithReplicas(int32(1)).Obj(),
 							},
 						).Obj()

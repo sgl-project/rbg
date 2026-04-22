@@ -32,6 +32,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("create leader-worker role with engine runtime", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
+				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 				WithEngineRuntime([]workloadsv1alpha2.EngineRuntime{{ProfileName: testutils.DefaultEngineRuntimeProfileName}}).
 				Obj(),
 		}).Obj()
@@ -45,7 +46,9 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 
 	ginkgo.It("update leader-worker role replicas & template", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
-			wrappersv2.BuildLeaderWorkerRole("role-1").Obj(),
+			wrappersv2.BuildLeaderWorkerRole("role-1").
+				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
+				Obj(),
 		}).Obj()
 
 		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
@@ -68,6 +71,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
+					WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 					WithReplicas(2).
 					WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(1)),
@@ -92,6 +96,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
+					WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 					WithReplicas(2).
 					WithRestartPolicy(workloadsv1alpha2.RecreateRBGOnPodRestart).
 					Obj(),
