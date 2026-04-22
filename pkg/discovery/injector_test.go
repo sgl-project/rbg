@@ -755,6 +755,14 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 
 	expectedEnvVars := []corev1.EnvVar{
 		{
+			Name: constants.EnvRBGRoleInstanceName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceNameLabelKey),
+				},
+			},
+		},
+		{
 			Name:  constants.EnvRBGLeaderAddress,
 			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, rbg.GetServiceName(role), rbg.Namespace),
 		},
@@ -803,14 +811,6 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 			},
 		},
 		{
-			Name: constants.EnvRBGRoleInstanceName,
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceNameLabelKey),
-				},
-			},
-		},
-		{
 			Name:  constants.EnvRBGRoleName,
 			Value: role.Name,
 		},
@@ -819,7 +819,22 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 			Value: "existing-value",
 		},
 	}
-
+	roleInstanceNameIndex := -1
+	leaderAddressIndex := -1
+	for i, envVar := range podSpec.Spec.Containers[0].Env {
+		switch envVar.Name {
+		case constants.EnvRBGRoleInstanceName:
+			roleInstanceNameIndex = i
+		case constants.EnvRBGLeaderAddress:
+			leaderAddressIndex = i
+		}
+	}
+	if roleInstanceNameIndex == -1 || leaderAddressIndex == -1 {
+		t.Fatalf("expected both %s and %s in env, got: %+v", constants.EnvRBGRoleInstanceName, constants.EnvRBGLeaderAddress, podSpec.Spec.Containers[0].Env)
+	}
+	if roleInstanceNameIndex >= leaderAddressIndex {
+		t.Fatalf("expected %s to appear before %s for Kubernetes env expansion, got indexes %d and %d", constants.EnvRBGRoleInstanceName, constants.EnvRBGLeaderAddress, roleInstanceNameIndex, leaderAddressIndex)
+	}
 	if diff := cmp.Diff(expectedEnvVars, podSpec.Spec.Containers[0].Env); diff != "" {
 		t.Fatalf("Environment variables mismatch (-want +got):\n%s", diff)
 	}
