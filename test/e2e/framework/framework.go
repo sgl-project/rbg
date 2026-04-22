@@ -17,8 +17,10 @@ limitations under the License.
 package framework
 
 import (
+	"bytes"
 	"context"
 	"flag"
+	"io"
 
 	"github.com/onsi/gomega"
 	rawzap "go.uber.org/zap"
@@ -29,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +47,7 @@ import (
 type Framework struct {
 	Ctx       context.Context
 	Client    client.Client
+	Clientset kubernetes.Interface
 	Namespace string
 	debugFn   func()
 }
@@ -59,11 +63,15 @@ func NewFramework(development bool) *Framework {
 	runtimeClient, err := client.New(cfg, client.Options{Scheme: scheme})
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
+	clientset, err := kubernetes.NewForConfig(cfg)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
 	ctx := initLogger(context.TODO(), development)
 
 	return &Framework{
-		Ctx:    ctx,
-		Client: runtimeClient,
+		Ctx:       ctx,
+		Client:    runtimeClient,
+		Clientset: clientset,
 	}
 }
 
@@ -71,6 +79,23 @@ func NewFramework(development bool) *Framework {
 // Each test case should call this to register its debug dump function.
 func (f *Framework) RegisterDebugFn(fn func()) {
 	f.debugFn = fn
+}
+
+// GetPodLogs returns the logs of a pod.
+func (f *Framework) GetPodLogs(namespace, name string) (string, error) {
+	req := f.Clientset.CoreV1().Pods(namespace).GetLogs(name, &v1.PodLogOptions{})
+	stream, err := req.Stream(f.Ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = stream.Close() }()
+
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, stream)
+	if err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func initLogger(ctx context.Context, development bool) context.Context {
