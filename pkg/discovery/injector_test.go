@@ -755,34 +755,6 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 
 	expectedEnvVars := []corev1.EnvVar{
 		{
-			Name: constants.EnvRBGRoleInstanceName,
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceNameLabelKey),
-				},
-			},
-		},
-		{
-			Name:  constants.EnvRBGLeaderAddress,
-			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, rbg.GetServiceName(role), rbg.Namespace),
-		},
-		{
-			Name: constants.EnvRBGIndex,
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIndexLabelKey),
-				},
-			},
-		},
-		{
-			Name: constants.EnvRBGSize,
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentSizeLabelKey),
-				},
-			},
-		},
-		{
 			Name: constants.EnvRBGComponentIndex,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
@@ -811,8 +783,36 @@ func TestDefaultInjector_InjectLeaderWorkerSetEnv(t *testing.T) {
 			},
 		},
 		{
+			Name: constants.EnvRBGRoleInstanceName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.RoleInstanceNameLabelKey),
+				},
+			},
+		},
+		{
 			Name:  constants.EnvRBGRoleName,
 			Value: role.Name,
+		},
+		{
+			Name:  constants.EnvRBGLeaderAddress,
+			Value: fmt.Sprintf("$(%s)-0.%s.%s", constants.EnvRBGRoleInstanceName, rbg.GetServiceName(role), rbg.Namespace),
+		},
+		{
+			Name: constants.EnvRBGIndex,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentIndexLabelKey),
+				},
+			},
+		},
+		{
+			Name: constants.EnvRBGSize,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: fmt.Sprintf("metadata.labels['%s']", constants.ComponentSizeLabelKey),
+				},
+			},
 		},
 		{
 			Name:  "EXISTING_VAR",
