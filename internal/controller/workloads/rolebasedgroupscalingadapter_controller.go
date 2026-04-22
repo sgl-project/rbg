@@ -25,6 +25,7 @@ import (
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,13 +73,15 @@ func NewRoleBasedGroupScalingAdapterReconciler(mgr ctrl.Manager) *RoleBasedGroup
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters/finalizers,verbs=update
 func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	// Fetch the RoleBasedGroupScalingAdapter instance
-	rbgScalingAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+	// Fetch the RoleBasedGroupScalingAdapter instance.
+	// DeepCopy to avoid mutating the informer cache when modifying conditions.
+	cached := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 	if err := r.client.Get(
-		ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbgScalingAdapter,
+		ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, cached,
 	); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	rbgScalingAdapter := cached.DeepCopy()
 	logger := log.FromContext(ctx).WithValues("rbg-scaling-adapter", klog.KObj(rbgScalingAdapter))
 	ctx = ctrl.LoggerInto(ctx, logger)
 
@@ -134,7 +137,9 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 				logger.Error(err, "Failed to update status", "rbgScalingAdapterName", rbgScalingAdapterName)
 			}
 		}
-		// TODO: currently reconcile unbound adapter by a default reconcile interval, need to implement a rbg event-driven manager
+		// The Watches() on RBG enables event-driven reconciliation for bound adapters.
+		// This RequeueAfter is retained for unbound adapters whose target RBG does not
+		// yet exist (no watch events generated for non-existent objects).
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
@@ -213,37 +218,155 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 	desiredReplicas, currentReplicas := rbgScalingAdapter.Spec.Replicas, targetRole.Replicas
 	if desiredReplicas == nil || currentReplicas == nil ||
 		*rbgScalingAdapter.Spec.Replicas == *targetRole.Replicas {
-		// nothing to do
+		if err := r.clearScaleDownDeferredCondition(ctx, rbgScalingAdapter); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Start scaling", "desired replicas", *desiredReplicas, "current replicas", *currentReplicas)
+	// Gate scale-down for partition-based workloads during rolling update.
+	// StatefulSet/LWS delete pods from highest ordinals on scale-down, which are
+	// the already-updated pods (ordinal >= partition). Deferring scale-down until
+	// the rollout completes prevents rollout progress destruction.
+	if deferred, result, err := r.deferScaleDownIfNeeded(
+		ctx, rbgScalingAdapter, rbg, targetRole, targetRoleName,
+		*desiredReplicas, *currentReplicas,
+	); deferred || err != nil {
+		return result, err
+	}
 
-	// scale role
-	if err := r.updateRoleReplicas(ctx, rbg, targetRoleName, desiredReplicas); err != nil {
+	// Clear condition in memory; the SSA status patch below persists the change
+	// in a single API call together with the replica/lastScaleTime update.
+	apimeta.RemoveStatusCondition(&rbgScalingAdapter.Status.Conditions,
+		workloadsv1alpha2.AdapterConditionScaleDownDeferred)
+
+	return r.scaleRole(ctx, rbgScalingAdapter, rbg, targetRoleName, *desiredReplicas, *currentReplicas)
+}
+
+// patchAdapterStatus persists the RBGSA status using SSA, consistent with all
+// other status writes in this controller.
+func (r *RoleBasedGroupScalingAdapterReconciler) patchAdapterStatus(
+	ctx context.Context, rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+) error {
+	applyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
+		WithStatus(ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, false))
+	return utils.PatchObjectApplyConfiguration(ctx, r.client, applyConfig, utils.PatchStatus)
+}
+
+// shouldDeferScaleDown returns true if the role's ScaleDownPolicy is
+// explicitly set to DeferDuringRollout. When unset, defaults to Unrestricted
+// (same behavior as before this feature was introduced).
+func shouldDeferScaleDown(role *workloadsv1alpha2.RoleSpec) bool {
+	if role.ScalingAdapter == nil || role.ScalingAdapter.ScaleDownPolicy == nil {
+		return false // default: unrestricted (backward compatible)
+	}
+	return *role.ScalingAdapter.ScaleDownPolicy == workloadsv1alpha2.ScaleDownPolicyDeferDuringRollout
+}
+
+// clearScaleDownDeferredCondition removes the ScaleDownDeferred condition if present
+// and persists the change via SSA status patch.
+func (r *RoleBasedGroupScalingAdapterReconciler) clearScaleDownDeferredCondition(
+	ctx context.Context, rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+) error {
+	if apimeta.FindStatusCondition(rbgScalingAdapter.Status.Conditions,
+		workloadsv1alpha2.AdapterConditionScaleDownDeferred) == nil {
+		return nil
+	}
+	apimeta.RemoveStatusCondition(&rbgScalingAdapter.Status.Conditions,
+		workloadsv1alpha2.AdapterConditionScaleDownDeferred)
+	return r.patchAdapterStatus(ctx, rbgScalingAdapter)
+}
+
+// deferScaleDownIfNeeded checks whether a scale-down should be deferred because
+// a partition-based rolling update is in progress. Returns (true, result, nil)
+// if the scale-down was deferred, (false, {}, nil) if it should proceed.
+func (r *RoleBasedGroupScalingAdapterReconciler) deferScaleDownIfNeeded(
+	ctx context.Context,
+	rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	targetRole *workloadsv1alpha2.RoleSpec,
+	targetRoleName string,
+	desiredReplicas, currentReplicas int32,
+) (bool, ctrl.Result, error) {
+	if desiredReplicas >= currentReplicas ||
+		!workloadsv1alpha2.IsStatefulRole(targetRole) ||
+		!shouldDeferScaleDown(targetRole) {
+		return false, ctrl.Result{}, nil
+	}
+
+	roleStatus, found := rbg.GetRoleStatus(targetRoleName)
+	if !found || roleStatus.UpdatedReplicas >= roleStatus.Replicas {
+		return false, ctrl.Result{}, nil
+	}
+
+	logger := log.FromContext(ctx)
+	msg := fmt.Sprintf(
+		"Scale-down to %d replicas deferred (current: %d): partition-based rolling update in progress for role %s (updated %d/%d)",
+		desiredReplicas, currentReplicas, targetRoleName,
+		roleStatus.UpdatedReplicas, roleStatus.Replicas)
+
+	logger.Info("Deferring scale-down during partition-based rollout",
+		"desired", desiredReplicas, "current", currentReplicas,
+		"updatedReplicas", roleStatus.UpdatedReplicas, "replicas", roleStatus.Replicas)
+
+	// Only emit the event on first deferral, not on every requeue.
+	isFirstDeferral := apimeta.FindStatusCondition(rbgScalingAdapter.Status.Conditions,
+		workloadsv1alpha2.AdapterConditionScaleDownDeferred) == nil
+
+	apimeta.SetStatusCondition(&rbgScalingAdapter.Status.Conditions, metav1.Condition{
+		Type:               workloadsv1alpha2.AdapterConditionScaleDownDeferred,
+		Status:             metav1.ConditionTrue,
+		Reason:             "RollingUpdateInProgress",
+		ObservedGeneration: rbgScalingAdapter.Generation,
+		Message:            msg,
+	})
+	if err := r.patchAdapterStatus(ctx, rbgScalingAdapter); err != nil {
+		return true, ctrl.Result{}, err
+	}
+
+	if isFirstDeferral {
+		r.recorder.Eventf(rbgScalingAdapter, corev1.EventTypeWarning, ScaleDownDeferred, msg)
+	}
+	return true, ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// scaleRole performs the actual replica update on the RBG and patches the RBGSA status.
+func (r *RoleBasedGroupScalingAdapterReconciler) scaleRole(
+	ctx context.Context,
+	rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	targetRoleName string,
+	desiredReplicas, currentReplicas int32,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	rbgName := rbg.Name
+
+	logger.Info("Start scaling", "desired replicas", desiredReplicas, "current replicas", currentReplicas)
+
+	if err := r.updateRoleReplicas(ctx, rbg, targetRoleName, &desiredReplicas); err != nil {
 		r.recorder.Eventf(
 			rbgScalingAdapter, corev1.EventTypeWarning, FailedScale,
 			"Failed to scale target role [%s] of rbg [%s] from %v to %v replicas: %v",
-			targetRoleName, rbgName, *currentReplicas, *desiredReplicas, err,
+			targetRoleName, rbgName, currentReplicas, desiredReplicas, err,
 		)
 		return ctrl.Result{}, err
 	}
 	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 		WithStatus(
-			ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, true).WithReplicas(*desiredReplicas),
+			ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(rbgScalingAdapter.Status, true).WithReplicas(desiredReplicas),
 		)
 	if err := utils.PatchObjectApplyConfiguration(
 		ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus,
 	); err != nil {
-		logger.Error(err, "Failed to update status", "rbgScalingAdapterName", rbgScalingAdapterName)
+		logger.Error(err, "Failed to update status for %s", rbgScalingAdapter.Name)
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Scale successfully", "old replicas", *currentReplicas, "new replicas", *desiredReplicas)
+	logger.Info("Scale successfully", "old replicas", currentReplicas, "new replicas", desiredReplicas)
 	r.recorder.Eventf(
 		rbgScalingAdapter, corev1.EventTypeNormal, SuccessfulScale,
 		"Succeed to scale target role [%s] of rbg [%s] from %v to %v replicas",
-		targetRoleName, rbgName, *currentReplicas, *desiredReplicas,
+		targetRoleName, rbgName, currentReplicas, desiredReplicas,
 	)
 
 	return ctrl.Result{}, nil
@@ -307,6 +430,9 @@ func ToRoleBasedGroupScalingAdapterStatusApplyConfiguration(status workloadsv1al
 	if scale {
 		statusApplyConfig = statusApplyConfig.WithLastScaleTime(metav1.Now())
 	}
+	// Always include conditions so SSA clears conditions that were previously set.
+	statusApplyConfig = statusApplyConfig.WithConditions(
+		ToConditionApplyConfigurations(status.Conditions)...)
 	return statusApplyConfig
 }
 

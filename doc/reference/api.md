@@ -85,10 +85,11 @@
 
 #### ScalingAdapter
 
- Field  | Description
---------|--------------------------------------------------------------------------------------------------------------
- enable | bool — whether the scaling adapter is enabled for the role (default=false)
- labels | map[string]string — additional labels for the auto-created RBGSA; controller labels (group-name, role-name) take precedence (optional)
+ Field           | Description
+-----------------|--------------------------------------------------------------------------------------------------------------
+ enable          | bool — whether the scaling adapter is enabled for the role (default=false)
+ labels          | map[string]string — additional labels for the auto-created RBGSA; controller labels (group-name, role-name) take precedence (optional)
+ scaleDownPolicy | *ScaleDownPolicyType — scale-down behavior during rollout (enum: DeferDuringRollout, Unrestricted; default=Unrestricted)
 
 ## RoleBasedGroupStatus
 

@@ -19,6 +19,14 @@
  rolebasedgroup.workloads.x-k8s.io/exclusive-topology         | Declares the topology domain (e.g. kubernetes.io/hostname) for exclusive scheduling.
  rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology | Can be set to "true" on a Role template to skip exclusive-topology affinity injection for that role.
 
+## Status Conditions
+
+### RoleBasedGroupScalingAdapter
+
+ Condition          | Description
+--------------------|----------------------------------------------------------------------------------------------------------------------
+ ScaleDownDeferred   | Set to True when a scale-down request is deferred because a partition-based rolling update is in progress. Removed when scaling proceeds.
+
 ## Env Variables
 
  Key        | Description

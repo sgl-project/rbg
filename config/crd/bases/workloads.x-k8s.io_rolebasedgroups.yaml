@@ -32899,6 +32899,15 @@ spec:
                             RoleBasedGroupScalingAdapter resource. Controller-managed labels
                             (group-name, role-name) take precedence and cannot be overridden.
                           type: object
+                        scaleDownPolicy:
+                          description: |-
+                            ScaleDownPolicy controls scale-down behavior during rolling updates.
+                            "DeferDuringRollout" defers scale-down for partition-based workloads
+                            while a rolling update is in progress.
+                          enum:
+                          - DeferDuringRollout
+                          - Unrestricted
+                          type: string
                       type: object
                     servicePorts:
                       items:

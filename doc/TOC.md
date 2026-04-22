@@ -42,6 +42,8 @@
       - [Rolling Update](../examples/basics/rolling-update.yaml)
     - Failure Handling
       - [Restart Policy](../examples/basics/restart-policy.yaml)
+    - Autoscaling
+      - [PD-Disagg with Scaling Adapter](../examples/pd-disagg/sglang/sglang-pd.yaml)
     - Scheduling
       - [Gang Scheduling](../examples/basics/scheduler-plugins-gang.yaml)
     - Monitoring
