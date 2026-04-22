@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -28,7 +29,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -961,4 +964,146 @@ func TestRBGRoleStatusPredicate(t *testing.T) {
 			Object: &workloadsv1alpha2.RoleBasedGroup{},
 		}))
 	})
+}
+
+func TestExtractLabelSelectorDefault(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	const (
+		rbgName   = "test-rbg"
+		roleName  = "decode"
+		namespace = "default"
+	)
+
+	risGVK := schema.GroupVersionKind{
+		Group:   "workloads.x-k8s.io",
+		Version: "v1alpha2",
+		Kind:    "RoleInstanceSet",
+	}
+	lwsGVK := schema.GroupVersionKind{
+		Group:   "leaderworkerset.x-k8s.io",
+		Version: "v1",
+		Kind:    "LeaderWorkerSet",
+	}
+
+	makeWorkload := func(gvk schema.GroupVersionKind, statusField, selectorValue string) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		obj.SetNamespace(namespace)
+		obj.SetName(fmt.Sprintf("%s-%s", rbgName, roleName))
+		if statusField != "" {
+			_ = unstructured.SetNestedField(obj.Object, selectorValue, "status", statusField)
+		}
+		return obj
+	}
+
+	// RoleInstanceSet + LeaderWorkerPattern: build LWP role but override workload to RIS
+	lwpRole := func() *workloadsv1alpha2.RoleSpec {
+		role := wrappersv2.BuildLeaderWorkerRole(roleName).Obj()
+		role.Workload = workloadsv1alpha2.WorkloadSpec{
+			APIVersion: risGVK.Group + "/" + risGVK.Version,
+			Kind:       risGVK.Kind,
+		}
+		return &role
+	}
+
+	// BuildStandaloneRole already sets workload to RoleInstanceSet
+	standaloneRole := func() *workloadsv1alpha2.RoleSpec {
+		role := wrappersv2.BuildStandaloneRole(roleName).Obj()
+		return &role
+	}
+
+	// LeaderWorkerSet role uses default workload from BuildLeaderWorkerRole
+	lwsRole := func() *workloadsv1alpha2.RoleSpec {
+		role := wrappersv2.BuildLeaderWorkerRole(roleName).Obj()
+		return &role
+	}
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, namespace).Obj()
+
+	tests := []struct {
+		name                   string
+		role                   *workloadsv1alpha2.RoleSpec
+		workload               *unstructured.Unstructured
+		expectError            bool
+		expectSelectorNotReady bool
+		expectSelector         string
+	}{
+		{
+			name:           "RoleInstanceSet with LWP and populated selector appends component-index",
+			role:           lwpRole(),
+			workload:       makeWorkload(risGVK, "labelSelector", "app=foo"),
+			expectSelector: fmt.Sprintf("app=foo,%s=0", constants.ComponentIndexLabelKey),
+		},
+		{
+			name:                   "RoleInstanceSet with LWP and empty selector returns transient error",
+			role:                   lwpRole(),
+			workload:               makeWorkload(risGVK, "labelSelector", ""),
+			expectError:            true,
+			expectSelectorNotReady: true,
+		},
+		{
+			name:                   "RoleInstanceSet with LWP and missing status field returns transient error",
+			role:                   lwpRole(),
+			workload:               makeWorkload(risGVK, "", ""), // no status field set
+			expectError:            true,
+			expectSelectorNotReady: true,
+		},
+		{
+			name:           "RoleInstanceSet standalone with populated selector returns as-is",
+			role:           standaloneRole(),
+			workload:       makeWorkload(risGVK, "labelSelector", "app=foo"),
+			expectSelector: "app=foo",
+		},
+		{
+			name:           "RoleInstanceSet standalone with empty selector returns empty",
+			role:           standaloneRole(),
+			workload:       makeWorkload(risGVK, "labelSelector", ""),
+			expectSelector: "",
+		},
+		{
+			name:           "LeaderWorkerSet uses hpaPodSelector without component-index",
+			role:           lwsRole(),
+			workload:       makeWorkload(lwsGVK, "hpaPodSelector", "app=bar"),
+			expectSelector: "app=bar",
+		},
+		{
+			name:        "workload not found returns hard error",
+			role:        lwpRole(),
+			workload:    nil, // no workload in client
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.workload != nil {
+				clientBuilder = clientBuilder.WithObjects(tt.workload)
+			}
+
+			reconciler := &RoleBasedGroupScalingAdapterReconciler{
+				client: clientBuilder.Build(),
+			}
+
+			selector, err := reconciler.extractLabelSelectorDefault(
+				context.Background(), rbg, tt.role,
+			)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.expectSelectorNotReady {
+					assert.True(t, errors.Is(err, errSelectorNotReady),
+						"expected errSelectorNotReady, got: %v", err)
+				} else {
+					assert.False(t, errors.Is(err, errSelectorNotReady),
+						"expected hard error, not errSelectorNotReady")
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectSelector, selector)
+		})
+	}
 }

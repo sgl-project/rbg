@@ -46,4 +46,5 @@ const (
 	FailedScale                = "FailedScale"
 	FailedGetRBGRole           = "FailedGetRBGRole"
 	FailedGetRBGScalingAdapter = "FailedGetRBGScalingAdapter"
+	SelectorNotReady           = "SelectorNotReady"
 )
