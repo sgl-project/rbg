@@ -71,6 +71,22 @@ const (
 	RoleWorkloadTypeAnnotationKey = RBGPrefix + "role-workload-type"
 )
 
+// SystemManagedRoleAnnotations is the set of role-level annotations that are
+// managed by the control plane and must not be propagated to downstream
+// workload/Pod metadata or overridden by user-provided values.
+var SystemManagedRoleAnnotations = map[string]struct{}{
+	RoleSizeAnnotationKey:         {},
+	RoleWorkloadTypeAnnotationKey: {},
+}
+
+// IsSystemManagedRoleAnnotation reports whether the given annotation key is
+// a system-managed role annotation that should be filtered out when copying
+// role annotations to downstream resources.
+func IsSystemManagedRoleAnnotation(key string) bool {
+	_, ok := SystemManagedRoleAnnotations[key]
+	return ok
+}
+
 // RoleInstance level annotations
 const (
 	// RoleInstancePatternKey identifies the RoleInstance organization pattern (Stateful/Stateless)
