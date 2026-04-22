@@ -177,28 +177,38 @@ func mergeEnvVars(existing, injected []corev1.EnvVar) []corev1.EnvVar {
 		injectedNames[env.Name] = struct{}{}
 	}
 
-	existingInjected := make([]corev1.EnvVar, 0, len(existing))
+	existingInjectedBase := make([]corev1.EnvVar, 0, len(existing))
+	existingInjectedDerived := make([]corev1.EnvVar, 0, len(existing))
 	existingOther := make([]corev1.EnvVar, 0, len(existing))
 	for _, env := range existing {
 		if _, ok := injectedNames[env.Name]; ok {
 			continue
 		}
 		if isRBGInjectedEnvVar(env.Name) {
-			existingInjected = append(existingInjected, env)
+			if isRBGLWPEnvVar(env.Name) {
+				existingInjectedDerived = append(existingInjectedDerived, env)
+			} else {
+				existingInjectedBase = append(existingInjectedBase, env)
+			}
 			continue
 		}
 		existingOther = append(existingOther, env)
 	}
 
 	merged := make([]corev1.EnvVar, 0, len(existing)+len(injected))
-	merged = append(merged, existingInjected...)
+	merged = append(merged, existingInjectedBase...)
 	merged = append(merged, injected...)
+	merged = append(merged, existingInjectedDerived...)
 	merged = append(merged, existingOther...)
 	return merged
 }
 
 func isRBGInjectedEnvVar(name string) bool {
 	return len(name) >= 4 && name[:4] == "RBG_"
+}
+
+func isRBGLWPEnvVar(name string) bool {
+	return len(name) >= 8 && name[:8] == "RBG_LWP_"
 }
 
 func dedupeEnvVarsPreserveLast(envs []corev1.EnvVar) []corev1.EnvVar {
