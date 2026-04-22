@@ -424,6 +424,8 @@ func newManagerOptions(devMode bool, webhookServer webhook.Server, metricsOpts m
 	if devMode {
 		opts.WebhookServer = nil
 		opts.LeaderElection = false
+		opts.Metrics.SecureServing = false
+		opts.Metrics.FilterProvider = nil
 	}
 	return opts
 }
@@ -440,7 +442,7 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 	// Use a direct (non-cached) client for cert bootstrap: mgr.GetClient() uses
 	// the informer cache which is not started until mgr.Start(), so it cannot
 	// serve reads at this point in startup.
-	directClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create direct client for cert bootstrap: %w", err)
 	}
