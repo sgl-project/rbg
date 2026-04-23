@@ -43,8 +43,8 @@
 
 | 概念 | 描述 |
 |:-----|:-----|
-| 🎭 **角色 (Role)** | 基础调度与发布单元。每个角色（prefill、decode）拥有独立的配置、生命周期和策略。 |
-| 🗂️ **角色组 (RoleBasedGroup)** | 多个角色构成的一个逻辑服务（例如一次 LLM 推理部署）。 |
+| **角色 (Role)** | 基础调度与发布单元。每个角色（prefill、decode）拥有独立的配置、生命周期和策略。 |
+| **角色组 (RoleBasedGroup)** | 多个角色构成的一个逻辑服务（例如一次 LLM 推理部署）。 |
 
 ---
 
@@ -52,13 +52,13 @@
 
 RBG 提供五大核心能力：
 
-| 能力 | 图标 | 描述 |
-|:-----|:----:|:-----|
-| **稳定 (Stable)** | 🔄 | 唯一 RoleID 注入，拓扑感知确定性运维 |
-| **协同 (Coordination)** | 🤝 | 跨角色策略引擎：部署配对、协同升级、联动恢复 |
-| **编排 (Orchestration)** | 🧭 | 角色依赖、精确启动顺序、拓扑自感知服务发现 |
-| **性能 (Performance)** | ⚡ | 硬件亲和性调度：GPU-NVLink → PCIe → RDMA → VPC |
-| **可扩展 (Extensible)** | 🧩 | 声明式 API 与插件机制，适配未来架构 |
+| 能力 | 描述 |
+|:-----|:-----|
+| **稳定 (Stable)** | 唯一 RoleID 注入，拓扑感知确定性运维 |
+| **协同 (Coordination)** | 跨角色策略引擎：部署配对、协同升级、联动恢复 |
+| **编排 (Orchestration)** | 角色依赖、精确启动顺序、拓扑自感知服务发现 |
+| **性能 (Performance)** | 硬件亲和性调度：GPU-NVLink → PCIe → RDMA → VPC |
+| **可扩展 (Extensible)** | 声明式 API 与插件机制，适配未来架构 |
 
 ---
 
@@ -89,7 +89,7 @@ metadata:
   name: pd-disagg-lws
 spec:
   roles:
-    # 🚦 Router: SGLang Model Gateway
+    # Router: SGLang Model Gateway
     - name: router
       replicas: 1
       standalonePattern:
@@ -110,7 +110,7 @@ spec:
                 ports:
                   - containerPort: 8000
 
-    # 📝 Prefill: standalone 模式（单 GPU 每实例）
+    # Prefill: standalone 模式（单 GPU 每实例）
     - name: prefill
       replicas: 2
       standalonePattern:
@@ -133,7 +133,7 @@ spec:
                   limits:
                     nvidia.com/gpu: "1"
 
-    # 🔮 Decode: leader-worker 模式用于张量并行
+    # Decode: leader-worker 模式用于张量并行
     - name: decode
       replicas: 4
       leaderWorkerPattern:
@@ -168,8 +168,8 @@ spec:
 
 | 模式 | 用途 | 描述 |
 |:-----|:-----|:-----|
-| 🟦 **StandalonePattern** | router, prefill | 单 pod 每实例 |
-| 🟧 **LeaderWorkerPattern** | decode | 多 GPU 张量并行 |
+| **StandalonePattern** | router, prefill | 单 pod 每实例 |
+| **LeaderWorkerPattern** | decode | 多 GPU 张量并行 |
 
 ---
 
@@ -179,25 +179,25 @@ spec:
 
 | 类别 | 说明 |
 |:-----|:-----|
-| 📄 **rbg/base.yaml** | 基础 RoleBasedGroup 配置，演示角色依赖 |
-| 🔗 **rbg/dependency/** | 角色依赖配置示例 |
-| 🎭 **rbg/patterns/** | 部署模式：standalone、leader-worker、custom-components |
-| 📍 **rbg/scheduling/** | Gang 调度：Volcano、scheduler-plugins |
-| 🔄 **rbg/update-strategy/** | 滚动更新，支持分区控制 |
-| 🔄 **rbg/restart-policy/** | 重启策略配置 |
-| 📈 **rbg/scaling/** | 伸缩适配器，支持 HPA 集成 |
-| 🤝 **coordinated-policy/** | 协同滚动更新与伸缩策略 |
-| ⚙️ **engine-runtime/** | 引擎运行时配置 |
+| **rbg/base.yaml** | 基础 RoleBasedGroup 配置，演示角色依赖 |
+| **rbg/dependency/** | 角色依赖配置示例 |
+| **rbg/patterns/** | 部署模式：standalone、leader-worker、custom-components |
+| **rbg/scheduling/** | Gang 调度：Volcano、scheduler-plugins |
+| **rbg/update-strategy/** | 滚动更新，支持分区控制 |
+| **rbg/restart-policy/** | 重启策略配置 |
+| **rbg/scaling/** | 伸缩适配器，支持 HPA 集成 |
+| **coordinated-policy/** | 协同滚动更新与伸缩策略 |
+| **engine-runtime/** | 引擎运行时配置 |
 
 ### 🧠 推理示例 (`examples/inference/`)
 
 | 示例 | 说明 |
 |:-----|:-----|
-| 🟦 **agg-standalone.yaml** | 聚合 SGLang 部署（standalone 模式） |
-| 🟧 **agg-leader-worker.yaml** | 聚合部署（leader-worker 模式） |
-| 🔀 **pd-disagg-standalone.yaml** | Prefill/Decode 解耦（standalone） |
-| 🔀 **pd-disagg-leader-worker.yaml** | Prefill/Decode 解耦（leader-worker） |
-| 🌐 **ecosystem/** | NATS、etcd、Dynamo、Mooncake 集成 |
+| **agg-standalone.yaml** | 聚合 SGLang 部署（standalone 模式） |
+| **agg-leader-worker.yaml** | 聚合部署（leader-worker 模式） |
+| **pd-disagg-standalone.yaml** | Prefill/Decode 解耦（standalone） |
+| **pd-disagg-leader-worker.yaml** | Prefill/Decode 解耦（leader-worker） |
+| **ecosystem/** | NATS、etcd、Dynamo、Mooncake 集成 |
 
 ---
 
@@ -210,12 +210,12 @@ spec:
 
 ### 📋 版本兼容性
 
-| RBG 版本 | Kubernetes | LeaderWorkerSet |
-|:---------|:----------:|:---------------:|
-| main / v0.7.0-alpha.x | >=v1.28.x | >=v0.7.0 |
-| v0.6.0 | >=v1.28.x | >=v0.7.0 |
-| v0.5.0 | >=v1.28.x | >=v0.6.0 |
-| v0.4.0 | >=v1.28.x | >=v0.7.0 |
+| RBG 版本 | Kubernetes |
+|:---------|:----------:|
+| main / v0.7.0-alpha.x | >=v1.22.x |
+| v0.6.0 | >=v1.28.x |
+| v0.5.0 | >=v1.28.x |
+| v0.4.0 | >=v1.28.x |
 
 ---
 

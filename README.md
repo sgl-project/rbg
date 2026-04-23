@@ -43,8 +43,8 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 
 | Concept | Description |
 |:--------|:------------|
-| 🎭 **Role** | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
-| 🗂️ **RoleBasedGroup** | A group of roles forming one logical service (e.g., one LLM inference deployment). |
+| **Role** | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
+| **RoleBasedGroup** | A group of roles forming one logical service (e.g., one LLM inference deployment). |
 
 ---
 
@@ -52,13 +52,13 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 
 RBG provides five core capabilities:
 
-| Capability | Icon | Description |
-|:-----------|:----:|:------------|
-| **Stable** | 🔄 | Topology-aware deterministic operations with unique RoleID injection |
-| **Coordination** | 🤝 | Cross-role policy engine: deployment pairing, coordinated upgrades, linked recovery |
-| **Orchestration** | 🧭 | Role dependencies, precise startup sequences, topology self-aware service discovery |
-| **Performance** | ⚡ | Hardware affinity scheduling: GPU-NVLink → PCIe → RDMA → VPC |
-| **Extensible** | 🧩 | Declarative APIs and plugin mechanisms for future architectures |
+| Capability | Description |
+|:-----------|:------------|
+| **Stable** | Topology-aware deterministic operations with unique RoleID injection |
+| **Coordination** | Cross-role policy engine: deployment pairing, coordinated upgrades, linked recovery |
+| **Orchestration** | Role dependencies, precise startup sequences, topology self-aware service discovery |
+| **Performance** | Hardware affinity scheduling: GPU-NVLink → PCIe → RDMA → VPC |
+| **Extensible** | Declarative APIs and plugin mechanisms for future architectures |
 
 ---
 
@@ -89,7 +89,7 @@ metadata:
   name: pd-disagg-lws
 spec:
   roles:
-    # 🚦 Router: SGLang Model Gateway
+    # Router: SGLang Model Gateway
     - name: router
       replicas: 1
       standalonePattern:
@@ -110,7 +110,7 @@ spec:
                 ports:
                   - containerPort: 8000
 
-    # 📝 Prefill: standalone pattern (single GPU per instance)
+    # Prefill: standalone pattern (single GPU per instance)
     - name: prefill
       replicas: 2
       standalonePattern:
@@ -133,7 +133,7 @@ spec:
                   limits:
                     nvidia.com/gpu: "1"
 
-    # 🔮 Decode: leader-worker pattern for tensor parallel
+    # Decode: leader-worker pattern for tensor parallel
     - name: decode
       replicas: 4
       leaderWorkerPattern:
@@ -168,8 +168,8 @@ spec:
 
 | Pattern | Used For | Description |
 |:--------|:---------|:------------|
-| 🟦 **StandalonePattern** | router, prefill | Single pod per instance |
-| 🟧 **LeaderWorkerPattern** | decode | Multi-GPU tensor parallelism |
+| **StandalonePattern** | router, prefill | Single pod per instance |
+| **LeaderWorkerPattern** | decode | Multi-GPU tensor parallelism |
 
 ---
 
@@ -179,25 +179,25 @@ spec:
 
 | Category | Description |
 |:---------|:------------|
-| 📄 **rbg/base.yaml** | Basic RoleBasedGroup with role dependencies |
-| 🔗 **rbg/dependency/** | Role dependency configurations |
-| 🎭 **rbg/patterns/** | Deployment patterns: standalone, leader-worker, custom-components |
-| 📍 **rbg/scheduling/** | Gang scheduling: Volcano, scheduler-plugins |
-| 🔄 **rbg/update-strategy/** | Rolling update with partition support |
-| 🔄 **rbg/restart-policy/** | Restart policy configurations |
-| 📈 **rbg/scaling/** | Scaling adapter with HPA integration |
-| 🤝 **coordinated-policy/** | Coordinated rollout and scaling policies |
-| ⚙️ **engine-runtime/** | Engine runtime profile configurations |
+| **rbg/base.yaml** | Basic RoleBasedGroup with role dependencies |
+| **rbg/dependency/** | Role dependency configurations |
+| **rbg/patterns/** | Deployment patterns: standalone, leader-worker, custom-components |
+| **rbg/scheduling/** | Gang scheduling: Volcano, scheduler-plugins |
+| **rbg/update-strategy/** | Rolling update with partition support |
+| **rbg/restart-policy/** | Restart policy configurations |
+| **rbg/scaling/** | Scaling adapter with HPA integration |
+| **coordinated-policy/** | Coordinated rollout and scaling policies |
+| **engine-runtime/** | Engine runtime profile configurations |
 
 ### 🧠 Inference Examples (`examples/inference/`)
 
 | Example | Description |
 |:--------|:------------|
-| 🟦 **agg-standalone.yaml** | Aggregated SGLang (standalone pattern) |
-| 🟧 **agg-leader-worker.yaml** | Aggregated (leader-worker pattern) |
-| 🔀 **pd-disagg-standalone.yaml** | Prefill/Decode disaggregated (standalone) |
-| 🔀 **pd-disagg-leader-worker.yaml** | Prefill/Decode disaggregated (leader-worker) |
-| 🌐 **ecosystem/** | NATS, etcd, Dynamo, Mooncake integration |
+| **agg-standalone.yaml** | Aggregated SGLang (standalone pattern) |
+| **agg-leader-worker.yaml** | Aggregated (leader-worker pattern) |
+| **pd-disagg-standalone.yaml** | Prefill/Decode disaggregated (standalone) |
+| **pd-disagg-leader-worker.yaml** | Prefill/Decode disaggregated (leader-worker) |
+| **ecosystem/** | NATS, etcd, Dynamo, Mooncake integration |
 
 ---
 
@@ -210,12 +210,12 @@ spec:
 
 ### 📋 Version Compatibility
 
-| RBG Version | Kubernetes | LeaderWorkerSet |
-|:------------|:----------:|:---------------:|
-| main / v0.7.0-alpha.x | >=v1.28.x | >=v0.7.0 |
-| v0.6.0 | >=v1.28.x | >=v0.7.0 |
-| v0.5.0 | >=v1.28.x | >=v0.6.0 |
-| v0.4.0 | >=v1.28.x | >=v0.7.0 |
+| RBG Version | Kubernetes |
+|:------------|:----------:|
+| main / v0.7.0-alpha.x | >=v1.22.x |
+| v0.6.0 | >=v1.28.x |
+| v0.5.0 | >=v1.28.x |
+| v0.4.0 | >=v1.28.x |
 
 ---
 
