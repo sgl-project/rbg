@@ -20,6 +20,7 @@ package v1alpha2
 import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	v1 "k8s.io/client-go/applyconfigurations/core/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // LeaderWorkerPatternApplyConfiguration represents a declarative configuration of the LeaderWorkerPattern type for use
@@ -27,8 +28,9 @@ import (
 type LeaderWorkerPatternApplyConfiguration struct {
 	Size                             *int32 `json:"size,omitempty"`
 	TemplateSourceApplyConfiguration `json:",inline"`
-	LeaderTemplatePatch              *runtime.RawExtension `json:"leaderTemplatePatch,omitempty"`
-	WorkerTemplatePatch              *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
+	LeaderTemplatePatch              *runtime.RawExtension                           `json:"leaderTemplatePatch,omitempty"`
+	WorkerTemplatePatch              *runtime.RawExtension                           `json:"workerTemplatePatch,omitempty"`
+	SharedServiceSelection           *workloadsv1alpha2.SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
 
 // LeaderWorkerPatternApplyConfiguration constructs a declarative configuration of the LeaderWorkerPattern type for use with
@@ -74,5 +76,13 @@ func (b *LeaderWorkerPatternApplyConfiguration) WithLeaderTemplatePatch(value ru
 // If called multiple times, the WorkerTemplatePatch field is set to the value of the last call.
 func (b *LeaderWorkerPatternApplyConfiguration) WithWorkerTemplatePatch(value runtime.RawExtension) *LeaderWorkerPatternApplyConfiguration {
 	b.WorkerTemplatePatch = &value
+	return b
+}
+
+// WithSharedServiceSelection sets the SharedServiceSelection field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SharedServiceSelection field is set to the value of the last call.
+func (b *LeaderWorkerPatternApplyConfiguration) WithSharedServiceSelection(value workloadsv1alpha2.SharedServiceSelectionPolicy) *LeaderWorkerPatternApplyConfiguration {
+	b.SharedServiceSelection = &value
 	return b
 }

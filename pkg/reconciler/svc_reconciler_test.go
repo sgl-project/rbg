@@ -43,10 +43,6 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(s))
 
 	leaderOnlyRole := wrappersv2.BuildLeaderWorkerRole("test-role-leaderonly").Obj()
-	leaderOnlyRole.Workload = workloadsv1alpha2.WorkloadSpec{
-		APIVersion: "workloads.x-k8s.io/v1alpha2",
-		Kind:       "RoleInstanceSet",
-	}
 	leaderOnlyRole.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
 		workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
 	)
@@ -140,10 +136,6 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace(t *te
 	require.NoError(t, corev1.AddToScheme(s))
 
 	role := wrappersv2.BuildLeaderWorkerRole("test-role").Obj()
-	role.Workload = workloadsv1alpha2.WorkloadSpec{
-		APIVersion: "workloads.x-k8s.io/v1alpha2",
-		Kind:       "RoleInstanceSet",
-	}
 	role.LeaderWorkerPattern.SharedServiceSelection = nil
 
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(

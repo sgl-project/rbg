@@ -68,6 +68,7 @@ func TestE2E(t *testing.T) {
 	ginkgo.Describe(
 		"[v1alpha2] Run role based controller e2e tests", func() {
 			testcasev1alpha2.RunRbgControllerTestCases(f)
+			testcasev1alpha2.RunSharedServiceSelectionTestCases(f)
 			testcasev1alpha2.RunControllerRevisionTestCases(f)
 			testcasev1alpha2.RunRbgScalingAdapterControllerTestCases(f)
 			testcasev1alpha2.RunDeploymentWorkloadTestCases(f)
