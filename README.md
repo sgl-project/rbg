@@ -210,12 +210,12 @@ spec:
 
 ### 📋 Version Compatibility
 
-| RBG Version | Kubernetes |
-|:------------|:----------:|
-| main / v0.7.0-alpha.x | >=v1.22.x |
-| v0.6.0 | >=v1.28.x |
-| v0.5.0 | >=v1.28.x |
-| v0.4.0 | >=v1.28.x |
+| RBG Version | Kubernetes | LeaderWorkerSet |
+|:------------|:----------:|:---------------:|
+| main / v0.7.0-alpha.x | >=v1.22.x | Not Required |
+| v0.6.0 | >=v1.28.x | >=v0.7.0 |
+| v0.5.0 | >=v1.28.x | >=v0.6.0 |
+| v0.4.0 | >=v1.28.x | >=v0.7.0 |
 
 ---
 
