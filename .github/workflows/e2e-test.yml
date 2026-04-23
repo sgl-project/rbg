@@ -43,7 +43,7 @@ jobs:
           echo "$CHANGED_FILES"
           
           # Check if all changes are in skip directories
-          SKIP_DIRS="^(examples|doc|python)/"
+          SKIP_DIRS="^(examples|doc|python|cmd/cli)/"
           SHOULD_RUN="true"
           
           if [ -n "$CHANGED_FILES" ]; then
@@ -51,7 +51,7 @@ jobs:
             NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
             
             if [ -z "$NON_SKIP_FILES" ]; then
-              echo "All changes are in examples, doc, python, or test directories. Skipping e2e tests."
+              echo "All changes are in examples, doc, python, or cmd/cli directories. Skipping e2e tests."
               SHOULD_RUN="false"
             else
               echo "Found changes outside skip directories. Running e2e tests."
