@@ -25335,6 +25335,10 @@ spec:
                           description: LeaderTemplatePatch indicates patching for
                             the leader template.
                           x-kubernetes-preserve-unknown-fields: true
+                        sharedServiceSelection:
+                          description: SharedServiceSelection indicates the service
+                            policy of the role
+                          type: string
                         size:
                           default: 1
                           description: |-

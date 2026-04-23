@@ -162,6 +162,17 @@ const (
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
 )
 
+// SharedServiceSelectionPolicy defines the service policy of service per role
+type SharedServiceSelectionPolicy string
+
+const (
+	// SharedServiceSelectionAll - All pods would be routed to
+	SharedServiceSelectionAll SharedServiceSelectionPolicy = "All"
+
+	// SharedServiceSelectionLeaderOnly - The headless service would only target at the leaders
+	SharedServiceSelectionLeaderOnly SharedServiceSelectionPolicy = "LeaderOnly"
+)
+
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!(has(self.standalonePattern) && has(self.leaderWorkerPattern))",message="standalonePattern and leaderWorkerPattern are mutually exclusive"
 type RoleSpec struct {
@@ -323,6 +334,10 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
+
+	// SharedServiceSelection indicates the service policy of the role
+	// +optional
+	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
 
 type CustomComponentsPattern struct {
