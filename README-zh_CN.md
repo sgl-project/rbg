@@ -43,8 +43,8 @@
 
 | 概念 | 描述 |
 |:-----|:-----|
-| **角色 (Role)** | 基础调度与发布单元。每个角色（prefill、decode）拥有独立的配置、生命周期和策略。 |
-| **角色组 (RoleBasedGroup)** | 多个角色构成的一个逻辑服务（例如一次 LLM 推理部署）。 |
+| 角色 (Role) | 基础调度与发布单元。每个角色（prefill、decode）拥有独立的配置、生命周期和策略。 |
+| 角色组 (RoleBasedGroup) | 多个角色构成的一个逻辑服务（例如一次 LLM 推理部署）。 |
 
 ---
 
@@ -54,11 +54,11 @@ RBG 提供五大核心能力：
 
 | 能力 | 描述 |
 |:-----|:-----|
-| **稳定 (Stable)** | 唯一 RoleID 注入，拓扑感知确定性运维 |
-| **协同 (Coordination)** | 跨角色策略引擎：部署配对、协同升级、联动恢复 |
-| **编排 (Orchestration)** | 角色依赖、精确启动顺序、拓扑自感知服务发现 |
-| **性能 (Performance)** | 硬件亲和性调度：GPU-NVLink → PCIe → RDMA → VPC |
-| **可扩展 (Extensible)** | 声明式 API 与插件机制，适配未来架构 |
+| 🔄 稳定 (Stable) | 唯一 RoleID 注入，拓扑感知确定性运维 |
+| 🤝 协同 (Coordination) | 跨角色策略引擎：部署配对、协同升级、联动恢复 |
+| 🧭 编排 (Orchestration) | 角色依赖、精确启动顺序、拓扑自感知服务发现 |
+| ⚡ 性能 (Performance) | 硬件亲和性调度：GPU-NVLink → PCIe → RDMA → VPC |
+| 🧩 可扩展 (Extensible) | 声明式 API 与插件机制，适配未来架构 |
 
 ---
 

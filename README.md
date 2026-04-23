@@ -43,8 +43,8 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 
 | Concept | Description |
 |:--------|:------------|
-| **Role** | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
-| **RoleBasedGroup** | A group of roles forming one logical service (e.g., one LLM inference deployment). |
+| Role | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
+| RoleBasedGroup | A group of roles forming one logical service (e.g., one LLM inference deployment). |
 
 ---
 
@@ -54,11 +54,11 @@ RBG provides five core capabilities:
 
 | Capability | Description |
 |:-----------|:------------|
-| **Stable** | Topology-aware deterministic operations with unique RoleID injection |
-| **Coordination** | Cross-role policy engine: deployment pairing, coordinated upgrades, linked recovery |
-| **Orchestration** | Role dependencies, precise startup sequences, topology self-aware service discovery |
-| **Performance** | Hardware affinity scheduling: GPU-NVLink → PCIe → RDMA → VPC |
-| **Extensible** | Declarative APIs and plugin mechanisms for future architectures |
+| 🔄 Stable | Topology-aware deterministic operations with unique RoleID injection |
+| 🤝 Coordination | Cross-role policy engine: deployment pairing, coordinated upgrades, linked recovery |
+| 🧭 Orchestration | Role dependencies, precise startup sequences, topology self-aware service discovery |
+| ⚡ Performance | Hardware affinity scheduling: GPU-NVLink → PCIe → RDMA → VPC |
+| 🧩 Extensible | Declarative APIs and plugin mechanisms for future architectures |
 
 ---
 
