@@ -377,18 +377,18 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 		WithRestartPolicy(workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart).
 		WithComponents(
 			workloadsv1alpha2client.RoleInstanceComponent().
-				WithName("leader").
+				WithName(string(constants.LeaderComponentType)).
 				WithServiceName(svcName).
 				WithSize(1).
 				WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
-					constants.ComponentNameLabelKey: "leader",
+					constants.ComponentNameLabelKey: string(constants.LeaderComponentType),
 					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
 				})),
 			workloadsv1alpha2client.RoleInstanceComponent().
-				WithName("worker").
+				WithName(string(constants.WorkerComponentType)).
 				WithSize(workerSize).
 				WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
-					constants.ComponentNameLabelKey: "worker",
+					constants.ComponentNameLabelKey: string(constants.WorkerComponentType),
 					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
 				})))
 	return nil

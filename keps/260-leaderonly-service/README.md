@@ -99,10 +99,10 @@ This KEP proposes a new role-level networking field,`NetworkConfig.TargetPolicy`
 
 The new field has two values:
 
-- `Full`
+- `All`
 - `LeaderOnly`
 
-`Full` keeps the current behavior and remains the default. `LeaderOnly` preserves the existing shared Service name, 
+`All` keeps the current behavior and remains the default. `LeaderOnly` preserves the existing shared Service name, 
 but changes the Service selector so that only leader Pods are targeted by that Service.
 
 
@@ -110,8 +110,8 @@ but changes the Service selector so that only leader Pods are targeted by that S
 
 RBG currently creates one shared headless Service per role, and the Service selector includes all Pods of that role.
 
-That behavior is acceptable when every Pod behind the Service is a real serving endpoint. But it would make requests for large EP inference engine
-which only leader Pods are expected to accept requests abnormal
+That behavior is acceptable when every Pod behind the Service is a real serving endpoint. But it would make requests for large EP inference engine,
+which only leader Pods are expected to accept, requests abnormal
 
 This problem occurs with runtimes such as `sglang`. In a cross-node engine, follower Pods may only run a dummy API server,
 and exposing those Pods through the role level Service causes requests routed to the dummy API servers.
@@ -129,7 +129,7 @@ This makes `LeaderOnly` a selector policy, not a service identity policy.
 
 1. Introduce a clear API for controlling which Pods are selected by the shared headless Service of a role.
 2. Keep current behavior as the default and support a `LeaderOnly` mode for `RoleInstanceSet + leaderWorkerPattern`.
-3. Ensure that switching between `Full` and `LeaderOnly` does not require Pod recreation or Service renaming.
+3. Ensure that switching between `All` and `LeaderOnly` does not require Pod recreation or Service renaming.
 
 ### Non-Goals
 
@@ -140,15 +140,15 @@ This makes `LeaderOnly` a selector policy, not a service identity policy.
 
 ## Proposal
 
-Add an optional `TargetPolicy` field under `RoleSpec.NetworkConfig`.
+Add an optional `SharedServiceSelectionPolicy` field under `RoleSpec.LeaderWorkerPattern`.
 
-- `Full` keeps the current shared headless Service behavior. The Service continues to select every Pod in the role.
+- `All` keeps the current shared headless Service behavior. The Service continues to select every Pod in the role.
 - `LeaderOnly` keeps the same shared headless Service object and the same Service name, but narrows its selector so that only leader Pods are exposed
 
 The feature is intended for `RoleInstanceSet + leaderWorkerPattern`, where the role has a clear leader component and 
 where only leader Pods should serve requests.
 
-Switching between `Full` and `LeaderOnly` is an in-place Service update:
+Switching between `All` and `LeaderOnly` is an in-place Service update:
 
 - no Pod restart nor `RoleInstanceSet` rollout
 - no Pod DNS identity change nor Service rename
@@ -195,11 +195,11 @@ const (
 
 Default:
 
-- If the field is unset, the policy defaults to `Full`.
+- If the field is unset, the policy defaults to `All`.
 
 ### Behavior
 
-#### `Full`
+#### `All`
 
 This is the current behavior and remains the default.
 
@@ -218,11 +218,11 @@ The supported scope of this KEP is:
 
 - `RoleInstanceSet + leaderWorkerPattern`
 
-Unsupported combinations should reject `LeaderOnly` instead of silently falling back to `Full`.
+Unsupported combinations should reject `LeaderOnly` instead of silently falling back to `All`.
 
 ### Rollout and Transition Behavior
 
-`Full -> LeaderOnly` and `LeaderOnly -> Full` should be handled by updating the shared Service selector in place.
+`All -> LeaderOnly` and `LeaderOnly -> All` should be handled by updating the shared Service selector in place.
 
 These transitions do not require:
 
@@ -246,21 +246,21 @@ The only behavior change is that worker Pods are no longer targeted by in the sh
 
 ##### Unit tests
 
-- API defaulting for `Full`
+- API defaulting for `All`
 - Validation for unsupported combinations using `LeaderOnly`
-- Shared Service selector generation for `Full` and `LeaderOnly`
+- Shared Service selector generation for `All` and `LeaderOnly`
 
 
 ##### Integration tests
 
-- `Full` creates one shared headless Service per role and includes leader and worker Pods
+- `All` creates one shared headless Service per role and includes leader and worker Pods
 - `LeaderOnly` creates one shared headless Service per role and includes only leader Pods
-- `Full <-> LeaderOnly` updates the shared Service in place
+- `All <-> LeaderOnly` updates the shared Service in place
 
 ##### e2e tests
 
 - In leader-worker mode, `LeaderOnly` prevents worker Pods from appearing in the shared Service endpoints
-- Switching between `Full` and `LeaderOnly` preserves availability and does not recreate Pods
+- Switching between `All` and `LeaderOnly` preserves availability and does not recreate Pods
 
 
 ## Production Readiness Review Questionnaire
@@ -269,15 +269,15 @@ The only behavior change is that worker Pods are no longer targeted by in the sh
 
 ###### Does enabling the feature change any default behavior?
 
-No. The default remains `Full`.
+No. The default remains `All`.
 
 ###### Can the feature be disabled once it has been enabled?
 
-Yes. Users can switch the policy back to `Full`.
+Yes. Users can switch the policy back to `All`.
 
 ###### Are there any tests for feature enablement/disablement?
 
-Yes. Unit and integration tests should cover both `Full` and `LeaderOnly`, and the transition in both directions.
+Yes. Unit and integration tests should cover both `All` and `LeaderOnly`, and the transition in both directions.
 
 
 ## Alternatives

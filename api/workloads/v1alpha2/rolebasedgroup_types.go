@@ -337,6 +337,7 @@ type LeaderWorkerPattern struct {
 
 	// SharedServiceSelection indicates the service policy of the role
 	// +optional
+	// +kubebuilder:validation:Enum={All;LeaderOnly}
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
 
