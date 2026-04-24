@@ -72,8 +72,8 @@ Heterogeneous pod groups per instance:
 |-------|-------------|
 | `name` | string — component identifier |
 | `size` | *int32 — number of pods for this component |
+| `serviceName` | string — headless service name (optional) |
 | `template` | PodTemplateSpec — pod template for this component |
-| `templateRef` | *TemplateRef — reference to roleTemplate |
 
 ## TemplateRef
 
@@ -104,7 +104,7 @@ Reusable pod template at RBG level:
 
 | Field | Description |
 |-------|-------------|
-| `type` | RollingUpdateType — `Recreate` or `InPlaceIfPossible` |
+| `type` | RollingUpdateType — `RecreatePod` or `InPlaceIfPossible` |
 | `maxUnavailable` | intstr.IntOrString — max unavailable pods (default: 1) |
 | `maxSurge` | intstr.IntOrString — max extra pods during update (default: 0) |
 | `partition` | *int32 — update pods with ordinal >= partition |
@@ -276,6 +276,6 @@ The following labels are automatically added by the controller:
 |-------|-------------|
 | `rbg.workloads.x-k8s.io/group-name` | RoleBasedGroup name |
 | `rbg.workloads.x-k8s.io/role-name` | Role name |
-| `rbg.workloads.x-k8s.io/role-index` | Role index ordinal |
+| `rbg.workloads.x-k8s.io/role-instance-index` | RoleInstance index ordinal |
 
 See [Labels, Annotations and Environment Variables](variables.md) for complete reference.

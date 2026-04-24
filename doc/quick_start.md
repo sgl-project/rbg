@@ -44,7 +44,7 @@ When the model is too large for a single Node to load all files, use multi-node 
 
 #### Multi-node aggregated examples
 
-- [Aggregated Multi-Node](../examples/inference/ecosystem/agg-multi-nodes.yaml)
+- [Aggregated Multi-Node (Dynamo)](../examples/inference/ecosystem/dynamo/agg-multi-nodes.yaml)
 
 ## PD Disaggregated
 
@@ -60,7 +60,7 @@ Deploying PD-disagg inference service with RBG.
 
 - [PD-Disaggregated Standalone](../examples/inference/pd-disagg-standalone.yaml)
 - [PD-Disaggregated Leader-Worker](../examples/inference/pd-disagg-leader-worker.yaml)
-- [PD-Disaggregated Multi-Node](../examples/inference/ecosystem/pd-disagg-multi-nodes.yaml)
+- [PD-Disaggregated Multi-Node (Dynamo)](../examples/inference/ecosystem/dynamo/pd-disagg-multi-nodes.yaml)
 
 ## Ecosystem Integration
 

@@ -218,7 +218,7 @@ Each instance has 1 prefill pod + 4 decode pods working together.
 | Pods per instance | 1 | 1 + N (leader+workers) | Multiple heterogeneous |
 | Pod types | Same | Same with patches | Different |
 | Use case | Simple services | TP inference | Disaggregated |
-| Backend workload | StatefulSet/Deployment | LeaderWorkerSet | InstanceSet |
+| Backend workload | StatefulSet/Deployment | RoleInstanceSet (or external LeaderWorkerSet) | RoleInstanceSet |
 
 ## Examples
 

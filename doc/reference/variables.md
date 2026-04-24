@@ -26,6 +26,8 @@
 | `rbg.workloads.x-k8s.io/role-instance-id` | Unique ID for RoleInstance and its Pods. |
 | `rbg.workloads.x-k8s.io/role-instance-name` | The name of the RoleInstance. |
 | `rbg.workloads.x-k8s.io/role-instance-index` | The index of RoleInstance in Role (for ordered scenarios). |
+| `rbg.workloads.x-k8s.io/role-instance-owner` | The owning RoleInstanceSet name; used as the RoleInstanceSet selector. |
+| `rbg.workloads.x-k8s.io/role-instance-delete` | Marks a RoleInstance for specified deletion. |
 
 ### Component Level Labels
 
@@ -79,3 +81,9 @@
 | `RBG_GROUP_NAME` | The name of the RoleBasedGroup. |
 | `RBG_ROLE_NAME` | The name of the role. |
 | `RBG_ROLE_INDEX` | The index or identity of the pod within the role. |
+| `RBG_ROLE_INSTANCE_NAME` | The name of the RoleInstance. |
+| `RBG_COMPONENT_NAME` | The component name within the RoleInstance (e.g., leader, worker, coordinator). |
+| `RBG_COMPONENT_INDEX` | The index of the component instance within the RoleInstance. |
+| `RBG_LWP_LEADER_ADDRESS` | The network address of the leader for leader-worker pattern workloads. |
+| `RBG_LWP_WORKER_INDEX` | The component index within the Instance. |
+| `RBG_LWP_GROUP_SIZE` | The total number of components in the Instance. |

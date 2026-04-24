@@ -13,7 +13,7 @@ roles:
     rolloutStrategy:
       type: RollingUpdate
       rollingUpdate:
-        type: Recreate  # or InPlaceIfPossible
+        type: RecreatePod  # or InPlaceIfPossible
         maxUnavailable: 1
         maxSurge: 1
 ```
@@ -22,10 +22,11 @@ roles:
 
 | Type | Description | Use Case |
 |------|-------------|----------|
-| `Recreate` | Delete old pods before creating new ones | Stateful workloads, GPU pods |
+| `RecreatePod` | Delete old pods before creating new ones | Stateful workloads, GPU pods |
 | `InPlaceIfPossible` | Update pod spec without recreation if possible | Image updates, resource changes |
+| `InPlaceOnly` | Only in-place update, fail if not possible | Strict in-place updates |
 
-### Recreate Strategy
+### RecreatePod Strategy
 
 Deletes old pods and creates new ones. Safer for GPU workloads:
 
@@ -33,7 +34,7 @@ Deletes old pods and creates new ones. Safer for GPU workloads:
 rolloutStrategy:
   type: RollingUpdate
   rollingUpdate:
-    type: Recreate
+    type: RecreatePod
     maxUnavailable: 1
 ```
 
@@ -163,7 +164,7 @@ spec:
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
-          type: Recreate
+          type: RecreatePod
           maxUnavailable: 1
           partition: 2  # Only update pods 2, 3
       standalonePattern:
@@ -216,7 +217,7 @@ See [Coordinated Policy](coordinated-policy.md) for details.
 1. Update a role and observe the rollout:
 
    ```bash
-   kubectl patch rolebasedgroup rolling-update --type='json' -p='[
+   kubectl patch rolebasedgroup rolling-update-demo --type='json' -p='[
      {
        "op": "replace",
        "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
@@ -228,7 +229,7 @@ See [Coordinated Policy](coordinated-policy.md) for details.
 1. Check the rollout status:
 
    ```bash
-   kubectl get rolebasedgroup rolling-update -ojsonpath='{.status}'
+   kubectl get rolebasedgroup rolling-update-demo -ojsonpath='{.status}'
    ```
 
 ### Partition Update Example

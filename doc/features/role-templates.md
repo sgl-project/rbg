@@ -203,20 +203,21 @@ leaderWorkerPattern:
 
 ### Custom Components Pattern
 
+`customComponentsPattern.components[]` in v1alpha2 does not support `templateRef`. Role templates can be referenced via `templateRef` in `standalonePattern` and `leaderWorkerPattern`, while custom components must define an inline `template`.
+
 ```yaml
 customComponentsPattern:
   components:
     - name: component-1
       size: 1
-      templateRef:
-        name: base-template
-        patch:
-          spec:
-            containers:
-              - name: engine
-                env:
-                  - name: COMPONENT
-                    value: "1"
+      template:
+        spec:
+          containers:
+            - name: engine
+              image: example/image:latest
+              env:
+                - name: COMPONENT
+                  value: "1"
 ```
 
 ## Use Cases

@@ -6,7 +6,7 @@ More importantly, the Instance supports the in-place update of its Pods.
 
 ![instanceset](../img/instanceset.jpeg)
 
-> **Note**: Instance is a v1alpha1 CRD that serves as the underlying building block for RoleBasedGroup's `customComponentsPattern` in v1alpha2. Users typically interact with RoleBasedGroup directly rather than creating Instance resources manually.
+> **Note**: `Instance` is a v1alpha1 CRD described on this page. In v1alpha2, `RoleBasedGroup`'s `customComponentsPattern` uses its own `RoleInstanceSet`/`RoleInstance` resources rather than the v1alpha1 `Instance` resource. Users of v1alpha2 patterns typically work with the v1alpha2 APIs directly.
 
 ## Instance Ready Status
 
