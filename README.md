@@ -117,8 +117,8 @@ spec:
 
 | Pattern | Used For | Description |
 |:--------|:---------|:------------|
-| **standalonePattern** | router, prefill, single-GPU | Single pod per instance |
-| **leaderWorkerPattern** | decode, multi-GPU TP | Leader + workers for tensor parallelism |
+| **standalonePattern** | Single-node deployment | Single pod per instance |
+| **leaderWorkerPattern** | Multi-node distributed deployment | Leader + workers for tensor parallelism |
 
 ### RoleTemplates
 
@@ -218,7 +218,7 @@ RBG integrates with ecosystem components for production LLM inference:
 
 ### NVIDIA Dynamo
 
-NVIDIA Dynamo provides K8s-native service discovery for SGLang runtime:
+[NVIDIA Dynamo](https://github.com/ai-dynamo/dynamo) is an open-source, datacenter-scale inference stack that orchestrates multi-node AI workloads above inference engines like vLLM and SGLang:
 
 | Example | Description |
 |:--------|:------------|
@@ -227,16 +227,16 @@ NVIDIA Dynamo provides K8s-native service discovery for SGLang runtime:
 | [dynamo/agg.yaml](examples/inference/ecosystem/dynamo/agg.yaml) | Aggregated inference with Dynamo |
 | [dynamo/agg-multi-nodes.yaml](examples/inference/ecosystem/dynamo/agg-multi-nodes.yaml) | Multi-node aggregated |
 
-### Mooncake KV Cache
+### Mooncake
 
-Mooncake provides KV cache transfer and reuse for distributed inference:
+[Mooncake](https://github.com/kvcache-ai/Mooncake) is a disaggregated architecture for LLM serving, providing KV cache transfer and reuse across distributed inference:
 
 | Example | Description |
 |:--------|:------------|
-| [mooncake-store/pd-disagg-kvcache-reuse.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD-disaggregated with KV cache reuse |
-| [mooncake-store/agg-kvcache-reuse.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | Aggregated with KV cache reuse |
-| [mooncake-transfer-engine/sglang-pd-disagg.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disgg-with-mooncake-te.yaml) | SGLang PD-disaggregated with transfer engine |
-| [mooncake-transfer-engine/vllm-pd-disagg.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disgg-with-mooncake-te.yaml) | vLLM PD-disaggregated with transfer engine |
+| [pd-disagg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD-disaggregated with KV cache reuse |
+| [agg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | Aggregated with KV cache reuse |
+| [sgl-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml) | SGLang PD-disaggregated with transfer engine |
+| [vllm-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml) | vLLM PD-disaggregated with transfer engine |
 
 ---
 

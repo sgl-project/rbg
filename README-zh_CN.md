@@ -117,8 +117,8 @@ spec:
 
 | 模式 | 用途 | 描述 |
 |:-----|:-----|:-----|
-| **standalonePattern** | router, prefill, 单 GPU | 单 pod 每实例 |
-| **leaderWorkerPattern** | decode, 多 GPU TP | Leader + workers 用于张量并行 |
+| **standalonePattern** | 单机部署 | 单 pod 每实例 |
+| **leaderWorkerPattern** | 多机分布式部署 | Leader + workers 用于张量并行 |
 
 ### RoleTemplates
 
@@ -218,7 +218,7 @@ RBG 集成生态组件用于生产级 LLM 推理：
 
 ### NVIDIA Dynamo
 
-NVIDIA Dynamo 为 SGLang 运行时提供 K8s 原生服务发现：
+[NVIDIA Dynamo](https://github.com/ai-dynamo/dynamo) 是开源的数据中心级推理栈，作为推理引擎（如 vLLM、SGLang）之上的编排层，协调多节点 AI 工作负载：
 
 | 示例 | 说明 |
 |:-----|:-----|
@@ -227,16 +227,16 @@ NVIDIA Dynamo 为 SGLang 运行时提供 K8s 原生服务发现：
 | [dynamo/agg.yaml](examples/inference/ecosystem/dynamo/agg.yaml) | Dynamo 聚合推理 |
 | [dynamo/agg-multi-nodes.yaml](examples/inference/ecosystem/dynamo/agg-multi-nodes.yaml) | 多节点聚合推理 |
 
-### Mooncake KV 缓存
+### Mooncake
 
-Mooncake 为分布式推理提供 KV 缓存传输与复用：
+[Mooncake](https://github.com/kvcache-ai/Mooncake) 采用解耦架构用于 LLM 推理服务，为分布式推理提供 KV 缓存传输与复用：
 
 | 示例 | 说明 |
 |:-----|:-----|
-| [mooncake-store/pd-disagg-kvcache-reuse.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD 解耦 KV 缓存复用 |
-| [mooncake-store/agg-kvcache-reuse.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | 聚合推理 KV 缓存复用 |
-| [mooncake-transfer-engine/sglang-pd-disagg.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disgg-with-mooncake-te.yaml) | SGLang PD 解耦传输引擎 |
-| [mooncake-transfer-engine/vllm-pd-disagg.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disgg-with-mooncake-te.yaml) | vLLM PD 解耦传输引擎 |
+| [pd-disagg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD 解耦 KV 缓存复用 |
+| [agg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | 聚合推理 KV 缓存复用 |
+| [sgl-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml) | SGLang PD 解耦传输引擎 |
+| [vllm-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml) | vLLM PD 解耦传输引擎 |
 
 ---
 
