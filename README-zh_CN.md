@@ -72,8 +72,22 @@
 
 ### 📦 安装
 
+从 [GitHub Releases](https://github.com/sgl-project/rbg/releases) 下载 helm chart 并安装：
+
 ```shell
-helm install rbg-controller oci://registry-1.docker.io/sglproject/rbg-controller-chart --version v0.7.0-alpha.3
+# 从最新 release 下载
+helm pull rbgs --version v0.7.0-alpha.3 \
+  --url https://github.com/sgl-project/rbg/releases/download/v0.7.0-alpha.3/rbgs-0.7.0-alpha.3.tgz
+
+# 安装
+helm install rbg-controller rbgs-0.7.0-alpha.3.tgz
+```
+
+或直接从 URL 安装：
+
+```shell
+helm install rbg-controller \
+  https://github.com/sgl-project/rbg/releases/download/v0.7.0-alpha.3/rbgs-0.7.0-alpha.3.tgz
 ```
 
 详细安装说明请参考 [安装指南](doc/install.md)。
