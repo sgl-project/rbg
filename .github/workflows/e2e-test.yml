@@ -28,7 +28,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check if only docs/examples/python/test changed
+      - name: Check if changes require e2e tests
         id: filter
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
@@ -36,30 +36,48 @@ jobs:
           else
             BASE_REF="HEAD^1"
           fi
-          
+
           # Get changed files
           CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD)
           echo "Changed files:"
           echo "$CHANGED_FILES"
-          
-          # Check if all changes are in skip directories
-          SKIP_DIRS="^(examples|doc|python|cmd/cli)/"
-          SHOULD_RUN="true"
-          
+
+          # Define patterns for files that DO require e2e tests (code and config files)
+          # - Go source code (*.go)
+          # - Build files (Makefile, Dockerfile, go.mod, go.sum)
+          # - CRD definitions (config/crd/**/*.yaml)
+          # - RBAC config (config/rbac/**/*.yaml)
+          # - Helm charts (deploy/helm/**/*.yaml)
+          # - CI workflows (.github/workflows/*.yml)
+          # - Test files (test/**/*)
+          CODE_PATTERNS='\.go$|^Makefile|^Dockerfile|go\.mod|go\.sum|\.sh$|^config/crd/|^config/rbac/|^deploy/helm/|^\.github/workflows/|^test/'
+          SKIP_DIRS='^(examples|doc|python|cmd/cli)/'
+
+          SHOULD_RUN="false"
+
           if [ -n "$CHANGED_FILES" ]; then
             # Filter out files in skip directories
             NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
-            
+
             if [ -z "$NON_SKIP_FILES" ]; then
-              echo "All changes are in examples, doc, python, or cmd/cli directories. Skipping e2e tests."
-              SHOULD_RUN="false"
+              echo "All changed files are in skip directories ($SKIP_DIRS). Skipping e2e tests."
             else
-              echo "Found changes outside skip directories. Running e2e tests."
-              echo "Files requiring e2e tests:"
-              echo "$NON_SKIP_FILES"
+              # Check if any non-skipped file matches code patterns
+              CODE_FILES=$(echo "$NON_SKIP_FILES" | grep -E "$CODE_PATTERNS" || true)
+
+              if [ -n "$CODE_FILES" ]; then
+                echo "Found code/config files that require e2e tests:"
+                echo "$CODE_FILES"
+                SHOULD_RUN="true"
+              else
+                echo "All changed files are non-code files (docs, examples, yaml configs, etc). Skipping e2e tests."
+              fi
             fi
+          else
+            # No changed files detected, run tests by default
+            SHOULD_RUN="true"
           fi
-          
+
           echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
 
   e2e-test:
