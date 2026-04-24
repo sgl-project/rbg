@@ -2,27 +2,80 @@
 
 ## Labels
 
- Key                                                                | Description
---------------------------------------------------------------------|-------------------------------------------------------------------------
- rolebasedgroup.workloads.x-k8s.io/name                             | The name of the RoleBasedGroup to which these resources belong.
- rolebasedgroup.workloads.x-k8s.io/role                             | The name of the role to which these resources belong.
- pod-group.scheduling.sigs.k8s.io/name                              | The name of the podGroup for gang scheduling.
- rolebasedgroup.workloads.x-k8s.io/group-unique-key                 | The unique key of the group. Used as match label for topology affinity.
- rolebasedgroup.workloads.x-k8s.io/controller-revision-hash         | The version hash corresponding to the RBG object, used to determine whether the RBG object has changed.
- rolebasedgroup.workloads.x-k8s.io/role-revision-hash-\<role-name\> | The version hash corresponding to the specific RBG role, used to determine whether the current role has changed.
+### Group Level Labels
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/group-name` | The name of the RoleBasedGroup to which these resources belong. |
+| `rbg.workloads.x-k8s.io/group-uid` | A short hash identifying all Pods belonging to the same RoleBasedGroup instance. Used for topology affinity. |
+| `rbg.workloads.x-k8s.io/group-revision` | The revision hash of the RoleBasedGroup, used to determine whether the RBG object has changed. |
+| `rbg.workloads.x-k8s.io/group-unique-hash` | Used for pod affinity rules in exclusive topology. |
+
+### Role Level Labels
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/role-name` | The name of the role to which these resources belong. |
+| `rbg.workloads.x-k8s.io/role-type` | The role template type. |
+| `rbg.workloads.x-k8s.io/role-revision-<role-name>` | The revision hash of the specific role, used to determine whether the role has changed. |
+
+### RoleInstance Level Labels
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/role-instance-id` | Unique ID for RoleInstance and its Pods. |
+| `rbg.workloads.x-k8s.io/role-instance-name` | The name of the RoleInstance. |
+| `rbg.workloads.x-k8s.io/role-instance-index` | The index of RoleInstance in Role (for ordered scenarios). |
+
+### Component Level Labels
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/component-name` | The component name (e.g., leader/worker/coordinator). |
+| `rbg.workloads.x-k8s.io/component-id` | The component instance index within the Instance. |
+| `rbg.workloads.x-k8s.io/component-size` | The component replica count. |
+| `rbg.workloads.x-k8s.io/component-index` | The component instance index. |
+
+### PodGroup Label (Gang Scheduling)
+
+| Key | Description |
+|-----|-------------|
+| `pod-group.scheduling.sigs.k8s.io/name` | The name of the PodGroup for gang scheduling (scheduler-plugins). |
 
 ## Annotations
 
- Key                                                          | Description
---------------------------------------------------------------|------------------------------------------------------------------------------------------------------
- rolebasedgroup.workloads.x-k8s.io/role-size                  | The size of the role.
- rolebasedgroup.workloads.x-k8s.io/exclusive-topology         | Declares the topology domain (e.g. kubernetes.io/hostname) for exclusive scheduling.
- rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology | Can be set to "true" on a Role template to skip exclusive-topology affinity injection for that role.
+### Group Level Annotations
 
-## Env Variables
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/group-exclusive-topology` | Declares the topology domain (e.g. `kubernetes.io/hostname`) for exclusive scheduling. |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling` | Set to `"true"` to enable gang scheduling for the RoleBasedGroup. |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling-timeout` | Schedule timeout in seconds for scheduler-plugins gang scheduling (default: 60). |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue` | Queue name for Volcano gang scheduling. |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority` | PriorityClassName for Volcano gang scheduling. |
 
- Key        | Description
-------------|----------------------------------------------------
- GROUP_NAME | The name of the RoleBasedGroup.
- ROLE_NAME  | The name of the role.
- ROLE_INDEX | The index or identity of the pod within the role.  
+### Role Level Annotations
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/role-size` | The size of the role (managed by controller). |
+| `rbg.workloads.x-k8s.io/role-disable-exclusive` | Set to `"true"` to skip exclusive-topology affinity injection for that role. |
+| `rbg.workloads.x-k8s.io/role-workload-type` | Specifies the workload type (primarily for v1alpha1 conversion). |
+
+### RoleInstance Level Annotations
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/role-instance-pattern` | Identifies the RoleInstance organization pattern (Stateful/Stateless). |
+| `rbg.workloads.x-k8s.io/role-instance-gang-scheduling` | Enables gang-scheduling aware behavior at the RoleInstance level. |
+| `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` | Identifies the lifecycle state of a RoleInstance. |
+| `rbg.workloads.x-k8s.io/inplace-update-state` | Identifies the in-place update state. |
+| `rbg.workloads.x-k8s.io/inplace-update-grace` | Identifies the in-place update grace period configuration. |
+
+## Environment Variables
+
+| Key | Description |
+|-----|-------------|
+| `RBG_GROUP_NAME` | The name of the RoleBasedGroup. |
+| `RBG_ROLE_NAME` | The name of the role. |
+| `RBG_ROLE_INDEX` | The index or identity of the pod within the role. |

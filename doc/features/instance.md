@@ -1,16 +1,16 @@
 # Instance
 
-An Instance is a collection of Pods. The lifecycle of Pods managed by the Instance is tightly bound, as shown in the figure below.
-The Instance controls the upgrades and status updates for this group of Pods.
+An Instance is a collection of Pods. The lifecycle of Pods managed by the Instance is tightly bound, as shown in the figure below. The Instance controls the upgrades and status updates for this group of Pods.
 
 More importantly, the Instance supports the in-place update of its Pods.
 
 ![instanceset](../img/instanceset.jpeg)
 
+> **Note**: Instance is a v1alpha1 CRD that serves as the underlying building block for RoleBasedGroup's `customComponentsPattern` in v1alpha2. Users typically interact with RoleBasedGroup directly rather than creating Instance resources manually.
+
 ## Instance Ready Status
 
-The Instance's ReadyPolicy supports two types: `AllPodReady` and `None`. When set to `AllPodReady`,
-the Instance will be `Ready` only when all its owned Pods are in the `Ready` condition.
+The Instance's ReadyPolicy supports two types: `AllPodReady` and `None`. When set to `AllPodReady`, the Instance will be `Ready` only when all its owned Pods are in the `Ready` condition.
 
 ```go
 type InstanceReadyPolicyType string
@@ -66,10 +66,9 @@ NAME    READY   AGE
 nginx   True    10s
 ```
 
-## Inplace-Update
+## In-place Update
 
-The Instance supports in-place updates of Pods when the metadata or image in the component's template is modified. Next, We try to
-update nginx-leader's image to `nginx:1.29.2`
+The Instance supports in-place updates of Pods when the metadata or image in the component's template is modified. Next, We try to update nginx-leader's image to `nginx:1.29.2`
 
 ```shell
 kubectl apply -f - <<EOF
@@ -117,7 +116,7 @@ Pod `nginx-leader-0` was updated in-place with its restart count set to `1`.
 
 ## Headless Service
 
-Instance support set `serviceName` for component, pods can use headless service request each other.
+Instance supports setting `serviceName` for component, pods can use headless service to request each other.
 
 ```shell
 kubectl apply -f - <<EOF
@@ -194,3 +193,7 @@ Address: 10.244.0.33
 
 root@nginx-leader-0:/#
 ```
+
+## Relation to RoleBasedGroup v1alpha2
+
+In v1alpha2, RoleBasedGroup's `customComponentsPattern` uses Instance (or RoleInstance) as the underlying workload for heterogeneous pod groups. See [Workload Patterns](patterns.md) for more information.

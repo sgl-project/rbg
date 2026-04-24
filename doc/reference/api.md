@@ -1,116 +1,281 @@
-# RoleBasedGroup API
+# RoleBasedGroup API Reference (v1alpha2)
+
+This document describes the API fields for RoleBasedGroup and related CRDs in v1alpha2.
 
 ## RoleBasedGroup
 
- Field               | Description
----------------------|----------------------------------------------------------------------------------------------
- apiVersion (string) | API version, e.g. v1alpha1
- kind (string)       | Resource kind, RoleBasedGroup
- metadata            | Standard Kubernetes object metadata
- spec [Required]     | RoleBasedGroupSpec — desired state of the RoleBasedGroup
- status              | RoleBasedGroupStatus — observed state (controller populated; exposed via subresource/status)
+| Field | Description |
+|-------|-------------|
+| `apiVersion` | `workloads.x-k8s.io/v1alpha2` |
+| `kind` | `RoleBasedGroup` |
+| `metadata` | Standard Kubernetes object metadata |
+| `spec` | RoleBasedGroupSpec — desired state |
+| `status` | RoleBasedGroupStatus — observed state |
 
 ## RoleBasedGroupSpec
 
- Field            | Description
-------------------|-----------------------------------------------------------------------------------------------
- roles [Required] | []RoleSpec — list of role specifications; at least one role required
- podGroupPolicy   | *PodGroupPolicy — optional PodGroup configuration to enable gang-scheduling (plugin-specific)
+| Field | Description |
+|-------|-------------|
+| `roles` | []RoleSpec — list of role specifications (required) |
+| `roleTemplates` | []RoleTemplate — reusable pod templates (optional) |
 
-### PodGroupPolicy
+## RoleSpec
 
- Field                         | Description
--------------------------------|------------------------------------------------------------------------------------
- (inline) PodGroupPolicySource | Inlined PodGroupPolicySource that selects the gang-scheduling plugin configuration
+| Field | Description |
+|-------|-------------|
+| `name` | string — unique role identifier (required) |
+| `replicas` | *int32 — desired replicas (default: 1) |
+| `dependencies` | []string — names of roles this role depends on |
+| `standalonePattern` | *StandalonePattern — single pod per instance |
+| `leaderWorkerPattern` | *LeaderWorkerPattern — leader + workers per instance |
+| `customComponentsPattern` | *CustomComponentsPattern — heterogeneous pod groups |
+| `rolloutStrategy` | *RolloutStrategy — update strategy configuration |
+| `restartPolicy` | RestartPolicyType — restart behavior enum |
+| `minReadySeconds` | *int32 — minimum seconds before considered ready |
+| `scalingAdapter` | *ScalingAdapter — external autoscaling config |
+| `engineRuntimes` | []EngineRuntime — runtime profiles to inject |
 
-#### PodGroupPolicySource
+## Workload Patterns
 
- Field          | Description
-----------------|----------------------------------------------------------------------------------------------------------------------------------------
- kubeScheduling | *KubeSchedulingPodGroupPolicySource — configuration for Kubernetes scheduler-plugins gang-scheduling support (only one source allowed)
+### StandalonePattern
 
-### RolloutStrategy
+Single pod per instance:
 
- Field         | Description
----------------|------------------------------------------------------------------------------------------
- type          | RolloutStrategyType — rollout strategy type (enum: RollingUpdate); default=RollingUpdate
- rollingUpdate | *RollingUpdate — parameters for rolling updates (optional)
+| Field | Description |
+|-------|-------------|
+| `template` | PodTemplateSpec — inline pod template |
+| `templateRef` | *TemplateRef — reference to roleTemplate |
+
+### LeaderWorkerPattern
+
+Leader + workers per instance (for tensor parallelism):
+
+| Field | Description |
+|-------|-------------|
+| `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
+| `template` | PodTemplateSpec — base pod template |
+| `templateRef` | *TemplateRef — reference to roleTemplate |
+| `leaderTemplatePatch` | runtime.RawExtension — patch for leader pod |
+| `workerTemplatePatch` | runtime.RawExtension — patch for worker pods |
+
+### CustomComponentsPattern
+
+Heterogeneous pod groups per instance:
+
+| Field | Description |
+|-------|-------------|
+| `components` | []ComponentSpec — list of component definitions |
+
+### ComponentSpec
+
+| Field | Description |
+|-------|-------------|
+| `name` | string — component identifier |
+| `size` | *int32 — number of pods for this component |
+| `template` | PodTemplateSpec — pod template for this component |
+| `templateRef` | *TemplateRef — reference to roleTemplate |
+
+## TemplateRef
+
+Reference to a roleTemplate with optional patch:
+
+| Field | Description |
+|-------|-------------|
+| `name` | string — name of roleTemplate to reference |
+| `patch` | runtime.RawExtension — strategic merge patch |
+
+## RoleTemplate
+
+Reusable pod template at RBG level:
+
+| Field | Description |
+|-------|-------------|
+| `name` | string — template identifier |
+| `template` | PodTemplateSpec — pod template definition |
+
+## RolloutStrategy
+
+| Field | Description |
+|-------|-------------|
+| `type` | RolloutStrategyType — only `RollingUpdate` supported |
+| `rollingUpdate` | *RollingUpdate — rolling update configuration |
 
 ### RollingUpdate
 
- Field          | Description
-----------------|----------------------------------------------------------------------------------------------------------------
- maxUnavailable | intstr.IntOrString — maximum number or percentage of replicas that can be unavailable during update; default=1
- maxSurge       | intstr.IntOrString — maximum number or percentage of replicas added above original during update; default=0
- partition      | intstr.IntOrString — an ordinal partition number that controls which StatefulSet Pods are updated; default=0
+| Field | Description |
+|-------|-------------|
+| `type` | RollingUpdateType — `Recreate` or `InPlaceIfPossible` |
+| `maxUnavailable` | intstr.IntOrString — max unavailable pods (default: 1) |
+| `maxSurge` | intstr.IntOrString — max extra pods during update (default: 0) |
+| `partition` | *int32 — update pods with ordinal >= partition |
+| `inPlaceUpdateStrategy` | *InPlaceUpdateStrategy — in-place update config |
 
-### RoleSpec
+### InPlaceUpdateStrategy
 
- Field               | Description
----------------------|-----------------------------------------------------------------------------------------------------------
- name [Required]     | string — unique role identifier (minLength=1)
- replicas            | *int32 — desired replicas for the role (minimum 0, default=1)
- rolloutStrategy     | *RolloutStrategy — rollout strategy applied when leader/worker templates change
- restartPolicy       | RestartPolicyType — restart policy enum (None, RecreateRBGOnPodRestart, RecreateRoleInstanceOnPodRestart)
- dependencies        | []string — names of roles this role depends on
- workload            | WorkloadSpec — workload type to use (apiVersion/kind); defaults to apps/v1 StatefulSet
- template [Required] | corev1.PodTemplateSpec — pod template for this role
- leaderWorkerSet     | LeaderWorkerTemplate — leader/worker split and related templates (optional)
- servicePorts        | []corev1.ServicePort — ports exposed by this role (optional)
- engineRuntimes      | []EngineRuntime — engine runtime profiles / injected containers (optional)
- scalingAdapter      | *ScalingAdapter — external scaling adapter config (optional)
+| Field | Description |
+|-------|-------------|
+| `gracePeriodSeconds` | *int32 — wait time before forcing update |
 
-#### WorkloadSpec
+## RestartPolicyType
 
- Field      | Description
-------------|-------------------------------------------------------------------------------------
- apiVersion | string — workload API version (default "apps/v1"); must match group/version pattern
- kind       | string — workload kind (default "StatefulSet")
+| Value | Description |
+|-------|-------------|
+| `None` | No automatic restart |
+| `RecreateRBGOnPodRestart` | Recreate entire RBG on pod restart |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
 
-#### EngineRuntime
+## ScalingAdapter
 
- Field            | Description
-------------------|-------------------------------------------------------------------------------------
- profileName      | string — engine runtime profile name
- injectContainers | []string — container names to inject runtime into (optional)
- containers       | []corev1.Container — engine runtime containers to override (command/args supported)
+| Field | Description |
+|-------|-------------|
+| `enable` | bool — enable autoscaling (default: false) |
+| `labels` | map[string]string — additional labels for RBGSA |
 
-#### LeaderWorkerTemplate
+## EngineRuntime
 
- Field               | Description
----------------------|----------------------------------------------------------------------------------------------------------------------
- size                | *int32 — number of pods per group (minimum 1, default=1). 1 implies a single leader and a 0-replica worker workload.
- patchLeaderTemplate | runtime.RawExtension — schemaless patch applied to leader template (optional)
- patchWorkerTemplate | runtime.RawExtension — schemaless patch applied to worker template (optional)
-
-#### ScalingAdapter
-
- Field  | Description
---------|--------------------------------------------------------------------------------------------------------------
- enable | bool — whether the scaling adapter is enabled for the role (default=false)
- labels | map[string]string — additional labels for the auto-created RBGSA; controller labels (group-name, role-name) take precedence (optional)
+| Field | Description |
+|-------|-------------|
+| `profileName` | string — ClusterEngineRuntimeProfile name |
+| `injectContainers` | []string — target container names |
+| `containers` | []Container — override container configs |
 
 ## RoleBasedGroupStatus
 
- Field              | Description
---------------------|-------------------------------------------------------------------------
- observedGeneration | int64 — controller-observed generation
- conditions         | []metav1.Condition — standard resource conditions (merge/patch by type)
- roleStatuses       | []RoleStatus — per-role status entries
+| Field | Description |
+|-------|-------------|
+| `observedGeneration` | int64 — controller-observed generation |
+| `conditions` | []Condition — standard conditions |
+| `roleStatuses` | []RoleStatus — per-role status |
 
 ### RoleStatus
 
- Field         | Description
----------------|-----------------------------------------------
- name          | string — role name
- readyReplicas | int32 — number of ready replicas for the role
- replicas      | int32 — total desired replicas for the role
+| Field | Description |
+|-------|-------------|
+| `name` | string — role name |
+| `replicas` | int32 — desired replicas |
+| `readyReplicas` | int32 — ready replicas |
 
-### Condition Types (RoleBasedGroupConditionType)
+## RoleBasedGroupScalingAdapter (RBGSA)
 
- Field                   | Description
--------------------------|-----------------------------------------------------------------------------------------------------
- Ready                   | "Ready" — RBG is available (minimum groups up and running)
- Progressing             | "Progressing" — RBG is creating or changing groups/pods; any in-progress group sets this
- RollingUpdateInProgress | "RollingUpdateInProgress" — RBG is performing a rolling update after leader/worker template changes
- RestartInProgress       | "RestartInProgress" — RBG is restarting due to pod/container restarts
+| Field | Description |
+|-------|-------------|
+| `apiVersion` | `workloads.x-k8s.io/v1alpha2` |
+| `kind` | `RoleBasedGroupScalingAdapter` |
+| `metadata` | Standard Kubernetes metadata |
+| `spec` | ScalingAdapterSpec |
+| `status` | ScalingAdapterStatus |
+
+### ScalingAdapterSpec
+
+| Field | Description |
+|-------|-------------|
+| `scaleTargetRef` | ScaleTargetRef — reference to RBG and role |
+
+### ScaleTargetRef
+
+| Field | Description |
+|-------|-------------|
+| `name` | string — RoleBasedGroup name |
+| `role` | string — role name to scale |
+
+### ScalingAdapterStatus
+
+| Field | Description |
+|-------|-------------|
+| `replicas` | int32 — desired replicas |
+| `readyReplicas` | int32 — ready replicas |
+| `selector` | string — pod selector string |
+
+## CoordinatedPolicy
+
+| Field | Description |
+|-------|-------------|
+| `apiVersion` | `workloads.x-k8s.io/v1alpha2` |
+| `kind` | `CoordinatedPolicy` |
+| `metadata` | Standard Kubernetes metadata |
+| `spec` | CoordinatedPolicySpec |
+
+### CoordinatedPolicySpec
+
+| Field | Description |
+|-------|-------------|
+| `policies` | []PolicySpec — list of coordination policies |
+
+### PolicySpec
+
+| Field | Description |
+|-------|-------------|
+| `name` | string — policy identifier |
+| `roles` | []string — role names to coordinate |
+| `strategy` | CoordinationStrategy — strategy configuration |
+
+### CoordinationStrategy
+
+| Field | Description |
+|-------|-------------|
+| `rollingUpdate` | *RollingUpdateCoordination — coordinated rolling update |
+| `scaling` | *ScalingCoordination — coordinated scaling |
+
+### RollingUpdateCoordination
+
+| Field | Description |
+|-------|-------------|
+| `maxSkew` | string — max progress difference (e.g., "1%", "10%") |
+| `maxUnavailable` | string — max unavailable across all roles |
+
+### ScalingCoordination
+
+| Field | Description |
+|-------|-------------|
+| `maxSkew` | string — max deployment progress difference |
+| `progression` | ProgressionType — `OrderScheduled` or `OrderReady` |
+
+## ClusterEngineRuntimeProfile
+
+| Field | Description |
+|-------|-------------|
+| `apiVersion` | `workloads.x-k8s.io/v1alpha2` |
+| `kind` | `ClusterEngineRuntimeProfile` |
+| `metadata` | Standard Kubernetes metadata (cluster-scoped) |
+| `spec` | EngineRuntimeProfileSpec |
+
+### EngineRuntimeProfileSpec
+
+| Field | Description |
+|-------|-------------|
+| `updateStrategy` | UpdateStrategy — `NoUpdate` or `RollingUpdate` |
+| `initContainers` | []Container — init containers to inject |
+| `containers` | []Container — sidecar containers to inject |
+| `volumes` | []Volume — volumes to inject |
+
+## Condition Types
+
+| Condition | Description |
+|-----------|-------------|
+| `Ready` | RBG is available (minimum replicas ready) |
+| `Progressing` | RBG is creating or changing pods |
+| `RollingUpdateInProgress` | Rolling update is active |
+| `RestartInProgress` | Restart is in progress |
+
+## Annotations
+
+### Gang Scheduling Annotations
+
+| Annotation | Description |
+|------------|-------------|
+| `rbg.workloads.x-k8s.io/group-gang-scheduling` | Enable gang scheduling |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling-timeout` | Timeout seconds (scheduler-plugins) |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue` | Volcano queue name |
+| `rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority` | Volcano priority class |
+
+## Labels
+
+The following labels are automatically added by the controller:
+
+| Label | Description |
+|-------|-------------|
+| `rbg.workloads.x-k8s.io/group-name` | RoleBasedGroup name |
+| `rbg.workloads.x-k8s.io/role-name` | Role name |
+| `rbg.workloads.x-k8s.io/role-index` | Role index ordinal |
+
+See [Labels, Annotations and Environment Variables](variables.md) for complete reference.

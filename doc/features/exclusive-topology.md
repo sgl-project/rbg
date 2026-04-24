@@ -1,23 +1,17 @@
 # Exclusive Topology
 
-Exclusive topology is a feature that allows you to specify a topology domain for a RoleBasedGroup or RoleBasedGroupSet,
-ensuring that all pods belonging to the same group are scheduled on the same topology domain (e.g., the same node, rack,
-or zone). This is particularly useful for distributed applications that require low-latency communication between roles
-or need to ensure data locality.
+Exclusive topology is a feature that allows you to specify a topology domain for a RoleBasedGroup or RoleBasedGroupSet, ensuring that all pods belonging to the same group are scheduled on the same topology domain (e.g., the same node, rack, or zone). This is particularly useful for distributed applications that require low-latency communication between roles or need to ensure data locality.
 
 ## How It Works
 
-The exclusive topology feature uses Kubernetes topology keys to define scheduling constraints. When you specify an
-exclusive topology key, all pods within the same RoleBasedGroup or RoleBasedGroupSet will be scheduled on nodes that
-share the same value for that topology key. This ensures co-location of related workloads for better performance and
-reduced network latency.
+The exclusive topology feature uses Kubernetes topology keys to define scheduling constraints. When you specify an exclusive topology key, all pods within the same RoleBasedGroup or RoleBasedGroupSet will be scheduled on nodes that share the same value for that topology key. This ensures co-location of related workloads for better performance and reduced network latency.
 
 ## Annotation
 
-To enable exclusive topology, add the following annotation to your resource:
+To enable exclusive topology, add the following annotation to your RoleBasedGroup:
 
 ```yaml
-rolebasedgroup.workloads.x-k8s.io/exclusive-topology: "<topology-key>"
+rbg.workloads.x-k8s.io/group-exclusive-topology: "<topology-key>"
 ```
 
 Common topology keys include:
@@ -26,17 +20,23 @@ Common topology keys include:
 - `topology.kubernetes.io/zone` - Schedule all pods in the same zone
 - `topology.kubernetes.io/region` - Schedule all pods in the same region
 
+## Disable Exclusive Topology for Specific Role
+
+To skip exclusive-topology affinity injection for a specific role, add this annotation to the role's template:
+
+```yaml
+rbg.workloads.x-k8s.io/role-disable-exclusive: "true"
+```
+
 ## Example: RoleBasedGroup with Exclusive Topology
 
-The [rbg-with-exclusive-topology example](../../examples/basic/rbg/scheduling/exclusive-topology.yaml) demonstrates how to use
-exclusive topology with a RoleBasedGroup, ensuring all roles are scheduled on the same node.  
-In this example, all pods (leader, worker, and lws) will be scheduled on the same node due to the
-`kubernetes.io/hostname` topology key.
+The [rbg-with-exclusive-topology example](../../examples/basic/rbg/scheduling/exclusive-topology.yaml) demonstrates how to use exclusive topology with a RoleBasedGroup, ensuring all roles are scheduled on the same node.
+
+In this example, all pods (leader, worker, etc.) will be scheduled on the same node due to the `kubernetes.io/hostname` topology key.
 
 ## Example: RoleBasedGroupSet with Exclusive Topology
 
-RoleBasedGroupSet extends the exclusive topology feature to multiple groups, where each group is scheduled exclusively
-on a topology domain. See example [rbgs-exclusive-topology.yaml](../../examples/basic/rbgs/rbgs-exclusive-topology.yaml).
+RoleBasedGroupSet extends the exclusive topology feature to multiple groups, where each group is scheduled exclusively on a topology domain. See example [rbgs-exclusive-topology.yaml](../../examples/basic/rbgs/rbgs-exclusive-topology.yaml).
 
 In this example:
 
@@ -48,6 +48,7 @@ In this example:
 
 1. **Disaggregated Inference**: Deploy Prefill and Decode on the same node to reduce inter-PD communication overhead
 2. **High-Performance Computing**: Place related computational tasks on the same physical hardware
+3. **Multi-GPU Workloads**: Ensure tensor parallel pods are on the same node for fast interconnect
 
 ## Benefits
 

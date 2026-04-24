@@ -1,151 +1,272 @@
 # Update Strategy
 
-Rolling update is important to online services with zero downtime. For LLM inference services, this is particularly
-important. Three different configurations are supported in RBG, **maxUnavailable**, **maxSurge** and **partition**.
+Rolling update is important for online services with zero downtime. For LLM inference services, this is particularly critical. RoleBasedGroup supports multiple update strategies with fine-grained control.
 
-| Configuration  | Description                                                                                                                                                                                                                                                                                       | Supported Workloads                     |
-|----------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
-| maxUnavailable | The maximum number (or percentage) of pods that may be unavailable during the update.                                                                                                                                                                                                             | Deployment, StatefulSet, LWS            |
-| maxSurge       | The maximum number (or percentage) of extra pods that may be created above the desired replica count during the update.                                                                                                                                                                           | Deployment, StatefulSet, LWS            |
-| partition      | An ordinal partition number that controls which StatefulSet Pods are updated.  Pods with ordinal ≥ partition are updated to the new revision; pods with ordinal < partition are left at the previous revision. This lets you roll out updates in order and stop/resume at a particular partition. | StatefulSet, LWS (LWS Version >= 0.7.0) |
+## Overview
 
-## Example: RollingUpdate with MaxSurge and MaxUnavailable
+In v1alpha2, each role can configure its own `rolloutStrategy`:
+
+```yaml
+roles:
+  - name: inference
+    replicas: 4
+    rolloutStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        type: Recreate  # or InPlaceIfPossible
+        maxUnavailable: 1
+        maxSurge: 1
+```
+
+## Update Types
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `Recreate` | Delete old pods before creating new ones | Stateful workloads, GPU pods |
+| `InPlaceIfPossible` | Update pod spec without recreation if possible | Image updates, resource changes |
+
+### Recreate Strategy
+
+Deletes old pods and creates new ones. Safer for GPU workloads:
 
 ```yaml
 rolloutStrategy:
   type: RollingUpdate
-  rollingUpdateConfiguration:
-    maxUnavailable: 2
-    maxSurge: 2
-  replicas: 4
+  rollingUpdate:
+    type: Recreate
+    maxUnavailable: 1
 ```
 
-1. Create a RBG with three roles
+### InPlaceIfPossible Strategy
 
-    ```bash
-    kubectl apply -f examples/basics/rolling-update.yaml
-    ```
-
-2. Update the label for roles and verify the rollout  
-   2.1 Update the label for the role with `StatefulSet` workload
-
-```bash
-kubectl patch rolebasedgroup rolling-update --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/roles/0/template/metadata/labels/appVersion",
-    "value": "v2"
-  }
-]'
-```
-
-2.2 Update the label for the role with `Deployment` workload
-
-```bash
-kubectl patch rolebasedgroup rolling-update --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/roles/1/template/metadata/labels/appVersion",
-    "value": "v2"
-  }
-]'
-```
-
-2.3 Update the label for the role with `LeaderWorkerSet` workload
-
-```bash
-kubectl patch rolebasedgroup rolling-update --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/roles/2/template/metadata/labels/appVersion",
-    "value": "v2"
-  }
-]'
-```
-
-## Example: RollingUpdate with Partition
-
-**LWS version >= 0.7.0 supports RollingUpdate with Partition.**
+Updates pods in-place when only certain fields change (image, resources). Faster updates with less disruption:
 
 ```yaml
 rolloutStrategy:
   type: RollingUpdate
-  rollingUpdateConfiguration:
-    maxUnavailable: 2
-    maxSurge: 2
-    partition: 1
-  replicas: 4
+  rollingUpdate:
+    type: InPlaceIfPossible
+    maxUnavailable: 1
+    inPlaceUpdateStrategy:
+      gracePeriodSeconds: 30  # Wait before forcing update
 ```
 
-1. Create a RBG with two roles
+**Supported in-place updates**:
+- Container image changes
+- Resource requests/limits changes
+- Certain environment variable changes
 
-    ```bash
-    kubectl apply -f examples/basics/rolling-update-with-partition.yaml
-    ```
+**Not supported for in-place**:
+- Pod spec changes (volumes, ports, etc.)
+- New containers added
+- Requires pod recreation
 
-2. Update the label for roles and verify the rollout  
-   2.1 Update the label for the role with `StatefulSet` workload
+## Configuration Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `maxUnavailable` | Maximum pods unavailable during update | 1 |
+| `maxSurge` | Maximum extra pods during update | 0 |
+| `partition` | Update pods with ordinal >= partition only | 0 |
+
+### maxUnavailable
+
+Can be absolute number or percentage:
+
+```yaml
+rollingUpdate:
+  maxUnavailable: 2        # Absolute number
+  # or
+  maxUnavailable: "10%"    # Percentage of replicas
+```
+
+### maxSurge
+
+Extra pods created during update for faster rollout:
+
+```yaml
+rollingUpdate:
+  maxSurge: 2              # Absolute number
+  # or
+  maxSurge: "20%"          # Percentage of replicas
+```
+
+### partition
+
+Control which pods get updated (StatefulSet-style):
+
+```yaml
+rollingUpdate:
+  partition: 2  # Pods with ordinal >= 2 get updated
+```
+
+Useful for:
+- Canary updates
+- Gradual rollouts
+- Testing on specific instances
+
+## Example: Rolling Update with InPlaceIfPossible
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: inference-cluster
+spec:
+  roles:
+    - name: prefill
+      replicas: 4
+      minReadySeconds: 10
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+          inPlaceUpdateStrategy:
+            gracePeriodSeconds: 30
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: inference
+                image: inference:v1
+                resources:
+                  limits:
+                    nvidia.com/gpu: "1"
+```
+
+### Updating the Image
+
+```bash
+kubectl patch rolebasedgroup inference-cluster --type='json' -p='[
+  {
+    "op": "replace",
+    "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/image",
+    "value": "inference:v2"
+  }
+]'
+```
+
+With `InPlaceIfPossible`, pods will be updated in-place (container restart) rather than full pod recreation.
+
+## Example: Rolling Update with Partition
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: inference-cluster
+spec:
+  roles:
+    - name: inference
+      replicas: 4
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: Recreate
+          maxUnavailable: 1
+          partition: 2  # Only update pods 2, 3
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: inference
+                image: inference:v1
+```
+
+With partition=2:
+- Pods with ordinal < 2 (0, 1) stay on old version
+- Pods with ordinal >= 2 (2, 3) get updated to new version
+
+Useful for testing new version on subset of pods before full rollout.
+
+## Coordinated Rolling Update
+
+For multi-role updates, use CoordinatedPolicy to keep roles synchronized:
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: CoordinatedPolicy
+metadata:
+  name: coordinated-rollout
+spec:
+  policies:
+    - name: prefill-decode-sync
+      roles:
+        - prefill
+        - decode
+      strategy:
+        rollingUpdate:
+          maxSkew: "1%"
+          maxUnavailable: "10%"
+```
+
+See [Coordinated Policy](coordinated-policy.md) for details.
+
+## Example: Rolling Update
+
+1. Create a RoleBasedGroup with multiple roles:
+
+```bash
+kubectl apply -f examples/basic/rbg/update-strategy/rolling-update.yaml
+```
+
+2. Update a role and observe the rollout:
+
+```bash
+kubectl patch rolebasedgroup rolling-update --type='json' -p='[
+  {
+    "op": "replace",
+    "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
+    "value": "v2"
+  }
+]'
+```
+
+3. Check the rollout status:
+
+```bash
+kubectl get rolebasedgroup rolling-update -ojsonpath='{.status}'
+```
+
+## Example: Rolling Update with Partition
+
+1. Create a RoleBasedGroup with partition:
+
+```bash
+kubectl apply -f examples/basic/rbg/update-strategy/rolling-update-with-partition.yaml
+```
+
+2. Update and verify partition behavior:
 
 ```bash
 kubectl patch rolebasedgroup rolling-update-with-partition --type='json' -p='[
   {
     "op": "replace",
-    "path": "/spec/roles/0/template/metadata/labels/appVersion",
+    "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
     "value": "v2"
   }
 ]'
 ```
 
-By checking the sts status, you can see that pods from partition to replicas-1 (1-3) have been updated to the new
-version,
-while pods with ordinal < partition have not been updated.
+3. Check that only pods >= partition are updated:
 
 ```bash
-kubectl get sts rolling-update-with-partition-sts -ojsonpath='{.status}'
-|jq
-{
-  "availableReplicas": 4,
-  "collisionCount": 0,
-  "currentReplicas": 1,
-  "currentRevision": "rolling-update-with-partition-sts-74894d9bf",
-  "observedGeneration": 6,
-  "readyReplicas": 4,
-  "replicas": 4,
-  "updateRevision": "rolling-update-with-partition-sts-cb5f86b9b",
-  "updatedReplicas": 3
-}
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rolling-update-with-partition
 ```
 
-2.2 Update the label for the role with `LeaderWorkerSet` workload
+## Supported Workloads
 
-```bash
-kubectl patch rolebasedgroup rolling-update-with-partition --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/roles/1/template/metadata/labels/appVersion",
-    "value": "v2"
-  }
-]'
-```
+| Workload | maxUnavailable | maxSurge | partition | InPlaceIfPossible |
+|----------|---------------|----------|-----------|-------------------|
+| StatefulSet | ✓ | ✓ | ✓ | ✓ |
+| Deployment | ✓ | ✓ | - | ✓ |
+| LeaderWorkerSet | ✓ | ✓ | ✓ (LWS >= 0.7.0) | ✓ |
 
-By checking the lws status, you can see that pods from partition to replicas-1 (1-3) have been updated to the new
-version,
-while pods with ordinal < partition have not been updated.
+**Note**: LeaderWorkerSet partition support requires LWS version >= 0.7.0.
 
-```bash
-kubectl get lws rolling-update-with-partition-lws -ojsonpath='{.status}' | jq
+## Examples
 
-{
-  "conditions": [xxxx],
-  "hpaPodSelector": "leaderworkerset.sigs.k8s.io/name=rolling-update-with-partition-lws,leaderworkerset.sigs.k8s.io/worker-index=0",
-  "readyReplicas": 4,
-  "replicas": 4,
-  "updatedReplicas": 3
-}
-
-```
-
-## Example YAMLs
-
-- [rolling-update.yaml](../../examples/basics/rolling-update.yaml)
-- [rolling-update-with-partition.yaml](../../examples/basics/rolling-update-with-partition.yaml)
+- [Rolling Update](../../examples/basic/rbg/update-strategy/rolling-update.yaml)
+- [Rolling Update with Partition](../../examples/basic/rbg/update-strategy/rolling-update-with-partition.yaml)
+- [Coordinated Rolling Update](../../examples/basic/coordinated-policy/coordinated-rolling-update.yaml)

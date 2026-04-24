@@ -20,7 +20,7 @@ The `kubectl-rbg llm generate` command currently integrates with [AI Configurato
    # version >= 0.5.0
    ```
 
-3. **Refer to [kubectl-rbg](doc/features/kubectl-rbg.md) for instructions on installing the kubectl-rbg plugin locally:**
+3. **Refer to [kubectl-rbg](kubectl-rbg.md) for instructions on installing the kubectl-rbg plugin locally:**
 
 ```shell
 # Download source code

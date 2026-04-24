@@ -64,21 +64,21 @@ Flags:
   -v, --v Level                        number for the log level verbosity
       --version                        version for kubectl
 
-Use "kubectl [command] --help" for more information about a command.
+Use "kubectl [command] --help" for more information about each command.
 ```
 
 ## 📖 Feature Overview
 
 ### Prepare Test Environment
 
-1. For example, after applying [RBG Base](../../examples/basics/rbg-base.yaml), the RBG will automatically create ControllerRevisions and the corresponding workloads.
+1. For example, after applying [RBG Base](../../examples/basic/rbg/base.yaml), the RBG will automatically create ControllerRevisions and the corresponding workloads.
 2. Update the RBG object specification:
 
 ```shell
 $ kubectl patch rolebasedgroup nginx-cluster --type=json -p='[
   {
     "op": "replace",
-    "path": "/spec/roles/1/template/spec/containers/0/resources",
+    "path": "/spec/roles/1/standalonePattern/template/spec/containers/0/resources",
     "value": {
       "requests": {
         "memory": "100Mi"
@@ -124,53 +124,34 @@ $ kubectl rbg rollout history nginx-cluster --revision=1
 data:
   spec:
     roles:
-    - $patch: replace
-    - leaderWorkerSet:
-        patchLeaderTemplate: null
-        patchWorkerTemplate: null
-      name: leader
-      replicas: 1
-      template:
-        metadata: {}
-        spec:
-          containers:
-          - image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
-            name: nginx-leader
-            ports:
-            - containerPort: 80
-              protocol: TCP
-            resources: {}
-      workload:
-        apiVersion: apps/v1
-        kind: StatefulSet
-    - dependencies:
-      - leader
-      leaderWorkerSet:
-        patchLeaderTemplate: null
-        patchWorkerTemplate: null
-      name: worker
-      replicas: 3
-      template:
-        metadata: {}
-        spec:
-          containers:
-          - image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
-            name: nginx-worker
-            ports:
-            - containerPort: 8080
-              protocol: TCP
-            resources: {}
-      workload:
-        apiVersion: apps/v1
-        kind: Deployment
+      - name: leader
+        replicas: 1
+        standalonePattern:
+          template:
+            spec:
+              containers:
+                - name: nginx-leader
+                  image: nginx:latest
+                  ports:
+                    - containerPort: 80
+      - name: worker
+        replicas: 3
+        dependencies: ["leader"]
+        standalonePattern:
+          template:
+            spec:
+              containers:
+                - name: nginx-worker
+                  image: nginx:latest
+                  ports:
+                    - containerPort: 8080
 metadata:
   labels:
-    rolebasedgroup.workloads.x-k8s.io/controller-revision-hash: 8676cf98bd
-    rolebasedgroup.workloads.x-k8s.io/name: nginx-cluster
+    rbg.workloads.x-k8s.io/group-revision: 8676cf98bd
+    rbg.workloads.x-k8s.io/group-name: nginx-cluster
   name: nginx-cluster-8676cf98bd-1
   namespace: default
 revision: 1
-
 ```
 
 ### View Differences Between Current RBG Object and Specified Revision
@@ -188,8 +169,6 @@ $ kubectl rbg rollout diff nginx-cluster --revision=1
 +                   memory: 512Mi
 +                 requests:
 +                   memory: 100Mi
-          workload:
-            apiVersion: apps/v1
         ... // 2 identical lines
         """
   )
