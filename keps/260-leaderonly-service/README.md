@@ -95,7 +95,7 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
-This KEP proposes a new role-level networking field,`NetworkConfig.TargetPolicy`, to control which Pods are selected by the existing shared headless Service of a role.
+This KEP proposes a new role-level networking optional field `SharedServiceSelectionPolicy``, under `RoleSpec.LeaderWorkerPattern`, to control which Pods are selected by the existing shared headless Service of a role.
 
 The new field has two values:
 

@@ -175,6 +175,7 @@ const (
 
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!(has(self.standalonePattern) && has(self.leaderWorkerPattern))",message="standalonePattern and leaderWorkerPattern are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection) || self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'",message="leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -337,7 +338,7 @@ type LeaderWorkerPattern struct {
 
 	// SharedServiceSelection indicates the service policy of the role
 	// +optional
-	// +kubebuilder:validation:Enum={All;LeaderOnly}
+	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
 
