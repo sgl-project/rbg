@@ -77,6 +77,16 @@ const (
 	WebhookModeNone = "none"
 )
 
+// validateWebhookMode checks if the webhook mode is a valid value.
+func validateWebhookMode(mode string) error {
+	switch mode {
+	case WebhookModeAll, WebhookModeNone:
+		return nil
+	default:
+		return fmt.Errorf("invalid value for --enable-webhooks %q: supported values are %q and %q", mode, WebhookModeAll, WebhookModeNone)
+	}
+}
+
 // webhooksEnabled returns true if the given webhook mode enables webhooks.
 func webhooksEnabled(mode string) bool {
 	return mode == WebhookModeAll
@@ -156,8 +166,8 @@ func main() {
 	flag.StringVar(
 		&webhookMode, "enable-webhooks", WebhookModeAll,
 		"Control which webhooks are enabled. Supported values: "+WebhookModeAll+", "+WebhookModeNone+". "+
-			"Use "+WebhookModeNone+" to disable all webhooks (cert bootstrap, conversion, admission) for local debugging. "+
-			"May be extended in the future to allow enabling individual webhook types (e.g. admission, conversion, validating).",
+			"Use "+WebhookModeNone+" to disable all webhooks (cert bootstrap, conversion, admission) for local debugging only. "+
+			"When set to "+WebhookModeNone+", leader election is also disabled and metrics are served insecurely over HTTP.",
 	)
 	flag.IntVar(
 		&maxConcurrentReconciles, "max-concurrent-reconciles", 10,
@@ -174,6 +184,13 @@ func main() {
 			"Defaults to scheduler-plugins.",
 	)
 	flag.Parse()
+
+	// Validate webhook mode to prevent typos silently disabling webhooks.
+	if err := validateWebhookMode(webhookMode); err != nil {
+		setupLog.Error(err, "invalid --enable-webhooks value")
+		os.Exit(1)
+	}
+
 	opts := zap.Options{
 		Development: development,
 		EncoderConfigOptions: []zap.EncoderConfigOption{
@@ -442,6 +459,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 		Cache:                  cacheOptions(),
 	}
 	if !webhooksEnabled(webhookMode) {
+		setupLog.Info("Webhooks disabled: forcing LeaderElection=false, Metrics.SecureServing=false")
 		opts.WebhookServer = nil
 		opts.LeaderElection = false
 		opts.Metrics.SecureServing = false
