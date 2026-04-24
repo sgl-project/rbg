@@ -278,7 +278,7 @@ Example:
 
 			// Create and save configuration
 			cfg := &config.Config{
-				APIVersion:     "rbg/v1alpha1",
+				APIVersion:     "rbg/v1alpha2",
 				Kind:           "Config",
 				CurrentStorage: storageType,
 				CurrentSource:  sourceType,

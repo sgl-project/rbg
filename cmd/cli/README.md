@@ -649,7 +649,7 @@ kubectl rbg llm config reset-engine ENGINE_TYPE
 The configuration is stored at `~/.rbg/config.yaml`:
 
 ```yaml
-apiVersion: rbg/v1alpha1
+apiVersion: rbg/v1alpha2
 kind: Config
 currentStorage: my-pvc
 currentSource: huggingface
