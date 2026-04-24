@@ -233,10 +233,10 @@ RBG 集成生态组件用于生产级 LLM 推理：
 
 | 示例 | 说明 |
 |:-----|:-----|
-| [pd-disagg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD 解耦 KV 缓存复用 |
-| [agg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | 聚合推理 KV 缓存复用 |
-| [sgl-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml) | SGLang PD 解耦传输引擎 |
-| [vllm-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml) | vLLM PD 解耦传输引擎 |
+| [mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD 解耦 KV 缓存复用 |
+| [mooncake-store/agg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | 聚合推理 KV 缓存复用 |
+| [mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml) | SGLang PD 解耦传输引擎 |
+| [mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml) | vLLM PD 解耦传输引擎 |
 
 ---
 

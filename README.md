@@ -233,10 +233,10 @@ RBG integrates with ecosystem components for production LLM inference:
 
 | Example | Description |
 |:--------|:------------|
-| [pd-disagg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD-disaggregated with KV cache reuse |
-| [agg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | Aggregated with KV cache reuse |
-| [sgl-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml) | SGLang PD-disaggregated with transfer engine |
-| [vllm-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml) | vLLM PD-disaggregated with transfer engine |
+| [mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/pd-disagg-kvcache-reuse-with-mooncake.yaml) | PD-disaggregated with KV cache reuse |
+| [mooncake-store/agg-kvcache-reuse-with-mooncake.yaml](examples/inference/ecosystem/mooncake/mooncake-store/agg-kvcache-reuse-with-mooncake.yaml) | Aggregated with KV cache reuse |
+| [mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml) | SGLang PD-disaggregated with transfer engine |
+| [mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml](examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml) | vLLM PD-disaggregated with transfer engine |
 
 ---
 

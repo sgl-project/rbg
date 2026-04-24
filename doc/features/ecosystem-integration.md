@@ -325,8 +325,8 @@ spec:
 ### Mooncake Examples
 
 - [Standalone Mooncake Service](../../examples/inference/ecosystem/mooncake/mooncake-store/standalone-mooncake-store.yaml)
-- [Mooncake Transfer Engine with vLLM](../../examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disgg-with-mooncake-te.yaml)
-- [Mooncake Transfer Engine with SGLang](../../examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disgg-with-mooncake-te.yaml)
+- [Mooncake Transfer Engine with vLLM](../../examples/inference/ecosystem/mooncake/mooncake-transfer-engine/vllm-pd-disagg-with-mooncake-te.yaml)
+- [Mooncake Transfer Engine with SGLang](../../examples/inference/ecosystem/mooncake/mooncake-transfer-engine/sgl-pd-disagg-with-mooncake-te.yaml)
 - [Mooncake KV Cache Reuse](../../examples/inference/ecosystem/mooncake/mooncake-store/)
 
 ### Infrastructure Examples
