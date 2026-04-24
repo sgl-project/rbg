@@ -51,8 +51,8 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 |:--------|:------------|
 | **Role** | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
 | **RoleBasedGroup** | A group of roles forming one logical service (e.g., one LLM inference deployment). |
-| **RoleInstance** | A collection of Pods with tightly bound lifecycle, supporting in-place updates. |
-| **CoordinatedPolicy** | A separate CRD for cross-role coordination with `maxSkew` and `progression` controls. |
+| **RoleInstance** | A collection of Pods with tightly bound lifecycle. Supports in-place updates and controls upgrades/status for the Pod group. |
+| **CoordinatedPolicy** | A separate CRD for coordinating operations across roles. Controls `maxSkew` and `progression` during rolling updates and scaling. |
 
 ---
 

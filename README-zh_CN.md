@@ -51,8 +51,8 @@
 |:-----|:-----|
 | **角色 (Role)** | 基础调度与发布单元。每个角色（prefill、decode）拥有独立的配置、生命周期和策略。 |
 | **角色组 (RoleBasedGroup)** | 多个角色构成的一个逻辑服务（例如一次 LLM 推理部署）。 |
-| **角色实例 (RoleInstance)** | Pod 集合，生命周期紧密绑定，支持原地更新。 |
-| **协同策略 (CoordinatedPolicy)** | 独立 CRD，用于跨角色协同控制（maxSkew、progression）。 |
+| **角色实例 (RoleInstance)** | Pod 集合，生命周期紧密绑定。支持原地更新，控制 Pod 组的升级与状态。 |
+| **协同策略 (CoordinatedPolicy)** | 独立 CRD，用于跨角色协同操作。控制滚动更新与伸缩期间的 `maxSkew` 和 `progression`。 |
 
 ---
 
