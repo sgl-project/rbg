@@ -12,6 +12,12 @@ English | [简体中文](./README-zh_CN.md)
 
 ---
 
+## 🏗️ Architecture
+
+![RBG Architecture](doc/rbg-structure.png)
+
+---
+
 ## 📰 Latest News
 
 | Date | Release | Highlights |
@@ -59,12 +65,6 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 | **Orchestration** | Role dependencies, precise startup sequences, topology self-aware service discovery |
 | **Performance** | Hardware affinity scheduling: GPU-NVLink → PCIe → RDMA → VPC |
 | **Extensible** | Declarative APIs and plugin mechanisms for future architectures |
-
----
-
-## 🏗️ Architecture
-
-![RBG Architecture](doc/rbg-structure.png)
 
 ---
 

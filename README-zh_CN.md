@@ -12,6 +12,12 @@
 
 ---
 
+## 🏗️ 架构图
+
+![RBG 架构图](doc/rbg-structure.png)
+
+---
+
 ## 📰 最新动态
 
 | 日期 | 版本 | 亮点 |
@@ -59,12 +65,6 @@
 | **编排 (Orchestration)** | 角色依赖、精确启动顺序、拓扑自感知服务发现 |
 | **性能 (Performance)** | 硬件亲和性调度：GPU-NVLink → PCIe → RDMA → VPC |
 | **可扩展 (Extensible)** | 声明式 API 与插件机制，适配未来架构 |
-
----
-
-## 🏗️ 架构图
-
-![RBG 架构图](doc/rbg-structure.png)
 
 ---
 
