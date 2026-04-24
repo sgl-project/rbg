@@ -149,11 +149,16 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
     Check CRD with:
 
     ```shell
-    $ kubectl get crd | grep -e rolebasedgroup -e clusterengineruntimeprofiles
+    $ kubectl get crd | grep -e rolebasedgroup -e roleinstance -e clusterengineruntimeprofile -e coordinatedpolicy -e instance
     clusterengineruntimeprofiles.workloads.x-k8s.io                  2025-09-01T09:22:57Z
+    coordinatedpolicies.workloads.x-k8s.io                           2025-09-01T09:22:57Z
+    instances.workloads.x-k8s.io                                     2025-09-01T09:22:57Z
+    instancesets.workloads.x-k8s.io                                  2025-09-01T09:22:57Z
     rolebasedgroups.workloads.x-k8s.io                               2025-09-01T09:22:58Z
     rolebasedgroupscalingadapters.workloads.x-k8s.io                 2025-09-01T09:22:58Z
     rolebasedgroupsets.workloads.x-k8s.io                            2025-09-01T09:22:58Z
+    roleinstances.workloads.x-k8s.io                                 2025-09-01T09:22:58Z
+    roleinstancesets.workloads.x-k8s.io                              2025-09-01T09:22:58Z
     ```
 
 4. Install your implementation
@@ -176,7 +181,7 @@ In the following steps, we assume you have properly configured `KUBECONFIG` envi
     Here is a sample provided by us, you may want to rewrite it according to your implementation.
 
     ```shell
-    kubectl apply -f examples/rbgs/rbgs-base.yaml
+    kubectl apply -f examples/basic/rbgs/rbgs-base.yaml
     ```
 
     Check sample pods:
@@ -235,14 +240,27 @@ The RGB controller supports local operation or debugging. Before running the con
     Check CRD with:
 
     ```shell
-    $ kubectl get crd | grep -e rolebasedgroup -e clusterengineruntimeprofiles
+    $ kubectl get crd | grep -e rolebasedgroup -e roleinstance -e clusterengineruntimeprofile -e coordinatedpolicy -e instance
     clusterengineruntimeprofiles.workloads.x-k8s.io                  2025-09-01T09:22:57Z
+    coordinatedpolicies.workloads.x-k8s.io                           2025-09-01T09:22:57Z
+    instances.workloads.x-k8s.io                                     2025-09-01T09:22:57Z
+    instancesets.workloads.x-k8s.io                                  2025-09-01T09:22:57Z
     rolebasedgroups.workloads.x-k8s.io                               2025-09-01T09:22:58Z
     rolebasedgroupscalingadapters.workloads.x-k8s.io                 2025-09-01T09:22:58Z
     rolebasedgroupsets.workloads.x-k8s.io                            2025-09-01T09:22:58Z
+    roleinstances.workloads.x-k8s.io                                 2025-09-01T09:22:58Z
+    roleinstancesets.workloads.x-k8s.io                              2025-09-01T09:22:58Z
     ```
 
-2. Build binary:
+2. Run Controller Locally (Recommended):
+
+    Use the `make run-local` shortcut to start the controller in local debug mode (webhooks disabled, no leader election, insecure metrics on `:8080`):
+
+    ```shell
+    $ make run-local
+    ```
+
+    Alternatively, you can build and run the binary manually:
 
     ```shell
     # Build controller binary
@@ -250,8 +268,6 @@ The RGB controller supports local operation or debugging. Before running the con
     ```
 
     By default, the binary would be put under `<rbg-path>/bin/`, and the default executable file name is manager.
-
-3. Run Controller:
 
     ```shell
     # Open the development debugging mode, configure health-probe-bind-address

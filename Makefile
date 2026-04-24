@@ -197,8 +197,8 @@ build-benchmark-dashboard: ## Build benchmark-dashboard binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/rbgs/main.go
 
-.PHONY: run-dev
-run-dev: manifests generate fmt vet ## Run a controller locally for debugging (webhooks disabled, no leader election, insecure metrics).
+.PHONY: run-local
+run-local: manifests generate fmt vet ## Run a controller locally for debugging (webhooks disabled, no leader election, insecure metrics).
 	go run ./cmd/rbgs/main.go --enable-webhooks=none --metrics-bind-address=:8080
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
