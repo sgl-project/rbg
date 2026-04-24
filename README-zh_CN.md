@@ -322,7 +322,7 @@ spec:
 | `rbg/update-strategy/` | 滚动更新，支持分区控制 |
 | `rbg/restart-policy/` | 重启策略配置 |
 | `rbg/scaling/` | 伸缩适配器，支持 HPA 集成 |
-| `rbg/role-temlate/` | RoleTemplates 模板复用配置 |
+| `rbg/role-template/` | RoleTemplates 模板复用配置 |
 | `coordinated-policy/` | 协同滚动更新与伸缩策略 |
 | `engine-runtime/` | 引擎运行时配置 |
 

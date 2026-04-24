@@ -322,7 +322,7 @@ spec:
 | `rbg/update-strategy/` | Rolling update with partition support |
 | `rbg/restart-policy/` | Restart policy configurations |
 | `rbg/scaling/` | Scaling adapter with HPA integration |
-| `rbg/role-temlate/` | RoleTemplates for reducing duplication |
+| `rbg/role-template/` | RoleTemplates for reducing duplication |
 | `coordinated-policy/` | Coordinated rollout and scaling policies |
 | `engine-runtime/` | Engine runtime profile configurations |
 
