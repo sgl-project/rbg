@@ -45,6 +45,8 @@
 |:-----|:-----|
 | **角色 (Role)** | 基础调度与发布单元。每个角色（prefill、decode）拥有独立的配置、生命周期和策略。 |
 | **角色组 (RoleBasedGroup)** | 多个角色构成的一个逻辑服务（例如一次 LLM 推理部署）。 |
+| **角色实例 (RoleInstance)** | Pod 集合，生命周期紧密绑定，支持原地更新。 |
+| **协同策略 (CoordinatedPolicy)** | 独立 CRD，用于跨角色协同控制（maxSkew、progression）。 |
 
 ---
 
@@ -152,6 +154,39 @@ spec:
                     requests:
                       memory: "128Mi"
 ```
+
+---
+
+## 🖥️ CLI 工具
+
+kubectl-rbg 是管理 RBG 资源和 LLM 部署的 CLI 工具。
+
+### 安装
+
+```shell
+# 从源码构建
+make build-cli
+chmod +x bin/kubectl-rbg
+sudo mv bin/kubectl-rbg /usr/local/bin/
+```
+
+### LLM 快速开始
+
+```shell
+# 初始化配置
+kubectl rbg llm config init
+
+# 拉取模型
+kubectl rbg llm model pull Qwen/Qwen3.5-0.8B
+
+# 部署推理服务
+kubectl rbg llm svc run my-qwen Qwen/Qwen3.5-0.8B
+
+# 与服务对话
+kubectl rbg llm svc chat my-qwen
+```
+
+详细 CLI 文档请参考 [kubectl-rbg](doc/cli/kubectl-rbg.md)。
 
 ---
 

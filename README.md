@@ -45,6 +45,8 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 |:--------|:------------|
 | **Role** | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
 | **RoleBasedGroup** | A group of roles forming one logical service (e.g., one LLM inference deployment). |
+| **RoleInstance** | A collection of Pods with tightly bound lifecycle, supporting in-place updates. |
+| **CoordinatedPolicy** | A separate CRD for cross-role coordination with `maxSkew` and `progression` controls. |
 
 ---
 
@@ -152,6 +154,39 @@ spec:
                     requests:
                       memory: "128Mi"
 ```
+
+---
+
+## 🖥️ CLI Tool
+
+kubectl-rbg is a CLI tool for managing RBG resources and LLM deployments.
+
+### Installation
+
+```shell
+# Build from source
+make build-cli
+chmod +x bin/kubectl-rbg
+sudo mv bin/kubectl-rbg /usr/local/bin/
+```
+
+### LLM Quick Start
+
+```shell
+# Initialize configuration
+kubectl rbg llm config init
+
+# Pull a model
+kubectl rbg llm model pull Qwen/Qwen3.5-0.8B
+
+# Deploy as inference service
+kubectl rbg llm svc run my-qwen Qwen/Qwen3.5-0.8B
+
+# Chat with the service
+kubectl rbg llm svc chat my-qwen
+```
+
+For detailed CLI documentation, see [kubectl-rbg](doc/cli/kubectl-rbg.md).
 
 ---
 
