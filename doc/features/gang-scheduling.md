@@ -52,7 +52,7 @@ spec:
 3. Scheduler waits until all pods can be placed simultaneously
 4. If timeout expires, scheduling fails
 
-### Created PodGroup
+### Scheduler Plugins PodGroup
 
 ```yaml
 apiVersion: scheduling.x-k8s.io/v1alpha1
@@ -116,7 +116,7 @@ spec:
 2. **Pod schedulerName**: Each pod must have `schedulerName: volcano`
 3. **Annotations**: Enable gang scheduling via annotations
 
-### Created PodGroup
+### Volcano PodGroup
 
 ```yaml
 apiVersion: scheduling.volcano.sh/v1beta1

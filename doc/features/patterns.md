@@ -177,7 +177,7 @@ spec:
                         nvidia.com/gpu: "1"
 ```
 
-### Key Fields
+### customComponentsPattern Fields
 
 | Field | Description |
 |-------|-------------|

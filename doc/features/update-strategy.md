@@ -149,7 +149,7 @@ kubectl patch rolebasedgroup inference-cluster --type='json' -p='[
 
 With `InPlaceIfPossible`, pods will be updated in-place (container restart) rather than full pod recreation.
 
-## Example: Rolling Update with Partition
+## Example: Partition Configuration
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -203,57 +203,59 @@ spec:
 
 See [Coordinated Policy](coordinated-policy.md) for details.
 
-## Example: Rolling Update
+## Examples: Rolling Update Operations
+
+### Rolling Update Example
 
 1. Create a RoleBasedGroup with multiple roles:
 
-```bash
-kubectl apply -f examples/basic/rbg/update-strategy/rolling-update.yaml
-```
+   ```bash
+   kubectl apply -f examples/basic/rbg/update-strategy/rolling-update.yaml
+   ```
 
-2. Update a role and observe the rollout:
+1. Update a role and observe the rollout:
 
-```bash
-kubectl patch rolebasedgroup rolling-update --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
-    "value": "v2"
-  }
-]'
-```
+   ```bash
+   kubectl patch rolebasedgroup rolling-update --type='json' -p='[
+     {
+       "op": "replace",
+       "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
+       "value": "v2"
+     }
+   ]'
+   ```
 
-3. Check the rollout status:
+1. Check the rollout status:
 
-```bash
-kubectl get rolebasedgroup rolling-update -ojsonpath='{.status}'
-```
+   ```bash
+   kubectl get rolebasedgroup rolling-update -ojsonpath='{.status}'
+   ```
 
-## Example: Rolling Update with Partition
+### Partition Update Example
 
 1. Create a RoleBasedGroup with partition:
 
-```bash
-kubectl apply -f examples/basic/rbg/update-strategy/rolling-update-with-partition.yaml
-```
+   ```bash
+   kubectl apply -f examples/basic/rbg/update-strategy/rolling-update-with-partition.yaml
+   ```
 
-2. Update and verify partition behavior:
+1. Update and verify partition behavior:
 
-```bash
-kubectl patch rolebasedgroup rolling-update-with-partition --type='json' -p='[
-  {
-    "op": "replace",
-    "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
-    "value": "v2"
-  }
-]'
-```
+   ```bash
+   kubectl patch rolebasedgroup rolling-update-with-partition --type='json' -p='[
+     {
+       "op": "replace",
+       "path": "/spec/roles/0/standalonePattern/template/metadata/labels/appVersion",
+       "value": "v2"
+     }
+   ]'
+   ```
 
-3. Check that only pods >= partition are updated:
+1. Check that only pods >= partition are updated:
 
-```bash
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rolling-update-with-partition
-```
+   ```bash
+   kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rolling-update-with-partition
+   ```
 
 ## Supported Workloads
 

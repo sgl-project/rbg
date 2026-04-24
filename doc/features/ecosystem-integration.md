@@ -13,9 +13,9 @@ NVIDIA Dynamo is a distributed inference runtime that supports PD-disaggregated 
 - **Aggregated Deployment**: Single engine with all-in-one architecture
 - **HPA Integration**: scalingAdapter for dynamic scaling
 
-### Architecture
+### Dynamo Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                     RoleBasedGroup                           │
 ├─────────────────────────────────────────────────────────────┤
@@ -145,9 +145,9 @@ metadata:
 
 Mooncake is a distributed KV cache system that enables KV cache reuse across inference instances, improving throughput and reducing latency.
 
-### Architecture
+### Mooncake Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                   Mooncake Service                           │
 ├─────────────────────────────────────────────────────────────┤
