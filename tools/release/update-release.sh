@@ -120,10 +120,6 @@ fi
 helm template \
   -n rbgs-system \
   --values "$HELM_CHART_PATH/values.yaml" \
-  --show-only templates/clusterrole.yaml \
-  --show-only templates/manager.yaml \
-  --show-only templates/rolebinding.yaml \
-  --show-only templates/serviceaccount.yaml \
   --dry-run \
   rbgs "$HELM_CHART_PATH" >> "$MANIFEST_FILE"
 echo "Updated manifests at $MANIFEST_FILE"
