@@ -444,7 +444,7 @@ func (r *RoleBasedGroupScalingAdapterReconciler) SetupWithManager(mgr ctrl.Manag
 		Watches(
 			&workloadsv1alpha2.RoleBasedGroup{},
 			handler.EnqueueRequestsFromMapFunc(r.mapRBGToScalingAdapters),
-			builder.WithPredicates(RBGRoleStatusPredicate()),
+			builder.WithPredicates(RBGRoleSpecOrStatusPredicate()),
 		).
 		Named("workloads-rolebasedgroup-scalingadapter").
 		Complete(r)
@@ -526,7 +526,12 @@ func RBGScalingAdapterPredicate() predicate.Funcs {
 	}
 }
 
-func RBGRoleStatusPredicate() predicate.Funcs {
+// RBGRoleSpecOrStatusPredicate enqueues an RBG-related event when either
+// status.roleStatuses changes (so we react to workload-level scaling
+// completing or readyReplicas updating) or any role's spec.replicas
+// changes (so we can correct an external mutator — e.g. a `helm upgrade`
+// that drops the field — without waiting for status to change).
+func RBGRoleSpecOrStatusPredicate() predicate.Funcs {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return false
@@ -534,10 +539,13 @@ func RBGRoleStatusPredicate() predicate.Funcs {
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldRBG, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
 			newRBG, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
-			if ok1 && ok2 {
-				return !reflect.DeepEqual(oldRBG.Status.RoleStatuses, newRBG.Status.RoleStatuses)
+			if !ok1 || !ok2 {
+				return false
 			}
-			return false
+			if !reflect.DeepEqual(oldRBG.Status.RoleStatuses, newRBG.Status.RoleStatuses) {
+				return true
+			}
+			return rolesReplicasDiffer(oldRBG.Spec.Roles, newRBG.Spec.Roles)
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			return false
@@ -546,6 +554,36 @@ func RBGRoleStatusPredicate() predicate.Funcs {
 			return false
 		},
 	}
+}
+
+// rolesReplicasDiffer reports whether any role (matched by name) has a
+// different spec.replicas value between old and new. Roles only present
+// on one side count as a difference, so adding/removing/renaming a role
+// also fires the watch.
+func rolesReplicasDiffer(oldRoles, newRoles []workloadsv1alpha2.RoleSpec) bool {
+	if len(oldRoles) != len(newRoles) {
+		return true
+	}
+	oldByName := make(map[string]*int32, len(oldRoles))
+	for i := range oldRoles {
+		oldByName[oldRoles[i].Name] = oldRoles[i].Replicas
+	}
+	for i := range newRoles {
+		oldRep, ok := oldByName[newRoles[i].Name]
+		if !ok {
+			return true
+		}
+		newRep := newRoles[i].Replicas
+		switch {
+		case oldRep == nil && newRep == nil:
+			continue
+		case oldRep == nil || newRep == nil:
+			return true
+		case *oldRep != *newRep:
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RoleBasedGroupScalingAdapterReconciler) GetTargetRbgFromAdapter(

@@ -878,8 +878,19 @@ func TestMapRBGToScalingAdapters(t *testing.T) {
 }
 
 // Gaps 9-11: RBG watch predicate
-func TestRBGRoleStatusPredicate(t *testing.T) {
-	pred := RBGRoleStatusPredicate()
+func TestRBGRoleSpecOrStatusPredicate(t *testing.T) {
+	pred := RBGRoleSpecOrStatusPredicate()
+
+	rbgWithStatus := func(roleStatuses []workloadsv1alpha2.RoleStatus) *workloadsv1alpha2.RoleBasedGroup {
+		return &workloadsv1alpha2.RoleBasedGroup{
+			Status: workloadsv1alpha2.RoleBasedGroupStatus{RoleStatuses: roleStatuses},
+		}
+	}
+	rbgWithRoles := func(roles ...workloadsv1alpha2.RoleSpec) *workloadsv1alpha2.RoleBasedGroup {
+		return &workloadsv1alpha2.RoleBasedGroup{
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: roles},
+		}
+	}
 
 	t.Run("UpdateFunc", func(t *testing.T) {
 		tests := []struct {
@@ -888,52 +899,96 @@ func TestRBGRoleStatusPredicate(t *testing.T) {
 			expected bool
 		}{
 			{
-				name: "returns true when RoleStatuses change",
+				name: "RoleStatuses change fires",
 				event: event.UpdateEvent{
-					ObjectOld: &workloadsv1alpha2.RoleBasedGroup{
-						Status: workloadsv1alpha2.RoleBasedGroupStatus{
-							RoleStatuses: []workloadsv1alpha2.RoleStatus{
-								{Name: "role-a", ReadyReplicas: 2},
-							},
-						},
-					},
-					ObjectNew: &workloadsv1alpha2.RoleBasedGroup{
-						Status: workloadsv1alpha2.RoleBasedGroupStatus{
-							RoleStatuses: []workloadsv1alpha2.RoleStatus{
-								{Name: "role-a", ReadyReplicas: 3},
-							},
-						},
-					},
+					ObjectOld: rbgWithStatus([]workloadsv1alpha2.RoleStatus{{Name: "a", ReadyReplicas: 2}}),
+					ObjectNew: rbgWithStatus([]workloadsv1alpha2.RoleStatus{{Name: "a", ReadyReplicas: 3}}),
 				},
 				expected: true,
 			},
 			{
-				name: "returns false when RoleStatuses unchanged",
+				name: "no change does not fire",
 				event: event.UpdateEvent{
-					ObjectOld: &workloadsv1alpha2.RoleBasedGroup{
-						Status: workloadsv1alpha2.RoleBasedGroupStatus{
-							RoleStatuses: []workloadsv1alpha2.RoleStatus{
-								{Name: "role-a", ReadyReplicas: 2},
-							},
-						},
-					},
-					ObjectNew: &workloadsv1alpha2.RoleBasedGroup{
-						Status: workloadsv1alpha2.RoleBasedGroupStatus{
-							RoleStatuses: []workloadsv1alpha2.RoleStatus{
-								{Name: "role-a", ReadyReplicas: 2},
-							},
-						},
-					},
+					ObjectOld: rbgWithStatus([]workloadsv1alpha2.RoleStatus{{Name: "a", ReadyReplicas: 2}}),
+					ObjectNew: rbgWithStatus([]workloadsv1alpha2.RoleStatus{{Name: "a", ReadyReplicas: 2}}),
 				},
 				expected: false,
 			},
 			{
-				name: "returns false for non-RBG types",
+				name: "non-RBG types do not fire",
 				event: event.UpdateEvent{
 					ObjectOld: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old"}},
 					ObjectNew: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "new"}},
 				},
 				expected: false,
+			},
+			{
+				name: "spec.replicas change fires (helm-style stomp)",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](10)}),
+					ObjectNew: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](1)}),
+				},
+				expected: true,
+			},
+			{
+				name: "spec.replicas nil to set fires",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a"}),
+					ObjectNew: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](1)}),
+				},
+				expected: true,
+			},
+			{
+				name: "spec.replicas set to nil fires",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](5)}),
+					ObjectNew: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a"}),
+				},
+				expected: true,
+			},
+			{
+				name: "spec.replicas equal, other fields differ does not fire",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(workloadsv1alpha2.RoleSpec{
+						Name: "a", Replicas: ptr.To[int32](3),
+						Annotations: map[string]string{"k": "v1"},
+					}),
+					ObjectNew: rbgWithRoles(workloadsv1alpha2.RoleSpec{
+						Name: "a", Replicas: ptr.To[int32](3),
+						Annotations: map[string]string{"k": "v2"},
+					}),
+				},
+				expected: false,
+			},
+			{
+				name: "added role fires",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](1)}),
+					ObjectNew: rbgWithRoles(
+						workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](1)},
+						workloadsv1alpha2.RoleSpec{Name: "b", Replicas: ptr.To[int32](2)},
+					),
+				},
+				expected: true,
+			},
+			{
+				name: "removed role fires",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(
+						workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](1)},
+						workloadsv1alpha2.RoleSpec{Name: "b", Replicas: ptr.To[int32](2)},
+					),
+					ObjectNew: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "a", Replicas: ptr.To[int32](1)}),
+				},
+				expected: true,
+			},
+			{
+				name: "renamed role fires (different role names with same count)",
+				event: event.UpdateEvent{
+					ObjectOld: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "old", Replicas: ptr.To[int32](1)}),
+					ObjectNew: rbgWithRoles(workloadsv1alpha2.RoleSpec{Name: "new", Replicas: ptr.To[int32](1)}),
+				},
+				expected: true,
 			},
 		}
 

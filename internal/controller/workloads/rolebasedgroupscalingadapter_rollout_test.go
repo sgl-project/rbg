@@ -667,7 +667,7 @@ func TestRBGStatusChangedPredicate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pred := RBGRoleStatusPredicate()
+			pred := RBGRoleSpecOrStatusPredicate()
 
 			oldRBG := &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
