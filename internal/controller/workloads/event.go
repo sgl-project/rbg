@@ -37,6 +37,14 @@ const (
 	// InvalidGangSchedulingAnnotations is emitted when group-gang-scheduling and
 	// role-instance-gang-scheduling annotations are set simultaneously on the same RBG.
 	InvalidGangSchedulingAnnotations = "InvalidGangSchedulingAnnotations"
+	// ReplicasOverriddenByAdapter is emitted when an external mutator (e.g. a
+	// `helm upgrade` whose chart no longer carries spec.roles[].replicas) sets
+	// spec.roles[i].replicas to a value that disagrees with a bound
+	// RoleBasedGroupScalingAdapter. The controller treats the adapter's value
+	// as authoritative and emits this event each reconcile that performs an
+	// override (so it fires once per drift episode, then stops as the adapter
+	// controller writes the value back).
+	ReplicasOverriddenByAdapter = "ReplicasOverriddenByAdapter"
 )
 
 // rbg-scaling-adapter events

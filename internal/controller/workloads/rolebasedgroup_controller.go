@@ -158,6 +158,10 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Info("Finished reconciling", "duration", time.Since(start))
 	}()
 
+	if err := r.applyRBGSAReplicasOverride(ctx, rbg); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Step 0: Pre-check validations
 	if err := r.preCheck(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
@@ -797,6 +801,68 @@ func buildScalingAdapterLabels(roleSpec *workloadsv1alpha2.RoleSpec, rbgName, ro
 	merged[constants.GroupNameLabelKey] = rbgName
 	merged[constants.RoleNameLabelKey] = roleName
 	return merged
+}
+
+// applyRBGSAReplicasOverride mutates rbg in-memory so that, for each role
+// with a bound RoleBasedGroupScalingAdapter, role.Replicas reflects the
+// adapter's spec.replicas. Without this override a client-side merge from
+// helm (or any other external mutator) that drops spec.roles[i].replicas
+// would let the apiserver fill the field with the CRD default of 1, the
+// rest of Reconcile would scale the underlying workload to 1, and pods
+// would churn until the adapter controller wrote the correct value back.
+//
+// Callers that intentionally manage replicas without an autoscaler are
+// unaffected: when scalingAdapter.enable is false, when the adapter is not
+// yet bound, or when adapter.spec.replicas is nil, the role's own value is
+// kept.
+func (r *RoleBasedGroupReconciler) applyRBGSAReplicasOverride(
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	logger := log.FromContext(ctx)
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		if !scale.IsScalingAdapterEnable(role) {
+			continue
+		}
+		adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+		adapterName := scale.GenerateScalingAdapterName(rbg.Name, role.Name)
+		if err := r.client.Get(ctx, types.NamespacedName{
+			Namespace: rbg.Namespace, Name: adapterName,
+		}, adapter); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("get scaling adapter %s/%s: %w", rbg.Namespace, adapterName, err)
+		}
+		if adapter.Status.Phase != constants.AdapterPhaseBound {
+			continue
+		}
+		if adapter.Spec.Replicas == nil {
+			continue
+		}
+		if role.Replicas != nil && *role.Replicas == *adapter.Spec.Replicas {
+			continue
+		}
+		var observed any = "<nil>"
+		if role.Replicas != nil {
+			observed = *role.Replicas
+		}
+		logger.Info(
+			"Overriding role.Replicas from bound RBGSA",
+			"role", role.Name,
+			"observed", observed,
+			"desired", *adapter.Spec.Replicas,
+			"adapter", adapterName,
+		)
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, ReplicasOverriddenByAdapter,
+			"Role %q replicas reset to RBGSA %q (desired=%d, observed=%v); "+
+				"external mutator (e.g. helm upgrade) likely dropped spec.roles[].replicas",
+			role.Name, adapterName, *adapter.Spec.Replicas, observed,
+		)
+		role.Replicas = ptr.To(*adapter.Spec.Replicas)
+	}
+	return nil
 }
 
 func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(

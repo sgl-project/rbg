@@ -39,6 +39,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
@@ -1015,6 +1016,200 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter_LabelUpdate(t *testing
 	err = r.ReconcileScalingAdapter(context.Background(), rbg, roleSpec)
 	if err != nil {
 		t.Fatalf("second ReconcileScalingAdapter() unexpected error: %v", err)
+	}
+}
+
+func TestRoleBasedGroupReconciler_applyRBGSAReplicasOverride(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	const (
+		rbgName  = "test-rbg"
+		ns       = "default"
+		roleName = "leader"
+	)
+	adapterName := scale.GenerateScalingAdapterName(rbgName, roleName)
+
+	makeRBG := func(roleReplicas *int32, scalingAdapterEnable bool) *workloadsv1alpha2.RoleBasedGroup {
+		role := workloadsv1alpha2.RoleSpec{
+			Name:     roleName,
+			Replicas: roleReplicas,
+		}
+		if scalingAdapterEnable {
+			role.ScalingAdapter = &workloadsv1alpha2.ScalingAdapter{Enable: true}
+		}
+		return &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: rbgName, Namespace: ns},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{role},
+			},
+		}
+	}
+
+	makeAdapter := func(phase constants.AdapterPhase, replicas *int32) *workloadsv1alpha2.RoleBasedGroupScalingAdapter {
+		return &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+			ObjectMeta: metav1.ObjectMeta{Name: adapterName, Namespace: ns},
+			Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+				Replicas: replicas,
+			},
+			Status: workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus{
+				Phase: phase,
+			},
+		}
+	}
+
+	tests := []struct {
+		name             string
+		rbg              *workloadsv1alpha2.RoleBasedGroup
+		seedAdapter      *workloadsv1alpha2.RoleBasedGroupScalingAdapter
+		expectedReplicas *int32
+		expectEvent      bool
+		wantErr          bool
+	}{
+		{
+			name:             "scalingAdapter disabled: role.Replicas untouched",
+			rbg:              makeRBG(ptr.To[int32](3), false),
+			seedAdapter:      makeAdapter(constants.AdapterPhaseBound, ptr.To[int32](10)),
+			expectedReplicas: ptr.To[int32](3),
+		},
+		{
+			name:             "RBGSA missing: role.Replicas untouched",
+			rbg:              makeRBG(ptr.To[int32](1), true),
+			seedAdapter:      nil,
+			expectedReplicas: ptr.To[int32](1),
+		},
+		{
+			name:             "RBGSA unbound: role.Replicas untouched",
+			rbg:              makeRBG(ptr.To[int32](1), true),
+			seedAdapter:      makeAdapter(constants.AdapterPhaseNotBound, ptr.To[int32](10)),
+			expectedReplicas: ptr.To[int32](1),
+		},
+		{
+			name:             "RBGSA bound but spec.replicas nil: role.Replicas untouched",
+			rbg:              makeRBG(ptr.To[int32](1), true),
+			seedAdapter:      makeAdapter(constants.AdapterPhaseBound, nil),
+			expectedReplicas: ptr.To[int32](1),
+		},
+		{
+			name:             "RBGSA bound, replicas equal: no change",
+			rbg:              makeRBG(ptr.To[int32](10), true),
+			seedAdapter:      makeAdapter(constants.AdapterPhaseBound, ptr.To[int32](10)),
+			expectedReplicas: ptr.To[int32](10),
+		},
+		{
+			name:             "RBGSA bound, replicas differ: override to adapter value",
+			rbg:              makeRBG(ptr.To[int32](1), true),
+			seedAdapter:      makeAdapter(constants.AdapterPhaseBound, ptr.To[int32](10)),
+			expectedReplicas: ptr.To[int32](10),
+			expectEvent:      true,
+		},
+		{
+			name:             "RBGSA bound, role.Replicas nil: override to adapter value",
+			rbg:              makeRBG(nil, true),
+			seedAdapter:      makeAdapter(constants.AdapterPhaseBound, ptr.To[int32](7)),
+			expectedReplicas: ptr.To[int32](7),
+			expectEvent:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(testScheme)
+			if tt.seedAdapter != nil {
+				builder = builder.WithObjects(tt.seedAdapter)
+			}
+			fakeClient := builder.Build()
+			recorder := record.NewFakeRecorder(2)
+			r := &RoleBasedGroupReconciler{
+				client:    fakeClient,
+				apiReader: fakeClient,
+				scheme:    testScheme,
+				recorder:  recorder,
+			}
+
+			err := r.applyRBGSAReplicasOverride(context.Background(), tt.rbg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("applyRBGSAReplicasOverride() err=%v wantErr=%v", err, tt.wantErr)
+			}
+
+			got := tt.rbg.Spec.Roles[0].Replicas
+			switch {
+			case tt.expectedReplicas == nil && got != nil:
+				t.Fatalf("expected nil replicas, got %d", *got)
+			case tt.expectedReplicas != nil && got == nil:
+				t.Fatalf("expected %d replicas, got nil", *tt.expectedReplicas)
+			case tt.expectedReplicas != nil && got != nil && *tt.expectedReplicas != *got:
+				t.Fatalf("expected %d replicas, got %d", *tt.expectedReplicas, *got)
+			}
+
+			if tt.expectEvent {
+				select {
+				case ev := <-recorder.Events:
+					if !strings.Contains(ev, ReplicasOverriddenByAdapter) {
+						t.Errorf("expected event with reason %q, got %q", ReplicasOverriddenByAdapter, ev)
+					}
+					if !strings.Contains(ev, "Warning") {
+						t.Errorf("expected Warning event, got %q", ev)
+					}
+				default:
+					t.Errorf("expected an Event but none was recorded")
+				}
+			} else {
+				select {
+				case ev := <-recorder.Events:
+					t.Errorf("expected no Event, got %q", ev)
+				default:
+				}
+			}
+		})
+	}
+}
+
+func TestRoleBasedGroupReconciler_applyRBGSAReplicasOverride_GetError(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name:           "leader",
+					Replicas:       ptr.To[int32](3),
+					ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{Enable: true},
+				},
+			},
+		},
+	}
+
+	getErr := fmt.Errorf("transient apiserver error")
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter); ok {
+					return getErr
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := &RoleBasedGroupReconciler{
+		client:    fakeClient,
+		apiReader: fakeClient,
+		scheme:    testScheme,
+		recorder:  record.NewFakeRecorder(1),
+	}
+
+	err := r.applyRBGSAReplicasOverride(context.Background(), rbg)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "get scaling adapter") {
+		t.Fatalf("expected wrapped error mentioning 'get scaling adapter', got %v", err)
 	}
 }
 
