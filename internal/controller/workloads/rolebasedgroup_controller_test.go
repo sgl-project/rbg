@@ -331,6 +331,33 @@ func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
 	}
 }
 
+func Test_CalculateNextRollingTarget_MinProgressWhenNoRoleReady(t *testing.T) {
+	maxSkew := "10%"
+	roles := sets.New[string]("prefill", "decode")
+	desiredReplicas := map[string]int32{
+		"prefill": 1,
+		"decode":  1,
+	}
+	updatedReplicas := map[string]int32{
+		"prefill": 0,
+		"decode":  0,
+	}
+	readyReplicas := map[string]int32{
+		"prefill": 0,
+		"decode":  0,
+	}
+
+	nextRollingTarget := calculateNextRollingTarget(&maxSkew, roles, desiredReplicas, updatedReplicas, readyReplicas)
+
+	var progressed int32
+	for _, target := range nextRollingTarget {
+		progressed += target
+	}
+	if progressed == 0 {
+		t.Fatalf("expected rolling target to progress, got %v", nextRollingTarget)
+	}
+}
+
 func TestRoleBasedGroupReconciler_CheckCrdExists_Partial(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)
