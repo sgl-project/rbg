@@ -55,6 +55,7 @@ import (
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/discovery"
@@ -339,11 +340,19 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 		mode = constants.RefineDiscoveryConfigMode
 	}
 
-	old := rbg.DeepCopy()
-	rbg.SetDiscoveryConfigMode(mode)
-	if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
+	gvk := utils.GetRbgGVK()
+	applyCfg := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gvk.Kind).
+		WithAPIVersion(gvk.GroupVersion().String()).
+		WithAnnotations(map[string]string{
+			constants.DiscoveryConfigModeAnnotationKey: string(mode),
+		})
+	if err := utils.PatchObjectApplyConfigurationWithFieldManager(
+		ctx, r.client, applyCfg, utils.PatchSpec, utils.RBGDiscoveryFieldManager,
+	); err != nil {
 		return true, err
 	}
+	rbg.SetDiscoveryConfigMode(mode)
 
 	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
 	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
