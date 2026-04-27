@@ -77,7 +77,7 @@ Install from [GitHub Releases](https://github.com/sgl-project/rbg/releases) (lat
 ```shell
 VERSION=$(curl -sL https://api.github.com/repos/sgl-project/rbg/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
 helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download/v$VERSION/rbgs-$VERSION.tgz \
-            --create-namespace --wait
+            --namespace rbgs-system --create-namespace --wait
 ```
 
 For detailed instructions, see [Installation Guide](doc/install.md).
