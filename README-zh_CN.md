@@ -76,7 +76,8 @@
 
 ```shell
 VERSION=$(curl -sL https://api.github.com/repos/sgl-project/rbg/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
-helm install rbg-controller https://github.com/sgl-project/rbg/releases/download/v$VERSION/rbgs-$VERSION.tgz
+helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download/v$VERSION/rbgs-$VERSION.tgz \
+            --create-namespace --wait
 ```
 
 详细安装说明请参考 [安装指南](doc/install.md)。
