@@ -72,22 +72,11 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 
 ### 📦 Installation
 
-Download the helm chart from [GitHub Releases](https://github.com/sgl-project/rbg/releases) and install:
-
-```shell
-# Download from latest release
-helm pull rbgs --version v0.7.0-alpha.3 \
-  --url https://github.com/sgl-project/rbg/releases/download/v0.7.0-alpha.3/rbgs-0.7.0-alpha.3.tgz
-
-# Install
-helm install rbg-controller rbgs-0.7.0-alpha.3.tgz
-```
-
-Or install directly from URL:
+Install from [GitHub Releases](https://github.com/sgl-project/rbg/releases) (latest version):
 
 ```shell
 helm install rbg-controller \
-  https://github.com/sgl-project/rbg/releases/download/v0.7.0-alpha.3/rbgs-0.7.0-alpha.3.tgz
+  https://github.com/sgl-project/rbg/releases/download/$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+')/rbgs-$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+').tgz
 ```
 
 For detailed instructions, see [Installation Guide](doc/install.md).
