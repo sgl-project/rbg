@@ -291,30 +291,10 @@ jobs:
           kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
           kubectl get pods -n volcano-system
 
-      - name: Build and load controller image
-        run: |
-          make docker-build-controller TAG=e2e-manifest
-          docker images | grep rbgs-controller || true
-          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-manifest --name rbgs-manifest-e2e
-
-      - name: Build and load CRD Upgrader image
-        run: |
-          make docker-build-crd-upgrader TAG=e2e-manifest
-          docker images | grep rbgs-upgrade-crd || true
-          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-manifest --name rbgs-manifest-e2e
-
       - name: Deploy controller using manifest
         run: |
-          # Create namespace first
-          kubectl create namespace rbgs-system
-
-          # Apply manifests with image tag override
-          kubectl apply -f deploy/kubectl/manifests.yaml \
-            --namespace rbgs-system \
-            --dry-run=client -o yaml | \
-            sed 's|docker.io/rolebasedgroup/rbgs-controller:.*|docker.io/rolebasedgroup/rbgs-controller:e2e-manifest|g' | \
-            sed 's|docker.io/rolebasedgroup/rbgs-upgrade-crd:.*|docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-manifest|g' | \
-            kubectl apply -f -
+          # Apply manifests with server-side apply (required for large CRD annotations)
+          kubectl apply --server-side -f deploy/kubectl/manifests.yaml
 
           kubectl get deploy -n rbgs-system
 
