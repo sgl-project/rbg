@@ -75,8 +75,8 @@
 从 [GitHub Releases](https://github.com/sgl-project/rbg/releases) 安装（最新版本）：
 
 ```shell
-helm install rbg-controller \
-  https://github.com/sgl-project/rbg/releases/download/$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+')/rbgs-$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+').tgz
+VERSION=$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+')
+helm install rbg-controller https://github.com/sgl-project/rbg/releases/download/$VERSION/rbgs-$VERSION.tgz
 ```
 
 详细安装说明请参考 [安装指南](doc/install.md)。

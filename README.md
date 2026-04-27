@@ -75,8 +75,8 @@ Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM
 Install from [GitHub Releases](https://github.com/sgl-project/rbg/releases) (latest version):
 
 ```shell
-helm install rbg-controller \
-  https://github.com/sgl-project/rbg/releases/download/$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+')/rbgs-$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+').tgz
+VERSION=$(curl -sL https://github.com/sgl-project/rbg/releases/latest | grep -oP 'tag/v\K[0-9a-zA-Z.-]+')
+helm install rbg-controller https://github.com/sgl-project/rbg/releases/download/$VERSION/rbgs-$VERSION.tgz
 ```
 
 For detailed instructions, see [Installation Guide](doc/install.md).
