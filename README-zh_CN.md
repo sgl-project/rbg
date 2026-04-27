@@ -183,7 +183,7 @@ kubectl rbg llm model pull Qwen/Qwen3.5-0.8B
 kubectl rbg llm svc run my-qwen Qwen/Qwen3.5-0.8B
 
 # 与服务对话
-kubectl rbg llm svc chat my-qwen
+kubectl rbg llm svc chat my-qwen -i
 ```
 
 详细 CLI 文档请参考 [kubectl-rbg](doc/cli/kubectl-rbg.md)。
