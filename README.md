@@ -182,8 +182,11 @@ kubectl rbg llm model pull Qwen/Qwen3.5-0.8B
 # Deploy as inference service
 kubectl rbg llm svc run my-qwen Qwen/Qwen3.5-0.8B
 
-# Chat with the service
+# Chat with the service (interactive)
 kubectl rbg llm svc chat my-qwen -i
+
+# Or send a single prompt
+kubectl rbg llm svc chat my-qwen --prompt "What is Kubernetes?"
 ```
 
 For detailed CLI documentation, see [kubectl-rbg](doc/cli/kubectl-rbg.md).
