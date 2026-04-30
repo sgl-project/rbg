@@ -365,6 +365,21 @@ type InstanceComponent struct {
 	// ServiceName is the name of the service that governs this Instance Component.
 	ServiceName string `json:"serviceName,omitempty"`
 
+	// Labels are additional labels merged into every pod of this component at creation time.
+	// They are merged with (and take precedence over) any labels already present in
+	// Template.Metadata.Labels.  Controller-directive labels can be placed here to keep
+	// the template.spec clean.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations are additional annotations merged into every pod of this component at
+	// creation time.  They are merged with (and take precedence over) any annotations
+	// already present in Template.Metadata.Annotations.
+	// Controller-directive annotations such as component-depends-on, port-allocator, and
+	// component-discovery should be placed here rather than inside template.metadata.annotations.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
 	// Template is the template for the component pods.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless

@@ -69,6 +69,21 @@ type RoleInstanceComponent struct {
 	// where "pod-specific-string" is managed by the RoleInstance controller.
 	ServiceName string `json:"serviceName,omitempty"`
 
+	// Labels are additional labels merged into every pod of this component at creation time.
+	// These are copied from InstanceComponent.Labels during reconciliation and are merged
+	// with (and take precedence over) any labels already present in Template.Metadata.Labels.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations are additional annotations merged into every pod of this component at
+	// creation time.  These are copied from InstanceComponent.Annotations during reconciliation
+	// and are merged with (and take precedence over) any annotations already present in
+	// Template.Metadata.Annotations.
+	// Controller-directive annotations (component-depends-on, port-allocator,
+	// component-discovery) live here.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
 	// Template is the template for the component pods.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless

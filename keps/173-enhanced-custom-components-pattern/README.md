@@ -81,6 +81,33 @@ on the same `RoleInstanceTemplate.Components[]` abstraction for all three patter
 to `CustomComponentsPattern`-equivalent structures. This design gives `CustomComponentsPattern` the
 full expressive power of the system.
 
+**What is a Component — the RoleInstanceSet connection**
+
+The `component` concept in `CustomComponentsPattern` is not an RBG-internal abstraction; it
+maps **one-to-one** onto the `RoleInstanceComponent` type defined in `RoleInstanceSet`.
+
+```
+RBG.spec.roles[].customComponentsPattern.components[]   (InstanceComponent)
+          │   controller translates
+          ▼
+RoleInstanceSet.spec.roleInstanceTemplate.components[]  (RoleInstanceComponent)
+          │   controller creates one RoleInstance per replica
+          ▼
+RoleInstance.spec.components[]                          (RoleInstanceComponent)
+          │   controller creates pods
+          ▼
+Pod × component.size
+```
+
+`RoleInstanceSet` is the actual workload CR that the RBG controller creates for a role. It holds
+`spec.roleInstanceTemplate`, which carries a `components[]` slice — each entry corresponds
+directly to one component in the user-declared `CustomComponentsPattern`. The
+`RoleInstanceSet` controller then instantiates one `RoleInstance` per replica, and each
+`RoleInstance` spawns `component.size` pods per component. Therefore:
+
+> A **component** in `CustomComponentsPattern` is the user-facing description of a
+> `RoleInstanceComponent` inside the `RoleInstanceSet` that backs this role.
+
 ### Emerging Need: Complex Heterogeneous Topologies
 
 Modern LLM inference deployments — particularly disaggregated Prefill-Decode architectures and
@@ -116,8 +143,10 @@ addresses the remaining two gaps.
 
 ### Goals
 
-- Support deterministic component creation order (array order) and deletion order (reverse array
-  order) within `CustomComponentsPattern`, without introducing new API fields.
+- Support flexible, explicit component startup/teardown ordering within `CustomComponentsPattern`
+  via a per-component annotation `rolebasedgroup.workloads.x-k8s.io/component-depends-on` with
+  `startAfter` and `deleteAfter` fields. The readiness gate uses
+  `RoleInstance.Status.ComponentStatuses.ReadyReplicas >= Size` rather than pod-level scheduling.
 - Introduce an opt-in annotation `rolebasedgroup.workloads.x-k8s.io/component-discovery` on
   component Pod templates to inject intra-role component addresses and port values as environment
   variables.
@@ -160,61 +189,25 @@ spec:
       replicas: 2
       customComponentsPattern:
         components:
-          # Array order = creation order: router → leader → worker
-          - name: router
-            size: 1
-            template:
-              metadata:
-                annotations:
-                  rolebasedgroup.workloads.x-k8s.io/port-allocator: |
-                    {
-                      "allocations": [
-                        {
-                          "name": "router-grpc",
-                          "env": "ROUTER_GRPC_PORT",
-                          "annotationKey": "example/router-grpc-port",
-                          "scope": "RoleScoped"
-                        }
-                      ]
-                    }
-              spec:
-                containers:
-                  - name: router
-                    image: prefill-router:v1
-
+          # leader and worker start in parallel (no startAfter);
+          # both must be deleted after router is gone (deleteAfter).
           - name: leader
             size: 1
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"deleteAfter": ["router"]}
+              rolebasedgroup.workloads.x-k8s.io/port-allocator: |
+                {
+                  "allocations": [
+                    {
+                      "name": "leader-grpc",
+                      "env": "LEADER_GRPC_PORT",
+                      "annotationKey": "example/leader-grpc-port",
+                      "scope": "RoleScoped"
+                    }
+                  ]
+                }
             template:
-              metadata:
-                annotations:
-                  rolebasedgroup.workloads.x-k8s.io/port-allocator: |
-                    {
-                      "allocations": [
-                        {
-                          "name": "leader-grpc",
-                          "env": "LEADER_GRPC_PORT",
-                          "annotationKey": "example/leader-grpc-port",
-                          "scope": "RoleScoped"
-                        }
-                      ]
-                    }
-                  rolebasedgroup.workloads.x-k8s.io/component-discovery: |
-                    {
-                      "portRefs": [
-                        {
-                          "env": "ROUTER_GRPC_PORT",
-                          "component": "router",
-                          "portName": "router-grpc"
-                        }
-                      ],
-                      "addressRefs": [
-                        {
-                          "env": "ROUTER_ADDR",
-                          "component": "router",
-                          "index": 0
-                        }
-                      ]
-                    }
               spec:
                 containers:
                   - name: leader
@@ -222,35 +215,63 @@ spec:
 
           - name: worker
             size: 4
-            template:
-              metadata:
-                annotations:
-                  rolebasedgroup.workloads.x-k8s.io/component-discovery: |
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"deleteAfter": ["router"]}
+              rolebasedgroup.workloads.x-k8s.io/component-discovery: |
+                {
+                  "portRefs": [
                     {
-                      "portRefs": [
-                        {
-                          "env": "LEADER_GRPC_PORT",
-                          "component": "leader",
-                          "portName": "leader-grpc"
-                        }
-                      ],
-                      "addressRefs": [
-                        {
-                          "env": "LEADER_ADDR",
-                          "component": "leader",
-                          "index": 0
-                        }
-                      ]
+                      "env": "LEADER_GRPC_PORT",
+                      "component": "leader",
+                      "portName": "leader-grpc"
                     }
+                  ],
+                  "addressRefs": [
+                    {
+                      "env": "LEADER_ADDR",
+                      "component": "leader",
+                      "index": 0
+                    }
+                  ]
+                }
+            template:
               spec:
                 containers:
                   - name: worker
                     image: prefill-worker:v1
+
+          # router starts only after both leader and worker are Ready;
+          # it is deleted first (no deleteAfter — reverse of startAfter is auto-derived).
+          - name: router
+            size: 1
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"startAfter": ["leader", "worker"]}
+              rolebasedgroup.workloads.x-k8s.io/port-allocator: |
+                {
+                  "allocations": [
+                    {
+                      "name": "router-grpc",
+                      "env": "ROUTER_GRPC_PORT",
+                      "annotationKey": "example/router-grpc-port",
+                      "scope": "RoleScoped"
+                    }
+                  ]
+                }
+            template:
+              spec:
+                containers:
+                  - name: router
+                    image: prefill-router:v1
 ```
 
 When an instance `prefill-0` is created, the resulting Pods will have:
-- `leader-0` Pod env: `ROUTER_GRPC_PORT=<allocated-port>`, `ROUTER_ADDR=<router-0-fqdn>`
 - `worker-{0..3}` Pods env: `LEADER_GRPC_PORT=<allocated-port>`, `LEADER_ADDR=<leader-0-fqdn>`
+
+The `router` pod is created only after both `leader` and `worker` pods have `ReadyReplicas == Size`
+in the instance's `componentStatuses`. On deletion, `router` is removed first, followed by
+`leader` and `worker` in parallel.
 
 #### Story 2: Domestic GPU Card Special Adaptation
 
@@ -267,52 +288,132 @@ must receive those endpoints at startup. `CustomComponentsPattern` with the new
 
 | Risk | Mitigation |
 |---|---|
-| Array-order creation assumption may not hold in all scheduler scenarios | The ordering is best-effort at the controller level (create in order, do not create next until previous is scheduled). For strict readiness-based ordering, users should use `restartPolicy` + liveness/readiness probes. |
+| `startAfter` gate may cause components to wait longer than expected | The gate is evaluated against `RoleInstance.Status.ComponentStatuses.ReadyReplicas >= Size`, which is set only when pods pass readiness probes. This is the intended semantics — if a dependency is slow to become ready, the controller waits correctly without creating unready dependents. |
 | Discovery annotation references a component that doesn't exist | Controller validation (webhook) rejects the RBG at admission time. |
 | Port reference targets a port not defined in port-allocator annotation | Controller returns error in reconcile and surfaces via RBG status condition. |
-| Circular address references (A refs B, B refs A) | No cycle is possible since a component can only reference addresses/ports; it cannot be referenced by itself to create a dependency loop. Annotations are pure data injection, not execution ordering. |
+| Circular dependency in `startAfter` / `deleteAfter` (A refs B, B refs A) | `DetectCycle` runs DFS on the dependency graph at each reconcile. If a cycle is found, the controller logs an error and falls back to the default parallel mode to avoid a deadlock. |
 
 ## Design Details
 
 ### Feature 1: Component Lifecycle Ordering
 
+**Default behavior: Parallel (no breaking change)**
+
+When no `component-depends-on` annotation is present on any component, all components in a
+`CustomComponentsPattern` are created and deleted concurrently — preserving existing behavior.
+No change is made to any workload that does not set the annotation.
+
+**Per-component annotation: `rolebasedgroup.workloads.x-k8s.io/component-depends-on`**
+
+Ordering constraints are expressed **per component** via the component's top-level `annotations`
+field (not on the role, and not in `template.metadata.annotations`). This gives fine-grained,
+explicit control over which component must start/stop before which.
+
+The annotation value is a JSON object:
+
+```go
+// ComponentDependsOnConfig is the JSON-encoded value of the component-depends-on annotation.
+type ComponentDependsOnConfig struct {
+    // StartAfter lists components that must have ReadyReplicas == Size in
+    // the instance's componentStatuses before this component's pods are created.
+    // By default (when DeleteAfter is absent), the implicit delete order is the reverse:
+    // this component is deleted before any component it listed in StartAfter.
+    // +optional
+    StartAfter []string `json:"startAfter,omitempty"`
+
+    // DeleteAfter lists components that must be fully deleted before this
+    // component's pods are deleted. Independent of StartAfter — use it to express
+    // a delete order that differs from the reverse start order.
+    // When both are set, both constraints are applied (union).
+    // +optional
+    DeleteAfter []string `json:"deleteAfter,omitempty"`
+}
+```
+
+**Readiness gate for `startAfter`**
+
+A component listed in `startAfter` is considered **ready** when its entry in the owning
+`RoleInstance.Status.ComponentStatuses` satisfies:
+
+```
+ReadyReplicas >= Size  &&  Size > 0
+```
+
+This is evaluated on the status written by the previous reconcile loop, so the gate becomes true
+only after the dependency's pods are genuinely ready (not merely scheduled).
+
+**Example: Router starts after Leader and Worker**
+
+```yaml
+spec:
+  roles:
+    - name: prefill
+      replicas: 2
+      customComponentsPattern:
+        components:
+          - name: leader
+            size: 1
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"deleteAfter": ["router"]}
+            # ...
+
+          - name: worker
+            size: 2
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"deleteAfter": ["router"]}
+            # ...
+
+          - name: router
+            size: 1
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"startAfter": ["leader", "worker"]}
+            # ...
+```
+
 **Creation Order**
 
-Components within `CustomComponentsPattern.components[]` are created in array declaration order.
-The controller iterates the components slice in forward order when constructing `RoleInstance` specs.
-The underlying `RoleInstanceSet` controller then creates component pods in the same order, waiting
-for each component's pods to reach the `Scheduled` phase before proceeding to the next component.
-
-This is a **zero-API-change** implementation: the semantics are derived purely from the existing
-array ordering of the `components` field.
-
-Example:
-```yaml
-components:
-  - name: router    # created first
-  - name: leader    # created after router pods are scheduled
-  - name: worker    # created last
-```
+When the controller reconciles scale-out, it iterates all components with pending pod creation.
+For each component, it checks whether all names in its `startAfter` list have
+`ReadyReplicas >= Size` in `RoleInstance.Status.ComponentStatuses`. Only components whose
+dependencies are satisfied are allowed to proceed with pod creation in that reconcile pass.
 
 **Deletion Order**
 
-When a RoleInstance is deleted (scale-down or RBG deletion), components are torn down in
-**reverse array order**:
+Deletion gates are derived from two sources (union of both):
 
+1. **Reverse of `startAfter`**: if component `X` started after `Y`, then `Y` is deleted only
+   after `X` is fully gone (no excess pods remain).
+2. **Explicit `deleteAfter`**: the annotated component waits for the listed components to be
+   fully deleted before its own pods are removed.
+
+Example (using the YAML above):
 ```
-worker → leader → router
+Delete order: router → (leader, worker in parallel)
+  gates["router"]  = []                  # deleted first
+  gates["leader"]  = ["router"]          # waits for router deletion
+  gates["worker"]  = ["router"]          # waits for router deletion
 ```
 
-This ensures dependent processes are stopped before the processes they depend on.
+**Cycle detection**
 
-The deletion order is implemented in the `RoleInstanceSet` controller's scale-down path by
-reversing the component list when issuing pod deletions.
+If the `startAfter` or `deleteAfter` dependency graph contains a cycle, the controller logs an
+error and falls back to the default parallel mode to avoid a deadlock.
 
-**Rationale for not adding API fields now**
+**Rationale for component-level annotation over role-level annotation**
 
-Explicit ordering fields (e.g. `dependsOn`, `after`, priority integers) add significant API surface
-and validation complexity. Operational evidence from early adopters will inform whether simple
-array-order is sufficient. A follow-up KEP will introduce explicit ordering API if needed.
+The previous design used a single role-level annotation (`role-component-lifecycle: Ordered`) that
+imposed strict array-order on all components. The new per-component annotation:
+
+- Allows non-sequential topologies (e.g. leader and worker start in parallel, router starts after both).
+- Keeps the CRD schema unchanged (annotations, not fields).
+- Is orthogonal — components without the annotation are unaffected.
+
+**Constraint**: This annotation is only meaningful within `CustomComponentsPattern` roles.
+Using it on `StandalonePattern` or `LeaderWorkerPattern` templates is ignored (those patterns
+manage their own lifecycle).
 
 ---
 
@@ -490,33 +591,40 @@ Using it in `StandalonePattern` or `LeaderWorkerPattern` templates is rejected b
 - Port key construction for `PortRef` with `RoleScoped` and `PodScoped` ports
 - Env var injection into Pod spec
 - Validation: unknown component name rejected
-- Validation: out-of-bounds index rejected
+- Validation: out-of-bounds `index` rejected
 - Validation: portName not defined in port-allocator annotation rejected
+- `ComponentDependsOnConfig` JSON parsing: `startAfter` / `deleteAfter` arrays parsed correctly; absent annotation yields nil entries
+- `allNamedComponentsReady`: returns true iff all named components have `ReadyReplicas >= Size && Size > 0` in `componentStatuses`; returns false for missing component, `Size == 0`, or `ReadyReplicas < Size`
+- `DetectCycle`: correctly identifies cyclic and acyclic dependency graphs
+- `BuildDeletionGates`: correctly derives deletion constraints from reverse-startAfter + explicit deleteAfter (union, deduplicated)
 
 #### Integration Tests
 
-- Component creation order is respected: verify pods are created in array order within a
-  RoleInstance
-- Component deletion order is respected: verify pods are deleted in reverse array order on
-  scale-down
+- Component `startAfter` gate: pods are not created for a component until all listed dependencies have `ReadyReplicas >= Size` in `componentStatuses`
+- Component deletion gate: pods are not deleted for a component until all listed `deleteAfter` (and reverse-startAfter) components have no excess pods remaining
+- When no `component-depends-on` annotation is present, all component pods are created/deleted concurrently (default behavior unchanged)
+- Cycle detection: controller falls back to parallel mode and logs error when a cycle is detected
 - Address injection: FQDN env var is correctly set in target pods
 - Port injection: port value env var matches the value in RoleInstance annotation
 
 #### End to End Tests
 
-- Deploy RBG with a 3-component role (router/leader/worker), verify:
-  - Pods start in the correct order
-  - `LEADER_ADDR` env var in worker pods resolves to the expected FQDN
-  - `LEADER_GRPC_PORT` env var in worker pods matches the port-allocator allocated value
-  - Scale-down removes worker pods before leader pods before router pods
+- Deploy RBG with a 3-component role (`leader`/`worker`/`router`), verify:
+  - `router` pod creation timestamp is strictly after `leader` and `worker` pods
+  - `LEADER_ADDR` env var in `worker` pods resolves to the expected FQDN
+  - `LEADER_GRPC_PORT` env var in `worker` pods matches the port-allocator allocated value
+  - RBG deletion completes cleanly: `router` is removed first, then `leader`/`worker`
+  - `RoleInstance.Status.ComponentStatuses` shows `ReadyReplicas == Size` for all components when RBG is Ready
 
 ## Alternatives
 
-### Alternative 1: Explicit `dependsOn` Field in InstanceComponent
+### Alternative 1: Structured `dependsOn` API Field in InstanceComponent
 
-Add a `dependsOn []string` field to `InstanceComponent` to express explicit ordered dependencies
-between components. This is more expressive but significantly more complex to validate and reconcile
-(cycle detection, partial ordering). Deferred until array-order proves insufficient.
+Add a structured `dependsOn` field to `InstanceComponent` to move the lifecycle ordering
+configuration into the CRD schema. This is more discoverable and validatable but requires a CRD
+schema change and graduation process. The annotation-based approach was chosen to allow fast
+iteration; a structured field can be introduced in a follow-up KEP if operational evidence shows
+annotations are insufficient.
 
 ### Alternative 2: Dedicated ServiceDiscovery CRD
 

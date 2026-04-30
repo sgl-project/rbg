@@ -371,7 +371,7 @@ func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *w
 	inInplaceUpdating := isInstanceInInplaceUpdatingPhase(instance)
 	markPodNotReady := inInplaceUpdating
 	if getInstanceReadyPolicy(instance) == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
-		allPodRuntimeReady := r.allPodsRuntimeReady(ctx, instance)
+		allPodRuntimeReady := r.allPodsRuntimeReady(ctx, instance, pods)
 		markPodNotReady = inInplaceUpdating || !allPodRuntimeReady
 	}
 	_, err := instanceutils.DoItSlowly(len(pods), initialBatchSize, func() error {
@@ -406,12 +406,13 @@ func getInstanceReadyPolicy(instance *workloadsv1alpha2.RoleInstance) workloadsv
 	return policy
 }
 
-func (r *realStatusUpdater) allPodsRuntimeReady(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) bool {
+// allPodsRuntimeReady checks whether all existing pods in the instance are runtime-ready.
+// It uses only the already-fetched filteredPods to avoid fetching pods that have not yet
+// been created (e.g. components whose creation is gated on ordered startup dependencies).
+// This prevents a false "not-ready" lifecycle mark on existing pods when some components
+// haven't started yet due to startAfter ordering.
+func (r *realStatusUpdater) allPodsRuntimeReady(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
 	logger := log.FromContext(ctx)
-	pods, err := r.getExpectOwnedPods(instance)
-	if err != nil {
-		return false
-	}
 	for _, pod := range pods {
 		if !instanceutils.IsPodRuntimeReady(pod, 0) {
 			logger.Info("pod runtime not ready", "pod", klog.KObj(pod))

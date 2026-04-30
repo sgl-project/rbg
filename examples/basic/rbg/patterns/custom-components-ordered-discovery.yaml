@@ -1,0 +1,204 @@
+# Example: CustomComponentsPattern with Component Dependencies + Component Discovery (v1alpha2)
+#
+# Scenario: 3-component prefill role — disaggregated inference (leader/worker/router)
+#   - leader :  1 pod, no startAfter  (starts in parallel with worker)
+#   - worker :  2 pods, no startAfter (starts in parallel with leader)
+#   - router :  1 pod, startAfter leader AND worker (starts only after both are Running+Ready)
+#
+# Start order:  leader/worker in parallel → router
+# Delete order: router first → leader/worker in parallel
+#   (router.startAfter drives reverse-delete; leader/worker.deleteAfter["router"] reinforces it)
+#
+# Port allocation:
+#   leader : RoleScoped "leader-grpc"   → one shared port for the single leader pod
+#   worker : PodScoped  "worker-grpc"   → independent port per worker pod (pod-0 / pod-1)
+#   router : no port allocation         → router connects out, it doesn't expose a port here
+#
+# Injected env vars per component:
+#   leader pod:
+#     LEADER_GRPC_PORT  = <allocated by port-allocator; injected by controller>
+#   worker-{0,1} pods:
+#     WORKER_GRPC_PORT  = <each pod's own PodScoped port>
+#     LEADER_GRPC_PORT  = <leader's RoleScoped port>
+#     LEADER_ADDR       = prefill-prefill-<id>-leader-0.s-prefill-prefill.<ns>.svc.cluster.local
+#   router pod:
+#     LEADER_GRPC_PORT  = <leader's RoleScoped port>
+#     LEADER_ADDR       = prefill-prefill-<id>-leader-0.s-prefill-prefill.<ns>.svc.cluster.local
+#     WORKER_0_GRPC_PORT= <worker pod-0's PodScoped port>
+#     WORKER_0_ADDR     = prefill-prefill-<id>-worker-0.s-prefill-prefill.<ns>.svc.cluster.local
+#     WORKER_1_GRPC_PORT= <worker pod-1's PodScoped port>
+#     WORKER_1_ADDR     = prefill-prefill-<id>-worker-1.s-prefill-prefill.<ns>.svc.cluster.local
+#
+# Verify (after all pods are Running):
+#   kubectl exec -n default <worker-0-pod> -- env | grep -E 'LEADER_ADDR|LEADER_GRPC_PORT|WORKER_GRPC_PORT'
+#   kubectl exec -n default <router-pod>   -- env | grep -E 'LEADER|WORKER'
+---
+# Headless Service — provides DNS subdomain for all component pods in this role.
+# Service name must match GetServiceName(rbg, role) = "s-<rbgName>-<roleName>".
+apiVersion: v1
+kind: Service
+metadata:
+  name: s-pd-server-prefill
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    workloads.x-k8s.io/group-name: pd-server
+    workloads.x-k8s.io/role-name: prefill
+  ports:
+    - name: placeholder
+      port: 1
+      targetPort: 1
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: pd-server
+  namespace: default
+spec:
+  roles:
+    - name: prefill
+      replicas: 1
+      customComponentsPattern:
+        components:
+
+          # ── component 1: leader ───────────────────────────────────────────
+          # No startAfter — starts immediately (in parallel with worker).
+          # deleteAfter router — waits for router to be fully deleted before torn down.
+          # Allocates its own RoleScoped gRPC port; no outbound discovery needed.
+          - name: leader
+            size: 1
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"deleteAfter": ["router"]}
+              rolebasedgroup.workloads.x-k8s.io/port-allocator: |
+                {
+                  "allocations": [
+                    {
+                      "name": "leader-grpc",
+                      "env": "LEADER_GRPC_PORT",
+                      "scope": "RoleScoped"
+                    }
+                  ]
+                }
+            template:
+              spec:
+                containers:
+                  - name: leader
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 9001
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"
+
+          # ── component 2: worker ───────────────────────────────────────────
+          # No startAfter — starts immediately (in parallel with leader).
+          # deleteAfter router — waits for router to be fully deleted before torn down.
+          # Each pod allocates its own PodScoped gRPC port (worker-0 / worker-1 get different ports).
+          # Discovers leader's shared gRPC port and FQDN address via component-discovery.
+          - name: worker
+            size: 2
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"deleteAfter": ["router"]}
+              rolebasedgroup.workloads.x-k8s.io/port-allocator: |
+                {
+                  "allocations": [
+                    {
+                      "name": "worker-grpc",
+                      "env": "WORKER_GRPC_PORT",
+                      "scope": "PodScoped"
+                    }
+                  ]
+                }
+              rolebasedgroup.workloads.x-k8s.io/component-discovery: |
+                {
+                  "portRefs": [
+                    {
+                      "env": "LEADER_GRPC_PORT",
+                      "component": "leader",
+                      "portName": "leader-grpc"
+                    }
+                  ],
+                  "addressRefs": [
+                    {
+                      "env": "LEADER_ADDR",
+                      "component": "leader",
+                      "index": 0
+                    }
+                  ]
+                }
+            template:
+              spec:
+                containers:
+                  - name: worker
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 9002
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"
+
+          # ── component 3: router ───────────────────────────────────────────
+          # startAfter leader AND worker — starts only after both are Running+Ready.
+          # No deleteAfter — router is deleted first because leader/worker's deleteAfter gates
+          # prevent them from being torn down before router is gone.
+          # Discovers leader pod-0 and all worker pods (pod-0 / pod-1) for routing decisions.
+          - name: router
+            size: 1
+            annotations:
+              rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+                {"startAfter": ["leader", "worker"]}
+              rolebasedgroup.workloads.x-k8s.io/component-discovery: |
+                {
+                  "portRefs": [
+                    {
+                      "env": "LEADER_GRPC_PORT",
+                      "component": "leader",
+                      "portName": "leader-grpc"
+                    },
+                    {
+                      "env": "WORKER_0_GRPC_PORT",
+                      "component": "worker",
+                      "portName": "worker-grpc",
+                      "index": 0
+                    },
+                    {
+                      "env": "WORKER_1_GRPC_PORT",
+                      "component": "worker",
+                      "portName": "worker-grpc",
+                      "index": 1
+                    }
+                  ],
+                  "addressRefs": [
+                    {
+                      "env": "LEADER_ADDR",
+                      "component": "leader",
+                      "index": 0
+                    },
+                    {
+                      "env": "WORKER_0_ADDR",
+                      "component": "worker",
+                      "index": 0
+                    },
+                    {
+                      "env": "WORKER_1_ADDR",
+                      "component": "worker",
+                      "index": 1
+                    }
+                  ]
+                }
+            template:
+              spec:
+                containers:
+                  - name: router
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    ports:
+                      - containerPort: 9000
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"

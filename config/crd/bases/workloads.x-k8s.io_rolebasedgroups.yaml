@@ -23914,6 +23914,22 @@ spec:
                         components:
                           items:
                             properties:
+                              annotations:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Annotations are additional annotations merged into every pod of this component at
+                                  creation time.  They are merged with (and take precedence over) any annotations
+                                  already present in Template.Metadata.
+                                type: object
+                              labels:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Labels are additional labels merged into every pod of this component at creation time.
+                                  They are merged with (and take precedence over) any labels already present in
+                                  Template.Metadata.Labels.
+                                type: object
                               name:
                                 description: Name is the type name of the component.
                                 type: string

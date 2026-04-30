@@ -209,14 +209,19 @@ func GenInstanceFromTemplate(template *workloadsv1alpha2.RoleInstanceTemplate, s
 		instance.OwnerReferences = append(instance.OwnerReferences, *controllerRef)
 	}
 	instance.Spec = *template.RoleInstanceSpec.DeepCopy()
-	// Propagate gang-scheduling annotation from RoleInstanceSet to RoleInstance so that
-	// the instance controller can enforce gang-scheduling constraints (e.g. orphan-pod check,
-	// atomic pod recreation) without access to the parent RBG.
-	if v, ok := set.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey]; ok {
-		if instance.Annotations == nil {
-			instance.Annotations = make(map[string]string)
+	// Propagate selected role-level annotations from RoleInstanceSet to RoleInstance so that
+	// instance-level controllers can act on them without access to the parent RBG.
+	annotationsToCopy := []string{
+		// Gang-scheduling: enables orphan-pod checks and atomic pod recreation.
+		constants.RoleInstanceGangSchedulingAnnotationKey,
+	}
+	for _, key := range annotationsToCopy {
+		if v, ok := set.Annotations[key]; ok {
+			if instance.Annotations == nil {
+				instance.Annotations = make(map[string]string)
+			}
+			instance.Annotations[key] = v
 		}
-		instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] = v
 	}
 	return instance, nil
 }

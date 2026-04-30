@@ -27,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -120,14 +121,67 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	if err != nil {
 		return nil, err
 	}
-	for _, rg := range prt.Topologies {
-		if rg.ToDeleteIDs.Len() > 0 {
-			toDeleteNum += rg.ToDeleteIDs.Len()
-			toDeletePods = append(toDeletePods, rg.ToDeletePod...)
+
+	// Build the per-component dependency graphs from template annotations.
+	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(updateInstance.Spec.Components)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse component dependencies: %w", err)
+	}
+
+	hasDeps := componentdiscovery.HasAnyDependency(updateInstance.Spec.Components)
+	if hasDeps {
+		// Build the final deletion-gate graph (union of reverse-of-start and explicit deleteAfter).
+		deletionGates := componentdiscovery.BuildDeletionGates(startDeps, deleteDeps)
+
+		// Cycle detection: a cycle in either graph causes a deadlock — fall back to parallel.
+		if componentdiscovery.DetectCycle(startDeps) || componentdiscovery.DetectCycle(deletionGates) {
+			klog.ErrorS(nil, "component-depends-on graph has a cycle; falling back to parallel (no ordering)",
+				"instance", klog.KObj(updateInstance))
+			hasDeps = false
 		}
-		if rg.ToScaleIDs.Len() > 0 {
-			toScaleNum += rg.ToScaleIDs.Len()
-			toScaleRoleIDS[rg.Name] = rg.ToScaleIDs
+
+		if hasDeps {
+			// Build a name→group index for O(1) lookups (used by deletion gate check).
+			topoMap := make(map[string]*instancecore.ComponentPodGroup, len(prt.Topologies))
+			for i := range prt.Topologies {
+				topoMap[prt.Topologies[i].Name] = &prt.Topologies[i]
+			}
+
+			// Scale out: create pods for a component only when all its startAfter dependencies
+			// have ReadyReplicas == Size in the instance's componentStatuses.
+			for _, rg := range prt.Topologies {
+				if rg.ToScaleIDs.Len() > 0 {
+					if allNamedComponentsReady(startDeps[rg.Name], updateInstance.Status.ComponentStatuses) {
+						toScaleNum += rg.ToScaleIDs.Len()
+						toScaleRoleIDS[rg.Name] = rg.ToScaleIDs
+					}
+				}
+			}
+
+			// Scale in: delete pods for a component only when every component in its deletion
+			// gates (reverse-of-start ∪ explicit deleteAfter) has no remaining excess pods.
+			for _, rg := range prt.Topologies {
+				if rg.ToDeleteIDs.Len() > 0 {
+					if allDependentsDeleted(deletionGates[rg.Name], topoMap) {
+						toDeleteNum += rg.ToDeleteIDs.Len()
+						toDeletePods = append(toDeletePods, rg.ToDeletePod...)
+					}
+				}
+			}
+		}
+	}
+
+	if !hasDeps {
+		// Default parallel mode: process all components concurrently.
+		for _, rg := range prt.Topologies {
+			if rg.ToDeleteIDs.Len() > 0 {
+				toDeleteNum += rg.ToDeleteIDs.Len()
+				toDeletePods = append(toDeletePods, rg.ToDeletePod...)
+			}
+			if rg.ToScaleIDs.Len() > 0 {
+				toScaleNum += rg.ToScaleIDs.Len()
+				toScaleRoleIDS[rg.Name] = rg.ToScaleIDs
+			}
 		}
 	}
 
@@ -143,6 +197,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 	coreControl := instancecore.New(updateInstance)
 	var newPods []*v1.Pod
 	componentPortConfigs := make(map[string]*portallocator.PortAllocatorConfig)
+	componentDiscoveryEnabled := make(map[string]bool)
 
 	for _, component := range updateInstance.Spec.Components {
 		updatePods, err := coreControl.NewUpdatePods(updateRevision, component.Name, sets.List(expectedCreations[component.Name]))
@@ -158,6 +213,11 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 				return false, fmt.Errorf("failed to parse port allocator config for component %s: %w", component.Name, err)
 			}
 			componentPortConfigs[component.Name] = config
+		}
+
+		// Check if component-discovery injection is needed for this component
+		if componentdiscovery.HasComponentDiscoveryConfig(&component.Template) {
+			componentDiscoveryEnabled[component.Name] = true
 		}
 	}
 
@@ -177,6 +237,13 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 			// Inject ports into the pod spec from Instance annotation
 			if err := portallocator.InjectPortsIntoPod(p, updateInstance, config, componentName); err != nil {
 				return false, fmt.Errorf("failed to inject ports into pod %s: %w", p.Name, err)
+			}
+		}
+
+		// Handle component-discovery injection (FQDN addresses and port env vars)
+		if componentDiscoveryEnabled[componentName] {
+			if err := componentdiscovery.InjectComponentDiscovery(p, updateInstance); err != nil {
+				return false, fmt.Errorf("failed to inject component discovery into pod %s: %w", p.Name, err)
 			}
 		}
 
@@ -284,4 +351,48 @@ func wasInstanceReady(instance *workloadsv1alpha2.RoleInstance) bool {
 // annotation during RoleInstanceSet reconciliation, or set directly via role.Annotations.
 func isGangSchedulingEnabled(instance *workloadsv1alpha2.RoleInstance) bool {
 	return instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "true"
+}
+
+// allNamedComponentsReady returns true when every component named in depNames
+// has ReadyReplicas >= Size (and Size > 0) in the RoleInstance's componentStatuses.
+// It is used during scale-out to gate creation of a dependent component's pods:
+// the dependent will only be created once every named dependency reports fully ready
+// in the status aggregated from the previous reconcile.
+func allNamedComponentsReady(depNames []string, componentStatuses []workloadsv1alpha2.RoleInstanceComponentStatus) bool {
+	if len(depNames) == 0 {
+		return true
+	}
+	// Build a quick lookup: component name → status entry.
+	statusMap := make(map[string]*workloadsv1alpha2.RoleInstanceComponentStatus, len(componentStatuses))
+	for i := range componentStatuses {
+		statusMap[componentStatuses[i].Name] = &componentStatuses[i]
+	}
+	for _, name := range depNames {
+		st, ok := statusMap[name]
+		if !ok {
+			// Dependency has no status entry yet — treat as not ready to block creation.
+			return false
+		}
+		if st.Size <= 0 || st.ReadyReplicas < st.Size {
+			return false
+		}
+	}
+	return true
+}
+
+// allDependentsDeleted returns true when every component in dependentNames has no
+// excess pods remaining to delete (ToDeleteIDs is empty), meaning all components
+// that depend on the current one have already been torn down or reached their
+// target size. It is used during scale-in to gate deletion of a dependency's pods.
+func allDependentsDeleted(dependentNames []string, topoMap map[string]*instancecore.ComponentPodGroup) bool {
+	for _, name := range dependentNames {
+		rg, ok := topoMap[name]
+		if !ok {
+			continue
+		}
+		if rg.ToDeleteIDs.Len() > 0 {
+			return false
+		}
+	}
+	return true
 }

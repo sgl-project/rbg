@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -538,4 +539,91 @@ func TestFailedPodDeletion(t *testing.T) {
 			assert.Equal(t, tt.expectedDeleteNum, len(toDeletePods))
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func makeComponentStatus(name string, size, readyReplicas int32) workloadsv1alpha2.RoleInstanceComponentStatus {
+	return workloadsv1alpha2.RoleInstanceComponentStatus{
+		Name:          name,
+		Size:          size,
+		ReadyReplicas: readyReplicas,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// allNamedComponentsReady
+// ---------------------------------------------------------------------------
+
+func TestAllNamedComponentsReady_EmptyDeps(t *testing.T) {
+	// No dependencies — always ready, even when componentStatuses is empty.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{}
+	assert.True(t, allNamedComponentsReady(nil, statuses))
+	assert.True(t, allNamedComponentsReady([]string{}, statuses))
+}
+
+func TestAllNamedComponentsReady_AllSatisfied(t *testing.T) {
+	// Both leader and worker are fully Ready.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 1, 1),
+		makeComponentStatus("worker", 2, 2),
+		makeComponentStatus("router", 0, 0), // router not yet created — size=0
+	}
+	assert.True(t, allNamedComponentsReady([]string{"leader", "worker"}, statuses))
+}
+
+func TestAllNamedComponentsReady_OneNotReady(t *testing.T) {
+	// worker is Running but readyReplicas < size.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 1, 1),
+		makeComponentStatus("worker", 2, 1), // only 1 of 2 ready
+	}
+	assert.False(t, allNamedComponentsReady([]string{"leader", "worker"}, statuses))
+}
+
+func TestAllNamedComponentsReady_SizeZero(t *testing.T) {
+	// A dep entry with size=0 means its pods haven't been created yet — not ready.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 0, 0),
+	}
+	assert.False(t, allNamedComponentsReady([]string{"leader"}, statuses))
+}
+
+func TestAllNamedComponentsReady_MissingDep(t *testing.T) {
+	// Referenced component has no status entry at all — treat as not ready.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 1, 1),
+	}
+	assert.False(t, allNamedComponentsReady([]string{"leader", "worker"}, statuses))
+}
+
+func TestAllNamedComponentsReady_EmptyStatuses(t *testing.T) {
+	// Status slice is nil but deps are non-empty — not ready.
+	assert.False(t, allNamedComponentsReady([]string{"leader"}, nil))
+}
+
+func TestAllNamedComponentsReady_ReadyReplicasLessThanSize(t *testing.T) {
+	// readyReplicas=0 even though size>0.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 1, 0),
+	}
+	assert.False(t, allNamedComponentsReady([]string{"leader"}, statuses))
+}
+
+func TestAllNamedComponentsReady_SingleDepFullyReady(t *testing.T) {
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 3, 3),
+	}
+	assert.True(t, allNamedComponentsReady([]string{"leader"}, statuses))
+}
+
+func TestAllNamedComponentsReady_PartialSetSatisfied(t *testing.T) {
+	// router only depends on leader, and leader is ready — worker unrelated.
+	statuses := []workloadsv1alpha2.RoleInstanceComponentStatus{
+		makeComponentStatus("leader", 1, 1),
+		makeComponentStatus("worker", 2, 1), // not fully ready, but not depended on
+	}
+	assert.True(t, allNamedComponentsReady([]string{"leader"}, statuses))
 }
