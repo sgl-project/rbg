@@ -43,11 +43,14 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED_FILES"
 
-          # Check if deploy directory changed (for manifest E2E)
+          # Check if deploy directory or this workflow file changed (for manifest E2E)
           DEPLOY_CHANGED="false"
           if echo "$CHANGED_FILES" | grep -qE '^deploy/'; then
             DEPLOY_CHANGED="true"
             echo "Deploy directory changed, will run manifest E2E"
+          elif echo "$CHANGED_FILES" | grep -qE '^\.github/workflows/e2e-test\.yml$'; then
+            DEPLOY_CHANGED="true"
+            echo "e2e-test workflow changed, will run manifest E2E"
           fi
           echo "deploy_changed=$DEPLOY_CHANGED" >> $GITHUB_OUTPUT
 
@@ -297,6 +300,16 @@ jobs:
           kubectl apply --server-side -f deploy/kubectl/manifests.yaml
 
           kubectl get deploy -n rbgs-system
+
+      - name: Enable portAllocator on controller deployment
+        run: |
+          # Patch controller deployment to enable portAllocator, equivalent to helm --set portAllocator.enabled=true
+          kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-allocate-strategy=random"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--start-port=30000"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-range=5000"}
+          ]'
 
       - name: Wait for controller to be ready
         run: |
