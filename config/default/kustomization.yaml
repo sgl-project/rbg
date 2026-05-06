@@ -33,6 +33,10 @@ resources:
 # be able to communicate with the Webhook Server.
 #- ../network-policy
 
+# Kustomize configurations for name/namespace substitution
+configurations:
+- kustomizeconfig.yaml
+
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.

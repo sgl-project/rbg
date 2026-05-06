@@ -4,12 +4,12 @@ metadata:
   labels:
     app.kubernetes.io/name: rbgs
     app.kubernetes.io/managed-by: kustomize
-  name: rbgs-controller-rolebinding
+  name: controller-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: rbgs-controller-role
+  name: controller-role
 subjects:
   - kind: ServiceAccount
-    name: rbgs-controller-sa
+    name: controller-sa
     namespace: system

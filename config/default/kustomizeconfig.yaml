@@ -1,0 +1,56 @@
+# This file teaches kustomize how to substitute name references
+# when namePrefix is applied
+
+nameReference:
+# ServiceAccount references
+- kind: ServiceAccount
+  version: v1
+  fieldSpecs:
+  - kind: Deployment
+    group: apps
+    version: v1
+    path: spec/template/spec/serviceAccountName
+  - kind: RoleBinding
+    group: rbac.authorization.k8s.io
+    version: v1
+    path: subjects/name
+  - kind: ClusterRoleBinding
+    group: rbac.authorization.k8s.io
+    version: v1
+    path: subjects/name
+
+# Role references
+- kind: Role
+  group: rbac.authorization.k8s.io
+  version: v1
+  fieldSpecs:
+  - kind: RoleBinding
+    group: rbac.authorization.k8s.io
+    version: v1
+    path: roleRef/name
+
+# ClusterRole references
+- kind: ClusterRole
+  group: rbac.authorization.k8s.io
+  version: v1
+  fieldSpecs:
+  - kind: ClusterRoleBinding
+    group: rbac.authorization.k8s.io
+    version: v1
+    path: roleRef/name
+
+# Service references (for webhook in CRD)
+- kind: Service
+  version: v1
+  fieldSpecs:
+  - kind: CustomResourceDefinition
+    version: v1
+    group: apiextensions.k8s.io
+    path: spec/conversion/webhook/clientConfig/service/name
+
+namespace:
+- kind: CustomResourceDefinition
+  version: v1
+  group: apiextensions.k8s.io
+  path: spec/conversion/webhook/clientConfig/service/namespace
+  create: false

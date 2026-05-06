@@ -65,7 +65,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=rbgs-controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
 	cp config/rbac/role.yaml deploy/helm/rbgs/templates/clusterrole.yaml
 
 .PHONY: generate
