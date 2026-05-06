@@ -296,26 +296,16 @@ jobs:
 
       - name: Validate and deploy manifests
         run: |
-          # Extract TAG from helm values.yaml to ensure consistency
-          # This matches the tag used in manifest-based installation
-          HELM_TAG=$(grep 'tag:' deploy/helm/rbgs/values.yaml | head -1 | awk '{print $2}')
-          echo "Using TAG from helm values.yaml: $HELM_TAG"
-
-          # Build manifests using make build-installer with helm TAG
-          # This ensures conversion webhook patches are properly applied
-          make build-installer TAG=$HELM_TAG
-
-          # Check if CRD sections changed (ignoring image tag changes in deployment)
-          # Compare only the critical conversion webhook configuration
+          # Validate CRD conversion webhook configuration in committed manifests
           echo "Validating CRD conversion webhook configuration..."
 
-          ORIG_CONV_COUNT=$(grep -c "conversion:" deploy/kubectl/manifests.yaml || echo "0")
-          ORIG_WEBHOOK_COUNT=$(grep -c "strategy: Webhook" deploy/kubectl/manifests.yaml || echo "0")
+          CONV_COUNT=$(grep -c "conversion:" deploy/kubectl/manifests.yaml || echo "0")
+          WEBHOOK_COUNT=$(grep -c "strategy: Webhook" deploy/kubectl/manifests.yaml || echo "0")
 
-          if [ "$ORIG_CONV_COUNT" -lt 2 ] || [ "$ORIG_WEBHOOK_COUNT" -lt 2 ]; then
+          if [ "$CONV_COUNT" -lt 2 ] || [ "$WEBHOOK_COUNT" -lt 2 ]; then
             echo "::error::CRDs missing conversion webhook configuration!"
             echo "Expected 2 conversion webhook entries (for RoleBasedGroup and RoleBasedGroupSet)"
-            echo "Found: conversion=$ORIG_CONV_COUNT, webhook strategy=$ORIG_WEBHOOK_COUNT"
+            echo "Found: conversion=$CONV_COUNT, webhook strategy=$WEBHOOK_COUNT"
             echo ""
             echo "Please run 'make build-installer' locally and commit the updated manifests."
             exit 1
