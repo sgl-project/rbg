@@ -438,28 +438,9 @@ func (r *RoleInstanceSetReconciler) ConstructRoleStatus(
 	); err != nil {
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
-
-	if roleInstanceSet.Status.ObservedGeneration < roleInstanceSet.Generation {
-		// Don't return an error here: this is a transient state where the
-		// RoleInstanceSet controller hasn't observed the latest generation yet.
-		// Returning an error would cause constructAndUpdateRoleStatuses to
-		// bail out before calling updateRBGStatus, which would prevent the
-		// RBG controller from preserving conditions (e.g. RestartInProgress)
-		// managed by other controllers.
-		logger := log.FromContext(ctx)
-		logger.V(1).Info("RoleInstanceSet status not yet observed, skipping status update for this role",
-			"role", role.Name,
-			"generation", roleInstanceSet.Generation,
-			"observedGeneration", roleInstanceSet.Status.ObservedGeneration,
-		)
-		return workloadsv1alpha2.RoleStatus{Name: role.Name}, nil
-	}
-
-	status := ConstructRoleStatue(rbg, role,
-		*roleInstanceSet.Spec.Replicas,
-		roleInstanceSet.Status.ReadyReplicas,
-		roleInstanceSet.Status.UpdatedReplicas)
-	return status, nil
+	return ConstructWorkloadRoleStatus(ctx, rbg, role,
+		*roleInstanceSet.Spec.Replicas, roleInstanceSet.Status.ReadyReplicas, roleInstanceSet.Status.UpdatedReplicas,
+		roleInstanceSet.Generation, roleInstanceSet.Status.ObservedGeneration), nil
 }
 
 func (r *RoleInstanceSetReconciler) CheckWorkloadReady(

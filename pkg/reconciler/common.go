@@ -48,6 +48,31 @@ func ConstructRoleStatue(rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv
 	return status
 }
 
+// ConstructWorkloadRoleStatus handles the common pattern of constructing a role status
+// from a workload that may not have observed the latest generation yet. If the
+// workload's controller hasn't observed the latest generation, it returns an empty
+// status (don't treat this as an error, otherwise constructAndUpdateRoleStatuses
+// would bail out before calling updateRBGStatus). Otherwise it delegates to
+// ConstructRoleStatue.
+func ConstructWorkloadRoleStatus(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+	replicas, readyReplicas, updatedReplicas int32,
+	generation, observedGeneration int64,
+) workloadsv1alpha2.RoleStatus {
+	if observedGeneration < generation {
+		logger := log.FromContext(ctx)
+		logger.V(1).Info("workload status not yet observed, skipping status update for this role",
+			"role", role.Name,
+			"generation", generation,
+			"observedGeneration", observedGeneration,
+		)
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}
+	}
+	return ConstructRoleStatue(rbg, role, replicas, readyReplicas, updatedReplicas)
+}
+
 func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1alpha2.RoleBasedGroup, gvk schema.GroupVersionKind) error {
 	logger := log.FromContext(ctx)
 
