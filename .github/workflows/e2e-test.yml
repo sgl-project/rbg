@@ -296,13 +296,14 @@ jobs:
 
       - name: Validate and deploy manifests
         run: |
-          # Use a fixed TAG to ensure consistent manifest generation
-          # The TAG is based on version, not commit hash, so it's consistent across CI runs
-          FIXED_TAG="v0.7.0"
+          # Extract TAG from helm values.yaml to ensure consistency
+          # This matches the tag used in manifest-based installation
+          HELM_TAG=$(grep 'tag:' deploy/helm/rbgs/values.yaml | head -1 | awk '{print $2}')
+          echo "Using TAG from helm values.yaml: $HELM_TAG"
 
-          # Build manifests using make build-installer with fixed TAG
+          # Build manifests using make build-installer with helm TAG
           # This ensures conversion webhook patches are properly applied
-          make build-installer TAG=$FIXED_TAG
+          make build-installer TAG=$HELM_TAG
 
           # Check if CRD sections changed (ignoring image tag changes in deployment)
           # Compare only the critical conversion webhook configuration
