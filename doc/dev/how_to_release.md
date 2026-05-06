@@ -131,35 +131,35 @@ If missing, the manifests were generated incorrectly. Run `make build-installer`
 
 ### Release Workflow
 
-When releasing a new version:
+When releasing a new version, use `update-release.sh` script:
 
-1. **Update VERSION in Makefile:**
+1. **Checkout version branch:**
    ```bash
-   # Update Makefile VERSION variable
-   VERSION ?= v0.7.0
+   git checkout 0.7.0  # or v0.7.0-alpha.1
    ```
 
-2. **Update config/manager/kustomization.yaml image tag:**
+2. **Run update-release.sh:**
    ```bash
-   # After running version-update.sh or manually:
-   # config/manager/kustomization.yaml should have:
-   newTag: v0.7.0  # or v0.7.0-<git-sha>
+   ./tools/release/update-release.sh
    ```
 
-3. **Regenerate manifests:**
-   ```bash
-   make build-installer TAG=v0.7.0
-   ```
+   This script updates:
+   - `deploy/helm/rbgs/Chart.yaml` (version, appVersion)
+   - `deploy/helm/rbgs/values.yaml` (image.tag)
+   - `config/manager/kustomization.yaml` (newTag)
+   - `deploy/kubectl/manifests.yaml` (regenerated with conversion webhook)
 
-4. **Commit changes:**
+3. **Commit changes:**
    ```bash
-   git add deploy/kubectl/manifests.yaml config/manager/kustomization.yaml
+   git add deploy/helm/rbgs/Chart.yaml \
+           deploy/helm/rbgs/values.yaml \
+           config/manager/kustomization.yaml \
+           deploy/kubectl/manifests.yaml
    git commit -s -m "chore: update manifests for v0.7.0 release"
    ```
 
-5. **Verify manifests in CI:** The `e2e-test-manifest` job validates that:
-   - Manifests contain conversion webhook configuration
-   - Manifests match `make build-installer` output
+4. **Verify manifests in CI:** The `e2e-test-manifest` job validates that:
+   - Manifests contain conversion webhook configuration (≥2 entries)
 
 ---
 
@@ -167,14 +167,13 @@ When releasing a new version:
 
 The `e2e-test-manifest` workflow validates manifests by:
 
-1. Running `make build-installer TAG=v0.7.0`
-2. Checking conversion webhook count (≥2 required)
-3. Applying manifests to Kind cluster
-4. Running E2E tests
+1. Checking conversion webhook count in committed manifests (≥2 required)
+2. Applying manifests to Kind cluster
+3. Running E2E tests
 
 If validation fails with "missing conversion webhook", ensure:
-- `config/crd/kustomization.yaml` has webhook patches uncommented
-- `make build-installer` was used (not manual editing)
+- `config/crd/kustomization.yaml` has webhook patches enabled
+- `make build-installer` or `update-release.sh` was used (not manual editing)
 
 ---
 
