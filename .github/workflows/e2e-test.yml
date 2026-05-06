@@ -294,8 +294,24 @@ jobs:
           kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
           kubectl get pods -n volcano-system
 
-      - name: Deploy controller using manifest
+      - name: Validate and deploy manifests
         run: |
+          # Build manifests using make build-installer (kustomize + helm template)
+          # This ensures conversion webhook patches are properly applied
+          make build-installer
+
+          # Check if manifests changed after build-installer
+          # If there are changes, it means the committed manifests were outdated or incorrect
+          if ! git diff --quiet deploy/kubectl/manifests.yaml; then
+            echo "::error::deploy/kubectl/manifests.yaml is outdated or incorrectly generated!"
+            echo "Changes detected after running 'make build-installer':"
+            git diff --stat deploy/kubectl/manifests.yaml
+            echo ""
+            echo "Please run 'make build-installer' locally and commit the updated manifests."
+            exit 1
+          fi
+          echo "Manifests validation passed - committed manifests are correct"
+
           # Apply manifests with server-side apply (required for large CRD annotations)
           kubectl apply --server-side -f deploy/kubectl/manifests.yaml
 

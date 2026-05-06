@@ -13,7 +13,14 @@ CHARTS_DIR="deploy/helm"
 HELM_CHART_PATH="$REPO_ROOT/$CHARTS_DIR/rbgs"
 MANIFEST_FILE="$REPO_ROOT/deploy/kubectl/manifests.yaml"
 
-# create target dir if not exits
+# Check for kustomize
+KUSTOMIZE="${REPO_ROOT}/bin/kustomize"
+if [ ! -f "$KUSTOMIZE" ]; then
+    # Fall back to system kustomize if available
+    KUSTOMIZE="kustomize"
+fi
+
+# create target dir if it exits
 mkdir -p "$MANIFEST_DIR"
 
 # Clear or create the manifest file
@@ -25,19 +32,10 @@ metadata:
     control-plane: rbgs-controller
   name: rbgs-system"> "$MANIFEST_FILE"
 
-# process crds from config/crd/bases (authoritative source)
-CRD_BASES_DIR="config/crd/bases"
-if [ -d "$CRD_BASES_DIR" ]; then
-    echo "Processing CRDs from $CRD_BASES_DIR..."
-    for crd_file in "$CRD_BASES_DIR"/*.yaml; do
-        if [ -f "$crd_file" ]; then
-            echo "---" >> "$MANIFEST_FILE"
-            cat "$crd_file" >> "$MANIFEST_FILE"
-        fi
-    done
-else
-    echo "Warning: CRD directory $CRD_BASES_DIR not found, skipping CRDs"
-fi
+# Build CRDs using kustomize to apply conversion webhook patches
+# This ensures v1alpha1->v1alpha2 conversion webhook is properly configured
+echo "Building CRDs with kustomize to apply conversion webhook patches..."
+$KUSTOMIZE build config/crd >> "$MANIFEST_FILE"
 
 # use helm template to generate manifests
 helm template \
