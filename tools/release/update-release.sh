@@ -8,9 +8,6 @@ cd "$REPO_ROOT" || { echo "Error: Failed to change to repo root"; exit 1; }
 # Set paths relative to repo root
 CHARTS_DIR="deploy/helm"
 
-# Set paths relative to manifest root
-MANIFEST_DIR="deploy/kubectl"
-
 # Function to extract variable values from Makefile
 extract_make_var() {
     local var_name=$1
@@ -56,15 +53,17 @@ echo "Detected Git SHA: $GIT_SHA"
 echo "Generated image TAG: $TAG"
 echo "Generated appVersion: $APP_VERSION"
 
-# Update Chart.yaml
+# ============================================
+# Step 1: Update Helm Chart.yaml and values.yaml
+# ============================================
 CHART_FILE="${CHARTS_DIR}/rbgs/Chart.yaml"
 if [[ -f "$CHART_FILE" ]]; then
     # Update version field
     sed -i.bak -E "s/^(version:[[:space:]]+).*/\1${CLEAN_VERSION}/" "$CHART_FILE"
-    
+
     # Update appVersion field without quotes
     sed -i.bak -E "s/^(appVersion:[[:space:]]+).*/\1${APP_VERSION}/" "$CHART_FILE"
-    
+
     rm -f "${CHART_FILE}.bak"
     echo "Updated $CHART_FILE:"
     echo "  version: $CLEAN_VERSION"
@@ -74,7 +73,6 @@ else
     exit 1
 fi
 
-# Update values.yaml
 VALUES_FILE="${CHARTS_DIR}/rbgs/values.yaml"
 if [[ -f "$VALUES_FILE" ]]; then
     # Update tag field without quotes
@@ -86,43 +84,37 @@ else
     exit 1
 fi
 
-# Update manifest.yaml used by kubectl
-HELM_CHART_PATH="${CHARTS_DIR}/rbgs"
-MANIFEST_FILE="${MANIFEST_DIR}/manifests.yaml"
-
-# create target dir if not exits
-mkdir -p "$MANIFEST_DIR"
-
-# Clear or create the manifest file
-echo "apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    app.kubernetes.io/name: rbgs
-    control-plane: rbgs-controller
-  name: rbgs-system"> "$MANIFEST_FILE"
-
-# process crds from config/crd/bases (authoritative source)
-CRD_BASES_DIR="config/crd/bases"
-if [ -d "$CRD_BASES_DIR" ]; then
-    echo "Processing CRDs from $CRD_BASES_DIR..."
-    for crd_file in "$CRD_BASES_DIR"/*.yaml; do
-        if [ -f "$crd_file" ]; then
-            echo "---" >> "$MANIFEST_FILE"
-            cat "$crd_file" >> "$MANIFEST_FILE"
-        fi
-    done
+# ============================================
+# Step 2: Update kustomize config/manager/kustomization.yaml
+# ============================================
+KUSTOMIZE_MANAGER_FILE="config/manager/kustomization.yaml"
+if [[ -f "$KUSTOMIZE_MANAGER_FILE" ]]; then
+    # Update newTag field in kustomization.yaml
+    sed -i.bak -E "s/^(  newTag:[[:space:]]+).*/\1$TAG/" "$KUSTOMIZE_MANAGER_FILE"
+    rm -f "${KUSTOMIZE_MANAGER_FILE}.bak"
+    echo "Updated $KUSTOMIZE_MANAGER_FILE newTag to $TAG"
 else
-    echo "Warning: CRD directory $CRD_BASES_DIR not found, skipping CRDs"
+    echo "Error: $KUSTOMIZE_MANAGER_FILE not found!"
+    exit 1
 fi
 
-# use helm template to generate manifests
-helm template \
-  -n rbgs-system \
-  --values "$HELM_CHART_PATH/values.yaml" \
-  --set crdUpgrade.enabled=false \
-  --dry-run \
-  rbgs "$HELM_CHART_PATH" >> "$MANIFEST_FILE"
-echo "Updated manifests at $MANIFEST_FILE"
+# ============================================
+# Step 3: Generate manifests using make build-installer
+# ============================================
+echo "Generating manifests using make build-installer..."
+make build-installer TAG=$TAG
 
+echo ""
 echo "Update completed successfully!"
+echo ""
+echo "Summary of changes:"
+echo "  - Helm Chart.yaml: version=$CLEAN_VERSION, appVersion=$APP_VERSION"
+echo "  - Helm values.yaml: image.tag=$TAG"
+echo "  - kustomization.yaml: newTag=$TAG"
+echo "  - deploy/kubectl/manifests.yaml: regenerated with conversion webhook"
+echo ""
+echo "Files to commit:"
+echo "  - deploy/helm/rbgs/Chart.yaml"
+echo "  - deploy/helm/rbgs/values.yaml"
+echo "  - config/manager/kustomization.yaml"
+echo "  - deploy/kubectl/manifests.yaml"
