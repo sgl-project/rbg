@@ -179,7 +179,7 @@ If validation fails with "missing conversion webhook", ensure:
 
 ### Directory Structure
 
-```
+```text
 config/
 ├── crd/
 │   ├── bases/              # CRD definitions (auto-generated)
@@ -202,7 +202,7 @@ config/
 
 **Build flow:**
 
-```
+```text
 config/default/kustomization.yaml
     ├── config/crd/ (with patches) → CRDs with conversion webhook
     ├── config/rbac/ → ClusterRole, RoleBinding, etc.

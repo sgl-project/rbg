@@ -105,7 +105,7 @@ configurations:
 #         delimiter: '.'
 #         index: 0
 #         create: true
-#     - select: # Uncomment the following to set the Service name for TLS config in Prometheus ServiceMonitor
+#     - select:  # Uncomment the following to set the Service name for TLS config in Prometheus ServiceMonitor
 #         kind: ServiceMonitor
 #         group: monitoring.coreos.com
 #         version: v1
@@ -135,7 +135,7 @@ configurations:
 #         delimiter: '.'
 #         index: 1
 #         create: true
-#     - select: # Uncomment the following to set the Service namespace for TLS in Prometheus ServiceMonitor
+#     - select:  # Uncomment the following to set the Service namespace for TLS in Prometheus ServiceMonitor
 #         kind: ServiceMonitor
 #         group: monitoring.coreos.com
 #         version: v1
@@ -147,7 +147,7 @@ configurations:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have any webhook
+# - source:  # Uncomment the following block if you have any webhook
 #     kind: Service
 #     version: v1
 #     name: webhook-service
@@ -184,7 +184,7 @@ configurations:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have a ValidatingWebhook (--programmatic-validation)
+# - source:  # Uncomment the following block if you have a ValidatingWebhook (--programmatic-validation)
 #     kind: Certificate
 #     group: cert-manager.io
 #     version: v1
@@ -215,7 +215,7 @@ configurations:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have a DefaultingWebhook (--defaulting )
+# - source:  # Uncomment the following block if you have a DefaultingWebhook (--defaulting )
 #     kind: Certificate
 #     group: cert-manager.io
 #     version: v1
@@ -246,13 +246,13 @@ configurations:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have a ConversionWebhook (--conversion)
+# - source:  # Uncomment the following block if you have a ConversionWebhook (--conversion)
 #     kind: Certificate
 #     group: cert-manager.io
 #     version: v1
 #     name: serving-cert
 #     fieldPath: .metadata.namespace # Namespace of the certificate CR
-#   targets: # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
+#   targets:  # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
 # +kubebuilder:scaffold:crdkustomizecainjectionns
 # - source:
 #     kind: Certificate
@@ -260,5 +260,5 @@ configurations:
 #     version: v1
 #     name: serving-cert
 #     fieldPath: .metadata.name
-#   targets: # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
+#   targets:  # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
 # +kubebuilder:scaffold:crdkustomizecainjectionname
