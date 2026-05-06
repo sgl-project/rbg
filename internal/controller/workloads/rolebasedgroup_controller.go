@@ -755,26 +755,27 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	// CRITICAL: Preserve the RestartInProgress condition managed by the pod controller.
-	// We check BOTH the cached rbg (which may already have it from the informer) AND
-	// the latest RBG from the API server. This double-check provides defense-in-depth
-	// against the condition being lost due to SSA with Force=true.
-	restartCond := apimeta.FindStatusCondition(
-		rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
-	)
-	if restartCond == nil {
-		// Not in cache, fetch from API server (bypass informer cache).
-		latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
-		if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
-			logger := log.FromContext(ctx)
-			logger.Error(err, "Failed to get latest RBG from API server for status update")
-			return err
+	// This condition is written by PodReconciler via RetryOnConflict+UpdateStatus (not SSA),
+	// so the informer cache may be stale. Always read from the API server to get the
+	// authoritative value and avoid overwriting a False→True transition back to True.
+	latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
+		logger := log.FromContext(ctx)
+		logger.Error(err, "Failed to get latest RBG from API server, falling back to cache for RestartInProgress")
+		// Fall back to cached condition if API server is unavailable
+		restartCond := apimeta.FindStatusCondition(
+			rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+		)
+		if restartCond != nil {
+			apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
 		}
-		restartCond = apimeta.FindStatusCondition(
+	} else {
+		restartCond := apimeta.FindStatusCondition(
 			latestRBG.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
 		)
-	}
-	if restartCond != nil {
-		apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
+		if restartCond != nil {
+			apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
+		}
 	}
 
 	// Skip SSA patch if status hasn't changed. This avoids unnecessary API calls
