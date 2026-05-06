@@ -631,7 +631,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 			return nil, err
 		}
 
-		roleStatus, _, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
+		roleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
 		if err != nil {
 			if !apierrors.IsNotFound(err) {
 				r.recorder.Eventf(
@@ -692,6 +692,11 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus,
 ) error {
+	// Capture current status before mutation to avoid unnecessary SSA patches.
+	// Since constructAndUpdateRoleStatuses now calls this on every reconcile,
+	// comparing old vs new status lets us skip redundant API calls.
+	oldStatus := *rbg.Status.DeepCopy()
+
 	// update ready condition
 	var rbgReady = true
 	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(roleStatuses))
@@ -770,6 +775,14 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 	if restartCond != nil {
 		apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
+	}
+
+	// Skip SSA patch if status hasn't changed. This avoids unnecessary API calls
+	// and reduces load on the API server, especially important now that
+	// constructAndUpdateRoleStatuses calls this method on every reconcile.
+	if reflect.DeepEqual(oldStatus, rbg.Status) {
+		log.FromContext(ctx).V(2).Info("RBG status unchanged, skipping SSA patch")
+		return nil
 	}
 
 	// update rbg status using SSA patch.

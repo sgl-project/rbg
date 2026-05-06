@@ -38,7 +38,7 @@ type WorkloadReconciler interface {
 		rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string) error
 	ConstructRoleStatus(
 		ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
-	) (workloadsv1alpha2.RoleStatus, bool, error)
+	) (workloadsv1alpha2.RoleStatus, error)
 	CheckWorkloadReady(
 		ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	) (bool, error)

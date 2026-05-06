@@ -112,9 +112,8 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 
 	// Test status construction
 	ctx := context.Background()
-	status, updateStatus, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
+	status, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
 	assert.NoError(t, err)
-	assert.True(t, updateStatus) // Should be true since there was no previous status
 	assert.Equal(t, "test-role", status.Name)
 	assert.Equal(t, int32(5), status.Replicas)
 	assert.Equal(t, int32(3), status.ReadyReplicas)
@@ -125,9 +124,8 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 	}
 
 	// Test when status is the same (should not need update)
-	status2, updateStatus2, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
+	status2, err := reconciler.ConstructRoleStatus(ctx, rbg, &lwsRole)
 	assert.NoError(t, err)
-	assert.False(t, updateStatus2) // Should be false since status is the same
 	assert.Equal(t, status, status2)
 }
 

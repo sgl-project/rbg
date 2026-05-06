@@ -61,7 +61,6 @@ func TestConstructRoleStatue(t *testing.T) {
 		currentReplicas  int32
 		currentReady     int32
 		updatedReplicas  int32
-		expectedUpdate   bool
 		expectedReplicas int32
 		expectedReady    int32
 		expectedUpdated  int32
@@ -71,7 +70,6 @@ func TestConstructRoleStatue(t *testing.T) {
 			currentReplicas:  3,
 			currentReady:     2,
 			updatedReplicas:  1,
-			expectedUpdate:   false,
 			expectedReplicas: 3,
 			expectedReady:    2,
 			expectedUpdated:  1,
@@ -81,7 +79,6 @@ func TestConstructRoleStatue(t *testing.T) {
 			currentReplicas:  5,
 			currentReady:     4,
 			updatedReplicas:  3,
-			expectedUpdate:   true,
 			expectedReplicas: 5,
 			expectedReady:    4,
 			expectedUpdated:  3,
@@ -90,9 +87,8 @@ func TestConstructRoleStatue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, updateStatus := ConstructRoleStatue(rbg, role, tt.currentReplicas, tt.currentReady, tt.updatedReplicas)
+			status := ConstructRoleStatue(rbg, role, tt.currentReplicas, tt.currentReady, tt.updatedReplicas)
 
-			assert.Equal(t, tt.expectedUpdate, updateStatus)
 			assert.Equal(t, role.Name, status.Name)
 			assert.Equal(t, tt.expectedReplicas, status.Replicas)
 			assert.Equal(t, tt.expectedReady, status.ReadyReplicas)

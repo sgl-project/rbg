@@ -33,8 +33,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
-func ConstructRoleStatue(rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, currentReplicas, currentReady, updatedReplicas int32) (workloadsv1alpha2.RoleStatus, bool) {
-	updateStatus := false
+func ConstructRoleStatue(rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, currentReplicas, currentReady, updatedReplicas int32) workloadsv1alpha2.RoleStatus {
 	status, found := rbg.GetRoleStatus(role.Name)
 	if !found || status.Replicas != currentReplicas ||
 		status.ReadyReplicas != currentReady ||
@@ -45,9 +44,8 @@ func ConstructRoleStatue(rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv
 			ReadyReplicas:   currentReady,
 			UpdatedReplicas: updatedReplicas,
 		}
-		updateStatus = true
 	}
-	return status, updateStatus
+	return status
 }
 
 func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1alpha2.RoleBasedGroup, gvk schema.GroupVersionKind) error {
