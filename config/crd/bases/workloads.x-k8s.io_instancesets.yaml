@@ -59,6 +59,7 @@ spec:
               APIVersion defines the versioned schema of this representation of an object.
               Servers should convert recognized schemas to the latest internal value, and
               may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
             description: |-
@@ -66,6 +67,7 @@ spec:
               Servers may infer this from the endpoint the client submits requests to.
               Cannot be updated.
               In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -96,6 +98,8 @@ spec:
                         description: |-
                           MarkNotReady = true means:
                           - Instance will be set to 'NotReady' at preparingDelete/preparingUpdate state.
+                          - Instance will be restored to 'Ready' at Updated state if it was set to 'NotReady' at preparingUpdate state.
+                          Default to false.
                         type: boolean
                     type: object
                   preDelete:
@@ -113,6 +117,8 @@ spec:
                         description: |-
                           MarkNotReady = true means:
                           - Instance will be set to 'NotReady' at preparingDelete/preparingUpdate state.
+                          - Instance will be restored to 'Ready' at Updated state if it was set to 'NotReady' at preparingUpdate state.
+                          Default to false.
                         type: boolean
                     type: object
                 type: object
@@ -120,6 +126,7 @@ spec:
                 description: |-
                   Minimum number of seconds for which a newly created Instances should be ready
                   without any of its container crashing, for it to be considered available.
+                  Defaults to 0 (Instances will be considered available as soon as it is ready)
                 format: int32
                 type: integer
               replicas:
@@ -133,7 +140,9 @@ spec:
               revisionHistoryLimit:
                 description: |-
                   RevisionHistoryLimit is the maximum number of revisions that will
-                  be maintained in the InstanceSet's revision history.
+                  be maintained in the InstanceSet's revision history. The revision history
+                  consists of all revisions not represented by a currently applied
+                  InstanceSetSpec version. The default value is 10.
                 format: int32
                 type: integer
               scaleStrategy:
@@ -155,13 +164,15 @@ spec:
                     description: |-
                       The maximum number of Instances that can be unavailable for scaled Instances.
                       This field can control the changes rate of replicas for InstanceSet so as to minimize the impact for users' service.
+                      The scale will fail if the number of unavailable Instances were greater than this MaxUnavailable at scaling up.
+                      MaxUnavailable works only when scaling up.
                     x-kubernetes-int-or-string: true
                 type: object
               selector:
                 description: |-
                   Selector is a label query over instances that should match the replica count.
                   It must match the instance template's labels.
-                  More info: https://kubernetes.
+                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -184,7 +195,8 @@ spec:
                           description: |-
                             values is an array of string values. If the operator is In or NotIn,
                             the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty.
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
                           items:
                             type: string
                           type: array
@@ -198,7 +210,10 @@ spec:
                   matchLabels:
                     additionalProperties:
                       type: string
-                    description: matchLabels is a map of {key,value} pairs.
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
@@ -222,8 +237,11 @@ spec:
                     anyOf:
                     - type: integer
                     - type: string
-                    description: The maximum number of Instances that can be scheduled
-                      above the desired replicas during update or specified delete.
+                    description: |-
+                      The maximum number of Instances that can be scheduled above the desired replicas during update or specified delete.
+                      Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
+                      Absolute number is calculated from percentage by rounding up.
+                      Defaults to 0.
                     x-kubernetes-int-or-string: true
                   maxUnavailable:
                     anyOf:
@@ -232,6 +250,9 @@ spec:
                     description: |-
                       The maximum number of Instances that can be unavailable during update or scale.
                       Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
+                      Absolute number is calculated from percentage by rounding up by default.
+                      When maxSurge > 0, absolute number is calculated from percentage by rounding down.
+                      Defaults to 20%.
                     x-kubernetes-int-or-string: true
                   partition:
                     anyOf:
@@ -240,6 +261,9 @@ spec:
                     description: |-
                       Partition is the desired number of Instances in old revisions.
                       Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
+                      Absolute number is calculated from percentage by rounding up by default.
+                      It means when partition is set during Instances updating, (replicas - partition value) number of Instances will be updated.
+                      Default value is 0.
                     x-kubernetes-int-or-string: true
                   paused:
                     description: |-
@@ -265,8 +289,10 @@ spec:
                 format: int32
                 type: integer
               collisionCount:
-                description: CollisionCount is the count of hash collisions for the
-                  InstanceSet.
+                description: |-
+                  CollisionCount is the count of hash collisions for the InstanceSet. The InstanceSet controller
+                  uses this field as a collision avoidance mechanism when it needs to create the name for the
+                  newest ControllerRevision.
                 format: int32
                 type: integer
               conditions:

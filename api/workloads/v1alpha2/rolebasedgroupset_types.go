@@ -66,6 +66,8 @@ type RoleBasedGroupSetStatus struct {
 	// Conditions track the condition of the rbgs
 	// +patchMergeKey=type
 	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 

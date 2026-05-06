@@ -38,6 +38,7 @@ spec:
               APIVersion defines the versioned schema of this representation of an object.
               Servers should convert recognized schemas to the latest internal value, and
               may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
             description: |-
@@ -45,6 +46,7 @@ spec:
               Servers may infer this from the endpoint the client submits requests to.
               Cannot be updated.
               In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -64,7 +66,9 @@ spec:
                       description: |-
                         ServiceName is the name of the service that governs this Instance Component.
                         This service must exist before the Instance, and is responsible for
-                        the network identity of the set.
+                        the network identity of the set. Pods get DNS/hostnames that follow the
+                        pattern: pod-specific-string.serviceName.default.svc.cluster.local
+                        where "pod-specific-string" is managed by the Instance controller.
                       type: string
                     size:
                       description: Size is the number of replicas for Pods that match
@@ -80,9 +84,9 @@ spec:
                   type: object
                 type: array
               podGroupPolicy:
-                description: MinReadySeconds is the minimum number of seconds for
-                  which a newly created Pod should be ready without any of its containers
-                  crashing, for it to be considered available.
+                description: |-
+                  MinReadySeconds is the minimum number of seconds for which a newly created Pod should be ready without any of its containers crashing, for it to be considered available.
+                  Configuration for the Instance to enable gang-scheduling via supported plugins.
                 properties:
                   kubeScheduling:
                     description: KubeScheduling plugin from the Kubernetes scheduler-plugins
@@ -102,7 +106,13 @@ spec:
                       configuration for volcano podgroup scheduling plugin
                     properties:
                       priorityClassName:
-                        description: If specified, indicates the PodGroup's priority.
+                        description: |-
+                          If specified, indicates the PodGroup's priority. "system-node-critical" and
+                          "system-cluster-critical" are two special keywords which indicate the
+                          highest priorities with the former being the highest priority. Any other
+                          name must be defined by creating a PriorityClass object with that name.
+                          If not specified, the PodGroup priority will be default or zero if there is no
+                          default.
                         type: string
                       queue:
                         description: |-
@@ -143,8 +153,10 @@ spec:
             description: InstanceStatus defines the observed state of Instance
             properties:
               collisionCount:
-                description: CollisionCount is the count of hash collisions for the
-                  InstanceSet.
+                description: |-
+                  CollisionCount is the count of hash collisions for the InstanceSet. The InstanceSet controller
+                  uses this field as a collision avoidance mechanism when it needs to create the name for the
+                  newest ControllerRevision.
                 format: int32
                 type: integer
               componentStatuses:

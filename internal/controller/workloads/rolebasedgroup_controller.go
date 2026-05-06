@@ -615,7 +615,6 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) ([]workloadsv1alpha2.RoleStatus, error) {
-	var updateStatus bool
 	roleStatuses := make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
 
 	for _, role := range rbg.Spec.Roles {
@@ -632,7 +631,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 			return nil, err
 		}
 
-		roleStatus, updateRoleStatus, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
+		roleStatus, _, err := reconciler.ConstructRoleStatus(roleCtx, rbg, &role)
 		if err != nil {
 			if !apierrors.IsNotFound(err) {
 				r.recorder.Eventf(
@@ -642,28 +641,20 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 				return nil, err
 			}
 		}
-		updateStatus = updateStatus || updateRoleStatus
 		roleStatuses = append(roleStatuses, roleStatus)
 	}
 
-	// Also trigger an update if the Ready condition is missing, which can happen when
-	// the pod controller patches only the RestartInProgress condition and the RBG
-	// controller has not yet re-evaluated readiness (e.g. after a pod restart/recreate).
-	readyConditionMissing := !apimeta.IsStatusConditionPresentAndEqual(
-		rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady), metav1.ConditionTrue,
-	) && !apimeta.IsStatusConditionPresentAndEqual(
-		rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady), metav1.ConditionFalse,
-	)
-
-	// Update the status based on the observed role statuses.
-	if updateStatus || readyConditionMissing {
-		if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedUpdateStatus,
-				"Failed to update status for %s: %v", rbg.Name, err,
-			)
-			return nil, err
-		}
+	// Always update the RBG status to ensure conditions managed by
+	// other controllers (e.g. RestartInProgress set by the pod controller)
+	// are preserved. The SSA patch with Force=true and map-type
+	// conditions (x-kubernetes-list-type: map) is efficient: it only
+	// touches fields that have actually changed.
+	if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+		r.recorder.Eventf(
+			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
+			"Failed to update status for %s: %v", rbg.Name, err,
+		)
+		return nil, err
 	}
 
 	return roleStatuses, nil

@@ -518,8 +518,19 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 	}
 
 	if sts.Status.ObservedGeneration < sts.Generation {
-		err := fmt.Errorf("sts generation not equal to observed generation")
-		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, err
+		// Don't return an error here: this is a transient state where the
+		// StatefulSet controller hasn't observed the latest generation yet.
+		// Returning an error would cause constructAndUpdateRoleStatuses to
+		// bail out before calling updateRBGStatus, which would prevent the
+		// RBG controller from preserving conditions (e.g. RestartInProgress)
+		// managed by other controllers.
+		logger := log.FromContext(ctx)
+		logger.V(1).Info("StatefulSet status not yet observed, skipping status update for this role",
+			"role", role.Name,
+			"generation", sts.Generation,
+			"observedGeneration", sts.Status.ObservedGeneration,
+		)
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, false, nil
 	}
 
 	status, updateStatus := ConstructRoleStatue(rbg, role,
