@@ -48,14 +48,16 @@ import (
 
 // PodReconciler reconciles a Pod object owned by RBG
 type PodReconciler struct {
-	client client.Client
-	scheme *runtime.Scheme
+	client    client.Client
+	apiReader client.Reader
+	scheme    *runtime.Scheme
 }
 
 func NewPodReconciler(mgr ctrl.Manager) *PodReconciler {
 	return &PodReconciler{
-		client: mgr.GetClient(),
-		scheme: mgr.GetScheme(),
+		client:    mgr.GetClient(),
+		apiReader: mgr.GetAPIReader(),
+		scheme:    mgr.GetScheme(),
 	}
 }
 
@@ -149,10 +151,15 @@ func (r *PodReconciler) setRestartCondition(
 	// Use RetryOnConflict + UpdateStatus to avoid SSA field-manager ownership conflicts.
 	// RoleBasedGroupStatus.Conditions is an atomic list in SSA, so two field managers cannot
 	// safely manage different entries. Instead, we use a standard UpdateStatus with optimistic
-	// locking: re-fetch the latest RBG, merge the RestartInProgress condition, then update.
+	// locking: re-fetch the latest RBG from the API server (NOT the informer cache), merge
+	// the RestartInProgress condition, then update.
+	// IMPORTANT: We use apiReader (non-caching) to read the latest RBG from the API server.
+	// Using the caching client would risk a read-modify-write race: if the informer cache is
+	// stale, we would overwrite status fields (e.g. RoleStatuses, Ready condition) that were
+	// updated by the RBG controller but not yet reflected in the cache.
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &workloadsv1alpha2.RoleBasedGroup{}
-		if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latest); err != nil {
+		if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latest); err != nil {
 			return err
 		}
 		meta.SetStatusCondition(&latest.Status.Conditions, restartCondition)

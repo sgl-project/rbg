@@ -359,8 +359,9 @@ func TestPodReconciler_podToRBG_EdgeCases(t *testing.T) {
 
 				fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(objects...).Build()
 				r := &PodReconciler{
-					client: fclient,
-					scheme: schema,
+					client:    fclient,
+					apiReader: fclient,
+					scheme:    schema,
 				}
 				got := r.podToRBG(tt.args.ctx, tt.args.pod)
 				assert.Equal(t, tt.want, got)
@@ -389,8 +390,9 @@ func TestPodReconciler_Reconcile(t *testing.T) {
 
 	fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(obj).WithStatusSubresource(obj).Build()
 	r := &PodReconciler{
-		client: fclient,
-		scheme: schema,
+		client:    fclient,
+		apiReader: fclient,
+		scheme:    schema,
 	}
 
 	req := reconcile.Request{

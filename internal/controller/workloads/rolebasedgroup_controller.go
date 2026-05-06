@@ -758,21 +758,26 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
-	// CRITICAL: Fetch the latest RBG from API server to preserve conditions set by other controllers.
-	// The pod controller uses UpdateStatus to set RestartInProgress, which may not be reflected
-	// in the informer cache yet. Without this, SSA with Force=true would overwrite those conditions.
-	latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
-	if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
-		logger := log.FromContext(ctx)
-		logger.Error(err, "Failed to get latest RBG from API server for status update")
-		return err
+	// CRITICAL: Preserve the RestartInProgress condition managed by the pod controller.
+	// We check BOTH the cached rbg (which may already have it from the informer) AND
+	// the latest RBG from the API server. This double-check provides defense-in-depth
+	// against the condition being lost due to SSA with Force=true.
+	restartCond := apimeta.FindStatusCondition(
+		rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+	)
+	if restartCond == nil {
+		// Not in cache, fetch from API server (bypass informer cache).
+		latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
+		if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
+			logger := log.FromContext(ctx)
+			logger.Error(err, "Failed to get latest RBG from API server for status update")
+			return err
+		}
+		restartCond = apimeta.FindStatusCondition(
+			latestRBG.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
+		)
 	}
-
-	// Preserve RestartInProgress condition if it exists in the latest RBG from API server.
-	// This condition is managed by the pod controller and should not be overwritten by RBG controller.
-	if restartCond := apimeta.FindStatusCondition(
-		latestRBG.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
-	); restartCond != nil {
+	if restartCond != nil {
 		apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
 	}
 
