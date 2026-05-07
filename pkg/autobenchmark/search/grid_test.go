@@ -27,7 +27,7 @@ import (
 	abtypes "sigs.k8s.io/rbgs/pkg/autobenchmark/types"
 )
 
-func TestExpandParam_Range(t *testing.T) {
+func TestExpandParam_Float(t *testing.T) {
 	tests := []struct {
 		name   string
 		param  config.SearchParam
@@ -35,22 +35,22 @@ func TestExpandParam_Range(t *testing.T) {
 	}{
 		{
 			name:   "integer range",
-			param:  config.SearchParam{Type: "range", Min: ptr(1.0), Max: ptr(5.0), Step: ptr(2.0)},
+			param:  config.SearchParam{Type: "float", Min: ptr(1.0), Max: ptr(5.0), Step: ptr(2.0)},
 			expect: []interface{}{1.0, 3.0, 5.0},
 		},
 		{
 			name:   "single value range",
-			param:  config.SearchParam{Type: "range", Min: ptr(10.0), Max: ptr(10.0), Step: ptr(1.0)},
+			param:  config.SearchParam{Type: "float", Min: ptr(10.0), Max: ptr(10.0), Step: ptr(1.0)},
 			expect: []interface{}{10.0},
 		},
 		{
 			name:   "step larger than range",
-			param:  config.SearchParam{Type: "range", Min: ptr(1.0), Max: ptr(3.0), Step: ptr(5.0)},
+			param:  config.SearchParam{Type: "float", Min: ptr(1.0), Max: ptr(3.0), Step: ptr(5.0)},
 			expect: []interface{}{1.0},
 		},
 		{
 			name:   "float range",
-			param:  config.SearchParam{Type: "range", Min: ptr(0.8), Max: ptr(0.95), Step: ptr(0.05)},
+			param:  config.SearchParam{Type: "float", Min: ptr(0.8), Max: ptr(0.95), Step: ptr(0.05)},
 			expect: []interface{}{0.8, 0.85, 0.9, 0.95},
 		},
 	}
@@ -79,7 +79,7 @@ func TestExpandSearchSpace(t *testing.T) {
 	ss := map[string]map[string]config.SearchParam{
 		"default": {
 			"x": {Type: "categorical", Values: []interface{}{1, 2}},
-			"y": {Type: "range", Min: ptr(10.0), Max: ptr(30.0), Step: ptr(10.0)},
+			"y": {Type: "float", Min: ptr(10.0), Max: ptr(30.0), Step: ptr(10.0)},
 		},
 	}
 	expanded := ExpandSearchSpace(ss)
@@ -132,7 +132,7 @@ func TestGridSearch_Basic(t *testing.T) {
 	}
 
 	g := &GridSearch{}
-	require.NoError(t, g.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
+	require.NoError(t, g.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
 
 	assert.Equal(t, "grid", g.Name())
 
@@ -159,7 +159,7 @@ func TestGridSearch_MaxTrials(t *testing.T) {
 	}
 
 	g := &GridSearch{}
-	require.NoError(t, g.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 3}))
+	require.NoError(t, g.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 3}))
 
 	var count int
 	for !g.IsDone(nil) {
@@ -180,7 +180,7 @@ func TestGridSearch_MaxTrialsExceedsSpace(t *testing.T) {
 	}
 
 	g := &GridSearch{}
-	require.NoError(t, g.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
+	require.NoError(t, g.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
 	assert.Equal(t, 3, g.maxTrials) // capped to space size
 
 	var count int
@@ -199,19 +199,19 @@ func TestGridSearch_IsDone(t *testing.T) {
 
 	// maxTrials < space: stops at maxTrials.
 	g1 := &GridSearch{}
-	require.NoError(t, g1.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 2}))
+	require.NoError(t, g1.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 2}))
 	assert.False(t, g1.IsDone(makeHistory(1)))
 	assert.True(t, g1.IsDone(makeHistory(2)))
 
 	// maxTrials > space: capped to 4.
 	g2 := &GridSearch{}
-	require.NoError(t, g2.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
+	require.NoError(t, g2.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
 	assert.False(t, g2.IsDone(makeHistory(3)))
 	assert.True(t, g2.IsDone(makeHistory(4)))
 
 	// maxTrials = 0: defaults to space size (4).
 	g3 := &GridSearch{}
-	require.NoError(t, g3.Init(context.Background(), "test", space, config.StrategySpec{}))
+	require.NoError(t, g3.Init(context.Background(), "test", nil, space, config.StrategySpec{}))
 	assert.False(t, g3.IsDone(makeHistory(3)))
 	assert.True(t, g3.IsDone(makeHistory(4)))
 }
@@ -223,7 +223,7 @@ func TestGridSearch_StateCheckpointResume(t *testing.T) {
 
 	// Run first 2 trials
 	g1 := &GridSearch{}
-	require.NoError(t, g1.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
+	require.NoError(t, g1.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
 	ps1, _ := g1.SuggestNext(nil)
 	ps2, _ := g1.SuggestNext(nil)
 
@@ -233,7 +233,7 @@ func TestGridSearch_StateCheckpointResume(t *testing.T) {
 
 	// Resume in new instance
 	g2 := &GridSearch{}
-	require.NoError(t, g2.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
+	require.NoError(t, g2.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
 	require.NoError(t, g2.UnmarshalState(state))
 
 	// Should continue from index 2
@@ -257,7 +257,7 @@ func TestGridSearch_FeedbackDoesNotAffectOrder(t *testing.T) {
 	}
 
 	g := &GridSearch{}
-	require.NoError(t, g.Init(context.Background(), "test", space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
+	require.NoError(t, g.Init(context.Background(), "test", nil, space, config.StrategySpec{MaxTrialsPerTemplate: 100}))
 
 	// Suggest with different histories — order should be the same
 	ps1, _ := g.SuggestNext(nil)

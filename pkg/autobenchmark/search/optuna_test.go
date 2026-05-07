@@ -36,7 +36,7 @@ import (
 
 func findBridgePath() string {
 	_, filename, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(filename), "..", "..", "..", "tools", "optuna_bridge.py")
+	return filepath.Join(filepath.Dir(filename), "..", "..", "..", "tools", "optuna", "optuna_bridge.py")
 }
 
 func skipIfNoOptuna(t *testing.T) {
@@ -57,8 +57,8 @@ func toFloat64(v any) float64 {
 	}
 }
 
-// objectiveFunc computes (score, slaPass) from suggested params.
-type objectiveFunc func(params abtypes.RoleParamSet) (float64, bool)
+// objectiveFunc computes (score, constraints) from suggested params.
+type objectiveFunc func(params abtypes.RoleParamSet) (float64, []float64)
 
 // runLoop runs a full ask-tell optimisation loop and returns the trial history.
 func runLoop(
@@ -70,19 +70,19 @@ func runLoop(
 	obj objectiveFunc,
 ) []abtypes.TrialResult {
 	t.Helper()
-	require.NoError(t, algo.Init(context.Background(), studyName, space, cfg))
+	require.NoError(t, algo.Init(context.Background(), studyName, nil, space, cfg))
 
 	var history []abtypes.TrialResult
 	for !algo.IsDone(history) {
 		params, err := algo.SuggestNext(history)
 		require.NoError(t, err)
 
-		score, slaPass := obj(params)
+		score, constraints := obj(params)
 		history = append(history, abtypes.TrialResult{
-			TrialIndex: len(history),
-			Params:     params,
-			Score:      score,
-			SLAPass:    slaPass,
+			TrialIndex:  len(history),
+			Params:      params,
+			Score:       score,
+			Constraints: constraints,
 		})
 	}
 	return history
@@ -119,12 +119,16 @@ func buildSmallSpace() ExpandedSearchSpace {
 	}
 }
 
-// evalSmall: peak at x=3, y=0.3 → score=10.0. SLA passes when score > 8.0.
-func evalSmall(params abtypes.RoleParamSet) (float64, bool) {
+// evalSmall: peak at x=3, y=0.3 → score=10.0. SLA constraint: score > 8.0.
+func evalSmall(params abtypes.RoleParamSet) (float64, []float64) {
 	x := toFloat64(params["default"]["x"])
 	y := toFloat64(params["default"]["y"])
 	score := 10.0 - (x-3)*(x-3) - (y-0.3)*(y-0.3)*100
-	return score, score > 8.0
+	constraint := 8.0 - score
+	if constraint < 0 {
+		constraint = 0
+	}
+	return score, []float64{constraint}
 }
 
 // ---------------------------------------------------------------------------
@@ -155,13 +159,17 @@ func buildLargeSpace() ExpandedSearchSpace {
 	}
 }
 
-// evalLarge: peak at a=15, b=7, c=4 → 100. SLA passes when score > 90.
-func evalLarge(params abtypes.RoleParamSet) (float64, bool) {
+// evalLarge: peak at a=15, b=7, c=4 → 100. SLA constraint: score > 90.0.
+func evalLarge(params abtypes.RoleParamSet) (float64, []float64) {
 	a := toFloat64(params["default"]["a"])
 	b := toFloat64(params["default"]["b"])
 	c := toFloat64(params["default"]["c"])
 	score := 100.0 - 0.5*(a-15)*(a-15) - (b-7)*(b-7) - 2*(c-4)*(c-4)
-	return score, score > 90.0
+	constraint := 90.0 - score
+	if constraint < 0 {
+		constraint = 0
+	}
+	return score, []float64{constraint}
 }
 
 // ===========================================================================
@@ -315,7 +323,7 @@ func TestOptunaSearch_SLAConstraint(t *testing.T) {
 
 	var passCount, failCount int
 	for _, r := range history {
-		if r.SLAPass {
+		if r.IsSLAFeasible() {
 			passCount++
 		} else {
 			failCount++
@@ -342,7 +350,7 @@ func TestOptunaSearch_MultiRole(t *testing.T) {
 	algo := &OptunaSearch{}
 	defer func() { _ = algo.Close() }()
 
-	require.NoError(t, algo.Init(context.Background(), "test-multi-role", space, config.StrategySpec{
+	require.NoError(t, algo.Init(context.Background(), "test-multi-role", nil, space, config.StrategySpec{
 		Algorithm:            "tpe",
 		MaxTrialsPerTemplate: 8,
 	}))
@@ -358,10 +366,10 @@ func TestOptunaSearch_MultiRole(t *testing.T) {
 		require.Contains(t, params["decode"], "maxNumSeqs")
 
 		result := abtypes.TrialResult{
-			TrialIndex: len(history),
-			Params:     params,
-			Score:      toFloat64(params["decode"]["maxNumSeqs"]) * 0.1,
-			SLAPass:    true,
+			TrialIndex:  len(history),
+			Params:      params,
+			Score:       toFloat64(params["decode"]["maxNumSeqs"]) * 0.1,
+			Constraints: []float64{},
 		}
 		history = append(history, result)
 
@@ -381,7 +389,7 @@ func TestOptunaSearch_ErrorTrial(t *testing.T) {
 	algo := &OptunaSearch{}
 	defer func() { _ = algo.Close() }()
 
-	require.NoError(t, algo.Init(context.Background(), "test-error", buildSmallSpace(), config.StrategySpec{
+	require.NoError(t, algo.Init(context.Background(), "test-error", nil, buildSmallSpace(), config.StrategySpec{
 		Algorithm:            "tpe",
 		MaxTrialsPerTemplate: 5,
 	}))
@@ -399,11 +407,11 @@ func TestOptunaSearch_ErrorTrial(t *testing.T) {
 		if len(history) == 0 {
 			result.Error = "simulated failure"
 			result.Score = 0
-			result.SLAPass = false
+			result.Constraints = []float64{1}
 		} else {
-			score, slaPass := evalSmall(params)
+			score, constraints := evalSmall(params)
 			result.Score = score
-			result.SLAPass = slaPass
+			result.Constraints = constraints
 		}
 		history = append(history, result)
 	}

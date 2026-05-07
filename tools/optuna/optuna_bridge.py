@@ -35,7 +35,11 @@ import threading
 import time
 
 import optuna
-from optuna.distributions import CategoricalDistribution
+from optuna.distributions import (
+    CategoricalDistribution,
+    FloatDistribution,
+    IntDistribution,
+)
 from optuna.trial import TrialState
 
 logging.basicConfig(
@@ -88,7 +92,7 @@ class StudyManager:
 
     def __init__(self):
         self.studies: dict[str, optuna.Study] = {}
-        self.distributions: dict[str, dict[str, CategoricalDistribution]] = {}
+        self.distributions: dict[str, dict[str, optuna.distributions.BaseDistribution]] = {}
         self.pending_trials: dict[str, optuna.Trial | None] = {}
         self.max_trials: dict[str, int] = {}
         self.space_sizes: dict[str, int] = {}  # Cartesian product size per study
@@ -96,7 +100,7 @@ class StudyManager:
     def init_study(
         self,
         study_name: str,
-        search_space: dict[str, dict[str, list]],
+        search_space: dict[str, dict[str, object]],
         direction: str = "maximize",
         max_trials: int = 100,
         storage_path: str | None = None,
@@ -131,23 +135,51 @@ class StudyManager:
                 study.tell(t.number, state=TrialState.FAIL)
                 logger.info("Pruned stale RUNNING trial #%d", t.number)
 
-        # Build flat distributions: "role/param" -> CategoricalDistribution.
+        # Build flat distributions: "role/param" -> distribution.
         distributions = {}
         for role, params in search_space.items():
-            for param_name, values in params.items():
+            for param_name, raw in params.items():
                 flat_key = f"{role}/{param_name}"
-                typed_values = _normalize_values(values)
-                distributions[flat_key] = CategoricalDistribution(choices=typed_values)
+                if not isinstance(raw, dict):
+                    raise ValueError(
+                        f"Unexpected search space entry for {flat_key}: expected dict, got {type(raw)}"
+                    )
+                dist_type = raw.get("type", "categorical")
+                if dist_type == "categorical":
+                    typed_values = _normalize_values(raw.get("choices", []))
+                    distributions[flat_key] = CategoricalDistribution(choices=typed_values)
+                elif dist_type == "float":
+                    kwargs = {"low": raw["low"], "high": raw["high"]}
+                    if raw.get("step") is not None:
+                        kwargs["step"] = raw["step"]
+                    if raw.get("log"):
+                        kwargs["log"] = True
+                    distributions[flat_key] = FloatDistribution(**kwargs)
+                elif dist_type == "int":
+                    kwargs = {"low": int(raw["low"]), "high": int(raw["high"])}
+                    if raw.get("step") is not None:
+                        kwargs["step"] = int(raw["step"])
+                    if raw.get("log"):
+                        kwargs["log"] = True
+                    distributions[flat_key] = IntDistribution(**kwargs)
+                else:
+                    raise ValueError(f"Unknown distribution type: {dist_type!r}")
+                    raise ValueError(f"Unexpected search space value for {flat_key}: {type(raw)}")
 
         self.studies[study_name] = study
         self.distributions[study_name] = distributions
         self.max_trials[study_name] = max_trials
         self.pending_trials[study_name] = None
 
-        # Compute Cartesian product size of the search space.
+        # Compute total combination count of the search space.
+        # For continuous distributions (no step), space is unbounded -> 0.
         space_size = 1
         for dist in distributions.values():
-            space_size *= len(dist.choices)
+            n = _dist_size(dist)
+            if n == 0:
+                space_size = 0
+                break
+            space_size *= n
         self.space_sizes[study_name] = space_size
 
         existing_total = sum(
@@ -189,7 +221,7 @@ class StudyManager:
         study_name: str,
         trial_id: int,
         score: float,
-        sla_pass: bool,
+        constraints: list | None = None,
         error: str = "",
     ) -> dict:
         """Report trial results to Optuna."""
@@ -221,10 +253,10 @@ class StudyManager:
                 "Study %r: trial #%d FAILED: %s", study_name, trial_id, error
             )
         else:
-            constraint_value = 0.0 if sla_pass else 1.0
+            constraint_values = constraints if constraints else []
             if pending is not None and pending.number == trial_id:
                 # Normal path: pending Trial has storage reference, set attr before tell.
-                pending.set_user_attr("constraints", [constraint_value])
+                pending.set_user_attr("constraints", constraint_values)
                 study.tell(pending, score)
             else:
                 # Resumed trial path: set constraints via storage internals BEFORE tell.
@@ -246,7 +278,7 @@ class StudyManager:
                         )
                     )
                     study._storage.set_trial_user_attr(
-                        trial_id_in_storage, "constraints", [constraint_value]
+                        trial_id_in_storage, "constraints", constraint_values
                     )
                 except AttributeError as e:
                     raise RuntimeError(
@@ -257,11 +289,11 @@ class StudyManager:
                 study.tell(trial_id, score, skip_if_finished=True)
 
             logger.info(
-                "Study %r: trial #%d score=%.4f sla_pass=%s",
+                "Study %r: trial #%d score=%.4f constraints=%s",
                 study_name,
                 trial_id,
                 score,
-                sla_pass,
+                constraint_values,
             )
 
         self.pending_trials[study_name] = None
@@ -307,6 +339,20 @@ class StudyManager:
             }
         except ValueError:
             return {"status": "error", "message": "no completed feasible trials"}
+
+
+def _dist_size(dist) -> int:
+    """Return the number of possible values for a distribution, or 0 if continuous/unbounded."""
+    if isinstance(dist, CategoricalDistribution):
+        return len(dist.choices)
+    if isinstance(dist, IntDistribution):
+        step = dist.step if dist.step is not None else 1
+        return (dist.high - dist.low) // step + 1
+    if isinstance(dist, FloatDistribution):
+        if dist.step is None:
+            return 0  # continuous, unbounded
+        return int((dist.high - dist.low) / dist.step) + 1
+    return 0
 
 
 def _normalize_values(values: list) -> list:
@@ -378,7 +424,7 @@ def main():
                     study_name=study_name,
                     trial_id=request["trial_id"],
                     score=request.get("score", 0.0),
-                    sla_pass=request.get("sla_pass", False),
+                    constraints=request.get("constraints", []),
                     error=request.get("error", ""),
                 )
             elif action == "is_done":

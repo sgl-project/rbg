@@ -64,26 +64,37 @@ type OptunaSearch struct {
 	studyName   string
 	algorithm   string // Optuna sampler name (tpe, gp, cmaes, etc.)
 	maxTrials   int
-	spaceSize   int // Cartesian product of all param values
-	toldCount   int // number of history entries already told to Optuna
-	lastTrialID int // Optuna trial ID from last ask, -1 if none
+	spaceSize   int            // Cartesian product of all param values
+	toldCount   int            // number of history entries already told to Optuna
+	lastTrialID int            // Optuna trial ID from last ask, -1 if none
+	rawSpace    RawSearchSpace // raw param definitions with type metadata (for pow2 decoding)
+}
+
+// distributionDescriptor describes an Optuna distribution for the Python bridge.
+type distributionDescriptor struct {
+	Type    string  `json:"type"`              // "float", "int", "categorical"
+	Low     float64 `json:"low,omitempty"`     // min value (for float/int)
+	High    float64 `json:"high,omitempty"`    // max value (for float/int)
+	Step    float64 `json:"step,omitempty"`    // step value (for discrete float/int)
+	Log     bool    `json:"log,omitempty"`     // log-uniform (for float)
+	Choices []any   `json:"choices,omitempty"` // for categorical
 }
 
 // bridgeRequest is the JSON message sent to the Python bridge.
 type bridgeRequest struct {
-	Action        string                      `json:"action"`
-	StudyName     string                      `json:"study_name,omitempty"`
-	SearchSpace   map[string]map[string][]any `json:"search_space,omitempty"`
-	Direction     string                      `json:"direction,omitempty"`
-	MaxTrials     int                         `json:"max_trials,omitempty"`
-	StoragePath   string                      `json:"storage_path,omitempty"`
-	Seed          *int                        `json:"seed,omitempty"`
-	Sampler       string                      `json:"sampler,omitempty"`
-	SamplerKwargs map[string]any              `json:"sampler_kwargs,omitempty"`
-	TrialID       int                         `json:"trial_id"`
-	Score         float64                     `json:"score"`
-	SLAPass       bool                        `json:"sla_pass"`
-	Error         string                      `json:"error,omitempty"`
+	Action        string                    `json:"action"`
+	StudyName     string                    `json:"study_name,omitempty"`
+	SearchSpace   map[string]map[string]any `json:"search_space,omitempty"`
+	Direction     string                    `json:"direction,omitempty"`
+	MaxTrials     int                       `json:"max_trials,omitempty"`
+	StoragePath   string                    `json:"storage_path,omitempty"`
+	Seed          *int                      `json:"seed,omitempty"`
+	Sampler       string                    `json:"sampler,omitempty"`
+	SamplerKwargs map[string]any            `json:"sampler_kwargs,omitempty"`
+	TrialID       int                       `json:"trial_id"`
+	Score         float64                   `json:"score"`
+	Constraints   []float64                 `json:"constraints"`
+	Error         string                    `json:"error,omitempty"`
 }
 
 // bridgeResponse is the JSON message received from the Python bridge.
@@ -106,11 +117,12 @@ func (o *OptunaSearch) Name() string { return o.algorithm }
 // Init initializes (or reinitializes) the Optuna study for a new template.
 // The Python bridge subprocess is started on the first call and reused for
 // subsequent calls, since it can manage multiple studies by study_name.
-func (o *OptunaSearch) Init(ctx context.Context, name string, space ExpandedSearchSpace, cfg config.StrategySpec) error {
+func (o *OptunaSearch) Init(ctx context.Context, name string, rawSpace RawSearchSpace, space ExpandedSearchSpace, cfg config.StrategySpec) error {
 	o.logger = log.FromContext(ctx).WithValues("study", name, "algorithm", cfg.Algorithm)
 	o.studyName = name
 	o.algorithm = cfg.Algorithm
 	o.maxTrials = cfg.MaxTrialsPerTemplate
+	o.rawSpace = rawSpace
 	o.lastTrialID = -1
 	o.toldCount = 0
 
@@ -121,14 +133,58 @@ func (o *OptunaSearch) Init(ctx context.Context, name string, space ExpandedSear
 		}
 	}
 
-	// Convert ExpandedSearchSpace to JSON-friendly format.
-	searchSpace := make(map[string]map[string][]any)
-	for role, params := range space {
-		searchSpace[role] = make(map[string][]any)
-		for paramName, values := range params {
-			converted := make([]any, len(values))
-			copy(converted, values)
-			searchSpace[role][paramName] = converted
+	// Build distribution descriptors from raw search space.
+	// Falls back to ExpandedSearchSpace (all categorical) when rawSpace is empty.
+	searchSpace := make(map[string]map[string]any)
+	if len(rawSpace) > 0 {
+		for role, params := range rawSpace {
+			searchSpace[role] = make(map[string]any)
+			for paramName, param := range params {
+				switch param.Type {
+				case "categorical":
+					searchSpace[role][paramName] = distributionDescriptor{
+						Type:    "categorical",
+						Choices: param.Values,
+					}
+				case "float":
+					dd := distributionDescriptor{Type: "float", Low: *param.Min, High: *param.Max}
+					if param.Step != nil {
+						dd.Step = *param.Step
+					}
+					if param.Log {
+						dd.Log = true
+					}
+					searchSpace[role][paramName] = dd
+				case "int":
+					dd := distributionDescriptor{Type: "int", Low: *param.Min, High: *param.Max}
+					if param.Step != nil {
+						dd.Step = *param.Step
+					}
+					if param.Log {
+						dd.Log = true
+					}
+					searchSpace[role][paramName] = dd
+				case "pow2":
+					// Encode to log2 range for the bridge; bridge sees plain IntDistribution.
+					dd := distributionDescriptor{
+						Type: "int",
+						Low:  float64(log2Int(int(*param.Min))),
+						High: float64(log2Int(int(*param.Max))),
+					}
+					searchSpace[role][paramName] = dd
+				}
+			}
+		}
+	} else {
+		// Fallback: treat ExpandedSearchSpace values as categorical choices.
+		for role, params := range space {
+			searchSpace[role] = make(map[string]any)
+			for paramName, values := range params {
+				searchSpace[role][paramName] = distributionDescriptor{
+					Type:    "categorical",
+					Choices: values,
+				}
+			}
 		}
 	}
 
@@ -167,12 +223,12 @@ func (o *OptunaSearch) SuggestNext(history []abtypes.TrialResult) (abtypes.RoleP
 	if o.lastTrialID >= 0 && len(history) > o.toldCount {
 		result := history[len(history)-1]
 		req := bridgeRequest{
-			Action:    "tell",
-			StudyName: o.studyName,
-			TrialID:   o.lastTrialID,
-			Score:     result.Score,
-			SLAPass:   result.SLAPass,
-			Error:     result.Error,
+			Action:      "tell",
+			StudyName:   o.studyName,
+			TrialID:     o.lastTrialID,
+			Score:       result.Score,
+			Constraints: result.Constraints,
+			Error:       result.Error,
 		}
 		resp, err := o.send(req)
 		if err != nil {
@@ -207,6 +263,33 @@ func (o *OptunaSearch) SuggestNext(history []abtypes.TrialResult) (abtypes.RoleP
 			rps[role][k] = v
 		}
 	}
+
+	// Decode pow2 parameters: the bridge returns log2 exponents,
+	// convert back to actual power-of-2 values.
+	for role, roleParams := range o.rawSpace {
+		for name, rawParam := range roleParams {
+			if rawParam.Type == "pow2" {
+				if ps, ok := rps[role]; ok {
+					if v, ok := ps[name]; ok {
+						var exp int
+						switch val := v.(type) {
+						case float64:
+							exp = int(val)
+						case int:
+							exp = val
+						case int64:
+							exp = int(val)
+						case json.Number:
+							n, _ := val.Int64()
+							exp = int(n)
+						}
+						ps[name] = 1 << exp
+					}
+				}
+			}
+		}
+	}
+
 	return rps, nil
 }
 

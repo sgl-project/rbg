@@ -40,15 +40,45 @@ func ExpandSearchSpace(searchSpace map[string]map[string]config.SearchParam) Exp
 
 func expandParam(param config.SearchParam) []interface{} {
 	switch param.Type {
-	case "range":
-		if param.Min == nil || param.Max == nil || param.Step == nil {
+	case "float":
+		if param.Min == nil || param.Max == nil {
 			return nil
+		}
+		if param.Step == nil {
+			return nil // continuous, only meaningful for samplers (not grid)
 		}
 		var values []interface{}
 		for v := *param.Min; v <= *param.Max+1e-9; v += *param.Step {
 			// Round to avoid floating point drift
 			rounded := math.Round(v*1e6) / 1e6
 			values = append(values, rounded)
+		}
+		return values
+	case "int":
+		if param.Min == nil || param.Max == nil {
+			return nil
+		}
+		if param.Step == nil {
+			return nil // continuous, only meaningful for samplers (not grid)
+		}
+		var values []interface{}
+		step := *param.Step
+		for v := *param.Min; v <= *param.Max+1e-9; v += step {
+			values = append(values, int(math.Round(v)))
+		}
+		return values
+	case "pow2":
+		if param.Min == nil || param.Max == nil {
+			return nil
+		}
+		if !isPow2Int(int64(*param.Min)) || !isPow2Int(int64(*param.Max)) {
+			return nil
+		}
+		var values []interface{}
+		start := log2Int(int(*param.Min))
+		end := log2Int(int(*param.Max))
+		for exp := start; exp <= end; exp++ {
+			values = append(values, 1<<exp)
 		}
 		return values
 	case "categorical":
@@ -58,6 +88,21 @@ func expandParam(param config.SearchParam) []interface{} {
 	default:
 		return nil
 	}
+}
+
+// isPow2 returns true if n is a positive power of 2.
+func isPow2(n int) bool {
+	return n > 0 && (n&(n-1)) == 0
+}
+
+// log2Int returns the base-2 logarithm of n. n must be a power of 2.
+func log2Int(n int) int {
+	return int(math.Log2(float64(n)))
+}
+
+// isPow2Int returns true if n is a positive power of 2 (int64 variant).
+func isPow2Int(n int64) bool {
+	return n > 0 && (n&(n-1)) == 0
 }
 
 // paramEntry represents a single parameter with its role, name, and values.

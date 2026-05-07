@@ -64,16 +64,23 @@ type TemplateRef struct {
 
 // SearchParam defines a single searchable parameter.
 type SearchParam struct {
-	// Type is the parameter type: "range" or "categorical".
+	// Type is the parameter type: "float", "int", "pow2", or "categorical".
 	Type string `yaml:"type" json:"type"`
 
 	// Values is used for categorical params.
 	Values []interface{} `yaml:"values,omitempty" json:"values,omitempty"`
 
-	// Min, Max, Step are used for range params.
+	// Min, Max, Step are used for float and int params.
+	// Min and Max are required; Step is optional (absent = continuous).
+	// For pow2, Min/Max use the actual values (e.g. 512/8192), no Step.
 	Min  *float64 `yaml:"min,omitempty" json:"min,omitempty"`
 	Max  *float64 `yaml:"max,omitempty" json:"max,omitempty"`
 	Step *float64 `yaml:"step,omitempty" json:"step,omitempty"`
+
+	// Log indicates whether the parameter should use log-uniform distribution
+	// in Optuna. Meaningful for "float" type (FloatDistribution) and "int" type
+	// (IntDistribution) when step is not set.
+	Log bool `yaml:"log,omitempty" json:"log,omitempty"`
 }
 
 // ScenarioSpec defines a fixed workload scenario for benchmarking.

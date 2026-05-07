@@ -45,10 +45,24 @@ type gridState struct {
 // Name returns the algorithm name.
 func (g *GridSearch) Name() string { return "grid" }
 
-// Init initializes the grid search with the expanded search space.
+// Init initializes the grid search with the raw and expanded search space.
 // maxTrials is capped to the number of combinations so that IsDone
 // correctly terminates when the space is smaller than MaxTrialsPerTemplate.
-func (g *GridSearch) Init(_ context.Context, _ string, space ExpandedSearchSpace, cfg config.StrategySpec) error {
+// Grid search requires all float/int parameters to have a step (discrete);
+// continuous parameters are rejected because they can't be enumerated.
+func (g *GridSearch) Init(_ context.Context, _ string, rawSpace RawSearchSpace, space ExpandedSearchSpace, cfg config.StrategySpec) error {
+	// Validate: float/int params must have step for grid enumeration.
+	for role, params := range rawSpace {
+		for name, param := range params {
+			switch param.Type {
+			case "float", "int":
+				if param.Step == nil {
+					return fmt.Errorf("grid search requires step for param %q/%q (type %s)", role, name, param.Type)
+				}
+			}
+		}
+	}
+
 	entries, total, err := cartesianProductEntries(space)
 	if err != nil {
 		return err

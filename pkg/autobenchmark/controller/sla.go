@@ -21,34 +21,34 @@ import (
 	abtypes "sigs.k8s.io/rbgs/pkg/autobenchmark/types"
 )
 
-// EvaluateSLA checks whether metrics satisfy all SLA constraints.
-// Returns (pass, score). Score is the value of the optimize metric when SLA passes,
-// or 0 when SLA fails.
-func EvaluateSLA(metrics *abtypes.Metrics, objectives config.ObjectivesSpec) (bool, float64) {
+// EvaluateSLA computes per-SLA constraint deviations and the optimize metric.
+//
+// For each SLA constraint, the deviation is:
+//   - Max constraint (TTFT, TPOT, error rate): max(0, actual - limit)
+//   - Min constraint (future): max(0, limit - actual)
+//
+// Deviation > 0 means constraint violated. Score is always the actual
+// optimize metric value regardless of SLA violation.
+func EvaluateSLA(metrics *abtypes.Metrics, objectives config.ObjectivesSpec) ([]float64, float64) {
 	if metrics == nil {
-		return false, 0
+		return []float64{0}, 0
 	}
 
 	sla := objectives.SLA
+	var constraints []float64
 
-	// Check TTFT P99 constraint
-	if sla.TTFTP99MaxMs != nil && metrics.TTFTP99 > *sla.TTFTP99MaxMs {
-		return false, 0
+	if sla.TTFTP99MaxMs != nil {
+		constraints = append(constraints, max(0, metrics.TTFTP99-*sla.TTFTP99MaxMs))
+	}
+	if sla.TPOTP99MaxMs != nil {
+		constraints = append(constraints, max(0, metrics.TPOTP99-*sla.TPOTP99MaxMs))
+	}
+	if sla.ErrorRateMax != nil {
+		constraints = append(constraints, max(0, metrics.ErrorRate-*sla.ErrorRateMax))
 	}
 
-	// Check TPOT P99 constraint
-	if sla.TPOTP99MaxMs != nil && metrics.TPOTP99 > *sla.TPOTP99MaxMs {
-		return false, 0
-	}
-
-	// Check error rate constraint
-	if sla.ErrorRateMax != nil && metrics.ErrorRate > *sla.ErrorRateMax {
-		return false, 0
-	}
-
-	// All SLA checks passed — compute score from optimize metric
 	score := getOptimizeMetric(metrics, objectives.Optimize)
-	return true, score
+	return constraints, score
 }
 
 // getOptimizeMetric extracts the metric value to maximize based on the optimize target.

@@ -44,28 +44,28 @@ func TestSelectBest(t *testing.T) {
 		{
 			name: "all fail SLA",
 			trials: []abtypes.TrialResult{
-				{TrialIndex: 0, SLAPass: false, Score: 0},
-				{TrialIndex: 1, SLAPass: false, Score: 0},
+				{TrialIndex: 0, Constraints: []float64{1}, Score: 0},
+				{TrialIndex: 1, Constraints: []float64{1}, Score: 0},
 			},
 			want: nil,
 		},
 		{
 			name: "single pass",
 			trials: []abtypes.TrialResult{
-				{TrialIndex: 0, SLAPass: false, Score: 0},
-				{TrialIndex: 1, SLAPass: true, Score: 1500},
+				{TrialIndex: 0, Constraints: []float64{1}, Score: 0},
+				{TrialIndex: 1, Constraints: []float64{}, Score: 1500},
 			},
-			want: &abtypes.TrialResult{TrialIndex: 1, SLAPass: true, Score: 1500},
+			want: &abtypes.TrialResult{TrialIndex: 1, Constraints: []float64{}, Score: 1500},
 		},
 		{
 			name: "multiple pass - highest score wins",
 			trials: []abtypes.TrialResult{
-				{TrialIndex: 0, SLAPass: true, Score: 1000},
-				{TrialIndex: 1, SLAPass: true, Score: 2000},
-				{TrialIndex: 2, SLAPass: true, Score: 1500},
-				{TrialIndex: 3, SLAPass: false, Score: 0},
+				{TrialIndex: 0, Constraints: []float64{}, Score: 1000},
+				{TrialIndex: 1, Constraints: []float64{}, Score: 2000},
+				{TrialIndex: 2, Constraints: []float64{}, Score: 1500},
+				{TrialIndex: 3, Constraints: []float64{1}, Score: 0},
 			},
-			want: &abtypes.TrialResult{TrialIndex: 1, SLAPass: true, Score: 2000},
+			want: &abtypes.TrialResult{TrialIndex: 1, Constraints: []float64{}, Score: 2000},
 		},
 	}
 
@@ -91,15 +91,15 @@ func TestBuildReport(t *testing.T) {
 				{
 					Name: "t1",
 					Trials: []abtypes.TrialResult{
-						{TrialIndex: 0, SLAPass: true, Score: 1000},
-						{TrialIndex: 1, SLAPass: false},
+						{TrialIndex: 0, Constraints: []float64{}, Score: 1000},
+						{TrialIndex: 1, Constraints: []float64{1}},
 					},
 					BestTrial: &abtypes.TrialResult{TrialIndex: 0, Score: 1000},
 				},
 				{
 					Name: "t2",
 					Trials: []abtypes.TrialResult{
-						{TrialIndex: 0, SLAPass: true, Score: 2000},
+						{TrialIndex: 0, Constraints: []float64{}, Score: 2000},
 					},
 					BestTrial: &abtypes.TrialResult{TrialIndex: 0, Score: 2000},
 				},
@@ -127,8 +127,8 @@ func TestBuildReport(t *testing.T) {
 				{
 					Name: "t1",
 					Trials: []abtypes.TrialResult{
-						{TrialIndex: 0, SLAPass: false},
-						{TrialIndex: 1, SLAPass: false},
+						{TrialIndex: 0, Constraints: []float64{1}},
+						{TrialIndex: 1, Constraints: []float64{1}},
 					},
 				},
 			},
@@ -204,7 +204,7 @@ func TestBuildResult(t *testing.T) {
 		},
 		SearchSpace: map[string]map[string]config.SearchParam{
 			"default": {
-				"gpuMemoryUtilization": {Type: "range", Min: float64Ptr(0.7), Max: float64Ptr(0.99), Step: float64Ptr(0.05)},
+				"gpuMemoryUtilization": {Type: "float", Min: float64Ptr(0.7), Max: float64Ptr(0.99), Step: float64Ptr(0.05)},
 				"maxNumSeqs":           {Type: "categorical", Values: []interface{}{float64(64), float64(128), float64(256)}},
 			},
 		},
@@ -218,16 +218,16 @@ func TestBuildResult(t *testing.T) {
 				{
 					Name: "tp",
 					Trials: []abtypes.TrialResult{
-						{TrialIndex: 0, SLAPass: true, Score: 1000},
-						{TrialIndex: 1, SLAPass: false, Score: 0},
-						{TrialIndex: 2, SLAPass: true, Score: 2000},
+						{TrialIndex: 0, Constraints: []float64{}, Score: 1000},
+						{TrialIndex: 1, Constraints: []float64{1}, Score: 0},
+						{TrialIndex: 2, Constraints: []float64{}, Score: 2000},
 					},
 					BestTrial: &abtypes.TrialResult{TrialIndex: 2, Score: 2000},
 				},
 				{
 					Name: "pp",
 					Trials: []abtypes.TrialResult{
-						{TrialIndex: 0, SLAPass: true, Score: 1500},
+						{TrialIndex: 0, Constraints: []float64{}, Score: 1500},
 					},
 					BestTrial: &abtypes.TrialResult{TrialIndex: 0, Score: 1500},
 				},
@@ -269,7 +269,7 @@ func TestBuildResult(t *testing.T) {
 		assert.Len(t, result.Config.SearchSpace, 1)
 		assert.Len(t, result.Config.SearchSpace["default"], 2)
 		gpuMem := result.Config.SearchSpace["default"]["gpuMemoryUtilization"]
-		assert.Equal(t, "range", gpuMem.Type)
+		assert.Equal(t, "float", gpuMem.Type)
 		require.NotNil(t, gpuMem.Min)
 		assert.InDelta(t, 0.7, *gpuMem.Min, 0.01)
 		require.NotNil(t, gpuMem.Max)
@@ -303,7 +303,7 @@ func TestBuildResult(t *testing.T) {
 				{
 					Name: "tp",
 					Trials: []abtypes.TrialResult{
-						{TrialIndex: 0, SLAPass: true, Score: 1000},
+						{TrialIndex: 0, Constraints: []float64{}, Score: 1000},
 					},
 				},
 			},
