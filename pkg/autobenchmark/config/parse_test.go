@@ -65,7 +65,6 @@ objectives:
 strategy:
   algorithm: "grid"
   maxTrialsPerTemplate: 10
-  earlyStopPatience: 3
   timeout: "2h"
 
 evaluator:

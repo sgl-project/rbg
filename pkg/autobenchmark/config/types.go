@@ -111,7 +111,6 @@ type SLASpec struct {
 type StrategySpec struct {
 	Algorithm            string `yaml:"algorithm" json:"algorithm"`
 	MaxTrialsPerTemplate int    `yaml:"maxTrialsPerTemplate" json:"maxTrialsPerTemplate"`
-	EarlyStopPatience    int    `yaml:"earlyStopPatience,omitempty" json:"earlyStopPatience,omitempty"`
 	Timeout              string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 
 	// Optuna-specific fields (used when algorithm is an Optuna-backed sampler).

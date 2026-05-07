@@ -55,7 +55,6 @@ objectives:
 strategy:
   algorithm: tpe             # grid | tpe | gp | cmaes | random | qmc | nsgaii | nsgaiii
   maxTrialsPerTemplate: 20   # 每个 template 最多试验次数
-  earlyStopPatience: 5       # 连续 N 次无改善则跳过当前 template
   timeout: 4h                # 总超时
 # 评估工具配置
 evaluator:

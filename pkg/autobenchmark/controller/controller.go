@@ -241,12 +241,6 @@ func (ctrl *Controller) runTrials(
 ) error {
 	logger := log.FromContext(ctx).WithValues("template", ts.Name)
 
-	earlyStopCounter := 0
-	bestScore := float64(0)
-	if ts.BestTrial != nil {
-		bestScore = ts.BestTrial.Score
-	}
-
 	for !algo.IsDone(ts.Trials) {
 		if err := ctx.Err(); err != nil {
 			return nil // timeout, graceful exit
@@ -263,24 +257,6 @@ func (ctrl *Controller) runTrials(
 
 		result := ctrl.executeTrial(ctx, baseRBG, ts.Name, trialIdx, params)
 		ts.Trials = append(ts.Trials, result)
-
-		// Check early stop: only count SLA-passing trials that did not improve.
-		// SLA failures reset the counter so that invalid configs don't exhaust patience.
-		if ctrl.cfg.Strategy.EarlyStopPatience > 0 {
-			feasible := result.IsSLAFeasible()
-			if feasible && result.Score > bestScore {
-				bestScore = result.Score
-				earlyStopCounter = 0
-			} else if feasible {
-				earlyStopCounter++
-			} else {
-				earlyStopCounter = 0
-			}
-			if earlyStopCounter >= ctrl.cfg.Strategy.EarlyStopPatience {
-				logger.Info("Early stop triggered", "patience", ctrl.cfg.Strategy.EarlyStopPatience)
-				break
-			}
-		}
 
 		// Save algorithm state
 		algoState, err := algo.MarshalState()

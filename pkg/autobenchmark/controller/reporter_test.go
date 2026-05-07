@@ -183,7 +183,6 @@ func TestBuildResult(t *testing.T) {
 		Strategy: config.StrategySpec{
 			Algorithm:            "tpe",
 			MaxTrialsPerTemplate: 10,
-			EarlyStopPatience:    3,
 			Timeout:              "1h",
 		},
 		Objectives: config.ObjectivesSpec{
@@ -263,7 +262,6 @@ func TestBuildResult(t *testing.T) {
 		assert.Equal(t, []string{"fixed(128,10)"}, result.Config.ScenarioWorkloads)
 		assert.Equal(t, []int{4}, result.Config.ScenarioConcurrency)
 		assert.Equal(t, 10, result.Config.MaxTrialsPerTmpl)
-		assert.Equal(t, 3, result.Config.EarlyStopPatience)
 		assert.Equal(t, "1h", result.Config.Timeout)
 		assert.Equal(t, []string{"tp", "pp"}, result.Config.Templates)
 		assert.Len(t, result.Config.SearchSpace, 1)
