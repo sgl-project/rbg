@@ -62,12 +62,19 @@ func ConstructWorkloadRoleStatus(
 	generation, observedGeneration int64,
 ) workloadsv1alpha2.RoleStatus {
 	if observedGeneration < generation {
+		// Don't return a zeroed RoleStatus here: doing so would overwrite the
+		// previously recorded replicas/readyReplicas with zeros in updateRBGStatus,
+		// causing transient but incorrect status flickering. Instead, return the
+		// last known status from RBG to preserve the current observed state.
 		logger := log.FromContext(ctx)
-		logger.V(1).Info("workload status not yet observed, skipping status update for this role",
+		logger.V(1).Info("workload status not yet observed, preserving last known status for this role",
 			"role", role.Name,
 			"generation", generation,
 			"observedGeneration", observedGeneration,
 		)
+		if status, found := rbg.GetRoleStatus(role.Name); found {
+			return status
+		}
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}
 	}
 	return ConstructRoleStatue(rbg, role, replicas, readyReplicas, updatedReplicas)
