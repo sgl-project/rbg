@@ -63,7 +63,7 @@ jobs:
           # - CI workflows (.github/workflows/*.yml)
           # - Test files (test/**/*)
           CODE_PATTERNS='\.go$|^Makefile|^Dockerfile|go\.mod|go\.sum|\.sh$|^config/crd/|^config/rbac/|^deploy/helm/|^\.github/workflows/|^test/'
-          SKIP_DIRS='^(examples|doc|python|cmd/cli)/'
+          SKIP_DIRS='^(examples|doc|python)/'
 
           SHOULD_RUN="false"
 
