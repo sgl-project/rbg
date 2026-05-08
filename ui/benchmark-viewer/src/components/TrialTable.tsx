@@ -1,5 +1,5 @@
 import type { TrialResult } from '@/types'
-import { formatNumber, formatDate } from '@/lib/utils'
+import { formatNumber, formatDate, isSlaPass } from '@/lib/utils'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { useState } from 'react'
 import { X, ZoomIn } from 'lucide-react'
@@ -54,7 +54,7 @@ function TrialDetailDialog({ trial, optimize, onClose }: { trial: TrialResult; o
           <section>
             <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Status</h4>
             <div className="grid grid-cols-3 gap-2 text-sm">
-              <div><span className="text-muted-foreground">SLA:</span> <StatusBadge pass={trial.slaPass} /></div>
+              <div><span className="text-muted-foreground">SLA:</span> <StatusBadge pass={isSlaPass(trial.constraints)} /></div>
               <div><span className="text-muted-foreground">Score:</span> <span className="font-mono">{formatNumber(trial.score)}</span></div>
               <div><span className="text-muted-foreground">Duration:</span> <span className="font-mono">{trial.duration}</span></div>
               <div className="col-span-2"><span className="text-muted-foreground">Start:</span> <span className="text-xs">{formatDate(trial.startTime)}</span></div>
@@ -191,7 +191,7 @@ export function TrialTable({ trials, optimize, showTemplateColumn }: TrialTableP
                         </div>
                       </td>
                       <td className="py-2.5 px-3 font-mono">{formatNumber(t.score)}</td>
-                      <td className="py-2.5 px-3"><StatusBadge pass={t.slaPass} /></td>
+                      <td className="py-2.5 px-3"><StatusBadge pass={isSlaPass(t.constraints)} /></td>
                       <td className="py-2.5 px-3 font-mono text-xs">
                         {t.metrics ? <MetricCell value={t.metrics.ttftP99} unit="ms" /> : '-'}
                       </td>

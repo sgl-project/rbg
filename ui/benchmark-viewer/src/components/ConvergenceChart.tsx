@@ -13,7 +13,7 @@ import {
 } from 'chart.js'
 import type { TrialResult, TemplateDetail } from '@/types'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { formatNumber } from '@/lib/utils'
+import { formatNumber, isSlaPass } from '@/lib/utils'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Filler, Legend)
 
@@ -49,9 +49,10 @@ export function ConvergenceChart({ trials, optimize, multiTemplate, templatesDat
         const bestSoFar: number[] = []
 
         for (const t of sortedTrials) {
-          if (t.slaPass && t.score > best) best = t.score
+          const pass = isSlaPass(t.constraints)
+          if (pass && t.score > best) best = t.score
           bestSoFar.push(best)
-          passPoints.push(t.slaPass ? t.score : null)
+          passPoints.push(pass ? t.score : null)
         }
 
         return {
@@ -73,12 +74,12 @@ export function ConvergenceChart({ trials, optimize, multiTemplate, templatesDat
     // Single-template mode
     const trialList = trials || []
     const labels = trialList.map((_, i) => `#${i}`)
-    const passMarks = trialList.map(t => t.slaPass ? t.score : NaN)
+    const passMarks = trialList.map(t => isSlaPass(t.constraints) ? t.score : NaN)
 
     const bestSoFar: number[] = []
     let best = 0
     for (const t of trialList) {
-      if (t.slaPass && t.score > best) best = t.score
+      if (isSlaPass(t.constraints) && t.score > best) best = t.score
       bestSoFar.push(best)
     }
 

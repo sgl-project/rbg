@@ -1,7 +1,7 @@
 import { useMemo, useRef, useEffect, useState } from 'react'
 import type { TrialResult, ParamSet } from '@/types'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
-import { formatNumber, computeScoreRatio, scoreColorToHsl } from '@/lib/utils'
+import { formatNumber, computeScoreRatio, scoreColorToHsl, isSlaPass } from '@/lib/utils'
 
 interface ParallelCoordinatesProps {
   trials: TrialResult[]
@@ -110,7 +110,7 @@ export function ParallelCoordinates({ trials, optimize, height = 420 }: Parallel
           axis.values.push(v)
         }
       })
-      axes[axes.length - 1].values.push(t.slaPass ? t.score : 0)
+      axes[axes.length - 1].values.push(t.score)
     })
 
     // Compute min/max for each axis with padding
@@ -155,12 +155,15 @@ export function ParallelCoordinates({ trials, optimize, height = 420 }: Parallel
         }
       })
 
-      // Score point
-      const scoreV = t.slaPass ? t.score : 0
+      // Score point (use actual score for all trials)
+      const scoreV = t.score
       const scoreRatio = axes[axes.length - 1].max === axes[axes.length - 1].min
         ? 0.5
         : (scoreV - axes[axes.length - 1].min) / (axes[axes.length - 1].max - axes[axes.length - 1].min)
       points.push({ x: axes.length - 1, y: 1 - scoreRatio })
+
+      // Derive slaPass from constraints
+      const trialSlaPass = isSlaPass(t.constraints)
 
       // Color by score ratio (considers optimization direction)
       const scoreColorRatio = computeScoreRatio(scores, t.score, optimize)
@@ -168,8 +171,8 @@ export function ParallelCoordinates({ trials, optimize, height = 420 }: Parallel
         trialIdx,
         points,
         score: t.score,
-        slaPass: t.slaPass,
-        color: scoreColorToHsl(scoreColorRatio, t.slaPass),
+        slaPass: trialSlaPass,
+        color: scoreColorToHsl(scoreColorRatio, trialSlaPass),
       }
     })
 

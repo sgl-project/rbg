@@ -122,6 +122,7 @@ export function OverviewTab({ data, templateIndex, multiTemplate = false }: Over
           <ParamComparison
             trials={data.templates[templateIndex]?.trials || []}
             optimize={config.optimize}
+            searchSpace={data.config.searchSpace.default}
           />
         </>
       )}

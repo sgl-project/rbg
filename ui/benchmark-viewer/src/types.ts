@@ -26,7 +26,8 @@ export interface TrialResult {
   templateName: string
   params: RoleParamSet
   metrics: Metrics | null
-  slaPass: boolean
+  constraints: number[] | null
+  slaPass?: boolean  // derived from constraints: true if all constraints <= 0
   score: number
   error: string
   duration: string

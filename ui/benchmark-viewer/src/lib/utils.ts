@@ -28,6 +28,18 @@ export function formatNumber(n: number, decimals = 2): string {
   return Number.isInteger(n) ? n.toString() : n.toFixed(decimals)
 }
 
+/**
+ * Derive SLA pass status from constraints array.
+ * constraints[i] > 0 means the i-th SLA constraint is violated.
+ * Returns true if all constraints are <= 0 (no violations).
+ * Returns false if any constraint > 0.
+ * Returns false if constraints is null/undefined (trial errored out).
+ */
+export function isSlaPass(constraints: number[] | null | undefined): boolean {
+  if (!constraints || constraints.length === 0) return false
+  return constraints.every(c => c <= 0)
+}
+
 // Metrics that should be minimized (lower is better)
 const MINIMIZE_METRICS = [
   'ttftP50', 'ttftP99',
