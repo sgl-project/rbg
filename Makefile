@@ -4,16 +4,10 @@ IMG_REPO ?= rolebasedgroup
 RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
 PATIO_IMG ?= ${IMG_REPO}/rbgs-patio-runtime
-BENCHMARK_DASHBOARD_IMG ?= ${IMG_REPO}/rbgs-benchmark-dashboard
-AUTO_BENCHMARK_DASHBOARD_IMG ?= ${IMG_REPO}/rbgs-auto-benchmark-dashboard
-BENCHMARK_TOOL_GENAI_IMG ?= ${IMG_REPO}/rbgs-benchmark-tool-genai
 
 RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
 PATIO_DOCKERFILE ?= python/patio/Dockerfile
-BENCHMARK_DASHBOARD_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/dashboard/Dockerfile
-AUTO_BENCHMARK_DASHBOARD_DOCKERFILE ?= ui/benchmark-viewer/Dockerfile
-BENCHMARK_TOOL_GENAI_DOCKERFILE ?= tools/benchmark/genai/Dockerfile
 
 VERSION ?= v0.7.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
@@ -132,16 +126,10 @@ copyright-fix: ## Add copyright headers to changed Go files against BASE_REF (de
 # Build docker images
 DOCKER_BUILD := docker-build-controller
 DOCKER_BUILD += docker-build-crd-upgrader
-DOCKER_BUILD_BENCHMARK := docker-build-benchmark-dashboard
-DOCKER_BUILD_BENCHMARK += docker-build-auto-benchmark-dashboard
-DOCKER_BUILD_BENCHMARK += docker-build-benchmark-tool-genai
 
 # Push docker images
 DOCKER_PUSH := docker-push-controller
 DOCKER_PUSH += docker-push-crd-upgrader
-DOCKER_PUSH_BENCHMARK := docker-push-benchmark-dashboard
-DOCKER_PUSH_BENCHMARK += docker-push-auto-benchmark-dashboard
-DOCKER_PUSH_BENCHMARK += docker-push-benchmark-tool-genai
 
 GOPROXY    ?=
 GOPRIVATE  ?=
@@ -169,35 +157,6 @@ build: ## Build manager binary.
 	GOPROXY=${GOPROXY} \
 	go build -v -o bin/manager -ldflags $(ldflags) cmd/rbgs/main.go
 
-.PHONY: build-cli
-build-cli:  ## Build cli binary.
-	GOARCH=${TARGETARCH} \
-	GOOS=${TARGETOS} \
-	CGO_ENABLED=0 \
-	GO111MODULE=on \
-	GOPROXY=${GOPROXY} \
-	go build -mod vendor -v -o bin/kubectl-rbg -ldflags $(ldflags) cmd/cli/main.go
-
-CLI_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
-
-.PHONY: build-cli-all
-build-cli-all: ## Build cli binaries for all platforms.
-	@for platform in $(CLI_PLATFORMS); do \
-		GOOS=$${platform%%/*} GOARCH=$${platform##*/} \
-		CGO_ENABLED=0 GO111MODULE=on GOPROXY=${GOPROXY} \
-		go build -mod vendor -v -o bin/kubectl-rbg-$${platform%%/*}-$${platform##*/} -ldflags $(ldflags) cmd/cli/main.go; \
-		echo "Built bin/kubectl-rbg-$${platform%%/*}-$${platform##*/}"; \
-	done
-
-.PHONY: build-benchmark-dashboard
-build-benchmark-dashboard: ## Build benchmark-dashboard binary.
-	GOARCH=${TARGETARCH} \
-	GOOS=${TARGETOS} \
-	CGO_ENABLED=0 \
-	GO111MODULE=on \
-	GOPROXY=${GOPROXY} \
-	go build -v -o bin/benchmark-dashboard -ldflags $(ldflags) ./cmd/cli/cmd/llm/benchmark/dashboard/
-
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/rbgs/main.go
@@ -221,35 +180,8 @@ docker-build-crd-upgrader:
 docker-build-patio:
 	$(CONTAINER_TOOL) build -f ${PATIO_DOCKERFILE} -t ${PATIO_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
-.PHONY: docker-build-benchmark-dashboard
-docker-build-benchmark-dashboard: ## Build docker image for benchmark-dashboard
-	$(CONTAINER_TOOL) build -f ${BENCHMARK_DASHBOARD_DOCKERFILE} -t ${BENCHMARK_DASHBOARD_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
-
-.PHONY: docker-push-benchmark-dashboard
-docker-push-benchmark-dashboard: ## Push docker image for benchmark-dashboard
-	$(CONTAINER_TOOL) push ${BENCHMARK_DASHBOARD_IMG}:${TAG}
-
-.PHONY: docker-build-auto-benchmark-dashboard
-docker-build-auto-benchmark-dashboard: ## Build docker image for auto-benchmark-dashboard (React UI)
-	cd ui/benchmark-viewer && $(CONTAINER_TOOL) build -f Dockerfile -t ${AUTO_BENCHMARK_DASHBOARD_IMG}:${TAG} .
-
-.PHONY: docker-push-auto-benchmark-dashboard
-docker-push-auto-benchmark-dashboard: docker-build-auto-benchmark-dashboard ## Push docker image for auto-benchmark-dashboard
-	$(CONTAINER_TOOL) push ${AUTO_BENCHMARK_DASHBOARD_IMG}:${TAG}
-
-.PHONY: docker-build-benchmark-tool-genai
-docker-build-benchmark-tool-genai: ## Build docker image for benchmark benchmark-tool (genai-bench)
-	$(CONTAINER_TOOL) build -f ${BENCHMARK_TOOL_GENAI_DOCKERFILE} -t ${BENCHMARK_TOOL_GENAI_IMG}:${TAG} .
-
-.PHONY: docker-push-benchmark-tool-genai
-docker-push-benchmark-tool-genai: ## Push docker image for benchmark benchmark-tool
-	$(CONTAINER_TOOL) push ${BENCHMARK_TOOL_GENAI_IMG}:${TAG}
-
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
-
-.PHONY: docker-build-benchmark
-docker-build-benchmark: ${DOCKER_BUILD_BENCHMARK}
 
 .PHONY: docker-push-controller
 docker-push-controller:
@@ -265,9 +197,6 @@ docker-push-patio:
 
 .PHONY: docker-push
 docker-push: ${DOCKER_PUSH}
-
-.PHONY: docker-push-benchmark
-docker-push-benchmark: ${DOCKER_PUSH_BENCHMARK}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

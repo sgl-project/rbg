@@ -174,27 +174,6 @@ chmod +x bin/kubectl-rbg
 sudo mv bin/kubectl-rbg /usr/local/bin/
 ```
 
-### LLM 快速开始
-
-```shell
-# 初始化配置
-kubectl rbg llm config init
-
-# 拉取模型
-kubectl rbg llm model pull Qwen/Qwen3.5-0.8B
-
-# 部署推理服务
-kubectl rbg llm svc run my-qwen Qwen/Qwen3.5-0.8B
-
-# 与服务对话（交互模式）
-kubectl rbg llm svc chat my-qwen -i
-
-# 或发送单个提示
-kubectl rbg llm svc chat my-qwen --prompt "什么是 Kubernetes?"
-```
-
-详细 CLI 文档请参考 [kubectl-rbg](doc/cli/kubectl-rbg.md)。
-
 ---
 
 ## 🧠 推理示例
