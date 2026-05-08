@@ -45,6 +45,8 @@ func newPullCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 		source   string
 		storage  string
 		wait     bool
+		memory   string
+		cpu      string
 	)
 
 	cmd := &cobra.Command{
@@ -71,7 +73,10 @@ Examples:
   kubectl rbg llm model pull Qwen/Qwen3.5-0.8B --source huggingface --storage model-pvc
 
   # Pull without waiting for completion
-  kubectl rbg llm model pull Qwen/Qwen3.5-0.8B --wait=false`,
+  kubectl rbg llm model pull Qwen/Qwen3.5-0.8B --wait=false
+
+  # Pull with custom resources (useful for large models that need more memory)
+  kubectl rbg llm model pull Qwen/Qwen3.5-0.8B --memory=16Gi --cpu=4`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			modelID := args[0]
@@ -157,19 +162,7 @@ Examples:
 			}
 
 			// Apply resource limits to the download container
-			if len(podTemplate.Spec.Containers) > 0 {
-				container := &podTemplate.Spec.Containers[0]
-				container.Resources = corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("1"),
-						corev1.ResourceMemory: resource.MustParse("2Gi"),
-					},
-					Limits: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("4"),
-						corev1.ResourceMemory: resource.MustParse("8Gi"),
-					},
-				}
-			}
+			applyPullResources(podTemplate, cpu, memory)
 
 			// Create the Job
 			job := buildPullJob(modelID, podTemplate)
@@ -213,8 +206,28 @@ Examples:
 	cmd.Flags().StringVar(&source, "source", "", "Source to use (overrides default)")
 	cmd.Flags().StringVar(&storage, "storage", "", "Storage to use (overrides default)")
 	cmd.Flags().BoolVar(&wait, "wait", true, "Wait for the pull job to complete and stream logs")
+	cmd.Flags().StringVar(&memory, "memory", defaultPullMemory, "Memory request/limit for the download container (e.g. 8Gi, 16Gi)")
+	cmd.Flags().StringVar(&cpu, "cpu", defaultPullCPU, "CPU request/limit for the download container (e.g. 2, 4)")
 
 	return cmd
+}
+
+// applyPullResources sets the CPU and memory requests/limits on the first container.
+func applyPullResources(podTemplate *corev1.PodTemplateSpec, cpu, memory string) {
+	if len(podTemplate.Spec.Containers) == 0 {
+		return
+	}
+	container := &podTemplate.Spec.Containers[0]
+	container.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpu),
+			corev1.ResourceMemory: resource.MustParse(memory),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpu),
+			corev1.ResourceMemory: resource.MustParse(memory),
+		},
+	}
 }
 
 // buildPullJob creates a Job from the pod template
@@ -313,6 +326,9 @@ const (
 	DefaultPullBackoffLimit            = int32(3)     // retry up to 3 times on failure
 	DefaultPullActiveDeadlineSeconds   = int64(86400) // 24 hours max runtime for large models
 	DefaultPullTTLSecondsAfterFinished = int32(86400) // keep job 24 hours after completion
+
+	defaultPullCPU    = "1"
+	defaultPullMemory = "8Gi"
 )
 
 // deriveJobState maps a Job status to a high-level JobState

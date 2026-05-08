@@ -29,7 +29,9 @@ import (
 	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 // --- shellEscape ---
@@ -60,6 +62,59 @@ func TestShellEscape_Empty(t *testing.T) {
 	result := shellEscape("")
 	// empty string: not matching safe chars -> wrapped in single quotes
 	assert.Equal(t, "''", result)
+}
+
+// --- newPullCmd flags ---
+
+func TestNewPullCmd_ResourceFlagsExist(t *testing.T) {
+	cf := genericclioptions.NewConfigFlags(true)
+	cmd := newPullCmd(cf)
+
+	memFlag := cmd.Flags().Lookup("memory")
+	require.NotNil(t, memFlag)
+	assert.Equal(t, defaultPullMemory, memFlag.DefValue)
+
+	cpuFlag := cmd.Flags().Lookup("cpu")
+	require.NotNil(t, cpuFlag)
+	assert.Equal(t, defaultPullCPU, cpuFlag.DefValue)
+}
+
+// --- applyPullResources ---
+
+func TestApplyPullResources_Defaults(t *testing.T) {
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "dl"}},
+		},
+	}
+	applyPullResources(tpl, defaultPullCPU, defaultPullMemory)
+
+	res := tpl.Spec.Containers[0].Resources
+	assert.True(t, res.Requests.Cpu().Equal(resource.MustParse(defaultPullCPU)))
+	assert.True(t, res.Requests.Memory().Equal(resource.MustParse(defaultPullMemory)))
+	assert.True(t, res.Limits.Cpu().Equal(resource.MustParse(defaultPullCPU)))
+	assert.True(t, res.Limits.Memory().Equal(resource.MustParse(defaultPullMemory)))
+}
+
+func TestApplyPullResources_CustomValues(t *testing.T) {
+	tpl := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "dl"}},
+		},
+	}
+	applyPullResources(tpl, "2", "16Gi")
+
+	res := tpl.Spec.Containers[0].Resources
+	assert.True(t, res.Requests.Cpu().Equal(resource.MustParse("2")))
+	assert.True(t, res.Requests.Memory().Equal(resource.MustParse("16Gi")))
+	assert.True(t, res.Limits.Cpu().Equal(resource.MustParse("2")))
+	assert.True(t, res.Limits.Memory().Equal(resource.MustParse("16Gi")))
+}
+
+func TestApplyPullResources_NoContainers_NoPanic(t *testing.T) {
+	tpl := &corev1.PodTemplateSpec{}
+	// Must not panic
+	applyPullResources(tpl, "1", "2Gi")
 }
 
 // --- buildPullJob ---
