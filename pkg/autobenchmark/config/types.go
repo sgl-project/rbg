@@ -146,3 +146,11 @@ var SupportedAlgorithms = []string{"grid", "tpe", "gp", "cmaes", "random", "qmc"
 
 // SupportedOptimizeMetrics lists valid optimization target metrics.
 var SupportedOptimizeMetrics = []string{"outputThroughput", "inputThroughput", "requestsPerSecond"}
+
+// Search parameter type constants.
+const (
+	ParamTypeCategorical = "categorical"
+	ParamTypeFloat       = "float"
+	ParamTypeInt         = "int"
+	ParamTypePow2        = "pow2"
+)

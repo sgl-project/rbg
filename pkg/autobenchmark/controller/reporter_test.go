@@ -241,7 +241,8 @@ func TestBuildResult(t *testing.T) {
 
 		// Status — completed (endTime is set)
 		assert.Equal(t, startTime, result.Status.StartTime)
-		assert.Equal(t, endTime, result.Status.EndTime)
+		require.NotNil(t, result.Status.EndTime)
+		assert.Equal(t, endTime, *result.Status.EndTime)
 		assert.InDelta(t, 30*time.Minute.Seconds(), time.Duration(result.Status.Duration).Seconds(), 1)
 		assert.Equal(t, 2, result.Status.NumTemplates)
 		assert.Equal(t, 4, result.Status.TotalTrials)
@@ -309,7 +310,7 @@ func TestBuildResult(t *testing.T) {
 
 		result := BuildResult(state, cfg, time.Time{})
 
-		assert.True(t, result.Status.EndTime.IsZero())
+		assert.Nil(t, result.Status.EndTime)
 		assert.Equal(t, abtypes.Duration(0), result.Status.Duration)
 	})
 

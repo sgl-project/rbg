@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,10 +65,10 @@ type OptunaSearch struct {
 	studyName   string
 	algorithm   string // Optuna sampler name (tpe, gp, cmaes, etc.)
 	maxTrials   int
-	spaceSize   int            // Cartesian product of all param values
-	toldCount   int            // number of history entries already told to Optuna
-	lastTrialID int            // Optuna trial ID from last ask, -1 if none
-	rawSpace    RawSearchSpace // raw param definitions with type metadata (for pow2 decoding)
+	spaceSize   int         // Cartesian product of all param values
+	toldCount   int         // number of history entries already told to Optuna
+	lastTrialID int         // Optuna trial ID from last ask, -1 if none
+	rawSpace    SearchSpace // raw param definitions with type metadata (for pow2 decoding)
 }
 
 // distributionDescriptor describes an Optuna distribution for the Python bridge.
@@ -117,7 +118,7 @@ func (o *OptunaSearch) Name() string { return o.algorithm }
 // Init initializes (or reinitializes) the Optuna study for a new template.
 // The Python bridge subprocess is started on the first call and reused for
 // subsequent calls, since it can manage multiple studies by study_name.
-func (o *OptunaSearch) Init(ctx context.Context, name string, rawSpace RawSearchSpace, space ExpandedSearchSpace, cfg config.StrategySpec) error {
+func (o *OptunaSearch) Init(ctx context.Context, name string, rawSpace SearchSpace, cfg config.StrategySpec) error {
 	o.logger = log.FromContext(ctx).WithValues("study", name, "algorithm", cfg.Algorithm)
 	o.studyName = name
 	o.algorithm = cfg.Algorithm
@@ -136,54 +137,41 @@ func (o *OptunaSearch) Init(ctx context.Context, name string, rawSpace RawSearch
 	// Build distribution descriptors from raw search space.
 	// Falls back to ExpandedSearchSpace (all categorical) when rawSpace is empty.
 	searchSpace := make(map[string]map[string]any)
-	if len(rawSpace) > 0 {
-		for role, params := range rawSpace {
-			searchSpace[role] = make(map[string]any)
-			for paramName, param := range params {
-				switch param.Type {
-				case "categorical":
-					searchSpace[role][paramName] = distributionDescriptor{
-						Type:    "categorical",
-						Choices: param.Values,
-					}
-				case "float":
-					dd := distributionDescriptor{Type: "float", Low: *param.Min, High: *param.Max}
-					if param.Step != nil {
-						dd.Step = *param.Step
-					}
-					if param.Log {
-						dd.Log = true
-					}
-					searchSpace[role][paramName] = dd
-				case "int":
-					dd := distributionDescriptor{Type: "int", Low: *param.Min, High: *param.Max}
-					if param.Step != nil {
-						dd.Step = *param.Step
-					}
-					if param.Log {
-						dd.Log = true
-					}
-					searchSpace[role][paramName] = dd
-				case "pow2":
-					// Encode to log2 range for the bridge; bridge sees plain IntDistribution.
-					dd := distributionDescriptor{
-						Type: "int",
-						Low:  float64(log2Int(int(*param.Min))),
-						High: float64(log2Int(int(*param.Max))),
-					}
-					searchSpace[role][paramName] = dd
-				}
-			}
-		}
-	} else {
-		// Fallback: treat ExpandedSearchSpace values as categorical choices.
-		for role, params := range space {
-			searchSpace[role] = make(map[string]any)
-			for paramName, values := range params {
+	for role, params := range rawSpace {
+		searchSpace[role] = make(map[string]any)
+		for paramName, param := range params {
+			switch param.Type {
+			case config.ParamTypeCategorical:
 				searchSpace[role][paramName] = distributionDescriptor{
-					Type:    "categorical",
-					Choices: values,
+					Type:    config.ParamTypeCategorical,
+					Choices: param.Values,
 				}
+			case config.ParamTypeFloat:
+				dd := distributionDescriptor{Type: config.ParamTypeFloat, Low: *param.Min, High: *param.Max}
+				if param.Step != nil {
+					dd.Step = *param.Step
+				}
+				if param.Log {
+					dd.Log = true
+				}
+				searchSpace[role][paramName] = dd
+			case config.ParamTypeInt:
+				dd := distributionDescriptor{Type: config.ParamTypeInt, Low: *param.Min, High: *param.Max}
+				if param.Step != nil {
+					dd.Step = *param.Step
+				}
+				if param.Log {
+					dd.Log = true
+				}
+				searchSpace[role][paramName] = dd
+			case config.ParamTypePow2:
+				// Encode to log2 range for the bridge; bridge sees plain IntDistribution.
+				dd := distributionDescriptor{
+					Type: config.ParamTypeInt,
+					Low:  float64(log2Int(int(*param.Min))),
+					High: float64(log2Int(int(*param.Max))),
+				}
+				searchSpace[role][paramName] = dd
 			}
 		}
 	}
@@ -431,4 +419,9 @@ func resolveStoragePath(cfg config.StrategySpec) string {
 		return cfg.StoragePath
 	}
 	return os.Getenv(envStoragePath)
+}
+
+// log2Int returns the base-2 logarithm of n. n must be a power of 2.
+func log2Int(n int) int {
+	return int(math.Log2(float64(n)))
 }

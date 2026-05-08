@@ -132,9 +132,6 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 		return fmt.Errorf("initializing state: %w", err)
 	}
 
-	// Expand search space once
-	expandedSpace := search.ExpandSearchSpace(ctrl.cfg.SearchSpace)
-
 	// Create algorithm instance once; Init will be called per template.
 	algoInstance, err := search.Get(ctrl.cfg.Strategy.Algorithm)
 	if err != nil {
@@ -173,7 +170,7 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 		// (Re-)initialize algorithm for this template. The algorithm instance
 		// is created once before the loop; Init reuses the subprocess.
-		if err := algoInstance.Init(ctx, tmplRef.Name, ctrl.cfg.SearchSpace, expandedSpace, ctrl.cfg.Strategy); err != nil {
+		if err := algoInstance.Init(ctx, tmplRef.Name, ctrl.cfg.SearchSpace, ctrl.cfg.Strategy); err != nil {
 			return fmt.Errorf("initializing algorithm for template %q: %w", tmplRef.Name, err)
 		}
 		if len(ts.AlgorithmState) > 0 {
