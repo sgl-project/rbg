@@ -16,7 +16,13 @@ limitations under the License.
 
 package utils
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
+)
 
 // PodRunningAndReady checks if the pod condition is running and marked as ready.
 func PodRunningAndReady(pod corev1.Pod) bool {
@@ -87,4 +93,101 @@ func ContainerRestarted(pod *corev1.Pod) bool {
 // PodDeleted checks if the worker pod has been deleted
 func PodDeleted(pod *corev1.Pod) bool {
 	return pod == nil || pod.DeletionTimestamp != nil
+}
+
+// PodBecameInactive checks if a pod transitioned from active to inactive state.
+// This is used in predicates to capture state transitions and avoid duplicate triggers.
+// Uses the native Kubernetes IsPodActive function for consistency.
+func PodBecameInactive(oldPod, newPod *corev1.Pod) bool {
+	if oldPod == nil || newPod == nil {
+		return false
+	}
+	wasActive := kubecontroller.IsPodActive(oldPod)
+	nowInactive := !kubecontroller.IsPodActive(newPod)
+	return wasActive && nowInactive
+}
+
+// IsPodEvicted checks if a pod was evicted due to resource pressure.
+// Evicted pods have Phase=Failed and status.reason="Evicted".
+// Also supports DisruptionTarget condition (Kubernetes 1.22+).
+func IsPodEvicted(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if !podutil.IsPodTerminal(pod) {
+		return false
+	}
+	if pod.Status.Phase != corev1.PodFailed {
+		return false
+	}
+	// Check DisruptionTarget condition (K8s 1.22+)
+	// Native reasons: PreemptionByScheduler, TerminationByKubelet
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.DisruptionTarget {
+			return true
+		}
+	}
+	// Traditional detection: status.reason = "Evicted"
+	return pod.Status.Reason == "Evicted"
+}
+
+// IsPodUnexpectedAdmissionError checks if a pod failed due to admission issues.
+func IsPodUnexpectedAdmissionError(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if pod.Status.Phase != corev1.PodFailed {
+		return false
+	}
+	return pod.Status.Reason == "UnexpectedAdmissionError"
+}
+
+// IsPodFailedSchedule checks if pod scheduling failed (PodScheduled=False).
+// Uses native constants: PodReasonUnschedulable, PodReasonSchedulerError.
+func IsPodFailedSchedule(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse {
+			return cond.Reason == corev1.PodReasonUnschedulable ||
+				cond.Reason == corev1.PodReasonSchedulerError
+		}
+	}
+	return false
+}
+
+// GetPodInactiveReason returns a human-readable reason for pod being inactive.
+// Based on podutil.IsPodTerminal and native constants.
+func GetPodInactiveReason(pod *corev1.Pod) string {
+	if pod == nil {
+		return "PodNotFound"
+	}
+	if pod.DeletionTimestamp != nil {
+		if podutil.IsPodTerminal(pod) {
+			return "PodTerminatingTerminal"
+		}
+		return "PodTerminating"
+	}
+	if pod.Status.Phase == corev1.PodSucceeded {
+		return "PodSucceeded"
+	}
+	if pod.Status.Phase == corev1.PodFailed {
+		if IsPodEvicted(pod) {
+			return "PodEvicted"
+		}
+		if IsPodUnexpectedAdmissionError(pod) {
+			return "UnexpectedAdmissionError"
+		}
+		// Check for eviction-like message patterns
+		if strings.Contains(pod.Status.Message, "Evicted") ||
+			strings.Contains(pod.Status.Message, "evicted") {
+			return "PodEvicted"
+		}
+		return "PodFailed"
+	}
+	if IsPodFailedSchedule(pod) {
+		return "PodUnschedulable"
+	}
+	return "Unknown"
 }

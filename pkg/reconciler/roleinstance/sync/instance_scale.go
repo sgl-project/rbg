@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
@@ -217,7 +218,8 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 // shouldRecreateInstance checks if the instance should be recreated based on RestartPolicy.
 // When RestartPolicy is RecreateInstanceOnPodRestart, the instance should be recreated if:
 // 1. Any container has restarted (RestartCount > 0)
-// 2. Any pod has been deleted (only when Instance was previously Ready)
+// 2. Any pod has become inactive (Failed/Succeeded) - uses native IsPodActive for consistency
+// 3. Any pod has been deleted (only when Instance was previously Ready)
 //
 // Note: We use Instance's Ready condition to distinguish between initial creation/scaling
 // and pod deletion. This avoids infinite recreation loops.
@@ -239,21 +241,23 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		}
 	}
 
-	// Check if any pod has been deleted:
+	// Check if any pod has become inactive (Failed/Evicted/Succeeded):
+	// Uses native IsPodActive instead of only checking DeletionTimestamp.
+	// This ensures Failed/Evicted pods are properly detected.
 	// Only trigger recreate if Instance was previously Ready (stable state)
 	// and spec is not being changed (Generation == ObservedGeneration).
 	// This avoids triggering recreate during initial creation or scaling up.
 	if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
 		expectedPodCount := getExpectedPodCount(instance)
-		// Calculate active pods (exclude those being deleted).
-		// Pods with DeletionTimestamp != nil are in Terminating state and should not
-		// be counted as active, otherwise the controller may fail to detect pod deletion.
+		// Calculate active pods using native IsPodActive.
+		// Pods with Phase=Failed/Succeeded or DeletionTimestamp!=nil are inactive.
 		activeCount := 0
 		for _, p := range pods {
-			if p.DeletionTimestamp == nil {
+			if kubecontroller.IsPodActive(p) {
 				activeCount++
 			}
 		}
+		// Inactive pod causes active count to be less than expected
 		if activeCount < expectedPodCount {
 			return true
 		}

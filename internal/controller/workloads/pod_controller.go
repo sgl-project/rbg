@@ -29,6 +29,7 @@ import (
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -256,12 +257,21 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 		return []reconcile.Request{}
 	}
 
-	if !utils.ContainerRestarted(pod) && !utils.PodDeleted(pod) {
+	// Original trigger conditions
+	containerRestarted := utils.ContainerRestarted(pod)
+	podDeleted := utils.PodDeleted(pod)
+
+	// New trigger condition: Pod became inactive (Failed/Succeeded) but not being deleted
+	// Uses native Kubernetes IsPodActive for consistency with ReplicaSet/StatefulSet behavior
+	podBecameInactive := !kubecontroller.IsPodActive(pod) && pod.DeletionTimestamp == nil
+
+	// Only trigger if any condition is met
+	if !containerRestarted && !podDeleted && !podBecameInactive {
 		return []reconcile.Request{}
 	}
 
 	logger := log.FromContext(ctx).WithValues("Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-	logger.V(1).Info("Processing Pod event for reconciliation")
+	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted, "podBecameInactive", podBecameInactive)
 
 	var rbg workloadsv1alpha2.RoleBasedGroup
 	err := r.client.Get(ctx, types.NamespacedName{Name: rbgName, Namespace: pod.Namespace}, &rbg)
@@ -314,8 +324,14 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Op
 			if ok1 && ok2 {
 				_, oldExist := oldPod.Labels[constants.GroupNameLabelKey]
 				_, newExist := newPod.Labels[constants.GroupNameLabelKey]
-				return oldExist && newExist
 
+				if !oldExist || !newExist {
+					return false
+				}
+
+				// Detect Pod state transition from active to inactive
+				// Only trigger on state transition to avoid duplicate triggers on every status update
+				return utils.PodBecameInactive(oldPod, newPod)
 			}
 			return false
 		},
