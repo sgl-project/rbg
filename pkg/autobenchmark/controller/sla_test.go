@@ -62,7 +62,8 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{TTFTP99MaxMs: f64(2000)},
 				Optimize: "outputThroughput",
 			},
-			wantConstraints: []float64{500},
+			// (2500 - 2000) / 2000 = 0.25 (25% relative deviation)
+			wantConstraints: []float64{0.25},
 			wantScore:       3000,
 		},
 		{
@@ -77,7 +78,8 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{TPOTP99MaxMs: f64(10)},
 				Optimize: "outputThroughput",
 			},
-			wantConstraints: []float64{5},
+			// (15 - 10) / 10 = 0.5 (50% relative deviation)
+			wantConstraints: []float64{0.5},
 			wantScore:       1000,
 		},
 		{
@@ -92,7 +94,8 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{ErrorRateMax: f64(0.01)},
 				Optimize: "outputThroughput",
 			},
-			wantConstraints: []float64{0.01},
+			// (0.02 - 0.01) / 0.01 = 1.0 (100% relative deviation)
+			wantConstraints: []float64{1.0},
 			wantScore:       500,
 		},
 		{
@@ -154,6 +157,21 @@ func TestEvaluateSLA(t *testing.T) {
 			},
 			wantConstraints: []float64{0},
 			wantScore:       1000,
+		},
+		{
+			// When constraint limit is 0, deviation falls back to absolute value.
+			name: "zero constraint limit uses absolute deviation",
+			metrics: &abtypes.Metrics{
+				ErrorRate:        0.05,
+				OutputThroughput: 500,
+			},
+			objectives: config.ObjectivesSpec{
+				SLA:      config.SLASpec{ErrorRateMax: f64(0)},
+				Optimize: "outputThroughput",
+			},
+			// limit=0, so use absolute: max(0, 0.05 - 0) = 0.05
+			wantConstraints: []float64{0.05},
+			wantScore:       500,
 		},
 	}
 

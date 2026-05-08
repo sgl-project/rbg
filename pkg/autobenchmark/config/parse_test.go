@@ -410,6 +410,53 @@ func TestParseFile_InvalidYAML(t *testing.T) {
 	assert.Contains(t, err.Error(), "parsing config YAML")
 }
 
+func TestValidate_SLANegativeValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(cfg *AutoBenchmarkConfig)
+		wantErr string
+	}{
+		{
+			name:    "negative ttftP99MaxMs",
+			modify:  func(cfg *AutoBenchmarkConfig) { v := -100.0; cfg.Objectives.SLA.TTFTP99MaxMs = &v },
+			wantErr: "objectives.sla.ttftP99MaxMs: must not be negative",
+		},
+		{
+			name:    "negative tpotP99MaxMs",
+			modify:  func(cfg *AutoBenchmarkConfig) { v := -50.0; cfg.Objectives.SLA.TPOTP99MaxMs = &v },
+			wantErr: "objectives.sla.tpotP99MaxMs: must not be negative",
+		},
+		{
+			name:    "negative errorRateMax",
+			modify:  func(cfg *AutoBenchmarkConfig) { v := -0.01; cfg.Objectives.SLA.ErrorRateMax = &v },
+			wantErr: "objectives.sla.errorRateMax: must not be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(fullValidConfig()))
+			require.NoError(t, err)
+			tt.modify(cfg)
+			err = Validate(cfg, false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestValidate_SLAZeroValues(t *testing.T) {
+	cfg, err := Parse([]byte(fullValidConfig()))
+	require.NoError(t, err)
+	// Zero values are allowed (used as fallback in deviation calculation)
+	zero := 0.0
+	cfg.Objectives.SLA.TTFTP99MaxMs = &zero
+	cfg.Objectives.SLA.TPOTP99MaxMs = &zero
+	cfg.Objectives.SLA.ErrorRateMax = &zero
+	err = Validate(cfg, false)
+	assert.NoError(t, err)
+}
+
 func TestParse_RoleSpecificSearchSpace(t *testing.T) {
 	yamlData := `
 templates:

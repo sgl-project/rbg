@@ -57,6 +57,7 @@ func Validate(cfg *AutoBenchmarkConfig, validateFiles bool) error {
 	errs = append(errs, validateTemplates(cfg, validateFiles)...)
 	errs = append(errs, validateSearchSpace(cfg)...)
 	errs = append(errs, validateScenario(cfg)...)
+	errs = append(errs, validateSLA(cfg)...)
 	errs = append(errs, validateStrategy(cfg)...)
 	errs = append(errs, validateEvaluator(cfg)...)
 	errs = append(errs, validateResults(cfg)...)
@@ -153,6 +154,21 @@ func validateScenario(cfg *AutoBenchmarkConfig) []string {
 		if _, err := time.ParseDuration(cfg.Scenario.Duration); err != nil {
 			errs = append(errs, fmt.Sprintf("scenario.duration: invalid duration: %v", err))
 		}
+	}
+	return errs
+}
+
+func validateSLA(cfg *AutoBenchmarkConfig) []string {
+	var errs []string
+	sla := cfg.Objectives.SLA
+	if sla.TTFTP99MaxMs != nil && *sla.TTFTP99MaxMs < 0 {
+		errs = append(errs, "objectives.sla.ttftP99MaxMs: must not be negative")
+	}
+	if sla.TPOTP99MaxMs != nil && *sla.TPOTP99MaxMs < 0 {
+		errs = append(errs, "objectives.sla.tpotP99MaxMs: must not be negative")
+	}
+	if sla.ErrorRateMax != nil && *sla.ErrorRateMax < 0 {
+		errs = append(errs, "objectives.sla.errorRateMax: must not be negative")
 	}
 	return errs
 }
