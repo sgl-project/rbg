@@ -1,122 +1,122 @@
-# KEP: Inactive Pod 处理增强
+# KEP-173: Inactive Pod Handling Enhancement
 
 <!-- toc -->
-- [背景与动机](#背景与动机)
-- [目标](#目标)
-- [非目标](#非目标)
-- [方案设计](#方案设计)
-    - [用户场景](#用户场景)
-    - [风险与缓解措施](#风险与缓解措施)
-- [详细设计](#详细设计)
-    - [新增检测函数](#新增检测函数)
-    - [Pod Controller 改造](#pod-controller-改造)
-    - [RoleInstance Controller 改造](#roleinstance-controller-改造)
-    - [RestartPolicy 处理矩阵](#restartpolicy-处理矩阵)
-    - [测试计划](#测试计划)
+- [Background and Motivation](#background-and-motivation)
+- [Goals](#goals)
+- [Non-Goals](#non-goals)
+- [Design Proposal](#design-proposal)
+    - [User Stories](#user-stories)
+    - [Risks and Mitigations](#risks-and-mitigations)
+- [Design Details](#design-details)
+    - [New Detection Functions](#new-detection-functions)
+    - [Pod Controller Changes](#pod-controller-changes)
+    - [RoleInstance Controller Changes](#roleinstance-controller-changes)
+    - [RestartPolicy Handling Matrix](#restartpolicy-handling-matrix)
+    - [Test Plan](#test-plan)
 <!-- /toc -->
 
-## 背景与动机
+## Background and Motivation
 
-RBG 项目在处理 Pod 异常状态（如 Evicted、UnexpectedAdmissionError、Failed 等）时存在缺陷。
+The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted, UnexpectedAdmissionError, Failed).
 
-**问题根源**：原生 Kubernetes 控制器会将 Failed/Succeeded 状态的 Pod 视为 inactive，立即创建新 Pod 补足副本数。但 RBG 当前的实现需要等待 Pod 被删除或容器重启才会触发重建，对于直接进入 Failed 状态的情况缺乏处理。
+**Root Cause**: Native Kubernetes controllers treat Failed/Succeeded Pods as inactive and immediately create new Pods to maintain replica count. However, RBG's current implementation only triggers recreation when a Pod is deleted or a container restarts, lacking handling for Pods that directly enter the Failed state.
 
-**具体问题点**：
+**Specific Issues**:
 
-1. **Failed/Evicted Pod 不触发 RBG 重建**
-   - `ContainerRestarted` 函数只检查 Running/Pending 状态，对 Failed Pod 返回 false
-   - `PodDeleted` 函数只检查 DeletionTimestamp，不检查 Phase
-   - Pod Controller `podToRBG` 的触发条件无法覆盖 Evicted/Failed Pod
+1. **Failed/Evicted Pod does not trigger RBG recreation**
+   - `ContainerRestarted` function only checks Running/Pending status, returns false for Failed Pods
+   - `PodDeleted` function only checks DeletionTimestamp, not Phase
+   - Pod Controller `podToRBG` trigger conditions cannot cover Evicted/Failed Pods
 
-2. **RoleInstance Controller 补足依赖 GC**
-   - `GetActiveAndInactivePods` 正确分类 Pod，但 inactive Pod 需要等 GC 删除后才创建新 Pod
-   - 在 GC 之前，Failed Pod 导致 RoleInstance 的 Ready 条件变为 False
+2. **RoleInstance Controller relies on GC for pod replacement**
+   - `GetActiveAndInactivePods` correctly classifies Pods, but inactive Pods need to wait for GC deletion before creating new Pods
+   - Before GC runs, Failed Pods cause RoleInstance's Ready condition to become False
 
-3. **无 DisruptionTarget 处理**
-   - Kubernetes 1.22+ 引入的 `DisruptionTarget` condition 未被检测
-   - 无法在 Pod 被驱逐前提前做出反应
+3. **No DisruptionTarget handling**
+   - Kubernetes 1.22+ introduced `DisruptionTarget` condition is not detected
+   - Cannot react before Pod is evicted
 
-4. **调度失败无重试**
-   - `PodScheduled` condition 为 False（Unschedulable）时 Pod 无限期 Pending
-   - 没有触发重建或重试的机制
+4. **No retry for scheduling failures**
+   - When `PodScheduled` condition is False (Unschedulable), Pod stays in Pending indefinitely
+   - No mechanism triggers recreation or retry
 
-**举例说明**：假设一个 Pod 因节点资源不足被 Evicted，其 Phase 变为 Failed。当前 RBG 控制器不会检测到这个状态变化，Pod 会一直停留在 Failed 状态直到被 GC 清理（默认阈值可能很大）。在此期间，服务副本数不足。
+**Example**: Suppose a Pod is Evicted due to node resource shortage, its Phase becomes Failed. The current RBG controller does not detect this state change, and the Pod stays in Failed state until GC cleans it up (default threshold may be large). During this period, the service has insufficient replicas.
 
-## 目标
+## Goals
 
-- 正确检测并处理 Failed/Evicted/UnexpectedAdmissionError 等异常 Pod 状态
-- 在 Pod 进入 inactive 状态时立即触发重建逻辑，无需等待 GC 删除
-- 遵循 Kubernetes 原生控制器模式，不主动删除 Failed Pod，而是创建替代 Pod
-- **保持向后兼容** —— 现有 RestartPolicy 行为保持不变，只是扩展触发条件
-- 支持 DisruptionTarget condition 检测（K8s 1.22+）
+- Correctly detect and handle Failed/Evicted/UnexpectedAdmissionError and other abnormal Pod states
+- Trigger recreation logic immediately when Pod enters inactive state, without waiting for GC deletion
+- Follow Kubernetes native controller pattern: don't actively delete Failed Pods, instead create replacement Pods
+- **Maintain backward compatibility** - existing RestartPolicy behavior remains unchanged, only extend trigger conditions
+- Support DisruptionTarget condition detection (K8s 1.22+)
 
-## 非目标
+## Non-Goals
 
-- 不引入新的 RestartPolicy 类型
-- 不改变现有的 RBG 重建流程
-- 不主动清理 Failed Pod（遵循 K8s 原生模式，让 GC 或用户处理）
-- 不处理 Pod Succeeded 状态（正常完成任务）
+- Do not introduce new RestartPolicy types
+- Do not change existing RBG recreation workflow
+- Do not actively clean up Failed Pods (follow K8s native pattern, let GC or users handle it)
+- Do not handle Pod Succeeded state (normal completion)
 
-## 方案设计
+## Design Proposal
 
-### 用户场景
+### User Stories
 
-#### 场景一：Evicted Pod 自动重建
+#### Story 1: Evicted Pod Automatic Recreation
 
-> 作为运维人员，当 Pod 因节点资源不足被驱逐时，我希望 RBG 能够立即检测到并创建替代 Pod，而不是等待 GC 清理。
+> As an operator, when a Pod is evicted due to node resource shortage, I want RBG to immediately detect it and create a replacement Pod, without waiting for GC cleanup.
 
-**期望行为**：
-- Pod 被驱逐后 Phase 变为 Failed，status.reason="Evicted"
-- RBG 控制器检测到 Pod 进入 inactive 状态
-- 根据 RestartPolicy 触发相应重建逻辑
-- 发出 Event 通知用户 Pod 状态变化
+**Expected Behavior**:
+- After Pod is evicted, Phase becomes Failed, status.reason="Evicted"
+- RBG controller detects Pod entering inactive state
+- Trigger corresponding recreation logic based on RestartPolicy
+- Emit Event to notify user of Pod state change
 
-#### 场景二：调度失败 Pod 重建
+#### Story 2: Scheduling Failed Pod Recreation
 
-> 作为运维人员，当 Pod 因资源不足无法调度（Unschedulable）时，我希望能够触发重建尝试调度到其他节点。
+> As an operator, when a Pod cannot be scheduled due to insufficient resources (Unschedulable), I want to trigger recreation to attempt scheduling on other nodes.
 
-**期望行为**：
-- Pod Scheduled condition 为 False，reason="Unschedulable"
-- RBG 控制器检测到调度失败
-- 根据 RestartPolicy 可能触发 Instance/RBG 重建
-- 新 Pod 有机会调度到其他节点
+**Expected Behavior**:
+- Pod Scheduled condition is False, reason="Unschedulable"
+- RBG controller detects scheduling failure
+- May trigger Instance/RBG recreation based on RestartPolicy
+- New Pod has chance to be scheduled on other nodes
 
-#### 场景三：RecreateRBGOnPodRestart 触发
+#### Story 3: RecreateRBGOnPodRestart Triggering
 
-> 作为用户，当配置 RestartPolicy=RecreateRBGOnPodRestart 时，我希望任何 Pod 进入 Failed 状态都能触发整个 RBG 重建。
+> As a user, when configuring RestartPolicy=RecreateRBGOnPodRestart, I want any Pod entering Failed state to trigger entire RBG recreation.
 
-**期望行为**：
-- 任一 Pod 因 Eviction/Failed 进入 inactive 状态
-- 整个 RBG 按依赖顺序重建所有 Role
-- 确保服务整体一致性
+**Expected Behavior**:
+- Any Pod enters inactive state due to Eviction/Failed
+- Entire RBG recreates all Roles in dependency order
+- Ensure service overall consistency
 
-### 风险与缓解措施
+### Risks and Mitigations
 
-| 风险 | 缓解措施 |
-|------|----------|
-| 扩展触发条件可能导致意外的重建循环 | 使用 `wasInstanceReady` 检查避免初始创建期间触发；使用 `RestartInProgress` condition 防止重复触发 |
-| Failed Pod 状态转换频繁可能增加 controller 负载 | predicate 只捕获 active→inactive 的状态转换，避免每次状态更新都触发 |
-| DisruptionTarget condition 依赖 K8s 1.22+ | 同时支持传统检测方式（status.reason），确保向后兼容 |
+| Risk | Mitigation |
+|------|------------|
+| Extended trigger conditions may cause unexpected recreation loops | Use `wasInstanceReady` check to avoid triggering during initial creation; use `RestartInProgress` condition to prevent duplicate triggers |
+| Frequent Failed Pod state transitions may increase controller load | predicate only captures active→inactive state transitions, avoiding triggering on every status update |
+| DisruptionTarget condition depends on K8s 1.22+ | Also support traditional detection method (status.reason) to ensure backward compatibility |
 
-## 详细设计
+## Design Details
 
-### 新增检测函数
+### New Detection Functions
 
-**原则**：优先复用原生 Kubernetes 函数，避免重复定义。
+**Principle**: Prioritize reusing native Kubernetes functions, avoid redefining.
 
-原生 K8s 已有的函数（可直接使用）：
+Native K8s functions available (can be used directly):
 
-| 原生函数 | 定义位置 | 作用 |
-|---------|---------|------|
+| Native Function | Location | Purpose |
+|----------------|----------|---------|
 | `kubecontroller.IsPodActive(pod)` | `vendor/k8s.io/kubernetes/pkg/controller/controller_utils.go` | Phase != Succeeded/Failed && DeletionTimestamp == nil |
 | `podutil.IsPodTerminal(pod)` | `vendor/k8s.io/kubernetes/pkg/api/v1/pod/util.go` | Phase == Failed || Phase == Succeeded |
 | `kubecontroller.IsPodTerminating(pod)` | `vendor/k8s.io/kubernetes/pkg/controller/controller_utils.go` | !IsPodTerminal && DeletionTimestamp != nil |
 
-**注意**：项目已在 `pkg/reconciler/roleinstance/utils/instance_utils.go` 中使用 `kubecontroller.IsPodActive`。
+**Note**: The project already uses `kubecontroller.IsPodActive` in `pkg/reconciler/roleinstance/utils/instance_utils.go`.
 
-在 `pkg/utils/pod_utils.go` 中新增以下**辅助函数**（基于原生函数和常量）：
+Add the following **helper functions** in `pkg/utils/pod_utils.go` (based on native functions and constants):
 
-#### PodBecameInactive（状态转换检测）
+#### PodBecameInactive (State Transition Detection)
 
 ```go
 import (
@@ -124,8 +124,8 @@ import (
     podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
-// PodBecameInactive 检测 Pod 是否从活跃状态变为非活跃状态
-// 用于 predicate 中捕获状态转换事件
+// PodBecameInactive checks if a Pod transitioned from active to inactive state.
+// Used in predicates to capture state transition events.
 func PodBecameInactive(oldPod, newPod *corev1.Pod) bool {
     if oldPod == nil || newPod == nil {
         return false
@@ -139,9 +139,9 @@ func PodBecameInactive(oldPod, newPod *corev1.Pod) bool {
 #### IsPodEvicted
 
 ```go
-// IsPodEvicted 判断 Pod 是否因资源不足被驱逐
-// Evicted Pod 的 Phase=Failed，status.reason="Evicted"
-// 同时支持 DisruptionTarget condition (K8s 1.22+)
+// IsPodEvicted checks if a Pod was evicted due to resource shortage.
+// Evicted Pod has Phase=Failed, status.reason="Evicted".
+// Also supports DisruptionTarget condition (K8s 1.22+).
 func IsPodEvicted(pod *corev1.Pod) bool {
     if pod == nil || !podutil.IsPodTerminal(pod) {
         return false
@@ -149,14 +149,14 @@ func IsPodEvicted(pod *corev1.Pod) bool {
     if pod.Status.Phase != corev1.PodFailed {
         return false
     }
-    // 检查 DisruptionTarget condition (K8s 1.22+)
-    // 原生定义的 reason: PreemptionByScheduler, TerminationByKubelet
+    // Check DisruptionTarget condition (K8s 1.22+)
+    // Native reasons: PreemptionByScheduler, TerminationByKubelet
     for _, cond := range pod.Status.Conditions {
         if cond.Type == corev1.DisruptionTarget {
             return true
         }
     }
-    // 传统检测方式：status.reason = "Evicted"
+    // Traditional detection: status.reason = "Evicted"
     return pod.Status.Reason == "Evicted"
 }
 ```
@@ -164,7 +164,7 @@ func IsPodEvicted(pod *corev1.Pod) bool {
 #### IsPodUnexpectedAdmissionError
 
 ```go
-// IsPodUnexpectedAdmissionError 判断 admission 异常
+// IsPodUnexpectedAdmissionError checks if a Pod failed due to admission issues.
 func IsPodUnexpectedAdmissionError(pod *corev1.Pod) bool {
     if pod == nil || pod.Status.Phase != corev1.PodFailed {
         return false
@@ -176,8 +176,8 @@ func IsPodUnexpectedAdmissionError(pod *corev1.Pod) bool {
 #### IsPodFailedSchedule
 
 ```go
-// IsPodFailedSchedule 判断调度失败 (PodScheduled=False)
-// 使用原生定义的常量: PodReasonUnschedulable, PodReasonSchedulerError
+// IsPodFailedSchedule checks if Pod scheduling failed (PodScheduled=False).
+// Uses native constants: PodReasonUnschedulable, PodReasonSchedulerError.
 func IsPodFailedSchedule(pod *corev1.Pod) bool {
     if pod == nil {
         return false
@@ -195,8 +195,8 @@ func IsPodFailedSchedule(pod *corev1.Pod) bool {
 #### GetPodInactiveReason
 
 ```go
-// GetPodInactiveReason 返回 Pod inactive 的具体原因
-// 基于 podutil.IsPodTerminal 和原生常量
+// GetPodInactiveReason returns the specific reason for Pod being inactive.
+// Based on podutil.IsPodTerminal and native constants.
 func GetPodInactiveReason(pod *corev1.Pod) string {
     if pod == nil {
         return "PodNotFound"
@@ -226,13 +226,13 @@ func GetPodInactiveReason(pod *corev1.Pod) string {
 }
 ```
 
-### Pod Controller 改造
+### Pod Controller Changes
 
-**文件**: `internal/controller/workloads/pod_controller.go`
+**File**: `internal/controller/workloads/pod_controller.go`
 
-#### 修改 podToRBG 触发条件
+#### Modify podToRBG Trigger Conditions
 
-使用原生 `kubecontroller.IsPodActive` 判断 Pod 状态：
+Use native `kubecontroller.IsPodActive` to judge Pod state:
 
 ```go
 import (
@@ -250,27 +250,27 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
         return []reconcile.Request{}
     }
 
-    // 原有触发条件
+    // Original trigger conditions
     containerRestarted := utils.ContainerRestarted(pod)
     podDeleted := utils.PodDeleted(pod)
 
-    // 新增触发条件：Pod 变为非活跃状态（复用原生 IsPodActive）
-    // Pod inactive = !IsPodActive，即 Phase=Failed/Succeeded 或正在删除
-    // 但排除正在删除的情况（已有 podDeleted 处理）
+    // New trigger condition: Pod became inactive (reuse native IsPodActive)
+    // Pod inactive = !IsPodActive, i.e., Phase=Failed/Succeeded or being deleted
+    // Exclude being deleted case (already handled by podDeleted)
     podBecameInactive := !kubecontroller.IsPodActive(pod) && pod.DeletionTimestamp == nil
 
-    // 只有满足任一条件才触发
+    // Only trigger if any condition is met
     if !containerRestarted && !podDeleted && !podBecameInactive {
         return []reconcile.Request{}
     }
 
-    // ... 后续 RBG 获取和 RestartPolicy 检查逻辑保持不变 ...
+    // ... subsequent RBG fetch and RestartPolicy check logic unchanged ...
 }
 ```
 
-#### 修改 predicate 捕获状态转换
+#### Modify Predicate to Capture State Transition
 
-使用新增的 `PodBecameInactive` 辅助函数（基于原生 `IsPodActive`）：
+Use the new `PodBecameInactive` helper function (based on native `IsPodActive`):
 
 ```go
 UpdateFunc: func(e event.UpdateEvent) bool {
@@ -284,21 +284,21 @@ UpdateFunc: func(e event.UpdateEvent) bool {
             return false
         }
 
-        // 检测 Pod 从 active 变为 inactive 的状态转换
-        // 只有状态转换时才触发，避免每次状态更新都触发
+        // Detect Pod state transition from active to inactive
+        // Only trigger on state transition to avoid triggering on every status update
         return utils.PodBecameInactive(oldPod, newPod)
     }
     return false
 },
 ```
 
-### RoleInstance Controller 改造
+### RoleInstance Controller Changes
 
-**文件**: `pkg/reconciler/roleinstance/sync/instance_scale.go`
+**File**: `pkg/reconciler/roleinstance/sync/instance_scale.go`
 
-#### 修改 shouldRecreateInstance
+#### Modify shouldRecreateInstance
 
-使用原生 `kubecontroller.IsPodActive` 替代仅检查 `DeletionTimestamp`：
+Use native `kubecontroller.IsPodActive` instead of only checking `DeletionTimestamp`:
 
 ```go
 import (
@@ -314,26 +314,26 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
         return false
     }
 
-    // 检查容器重启
+    // Check container restart
     for _, pod := range pods {
         if utils.ContainerRestarted(pod) {
             return true
         }
     }
 
-    // 检查非活跃 Pod（Failed/Evicted 等）
-    // 使用原生 IsPodActive，与 K8s 控制器行为一致
+    // Check inactive Pods (Failed/Evicted etc.)
+    // Use native IsPodActive, consistent with K8s controller behavior
     if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
         expectedPodCount := getExpectedPodCount(instance)
         activeCount := 0
         for _, p := range pods {
-            // 使用原生 IsPodActive 替代仅检查 DeletionTimestamp
-            // 这样可以正确检测 Failed/Evicted Pod（Phase=Failed 也视为 inactive）
+            // Use native IsPodActive instead of only checking DeletionTimestamp
+            // This correctly detects Failed/Evicted Pods (Phase=Failed is also inactive)
             if kubecontroller.IsPodActive(p) {
                 activeCount++
             }
         }
-        // 有 inactive Pod 导致 active 数量不足
+        // Inactive Pod causes active count to be less than expected
         if activeCount < expectedPodCount {
             return true
         }
@@ -343,28 +343,28 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 }
 ```
 
-#### 修改 calculateDiffsWithExpectation
+#### Modify calculateDiffsWithExpectation
 
-项目已在 `instance_utils.go` 中有 `GetActiveAndInactivePods` 函数，使用原生 `IsPodActive` 分类。只需确保调用时正确处理：
+The project already has `GetActiveAndInactivePods` function in `instance_utils.go`, using native `IsPodActive` for classification. Just ensure correct handling when calling:
 
 ```go
 func (c *realControl) calculateDiffsWithExpectation(...) (*expectationDiff, error) {
-    // ... shouldRecreateInstance 检查 ...
+    // ... shouldRecreateInstance check ...
 
-    // 使用已有的 GetActiveAndInactivePods 分离 Pod
-    // 该函数使用 kubecontroller.IsPodActive 进行分类
-    // inactive Pod 不计入 ExistIDs，自动触发创建新 Pod
+    // Use existing GetActiveAndInactivePods to separate Pods
+    // This function uses kubecontroller.IsPodActive for classification
+    // inactive Pods are not counted in ExistIDs, automatically triggers new Pod creation
 
-    // 当前代码已使用 pods 参数计算拓扑
-    // 内部 GetComponentsTopology 会通过 GroupPodsByComponentName 处理
-    // 需确认只有 activePods 参与拓扑计算
+    // Current code already uses pods parameter to calculate topology
+    // Internal GetComponentsTopology handles via GroupPodsByComponentName
+    // Need to confirm only activePods participate in topology calculation
 
     prt, err := coreControl.GetComponentsTopology(pods)
     // ...
 }
 ```
 
-**注意**：项目 `pkg/reconciler/roleinstance/utils/instance_utils.go` 中已有：
+**Note**: The project's `pkg/reconciler/roleinstance/utils/instance_utils.go` already has:
 
 ```go
 func GetActiveAndInactivePods(ctx context.Context, reader client.Reader, opts *client.ListOptions) ([]*v1.Pod, []*v1.Pod, error) {
@@ -381,50 +381,50 @@ func GetActiveAndInactivePods(ctx context.Context, reader client.Reader, opts *c
 }
 ```
 
-此函数已正确使用原生 `IsPodActive`，无需修改。
+This function already correctly uses native `IsPodActive`, no modification needed.
 
-### RestartPolicy 处理矩阵
+### RestartPolicy Handling Matrix
 
-| RestartPolicy | Inactive Pod 行为 |
-|--------------|-----------------|
-| `None` | 创建替代 Pod 维护副本数，不重建 Instance/RBG。这是 RoleInstanceSet 的默认行为。 |
-| `RecreateRoleInstanceOnPodRestart` | 整个 RoleInstance 重建（所有 Pod 删除后重建）。当任一 Pod 进入 inactive 状态触发。 |
-| `RecreateRBGOnPodRestart` | 整个 RBG 重建（所有 Role 按依赖顺序重建）。当 Pod 进入 inactive 状态且角色配置此策略时触发。 |
+| RestartPolicy | Inactive Pod Behavior |
+|--------------|----------------------|
+| `None` | Create replacement Pod to maintain replica count, no Instance/RBG recreation. This is RoleInstanceSet default behavior. |
+| `RecreateRoleInstanceOnPodRestart` | Entire RoleInstance recreation (all Pods deleted then recreated). Triggered when any Pod enters inactive state. |
+| `RecreateRBGOnPodRestart` | Entire RBG recreation (all Roles recreated in dependency order). Triggered when Pod enters inactive state and role has this policy. |
 
-### 测试计划
+### Test Plan
 
-[X] 我/我们理解相关组件的所有者可能需要在实现此增强功能之前更新现有测试。
+[X] I/we understand that owners of the involved components may require updates to existing tests before implementing this enhancement.
 
-#### 单元测试
+#### Unit Tests
 
-| 测试名称 | 测试内容 |
-|---------|---------|
-| `TestPodBecameInactive` | 验证状态转换检测：Running→Failed、Pending→Failed、Running→Succeeded |
-| `TestIsPodEvicted` | 验证 Evicted Pod 检测：status.reason="Evicted"、DisruptionTarget condition |
-| `TestIsPodUnexpectedAdmissionError` | 验证 admission 异常检测 |
-| `TestIsPodFailedSchedule` | 验证调度失败检测：PodReasonUnschedulable、PodReasonSchedulerError |
-| `TestGetPodInactiveReason` | 验证各状态返回正确的 reason 字符串 |
-| `TestPodToRBGWithInactivePod` | 验证 inactive Pod 触发 RBG reconcile（使用原生 IsPodActive） |
-| `TestShouldRecreateInstanceWithInactivePod` | 验证 inactive Pod 触发 Instance 重建 |
-| `TestPredicateStateTransition` | 验证 predicate 只捕获 active→inactive 转换，不重复触发 |
+| Test Name | Test Content |
+|-----------|--------------|
+| `TestPodBecameInactive` | Verify state transition detection: Running→Failed, Pending→Failed, Running→Succeeded |
+| `TestIsPodEvicted` | Verify Evicted Pod detection: status.reason="Evicted", DisruptionTarget condition |
+| `TestIsPodUnexpectedAdmissionError` | Verify admission error detection |
+| `TestIsPodFailedSchedule` | Verify scheduling failure detection: PodReasonUnschedulable, PodReasonSchedulerError |
+| `TestGetPodInactiveReason` | Verify correct reason string returned for each state |
+| `TestPodToRBGWithInactivePod` | Verify inactive Pod triggers RBG reconcile (using native IsPodActive) |
+| `TestShouldRecreateInstanceWithInactivePod` | Verify inactive Pod triggers Instance recreation |
+| `TestPredicateStateTransition` | Verify predicate only captures active→inactive transition, no duplicate triggers |
 
-**测试注意点**：
-- 确保使用原生 `kubecontroller.IsPodActive` 和 `podutil.IsPodTerminal` 进行判断
-- 测试原生常量：`corev1.PodReasonUnschedulable`、`corev1.DisruptionTarget` 等
-- 测试与原生 K8s ReplicaSet/StatefulSet 控制器行为的一致性
+**Test Notes**:
+- Ensure using native `kubecontroller.IsPodActive` and `podutil.IsPodTerminal` for judgment
+- Test native constants: `corev1.PodReasonUnschedulable`, `corev1.DisruptionTarget`, etc.
+- Test consistency with native K8s ReplicaSet/StatefulSet controller behavior
 
-#### E2E 测试
+#### E2E Tests
 
-**测试文件位置**: `test/e2e/testcase/v1alpha2/inactive_pod.go`
+**Test File Location**: `test/e2e/testcase/v1alpha2/inactive_pod.go`
 
-**测试环境**: Kind cluster (已有 CI 流程)
+**Test Environment**: Kind cluster (existing CI workflow)
 
-**模拟 Pod 异常状态的方法**:
+**Method to Simulate Pod Abnormal State**:
 
-在真实 K8s 集群中无法轻易触发真实的 Pod Eviction，因此采用**手动修改 Pod status subresource** 的方式模拟：
+In a real K8s cluster, triggering real Pod Eviction is difficult, so use **manually modifying Pod status subresource** to simulate:
 
 ```go
-// 模拟 Evicted Pod
+// Simulate Evicted Pod
 func setPodEvicted(ctx context.Context, client client.Client, pod *corev1.Pod) error {
     pod.Status.Phase = corev1.PodFailed
     pod.Status.Reason = "Evicted"
@@ -433,62 +433,73 @@ func setPodEvicted(ctx context.Context, client client.Client, pod *corev1.Pod) e
 }
 ```
 
-**测试 Case 设计**:
+**Test Case Design**:
 
-##### Case 1: Evicted Pod 触发 RBG 重建 (RecreateRBGOnPodRestart)
+##### Case 1: Evicted Pod Triggers RBG Recreation (RecreateRBGOnPodRestart)
 
-- 创建 RBG with `RestartPolicy=RecreateRBGOnPodRestart`
-- 等待 Pod Ready
-- 手动将 Pod status 改为 `Phase=Failed, Reason="Evicted"`
-- 验证 RBG 触发重建（RestartInProgress condition → True → False）
-- 验证新 Pod 创建完成
+- Create RBG with `RestartPolicy=RecreateRBGOnPodRestart`
+- Wait for Pod Ready
+- Manually change Pod status to `Phase=Failed, Reason="Evicted"`
+- Verify RBG triggers recreation (RestartInProgress condition → True → False)
+- Verify new Pod creation completes
 
-##### Case 2: Failed Pod 触发 RoleInstance 重建 (RecreateRoleInstanceOnPodRestart)
+##### Case 2: Failed Pod Triggers RoleInstance Recreation (RecreateRoleInstanceOnPodRestart)
 
-- 创建 RBG with `RestartPolicy=RecreateRoleInstanceOnPodRestart` (LeaderWorkerSet)
-- 等待 Pod Ready
-- 手动将 Pod status 改为 `Phase=Failed, Reason="Error"`
-- 验证 RoleInstance 重建（LWS 控制器重建 Group）
+- Create RBG with `RestartPolicy=RecreateRoleInstanceOnPodRestart` (LeaderWorkerSet)
+- Wait for Pod Ready
+- Manually change Pod status to `Phase=Failed, Reason="Error"`
+- Verify RoleInstance recreation (LWS controller recreates Group)
 
-##### Case 3: RestartPolicy=None 时创建替代 Pod
+##### Case 3: RestartPolicy=None Creates Replacement Pod
 
-- 创建 RBG with `RestartPolicy=None` (默认，Replicas=3)
-- 等待 Pod Ready，记录初始 Pod UIDs
-- 手动将一个 Pod 改为 Evicted 状态
-- 验证活跃 Pod 数量恢复到 3（创建替代 Pod）
-- 验证没有 RestartInProgress condition（不重建 RBG）
+- Create RBG with `RestartPolicy=None` (default, Replicas=3)
+- Wait for Pod Ready, record initial Pod UIDs
+- Manually change one Pod to Evicted state
+- Verify active Pod count returns to 3 (replacement Pod created)
+- Verify no RestartInProgress condition (no RBG recreation)
 
-##### Case 4: predicate 只捕获状态转换（不重复触发）
+##### Case 4: Predicate Only Captures State Transition (No Duplicate Triggers)
 
-- 创建 RBG，触发一次 Evicted → 重建
-- 对新 Pod 再次更新 status（不改变 Phase）
-- 验证没有再次触发重建
+- Create RBG, trigger one Evicted → recreation
+- Update new Pod status again (without changing Phase)
+- Verify no second recreation triggered
 
-#### 测试辅助函数
+#### Test Helper Functions
 
-在 `test/utils/utils.go` 中添加：
+Add in `test/utils/utils.go`:
 
 ```go
-// SetPodEvicted 模拟 Pod Evicted 状态
+// SetPodEvicted simulates Pod Evicted state
 func SetPodEvicted(ctx context.Context, rclient client.Client, pod *corev1.Pod) error
 
-// SetPodUnexpectedAdmissionError 模拟 Admission Error
+// SetPodUnexpectedAdmissionError simulates Admission Error
 func SetPodUnexpectedAdmissionError(ctx context.Context, rclient client.Client, pod *corev1.Pod) error
 
-// SetPodFailed 模拟 Pod Failed 状态
+// SetPodFailed simulates Pod Failed state
 func SetPodFailed(ctx context.Context, rclient client.Client, pod *corev1.Pod) error
 
-// GetActivePodCount 获取活跃 Pod 数量（使用原生 IsPodActive）
+// GetActivePodCount gets active Pod count (using native IsPodActive)
 func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rbgName string) (int, error)
 ```
 
 ---
 
-## 关键文件清单
+## Implementation History
 
-| 文件 | 改动类型 |
-|-----|---------|
-| `pkg/utils/pod_utils.go` | 新增函数 |
-| `pkg/utils/pod_utils_test.go` | 新增测试 |
-| `internal/controller/workloads/pod_controller.go` | 修改函数 |
-| `pkg/reconciler/roleinstance/sync/instance_scale.go` | 修改函数 |
+- 2026-05-08: Initial implementation completed
+  - Added pod inactive detection functions in `pkg/utils/pod_utils.go`
+  - Modified Pod Controller trigger conditions in `internal/controller/workloads/pod_controller.go`
+  - Fixed RoleInstance Controller in `pkg/reconciler/roleinstance/sync/instance_scale.go`
+  - Added unit tests with 27 test cases
+  - Added E2E test cases in `test/e2e/testcase/v1alpha2/inactive_pod.go`
+
+## Key Files Changed
+
+| File | Change Type |
+|------|-------------|
+| `pkg/utils/pod_utils.go` | Added functions |
+| `pkg/utils/pod_utils_test.go` | Added tests |
+| `internal/controller/workloads/pod_controller.go` | Modified functions |
+| `pkg/reconciler/roleinstance/sync/instance_scale.go` | Modified functions |
+| `test/e2e/testcase/v1alpha2/inactive_pod.go` | Added E2E tests |
+| `test/utils/utils.go` | Added helper functions |
