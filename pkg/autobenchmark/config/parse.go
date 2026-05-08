@@ -57,6 +57,7 @@ func Validate(cfg *AutoBenchmarkConfig, validateFiles bool) error {
 	errs = append(errs, validateTemplates(cfg, validateFiles)...)
 	errs = append(errs, validateSearchSpace(cfg)...)
 	errs = append(errs, validateScenario(cfg)...)
+	errs = append(errs, validateSLA(cfg)...)
 	errs = append(errs, validateStrategy(cfg)...)
 	errs = append(errs, validateEvaluator(cfg)...)
 	errs = append(errs, validateResults(cfg)...)
@@ -157,6 +158,21 @@ func validateScenario(cfg *AutoBenchmarkConfig) []string {
 	return errs
 }
 
+func validateSLA(cfg *AutoBenchmarkConfig) []string {
+	var errs []string
+	sla := cfg.Objectives.SLA
+	if sla.TTFTP99MaxMs != nil && *sla.TTFTP99MaxMs < 0 {
+		errs = append(errs, "objectives.sla.ttftP99MaxMs: must not be negative")
+	}
+	if sla.TPOTP99MaxMs != nil && *sla.TPOTP99MaxMs < 0 {
+		errs = append(errs, "objectives.sla.tpotP99MaxMs: must not be negative")
+	}
+	if sla.ErrorRateMax != nil && *sla.ErrorRateMax < 0 {
+		errs = append(errs, "objectives.sla.errorRateMax: must not be negative")
+	}
+	return errs
+}
+
 func validateStrategy(cfg *AutoBenchmarkConfig) []string {
 	var errs []string
 	if cfg.Strategy.MaxTrialsPerTemplate <= 0 {
@@ -204,24 +220,51 @@ func validateExecution(cfg *AutoBenchmarkConfig) []string {
 func validateSearchParam(role, name string, param SearchParam) error {
 	prefix := fmt.Sprintf("searchSpace.%s.%s", role, name)
 	switch param.Type {
-	case "range":
-		if param.Min == nil || param.Max == nil || param.Step == nil {
-			return fmt.Errorf("%s: range type requires min, max, and step", prefix)
+	case "float", "int":
+		if param.Min == nil || param.Max == nil {
+			return fmt.Errorf("%s: %s type requires min and max", prefix, param.Type)
 		}
 		if *param.Min > *param.Max {
 			return fmt.Errorf("%s: min (%v) must be less than max (%v)", prefix, *param.Min, *param.Max)
 		}
-		if *param.Step <= 0 {
+		if param.Step != nil && *param.Step <= 0 {
 			return fmt.Errorf("%s: step must be positive, got %v", prefix, *param.Step)
+		}
+	case "pow2":
+		if param.Min == nil || param.Max == nil {
+			return fmt.Errorf("%s: pow2 type requires min and max", prefix)
+		}
+		if *param.Min >= *param.Max {
+			return fmt.Errorf("%s: min (%v) must be less than max (%v)", prefix, *param.Min, *param.Max)
+		}
+		if param.Step != nil {
+			return fmt.Errorf("%s: pow2 type does not support step", prefix)
+		}
+		minVal := *param.Min
+		maxVal := *param.Max
+		if !isPow2Int(minVal) {
+			return fmt.Errorf("%s: pow2 min (%v) must be a power of 2", prefix, minVal)
+		}
+		if !isPow2Int(maxVal) {
+			return fmt.Errorf("%s: pow2 max (%v) must be a power of 2", prefix, maxVal)
 		}
 	case "categorical":
 		if len(param.Values) == 0 {
 			return fmt.Errorf("%s: categorical type requires at least one value", prefix)
 		}
 	default:
-		return fmt.Errorf("%s: unsupported type %q, must be \"range\" or \"categorical\"", prefix, param.Type)
+		return fmt.Errorf("%s: unsupported type %q, must be \"float\", \"int\", \"pow2\", or \"categorical\"", prefix, param.Type)
 	}
 	return nil
+}
+
+// isPow2Int returns true if the float64 value is an integer that is a power of 2.
+func isPow2Int(v float64) bool {
+	if v <= 0 || v != float64(int64(v)) {
+		return false
+	}
+	n := int64(v)
+	return n > 0 && (n&(n-1)) == 0
 }
 
 func setDefaults(cfg *AutoBenchmarkConfig) error {

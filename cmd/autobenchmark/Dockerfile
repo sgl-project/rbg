@@ -34,7 +34,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir genai-bench optuna
 
 # Copy optuna bridge script
-COPY tools/optuna_bridge.py /tools/optuna_bridge.py
+COPY tools/optuna/optuna_bridge.py /tools/optuna_bridge.py
 
 # Copy controller binary
 WORKDIR /

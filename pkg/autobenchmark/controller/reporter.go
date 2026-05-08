@@ -62,7 +62,7 @@ func BuildReport(state *abtypes.ExperimentState) *Report {
 			NumTrials: len(ts.Trials),
 		}
 		for _, trial := range ts.Trials {
-			if trial.SLAPass {
+			if trial.IsSLAFeasible() {
 				tr.NumSLAPass++
 			}
 		}
@@ -92,7 +92,7 @@ func SelectBest(trials []abtypes.TrialResult) *abtypes.TrialResult {
 	var best *abtypes.TrialResult
 	for i := range trials {
 		t := &trials[i]
-		if !t.SLAPass {
+		if !t.IsSLAFeasible() {
 			continue
 		}
 		if best == nil || t.Score > best.Score {
@@ -141,7 +141,7 @@ type ResultDetail struct {
 // ResultStatus holds timing and progress metadata for the experiment.
 type ResultStatus struct {
 	StartTime    time.Time        `json:"startTime"`
-	EndTime      time.Time        `json:"endTime,omitempty"`
+	EndTime      *time.Time       `json:"endTime,omitempty"`
 	Duration     abtypes.Duration `json:"duration,omitempty"`
 	NumTemplates int              `json:"numTemplates"`
 	TotalTrials  int              `json:"totalTrials"`
@@ -160,7 +160,6 @@ type ResultConfig struct {
 	ScenarioWorkloads   []string          `json:"scenarioWorkloads,omitempty"`
 	ScenarioConcurrency []int             `json:"scenarioConcurrency,omitempty"`
 	MaxTrialsPerTmpl    int               `json:"maxTrialsPerTemplate"`
-	EarlyStopPatience   int               `json:"earlyStopPatience,omitempty"`
 	Timeout             string            `json:"timeout,omitempty"`
 	Templates           []string          `json:"templates"`
 	SearchSpace         ResultSearchSpace `json:"searchSpace"`
@@ -202,7 +201,7 @@ func BuildResult(state *abtypes.ExperimentState, cfg *config.AutoBenchmarkConfig
 	// Status
 	result.Status.StartTime = state.StartTime
 	if !endTime.IsZero() {
-		result.Status.EndTime = endTime
+		result.Status.EndTime = &endTime
 		result.Status.Duration = abtypes.Duration(endTime.Sub(state.StartTime))
 	}
 	result.Status.NumTemplates = len(state.Templates)
@@ -210,7 +209,7 @@ func BuildResult(state *abtypes.ExperimentState, cfg *config.AutoBenchmarkConfig
 	for _, ts := range state.Templates {
 		result.Status.TotalTrials += len(ts.Trials)
 		for _, trial := range ts.Trials {
-			if trial.SLAPass {
+			if trial.IsSLAFeasible() {
 				result.Status.NumSLAPass++
 			} else {
 				result.Status.NumSLAFail++
@@ -230,7 +229,6 @@ func BuildResult(state *abtypes.ExperimentState, cfg *config.AutoBenchmarkConfig
 	result.Config.ScenarioWorkloads = cfg.Scenario.Workloads
 	result.Config.ScenarioConcurrency = cfg.Scenario.Concurrency
 	result.Config.MaxTrialsPerTmpl = cfg.Strategy.MaxTrialsPerTemplate
-	result.Config.EarlyStopPatience = cfg.Strategy.EarlyStopPatience
 	result.Config.Timeout = cfg.Strategy.Timeout
 
 	for _, t := range cfg.Templates {

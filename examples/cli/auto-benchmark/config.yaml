@@ -17,14 +17,18 @@ backend: sglang   # sglang | vllm
 searchSpace:
   default:                           # "default" 应用于所有 role
     gpuMemoryUtilization:
-      type: categorical
-      values: [0.70, 0.80, 0.90, 0.95]
+      type: float
+      min: 0.70
+      max: 0.95
+      step: 0.05
     maxNumSeqs:
-      type: categorical
-      values: [256, 512, 1024, 2048]
+      type: pow2
+      min: 256
+      max: 2048
     chunkedPrefillSize:
-      type: categorical
-      values: [512, 2048, 8192]
+      type: pow2
+      min: 512
+      max: 8192
     schedulePolicy:
       type: categorical
       values: ["lpm", "dfs-weight", "random"]
@@ -51,7 +55,6 @@ objectives:
 strategy:
   algorithm: tpe             # grid | tpe | gp | cmaes | random | qmc | nsgaii | nsgaiii
   maxTrialsPerTemplate: 20   # 每个 template 最多试验次数
-  earlyStopPatience: 5       # 连续 N 次无改善则跳过当前 template
   timeout: 4h                # 总超时
 # 评估工具配置
 evaluator:

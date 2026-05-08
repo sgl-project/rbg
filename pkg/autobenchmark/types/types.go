@@ -33,12 +33,22 @@ type TrialResult struct {
 	TemplateName string       `json:"templateName"`
 	Params       RoleParamSet `json:"params"`
 	Metrics      *Metrics     `json:"metrics,omitempty"`
-	SLAPass      bool         `json:"slaPass"`
+	Constraints  []float64    `json:"constraints"` // per-SLA deviation, ≤0 = feasible
 	Score        float64      `json:"score"`
 	Error        string       `json:"error,omitempty"`
 	Duration     Duration     `json:"duration"`
 	StartTime    time.Time    `json:"startTime"`
 	EndTime      time.Time    `json:"endTime"`
+}
+
+// IsSLAFeasible returns true when all SLA constraints are satisfied (all ≤ 0).
+func (t *TrialResult) IsSLAFeasible() bool {
+	for _, c := range t.Constraints {
+		if c > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Metrics contains the benchmark performance metrics extracted from evaluator output.

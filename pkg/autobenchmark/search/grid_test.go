@@ -27,7 +27,7 @@ import (
 	abtypes "sigs.k8s.io/rbgs/pkg/autobenchmark/types"
 )
 
-func TestExpandParam_Range(t *testing.T) {
+func TestExpandParamForGrid_Float(t *testing.T) {
 	tests := []struct {
 		name   string
 		param  config.SearchParam
@@ -35,29 +35,30 @@ func TestExpandParam_Range(t *testing.T) {
 	}{
 		{
 			name:   "integer range",
-			param:  config.SearchParam{Type: "range", Min: ptr(1.0), Max: ptr(5.0), Step: ptr(2.0)},
+			param:  config.SearchParam{Type: config.ParamTypeFloat, Min: ptr(1.0), Max: ptr(5.0), Step: ptr(2.0)},
 			expect: []interface{}{1.0, 3.0, 5.0},
 		},
 		{
 			name:   "single value range",
-			param:  config.SearchParam{Type: "range", Min: ptr(10.0), Max: ptr(10.0), Step: ptr(1.0)},
+			param:  config.SearchParam{Type: config.ParamTypeFloat, Min: ptr(10.0), Max: ptr(10.0), Step: ptr(1.0)},
 			expect: []interface{}{10.0},
 		},
 		{
 			name:   "step larger than range",
-			param:  config.SearchParam{Type: "range", Min: ptr(1.0), Max: ptr(3.0), Step: ptr(5.0)},
+			param:  config.SearchParam{Type: config.ParamTypeFloat, Min: ptr(1.0), Max: ptr(3.0), Step: ptr(5.0)},
 			expect: []interface{}{1.0},
 		},
 		{
 			name:   "float range",
-			param:  config.SearchParam{Type: "range", Min: ptr(0.8), Max: ptr(0.95), Step: ptr(0.05)},
+			param:  config.SearchParam{Type: config.ParamTypeFloat, Min: ptr(0.8), Max: ptr(0.95), Step: ptr(0.05)},
 			expect: []interface{}{0.8, 0.85, 0.9, 0.95},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := expandParam(tt.param)
+			result, err := expandParamForGrid("default", tt.name, tt.param)
+			require.NoError(t, err)
 			assert.Equal(t, len(tt.expect), len(result))
 			for i, v := range tt.expect {
 				assert.InDelta(t, v, result[i], 1e-6)
@@ -66,68 +67,67 @@ func TestExpandParam_Range(t *testing.T) {
 	}
 }
 
-func TestExpandParam_Categorical(t *testing.T) {
+func TestExpandParamForGrid_Int(t *testing.T) {
+	param := config.SearchParam{Type: config.ParamTypeInt, Min: ptr(1.0), Max: ptr(5.0), Step: ptr(2.0)}
+	result, err := expandParamForGrid("default", "x", param)
+	require.NoError(t, err)
+	assert.Equal(t, []any{1, 3, 5}, result)
+}
+
+func TestExpandParamForGrid_Categorical(t *testing.T) {
 	param := config.SearchParam{
-		Type:   "categorical",
+		Type:   config.ParamTypeCategorical,
 		Values: []interface{}{0.85, 0.9, 0.95},
 	}
-	result := expandParam(param)
+	result, err := expandParamForGrid("default", "x", param)
+	require.NoError(t, err)
 	assert.Equal(t, []interface{}{0.85, 0.9, 0.95}, result)
 }
 
-func TestExpandSearchSpace(t *testing.T) {
-	ss := map[string]map[string]config.SearchParam{
-		"default": {
-			"x": {Type: "categorical", Values: []interface{}{1, 2}},
-			"y": {Type: "range", Min: ptr(10.0), Max: ptr(30.0), Step: ptr(10.0)},
+func TestExpandParamForGrid_Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		param   config.SearchParam
+		wantErr string
+	}{
+		{
+			name:    "float without step",
+			param:   config.SearchParam{Type: config.ParamTypeFloat, Min: ptr(1.0), Max: ptr(5.0)},
+			wantErr: "requires step",
+		},
+		{
+			name:    "int without step",
+			param:   config.SearchParam{Type: config.ParamTypeInt, Min: ptr(1.0), Max: ptr(5.0)},
+			wantErr: "requires step",
+		},
+		{
+			name:    "pow2 type",
+			param:   config.SearchParam{Type: config.ParamTypePow2, Min: ptr(512.0), Max: ptr(8192.0)},
+			wantErr: "unsupported type",
+		},
+		{
+			name:    "empty categorical",
+			param:   config.SearchParam{Type: config.ParamTypeCategorical, Values: []interface{}{}},
+			wantErr: "at least one value",
 		},
 	}
-	expanded := ExpandSearchSpace(ss)
-	assert.Len(t, expanded["default"]["x"], 2)
-	assert.Len(t, expanded["default"]["y"], 3) // 10, 20, 30
-}
 
-func TestCartesianProduct_SingleRole(t *testing.T) {
-	space := ExpandedSearchSpace{
-		"default": {
-			"a": {1, 2},
-			"b": {10, 20, 30},
-		},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := expandParamForGrid("default", tt.name, tt.param)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
 	}
-	combos := CartesianProduct(space)
-	assert.Len(t, combos, 6) // 2 * 3
-}
-
-func TestCartesianProduct_MultiRole(t *testing.T) {
-	space := ExpandedSearchSpace{
-		"default": {"x": {1, 2}},
-		"prefill": {"y": {10, 20}},
-	}
-	combos := CartesianProduct(space)
-	assert.Len(t, combos, 4) // 2 * 2
-
-	// Verify each combo has both roles
-	for _, c := range combos {
-		assert.Contains(t, c, "default")
-		assert.Contains(t, c, "prefill")
-	}
-}
-
-func TestCartesianProduct_Empty(t *testing.T) {
-	space := ExpandedSearchSpace{}
-	combos := CartesianProduct(space)
-	assert.Len(t, combos, 1) // one empty combo
 }
 
 func ptr(v float64) *float64 { return &v }
 
-// grid_test.go tests
-
 func TestGridSearch_Basic(t *testing.T) {
-	space := ExpandedSearchSpace{
+	space := SearchSpace{
 		"default": {
-			"a": {1, 2},
-			"b": {10, 20},
+			"a": {Type: config.ParamTypeCategorical, Values: []interface{}{1, 2}},
+			"b": {Type: config.ParamTypeCategorical, Values: []interface{}{10, 20}},
 		},
 	}
 
@@ -152,9 +152,9 @@ func TestGridSearch_Basic(t *testing.T) {
 }
 
 func TestGridSearch_MaxTrials(t *testing.T) {
-	space := ExpandedSearchSpace{
+	space := SearchSpace{
 		"default": {
-			"a": {1, 2, 3, 4, 5},
+			"a": {Type: config.ParamTypeCategorical, Values: []interface{}{1, 2, 3, 4, 5}},
 		},
 	}
 
@@ -175,8 +175,8 @@ func TestGridSearch_MaxTrials(t *testing.T) {
 
 func TestGridSearch_MaxTrialsExceedsSpace(t *testing.T) {
 	// maxTrials (100) > space size (3): should stop after exhausting all 3 combos.
-	space := ExpandedSearchSpace{
-		"default": {"a": {1, 2, 3}},
+	space := SearchSpace{
+		"default": {"a": {Type: config.ParamTypeCategorical, Values: []interface{}{1, 2, 3}}},
 	}
 
 	g := &GridSearch{}
@@ -193,8 +193,11 @@ func TestGridSearch_MaxTrialsExceedsSpace(t *testing.T) {
 }
 
 func TestGridSearch_IsDone(t *testing.T) {
-	space := ExpandedSearchSpace{
-		"default": {"a": {1, 2}, "b": {10, 20}}, // 4 combos
+	space := SearchSpace{
+		"default": {
+			"a": {Type: config.ParamTypeCategorical, Values: []interface{}{1, 2}},
+			"b": {Type: config.ParamTypeCategorical, Values: []interface{}{10, 20}},
+		},
 	}
 
 	// maxTrials < space: stops at maxTrials.
@@ -217,8 +220,8 @@ func TestGridSearch_IsDone(t *testing.T) {
 }
 
 func TestGridSearch_StateCheckpointResume(t *testing.T) {
-	space := ExpandedSearchSpace{
-		"default": {"a": {1, 2, 3, 4}},
+	space := SearchSpace{
+		"default": {"a": {Type: config.ParamTypeCategorical, Values: []interface{}{1, 2, 3, 4}}},
 	}
 
 	// Run first 2 trials
@@ -252,8 +255,8 @@ func TestGridSearch_StateCheckpointResume(t *testing.T) {
 }
 
 func TestGridSearch_FeedbackDoesNotAffectOrder(t *testing.T) {
-	space := ExpandedSearchSpace{
-		"default": {"a": {1, 2, 3}},
+	space := SearchSpace{
+		"default": {"a": {Type: config.ParamTypeCategorical, Values: []interface{}{1, 2, 3}}},
 	}
 
 	g := &GridSearch{}

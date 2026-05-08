@@ -132,9 +132,6 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 		return fmt.Errorf("initializing state: %w", err)
 	}
 
-	// Expand search space once
-	expandedSpace := search.ExpandSearchSpace(ctrl.cfg.SearchSpace)
-
 	// Create algorithm instance once; Init will be called per template.
 	algoInstance, err := search.Get(ctrl.cfg.Strategy.Algorithm)
 	if err != nil {
@@ -173,7 +170,7 @@ func (ctrl *Controller) Run(ctx context.Context) error {
 
 		// (Re-)initialize algorithm for this template. The algorithm instance
 		// is created once before the loop; Init reuses the subprocess.
-		if err := algoInstance.Init(ctx, tmplRef.Name, expandedSpace, ctrl.cfg.Strategy); err != nil {
+		if err := algoInstance.Init(ctx, tmplRef.Name, ctrl.cfg.SearchSpace, ctrl.cfg.Strategy); err != nil {
 			return fmt.Errorf("initializing algorithm for template %q: %w", tmplRef.Name, err)
 		}
 		if len(ts.AlgorithmState) > 0 {
@@ -241,12 +238,6 @@ func (ctrl *Controller) runTrials(
 ) error {
 	logger := log.FromContext(ctx).WithValues("template", ts.Name)
 
-	earlyStopCounter := 0
-	bestScore := float64(0)
-	if ts.BestTrial != nil {
-		bestScore = ts.BestTrial.Score
-	}
-
 	for !algo.IsDone(ts.Trials) {
 		if err := ctx.Err(); err != nil {
 			return nil // timeout, graceful exit
@@ -263,23 +254,6 @@ func (ctrl *Controller) runTrials(
 
 		result := ctrl.executeTrial(ctx, baseRBG, ts.Name, trialIdx, params)
 		ts.Trials = append(ts.Trials, result)
-
-		// Check early stop: only count SLA-passing trials that did not improve.
-		// SLA failures reset the counter so that invalid configs don't exhaust patience.
-		if ctrl.cfg.Strategy.EarlyStopPatience > 0 {
-			if result.SLAPass && result.Score > bestScore {
-				bestScore = result.Score
-				earlyStopCounter = 0
-			} else if result.SLAPass {
-				earlyStopCounter++
-			} else {
-				earlyStopCounter = 0
-			}
-			if earlyStopCounter >= ctrl.cfg.Strategy.EarlyStopPatience {
-				logger.Info("Early stop triggered", "patience", ctrl.cfg.Strategy.EarlyStopPatience)
-				break
-			}
-		}
 
 		// Save algorithm state
 		algoState, err := algo.MarshalState()
@@ -409,11 +383,11 @@ func (ctrl *Controller) executeTrial(
 
 	// Evaluate SLA
 	result.Metrics = metrics
-	result.SLAPass, result.Score = EvaluateSLA(metrics, ctrl.cfg.Objectives)
+	result.Constraints, result.Score = EvaluateSLA(metrics, ctrl.cfg.Objectives)
 	result.EndTime = time.Now()
 	result.Duration = abtypes.Duration(result.EndTime.Sub(start))
 
-	logger.Info("Trial completed", "slaPass", result.SLAPass, "score", result.Score)
+	logger.Info("Trial completed", "feasible", result.IsSLAFeasible(), "score", result.Score, "constraints", result.Constraints)
 	return result
 }
 

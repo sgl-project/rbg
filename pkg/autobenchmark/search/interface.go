@@ -25,15 +25,19 @@ import (
 	abtypes "sigs.k8s.io/rbgs/pkg/autobenchmark/types"
 )
 
+// RawSearchSpace maps role names to their raw (unexpanded) parameter definitions.
+// This carries type metadata (float, int, pow2, categorical) that is lost after expansion.
+type SearchSpace map[string]map[string]config.SearchParam
+
 // SearchAlgorithm defines the interface for parameter search strategies.
 type SearchAlgorithm interface {
 	// Name returns the algorithm name.
 	Name() string
 
-	// Init initializes the algorithm with the given study name, expanded search space, and strategy config.
+	// Init initializes the algorithm with the given study name, search space and strategy config.
 	// The name uniquely identifies this search instance (e.g., template name) and is used by
 	// stateful backends (like Optuna) as the persistent study identifier.
-	Init(ctx context.Context, name string, space ExpandedSearchSpace, cfg config.StrategySpec) error
+	Init(ctx context.Context, name string, rawSpace SearchSpace, cfg config.StrategySpec) error
 
 	// SuggestNext returns the next parameter set to try, given previous trial results.
 	SuggestNext(history []abtypes.TrialResult) (abtypes.RoleParamSet, error)
@@ -47,10 +51,6 @@ type SearchAlgorithm interface {
 	// UnmarshalState restores algorithm state from checkpoint.
 	UnmarshalState(data []byte) error
 }
-
-// ExpandedSearchSpace maps role names to their expanded parameter lists.
-// Each parameter name maps to a list of discrete values to search.
-type ExpandedSearchSpace map[string]map[string][]any
 
 // Factory is a function that creates a new SearchAlgorithm instance.
 type Factory func() SearchAlgorithm

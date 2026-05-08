@@ -29,11 +29,11 @@ func f64(v float64) *float64 { return &v }
 
 func TestEvaluateSLA(t *testing.T) {
 	tests := []struct {
-		name       string
-		metrics    *abtypes.Metrics
-		objectives config.ObjectivesSpec
-		wantPass   bool
-		wantScore  float64
+		name            string
+		metrics         *abtypes.Metrics
+		objectives      config.ObjectivesSpec
+		wantConstraints []float64
+		wantScore       float64
 	}{
 		{
 			name: "all pass - output throughput",
@@ -47,8 +47,8 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{TTFTP99MaxMs: f64(2000), TPOTP99MaxMs: f64(10), ErrorRateMax: f64(0.01)},
 				Optimize: "outputThroughput",
 			},
-			wantPass:  true,
-			wantScore: 2000,
+			wantConstraints: []float64{0, 0, 0},
+			wantScore:       2000,
 		},
 		{
 			name: "TTFT P99 exceeds SLA",
@@ -62,8 +62,9 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{TTFTP99MaxMs: f64(2000)},
 				Optimize: "outputThroughput",
 			},
-			wantPass:  false,
-			wantScore: 0,
+			// (2500 - 2000) / 2000 = 0.25 (25% relative deviation)
+			wantConstraints: []float64{0.25},
+			wantScore:       3000,
 		},
 		{
 			name: "TPOT P99 exceeds SLA",
@@ -77,8 +78,9 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{TPOTP99MaxMs: f64(10)},
 				Optimize: "outputThroughput",
 			},
-			wantPass:  false,
-			wantScore: 0,
+			// (15 - 10) / 10 = 0.5 (50% relative deviation)
+			wantConstraints: []float64{0.5},
+			wantScore:       1000,
 		},
 		{
 			name: "error rate exceeds SLA",
@@ -92,8 +94,9 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{ErrorRateMax: f64(0.01)},
 				Optimize: "outputThroughput",
 			},
-			wantPass:  false,
-			wantScore: 0,
+			// (0.02 - 0.01) / 0.01 = 1.0 (100% relative deviation)
+			wantConstraints: []float64{1.0},
+			wantScore:       500,
 		},
 		{
 			name: "no SLA constraints - always passes",
@@ -104,17 +107,17 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{},
 				Optimize: "outputThroughput",
 			},
-			wantPass:  true,
-			wantScore: 1500,
+			wantConstraints: nil,
+			wantScore:       1500,
 		},
 		{
-			name:    "nil metrics - fails",
+			name:    "nil metrics",
 			metrics: nil,
 			objectives: config.ObjectivesSpec{
 				Optimize: "outputThroughput",
 			},
-			wantPass:  false,
-			wantScore: 0,
+			wantConstraints: []float64{0},
+			wantScore:       0,
 		},
 		{
 			name: "optimize requestsPerSecond",
@@ -126,8 +129,8 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{},
 				Optimize: "requestsPerSecond",
 			},
-			wantPass:  true,
-			wantScore: 50.5,
+			wantConstraints: nil,
+			wantScore:       50.5,
 		},
 		{
 			name: "optimize inputThroughput",
@@ -139,8 +142,8 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{},
 				Optimize: "inputThroughput",
 			},
-			wantPass:  true,
-			wantScore: 800,
+			wantConstraints: nil,
+			wantScore:       800,
 		},
 		{
 			name: "boundary - exactly at SLA limit passes",
@@ -152,15 +155,30 @@ func TestEvaluateSLA(t *testing.T) {
 				SLA:      config.SLASpec{TTFTP99MaxMs: f64(2000)},
 				Optimize: "outputThroughput",
 			},
-			wantPass:  true,
-			wantScore: 1000,
+			wantConstraints: []float64{0},
+			wantScore:       1000,
+		},
+		{
+			// When constraint limit is 0, deviation falls back to absolute value.
+			name: "zero constraint limit uses absolute deviation",
+			metrics: &abtypes.Metrics{
+				ErrorRate:        0.05,
+				OutputThroughput: 500,
+			},
+			objectives: config.ObjectivesSpec{
+				SLA:      config.SLASpec{ErrorRateMax: f64(0)},
+				Optimize: "outputThroughput",
+			},
+			// limit=0, so use absolute: max(0, 0.05 - 0) = 0.05
+			wantConstraints: []float64{0.05},
+			wantScore:       500,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pass, score := EvaluateSLA(tt.metrics, tt.objectives)
-			assert.Equal(t, tt.wantPass, pass)
+			constraints, score := EvaluateSLA(tt.metrics, tt.objectives)
+			assert.Equal(t, tt.wantConstraints, constraints)
 			assert.InDelta(t, tt.wantScore, score, 0.01)
 		})
 	}

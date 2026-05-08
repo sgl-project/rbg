@@ -77,7 +77,8 @@ func runList(ctx context.Context, cf *genericclioptions.ConfigFlags) error {
 		}
 
 		age := metav1.Now().Sub(job.CreationTimestamp.Time)
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", job.Name, status, formatDuration(age))
+		jn := job.Labels[constant.AutoBenchmarkLabelKey]
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", jn, status, formatDuration(age))
 	}
 
 	return w.Flush()

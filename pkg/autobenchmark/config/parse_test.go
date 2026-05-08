@@ -44,7 +44,7 @@ searchSpace:
       type: "categorical"
       values: [0.85, 0.90, 0.95]
     maxNumSeqs:
-      type: "range"
+      type: "float"
       min: 64
       max: 512
       step: 64
@@ -65,7 +65,6 @@ objectives:
 strategy:
   algorithm: "grid"
   maxTrialsPerTemplate: 10
-  earlyStopPatience: 3
   timeout: "2h"
 
 evaluator:
@@ -224,7 +223,7 @@ func TestValidate_DuplicateTemplateName(t *testing.T) {
 	assert.Contains(t, err.Error(), "duplicate name")
 }
 
-func TestValidate_SearchParamRangeErrors(t *testing.T) {
+func TestValidate_SearchParamFloatIntErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		param   SearchParam
@@ -232,18 +231,53 @@ func TestValidate_SearchParamRangeErrors(t *testing.T) {
 	}{
 		{
 			name:    "min >= max",
-			param:   SearchParam{Type: "range", Min: ptr(100.0), Max: ptr(50.0), Step: ptr(10.0)},
+			param:   SearchParam{Type: "float", Min: ptr(100.0), Max: ptr(50.0), Step: ptr(10.0)},
 			wantErr: "min (100) must be less than max (50)",
 		},
 		{
 			name:    "step <= 0",
-			param:   SearchParam{Type: "range", Min: ptr(1.0), Max: ptr(10.0), Step: ptr(0.0)},
+			param:   SearchParam{Type: "int", Min: ptr(1.0), Max: ptr(10.0), Step: ptr(0.0)},
 			wantErr: "step must be positive",
 		},
 		{
-			name:    "missing min/max/step",
-			param:   SearchParam{Type: "range", Min: ptr(1.0)},
-			wantErr: "range type requires min, max, and step",
+			name:    "missing min/max",
+			param:   SearchParam{Type: "float", Min: ptr(1.0)},
+			wantErr: "float type requires min and max",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(fullValidConfig()))
+			require.NoError(t, err)
+			cfg.SearchSpace["default"]["testParam"] = tt.param
+			err = Validate(cfg, false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestValidate_SearchParamPow2Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		param   SearchParam
+		wantErr string
+	}{
+		{
+			name:    "non-power-of-2 min",
+			param:   SearchParam{Type: "pow2", Min: ptr(500.0), Max: ptr(8192.0)},
+			wantErr: "pow2 min (500) must be a power of 2",
+		},
+		{
+			name:    "non-power-of-2 max",
+			param:   SearchParam{Type: "pow2", Min: ptr(512.0), Max: ptr(5000.0)},
+			wantErr: "pow2 max (5000) must be a power of 2",
+		},
+		{
+			name:    "pow2 with step",
+			param:   SearchParam{Type: "pow2", Min: ptr(512.0), Max: ptr(8192.0), Step: ptr(512.0)},
+			wantErr: "pow2 type does not support step",
 		},
 	}
 
@@ -376,6 +410,53 @@ func TestParseFile_InvalidYAML(t *testing.T) {
 	assert.Contains(t, err.Error(), "parsing config YAML")
 }
 
+func TestValidate_SLANegativeValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(cfg *AutoBenchmarkConfig)
+		wantErr string
+	}{
+		{
+			name:    "negative ttftP99MaxMs",
+			modify:  func(cfg *AutoBenchmarkConfig) { v := -100.0; cfg.Objectives.SLA.TTFTP99MaxMs = &v },
+			wantErr: "objectives.sla.ttftP99MaxMs: must not be negative",
+		},
+		{
+			name:    "negative tpotP99MaxMs",
+			modify:  func(cfg *AutoBenchmarkConfig) { v := -50.0; cfg.Objectives.SLA.TPOTP99MaxMs = &v },
+			wantErr: "objectives.sla.tpotP99MaxMs: must not be negative",
+		},
+		{
+			name:    "negative errorRateMax",
+			modify:  func(cfg *AutoBenchmarkConfig) { v := -0.01; cfg.Objectives.SLA.ErrorRateMax = &v },
+			wantErr: "objectives.sla.errorRateMax: must not be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(fullValidConfig()))
+			require.NoError(t, err)
+			tt.modify(cfg)
+			err = Validate(cfg, false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestValidate_SLAZeroValues(t *testing.T) {
+	cfg, err := Parse([]byte(fullValidConfig()))
+	require.NoError(t, err)
+	// Zero values are allowed (used as fallback in deviation calculation)
+	zero := 0.0
+	cfg.Objectives.SLA.TTFTP99MaxMs = &zero
+	cfg.Objectives.SLA.TPOTP99MaxMs = &zero
+	cfg.Objectives.SLA.ErrorRateMax = &zero
+	err = Validate(cfg, false)
+	assert.NoError(t, err)
+}
+
 func TestParse_RoleSpecificSearchSpace(t *testing.T) {
 	yamlData := `
 templates:
@@ -393,7 +474,7 @@ searchSpace:
       values: [2048, 4096]
   decode:
     maxNumSeqs:
-      type: "range"
+      type: "float"
       min: 128
       max: 512
       step: 128

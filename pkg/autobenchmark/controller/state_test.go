@@ -40,10 +40,10 @@ func TestStateManager_SaveAndLoad(t *testing.T) {
 				Name:      "template-a",
 				Completed: true,
 				Trials: []abtypes.TrialResult{
-					{TrialIndex: 0, TemplateName: "template-a", SLAPass: true, Score: 1500},
-					{TrialIndex: 1, TemplateName: "template-a", SLAPass: false, Score: 0},
+					{TrialIndex: 0, TemplateName: "template-a", Constraints: []float64{}, Score: 1500},
+					{TrialIndex: 1, TemplateName: "template-a", Constraints: []float64{1}, Score: 0},
 				},
-				BestTrial: &abtypes.TrialResult{TrialIndex: 0, Score: 1500, SLAPass: true},
+				BestTrial: &abtypes.TrialResult{TrialIndex: 0, Score: 1500, Constraints: []float64{}},
 			},
 			{
 				Name:      "template-b",
@@ -51,7 +51,7 @@ func TestStateManager_SaveAndLoad(t *testing.T) {
 				Trials:    nil,
 			},
 		},
-		GlobalBest: &abtypes.TrialResult{TrialIndex: 0, TemplateName: "template-a", Score: 1500, SLAPass: true},
+		GlobalBest: &abtypes.TrialResult{TrialIndex: 0, TemplateName: "template-a", Score: 1500, Constraints: []float64{}},
 	}
 
 	// Save
