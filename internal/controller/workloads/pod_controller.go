@@ -274,7 +274,10 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted, "podBecameInactive", podBecameInactive)
 
 	var rbg workloadsv1alpha2.RoleBasedGroup
-	err := r.client.Get(ctx, types.NamespacedName{Name: rbgName, Namespace: pod.Namespace}, &rbg)
+	// Use apiReader (non-caching) to get the latest RBG status for RestartInProgress check.
+	// This avoids a race condition where the informer cache is stale after the first restart
+	// sets RestartInProgress=True, allowing duplicate triggers before the cache updates.
+	err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbgName, Namespace: pod.Namespace}, &rbg)
 	if err != nil || rbg.DeletionTimestamp != nil {
 		return []reconcile.Request{}
 	}
