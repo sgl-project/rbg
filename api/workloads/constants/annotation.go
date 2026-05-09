@@ -136,3 +136,16 @@ const (
 	// states of runtime containers into its value, which is a structure JSON of RuntimeContainerMetaSet type.
 	RuntimeContainerMetaKey = "workloads.x-k8s.io/runtime-containers-meta"
 )
+
+// Component level annotations
+const (
+	// ComponentNoTriggerRestartPolicyAnnotationKey marks a component's pods so that
+	// their restart/delete events do not trigger the role's restart policy actions
+	// (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart). When this annotation
+	// is set to "true" on a component's pod template, the restart policy configured on
+	// the role will not be triggered by this component's pod events.
+	// This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose
+	// failures should not affect the main workload.
+	// Example: rbg.workloads.x-k8s.io/component-no-trigger-restart: "true"
+	ComponentNoTriggerRestartPolicyAnnotationKey = RBGPrefix + "component-no-trigger-restart"
+)
