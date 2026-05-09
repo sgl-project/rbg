@@ -256,3 +256,37 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 	}
 	return count, nil
 }
+
+// SimulateContainerRestart simulates a container restart by updating the container's RestartCount.
+// This is used in e2e tests to trigger container restart handling (Dimension 1).
+func SimulateContainerRestart(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	// Ensure pod has container statuses
+	if len(pod.Status.ContainerStatuses) == 0 {
+		pod.Status.ContainerStatuses = []v1.ContainerStatus{
+			{
+				Name:         "main-container",
+				RestartCount: 0,
+				Ready:        true,
+				State: v1.ContainerState{
+					Running: &v1.ContainerStateRunning{
+						StartedAt: metav1.Now(),
+					},
+				},
+			},
+		}
+	}
+
+	// Increment restart count for the first container
+	pod.Status.ContainerStatuses[0].RestartCount = 1
+	pod.Status.ContainerStatuses[0].LastTerminationState = v1.ContainerState{
+		Terminated: &v1.ContainerStateTerminated{
+			ExitCode:   1,
+			Reason:     "Error",
+			Message:    "Container crashed",
+			FinishedAt: metav1.Now(),
+			StartedAt:  metav1.NewTime(metav1.Now().Add(-time.Minute)),
+		},
+	}
+
+	return rclient.Status().Update(ctx, pod)
+}

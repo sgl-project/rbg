@@ -17,12 +17,11 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"time"
-
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -32,8 +31,10 @@ import (
 )
 
 func RunInactivePodTestCases(f *framework.Framework) {
-	// Case 1: Evicted Pod triggers RBG recreation with RestartPolicy=RecreateRBGOnPodRestart
-	ginkgo.It("evicted pod triggers RBG recreation with RecreateRBGOnPodRestart", func() {
+	// Case 1: Evicted Pod triggers replacement Pod creation with RestartPolicy=RecreateRBGOnPodRestart
+	// Note: Pod Failed (Dimension 2) does NOT trigger RBG recreation via Pod Controller.
+	// RoleInstance Controller creates replacement Pod through normal reconciliation.
+	ginkgo.It("evicted pod triggers replacement pod creation with RecreateRBGOnPodRestart", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-evicted-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
@@ -46,27 +47,45 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// Get one pod and simulate Evicted status
+		// Get pods and record initial UIDs
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
+		gomega.Expect(podList.Items).Should(gomega.HaveLen(2))
 
+		initialPodUIDs := make(map[string]types.UID)
+		for _, p := range podList.Items {
+			initialPodUIDs[p.Name] = p.UID
+		}
+
+		// Get one pod and simulate Evicted status
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
-		// Wait for RBG recreation - RestartInProgress should go True then False
-		f.ExpectRbgV2Equal(rbg)
-		f.ExpectRbgV2Condition(rbg, workloadsv1alpha2.RoleBasedGroupRestartInProgress, metav1.ConditionFalse)
+		// Wait for replacement pod creation - active pods count should be restored to 2
+		gomega.Eventually(func() int {
+			activeCount, err := utils.GetActivePodCount(f.Ctx, f.Client, f.Namespace, rbg.Name)
+			if err != nil {
+				return 0
+			}
+			return activeCount
+		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2))
 
-		// Verify active pods count restored to 2
-		activeCount, err := utils.GetActivePodCount(f.Ctx, f.Client, f.Namespace, rbg.Name)
-		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
-		gomega.Expect(activeCount).Should(gomega.Equal(2))
+		// Verify NO RBG restart occurred (RestartInProgress should be False or absent)
+		// Pod Failed (Dimension 2) does not trigger RBG recreation
+		freshRbg := &workloadsv1alpha2.RoleBasedGroup{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), freshRbg)).Should(gomega.Succeed())
+		for _, cond := range freshRbg.Status.Conditions {
+			if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+				gomega.Expect(cond.Status).Should(gomega.Equal(metav1.ConditionFalse))
+			}
+		}
 	})
 
 	// Case 2: Failed Pod triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
+	// Note: With this policy, RoleInstance Controller recreates entire Instance (not just replacement Pod)
 	ginkgo.It("failed pod triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-instance-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
@@ -79,17 +98,41 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// Get one pod and simulate Failed status
+		// Get pods and record initial UIDs
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
+		initialPodUIDs := make(map[string]types.UID)
+		for _, p := range podList.Items {
+			initialPodUIDs[p.Name] = p.UID
+		}
+
+		// Get one pod and simulate Failed status
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
-		// Wait for RoleInstance recreation via LWS controller
+		// Wait for RoleInstance recreation - all pods should be recreated (new UIDs)
+		gomega.Eventually(func() bool {
+			gomega.Expect(f.Client.List(f.Ctx, podList,
+				client.InNamespace(f.Namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+			if len(podList.Items) == 0 {
+				return false
+			}
+			// All pods should have new UIDs (Instance was recreated)
+			allNew := true
+			for _, p := range podList.Items {
+				if initialPodUIDs[p.Name] == p.UID {
+					allNew = false
+					break
+				}
+			}
+			return allNew
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+
 		f.ExpectRbgV2Equal(rbg)
 	})
 
@@ -114,9 +157,9 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 		gomega.Expect(podList.Items).Should(gomega.HaveLen(3))
 
-		initialPodUIDs := make(map[string]string)
+		initialPodUIDs := make(map[string]types.UID)
 		for _, p := range podList.Items {
-			initialPodUIDs[p.Name] = string(p.UID)
+			initialPodUIDs[p.Name] = p.UID
 		}
 
 		// Simulate one pod becoming Evicted
@@ -124,13 +167,13 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
 		// Wait for replacement pod to be created - active count should be 3
-		gomega.Eventually(func() bool {
+		gomega.Eventually(func() int {
 			activeCount, err := utils.GetActivePodCount(f.Ctx, f.Client, f.Namespace, rbg.Name)
 			if err != nil {
-				return false
+				return 0
 			}
-			return activeCount == 3
-		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+			return activeCount
+		}, utils.Timeout, utils.Interval).Should(gomega.Equal(3))
 
 		// Verify no RBG restart occurred (RestartInProgress should be False or absent)
 		freshRbg := &workloadsv1alpha2.RoleBasedGroup{}
@@ -145,14 +188,10 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
-		newPodUIDs := make(map[string]string)
-		for _, p := range podList.Items {
-			newPodUIDs[p.Name] = string(p.UID)
-		}
 		// At least one pod should have a different UID (the replacement)
 		foundReplacement := false
-		for name, newUID := range newPodUIDs {
-			if initialPodUIDs[name] != newUID {
+		for _, p := range podList.Items {
+			if initialPodUIDs[p.Name] != p.UID {
 				foundReplacement = true
 				break
 			}
@@ -160,9 +199,10 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(foundReplacement).Should(gomega.BeTrue())
 	})
 
-	// Case 4: predicate only captures state transition, no duplicate triggers
-	ginkgo.It("predicate only captures state transition, no duplicate triggers", func() {
-		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-no-dup-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
+	// Case 4: Container restart triggers RBG recreation with RecreateRBGOnPodRestart
+	// This tests Dimension 1: container restart → restartPolicy behavior
+	ginkgo.It("container restart triggers RBG recreation with RecreateRBGOnPodRestart", func() {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-container-restart-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
 				WithReplicas(1).
@@ -174,7 +214,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// First eviction - should trigger recreation
+		// Get pod and simulate container restart
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
@@ -182,44 +222,17 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
 		targetPod := &podList.Items[0]
-		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(utils.SimulateContainerRestart(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
-		// Wait for recreation to complete
+		// Wait for RBG recreation - RestartInProgress should go True then False
 		f.ExpectRbgV2Equal(rbg)
 		f.ExpectRbgV2Condition(rbg, workloadsv1alpha2.RoleBasedGroupRestartInProgress, metav1.ConditionFalse)
-
-		// Get new pod and update status again (should NOT trigger recreation)
-		gomega.Expect(f.Client.List(f.Ctx, podList,
-			client.InNamespace(f.Namespace),
-			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
-		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
-
-		newPod := &podList.Items[0]
-
-		// Update pod status message without changing phase
-		newPod.Status.Message = "Updated message for testing"
-		gomega.Expect(f.Client.Status().Update(f.Ctx, newPod)).Should(gomega.Succeed())
-
-		// Use Consistently instead of Sleep to verify no new restart occurred
-		// RestartInProgress should stay False for the duration
-		gomega.Consistently(func() metav1.ConditionStatus {
-			freshRbg := &workloadsv1alpha2.RoleBasedGroup{}
-			if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), freshRbg); err != nil {
-				return metav1.ConditionUnknown
-			}
-			for _, cond := range freshRbg.Status.Conditions {
-				if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
-					return cond.Status
-				}
-			}
-			// If condition doesn't exist, treat as False (no restart happened)
-			return metav1.ConditionFalse
-		}, 5*time.Second, 500*time.Millisecond).Should(gomega.Equal(metav1.ConditionFalse))
 	})
 
-	// Case 5: UnexpectedAdmissionError triggers recreation
-	ginkgo.It("unexpected admission error pod triggers recreation", func() {
-		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-admission-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
+	// Case 5: Pod deletion triggers RBG recreation with RecreateRBGOnPodRestart
+	// This is part of Dimension 1: pod deletion is handled by Pod Controller
+	ginkgo.It("pod deletion triggers RBG recreation with RecreateRBGOnPodRestart", func() {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-pod-deletion-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
 				WithReplicas(1).
@@ -231,7 +244,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// Get pod and simulate UnexpectedAdmissionError
+		// Get pod and delete it
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
@@ -239,9 +252,9 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
 		targetPod := &podList.Items[0]
-		gomega.Expect(utils.SetPodUnexpectedAdmissionError(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(f.Client.Delete(f.Ctx, targetPod)).Should(gomega.Succeed())
 
-		// Wait for RBG recreation
+		// Wait for RBG recreation - RestartInProgress should go True then False
 		f.ExpectRbgV2Equal(rbg)
 		f.ExpectRbgV2Condition(rbg, workloadsv1alpha2.RoleBasedGroupRestartInProgress, metav1.ConditionFalse)
 	})

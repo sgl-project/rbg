@@ -15,6 +15,60 @@
     - [Test Plan](#test-plan)
 <!-- /toc -->
 
+## Two Dimensions of Pod Restart Handling
+
+This KEP addresses two distinct dimensions that are often conflated. Understanding this separation is critical for correct implementation.
+
+### Dimension 1: Container Restart → restartPolicy Behavior
+
+| Aspect | Description |
+|--------|-------------|
+| **Trigger** | Container inside Pod restarts (RestartCount increases) |
+| **Handler** | Pod Controller (`pod_controller.go`) |
+| **restartPolicy involved** | Yes - behavior depends on policy: |
+| | - `None`: Do nothing |
+| | - `RecreateRBGOnPodRestart`: Recreate entire RBG |
+| | - `RecreateRoleInstanceOnPodRestart`: Recreate RoleInstance (handled by LWS controller, RBG controller does nothing) |
+| **Key point** | This is a user-configurable policy for handling container crashes |
+
+### Dimension 2: Pod Failed/Error → Replacement Pod Creation
+
+| Aspect | Description |
+|--------|-------------|
+| **Trigger** | Pod enters Failed state (Evicted, UnexpectedAdmissionError, etc.) |
+| **Handler** | RoleInstance Controller (`instance_scale.go`) |
+| **restartPolicy involved** | No - this is inherent Pod lifecycle management |
+| **Behavior** | Create replacement Pod to maintain replica count |
+| **Key point** | This follows native K8s controller behavior (StatefulSet/ReplicaSet) - Failed Pods should always get replacement |
+
+### Why Separation Matters
+
+The current implementation conflates these two dimensions:
+
+1. **Pod Controller (`podToRBG`)** checks both `containerRestarted` (Dimension 1) AND `podBecameFailed` (Dimension 2 trigger)
+2. **RoleInstance Controller (`shouldRecreateInstance`)** checks both `ContainerRestarted` (Dimension 1) AND Pod Failed state (Dimension 2)
+
+This causes confusion because:
+- Dimension 2 (Pod Failed) should NOT be routed through Pod Controller's restartPolicy logic
+- Pod Controller's `restartPolicy` check should only apply to Dimension 1 (container restart)
+
+### Correct Separation
+
+**Pod Controller should only handle Dimension 1**:
+- Trigger: `containerRestarted` or `podDeleted`
+- Check `restartPolicy` to determine action
+- Do NOT check `podBecameFailed`
+
+**RoleInstance Controller should handle Dimension 2**:
+- Through normal reconciliation, detects Pod Failed → active count decreases
+- Creates replacement Pod (inherent lifecycle management, NOT dependent on restartPolicy)
+- Do NOT check `ContainerRestarted`
+
+**Special case for `RecreateRoleInstanceOnPodRestart`**:
+- When restartPolicy=`RecreateRoleInstanceOnPodRestart` AND a Pod becomes Failed:
+- RoleInstance Controller should recreate the entire Instance (not just replacement Pod)
+- This is because the policy indicates user wants Instance-level consistency on Pod failures
+
 ## Background and Motivation
 
 The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted, UnexpectedAdmissionError, Failed).
@@ -228,15 +282,17 @@ func GetPodInactiveReason(pod *corev1.Pod) string {
 
 **File**: `internal/controller/workloads/pod_controller.go`
 
+**Scope**: Pod Controller ONLY handles Dimension 1 (container restart). It should NOT handle Dimension 2 (Pod Failed).
+
 #### Modify podToRBG Trigger Conditions
 
-Use native `kubecontroller.IsPodActive` to judge Pod state:
+Pod Controller should only trigger on:
+1. Container restart (Dimension 1)
+2. Pod deletion (Dimension 1)
+
+It should NOT trigger on Pod becoming Failed (Dimension 2 - handled by RoleInstance Controller).
 
 ```go
-import (
-    kubecontroller "k8s.io/kubernetes/pkg/controller"
-)
-
 func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []reconcile.Request {
     pod, ok := obj.(*corev1.Pod)
     if !ok {
@@ -248,27 +304,24 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
         return []reconcile.Request{}
     }
 
-    // Original trigger conditions
+    // Dimension 1 triggers ONLY
     containerRestarted := utils.ContainerRestarted(pod)
     podDeleted := utils.PodDeleted(pod)
 
-    // New trigger condition: Pod became inactive (reuse native IsPodActive)
-    // Pod inactive = !IsPodActive, i.e., Phase=Failed/Succeeded or being deleted
-    // Exclude being deleted case (already handled by podDeleted)
-    podBecameInactive := !kubecontroller.IsPodActive(pod) && pod.DeletionTimestamp == nil
+    // Do NOT check podBecameFailed - that's Dimension 2, handled by RoleInstance Controller
 
-    // Only trigger if any condition is met
-    if !containerRestarted && !podDeleted && !podBecameInactive {
+    if !containerRestarted && !podDeleted {
         return []reconcile.Request{}
     }
 
-    // ... subsequent RBG fetch and RestartPolicy check logic unchanged ...
+    // ... subsequent RBG fetch and RestartPolicy check logic ...
 }
 ```
 
-#### Modify Predicate to Capture State Transition and Container Restarts
+#### Modify Predicate to Capture Container Restart Count Changes
 
-Use both `PodBecameFailed` (for Failed pod transitions) and `ContainerRestartCountChanged` (for container restarts) helper functions:
+Predicate should ONLY capture container restart count changes (Dimension 1).
+Pod Failed state transitions (Dimension 2) are handled through RoleInstance Controller's normal reconciliation.
 
 ```go
 UpdateFunc: func(e event.UpdateEvent) bool {
@@ -282,54 +335,68 @@ UpdateFunc: func(e event.UpdateEvent) bool {
             return false
         }
 
-        // Detect Pod state transition from active to Failed (excluding Succeeded)
-        // and container restart count changes.
-        // This ensures both inactive pod handling AND container restart handling work correctly.
-        return utils.PodBecameFailed(oldPod, newPod) || utils.ContainerRestartCountChanged(oldPod, newPod)
+        // Dimension 1: Only capture container restart count changes
+        return utils.ContainerRestartCountChanged(oldPod, newPod)
     }
     return false
 },
 ```
 
-**Note**: We use `PodBecameFailed` instead of `PodBecameInactive` to explicitly exclude Succeeded pods per Non-Goals. Succeeded pods represent normal completion and should not trigger RBG recreation.
+**Note**: Pod deletion is already handled by DeleteFunc, no change needed.
 
 ### RoleInstance Controller Changes
 
 **File**: `pkg/reconciler/roleinstance/sync/instance_scale.go`
 
-#### Modify shouldRecreateInstance
+**Scope**: RoleInstance Controller handles Dimension 2 (Pod Failed → replacement Pod creation). This is inherent Pod lifecycle management, NOT dependent on restartPolicy.
 
-Use explicit check for Failed pods (excluding Succeeded per Non-Goals):
+#### Understanding shouldRecreateInstance
+
+The `shouldRecreateInstance` function exists to handle a special case:
+
+**When restartPolicy=`RecreateRoleInstanceOnPodRestart` AND a Pod becomes Failed**:
+- Instead of creating a replacement Pod, recreate the entire Instance
+- This maintains Instance-level consistency on Pod failures
+
+**When restartPolicy is NOT `RecreateRoleInstanceOnPodRestart`**:
+- Pod Failed → RoleInstance Controller creates replacement Pod through normal reconciliation
+- This is the default behavior (same as StatefulSet/ReplicaSet)
+
+#### Correct Implementation of shouldRecreateInstance
 
 ```go
+// shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
+// This applies when:
+// 1. restartPolicy = RecreateRoleInstanceOnPodRestart AND Pod Failed
+//    - Instead of replacement Pod, recreate entire Instance for consistency
+//
+// Note: This function does NOT handle container restart (Dimension 1).
+// Container restart with RecreateRoleInstanceOnPodRestart is handled by LWS controller,
+// RBG controller does nothing in that case.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
+    // Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
     if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
         return false
     }
 
+    // If no pods exist yet (initial creation), don't trigger recreate
     if len(pods) == 0 {
         return false
     }
 
-    // Check container restart
-    for _, pod := range pods {
-        if utils.ContainerRestarted(pod) {
-            return true
-        }
-    }
-
-    // Check Failed Pods (excluding Succeeded per Non-Goals)
+    // Check if any Pod has become Failed (Dimension 2)
+    // With RecreateRoleInstanceOnPodRestart policy, Pod Failed triggers Instance recreation
     if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
         expectedPodCount := getExpectedPodCount(instance)
         activeCount := 0
         for _, p := range pods {
             // Pod is active if: Phase != Failed && Phase != Succeeded && DeletionTimestamp == nil
-            // We explicitly exclude Succeeded pods per Non-Goals
             if p.Status.Phase != corev1.PodFailed && p.Status.Phase != corev1.PodSucceeded && p.DeletionTimestamp == nil {
                 activeCount++
             }
         }
         // Failed Pod causes active count to be less than expected
+        // → Trigger Instance recreation (instead of just replacement Pod)
         if activeCount < expectedPodCount {
             return true
         }
@@ -339,55 +406,50 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 }
 ```
 
-**Note**: We explicitly check `Phase != Failed && Phase != Succeeded` instead of using `IsPodActive` directly, to ensure Succeeded pods are excluded per Non-Goals while still correctly detecting Failed pods.
+**Note**: We DO NOT check `ContainerRestarted` here. Container restart (Dimension 1) with `RecreateRoleInstanceOnPodRestart` policy is handled by LWS controller, RBG controller has no action.
 
-#### Modify calculateDiffsWithExpectation
+#### How Pod Failed → Replacement Pod Works (Default Behavior)
 
-The project already has `GetActiveAndInactivePods` function in `instance_utils.go`, using native `IsPodActive` for classification. Just ensure correct handling when calling:
+When restartPolicy is NOT `RecreateRoleInstanceOnPodRestart`:
 
-```go
-func (c *realControl) calculateDiffsWithExpectation(...) (*expectationDiff, error) {
-    // ... shouldRecreateInstance check ...
+1. Pod becomes Failed → RoleInstance Controller reconciliation triggers
+2. `GetActiveAndInactivePods` separates active/inactive pods
+3. `GetComponentsTopology` calculates topology based on active pods
+4. Finds `toScaleNum > 0` (active count < expected count)
+5. Creates replacement Pod through `createPods`
 
-    // Use existing GetActiveAndInactivePods to separate Pods
-    // This function uses kubecontroller.IsPodActive for classification
-    // inactive Pods are not counted in ExistIDs, automatically triggers new Pod creation
-
-    // Current code already uses pods parameter to calculate topology
-    // Internal GetComponentsTopology handles via GroupPodsByComponentName
-    // Need to confirm only activePods participate in topology calculation
-
-    prt, err := coreControl.GetComponentsTopology(pods)
-    // ...
-}
-```
-
-**Note**: The project's `pkg/reconciler/roleinstance/utils/instance_utils.go` already has:
-
-```go
-func GetActiveAndInactivePods(ctx context.Context, reader client.Reader, opts *client.ListOptions) ([]*v1.Pod, []*v1.Pod, error) {
-    // ...
-    for i := range podList.Items {
-        pod := &podList.Items[i]
-        if kubecontroller.IsPodActive(pod) {
-            activePods = append(activePods, pod)
-        } else {
-            inactivePods = append(inactivePods, pod)
-        }
-    }
-    return activePods, inactivePods, nil
-}
-```
-
-This function already correctly uses native `IsPodActive`, no modification needed.
+This is the standard reconciliation flow, no special handling needed.
 
 ### RestartPolicy Handling Matrix
 
-| RestartPolicy | Inactive Pod Behavior |
-|--------------|----------------------|
-| `None` | Create replacement Pod to maintain replica count, no Instance/RBG recreation. This is RoleInstanceSet default behavior. |
-| `RecreateRoleInstanceOnPodRestart` | Entire RoleInstance recreation (all Pods deleted then recreated). Triggered when any Pod enters inactive state. |
-| `RecreateRBGOnPodRestart` | Entire RBG recreation (all Roles recreated in dependency order). Triggered when Pod enters inactive state and role has this policy. |
+#### Dimension 1: Container Restart
+
+| RestartPolicy | Container Restart Behavior |
+|--------------|---------------------------|
+| `None` | Do nothing - let container restart naturally |
+| `RecreateRoleInstanceOnPodRestart` | LWS controller recreates RoleInstance, RBG controller does nothing |
+| `RecreateRBGOnPodRestart` | Pod Controller triggers RBG recreation |
+
+#### Dimension 2: Pod Failed
+
+| RestartPolicy | Pod Failed Behavior |
+|--------------|---------------------|
+| `None` | Create replacement Pod (default behavior, same as StatefulSet) |
+| `RecreateRoleInstanceOnPodRestart` | Recreate entire RoleInstance (for Instance-level consistency) |
+| `RecreateRBGOnPodRestart` | Pod Controller does NOT handle Pod Failed; RoleInstance Controller creates replacement Pod |
+
+**Note**: `RecreateRBGOnPodRestart` policy only applies to Dimension 1 (container restart). Pod Failed (Dimension 2) should NOT trigger RBG recreation through Pod Controller. However, if multiple Pods across different roles become Failed, the RoleBasedGroup's overall status reflects this through Ready condition.
+
+#### Summary
+
+| Scenario | Handler | Action |
+|----------|---------|--------|
+| Container restart + `None` | None | Let container restart |
+| Container restart + `RecreateRoleInstanceOnPodRestart` | LWS Controller | Recreate RoleInstance |
+| Container restart + `RecreateRBGOnPodRestart` | Pod Controller | Recreate RBG |
+| Pod Failed + `None` | RoleInstance Controller | Create replacement Pod |
+| Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate RoleInstance |
+| Pod Failed + `RecreateRBGOnPodRestart` | RoleInstance Controller | Create replacement Pod (NOT RBG recreation) |
 
 ### Test Plan
 
@@ -484,12 +546,19 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 
 ## Implementation History
 
-- 2026-05-08: Initial implementation completed
+- 2026-05-08: Initial implementation completed (conflated two dimensions)
   - Added pod inactive detection functions in `pkg/utils/pod_utils.go`
   - Modified Pod Controller trigger conditions in `internal/controller/workloads/pod_controller.go`
   - Fixed RoleInstance Controller in `pkg/reconciler/roleinstance/sync/instance_scale.go`
   - Added unit tests with 27 test cases
   - Added E2E test cases in `test/e2e/testcase/v1alpha2/inactive_pod.go`
+
+- 2026-05-09: Refactored to properly separate two dimensions
+  - Updated KEP documentation with dimension separation analysis
+  - Pod Controller: removed `podBecameFailed` check, only handles container restart (Dimension 1)
+  - RoleInstance Controller: removed `ContainerRestarted` check from `shouldRecreateInstance`
+  - Predicate: only captures container restart count changes (Dimension 1)
+  - RoleInstance Controller handles Pod Failed through normal reconciliation (Dimension 2)
 
 ## Key Files Changed
 

@@ -29,10 +29,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
@@ -250,6 +253,289 @@ func TestPodReconciler_restartConditionTrue(t *testing.T) {
 				assert.Equal(t, tt.expected, result)
 			},
 		)
+	}
+}
+
+// Tests for Dimension 1: Pod Controller only handles container restart and pod deletion
+func TestPodReconciler_podToRBG_Dimension1(t *testing.T) {
+	schema := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").
+				WithRestartPolicy(workloadsv1alpha2.RecreateRBGOnPodRestart).
+				Obj(),
+		}).Obj()
+
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want []reconcile.Request
+		desc string
+	}{
+		{
+			name: "Container restart triggers reconciliation (Dimension 1)",
+			desc: "Pod Controller handles container restart for RecreateRBGOnPodRestart",
+			pod: wrappers.BuildBasicPod().WithLabels(map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "test-role",
+			}).Obj(),
+			want: []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      "test-rbg",
+						Namespace: "default",
+					},
+				},
+			},
+		},
+		{
+			name: "Pod deletion triggers reconciliation (Dimension 1)",
+			desc: "Pod Controller handles pod deletion for RecreateRBGOnPodRestart",
+			pod: wrappers.BuildDeletingPod().WithLabels(map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "test-role",
+			}).Obj(),
+			want: []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      "test-rbg",
+						Namespace: "default",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set namespace for pod to match RBG namespace
+			tt.pod.Namespace = "default"
+
+			// For container restart test, set restart count
+			if tt.name == "Container restart triggers reconciliation (Dimension 1)" {
+				tt.pod.Status.Phase = corev1.PodRunning
+				tt.pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+					{Name: "nginx", RestartCount: 1},
+				}
+			}
+
+			objects := []client.Object{rbg, tt.pod}
+			fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(objects...).Build()
+			r := &PodReconciler{
+				client:    fclient,
+				apiReader: fclient,
+				scheme:    schema,
+			}
+			got := r.podToRBG(context.TODO(), tt.pod)
+			assert.Equal(t, tt.want, got, tt.desc)
+		})
+	}
+}
+
+// Test that Pod Failed (Dimension 2) does NOT trigger Pod Controller
+func TestPodReconciler_podToRBG_Dimension2_NotTriggered(t *testing.T) {
+	schema := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("test-role").
+				WithRestartPolicy(workloadsv1alpha2.RecreateRBGOnPodRestart).
+				Obj(),
+		}).Obj()
+
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		desc string
+	}{
+		{
+			name: "Pod Failed does NOT trigger Pod Controller",
+			desc: "Pod Failed (Dimension 2) is handled by RoleInstance Controller, not Pod Controller",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "failed-pod",
+					Namespace: "default",
+					Labels: map[string]string{
+						constants.GroupNameLabelKey: "test-rbg",
+						constants.RoleNameLabelKey:  "test-role",
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "Evicted",
+				},
+			},
+		},
+		{
+			name: "Pod with UnexpectedAdmissionError does NOT trigger Pod Controller",
+			desc: "Pod Failed with admission error is Dimension 2, not handled by Pod Controller",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "admission-error-pod",
+					Namespace: "default",
+					Labels: map[string]string{
+						constants.GroupNameLabelKey: "test-rbg",
+						constants.RoleNameLabelKey:  "test-role",
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "UnexpectedAdmissionError",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objects := []client.Object{rbg, tt.pod}
+			fclient := fake.NewClientBuilder().WithScheme(schema).WithObjects(objects...).Build()
+			r := &PodReconciler{
+				client:    fclient,
+				apiReader: fclient,
+				scheme:    schema,
+			}
+			got := r.podToRBG(context.TODO(), tt.pod)
+			// Pod Failed should NOT trigger Pod Controller
+			assert.Empty(t, got, tt.desc)
+		})
+	}
+}
+
+// Test predicate only captures container restart count changes (Dimension 1)
+func TestPodReconciler_Predicate_Dimension1(t *testing.T) {
+	podPredicate := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return false
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, ok1 := e.ObjectOld.(*corev1.Pod)
+			newPod, ok2 := e.ObjectNew.(*corev1.Pod)
+			if ok1 && ok2 {
+				_, oldExist := oldPod.Labels[constants.GroupNameLabelKey]
+				_, newExist := newPod.Labels[constants.GroupNameLabelKey]
+
+				if !oldExist || !newExist {
+					return false
+				}
+
+				// Dimension 1: Only capture container restart count changes
+				return utils.ContainerRestartCountChanged(oldPod, newPod)
+			}
+			return false
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			if pod, ok := e.Object.(*corev1.Pod); ok {
+				_, exist := pod.Labels[constants.GroupNameLabelKey]
+				return exist
+			}
+			return false
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return false
+		},
+	}
+
+	tests := []struct {
+		name     string
+		oldPod   *corev1.Pod
+		newPod   *corev1.Pod
+		expected bool
+		desc     string
+	}{
+		{
+			name: "Container restart count changed - triggers predicate",
+			desc: "Predicate captures container restart (Dimension 1)",
+			oldPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "nginx", RestartCount: 0},
+					},
+				},
+			},
+			newPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "nginx", RestartCount: 1},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Pod became Failed - does NOT trigger predicate",
+			desc: "Predicate does NOT capture Pod Failed (Dimension 2 handled elsewhere)",
+			oldPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+				},
+			},
+			newPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+				},
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "Evicted",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod status update without restart count change - does NOT trigger",
+			desc: "Predicate ignores status updates that don't change restart count",
+			oldPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "nginx", RestartCount: 0},
+					},
+				},
+			},
+			newPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{constants.GroupNameLabelKey: "test-rbg"},
+				},
+				Status: corev1.PodStatus{
+					Phase:   corev1.PodRunning,
+					Message: "Updated status message",
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "nginx", RestartCount: 0},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := event.UpdateEvent{
+				ObjectOld: tt.oldPod,
+				ObjectNew: tt.newPod,
+			}
+			result := podPredicate.UpdateFunc(e)
+			assert.Equal(t, tt.expected, result, tt.desc)
+		})
 	}
 }
 

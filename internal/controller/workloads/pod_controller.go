@@ -256,22 +256,18 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 		return []reconcile.Request{}
 	}
 
-	// Original trigger conditions
+	// Dimension 1 triggers ONLY: container restart or pod deletion
+	// Pod Failed (Dimension 2) is handled by RoleInstance Controller through normal reconciliation
 	containerRestarted := utils.ContainerRestarted(pod)
 	podDeleted := utils.PodDeleted(pod)
 
-	// New trigger condition: Pod became Failed (excluding Succeeded per KEP Non-Goals)
-	// Uses native Kubernetes IsPodActive for consistency with ReplicaSet/StatefulSet behavior
-	// Succeeded pods are explicitly excluded as they represent normal completion
-	podBecameFailed := pod.Status.Phase == corev1.PodFailed && pod.DeletionTimestamp == nil
-
-	// Only trigger if any condition is met
-	if !containerRestarted && !podDeleted && !podBecameFailed {
+	// Only trigger if any Dimension 1 condition is met
+	if !containerRestarted && !podDeleted {
 		return []reconcile.Request{}
 	}
 
 	logger := log.FromContext(ctx).WithValues("Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted, "podBecameFailed", podBecameFailed)
+	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted)
 
 	var rbg workloadsv1alpha2.RoleBasedGroup
 	// Use apiReader (non-caching) to get the latest RBG status for RestartInProgress check.
@@ -332,10 +328,9 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Op
 					return false
 				}
 
-				// Detect Pod state transition from active to Failed (excluding Succeeded per KEP Non-Goals)
-				// and container restart count changes.
-				// This ensures both inactive pod handling AND container restart handling work correctly.
-				return utils.PodBecameFailed(oldPod, newPod) || utils.ContainerRestartCountChanged(oldPod, newPod)
+				// Dimension 1: Only capture container restart count changes
+				// Pod Failed state transitions (Dimension 2) are handled by RoleInstance Controller
+				return utils.ContainerRestartCountChanged(oldPod, newPod)
 			}
 			return false
 		},
