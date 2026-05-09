@@ -20,14 +20,13 @@ package statefulmode
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"sort"
 	"time"
 
 	apps "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
-	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -46,7 +45,84 @@ const (
 
 	// Realistic value for maximum in-flight requests when processing in parallel mode.
 	MaxBatchSize = 500
+
+	// stableUnhealthyDuration is the minimum CONSECUTIVE time an instance must
+	// be observed unhealthy before progressUpdate is allowed to treat it as
+	// "free" (cleanup-unhealthy semantics — i.e. delete it without consuming
+	// the maxUnavailable budget).
+	//
+	// Without this gate, a transient cache view that briefly reports a ready
+	// base instance as not-ready could let progressUpdate wrongly free-delete
+	// it. Combined with surge that has just become available, this can
+	// cascade into wiping out healthy ready replicas mid-rollout.
+	//
+	// The gate is enforced by tracking, per RoleInstance UID, the first time
+	// THIS controller observed the instance as unhealthy (in
+	// instanceUnhealthySince). The timer resets whenever the same UID is
+	// subsequently observed as healthy — so flapping cache (Ready toggling on
+	// the order of milliseconds) can never accumulate enough continuous time
+	// to satisfy the gate. A genuinely broken instance is observed unhealthy
+	// continuously and becomes eligible after this window.
+	//
+	// 10s is well above the typical informer cache lag (sub-second) while
+	// keeping the recovery delay for genuinely broken pods small enough to
+	// avoid wasting GPU resources for too long.
+	stableUnhealthyDuration = 10 * time.Second
 )
+
+// observeInstanceHealth maintains the instanceUnhealthySince map: for each
+// instance, record the first observation time when unhealthy, and clear the
+// entry when observed healthy. Called once at the top of every reconcile in
+// Phase A so the timestamps reflect the current cache snapshot.
+//
+// Also opportunistically removes entries for UIDs that no longer appear in
+// the supplied instances slice, preventing the map from growing unbounded as
+// instances are recreated (each delete-and-recreate produces a new UID).
+func observeInstanceHealth(instances []*workloadsv1alpha2.RoleInstance) {
+	now := time.Now()
+	live := make(map[types.UID]struct{}, len(instances))
+	for _, inst := range instances {
+		if inst == nil || inst.UID == "" {
+			continue
+		}
+		live[inst.UID] = struct{}{}
+		if isHealthy(inst) {
+			instanceUnhealthySince.Delete(inst.UID)
+			continue
+		}
+		// Unhealthy: record first-observed time if not already recorded.
+		instanceUnhealthySince.LoadOrStore(inst.UID, now)
+	}
+	// Drop entries for instances that have disappeared (different UID after
+	// recreate, or fully deleted).
+	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
+		uid, _ := key.(types.UID)
+		if _, alive := live[uid]; !alive {
+			instanceUnhealthySince.Delete(uid)
+		}
+		return true
+	})
+}
+
+// isStablyUnhealthy returns true when the controller has observed `inst` as
+// unhealthy for at least stableUnhealthyDuration of CONSECUTIVE time. This is
+// the only signal progressUpdate uses to decide whether a base instance is
+// "free" to update without consuming maxUnavailable budget. See
+// stableUnhealthyDuration for the rationale.
+func isStablyUnhealthy(inst *workloadsv1alpha2.RoleInstance) bool {
+	if inst == nil || inst.UID == "" {
+		return false
+	}
+	v, ok := instanceUnhealthySince.Load(inst.UID)
+	if !ok {
+		return false
+	}
+	first, ok := v.(time.Time)
+	if !ok {
+		return false
+	}
+	return time.Since(first) >= stableUnhealthyDuration
+}
 
 // StatefulInstanceSetControlInterface implements the control logic for updating InstanceSets managing Instances
 type StatefulInstanceSetControlInterface interface {
@@ -267,7 +343,22 @@ func (ssc *defaultStatefulInstanceSetControl) getInstanceSetRevisions(
 	return currentRevision, updateRevision, collisionCount, nil
 }
 
-// updateStatefulInstanceSet performs the update function for a InstanceSet managing instances
+// updateStatefulInstanceSet drives a single reconcile pass over the
+// RoleInstanceSet, in four ordered phases that each have a clear contract:
+//
+//	Phase A — observe         compute revisions & topology, build the
+//	                          desired status skeleton.
+//	Phase B — scale & identity ensure ord [start, end) is fully populated:
+//	                          condemn out-of-range, create missing slots,
+//	                          process replicas (creation) & condemned (delete).
+//	Phase C — progress update for in-rollout sets, drive rolling update with
+//	                          a free-vs-costly maxUnavailable budget.
+//	Phase D — status & advance recompute counts, decide whether to advance
+//	                          status.CurrentRevision (multi-layer guard).
+//
+// The four phases share the topology computed in Phase A as the single source
+// of truth for ordinal range, surge sizing, partition, and budget — so there
+// is no second place that recomputes "where surge ends".
 func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
@@ -276,12 +367,12 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	collisionCount int32,
 	instances []*workloadsv1alpha2.RoleInstance,
 	revisions []*apps.ControllerRevision) (*workloadsv1alpha2.RoleInstanceSetStatus, error) {
+
+	// =====================  Phase A — observe  =====================
 	selector, err := utils.ValidatedLabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
 		return set.Status.DeepCopy(), err
 	}
-
-	// get the current and update revisions of the set.
 	currentSet, err := ApplyRevision(set, currentRevision)
 	if err != nil {
 		return set.Status.DeepCopy(), err
@@ -290,61 +381,120 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	if err != nil {
 		return set.Status.DeepCopy(), err
 	}
+	topo, err := computeTopology(set, instances, currentRevision.Name, updateRevision.Name)
+	if err != nil {
+		return set.Status.DeepCopy(), err
+	}
 
-	// set the generation, and revisions in the returned status
+	// Update the per-UID "first observed unhealthy" timestamps so the time
+	// gate (isStablyUnhealthy) reflects the cache snapshot we are about to
+	// reason over. Healthy instances clear their entry; unhealthy instances
+	// either start a new timer or carry forward the prior one. See
+	// stableUnhealthyDuration for why this gate is the bug-3 defense.
+	observeInstanceHealth(instances)
+
+	minReadySeconds := getMinReadySeconds(set)
+	monotonic := !allowsBurst(set)
+
 	status := workloadsv1alpha2.RoleInstanceSetStatus{}
 	status.ObservedGeneration = set.Generation
 	status.CurrentRevision = currentRevision.Name
 	status.UpdateRevision = updateRevision.Name
 	status.CollisionCount = ptr.To[int32](collisionCount)
 	status.LabelSelector = selector.String()
-	minReadySeconds := getMinReadySeconds(set)
-
+	status.ExpectedUpdatedReplicas = int32(topo.replicas - topo.partition)
 	updateStatus(&status, minReadySeconds, currentRevision, updateRevision, instances)
 
-	startOrdinal, endOrdinal, reserveOrdinals := getInstanceSetReplicasRange(set)
-	// slice that will contain all Instances such that startOrdinal <= getOrdinal(instance) < endOrdinal
-	replicas := make([]*workloadsv1alpha2.RoleInstance, endOrdinal-startOrdinal)
-	// slice that will contain all Instances such that getOrdinal(instance) < startOrdinal or getOrdinal(instance) >= endOrdinal
+	// ===============  Phase B — scale & identity  ==================
+	// Partition instances into in-range slots and condemned (out-of-range).
+	// Anything beyond endOrdinal — including stale-rev surge from a prior
+	// rollout — falls into condemned and gets deleted by processCondemned.
+	replicas := make([]*workloadsv1alpha2.RoleInstance, topo.endOrdinal-topo.startOrdinal)
 	condemned := make([]*workloadsv1alpha2.RoleInstance, 0, len(instances))
-	unhealthy := 0
-	firstUnhealthyOrdinal := math.MaxInt32
-	var firstUnhealthyInstance *workloadsv1alpha2.RoleInstance
-	monotonic := !allowsBurst(set)
-
-	// First we partition instances into two lists valid replicas and condemned Instances
 	for i := range instances {
-		if ord := getOrdinal(instances[i]); instanceInOrdinalRangeWithParams(instances[i], startOrdinal, endOrdinal, reserveOrdinals) {
-			// if the ordinal of the instance is within the range of the current number of replicas
-			// insert it at the indirection of its ordinal
-			replicas[ord-startOrdinal] = instances[i]
-
+		ord := getOrdinal(instances[i])
+		if instanceInOrdinalRangeWithParams(instances[i], topo.startOrdinal, topo.endOrdinal, topo.reserveOrdinals) {
+			replicas[ord-topo.startOrdinal] = instances[i]
 		} else if ord >= 0 {
-			// if the ordinal is valid, but not within the range
-			// add it to the condemned list
 			condemned = append(condemned, instances[i])
 		}
 	}
-
-	// for any empty indices in the sequence [startOrdinal,endOrdinal) create a new Instance at the correct revision
-	for ord := startOrdinal; ord < endOrdinal; ord++ {
-		if reserveOrdinals.Has(ord) {
+	// Fill empty in-range slots. ord < partition uses currentRev (per
+	// newVersionedInstance), the rest get updateRev — including surge slots.
+	for ord := topo.startOrdinal; ord < topo.endOrdinal; ord++ {
+		if topo.reserveOrdinals.Has(ord) {
 			continue
 		}
-		replicaIdx := ord - startOrdinal
-		if replicas[replicaIdx] == nil {
-			replicas[replicaIdx] = newVersionedInstance(
-				currentSet,
-				updateSet,
-				currentRevision.Name,
-				updateRevision.Name, ord, replicas)
+		idx := ord - topo.startOrdinal
+		if replicas[idx] == nil {
+			replicas[idx] = newVersionedInstance(currentSet, updateSet, currentRevision.Name, updateRevision.Name, ord, replicas)
+		}
+	}
+	sort.Sort(descendingOrdinal(condemned))
+	_, firstUnhealthyInstance := countUnhealthy(replicas, condemned)
+
+	if set.DeletionTimestamp != nil {
+		return &status, nil
+	}
+
+	// Refresh in-place readiness condition for all created instances. Without
+	// this, freshly created instances would carry InPlaceUpdateReady=False
+	// from the instance controller and could deadlock processReplica in
+	// OrderedReady mode (which gates on isHealthy).
+	for i := range replicas {
+		if replicas[i] == nil || !isCreated(replicas[i]) {
+			continue
+		}
+		if _, duration, err := ssc.refreshInstanceState(set, replicas[i], updateRevision.Name); err != nil {
+			return &status, err
+		} else if duration > 0 {
+			durationStore.Push(getInstanceSetKey(set), duration)
 		}
 	}
 
-	// sort the condemned Instances by their ordinals
-	sort.Sort(descendingOrdinal(condemned))
+	scaleMaxUnavailable, err := getScaleMaxUnavailable(set)
+	if err != nil {
+		return &status, err
+	}
+	processReplicaFn := func(i int) (bool, bool, error) {
+		return ssc.processReplica(ctx, set, updateSet, monotonic, replicas, i, &status, scaleMaxUnavailable)
+	}
+	if shouldExit, err := runForAllWithBreak(replicas, processReplicaFn, monotonic); shouldExit || err != nil {
+		updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
+		return &status, err
+	}
+	processCondemnedFn := func(i int) (bool, error) {
+		return ssc.processCondemned(ctx, set, firstUnhealthyInstance, monotonic, condemned, i)
+	}
+	if shouldExit, err := runForAll(condemned, processCondemnedFn, monotonic); shouldExit || err != nil {
+		updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
+		return &status, err
+	}
 
-	// find the first unhealthy Instance
+	// ===============  Phase C — progress rolling update  ===========
+	if topo.inRollout {
+		if _, err := ssc.progressUpdate(set, &status, currentRevision, updateRevision, revisions, instances, replicas, minReadySeconds, topo); err != nil {
+			updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
+			return &status, err
+		}
+	}
+
+	// ===============  Phase D — final status & advance  ============
+	updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
+	if shouldAdvanceCurrentRevision(set, replicas, updateRevision.Name, topo) {
+		klog.V(2).InfoS("Advancing CurrentRevision", "instanceSet", klog.KObj(set), "from", status.CurrentRevision, "to", updateRevision.Name)
+		status.CurrentRevision = updateRevision.Name
+	}
+	return &status, nil
+}
+
+// countUnhealthy returns the count of unhealthy instances across the in-range
+// replicas slice and the condemned list, plus the lowest-ordinal unhealthy
+// instance (used by processCondemned in OrderedReady mode).
+func countUnhealthy(replicas, condemned []*workloadsv1alpha2.RoleInstance) (int, *workloadsv1alpha2.RoleInstance) {
+	unhealthy := 0
+	firstUnhealthyOrdinal := math.MaxInt32
+	var firstUnhealthyInstance *workloadsv1alpha2.RoleInstance
 	for i := range replicas {
 		if replicas[i] == nil {
 			continue
@@ -357,8 +507,6 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 			}
 		}
 	}
-
-	// or the first unhealthy condemned Instance (condemned are sorted in descending order for ease of use)
 	for i := len(condemned) - 1; i >= 0; i-- {
 		if !isHealthy(condemned[i]) {
 			unhealthy++
@@ -368,69 +516,41 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 			}
 		}
 	}
-
-	if unhealthy > 0 {
-		klog.V(4).InfoS("InstanceSet has unhealthy Instances", "instanceSet", klog.KObj(set), "unhealthyReplicas", unhealthy, "instance", klog.KObj(firstUnhealthyInstance))
+	if unhealthy > 0 && firstUnhealthyInstance != nil {
+		klog.V(4).InfoS("InstanceSet has unhealthy Instances", "unhealthyReplicas", unhealthy, "instance", klog.KObj(firstUnhealthyInstance))
 	}
-
-	// If the InstanceSet is being deleted, don't do anything other than updating status.
-	if set.DeletionTimestamp != nil {
-		return &status, nil
-	}
-
-	// Refresh states for all created instances to ensure InstanceInPlaceUpdateReady condition is up-to-date.
-	// Newly created instances default to InstanceInPlaceUpdateReady=False at the Instance controller level,
-	// but they don't actually need an in-place update. Without this refresh, these instances would remain
-	// unhealthy and block the processReplica loop in monotonic (OrderedReady) mode, creating a deadlock
-	// where processReplica waits for healthy instances, but refreshInstanceState (which sets the condition
-	// to True) is only called in rollingUpdateInstances which is never reached.
-	for i := range replicas {
-		if replicas[i] == nil || !isCreated(replicas[i]) {
-			continue
-		}
-		if _, duration, err := ssc.refreshInstanceState(set, replicas[i], updateRevision.Name); err != nil {
-			return &status, err
-		} else if duration > 0 {
-			durationStore.Push(getInstanceSetKey(set), duration)
-		}
-	}
-
-	// First, process each living replica. Exit if we run into an error or something blocking in monotonic mode.
-	scaleMaxUnavailable, err := getScaleMaxUnavailable(set)
-	if err != nil {
-		return &status, err
-	}
-	processReplicaFn := func(i int) (bool, bool, error) {
-		return ssc.processReplica(ctx, set, updateSet, monotonic, replicas, i, &status, scaleMaxUnavailable)
-	}
-	if shouldExit, err := runForAllWithBreak(replicas, processReplicaFn, monotonic); shouldExit || err != nil {
-		updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
-		return &status, err
-	}
-
-	// Process condemned instances
-	processCondemnedFn := func(i int) (bool, error) {
-		return ssc.processCondemned(ctx, set, firstUnhealthyInstance, monotonic, condemned, i)
-	}
-	if shouldExit, err := runForAll(condemned, processCondemnedFn, monotonic); shouldExit || err != nil {
-		updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
-		return &status, err
-	}
-	updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
-
-	// TODO: support OnDelete
-	// for the OnDelete strategy we short circuit.
-	// if set.Spec.UpdateStrategy.Type == apps.OnDeleteStatefulSetStrategyType {
-	// 	return &status, nil
-	// }
-
-	return ssc.rollingUpdateInstances(
-		set, &status, currentRevision, updateRevision, revisions, instances, replicas, minReadySeconds,
-	)
+	return unhealthy, firstUnhealthyInstance
 }
 
-// rollingUpdateInstances implements the rolling update logic for instances
-func (ssc *defaultStatefulInstanceSetControl) rollingUpdateInstances(
+// progressUpdate is Phase C: drive the rolling update by replacing base
+// instances at non-update revision with their updateRev counterparts (in-place
+// or delete-and-recreate).
+//
+// Budget model:
+//
+//	effectiveBudget = maxUnavailable + availableSurge
+//
+// where availableSurge counts surge ords [replicas, endOrdinal) that already
+// hold a healthy, non-terminating instance at updateRev — only those provide a
+// real availability buffer for base unavailability.
+//
+// Each target is classified:
+//
+//   - free   = target is not currently contributing to availability (already
+//     unhealthy or terminating). Updating it does not violate the
+//     maxUnavailable contract; it does not consume budget. This is the
+//     k8s Deployment cleanupUnhealthyReplicas semantics.
+//   - costly = target is currently healthy. Updating consumes 1 unit of
+//     budget. The combined check
+//     newlyUnavail >= maxUnavailable
+//     OR (initialBaseUnavail+newlyUnavail >= effectiveBudget AND target not
+//     already counted as unavailable)
+//     blocks further costly updates this loop.
+//
+// The "costly" path is what protects ready instances from being deleted faster
+// than maxUnavailable allows. The "free" path lets us recover from already-
+// degraded states (broken rollout, mid-rollout config change with stale base).
+func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	status *workloadsv1alpha2.RoleInstanceSetStatus,
 	currentRevision *apps.ControllerRevision,
@@ -439,47 +559,275 @@ func (ssc *defaultStatefulInstanceSetControl) rollingUpdateInstances(
 	instances []*workloadsv1alpha2.RoleInstance,
 	replicas []*workloadsv1alpha2.RoleInstance,
 	minReadySeconds int32,
+	topo topology,
 ) (*workloadsv1alpha2.RoleInstanceSetStatus, error) {
-
-	// If update expectations have not satisfied yet, skip updating instances
-	if updateSatisfied, _, updateDirtyInstances := updateExpectations.SatisfiedExpectations(getInstanceSetKey(set), updateRevision.Name); !updateSatisfied {
-		klog.InfoS("Update expectations not satisfied, skipping update", "instanceSet", klog.KObj(set), "updateDirtyInstances", updateDirtyInstances, "updateRevision", updateRevision.Name)
+	if updateSatisfied, _, dirty := updateExpectations.SatisfiedExpectations(getInstanceSetKey(set), updateRevision.Name); !updateSatisfied {
+		klog.InfoS("Update expectations not satisfied, skipping update",
+			"instanceSet", klog.KObj(set), "dirty", dirty, "updateRevision", updateRevision.Name)
 		return status, nil
 	}
-	klog.InfoS("Update expectations satisfied, proceeding with update", "instanceSet", klog.KObj(set), "updateRevision", updateRevision.Name)
-
-	// refresh states for all instances
 	if modified, err := ssc.refreshAllInstanceStates(set, instances, updateRevision.Name); err != nil {
 		return status, err
 	} else if modified {
 		return status, nil
 	}
 
-	if set.Spec.UpdateStrategy.Paused {
-		return status, nil
-	}
+	availableSurge := countAvailableSurge(replicas, topo, updateRevision.Name)
+	effectiveBudget := topo.maxUnavailable + availableSurge
+	baseUnavail := ssc.collectBaseUnavailable(set, replicas, topo, minReadySeconds)
+	initialBaseUnavail := len(baseUnavail)
+	targets := buildUpdateTargets(replicas, topo, updateRevision.Name)
 
-	maxUnavailable, err := ssc.getMaxUnavailable(set)
-	if err != nil {
-		return status, err
-	}
+	klog.InfoS("Progress rolling update", "instanceSet", klog.KObj(set),
+		"targets", targets, "maxUnavailable", topo.maxUnavailable,
+		"maxSurge", topo.maxSurge, "activeSurge", topo.activeSurge,
+		"availableSurge", availableSurge, "effectiveBudget", effectiveBudget,
+		"initialBaseUnavail", initialBaseUnavail)
 
-	unavailableInstances := ssc.collectUnavailableInstances(set, replicas, minReadySeconds)
+	newlyUnavail := 0
+	for _, idx := range targets {
+		target := replicas[idx]
+		// "free" = updating this target does not violate the maxUnavailable
+		// contract on BASE ordinals. Three sources of free:
+		//   - surge slot: surge is extra capacity, not part of the base
+		//     availability contract; replacing it never affects base availability.
+		//   - target already terminating: nothing more to do this loop.
+		//   - target stably unhealthy (Ready=False observed CONSECUTIVELY for
+		//     >= stableUnhealthyDuration): cleanupUnhealthy semantics. The
+		//     time gate prevents transient cache flap from triggering a
+		//     wrongful free-delete on a base instance that is actually ready —
+		//     millisecond-level mislabeling cannot accumulate enough continuous
+		//     unhealthy time to satisfy it, while a genuinely broken instance
+		//     accrues quickly.
+		isSurgeSlot := getOrdinal(target) >= topo.replicas
+		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(target)
 
-	// Sort instances to update
-	if set.Spec.Replicas == nil {
-		return status, fmt.Errorf("Replicas is nil")
-	}
-	updateIndexes := sortInstancesToUpdate(&set.Spec.UpdateStrategy, updateRevision.Name, *set.Spec.Replicas, replicas)
-	// Log detailed instance revisions for debugging
-	for i, instance := range replicas {
-		if instance != nil {
-			klog.InfoS("Instance revision status", "instanceSet", klog.KObj(set), "index", i, "instance", klog.KObj(instance), "currentRevision", getInstanceRevision(instance), "updateRevision", updateRevision.Name, "needsUpdate", getInstanceRevision(instance) != updateRevision.Name)
+		if !isFree && initialBaseUnavail+newlyUnavail >= effectiveBudget {
+			klog.InfoS("Rolling update budget exhausted",
+				"instanceSet", klog.KObj(set), "instance", klog.KObj(target),
+				"initialBaseUnavail", initialBaseUnavail, "newlyUnavail", newlyUnavail,
+				"effectiveBudget", effectiveBudget)
+			return status, nil
+		}
+		if isTerminating(target) {
+			continue
+		}
+
+		decrement, err := ssc.applyTargetUpdate(set, target, currentRevision, updateRevision, revisions, isSurgeSlot, isFree)
+		if err != nil {
+			return status, err
+		}
+		if !isFree {
+			baseUnavail.Insert(target.Name)
+			newlyUnavail++
+		}
+		if decrement {
+			status.CurrentReplicas--
 		}
 	}
-	klog.InfoS("Prepare to update instance indexes for InstanceSet", "instanceSet", klog.KObj(set), "instanceIndexes", updateIndexes, "maxUnavailable", maxUnavailable, "unavailableInstances", unavailableInstances.UnsortedList())
+	return status, nil
+}
 
-	return ssc.updateInstancesInSequence(set, status, currentRevision, updateRevision, revisions, replicas, updateIndexes, unavailableInstances, maxUnavailable)
+// countAvailableSurge counts surge slots [replicas, endOrdinal) whose instance
+// is at updateRev AND healthy AND not terminating. Only those provide a real
+// availability buffer — stale-rev or unhealthy surge does not.
+func countAvailableSurge(
+	replicas []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	updateRev string,
+) int {
+	out := 0
+	for ord := topo.surgeStart; ord < topo.endOrdinal; ord++ {
+		idx := ord - topo.startOrdinal
+		if idx < 0 || idx >= len(replicas) {
+			continue
+		}
+		inst := replicas[idx]
+		if inst != nil && isCreated(inst) && isHealthy(inst) && !isTerminating(inst) &&
+			getInstanceRevision(inst) == updateRev {
+			out++
+		}
+	}
+	return out
+}
+
+// collectBaseUnavailable returns the set of base ord [start, replicas) instance
+// names that are currently NOT contributing to availability (unhealthy,
+// in-place-update incomplete, or not-yet-available under minReadySeconds).
+// These are "already unavailable" for budget purposes — updating them in
+// progressUpdate is free. Also pushes any minReadySeconds wait into
+// durationStore so the controller is requeued when those windows expire.
+func (ssc *defaultStatefulInstanceSetControl) collectBaseUnavailable(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	minReadySeconds int32,
+) sets.Set[string] {
+	out := sets.New[string]()
+	opts := instanceinplace.SetOptionsDefaults(&instanceinplace.UpdateOptions{})
+	minWaitTime := MaxMinReadySeconds * time.Second
+
+	for ord := topo.startOrdinal; ord < topo.replicas; ord++ {
+		idx := ord - topo.startOrdinal
+		if idx < 0 || idx >= len(replicas) {
+			continue
+		}
+		inst := replicas[idx]
+		if inst == nil {
+			continue
+		}
+		if !isHealthy(inst) || opts.CheckRoleInstanceUpdateCompleted(inst) != nil {
+			out.Insert(inst.Name)
+			continue
+		}
+		isAvailable, waitTime := isInstanceRunningAndAvailable(inst, minReadySeconds)
+		if isAvailable {
+			continue
+		}
+		out.Insert(inst.Name)
+		if waitTime != 0 && waitTime <= minWaitTime {
+			minWaitTime = waitTime
+			durationStore.Push(getInstanceSetKey(set), waitTime)
+		}
+	}
+	return out
+}
+
+// buildUpdateTargets returns indices into replicas[] of in-range ords
+// [partition, endOrdinal) holding an instance whose revision != updateRev,
+// sorted by descending ordinal. The range deliberately includes surge ords
+// [replicas, endOrdinal): a surge slot may hold a stale-rev instance from a
+// superseded rollout, and Phase B cannot condemn it (the slot is still
+// in-range for the current rollout's surge needs), so progressUpdate must
+// recycle it — otherwise stale-rev surge persists forever.
+func buildUpdateTargets(
+	replicas []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	updateRev string,
+) []int {
+	out := make([]int, 0, topo.endOrdinal-topo.partition)
+	for ord := topo.partition; ord < topo.endOrdinal; ord++ {
+		idx := ord - topo.startOrdinal
+		if idx < 0 || idx >= len(replicas) {
+			continue
+		}
+		if replicas[idx] == nil {
+			continue
+		}
+		if getInstanceRevision(replicas[idx]) == updateRev {
+			continue
+		}
+		out = append(out, idx)
+	}
+	// Highest ordinal first (statefulset convention; also means surge slots
+	// are recycled before base, so we re-establish fresh surge at updateRev
+	// before chipping at base).
+	sort.Slice(out, func(i, j int) bool {
+		return getOrdinal(replicas[out[i]]) > getOrdinal(replicas[out[j]])
+	})
+	return out
+}
+
+// applyTargetUpdate performs a single target's update — in-place when possible,
+// otherwise delete-and-recreate via Phase B on the next reconcile. Returns
+// `decrementCurrent=true` when the operation actually transitioned the target
+// away from currentRevision (so caller can decrement status.CurrentReplicas).
+func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	target *workloadsv1alpha2.RoleInstance,
+	currentRevision *apps.ControllerRevision,
+	updateRevision *apps.ControllerRevision,
+	revisions []*apps.ControllerRevision,
+	isSurgeSlot bool,
+	isFree bool,
+) (bool, error) {
+	klog.InfoS("Updating instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(target),
+		"from", getInstanceRevision(target), "to", updateRevision.Name,
+		"isSurge", isSurgeSlot, "free", isFree)
+	inplacing, err := ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
+	if err != nil {
+		return false, err
+	}
+	transitioned := inplacing
+	if !inplacing {
+		_, actualDeleting, err := ssc.deleteInstance(set, target)
+		if err != nil {
+			return false, err
+		}
+		transitioned = actualDeleting
+	}
+	return transitioned && getInstanceRevision(target) == currentRevision.Name, nil
+}
+
+// shouldAdvanceCurrentRevision decides whether status.CurrentRevision can be
+// advanced to updateRev this reconcile. Multi-layer guard:
+//
+//	① We are actually in a rollout (currentRev != updateRev, !Paused).
+//	② Partition has been fully consumed (partition == 0). When partition > 0
+//	   the ords below partition are pinned at the "old" revision, so
+//	   advancing CurrentRevision to updateRev would lie about their state and
+//	   prevent later partition decreases from being recognized as
+//	   "currentRev != updateRev → in rollout" — exactly the bug behind
+//	   "lower partition does not progress".
+//	③ The PRIOR persisted status already named updateRev as UpdateRevision
+//	   AND counted UpdatedReplicas >= replicas - partition. This forces the
+//	   "all base updated" observation to have survived at least one full
+//	   reconcile cycle, so a transient cache lag in the current cycle cannot
+//	   cause an erroneous advance. This is the central defense against the
+//	   "rollout right after creation deletes everything" cascade.
+//	④ updateExpectations are satisfied (no in-place updates we are still
+//	   waiting for the API to acknowledge).
+//	⑤ The observed in-memory snapshot for every base ord [partition,
+//	   replicas) shows: at updateRev, isCreated, isHealthy, !isTerminating,
+//	   and ObservedGeneration synced.
+//
+// We never write to the in-memory rev label after an in-place update (see
+// inPlaceUpdateInstance), so the snapshot is the unmodified Phase-A read.
+func shouldAdvanceCurrentRevision(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	updateRev string,
+	topo topology,
+) bool {
+	if !topo.inRollout {
+		return false
+	}
+	// ② only advance once partition is fully consumed
+	if topo.partition > 0 {
+		return false
+	}
+	// ③ prior persisted concurrence
+	if set.Status.UpdateRevision != updateRev {
+		return false
+	}
+	if set.Status.UpdatedReplicas < int32(topo.replicas-topo.partition) {
+		return false
+	}
+	// ④ no in-flight in-place updates
+	if satisfied, _, _ := updateExpectations.SatisfiedExpectations(getInstanceSetKey(set), updateRev); !satisfied {
+		return false
+	}
+	// ⑤ observed snapshot all green
+	for ord := topo.partition; ord < topo.replicas; ord++ {
+		idx := ord - topo.startOrdinal
+		if idx < 0 || idx >= len(replicas) {
+			return false
+		}
+		inst := replicas[idx]
+		if inst == nil || !isCreated(inst) || isTerminating(inst) {
+			return false
+		}
+		if getInstanceRevision(inst) != updateRev {
+			return false
+		}
+		if !isHealthy(inst) {
+			return false
+		}
+		if inst.Status.ObservedGeneration < inst.Generation {
+			return false
+		}
+	}
+	return true
 }
 
 // refreshAllInstanceStates refreshes states for all instances and returns if any was modified
@@ -505,122 +853,6 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 		}
 	}
 	return modified, nil
-}
-
-// getMaxUnavailable computes the maxUnavailable value from the update strategy
-func (ssc *defaultStatefulInstanceSetControl) getMaxUnavailable(set *workloadsv1alpha2.RoleInstanceSet) (int, error) {
-	maxUnavailable := 1
-	if set.Spec.UpdateStrategy.MaxUnavailable != nil {
-		if set.Spec.Replicas == nil {
-			return 0, fmt.Errorf("Replicas is nil")
-		}
-		var err error
-		maxUnavailable, err = intstrutil.GetValueFromIntOrPercent(
-			set.Spec.UpdateStrategy.MaxUnavailable,
-			int(*set.Spec.Replicas), false)
-		if err != nil {
-			return 0, err
-		}
-	}
-	// maxUnavailable should not be less than 1
-	if maxUnavailable < 1 {
-		maxUnavailable = 1
-	}
-	return maxUnavailable, nil
-}
-
-// collectUnavailableInstances counts instances that are unhealthy for checking maxUnavailable limit
-func (ssc *defaultStatefulInstanceSetControl) collectUnavailableInstances(
-	set *workloadsv1alpha2.RoleInstanceSet,
-	replicas []*workloadsv1alpha2.RoleInstance,
-	minReadySeconds int32,
-) sets.Set[string] {
-	minWaitTime := MaxMinReadySeconds * time.Second
-	unavailableInstances := sets.New[string]()
-	opts := &instanceinplace.UpdateOptions{}
-	opts = instanceinplace.SetOptionsDefaults(opts)
-
-	for target := range replicas {
-		if replicas[target] == nil {
-			continue
-		}
-		if !isHealthy(replicas[target]) {
-			unavailableInstances.Insert(replicas[target].Name)
-		} else if completedErr := opts.CheckRoleInstanceUpdateCompleted(replicas[target]); completedErr != nil {
-			klog.V(4).ErrorS(completedErr, "InstanceSet found Instance in-place update not-ready",
-				"instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[target]))
-			unavailableInstances.Insert(replicas[target].Name)
-		} else if isAvailable, waitTime := isInstanceRunningAndAvailable(replicas[target], minReadySeconds); !isAvailable {
-			unavailableInstances.Insert(replicas[target].Name)
-			if waitTime != 0 && waitTime <= minWaitTime {
-				minWaitTime = waitTime
-				durationStore.Push(getInstanceSetKey(set), waitTime)
-			}
-		}
-	}
-	return unavailableInstances
-}
-
-// updateInstancesInSequence updates instances in sequence respecting maxUnavailable
-func (ssc *defaultStatefulInstanceSetControl) updateInstancesInSequence(
-	set *workloadsv1alpha2.RoleInstanceSet,
-	status *workloadsv1alpha2.RoleInstanceSetStatus,
-	currentRevision *apps.ControllerRevision,
-	updateRevision *apps.ControllerRevision,
-	revisions []*apps.ControllerRevision,
-	replicas []*workloadsv1alpha2.RoleInstance,
-	updateIndexes []int,
-	unavailableInstances sets.Set[string],
-	maxUnavailable int,
-) (*workloadsv1alpha2.RoleInstanceSetStatus, error) {
-	// Track instances updated in this reconcile loop
-	updatedInThisLoop := 0
-
-	// update instances in sequence
-	for _, target := range updateIndexes {
-		// the target is already up-to-date, go to next
-		if getInstanceRevision(replicas[target]) == updateRevision.Name {
-			continue
-		}
-
-		// Block if:
-		// 1. We already triggered maxUnavailable updates in this reconcile loop
-		// 2. OR there are already maxUnavailable instances that are unavailable (not counting current target)
-		if updatedInThisLoop >= maxUnavailable || (len(unavailableInstances) >= maxUnavailable && !unavailableInstances.Has(replicas[target].Name)) {
-			klog.InfoS("InstanceSet was waiting for unavailable Instances to update, blocked instance",
-				"instanceSet", klog.KObj(set), "unavailableInstances", unavailableInstances.UnsortedList(), "blockedInstance", klog.KObj(replicas[target]), "updatedInThisLoop", updatedInThisLoop, "maxUnavailable", maxUnavailable)
-			return status, nil
-		}
-
-		// delete or inplace update the Instance if it does not match the update revision
-		if !isTerminating(replicas[target]) {
-			klog.InfoS("InstanceSet attempting to update Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[target]), "currentRevision", getInstanceRevision(replicas[target]), "targetRevision", updateRevision.Name)
-			inplacing, inplaceUpdateErr := ssc.inPlaceUpdateInstance(set, replicas[target], updateRevision, revisions)
-			if inplaceUpdateErr != nil {
-				return status, inplaceUpdateErr
-			}
-			klog.InfoS("InstanceSet update Instance result", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[target]), "inplacing", inplacing)
-			// if instance is inplacing or actual deleting, update status
-			revisionNeedDecrease := inplacing
-			if !inplacing {
-				klog.V(2).InfoS("InstanceSet terminating Instance for update", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[target]))
-				if _, actualDeleting, err := ssc.deleteInstance(set, replicas[target]); err != nil {
-					return status, err
-				} else {
-					revisionNeedDecrease = actualDeleting
-				}
-			}
-			// Mark target as unavailable for this reconcile loop
-			unavailableInstances.Insert(replicas[target].Name)
-			updatedInThisLoop++
-
-			if revisionNeedDecrease && getInstanceRevision(replicas[target]) == currentRevision.Name {
-				status.CurrentReplicas--
-			}
-		}
-	}
-
-	return status, nil
 }
 
 // processReplica processes a single replica instance.
@@ -789,12 +1021,15 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 			"instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
 		updateExpectations.ExpectUpdated(getInstanceSetKey(set), updateRevision.Name, instance)
 
-		// Update the instance's revision label in memory to reflect the update
-		// This prevents the controller from repeatedly triggering updates
-		if instance.Labels == nil {
-			instance.Labels = make(map[string]string)
-		}
-		instance.Labels[apps.ControllerRevisionHashLabelKey] = updateRevision.Name
+		// NOTE: Do NOT mutate instance.Labels in memory here. inplaceControl.Update
+		// patched the API server (label + spec + condition Ready=False), but the
+		// in-memory object we hold reflects the snapshot from the start of this
+		// reconcile. If we forced the rev label here, shouldAdvanceCurrentRevision
+		// would see "rev=updateRev AND isHealthy=true (stale Ready)" and could
+		// erroneously advance status.CurrentRevision, which is exactly the
+		// cascade behind the "rollout right after creation deletes everything"
+		// bug. Next reconcile reads fresh state and sees both new rev and
+		// updated condition, at which point advance can fire safely.
 	}
 
 	return result.InPlaceUpdate, nil
@@ -815,43 +1050,4 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	}
 
 	return true, true, nil
-}
-
-// sortInstancesToUpdate returns the indexes of instances in the order they should be updated
-func sortInstancesToUpdate(
-	rollingUpdate *workloadsv1alpha2.RoleInstanceSetUpdateStrategy,
-	updateRevision string,
-	replicas int32,
-	instances []*workloadsv1alpha2.RoleInstance,
-) []int {
-	var partition int32 = 0
-	if rollingUpdate != nil && rollingUpdate.Partition != nil {
-		// Convert IntOrString to int32
-		partitionValue, err := intstrutil.GetValueFromIntOrPercent(
-			rollingUpdate.Partition,
-			int(replicas),
-			false,
-		)
-		if err == nil {
-			partition = int32(partitionValue)
-		}
-	}
-
-	var updateIndexes []int
-	for i := range instances {
-		if instances[i] == nil {
-			continue
-		}
-		ordinal := getOrdinal(instances[i])
-		if ordinal >= int(partition) && getInstanceRevision(instances[i]) != updateRevision {
-			updateIndexes = append(updateIndexes, i)
-		}
-	}
-
-	// sort by ordinal in reverse order (start from the largest ordinal)
-	sort.Slice(updateIndexes, func(i, j int) bool {
-		return getOrdinal(instances[updateIndexes[i]]) > getOrdinal(instances[updateIndexes[j]])
-	})
-
-	return updateIndexes
 }

@@ -22,6 +22,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -62,6 +63,22 @@ var (
 
 	// global client
 	sigsruntimeClient sigsclient.Client
+
+	// instanceUnhealthySince tracks, per RoleInstance UID, the timestamp at
+	// which this controller first observed the instance in an unhealthy state.
+	// Reset to zero whenever the controller subsequently observes the same UID
+	// as healthy, so the duration only accumulates over CONSECUTIVE unhealthy
+	// observations. This is the input to the "stably unhealthy" gate (see
+	// stableUnhealthyDuration / isStablyUnhealthy in stateful_instance_set_control.go),
+	// which prevents a transient cache view that briefly mislabels a ready
+	// instance as not-ready from accumulating enough continuous unhealthy
+	// time to trigger a free-delete on an actually-ready base instance.
+	//
+	// The map is in-memory; on controller restart it resets, which is
+	// acceptable — the worst case after a restart is that a genuinely-broken
+	// instance takes one extra stableUnhealthyDuration window before it
+	// becomes eligible for cleanup.
+	instanceUnhealthySince sync.Map // map[types.UID]time.Time
 )
 
 // NewReconciler creates a new reconcile.Reconciler for external usage

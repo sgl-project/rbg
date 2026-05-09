@@ -73,6 +73,7 @@ func TestE2E(t *testing.T) {
 			testcasev1alpha2.RunDeploymentWorkloadTestCases(f)
 			testcasev1alpha2.RunStatefulSetWorkloadTestCases(f)
 			testcasev1alpha2.RunLeaderWorkerSetWorkloadTestCases(f)
+			testcasev1alpha2.RunRoleInstanceSetWorkloadTestCases(f)
 			testcasev1alpha2.RunRbgSetControllerTestCases(f)
 			testcasev1alpha2.RunRoleTemplateTestCases(f)
 			testcasev1alpha2.RunPortAllocatorTestCases(f)
