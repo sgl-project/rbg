@@ -1,7 +1,7 @@
 title: Enhanced CustomComponentsPattern - Component Lifecycle Ordering and Intra-Role Service Discovery
 kep-number: 173
 authors:
-  - "@TBD"
+  - "@Syspretor"
 status: provisional
 creation-date: 2026-04-29
 reviewers:

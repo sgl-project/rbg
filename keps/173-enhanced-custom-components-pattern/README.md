@@ -291,7 +291,7 @@ must receive those endpoints at startup. `CustomComponentsPattern` with the new
 | `startAfter` gate may cause components to wait longer than expected | The gate is evaluated against `RoleInstance.Status.ComponentStatuses.ReadyReplicas >= Size`, which is set only when pods pass readiness probes. This is the intended semantics — if a dependency is slow to become ready, the controller waits correctly without creating unready dependents. |
 | Discovery annotation references a component that doesn't exist | Controller validation (webhook) rejects the RBG at admission time. |
 | Port reference targets a port not defined in port-allocator annotation | Controller returns error in reconcile and surfaces via RBG status condition. |
-| Circular dependency in `startAfter` / `deleteAfter` (A refs B, B refs A) | `DetectCycle` runs DFS on the dependency graph at each reconcile. If a cycle is found, the controller logs an error and falls back to the default parallel mode to avoid a deadlock. |
+| Circular dependency in `startAfter` / `deleteAfter` (A refs B, B refs A) | `DetectCycle` runs DFS on the dependency graph at each reconcile. If a cycle is found, the controller logs an error and falls back to the default parallel mode to avoid a deadlock. Note: cycles involving different components (A→B and B→A) are possible even when self-reference is disallowed; the cycle detection handles this case. |
 
 ## Design Details
 
@@ -341,6 +341,24 @@ ReadyReplicas >= Size  &&  Size > 0
 
 This is evaluated on the status written by the previous reconcile loop, so the gate becomes true
 only after the dependency's pods are genuinely ready (not merely scheduled).
+
+**Why `ReadyReplicas >= Size` instead of `Scheduled`?**
+
+The motivation section describes scenarios where workers crash because the leader's gRPC server
+is not yet ready when they attempt to connect. The `Scheduled` condition only indicates that a pod
+has been assigned to a node — the container may not even be running yet. Using `ReadyReplicas >= Size`
+ensures that all pods of the dependency component have passed their readiness probes, meaning the
+application is actually serving traffic.
+
+**Recommended user-side configuration:**
+
+When using `startAfter` ordering, users should:
+- Define proper `readinessProbe` in the dependency component's pod spec (e.g., TCP socket check on
+  the gRPC port, or an HTTP health endpoint).
+- Ensure the dependent component's startup logic handles transient connection failures gracefully
+  (the dependency may become unavailable after initial readiness due to restarts).
+- Consider using `restartPolicy: OnFailure` at the RBG level if transient failures should trigger
+  pod restart rather than role instance recreation.
 
 **Example: Router starts after Leader and Worker**
 
@@ -518,7 +536,20 @@ constructed as:
 ```
 
 Where `<service-name>` is the headless service name for the role, which already exists as created
-by the `ServiceReconciler`.
+by the `ServiceReconciler`. The relationship between `serviceName` and the role-level headless
+service is:
+- The `InstanceComponent.serviceName` field specifies the service that backs the component's pods.
+- If not explicitly set, the controller uses the role's default headless service (named
+  `s-<rbg-name>-<role-name>` by convention).
+- The FQDN uses this service name as the subdomain, enabling DNS resolution via Kubernetes
+  headless service DNS.
+
+**Cluster domain assumption**: The FQDN format uses `.svc.cluster.local` as the default cluster
+domain suffix. This matches the vast majority of Kubernetes clusters. If your cluster uses a
+custom domain (e.g., `.svc.mycluster.local`), the injected address may not resolve correctly.
+A future enhancement may support configurable cluster domains or use the shorter
+`<pod>.<svc>.<namespace>` format which is domain-agnostic. For now, users on non-default cluster
+domains should consider this limitation or use the shorter address format via init containers.
 
 **Example**: For RBG `llm-prefill`, role `prefill`, instance ordinal `0`, component `leader`, pod
 index `0`, service `s-llm-prefill-prefill`:
@@ -542,6 +573,14 @@ feature (`from` field in `PortReference`). The resolution reads the allocated po
 | `RoleScoped` | `<component-name>.<port-name>` | `leader.leader-grpc` |
 | `PodScoped` | `<pod-name>.<port-name>` | `llm-prefill-prefill-0-leader-0.leader-grpc` |
 
+**`Index` field semantics for different scopes:**
+
+- For `RoleScoped` ports: The `Index` field in `ComponentPortRef` is **ignored** because
+  `RoleScoped` ports have the same value for all pods in the component. The key does not include
+  pod-specific identifiers, so specifying an index is unnecessary.
+- For `PodScoped` ports: The `Index` field is used to construct the pod name portion of the key.
+  It must be within bounds `[0, size-1]` of the referenced component.
+
 When a `ComponentPortRef` is processed, the controller:
 1. Determines whether the target port is `RoleScoped` or `PodScoped` by inspecting the
    port-allocator annotation on the referenced component template.
@@ -560,21 +599,39 @@ writing the final Pod spec. This mirrors the existing `port-allocator` injection
 1. Parse component-discovery annotation from pod template
 2. For each AddressRef:
    a. Compute target pod FQDN from (component, index, role context)
-   b. Append env var {Name: ref.Env, Value: <fqdn>} to all containers
+   b. Inject env var {Name: ref.Env, Value: <fqdn>} to all containers
 3. For each PortRef:
    a. Look up resolved port value from RoleInstance annotation
       (using same key format as port-allocator)
-   b. Append env var {Name: ref.Env, Value: <port>} to all containers
+   b. Inject env var {Name: ref.Env, Value: <port>} to all containers
 4. Remove component-discovery annotation from the generated Pod
    (it is a controller directive, not a pod-level annotation)
 ```
+
+**Environment variable collision behavior:**
+
+If an injected environment variable name already exists in a container's spec:
+- The injected value **overrides** the existing value. This follows the Kubernetes pattern where
+  controller-level injection takes precedence over user-declared values for orchestration purposes.
+- Users should avoid using reserved variable names (those that may be injected by RBG) in their
+  container specs, or explicitly document that they are intentionally overriding controller values.
+- The admission webhook does **not** reject collisions — this allows users to override defaults
+  while still getting the benefits of automatic injection for other components.
 
 **Validation (admission webhook):**
 
 - All `component` names in `ComponentAddressRef` and `ComponentPortRef` must reference a component
   name that exists in the same `CustomComponentsPattern.components[]` array.
 - A component cannot reference itself (self-reference is a no-op and is rejected to avoid
-  confusion).
+  confusion). **Note on intra-component discovery**: For components with `size > 1` (e.g., 4 workers),
+  pods within the same component may need to discover each other's addresses (e.g., ring allreduce,
+  mesh topologies). This use case is intentionally **out of scope** for this KEP because:
+  - Intra-component pod discovery requires a different addressing scheme (all pods share the same
+    component name but different indices).
+  - Users can achieve this via Kubernetes Downward API for self-index, combined with the FQDN
+    formula documented above, or by using a dedicated service mesh.
+  - A future enhancement may introduce a `ComponentAddressRef.scope: IntraComponent` option to
+    explicitly support this pattern.
 - `index` must be within the bounds of the referenced component's `size`.
 - `portName` in `ComponentPortRef` must correspond to an `allocations[].name` defined in the
   referenced component's port-allocator annotation.
