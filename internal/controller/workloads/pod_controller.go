@@ -29,7 +29,6 @@ import (
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
-	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -261,17 +260,18 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 	containerRestarted := utils.ContainerRestarted(pod)
 	podDeleted := utils.PodDeleted(pod)
 
-	// New trigger condition: Pod became inactive (Failed/Succeeded) but not being deleted
+	// New trigger condition: Pod became Failed (excluding Succeeded per KEP Non-Goals)
 	// Uses native Kubernetes IsPodActive for consistency with ReplicaSet/StatefulSet behavior
-	podBecameInactive := !kubecontroller.IsPodActive(pod) && pod.DeletionTimestamp == nil
+	// Succeeded pods are explicitly excluded as they represent normal completion
+	podBecameFailed := pod.Status.Phase == corev1.PodFailed && pod.DeletionTimestamp == nil
 
 	// Only trigger if any condition is met
-	if !containerRestarted && !podDeleted && !podBecameInactive {
+	if !containerRestarted && !podDeleted && !podBecameFailed {
 		return []reconcile.Request{}
 	}
 
 	logger := log.FromContext(ctx).WithValues("Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted, "podBecameInactive", podBecameInactive)
+	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted, "podBecameFailed", podBecameFailed)
 
 	var rbg workloadsv1alpha2.RoleBasedGroup
 	// Use apiReader (non-caching) to get the latest RBG status for RestartInProgress check.
@@ -332,9 +332,10 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Op
 					return false
 				}
 
-				// Detect Pod state transition from active to inactive
-				// Only trigger on state transition to avoid duplicate triggers on every status update
-				return utils.PodBecameInactive(oldPod, newPod)
+				// Detect Pod state transition from active to Failed (excluding Succeeded per KEP Non-Goals)
+				// and container restart count changes.
+				// This ensures both inactive pod handling AND container restart handling work correctly.
+				return utils.PodBecameFailed(oldPod, newPod) || utils.ContainerRestartCountChanged(oldPod, newPod)
 			}
 			return false
 		},

@@ -24,6 +24,44 @@ import (
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 )
 
+// PatioRuntimeContainerName is the container name for patio-runtime.
+// Container restarts for this container are ignored in RBG recreation logic.
+const PatioRuntimeContainerName = "patio-runtime"
+
+// ContainerRestartCountChanged checks if the restart count increased between old and new pod.
+// This is used in predicates to detect container restart events while pod is still Running/Pending.
+func ContainerRestartCountChanged(oldPod, newPod *corev1.Pod) bool {
+	if oldPod == nil || newPod == nil {
+		return false
+	}
+
+	// Check init container restart counts
+	for i := range oldPod.Status.InitContainerStatuses {
+		if i >= len(newPod.Status.InitContainerStatuses) {
+			continue
+		}
+		if newPod.Status.InitContainerStatuses[i].RestartCount > oldPod.Status.InitContainerStatuses[i].RestartCount {
+			return true
+		}
+	}
+
+	// Check container restart counts (excluding patio-runtime as per ContainerRestarted logic)
+	for i := range oldPod.Status.ContainerStatuses {
+		if i >= len(newPod.Status.ContainerStatuses) {
+			continue
+		}
+		// Skip patio-runtime container (matches ContainerRestarted logic)
+		if oldPod.Status.ContainerStatuses[i].Name == PatioRuntimeContainerName || newPod.Status.ContainerStatuses[i].Name == PatioRuntimeContainerName {
+			continue
+		}
+		if newPod.Status.ContainerStatuses[i].RestartCount > oldPod.Status.ContainerStatuses[i].RestartCount {
+			return true
+		}
+	}
+
+	return false
+}
+
 // PodRunningAndReady checks if the pod condition is running and marked as ready.
 func PodRunningAndReady(pod corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodRunning && podReady(pod)
@@ -78,7 +116,7 @@ func ContainerRestarted(pod *corev1.Pod) bool {
 		}
 		for j := range pod.Status.ContainerStatuses {
 			// if engine runtime restart, do not need to recreate rbg.
-			if pod.Status.ContainerStatuses[j].Name == "patio-runtime" {
+			if pod.Status.ContainerStatuses[j].Name == PatioRuntimeContainerName {
 				continue
 			}
 			stat := pod.Status.ContainerStatuses[j]
@@ -98,6 +136,8 @@ func PodDeleted(pod *corev1.Pod) bool {
 // PodBecameInactive checks if a pod transitioned from active to inactive state.
 // This is used in predicates to capture state transitions and avoid duplicate triggers.
 // Uses the native Kubernetes IsPodActive function for consistency.
+// Note: This function treats PodSucceeded as inactive, which matches IsPodActive behavior.
+// For RBG-specific handling, Succeeded pods should be explicitly excluded in trigger logic.
 func PodBecameInactive(oldPod, newPod *corev1.Pod) bool {
 	if oldPod == nil || newPod == nil {
 		return false
@@ -107,6 +147,18 @@ func PodBecameInactive(oldPod, newPod *corev1.Pod) bool {
 	return wasActive && nowInactive
 }
 
+// PodBecameFailed checks if a pod transitioned to Failed phase (excluding Succeeded).
+// This is used specifically for RBG recreation triggers, as Succeeded pods are not handled
+// per KEP Non-Goals.
+func PodBecameFailed(oldPod, newPod *corev1.Pod) bool {
+	if oldPod == nil || newPod == nil {
+		return false
+	}
+	wasActive := kubecontroller.IsPodActive(oldPod)
+	nowFailed := newPod.Status.Phase == corev1.PodFailed && newPod.DeletionTimestamp == nil
+	return wasActive && nowFailed
+}
+
 // IsPodEvicted checks if a pod was evicted due to resource pressure.
 // Evicted pods have Phase=Failed and status.reason="Evicted".
 // Also supports DisruptionTarget condition (Kubernetes 1.22+).
@@ -114,16 +166,14 @@ func IsPodEvicted(pod *corev1.Pod) bool {
 	if pod == nil {
 		return false
 	}
-	if !podutil.IsPodTerminal(pod) {
-		return false
-	}
 	if pod.Status.Phase != corev1.PodFailed {
 		return false
 	}
 	// Check DisruptionTarget condition (K8s 1.22+)
+	// Only return true if the condition is actually active (Status == True)
 	// Native reasons: PreemptionByScheduler, TerminationByKubelet
 	for _, cond := range pod.Status.Conditions {
-		if cond.Type == corev1.DisruptionTarget {
+		if cond.Type == corev1.DisruptionTarget && cond.Status == corev1.ConditionTrue {
 			return true
 		}
 	}

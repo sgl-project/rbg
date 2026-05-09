@@ -25,7 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
-	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
@@ -218,11 +217,12 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 // shouldRecreateInstance checks if the instance should be recreated based on RestartPolicy.
 // When RestartPolicy is RecreateInstanceOnPodRestart, the instance should be recreated if:
 // 1. Any container has restarted (RestartCount > 0)
-// 2. Any pod has become inactive (Failed/Succeeded) - uses native IsPodActive for consistency
+// 2. Any pod has become Failed (excluding Succeeded per KEP Non-Goals) - uses native IsPodActive for consistency
 // 3. Any pod has been deleted (only when Instance was previously Ready)
 //
 // Note: We use Instance's Ready condition to distinguish between initial creation/scaling
 // and pod deletion. This avoids infinite recreation loops.
+// Succeeded pods are NOT handled here per KEP Non-Goals ("Do not handle Pod Succeeded state").
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
 	// Only check when RestartPolicy is RecreateInstanceOnPodRestart
 	if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
@@ -241,23 +241,25 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		}
 	}
 
-	// Check if any pod has become inactive (Failed/Evicted/Succeeded):
-	// Uses native IsPodActive instead of only checking DeletionTimestamp.
-	// This ensures Failed/Evicted pods are properly detected.
+	// Check if any pod has become Failed (excluding Succeeded per KEP Non-Goals):
+	// Uses native IsPodActive but explicitly excludes Succeeded pods.
+	// This ensures Failed/Evicted pods are properly detected while respecting KEP Non-Goals.
 	// Only trigger recreate if Instance was previously Ready (stable state)
 	// and spec is not being changed (Generation == ObservedGeneration).
 	// This avoids triggering recreate during initial creation or scaling up.
 	if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
 		expectedPodCount := getExpectedPodCount(instance)
-		// Calculate active pods using native IsPodActive.
-		// Pods with Phase=Failed/Succeeded or DeletionTimestamp!=nil are inactive.
+		// Calculate active pods: Running/Pending pods that are not being deleted
+		// Failed/Succeeded pods are inactive per IsPodActive, but we only care about Failed.
 		activeCount := 0
 		for _, p := range pods {
-			if kubecontroller.IsPodActive(p) {
+			// Pod is active if: Phase != Failed && Phase != Succeeded && DeletionTimestamp == nil
+			// We count pods that would still be serving traffic.
+			if p.Status.Phase != v1.PodFailed && p.Status.Phase != v1.PodSucceeded && p.DeletionTimestamp == nil {
 				activeCount++
 			}
 		}
-		// Inactive pod causes active count to be less than expected
+		// Failed pod causes active count to be less than expected
 		if activeCount < expectedPodCount {
 			return true
 		}

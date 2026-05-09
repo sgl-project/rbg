@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -246,13 +247,10 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 	}
 
 	// Use native IsPodActive from k8s.io/kubernetes/pkg/controller
+	// Pod is active if: Phase != Succeeded && Phase != Failed && DeletionTimestamp == nil
 	count := 0
 	for i := range podList.Items {
-		pod := &podList.Items[i]
-		// Pod is active if: Phase != Succeeded && Phase != Failed && DeletionTimestamp == nil
-		if pod.Status.Phase != v1.PodSucceeded &&
-			pod.Status.Phase != v1.PodFailed &&
-			pod.DeletionTimestamp == nil {
+		if kubecontroller.IsPodActive(&podList.Items[i]) {
 			count++
 		}
 	}

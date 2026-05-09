@@ -32,22 +32,19 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
    - `GetActiveAndInactivePods` correctly classifies Pods, but inactive Pods need to wait for GC deletion before creating new Pods
    - Before GC runs, Failed Pods cause RoleInstance's Ready condition to become False
 
-3. **No DisruptionTarget handling**
-   - Kubernetes 1.22+ introduced `DisruptionTarget` condition is not detected
-   - Cannot react before Pod is evicted
-
-4. **No retry for scheduling failures**
-   - When `PodScheduled` condition is False (Unschedulable), Pod stays in Pending indefinitely
-   - No mechanism triggers recreation or retry
+3. **DisruptionTarget handling limited to terminal pods**
+   - Kubernetes 1.22+ introduced `DisruptionTarget` condition
+   - RBG handles DisruptionTarget condition on terminal pods (Phase=Failed) but does not preemptively act before eviction completes
+   - This matches K8s native controller behavior - controllers react after pod becomes terminal
 
 **Example**: Suppose a Pod is Evicted due to node resource shortage, its Phase becomes Failed. The current RBG controller does not detect this state change, and the Pod stays in Failed state until GC cleans it up (default threshold may be large). During this period, the service has insufficient replicas.
 
 ## Goals
 
-- Correctly detect and handle Failed/Evicted/UnexpectedAdmissionError and other abnormal Pod states
-- Trigger recreation logic immediately when Pod enters inactive state, without waiting for GC deletion
+- Correctly detect and handle Failed/Evicted/UnexpectedAdmissionError Pod states
+- Trigger recreation logic immediately when Pod enters Failed state, without waiting for GC deletion
 - Follow Kubernetes native controller pattern: don't actively delete Failed Pods, instead create replacement Pods
-- **Maintain backward compatibility** - existing RestartPolicy behavior remains unchanged, only extend trigger conditions
+- **Maintain backward compatibility** - existing container restart trigger behavior remains unchanged, only extend trigger conditions for Failed pods
 - Support DisruptionTarget condition detection (K8s 1.22+)
 
 ## Non-Goals
@@ -55,7 +52,8 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 - Do not introduce new RestartPolicy types
 - Do not change existing RBG recreation workflow
 - Do not actively clean up Failed Pods (follow K8s native pattern, let GC or users handle it)
-- Do not handle Pod Succeeded state (normal completion)
+- Do not handle Pod Succeeded state (normal completion) - explicitly excluded from trigger conditions
+- Do not handle Unschedulable pods (PodScheduled=False) - these pods are still active per IsPodActive and rely on K8s scheduler retry
 
 ## Design Proposal
 
@@ -268,9 +266,9 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 }
 ```
 
-#### Modify Predicate to Capture State Transition
+#### Modify Predicate to Capture State Transition and Container Restarts
 
-Use the new `PodBecameInactive` helper function (based on native `IsPodActive`):
+Use both `PodBecameFailed` (for Failed pod transitions) and `ContainerRestartCountChanged` (for container restarts) helper functions:
 
 ```go
 UpdateFunc: func(e event.UpdateEvent) bool {
@@ -284,13 +282,16 @@ UpdateFunc: func(e event.UpdateEvent) bool {
             return false
         }
 
-        // Detect Pod state transition from active to inactive
-        // Only trigger on state transition to avoid triggering on every status update
-        return utils.PodBecameInactive(oldPod, newPod)
+        // Detect Pod state transition from active to Failed (excluding Succeeded)
+        // and container restart count changes.
+        // This ensures both inactive pod handling AND container restart handling work correctly.
+        return utils.PodBecameFailed(oldPod, newPod) || utils.ContainerRestartCountChanged(oldPod, newPod)
     }
     return false
 },
 ```
+
+**Note**: We use `PodBecameFailed` instead of `PodBecameInactive` to explicitly exclude Succeeded pods per Non-Goals. Succeeded pods represent normal completion and should not trigger RBG recreation.
 
 ### RoleInstance Controller Changes
 
@@ -298,13 +299,9 @@ UpdateFunc: func(e event.UpdateEvent) bool {
 
 #### Modify shouldRecreateInstance
 
-Use native `kubecontroller.IsPodActive` instead of only checking `DeletionTimestamp`:
+Use explicit check for Failed pods (excluding Succeeded per Non-Goals):
 
 ```go
-import (
-    kubecontroller "k8s.io/kubernetes/pkg/controller"
-)
-
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
     if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
         return false
@@ -321,19 +318,18 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
         }
     }
 
-    // Check inactive Pods (Failed/Evicted etc.)
-    // Use native IsPodActive, consistent with K8s controller behavior
+    // Check Failed Pods (excluding Succeeded per Non-Goals)
     if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
         expectedPodCount := getExpectedPodCount(instance)
         activeCount := 0
         for _, p := range pods {
-            // Use native IsPodActive instead of only checking DeletionTimestamp
-            // This correctly detects Failed/Evicted Pods (Phase=Failed is also inactive)
-            if kubecontroller.IsPodActive(p) {
+            // Pod is active if: Phase != Failed && Phase != Succeeded && DeletionTimestamp == nil
+            // We explicitly exclude Succeeded pods per Non-Goals
+            if p.Status.Phase != corev1.PodFailed && p.Status.Phase != corev1.PodSucceeded && p.DeletionTimestamp == nil {
                 activeCount++
             }
         }
-        // Inactive Pod causes active count to be less than expected
+        // Failed Pod causes active count to be less than expected
         if activeCount < expectedPodCount {
             return true
         }
@@ -342,6 +338,8 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
     return false
 }
 ```
+
+**Note**: We explicitly check `Phase != Failed && Phase != Succeeded` instead of using `IsPodActive` directly, to ensure Succeeded pods are excluded per Non-Goals while still correctly detecting Failed pods.
 
 #### Modify calculateDiffsWithExpectation
 

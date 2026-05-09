@@ -84,6 +84,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
@@ -105,11 +106,14 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// Record initial pod UIDs
+		// Get pods and record initial UIDs for verification
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
+		gomega.Expect(podList.Items).Should(gomega.HaveLen(3))
+
 		initialPodUIDs := make(map[string]string)
 		for _, p := range podList.Items {
 			initialPodUIDs[p.Name] = string(p.UID)
@@ -128,10 +132,32 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			return activeCount == 3
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 
-		// Verify no RBG restart (RestartInProgress should not exist or be False)
+		// Verify no RBG restart occurred (RestartInProgress should be False or absent)
 		freshRbg := &workloadsv1alpha2.RoleBasedGroup{}
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), freshRbg)).Should(gomega.Succeed())
-		// No restart should have occurred for RestartPolicy=None
+		for _, cond := range freshRbg.Status.Conditions {
+			if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+				gomega.Expect(cond.Status).Should(gomega.Equal(metav1.ConditionFalse))
+			}
+		}
+
+		// Verify new pod has different UID (replacement pod created)
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		newPodUIDs := make(map[string]string)
+		for _, p := range podList.Items {
+			newPodUIDs[p.Name] = string(p.UID)
+		}
+		// At least one pod should have a different UID (the replacement)
+		foundReplacement := false
+		for name, newUID := range newPodUIDs {
+			if initialPodUIDs[name] != newUID {
+				foundReplacement = true
+				break
+			}
+		}
+		gomega.Expect(foundReplacement).Should(gomega.BeTrue())
 	})
 
 	// Case 4: predicate only captures state transition, no duplicate triggers
@@ -153,6 +179,8 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
+
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -164,29 +192,29 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
+
 		newPod := &podList.Items[0]
 
 		// Update pod status message without changing phase
 		newPod.Status.Message = "Updated message for testing"
 		gomega.Expect(f.Client.Status().Update(f.Ctx, newPod)).Should(gomega.Succeed())
 
-		// Wait a bit and verify no new restart occurred
-		time.Sleep(5 * time.Second)
-		freshRbg := &workloadsv1alpha2.RoleBasedGroup{}
-		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), freshRbg)).Should(gomega.Succeed())
-
-		// RestartInProgress should still be False (no new recreation)
-		hasRestartCondition := false
-		for _, cond := range freshRbg.Status.Conditions {
-			if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
-				hasRestartCondition = true
-				gomega.Expect(cond.Status).Should(gomega.Equal(metav1.ConditionFalse))
+		// Use Consistently instead of Sleep to verify no new restart occurred
+		// RestartInProgress should stay False for the duration
+		gomega.Consistently(func() metav1.ConditionStatus {
+			freshRbg := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), freshRbg); err != nil {
+				return metav1.ConditionUnknown
 			}
-		}
-		// If no restart condition exists, that's also acceptable (no restart happened)
-		if hasRestartCondition {
-			gomega.Expect(freshRbg.Status.Conditions).ShouldNot(gomega.BeEmpty())
-		}
+			for _, cond := range freshRbg.Status.Conditions {
+				if cond.Type == string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+					return cond.Status
+				}
+			}
+			// If condition doesn't exist, treat as False (no restart happened)
+			return metav1.ConditionFalse
+		}, 5*time.Second, 500*time.Millisecond).Should(gomega.Equal(metav1.ConditionFalse))
 	})
 
 	// Case 5: UnexpectedAdmissionError triggers recreation
@@ -208,6 +236,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodUnexpectedAdmissionError(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
