@@ -28,7 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
-	"sigs.k8s.io/rbgs/pkg/utils"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
@@ -214,15 +213,22 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 	return nil
 }
 
-// shouldRecreateInstance checks if the instance should be recreated based on RestartPolicy.
-// When RestartPolicy is RecreateInstanceOnPodRestart, the instance should be recreated if:
-// 1. Any container has restarted (RestartCount > 0)
-// 2. Any pod has been deleted (only when Instance was previously Ready)
+// shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
+// This applies when:
+// 1. restartPolicy = RecreateRoleInstanceOnPodRestart AND Pod Failed
+//   - Instead of replacement Pod, recreate entire Instance for consistency
 //
-// Note: We use Instance's Ready condition to distinguish between initial creation/scaling
-// and pod deletion. This avoids infinite recreation loops.
+// Note: This function does NOT handle container restart (Dimension 1).
+// Container restart with RecreateRoleInstanceOnPodRestart is handled by LWS controller,
+// RBG controller does nothing in that case.
+//
+// For restartPolicy=None or RecreateRBGOnPodRestart, Pod Failed triggers replacement Pod
+// creation through normal reconciliation (GetActiveAndInactivePods → createPods).
+//
+// Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
+// and should not trigger Instance recreation.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
-	// Only check when RestartPolicy is RecreateInstanceOnPodRestart
+	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
 	if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
 		return false
 	}
@@ -232,30 +238,21 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		return false
 	}
 
-	// Check each pod for container restart
-	for _, pod := range pods {
-		if utils.ContainerRestarted(pod) {
-			return true
-		}
-	}
-
-	// Check if any pod has been deleted:
-	// Only trigger recreate if Instance was previously Ready (stable state)
-	// and spec is not being changed (Generation == ObservedGeneration).
-	// This avoids triggering recreate during initial creation or scaling up.
+	// Check if any Pod has become Failed (Dimension 2)
+	// With RecreateRoleInstanceOnPodRestart policy, Pod Failed triggers Instance recreation
+	// (instead of just replacement Pod)
+	//
+	// Per KEP Non-Goals: Succeeded pods are explicitly excluded - only Failed pods trigger recreation.
+	// Pod being deleted (with DeletionTimestamp) is also excluded as it's handled separately.
 	if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
-		expectedPodCount := getExpectedPodCount(instance)
-		// Calculate active pods (exclude those being deleted).
-		// Pods with DeletionTimestamp != nil are in Terminating state and should not
-		// be counted as active, otherwise the controller may fail to detect pod deletion.
-		activeCount := 0
+		// Check if any Pod is Failed (excluding Succeeded and pods being deleted)
 		for _, p := range pods {
-			if p.DeletionTimestamp == nil {
-				activeCount++
+			// Only Failed pods trigger Instance recreation
+			// Succeeded pods (normal completion) are explicitly excluded per KEP Non-Goals
+			// Pods being deleted are excluded as they're handled through normal deletion flow
+			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+				return true
 			}
-		}
-		if activeCount < expectedPodCount {
-			return true
 		}
 	}
 

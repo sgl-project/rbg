@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -208,4 +209,84 @@ func MapContains(m map[string]string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+// SetPodEvicted simulates a Pod being evicted by updating its status subresource.
+// This is used in e2e tests to trigger inactive pod handling.
+func SetPodEvicted(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	pod.Status.Phase = v1.PodFailed
+	pod.Status.Reason = "Evicted"
+	pod.Status.Message = "The node was low on resource: ephemeral-storage. Evicted."
+	return rclient.Status().Update(ctx, pod)
+}
+
+// SetPodUnexpectedAdmissionError simulates a Pod with unexpected admission error.
+func SetPodUnexpectedAdmissionError(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	pod.Status.Phase = v1.PodFailed
+	pod.Status.Reason = "UnexpectedAdmissionError"
+	pod.Status.Message = "Pod rejected by admission webhook"
+	return rclient.Status().Update(ctx, pod)
+}
+
+// SetPodFailed simulates a Pod in Failed state with generic error.
+func SetPodFailed(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	pod.Status.Phase = v1.PodFailed
+	pod.Status.Reason = "Error"
+	pod.Status.Message = "Container exited with error"
+	return rclient.Status().Update(ctx, pod)
+}
+
+// GetActivePodCount returns the count of active pods for a given RBG.
+// Uses the native Kubernetes IsPodActive function for consistency.
+func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rbgName string) (int, error) {
+	podList := &v1.PodList{}
+	if err := rclient.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgName}); err != nil {
+		return 0, err
+	}
+
+	// Use native IsPodActive from k8s.io/kubernetes/pkg/controller
+	// Pod is active if: Phase != Succeeded && Phase != Failed && DeletionTimestamp == nil
+	count := 0
+	for i := range podList.Items {
+		if kubecontroller.IsPodActive(&podList.Items[i]) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// SimulateContainerRestart simulates a container restart by updating the container's RestartCount.
+// This is used in e2e tests to trigger container restart handling (Dimension 1).
+func SimulateContainerRestart(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	// Ensure pod has container statuses
+	if len(pod.Status.ContainerStatuses) == 0 {
+		pod.Status.ContainerStatuses = []v1.ContainerStatus{
+			{
+				Name:         "main-container",
+				RestartCount: 0,
+				Ready:        true,
+				State: v1.ContainerState{
+					Running: &v1.ContainerStateRunning{
+						StartedAt: metav1.Now(),
+					},
+				},
+			},
+		}
+	}
+
+	// Increment restart count for the first container
+	pod.Status.ContainerStatuses[0].RestartCount = 1
+	pod.Status.ContainerStatuses[0].LastTerminationState = v1.ContainerState{
+		Terminated: &v1.ContainerStateTerminated{
+			ExitCode:   1,
+			Reason:     "Error",
+			Message:    "Container crashed",
+			FinishedAt: metav1.Now(),
+			StartedAt:  metav1.NewTime(metav1.Now().Add(-time.Minute)),
+		},
+	}
+
+	return rclient.Status().Update(ctx, pod)
 }

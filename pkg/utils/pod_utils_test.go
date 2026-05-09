@@ -656,3 +656,419 @@ func TestPodDeleted(t *testing.T) {
 		)
 	}
 }
+
+func TestPodBecameInactive(t *testing.T) {
+	now := metav1.Now()
+
+	tests := []struct {
+		name     string
+		oldPod   *corev1.Pod
+		newPod   *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "running to failed - state transition detected",
+			oldPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			newPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodFailed},
+			},
+			expected: true,
+		},
+		{
+			name: "pending to failed - state transition detected",
+			oldPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodPending},
+			},
+			newPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodFailed},
+			},
+			expected: true,
+		},
+		{
+			name: "running to succeeded - state transition detected",
+			oldPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			newPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+			},
+			expected: true,
+		},
+		{
+			name: "running to running with deletion timestamp - state transition detected",
+			oldPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			newPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
+				Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			expected: true,
+		},
+		{
+			name: "running to running - no state transition",
+			oldPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			newPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			expected: false,
+		},
+		{
+			name: "failed to failed - no state transition (already inactive)",
+			oldPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodFailed},
+			},
+			newPod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted"},
+			},
+			expected: false,
+		},
+		{
+			name:     "nil old pod",
+			oldPod:   nil,
+			newPod:   &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed}},
+			expected: false,
+		},
+		{
+			name:     "nil new pod",
+			oldPod:   &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+			newPod:   nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := PodBecameInactive(tt.oldPod, tt.newPod)
+			if result != tt.expected {
+				t.Errorf("PodBecameInactive() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPodEvicted(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "evicted pod via status reason",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:   corev1.PodFailed,
+					Reason:  "Evicted",
+					Message: "The node was low on resource: ephemeral-storage. Evicted.",
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "evicted pod via DisruptionTarget condition",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodFailed,
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.DisruptionTarget,
+							Status: corev1.ConditionTrue,
+							Reason: "PreemptionByScheduler",
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "failed pod but not evicted",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "Error",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "running pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			expected: false,
+		},
+		{
+			name: "succeeded pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+			},
+			expected: false,
+		},
+		{
+			name:     "nil pod",
+			pod:      nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsPodEvicted(tt.pod)
+			if result != tt.expected {
+				t.Errorf("IsPodEvicted() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPodUnexpectedAdmissionError(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "unexpected admission error",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "UnexpectedAdmissionError",
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "failed pod with different reason",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "Error",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "running pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			expected: false,
+		},
+		{
+			name:     "nil pod",
+			pod:      nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsPodUnexpectedAdmissionError(tt.pod)
+			if result != tt.expected {
+				t.Errorf("IsPodUnexpectedAdmissionError() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPodFailedSchedule(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "unschedulable pod",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionFalse,
+							Reason: corev1.PodReasonUnschedulable,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "scheduler error",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionFalse,
+							Reason: corev1.PodReasonSchedulerError,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "pod scheduled successfully",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "pod without scheduled condition",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{},
+				},
+			},
+			expected: false,
+		},
+		{
+			name:     "nil pod",
+			pod:      nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsPodFailedSchedule(tt.pod)
+			if result != tt.expected {
+				t.Errorf("IsPodFailedSchedule() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetPodInactiveReason(t *testing.T) {
+	now := metav1.Now()
+
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected string
+	}{
+		{
+			name:     "nil pod",
+			pod:      nil,
+			expected: "PodNotFound",
+		},
+		{
+			name: "pod terminating",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
+				Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			expected: "PodTerminating",
+		},
+		{
+			name: "pod terminating and terminal",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
+				Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+			},
+			expected: "PodTerminatingTerminal",
+		},
+		{
+			name: "pod succeeded",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+			},
+			expected: "PodSucceeded",
+		},
+		{
+			name: "pod evicted via reason",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "Evicted",
+				},
+			},
+			expected: "PodEvicted",
+		},
+		{
+			name: "pod evicted via DisruptionTarget",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodFailed,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			expected: "PodEvicted",
+		},
+		{
+			name: "pod evicted via message",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:   corev1.PodFailed,
+					Message: "Pod was Evicted due to resource pressure",
+				},
+			},
+			expected: "PodEvicted",
+		},
+		{
+			name: "unexpected admission error",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "UnexpectedAdmissionError",
+				},
+			},
+			expected: "UnexpectedAdmissionError",
+		},
+		{
+			name: "pod failed generic",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase:  corev1.PodFailed,
+					Reason: "Error",
+				},
+			},
+			expected: "PodFailed",
+		},
+		{
+			name: "pod unschedulable",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionFalse,
+							Reason: corev1.PodReasonUnschedulable,
+						},
+					},
+				},
+			},
+			expected: "PodUnschedulable",
+		},
+		{
+			name: "running pod - unknown",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			},
+			expected: "Unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetPodInactiveReason(tt.pod)
+			if result != tt.expected {
+				t.Errorf("GetPodInactiveReason() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}

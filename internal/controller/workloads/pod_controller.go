@@ -256,15 +256,24 @@ func (r *PodReconciler) podToRBG(ctx context.Context, obj client.Object) []recon
 		return []reconcile.Request{}
 	}
 
-	if !utils.ContainerRestarted(pod) && !utils.PodDeleted(pod) {
+	// Dimension 1 triggers ONLY: container restart or pod deletion
+	// Pod Failed (Dimension 2) is handled by RoleInstance Controller through normal reconciliation
+	containerRestarted := utils.ContainerRestarted(pod)
+	podDeleted := utils.PodDeleted(pod)
+
+	// Only trigger if any Dimension 1 condition is met
+	if !containerRestarted && !podDeleted {
 		return []reconcile.Request{}
 	}
 
 	logger := log.FromContext(ctx).WithValues("Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-	logger.V(1).Info("Processing Pod event for reconciliation")
+	logger.V(1).Info("Processing Pod event for reconciliation", "containerRestarted", containerRestarted, "podDeleted", podDeleted)
 
 	var rbg workloadsv1alpha2.RoleBasedGroup
-	err := r.client.Get(ctx, types.NamespacedName{Name: rbgName, Namespace: pod.Namespace}, &rbg)
+	// Use apiReader (non-caching) to get the latest RBG status for RestartInProgress check.
+	// This avoids a race condition where the informer cache is stale after the first restart
+	// sets RestartInProgress=True, allowing duplicate triggers before the cache updates.
+	err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbgName, Namespace: pod.Namespace}, &rbg)
 	if err != nil || rbg.DeletionTimestamp != nil {
 		return []reconcile.Request{}
 	}
@@ -314,8 +323,14 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Op
 			if ok1 && ok2 {
 				_, oldExist := oldPod.Labels[constants.GroupNameLabelKey]
 				_, newExist := newPod.Labels[constants.GroupNameLabelKey]
-				return oldExist && newExist
 
+				if !oldExist || !newExist {
+					return false
+				}
+
+				// Dimension 1: Only capture container restart count changes
+				// Pod Failed state transitions (Dimension 2) are handled by RoleInstance Controller
+				return utils.ContainerRestartCountChanged(oldPod, newPod)
 			}
 			return false
 		},
