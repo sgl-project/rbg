@@ -62,7 +62,7 @@ spec:
 
 When using `customComponentsPattern`, you can prevent specific components from triggering the role's restart policy by setting an annotation on the component's pod template. This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose failures should not affect the main workload.
 
-Set the annotation `rbg.workloads.x-k8s.io/component-no-trigger-restart: "true"` in the component's `template.metadata.annotations`:
+Set the annotation `rbg.workloads.x-k8s.io/restart-trigger-policy: "Ignore"` in the component's `template.metadata.annotations`:
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -92,17 +92,17 @@ spec:
               metadata:
                 annotations:
                   # This component's pod restart/delete will NOT trigger role/RBG recreation
-                  rbg.workloads.x-k8s.io/component-no-trigger-restart: "true"
+                  rbg.workloads.x-k8s.io/restart-trigger-policy: "Ignore"
               spec:
                 containers:
                   - name: monitor
                     image: monitoring:latest
 ```
 
-When this annotation is set on a component's pod template:
+When this annotation is set to "Ignore" on a component's pod template:
 - Pod restart/delete events from this component will NOT trigger the role's restart policy
 - The restart policy (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart) remains unaffected for other components
-- Only pods from components WITHOUT this annotation will trigger the restart policy
+- Only pods from components WITHOUT this annotation (or with annotation set to "Inherit") will trigger the restart policy
 
 ## Use Cases
 

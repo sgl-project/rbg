@@ -139,13 +139,27 @@ const (
 
 // Component level annotations
 const (
-	// ComponentNoTriggerRestartPolicyAnnotationKey marks a component's pods so that
-	// their restart/delete events do not trigger the role's restart policy actions
-	// (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart). When this annotation
-	// is set to "true" on a component's pod template, the restart policy configured on
-	// the role will not be triggered by this component's pod events.
+	// RestartTriggerPolicyAnnotationKey specifies whether a component's
+	// pod restart/delete events should trigger the role's restart policy actions
+	// (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart).
+	// Valid values are:
+	//   - "Inherit" (or empty): Pod events from this component will follow the role's restart policy.
+	//   - "Ignore": Pod events from this component will NOT trigger restart policy.
 	// This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose
 	// failures should not affect the main workload.
-	// Example: rbg.workloads.x-k8s.io/component-no-trigger-restart: "true"
-	ComponentNoTriggerRestartPolicyAnnotationKey = RBGPrefix + "component-no-trigger-restart"
+	// Example: rbg.workloads.x-k8s.io/restart-trigger-policy: "Ignore"
+	RestartTriggerPolicyAnnotationKey = RBGPrefix + "restart-trigger-policy"
+)
+
+// Restart trigger policy values
+const (
+	// RestartTriggerPolicyInherit means the component's pod events will
+	// follow the role's restart policy configuration. This is the default behavior
+	// when the annotation is not set or set to an unrecognized value.
+	RestartTriggerPolicyInherit = "Inherit"
+
+	// RestartTriggerPolicyIgnore means the component's pod events will
+	// NOT trigger the role's restart policy. Use this for auxiliary components
+	// whose failures should not cascade to the main workload.
+	RestartTriggerPolicyIgnore = "Ignore"
 )

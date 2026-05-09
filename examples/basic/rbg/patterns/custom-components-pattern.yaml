@@ -3,11 +3,12 @@
 # (components), each component can have a different size and template.
 # Use this for workloads requiring heterogeneous pod groups, e.g. disaggregated inference.
 #
-# Component annotation rbg.workloads.x-k8s.io/component-no-trigger-restart:
-# When set to "true" on a component's pod template, this component's pod restart/delete
-# events will NOT trigger the role's restart policy (RecreateRoleInstanceOnPodRestart or
-# RecreateRBGOnPodRestart). This is useful for auxiliary components (e.g., monitoring,
-# logging sidecars) whose failures should not affect the main workload.
+# Annotation rbg.workloads.x-k8s.io/restart-trigger-policy:
+# Valid values are "Inherit" (or empty) and "Ignore". When set to "Ignore" on a
+# component's pod template, this component's pod restart/delete events will NOT
+# trigger the role's restart policy (RecreateRoleInstanceOnPodRestart or
+# RecreateRBGOnPodRestart). This is useful for auxiliary components (e.g.,
+# monitoring, logging sidecars) whose failures should not affect the main workload.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -58,8 +59,8 @@ spec:
             template:
               metadata:
                 annotations:
-                  # This annotation prevents this component from triggering restart policy
-                  rbg.workloads.x-k8s.io/component-no-trigger-restart: "true"
+                  # Set to "Ignore" to prevent this component from triggering restart policy
+                  rbg.workloads.x-k8s.io/restart-trigger-policy: "Ignore"
               spec:
                 containers:
                   - name: monitor
