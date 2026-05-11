@@ -381,6 +381,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	rbgWarmupReconciler := workloadscontroller.NewRoleBasedGroupWarmupReconciler(mgr)
+	if err = rbgWarmupReconciler.CheckCrdExists(); err != nil {
+		setupLog.Error(err, "unable to create rbg warmup controller", "controller", "RoleBasedGroupWarmup")
+		os.Exit(1)
+	}
+
+	if err = rbgWarmupReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create rbg warmup controller", "controller", "RoleBasedGroupWarmup")
+		os.Exit(1)
+	}
+
 	setupLog.Info("register field index")
 	if err = fieldindex.RegisterFieldIndexes(mgr.GetCache()); err != nil {
 		setupLog.Error(err, "failed to register field index")
@@ -396,6 +407,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
 
 	// +kubebuilder:scaffold:builder
 	if metricsCertWatcher != nil {
