@@ -24,14 +24,14 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-type WarmUpJobPhase string
+type WarmupJobPhase string
 
 const (
-	WarmUpJobPhaseNone      WarmUpJobPhase = ""
-	WarmUpJobPhaseRunning   WarmUpJobPhase = "Running"
-	WarmUpJobPhasePaused    WarmUpJobPhase = "Paused"
-	WarmUpJobPhaseCompleted WarmUpJobPhase = "Completed"
-	WarmUpJobPhaseFailed    WarmUpJobPhase = "Failed"
+	WarmupJobPhaseNone      WarmupJobPhase = ""
+	WarmupJobPhaseRunning   WarmupJobPhase = "Running"
+	WarmupJobPhasePaused    WarmupJobPhase = "Paused"
+	WarmupJobPhaseCompleted WarmupJobPhase = "Completed"
+	WarmupJobPhaseFailed    WarmupJobPhase = "Failed"
 )
 
 type ImagePreloadAction struct {
@@ -52,7 +52,7 @@ type CustomizedAction struct {
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 }
 
-type WarmUpActions struct {
+type WarmupActions struct {
 	// +optional
 	ImagePreload *ImagePreloadAction `json:"imagePreload,omitempty"`
 
@@ -65,17 +65,17 @@ type TargetNodes struct {
 
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
-	WarmUpActions `json:",inline"`
+	WarmupActions `json:",inline"`
 }
 
 type TargetRoleBasedGroup struct {
 	Name string `json:"name"`
 
-	Roles map[string]WarmUpActions `json:"roles"`
+	Roles map[string]WarmupActions `json:"roles"`
 }
 
-// RoleBasedGroupWarmUpSpec defines the desired state of RoleBasedGroupWarmUp
-type RoleBasedGroupWarmUpSpec struct {
+// RoleBasedGroupWarmupSpec defines the desired state of RoleBasedGroupWarmup
+type RoleBasedGroupWarmupSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	// The following markers will use OpenAPI v3 schema to validate the value
@@ -93,8 +93,8 @@ type RoleBasedGroupWarmUpSpec struct {
 	TargetRoleBasedGroup *TargetRoleBasedGroup `json:"targetRoleBasedGroup,omitempty"`
 }
 
-// RoleBasedGroupWarmUpStatus defines the observed state of RoleBasedGroupWarmUp.
-type RoleBasedGroupWarmUpStatus struct {
+// RoleBasedGroupWarmupStatus defines the observed state of RoleBasedGroupWarmup.
+type RoleBasedGroupWarmupStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
@@ -115,9 +115,9 @@ type RoleBasedGroupWarmUpStatus struct {
 
 	Ready int32 `json:"ready,omitempty"`
 
-	Phase WarmUpJobPhase `json:"phase"`
+	Phase WarmupJobPhase `json:"phase"`
 
-	// conditions represent the current state of the RoleBasedGroupWarmUp resource.
+	// conditions represent the current state of the RoleBasedGroupWarmup resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
@@ -145,11 +145,11 @@ type RoleBasedGroupWarmup struct {
 
 	// spec defines the desired state of RoleBasedGroupWarmup
 	// +required
-	Spec RoleBasedGroupWarmUpSpec `json:"spec"`
+	Spec RoleBasedGroupWarmupSpec `json:"spec"`
 
 	// status defines the observed state of RoleBasedGroupWarmup
 	// +optional
-	Status RoleBasedGroupWarmUpStatus `json:"status,omitempty"`
+	Status RoleBasedGroupWarmupStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
