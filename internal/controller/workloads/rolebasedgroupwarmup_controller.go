@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -47,8 +48,19 @@ const (
 // RoleBasedGroupWarmupReconciler reconciles a RoleBasedGroupWarmup object
 type RoleBasedGroupWarmupReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+
+	apiReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+}
+
+func NewRoleBasedGroupWarmupReconciler(mgr ctrl.Manager) *RoleBasedGroupWarmupReconciler {
+	return &RoleBasedGroupWarmupReconciler{
+		Client:    mgr.GetClient(),
+		apiReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorderFor("rbg-warmup-controller"),
+	}
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=RoleBasedGroupWarmups,verbs=get;list;watch;create;update;patch;delete
@@ -528,12 +540,23 @@ func statusEqual(a, b workloadsv1alpha2.RoleBasedGroupWarmupStatus) bool {
 		a.CompletionTime.Equal(&b.CompletionTime)
 }
 
+func (r *RoleBasedGroupWarmupReconciler) CheckCrdExists() error {
+	crds := []string{
+		"rolebasedgroupwarmup.workloads.x-k8s.io",
+	}
+
+	for _, crd := range crds {
+		if err := utils.CheckCrdExists(r.apiReader, crd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
-func (r *RoleBasedGroupWarmupReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("RoleBasedGroupWarmup")
+func (r *RoleBasedGroupWarmupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&workloadsv1alpha2.RoleBasedGroupWarmup{}).
 		Owns(&corev1.Pod{}).
-		Named("workloads.x-k8s.io-RoleBasedGroupWarmup").
 		Complete(r)
 }
