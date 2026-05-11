@@ -11,6 +11,8 @@ spec:
     kind: RoleBasedGroupWarmup
     listKind: RoleBasedGroupWarmupList
     plural: rolebasedgroupwarmups
+    shortNames:
+    - rbgwarmup
     singular: rolebasedgroupwarmup
   scope: Namespaced
   versions:
@@ -6138,7 +6140,7 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  conditions represent the current state of the RoleBasedGroupWarmUp resource.
+                  conditions represent the current state of the RoleBasedGroupWarmup resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
                 items:
                   description: Condition contains details for one aspect of the current
