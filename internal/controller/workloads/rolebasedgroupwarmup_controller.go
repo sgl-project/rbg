@@ -63,9 +63,9 @@ func NewRoleBasedGroupWarmupReconciler(mgr ctrl.Manager) *RoleBasedGroupWarmupRe
 	}
 }
 
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=RoleBasedGroupWarmups,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=RoleBasedGroupWarmups/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=RoleBasedGroupWarmups/finalizers,verbs=update
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupwarmups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupwarmups/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupwarmups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch

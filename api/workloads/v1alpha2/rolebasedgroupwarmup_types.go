@@ -134,6 +134,7 @@ type RoleBasedGroupWarmupStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName={rbgwarmup}
 
 // RoleBasedGroupWarmup is the Schema for the rolebasedgroupwarmups API
 type RoleBasedGroupWarmup struct {
