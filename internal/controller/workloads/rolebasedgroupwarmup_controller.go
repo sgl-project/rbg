@@ -542,7 +542,7 @@ func statusEqual(a, b workloadsv1alpha2.RoleBasedGroupWarmupStatus) bool {
 
 func (r *RoleBasedGroupWarmupReconciler) CheckCrdExists() error {
 	crds := []string{
-		"rolebasedgroupwarmup.workloads.x-k8s.io",
+		"rolebasedgroupwarmups.workloads.x-k8s.io",
 	}
 
 	for _, crd := range crds {
