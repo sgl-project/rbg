@@ -17,13 +17,11 @@ limitations under the License.
 package scale
 
 import (
-	"fmt"
-
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func GenerateScalingAdapterName(rbgName, roleName string) string {
-	return fmt.Sprintf("%s-%s", rbgName, roleName)
+	return workloadsv1alpha2.GenerateScalingAdapterName(rbgName, roleName)
 }
 
 func IsScalingAdapterManagedByRBG(

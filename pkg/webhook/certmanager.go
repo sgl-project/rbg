@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -171,4 +172,88 @@ func ConversionWebhookCRDs() []string {
 		"rolebasedgroups.workloads.x-k8s.io",
 		"rolebasedgroupsets.workloads.x-k8s.io",
 	}
+}
+
+// ValidatingWebhookConfigurationName is the name of the ValidatingWebhookConfiguration
+// deployed by the helm chart / kustomize manifests.
+const ValidatingWebhookConfigurationName = "rbgs-validating-webhook-configuration"
+
+// ValidatingWebhookConfigurations returns the names of ValidatingWebhookConfiguration
+// objects whose webhooks[*].clientConfig.caBundle should be kept in sync.
+func ValidatingWebhookConfigurations() []string {
+	return []string{ValidatingWebhookConfigurationName}
+}
+
+// PatchValidatingWebhookCABundle patches webhooks[*].clientConfig.caBundle on
+// each named ValidatingWebhookConfiguration with the given CA certificate.
+// Idempotent and uses the same retry policy as PatchCRDCABundle.
+func (m *CertManager) PatchValidatingWebhookCABundle(ctx context.Context, names []string, caCert []byte) error {
+	var errs []error
+	for _, name := range names {
+		if err := m.patchValidatingWebhookWithRetry(ctx, name, caCert); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *CertManager) patchValidatingWebhookWithRetry(ctx context.Context, name string, caCert []byte) error {
+	return m.retry(ctx, "ValidatingWebhookConfiguration", name, func() error {
+		return m.patchOneValidatingWebhook(ctx, name, caCert)
+	})
+}
+
+// retry runs op with the same exponential backoff used by patchOneCRDWithRetry.
+func (m *CertManager) retry(ctx context.Context, kind, name string, op func() error) error {
+	delay := patchRetryBaseDelay
+	var lastErr error
+	for attempt := 1; attempt <= patchRetryAttempts; attempt++ {
+		if lastErr = op(); lastErr == nil {
+			return nil
+		}
+		if attempt == patchRetryAttempts {
+			break
+		}
+		certLog.Info("retrying caBundle patch", "kind", kind, "name", name, "attempt", attempt, "delay", delay, "error", lastErr)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while retrying caBundle patch for %s/%s: %w", kind, name, ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+	return fmt.Errorf("patching caBundle on %s/%s failed after %d attempts: %w", kind, name, patchRetryAttempts, lastErr)
+}
+
+func (m *CertManager) patchOneValidatingWebhook(ctx context.Context, name string, caCert []byte) error {
+	vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+	if err := m.client.Get(ctx, client.ObjectKey{Name: name}, vwc); err != nil {
+		return fmt.Errorf("getting ValidatingWebhookConfiguration %s: %w", name, err)
+	}
+	if len(vwc.Webhooks) == 0 {
+		certLog.Info("ValidatingWebhookConfiguration has no webhooks, skipping", "name", name)
+		return nil
+	}
+
+	upToDate := true
+	for i := range vwc.Webhooks {
+		if !reflect.DeepEqual(vwc.Webhooks[i].ClientConfig.CABundle, caCert) {
+			upToDate = false
+			break
+		}
+	}
+	if upToDate {
+		certLog.V(1).Info("ValidatingWebhookConfiguration caBundle already up to date", "name", name)
+		return nil
+	}
+
+	patch := client.MergeFrom(vwc.DeepCopy())
+	for i := range vwc.Webhooks {
+		vwc.Webhooks[i].ClientConfig.CABundle = caCert
+	}
+	if err := m.client.Patch(ctx, vwc, patch); err != nil {
+		return fmt.Errorf("patching caBundle on ValidatingWebhookConfiguration %s: %w", name, err)
+	}
+	certLog.Info("patched caBundle on ValidatingWebhookConfiguration", "name", name)
+	return nil
 }

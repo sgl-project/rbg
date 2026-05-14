@@ -23,22 +23,22 @@ import (
 
 // Scenario holds the stress test configuration.
 type Scenario struct {
-	Kubeconfig          string
-	Namespace           string
-	TotalRBGs           int
-	RolesPerRBG         int
-	LWSRoles            int
-	LWSSize             int
-	CreateQPS           float64
-	UpdateQPS           float64
-	DeleteQPS           float64
-	InPlaceUpdate       bool
-	UseKwokNodes        bool
-	PprofAddr           string
-	OutputDir           string
-	Timeout             time.Duration
-	ControllerNamespace string
-	ControllerLabel     string
+	Kubeconfig           string
+	Namespace            string
+	TotalRBGs            int
+	RolesPerRBG          int
+	LWSRoles             int
+	LWSSize              int
+	CreateQPS            float64
+	UpdateQPS            float64
+	DeleteQPS            float64
+	InPlaceUpdate        bool
+	UseKwokNodes         bool
+	PprofAddr            string
+	OutputDir            string
+	Timeout              time.Duration
+	ControllerNamespace  string
+	ControllerLabel      string
 	MaxConcurrentWaiters int
 
 	// Collected at runtime
