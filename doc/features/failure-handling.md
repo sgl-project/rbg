@@ -58,9 +58,9 @@ spec:
                 image: nginx:latest
 ```
 
-## Excluding Components from Restart Policy Trigger (CustomComponentsPattern)
+## Excluding Components from Restart Policy Trigger
 
-When using `customComponentsPattern`, you can prevent specific components from triggering the role's restart policy by setting an annotation on the component's pod template. This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose failures should not affect the main workload.
+You can prevent specific pods from triggering the role's restart policy by setting an annotation on the pod template. This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose failures should not affect the main workload. The annotation works with any deployment pattern (standalonePattern, leaderWorkerPattern, or customComponentsPattern).
 
 Set the annotation `rbg.workloads.x-k8s.io/restart-trigger-policy: "Ignore"` in the component's `template.metadata.annotations`:
 
@@ -109,9 +109,9 @@ When this annotation is set to "Ignore" on a component's pod template:
 - **RecreateRBGOnPodRestart**: Gateway/router roles that require all downstream services to be healthy.
 - **RecreateRoleInstanceOnPodRestart**: Worker roles that can tolerate individual instance failures.
 - **None**: Monitoring/logging sidecars that don't affect the main workload.
-- **ignoreRestartPolicy**: Auxiliary components within customComponentsPattern that should be isolated from restart policy actions.
+- **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components whose pod failures should not trigger the role's restart policy actions.
 
 ## Examples
 
 - [Restart Policy Examples](../../examples/basic/rbg/restart-policy/restart-policy.yaml)
-- [CustomComponentsPattern with ignoreRestartPolicy](../../examples/basic/rbg/patterns/custom-components-pattern.yaml)
+- [CustomComponentsPattern with restart-trigger-policy annotation](../../examples/basic/rbg/patterns/custom-components-pattern.yaml)
