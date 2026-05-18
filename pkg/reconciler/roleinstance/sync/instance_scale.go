@@ -41,8 +41,8 @@ const (
 )
 
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
-	revisions []*apps.ControllerRevision, pods []*v1.Pod) (bool, error) {
-	diffRes, err := c.calculateDiffsWithExpectation(ctx, updateInstance, currentRevision, updateRevision, revisions, pods)
+	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, error) {
+	diffRes, err := c.calculateDiffsWithExpectation(ctx, updateInstance, currentRevision, updateRevision, revisions, pods, inactivePods)
 	if err != nil {
 		return true, err
 	}
@@ -65,16 +65,19 @@ type expectationDiff struct {
 
 func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision *apps.ControllerRevision,
-	revisions []*apps.ControllerRevision, pods []*v1.Pod) (*expectationDiff, error) {
+	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (*expectationDiff, error) {
 
 	coreControl := instancecore.New(updateInstance)
 
-	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod is deleted or restarted,
-	// recreate all pods of the instance
-	if shouldRecreateInstance(updateInstance, pods) {
+	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod Failed,
+	// recreate all pods of the instance.
+	// We include inactive pods (Failed/Succeeded) in the check because Failed pods are
+	// filtered out by IsPodActive but must be visible to trigger recreation.
+	allPods := append(pods, inactivePods...)
+	if shouldRecreateInstance(updateInstance, allPods) {
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
 			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))
-		return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
+		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
 	}
 
 	if isGangSchedulingEnabled(updateInstance) {
@@ -101,6 +104,15 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		toScaleNum     = 0
 		toScaleRoleIDS = make(map[string]sets.Set[int32])
 	)
+
+	// Delete inactive (Failed) pods so that replacements can be created on next reconcile.
+	// Failed pods block replacement creation because hasOrphanPod detects the same-name pod still exists.
+	for _, p := range inactivePods {
+		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+			toDeleteNum++
+			toDeletePods = append(toDeletePods, p)
+		}
+	}
 
 	prt, err := coreControl.GetComponentsTopology(pods)
 	if err != nil {
@@ -215,12 +227,11 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 
 // shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
 // This applies when:
-// 1. restartPolicy = RecreateRoleInstanceOnPodRestart AND Pod Failed
-//   - Instead of replacement Pod, recreate entire Instance for consistency
+//   - restartPolicy = RecreateRoleInstanceOnPodRestart AND any Pod is in Failed phase
 //
-// Note: This function does NOT handle container restart (Dimension 1).
-// Container restart with RecreateRoleInstanceOnPodRestart is handled by LWS controller,
-// RBG controller does nothing in that case.
+// Note: This function does NOT handle container restart.
+// Container restart with RecreateRoleInstanceOnPodRestart is handled by the
+// underlying workload controller (e.g. LWS controller).
 //
 // For restartPolicy=None, Pod Failed triggers replacement Pod
 // creation through normal reconciliation (GetActiveAndInactivePods → createPods).
@@ -238,21 +249,17 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		return false
 	}
 
-	// Check if any Pod has become Failed (Dimension 2)
-	// With RecreateRoleInstanceOnPodRestart policy, Pod Failed triggers Instance recreation
-	// (instead of just replacement Pod)
-	//
-	// Per KEP Non-Goals: Succeeded pods are explicitly excluded - only Failed pods trigger recreation.
-	// Pod being deleted (with DeletionTimestamp) is also excluded as it's handled separately.
-	if wasInstanceReady(instance) && instance.Generation == instance.Status.ObservedGeneration {
-		// Check if any Pod is Failed (excluding Succeeded and pods being deleted)
-		for _, p := range pods {
-			// Only Failed pods trigger Instance recreation
-			// Succeeded pods (normal completion) are explicitly excluded per KEP Non-Goals
-			// Pods being deleted are excluded as they're handled through normal deletion flow
-			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
-				return true
-			}
+	// Only trigger when Instance was previously Ready (stable state)
+	// and spec is not being changed (Generation == ObservedGeneration).
+	// This avoids triggering recreate during initial creation or scaling up.
+	if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
+		return false
+	}
+
+	// Check if any Pod is in Failed phase (excluding pods being deleted)
+	for _, p := range pods {
+		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+			return true
 		}
 	}
 

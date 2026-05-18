@@ -72,7 +72,8 @@ func RunInactivePodTestCases(f *framework.Framework) {
 	})
 
 	// Case 2: Failed Pod triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
-	// Note: With this policy, RoleInstance Controller recreates entire Instance (not just replacement Pod)
+	// Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
+	// Only the RoleInstance containing the Failed pod is recreated; other RoleInstances are unaffected.
 	ginkgo.It("failed pod triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-instance-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
@@ -99,25 +100,28 @@ func RunInactivePodTestCases(f *framework.Framework) {
 
 		// Get one pod and simulate Failed status
 		targetPod := &podList.Items[0]
+		targetInstanceName := targetPod.Labels[constants.RoleInstanceNameLabelKey]
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
-		// Wait for RoleInstance recreation - all pods should be recreated (new UIDs)
+		// Wait for the affected RoleInstance's pods to be recreated (new UIDs)
+		// Only the Instance containing the Failed pod should be recreated
 		gomega.Eventually(func() bool {
 			gomega.Expect(f.Client.List(f.Ctx, podList,
 				client.InNamespace(f.Namespace),
-				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+				client.MatchingLabels{
+					constants.GroupNameLabelKey:        rbg.Name,
+					constants.RoleInstanceNameLabelKey: targetInstanceName,
+				})).Should(gomega.Succeed())
 			if len(podList.Items) == 0 {
 				return false
 			}
-			// All pods should have new UIDs (Instance was recreated)
-			allNew := true
+			// All pods in the affected Instance should have new UIDs
 			for _, p := range podList.Items {
 				if initialPodUIDs[p.Name] == p.UID {
-					allNew = false
-					break
+					return false
 				}
 			}
-			return allNew
+			return true
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 
 		f.ExpectRbgV2Equal(rbg)
