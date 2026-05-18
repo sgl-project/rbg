@@ -31,7 +31,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -754,44 +753,41 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
-	// CRITICAL: Preserve the RestartInProgress condition managed by the pod controller.
-	// This condition is written by PodReconciler via RetryOnConflict+UpdateStatus (not SSA),
-	// so the informer cache may be stale. Always read from the API server to get the
-	// authoritative value and avoid overwriting a False→True transition back to True.
-	latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
-	if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latestRBG); err != nil {
-		logger := log.FromContext(ctx)
-		logger.Error(err, "Failed to get latest RBG from API server, falling back to cache for RestartInProgress")
-		// Fall back to cached condition if API server is unavailable
-		restartCond := apimeta.FindStatusCondition(
-			rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
-		)
-		if restartCond != nil {
-			apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
-		}
-	} else {
-		restartCond := apimeta.FindStatusCondition(
-			latestRBG.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
-		)
-		if restartCond != nil {
-			apimeta.SetStatusCondition(&rbg.Status.Conditions, *restartCond)
+	// Filter out RestartInProgress from conditions before SSA patch.
+	// RestartInProgress is exclusively owned by the pod controller (via PodControllerFieldManager SSA).
+	// Since conditions is a listType=map (keyed by type), each field manager owns its own entries.
+	// The RBG controller must NOT include RestartInProgress in its patch to avoid overwriting
+	// the pod controller's updates due to race conditions between the two controllers.
+	ownedConditions := make([]metav1.Condition, 0, len(rbg.Status.Conditions))
+	for _, c := range rbg.Status.Conditions {
+		if c.Type != string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+			ownedConditions = append(ownedConditions, c)
 		}
 	}
 
 	// Skip SSA patch if status hasn't changed. This avoids unnecessary API calls
 	// and reduces load on the API server, especially important now that
 	// constructAndUpdateRoleStatuses calls this method on every reconcile.
-	if reflect.DeepEqual(oldStatus, rbg.Status) {
+	// Compare only the fields we own (excluding RestartInProgress).
+	oldOwnedConditions := make([]metav1.Condition, 0, len(oldStatus.Conditions))
+	for _, c := range oldStatus.Conditions {
+		if c.Type != string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
+			oldOwnedConditions = append(oldOwnedConditions, c)
+		}
+	}
+	oldStatusForCompare := oldStatus
+	oldStatusForCompare.Conditions = oldOwnedConditions
+	newStatusForCompare := *rbg.Status.DeepCopy()
+	newStatusForCompare.Conditions = ownedConditions
+	if reflect.DeepEqual(oldStatusForCompare, newStatusForCompare) {
 		log.FromContext(ctx).V(2).Info("RBG status unchanged, skipping SSA patch")
 		return nil
 	}
 
-	// update rbg status using SSA patch.
-	// IMPORTANT: We must preserve the RestartInProgress condition managed by pod controller.
-	// The above code fetches the latest RBG from API server (bypassing informer cache) and
-	// preserves any RestartInProgress condition. This prevents SSA with Force=true from
-	// overwriting conditions set by other controllers due to informer cache latency.
-	rbgApplyConfig := ToRBGApplyConfigurationForStatus(rbg)
+	// Update rbg status using SSA patch with only conditions owned by the RBG controller.
+	// RestartInProgress is managed by the pod controller with its own field manager,
+	// so SSA map-type list semantics ensure the two controllers cannot interfere.
+	rbgApplyConfig := ToRBGApplyConfigurationForStatusWithConditions(rbg, ownedConditions)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 

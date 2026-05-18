@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -128,43 +127,38 @@ func (r *PodReconciler) restartRBG(ctx context.Context, rbg *workloadsv1alpha2.R
 func (r *PodReconciler) setRestartCondition(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, restartCompleted bool,
 ) error {
-	var restartCondition metav1.Condition
+	var condStatus metav1.ConditionStatus
+	var reason, message string
 	if restartCompleted {
-		restartCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
-			Status:             metav1.ConditionStatus(corev1.ConditionFalse),
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RBGRestartCompleted",
-			Message:            "RBG Restart Completed",
-		}
+		condStatus = metav1.ConditionFalse
+		reason = "RBGRestartCompleted"
+		message = "RBG Restart Completed"
 	} else {
-		restartCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha2.RoleBasedGroupRestartInProgress),
-			Status:             metav1.ConditionStatus(corev1.ConditionTrue),
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RBGRestart",
-			Message:            "RBG Restart in progress",
-		}
+		condStatus = metav1.ConditionTrue
+		reason = "RBGRestart"
+		message = "RBG Restart in progress"
 	}
-	restartCondition.ObservedGeneration = rbg.Generation
 
-	// Use RetryOnConflict + UpdateStatus to avoid SSA field-manager ownership conflicts.
-	// RoleBasedGroupStatus.Conditions is an atomic list in SSA, so two field managers cannot
-	// safely manage different entries. Instead, we use a standard UpdateStatus with optimistic
-	// locking: re-fetch the latest RBG from the API server (NOT the informer cache), merge
-	// the RestartInProgress condition, then update.
-	// IMPORTANT: We use apiReader (non-caching) to read the latest RBG from the API server.
-	// Using the caching client would risk a read-modify-write race: if the informer cache is
-	// stale, we would overwrite status fields (e.g. RoleStatuses, Ready condition) that were
-	// updated by the RBG controller but not yet reflected in the cache.
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		latest := &workloadsv1alpha2.RoleBasedGroup{}
-		if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, latest); err != nil {
-			return err
-		}
-		meta.SetStatusCondition(&latest.Status.Conditions, restartCondition)
-		return r.client.Status().Update(ctx, latest)
-	})
+	// Use SSA with PodControllerFieldManager to set the RestartInProgress condition.
+	// Since conditions is a listType=map (keyed by type), each field manager owns its own entries.
+	// This eliminates the race condition where the RBG controller's Force=true SSA patch could
+	// overwrite our Status().Update() — now both controllers use SSA with separate field managers,
+	// and each only touches the condition entries it owns.
+	now := metav1.Now()
+	gvk := utils.GetRbgGVK()
+	rbgApplyConfig := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gvk.Kind).
+		WithAPIVersion(gvk.GroupVersion().String()).
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithConditions(metav1ac.Condition().
+				WithType(string(workloadsv1alpha2.RoleBasedGroupRestartInProgress)).
+				WithStatus(condStatus).
+				WithLastTransitionTime(now).
+				WithReason(reason).
+				WithMessage(message).
+				WithObservedGeneration(rbg.Generation)))
+
+	return utils.PatchStatusWithFieldManager(ctx, r.client, rbgApplyConfig, utils.PodControllerFieldManager)
 }
 
 func restartConditionTrue(status workloadsv1alpha2.RoleBasedGroupStatus) bool {
