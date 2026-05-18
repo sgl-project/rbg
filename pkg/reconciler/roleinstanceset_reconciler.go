@@ -434,7 +434,7 @@ func (r *RoleInstanceSetReconciler) ConstructRoleStatus(
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
 	return ConstructWorkloadRoleStatus(ctx, rbg, role,
-		*roleInstanceSet.Spec.Replicas, roleInstanceSet.Status.ReadyReplicas, roleInstanceSet.Status.UpdatedReplicas,
+		roleInstanceSet.Status.Replicas, roleInstanceSet.Status.ReadyReplicas, roleInstanceSet.Status.UpdatedReplicas,
 		roleInstanceSet.Generation, roleInstanceSet.Status.ObservedGeneration), nil
 }
 

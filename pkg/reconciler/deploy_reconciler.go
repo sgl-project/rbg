@@ -228,7 +228,7 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 	}
 
 	return ConstructWorkloadRoleStatus(ctx, rbg, role,
-		*deploy.Spec.Replicas, deploy.Status.ReadyReplicas, deploy.Status.UpdatedReplicas,
+		deploy.Status.Replicas, deploy.Status.ReadyReplicas, deploy.Status.UpdatedReplicas,
 		deploy.Generation, deploy.Status.ObservedGeneration), nil
 }
 
