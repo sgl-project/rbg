@@ -131,7 +131,7 @@ Creates instances with multiple heterogeneous pod types (components). Each compo
 - Different resource requirements
 
 Ideal for:
-- Disaggregated inference (prefill/decode pods in same instance)
+- Disaggregated inference (router/leader/worker pods in same instance)
 - Heterogeneous multi-node deployments
 - Custom pod compositions
 
@@ -150,26 +150,38 @@ spec:
           type: InPlaceIfPossible
       customComponentsPattern:
         components:
-          - name: prefill-component
+          - name: prefill-router
             size: 1
             template:
               spec:
                 containers:
-                  - name: prefill
-                    image: prefill-engine:latest
+                  - name: router
+                    image: prefill-router:latest
+                    resources:
+                      requests:
+                        cpu: "2"
+                        memory: "8Gi"
+
+          - name: prefill-leader
+            size: 1
+            template:
+              spec:
+                containers:
+                  - name: leader
+                    image: prefill-leader:latest
                     resources:
                       requests:
                         cpu: "4"
                         memory: "32Gi"
                         nvidia.com/gpu: "1"
 
-          - name: decode-component
+          - name: prefill-worker
             size: 2
             template:
               spec:
                 containers:
-                  - name: decode
-                    image: decode-engine:latest
+                  - name: worker
+                    image: prefill-worker:latest
                     resources:
                       requests:
                         cpu: "2"
@@ -184,32 +196,222 @@ spec:
 | `components` | List of component definitions |
 | `components[].name` | Component identifier |
 | `components[].size` | Number of pods for this component |
+| `components[].serviceName` | Service name governing this component's pods |
+| `components[].labels` | Additional labels merged into every pod of this component |
+| `components[].annotations` | Controller-directive annotations (component-depends-on, component-discovery, etc.) |
 | `components[].template` | Pod template for this component |
 
-### Use Case: Disaggregated Instance
+#### `components[].labels` / `components[].annotations`
 
-An instance containing both prefill and decode pods in one unit:
+The `labels` and `annotations` fields on each component are merged into every pod created for that component at creation time. They take precedence over any labels/annotations already present in `template.metadata`.
+
+**Controller-directive annotations** — such as `component-depends-on`, `component-discovery`, and `port-allocator` — should be placed here rather than inside `template.metadata.annotations`. This keeps the pod template spec clean and allows controller-level processing.
+
+---
+
+### Component Lifecycle Ordering (component-depends-on)
+
+When deploying multi-component roles (e.g. Router → Leader → Worker), the default parallel creation/deletion of all components may cause startup failures. Components may crash if their dependencies are not ready.
+
+The per-component annotation **`rolebasedgroup.workloads.x-k8s.io/component-depends-on`** solves this by allowing explicit ordering constraints.
+
+#### Annotation Schema
+
+```json
+{
+  "startAfter": ["component-name-1", "component-name-2"],
+  "deleteAfter": ["component-name-1"]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `startAfter` | Component names that must have `ReadyReplicas >= Size` before this component starts |
+| `deleteAfter` | Component names that must be fully deleted before this component is removed |
+
+#### Start Order
+
+A component listed in `startAfter` is considered ready when its entry in `RoleInstance.Status.ComponentStatuses` satisfies:
+
+```
+ReadyReplicas >= Size  &&  Size > 0
+```
+
+Components without `startAfter` constraints start immediately in parallel.
+
+#### Delete Order
+
+Deletion gates are derived from two sources (union):
+1. **Reverse of `startAfter`**: If component X started after Y, Y is deleted only after X is gone.
+2. **Explicit `deleteAfter`**: The annotated component waits for the listed components to be fully deleted.
+
+#### Example: Hierarchical Component Startup
 
 ```yaml
 customComponentsPattern:
   components:
-    - name: prefill
+    # Leader and Worker start in parallel (no startAfter)
+    - name: leader
       size: 1
-      template:
-        spec:
-          containers:
-            - name: prefill
-              image: prefill:v1
-    - name: decode
-      size: 4
-      template:
-        spec:
-          containers:
-            - name: decode
-              image: decode:v1
+      annotations:
+        rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+          {"deleteAfter": ["router"]}
+      template: ...
+
+    - name: worker
+      size: 2
+      annotations:
+        rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+          {"deleteAfter": ["router"]}
+      template: ...
+
+    # Router starts only after Leader and Worker are Ready
+    - name: router
+      size: 1
+      annotations:
+        rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+          {"startAfter": ["leader", "worker"]}
+      template: ...
 ```
 
-Each instance has 1 prefill pod + 4 decode pods working together.
+**Start order**: leader/worker (parallel) → router  
+**Delete order**: router first → leader/worker (parallel)  
+
+*This annotation is only meaningful within `CustomComponentsPattern` roles. It is ignored on `StandalonePattern` and `LeaderWorkerPattern`.*
+
+#### Cycle Detection
+
+If the dependency graph contains a cycle, the controller logs an error and falls back to the default parallel mode to avoid deadlocks.
+
+#### Readiness Probe Recommendation
+
+When using `startAfter`, define proper `readinessProbe` on the dependency component's pod spec to ensure the application is truly serving before dependents start.
+
+---
+
+### Intra-Role Service Discovery (component-discovery)
+
+In multi-component roles, pods often need to discover each other's network addresses and port values at launch time. The opt-in annotation **`rolebasedgroup.workloads.x-k8s.io/component-discovery`** injects these values as environment variables.
+
+#### Annotation Schema
+
+```json
+{
+  "addressRefs": [
+    {
+      "env": "LEADER_ADDR",
+      "component": "leader",
+      "index": 0
+    }
+  ],
+  "portRefs": [
+    {
+      "env": "LEADER_GRPC_PORT",
+      "component": "leader",
+      "portName": "leader-grpc"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `addressRefs[].env` | Environment variable name to inject |
+| `addressRefs[].component` | Target component name within the same role |
+| `addressRefs[].index` | Zero-based pod ordinal (default: 0) |
+| `portRefs[].env` | Environment variable name to inject |
+| `portRefs[].component` | Target component name within the same role |
+| `portRefs[].portName` | Logical port name defined in the port-allocator annotation |
+| `portRefs[].index` | Zero-based pod ordinal for PodScoped ports (default: 0) |
+
+#### Address Resolution
+
+Pod addresses are resolved to a deterministic FQDN:
+
+```
+<rbg-name>-<role-name>-<instance-index>-<comp-name>-<pod-index>.<headless-svc>.<ns>.svc.cluster.local
+```
+
+This FQDN is computed at Pod creation time without any lookups and works with Kubernetes headless service DNS.
+
+#### Example: Worker Discovers Leader
+
+```yaml
+- name: worker
+  size: 2
+  annotations:
+    rolebasedgroup.workloads.x-k8s.io/component-discovery: |
+      {
+        "addressRefs": [
+          {"env": "LEADER_ADDR", "component": "leader", "index": 0}
+        ],
+        "portRefs": [
+          {"env": "LEADER_GRPC_PORT", "component": "leader", "portName": "leader-grpc"}
+        ]
+      }
+  template: ...
+```
+
+When this worker pod starts, it will have `LEADER_ADDR` and `LEADER_GRPC_PORT` injected as environment variables, pointing to the leader component's first pod.
+
+*This annotation is processed by the Pod reconciler after port allocation and before writing the final Pod spec.*
+
+---
+
+### Use Case: Disaggregated Inference with Ordering & Discovery
+
+A Prefill role with Router/Leader/Worker topology using both new annotations:
+
+```yaml
+roles:
+  - name: prefill
+    replicas: 2
+    customComponentsPattern:
+      components:
+        - name: leader
+          size: 1
+          annotations:
+            rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+              {"deleteAfter": ["router"]}
+          template:
+            spec:
+              containers:
+                - name: leader
+                  image: prefill-leader:v1
+
+        - name: worker
+          size: 4
+          annotations:
+            rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+              {"deleteAfter": ["router"]}
+            rolebasedgroup.workloads.x-k8s.io/component-discovery: |
+              {
+                "addressRefs": [
+                  {"env": "LEADER_ADDR", "component": "leader", "index": 0}
+                ],
+                "portRefs": [
+                  {"env": "LEADER_GRPC_PORT", "component": "leader", "portName": "leader-grpc"}
+                ]
+              }
+          template:
+            spec:
+              containers:
+                - name: worker
+                  image: prefill-worker:v1
+
+        - name: router
+          size: 1
+          annotations:
+            rolebasedgroup.workloads.x-k8s.io/component-depends-on: |
+              {"startAfter": ["leader", "worker"]}
+          template:
+            spec:
+              containers:
+                - name: router
+                  image: prefill-router:v1
+```
+
+Each instance creates 6 pods (1 leader + 4 workers + 1 router) with ordered startup and automatic address/port injection.
 
 ## Pattern Comparison
 
@@ -225,3 +427,4 @@ Each instance has 1 prefill pod + 4 decode pods working together.
 - [Standalone Pattern](../../examples/basic/rbg/patterns/standalone-pattern.yaml)
 - [Leader-Worker Pattern](../../examples/basic/rbg/patterns/leader-worker-pattern.yaml)
 - [Custom Components Pattern](../../examples/basic/rbg/patterns/custom-components-pattern.yaml)
+- [Custom Components with Ordering & Discovery](../../examples/basic/rbg/patterns/custom-components-ordered-discovery.yaml)
