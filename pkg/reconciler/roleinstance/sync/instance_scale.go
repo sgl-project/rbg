@@ -46,11 +46,11 @@ func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alph
 	if err != nil {
 		return true, err
 	}
-	if diffRes.toScaleNum > 0 {
-		return c.createPods(ctx, updateInstance, diffRes.toScaleRoleIDS, updateRevision.Name)
-	}
 	if diffRes.toDeleteNum > 0 {
 		return c.deletePods(ctx, updateInstance, diffRes.toDeletePod)
+	}
+	if diffRes.toScaleNum > 0 {
+		return c.createPods(ctx, updateInstance, diffRes.toScaleRoleIDS, updateRevision.Name)
 	}
 	return false, nil
 }
@@ -73,7 +73,9 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// recreate all pods of the instance.
 	// We include inactive pods (Failed/Succeeded) in the check because Failed pods are
 	// filtered out by IsPodActive but must be visible to trigger recreation.
-	allPods := append(pods, inactivePods...)
+	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
+	allPods = append(allPods, pods...)
+	allPods = append(allPods, inactivePods...)
 	if shouldRecreateInstance(updateInstance, allPods) {
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
 			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))

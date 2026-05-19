@@ -20,10 +20,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// PatioRuntimeContainerName is the container name for patio-runtime.
-// Container restarts for this container are ignored in RBG recreation logic.
-const PatioRuntimeContainerName = "patio-runtime"
-
 // PodRunningAndReady checks if the pod condition is running and marked as ready.
 func PodRunningAndReady(pod corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodRunning && podReady(pod)
@@ -61,33 +57,6 @@ func getPodConditionFromList(conditions []corev1.PodCondition, conditionType cor
 		}
 	}
 	return -1, nil
-}
-
-// ContainerRestarted return true when there is any container in the pod that gets restarted
-func ContainerRestarted(pod *corev1.Pod) bool {
-	// if pod is nil, no containers restarted.
-	if pod == nil {
-		return false
-	}
-	if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
-		for j := range pod.Status.InitContainerStatuses {
-			stat := pod.Status.InitContainerStatuses[j]
-			if stat.RestartCount > 0 {
-				return true
-			}
-		}
-		for j := range pod.Status.ContainerStatuses {
-			// if engine runtime restart, do not need to recreate rbg.
-			if pod.Status.ContainerStatuses[j].Name == PatioRuntimeContainerName {
-				continue
-			}
-			stat := pod.Status.ContainerStatuses[j]
-			if stat.RestartCount > 0 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // PodDeleted checks if the worker pod has been deleted
