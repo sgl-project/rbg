@@ -184,6 +184,7 @@ type RoleSpec struct {
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
+	// Default is RecreateRoleInstanceOnPodRestart for all patterns.
 	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`

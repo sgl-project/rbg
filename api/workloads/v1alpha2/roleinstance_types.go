@@ -32,7 +32,7 @@ type RoleInstanceSpec struct {
 	ReadyPolicy RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
 	// RestartPolicy defines the restart policy for all pods within the RoleInstance.
-	RestartPolicy RoleInstanceRestartPolicyType `json:"restartPolicy,omitempty"`
+	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
@@ -54,16 +54,6 @@ const (
 	RoleInstanceReadyPolicyTypeNone RoleInstanceReadyPolicyType = "None"
 )
 
-type RoleInstanceRestartPolicyType string
-
-const (
-	// NoneRoleInstanceRestartPolicy will follow the same behavior as the Pod.
-	NoneRoleInstanceRestartPolicy RoleInstanceRestartPolicyType = "None"
-
-	// RoleInstanceRestartPolicyRecreateOnPodRestart will recreate a role instance if its Pod restarted.
-	// It equals to RecreateRoleInstanceOnPodRestart of RBG.
-	RoleInstanceRestartPolicyRecreateOnPodRestart RoleInstanceRestartPolicyType = "RecreateRoleInstanceOnPodRestart"
-)
 
 type RoleInstanceComponent struct {
 	// Name is the type name of the component.

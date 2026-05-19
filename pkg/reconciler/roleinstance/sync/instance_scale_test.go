@@ -45,7 +45,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -79,7 +79,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -113,7 +113,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.NoneRoleInstanceRestartPolicy,
+					RestartPolicy: workloadsv1alpha2.RestartPolicyNone,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -147,7 +147,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -181,7 +181,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 2,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -215,7 +215,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -242,7 +242,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -276,7 +276,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -310,7 +310,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -344,7 +344,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart,
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},

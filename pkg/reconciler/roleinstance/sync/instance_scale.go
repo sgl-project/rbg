@@ -242,7 +242,7 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 // and should not trigger Instance recreation.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
 	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
+	if instance.Spec.RestartPolicy != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
 	}
 

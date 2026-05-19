@@ -10,7 +10,7 @@ RBG supports multiple failure handling policies: `None`, `RecreateRBGOnPodRestar
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. |
 | `RecreateRBGOnPodRestart` | Recreate the entire RoleBasedGroup when any pod in this role restarts. Useful for critical roles that require all pods to be healthy. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod restarts. More granular control for less critical roles. |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod restarts. More granular control for less critical roles. **This is the default policy for all patterns** (standalonePattern, leaderWorkerPattern, customComponentsPattern). |
 
 ## Configuration
 
