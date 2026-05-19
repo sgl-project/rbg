@@ -19,10 +19,13 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -73,6 +76,13 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return reconcile.Result{}, err
 	}
 
+	// Clean up RoleInstances that belong to a different pattern than the current one.
+	// This handles the case where the pattern annotation is changed (stateful ↔ stateless),
+	// leaving behind instances from the old pattern that the new reconciler won't manage.
+	if requeue, err := r.cleanupStaleInstances(ctx, set); err != nil || requeue {
+		return reconcile.Result{Requeue: requeue}, err
+	}
+
 	// Dispatch based on the role instance pattern annotation
 	pattern := constants.InstancePatternType(set.Annotations[constants.RoleInstancePatternKey])
 	switch pattern {
@@ -85,6 +95,59 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		err := fmt.Errorf("unknown role instance pattern %q", pattern)
 		r.recorder.Event(set, corev1.EventTypeWarning, "UnknownRoleInstancePattern", err.Error())
 		return reconcile.Result{}, err
+	}
+}
+
+// cleanupStaleInstances lists all RoleInstances owned by the set and deletes those
+// that don't belong to the current pattern. Returns true if any instance was deleted
+// (caller should requeue to wait for deletion and let the new reconciler create fresh instances).
+func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, set *v1alpha2.RoleInstanceSet) (bool, error) {
+	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+	if err != nil {
+		return false, err
+	}
+
+	instanceList := &v1alpha2.RoleInstanceList{}
+	if err := r.client.List(ctx, instanceList,
+		client.InNamespace(set.Namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return false, err
+	}
+
+	pattern := constants.InstancePatternType(set.Annotations[constants.RoleInstancePatternKey])
+	var deleted bool
+	for i := range instanceList.Items {
+		instance := &instanceList.Items[i]
+		if !metav1.IsControlledBy(instance, set) {
+			continue
+		}
+		if instanceBelongsToPattern(instance, set, pattern) {
+			continue
+		}
+		klog.InfoS("Deleting stale RoleInstance from different pattern", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance), "currentPattern", pattern)
+		if err := r.client.Delete(ctx, instance); err != nil && !errors.IsNotFound(err) {
+			return false, err
+		}
+		deleted = true
+	}
+	return deleted, nil
+}
+
+// statefulInstanceNameRegex extracts the parent name and ordinal from a stateful instance name.
+var statefulInstanceNameRegex = regexp.MustCompile(`^(.*)-(\d+)$`)
+
+// instanceBelongsToPattern returns true if the instance was created by the given pattern.
+func instanceBelongsToPattern(instance *v1alpha2.RoleInstance, set *v1alpha2.RoleInstanceSet, pattern constants.InstancePatternType) bool {
+	switch pattern {
+	case constants.StatelessPattern:
+		return instance.Labels[constants.RoleInstanceOwnerLabelKey] == string(set.UID)
+	case constants.StatefulPattern, "":
+		// Stateful instances follow the ordinal naming pattern: {setName}-{ordinal}
+		subMatch := statefulInstanceNameRegex.FindStringSubmatch(instance.Name)
+		return len(subMatch) == 3 && subMatch[1] == set.Name
+	default:
+		return true
 	}
 }
 
