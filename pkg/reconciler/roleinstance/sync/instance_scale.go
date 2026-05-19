@@ -222,7 +222,7 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 // Container restart with RecreateRoleInstanceOnPodRestart is handled by LWS controller,
 // RBG controller does nothing in that case.
 //
-// For restartPolicy=None or RecreateRBGOnPodRestart, Pod Failed triggers replacement Pod
+// For restartPolicy=None, Pod Failed triggers replacement Pod
 // creation through normal reconciliation (GetActiveAndInactivePods → createPods).
 //
 // Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion

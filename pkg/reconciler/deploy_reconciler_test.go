@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
@@ -33,8 +32,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -434,172 +431,6 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	}
 }
 
-// TestDeploymentReconciler_RecreateWorkload tests the RecreateWorkload method
-func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha2.AddToScheme(scheme)
-
-	replicas := int32(1)
-	deployRole := &workloadsv1alpha2.RoleSpec{
-		Name:     "test-role",
-		Replicas: &replicas,
-		Annotations: map[string]string{
-			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
-		},
-	}
-	rbg := &workloadsv1alpha2.RoleBasedGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg",
-			Namespace: "default",
-			UID:       "test-uid",
-			Labels: map[string]string{
-				constants.GroupNameLabelKey: "test-rbg",
-			},
-		},
-		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha2.RoleSpec{
-				*deployRole,
-			},
-		},
-	}
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg-test-role",
-			Namespace: "default",
-			UID:       "deploy-uid",
-		},
-	}
-
-	tests := []struct {
-		name          string
-		client        client.Client
-		rbg           *workloadsv1alpha2.RoleBasedGroup
-		role          *workloadsv1alpha2.RoleSpec
-		mockReconcile bool
-		expectError   bool
-	}{
-		{
-			name:          "recreate existing deployment",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build(),
-			rbg:           rbg,
-			role:          deployRole,
-			mockReconcile: true,
-			expectError:   false,
-		},
-		{
-			name:   "deployment does not exist",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg",
-					Namespace: "default",
-				},
-			},
-			role: &workloadsv1alpha2.RoleSpec{
-				Name:     "test-role",
-				Replicas: &replicas,
-			},
-			mockReconcile: false,
-			expectError:   false, // Should not error when deployment doesn't exist
-		},
-		{
-			name: "delete error",
-			client: fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(
-				interceptor.Funcs{
-					Delete: func(
-						ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.DeleteOption,
-					) error {
-						return apierrors.NewInternalError(fmt.Errorf("fake client delete error"))
-					},
-				},
-			).WithObjects(
-				&appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg-test-role",
-						Namespace: "default",
-						UID:       "deploy-uid",
-					},
-				},
-			).Build(),
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg",
-					Namespace: "default",
-				},
-			},
-			role: &workloadsv1alpha2.RoleSpec{
-				Name:     "test-role",
-				Replicas: &replicas,
-			},
-			mockReconcile: false,
-			expectError:   true,
-		},
-		{
-			name:   "nil rbg",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg:    nil,
-			role: &workloadsv1alpha2.RoleSpec{
-				Name:     "test-role",
-				Replicas: &replicas,
-			},
-			mockReconcile: false,
-			expectError:   false,
-		},
-		{
-			name:   "nil role",
-			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg",
-					Namespace: "default",
-				},
-			},
-			role:          nil,
-			mockReconcile: false,
-			expectError:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				r := &DeploymentReconciler{
-					scheme: tt.client.Scheme(),
-					client: tt.client,
-				}
-
-				logger := zap.New().WithValues("env", "test")
-				ctx := log.IntoContext(context.TODO(), logger)
-
-				if tt.mockReconcile {
-					// mock rbg controller reconcile
-					go func() {
-						for i := 0; i < 60; i++ {
-							newDeploy := &appsv1.Deployment{
-								ObjectMeta: metav1.ObjectMeta{
-									Name:      "test-rbg-test-role",
-									Namespace: "default",
-								},
-							}
-							err := r.client.Create(ctx, newDeploy)
-							if err != nil && !apierrors.IsAlreadyExists(err) {
-								t.Logf("create failed: %v", err)
-							}
-							time.Sleep(5 * time.Second)
-						}
-					}()
-				}
-
-				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
-
-				if (err != nil) != tt.expectError {
-					t.Errorf("DeploymentReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectError)
-				}
-			},
-		)
-	}
-}
 
 // TestDeploymentReconciler_constructDeployApplyConfiguration tests the constructDeployApplyConfiguration method
 func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {

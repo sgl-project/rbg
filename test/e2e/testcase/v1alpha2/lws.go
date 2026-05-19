@@ -24,7 +24,6 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -99,27 +98,6 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectRbgV2Equal(rbg)
 	})
 
-	ginkgo.It("lws with restartPolicy", func() {
-		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
-			[]workloadsv1alpha2.RoleSpec{
-				wrappersv2.BuildLeaderWorkerRole("role-1").
-					WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
-					WithReplicas(2).
-					WithRestartPolicy(workloadsv1alpha2.RecreateRBGOnPodRestart).
-					Obj(),
-			}).Obj()
-
-		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
-
-		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-		f.ExpectRbgV2Equal(rbg)
-
-		gomega.Expect(testutils.DeletePodV2(f.Ctx, f.Client, f.Namespace, rbg.Name)).Should(gomega.Succeed())
-
-		// wait rbg recreate
-		f.ExpectRbgV2Equal(rbg)
-		f.ExpectRbgV2Condition(rbg, workloadsv1alpha2.RoleBasedGroupRestartInProgress, metav1.ConditionFalse)
-	})
 
 	ginkgo.It("leaderWorkerPattern env variables are correctly injected in default RoleInstanceSet mode", func() {
 		role := wrappersv2.BuildLeaderWorkerRole("role-1").WithSize(3).Obj()

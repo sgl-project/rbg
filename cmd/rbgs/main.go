@@ -332,12 +332,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	podReconciler := workloadscontroller.NewPodReconciler(mgr)
-	if err = podReconciler.SetupWithManager(mgr, options); err != nil {
-		setupLog.Error(err, "unable to create pod controller", "controller", "Pod")
-		os.Exit(1)
-	}
-
 	rbgScalingAdapterReconciler := workloadscontroller.NewRoleBasedGroupScalingAdapterReconciler(mgr)
 	if err = rbgScalingAdapterReconciler.CheckCrdExists(); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RoleBasedGroupScalingAdapter")

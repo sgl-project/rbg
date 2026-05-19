@@ -43,7 +43,6 @@ type WorkloadReconciler interface {
 		ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	) (bool, error)
 	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error
-	RecreateWorkload(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) error
 }
 
 // PodGroupManagerSetter is an optional interface implemented by WorkloadReconcilers

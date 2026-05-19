@@ -31,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -54,6 +55,7 @@ import (
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
 	"sigs.k8s.io/rbgs/pkg/dependency"
 	"sigs.k8s.io/rbgs/pkg/discovery"
@@ -643,11 +645,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 		roleStatuses = append(roleStatuses, roleStatus)
 	}
 
-	// Always update the RBG status to ensure conditions managed by
-	// other controllers (e.g. RestartInProgress set by the pod controller)
-	// are preserved. The SSA patch with Force=true and map-type
-	// conditions (x-kubernetes-list-type: map) is efficient: it only
-	// touches fields that have actually changed.
+	// Always update the RBG status via SSA patch.
 	if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
 		r.recorder.Eventf(
 			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
@@ -732,7 +730,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 	readyCondition.ObservedGeneration = rbg.Generation
 
-	setCondition(rbg, readyCondition)
+	apimeta.SetStatusCondition(&rbg.Status.Conditions, readyCondition)
 	rbg.Status.ObservedGeneration = rbg.Generation
 
 	// update role status
@@ -753,44 +751,58 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 		}
 	}
 
-	// Filter out RestartInProgress from conditions before SSA patch.
-	// RestartInProgress is exclusively owned by the pod controller (via PodControllerFieldManager SSA).
-	// Since conditions is a listType=map (keyed by type), each field manager owns its own entries.
-	// The RBG controller must NOT include RestartInProgress in its patch to avoid overwriting
-	// the pod controller's updates due to race conditions between the two controllers.
-	ownedConditions := make([]metav1.Condition, 0, len(rbg.Status.Conditions))
-	for _, c := range rbg.Status.Conditions {
-		if c.Type != string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
-			ownedConditions = append(ownedConditions, c)
-		}
-	}
-
-	// Skip SSA patch if status hasn't changed. This avoids unnecessary API calls
-	// and reduces load on the API server, especially important now that
-	// constructAndUpdateRoleStatuses calls this method on every reconcile.
-	// Compare only the fields we own (excluding RestartInProgress).
-	oldOwnedConditions := make([]metav1.Condition, 0, len(oldStatus.Conditions))
-	for _, c := range oldStatus.Conditions {
-		if c.Type != string(workloadsv1alpha2.RoleBasedGroupRestartInProgress) {
-			oldOwnedConditions = append(oldOwnedConditions, c)
-		}
-	}
-	oldStatusForCompare := oldStatus
-	oldStatusForCompare.Conditions = oldOwnedConditions
-	newStatusForCompare := *rbg.Status.DeepCopy()
-	newStatusForCompare.Conditions = ownedConditions
-	if reflect.DeepEqual(oldStatusForCompare, newStatusForCompare) {
+	// Skip SSA patch if status hasn't changed.
+	if reflect.DeepEqual(oldStatus, rbg.Status) {
 		log.FromContext(ctx).V(2).Info("RBG status unchanged, skipping SSA patch")
 		return nil
 	}
 
-	// Update rbg status using SSA patch with only conditions owned by the RBG controller.
-	// RestartInProgress is managed by the pod controller with its own field manager,
-	// so SSA map-type list semantics ensure the two controllers cannot interfere.
-	rbgApplyConfig := ToRBGApplyConfigurationForStatusWithConditions(rbg, ownedConditions)
-
+	rbgApplyConfig := toRBGApplyConfigurationForStatus(rbg)
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 
+}
+
+func toRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {
+	if rbg == nil {
+		return nil
+	}
+	gvk := utils.GetRbgGVK()
+	return applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gvk.Kind).
+		WithAPIVersion(gvk.GroupVersion().String()).
+		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithObservedGeneration(rbg.Status.ObservedGeneration).
+			WithRoleStatuses(toRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
+			WithConditions(toConditionApplyConfigurations(rbg.Status.Conditions)...))
+}
+
+func toRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha2.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {
+	if roleStatus == nil {
+		return []*applyconfiguration.RoleStatusApplyConfiguration{}
+	}
+	out := make([]*applyconfiguration.RoleStatusApplyConfiguration, 0, len(roleStatus))
+	for _, rs := range roleStatus {
+		out = append(out, applyconfiguration.RoleStatus().
+			WithName(rs.Name).
+			WithReplicas(rs.Replicas).
+			WithReadyReplicas(rs.ReadyReplicas).
+			WithUpdatedReplicas(rs.UpdatedReplicas))
+	}
+	return out
+}
+
+func toConditionApplyConfigurations(conds []metav1.Condition) []*metaapplyv1.ConditionApplyConfiguration {
+	out := make([]*metaapplyv1.ConditionApplyConfiguration, 0, len(conds))
+	for _, c := range conds {
+		out = append(out, metaapplyv1.Condition().
+			WithType(c.Type).
+			WithStatus(c.Status).
+			WithReason(c.Reason).
+			WithMessage(c.Message).
+			WithObservedGeneration(c.ObservedGeneration).
+			WithLastTransitionTime(c.LastTransitionTime))
+	}
+	return out
 }
 
 // buildScalingAdapterLabels merges user-specified labels from scalingAdapter.labels
