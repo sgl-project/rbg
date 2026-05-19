@@ -220,8 +220,9 @@ func BuildBasicPodTemplateSpec() corev1.PodTemplateSpec {
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name:  "nginx",
-					Image: utils.DefaultImage,
+					Name:            "nginx",
+					Image:           utils.DefaultImage,
+					ImagePullPolicy: corev1.PullIfNotPresent,
 				},
 			},
 		},
