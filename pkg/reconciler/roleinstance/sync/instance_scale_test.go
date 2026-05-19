@@ -27,7 +27,7 @@ import (
 )
 
 // TestShouldRecreateInstance tests the shouldRecreateInstance function
-// which handles Dimension 2: Pod Failed → RoleInstance recreation
+// which handles Pod Failed → RoleInstance recreation
 func TestShouldRecreateInstance(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -38,7 +38,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 	}{
 		{
 			name: "RestartPolicy is RecreateOnPodRestart AND Pod Failed - should recreate",
-			desc: "Dimension 2: With RecreateRoleInstanceOnPodRestart policy, Pod Failed triggers Instance recreation",
+			desc: "With RecreateRoleInstanceOnPodRestart policy, Pod Failed triggers Instance recreation",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -72,7 +72,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "RestartPolicy is RecreateOnPodRestart AND Pod Evicted - should recreate",
-			desc: "Dimension 2: Evicted Pod (Failed phase) triggers Instance recreation with RecreateRoleInstanceOnPodRestart",
+			desc: "Evicted Pod (Failed phase) triggers Instance recreation with RecreateRoleInstanceOnPodRestart",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -106,7 +106,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "RestartPolicy is None - should NOT recreate (replacement Pod instead)",
-			desc: "Dimension 2: With RestartPolicy=None, Pod Failed triggers replacement Pod (not Instance recreation)",
+			desc: "With RestartPolicy=None, Pod Failed triggers replacement Pod (not Instance recreation)",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -140,7 +140,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "Instance not Ready - should NOT recreate",
-			desc: "Dimension 2: Only trigger recreation when Instance was previously Ready (stable state)",
+			desc: "Only trigger recreation when Instance was previously Ready (stable state)",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -174,7 +174,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "Generation != ObservedGeneration (spec being changed) - should NOT recreate",
-			desc: "Dimension 2: Avoid triggering recreation during spec changes",
+			desc: "Avoid triggering recreation during spec changes",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -208,7 +208,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "No pods exist - should NOT recreate",
-			desc: "Dimension 2: If no pods exist (initial creation), don't trigger recreation",
+			desc: "If no pods exist (initial creation), don't trigger recreation",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -235,7 +235,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "Pod Succeeded - should NOT recreate (per KEP Non-Goals)",
-			desc: "Dimension 2: Succeeded pods are excluded per KEP Non-Goals",
+			desc: "Succeeded pods are excluded per KEP Non-Goals",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -269,7 +269,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "Pod being deleted - should NOT recreate",
-			desc: "Dimension 2: Pod being deleted (with DeletionTimestamp) is not counted as Failed",
+			desc: "Pod being deleted (with DeletionTimestamp) is not counted as Failed",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -303,7 +303,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "All pods Running - should NOT recreate",
-			desc: "Dimension 2: No Failed pods, all active",
+			desc: "No Failed pods, all active",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -336,8 +336,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Pod with container restart count - should NOT trigger (Dimension 1 handled elsewhere)",
-			desc: "Dimension 2: Container restart (Dimension 1) should NOT trigger Instance recreation here",
+			name: "Pod with container restart count - should NOT trigger (handled by Pod Controller)",
+			desc: "Container restart should NOT trigger Instance recreation here",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -449,63 +449,93 @@ func TestWasInstanceReady(t *testing.T) {
 	}
 }
 
-// TestGetExpectedPodCount tests the getExpectedPodCount helper function
-func TestGetExpectedPodCount(t *testing.T) {
+// TestFailedPodDeletion tests that Failed pods in inactivePods are included in the delete list
+// so they get cleaned up and replacements can be created on subsequent reconciles.
+func TestFailedPodDeletion(t *testing.T) {
+	now := metav1.Now()
 	tests := []struct {
-		name     string
-		instance *workloadsv1alpha2.RoleInstance
-		expected int
+		name               string
+		inactivePods       []*corev1.Pod
+		expectedDeleteNum  int
+		expectedDeletePods []*corev1.Pod
 	}{
 		{
-			name: "Single component with size",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](3)},
+			name: "Failed pod without DeletionTimestamp should be deleted",
+			inactivePods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+			},
+			expectedDeleteNum: 1,
+		},
+		{
+			name: "Failed pod with DeletionTimestamp should NOT be deleted (already terminating)",
+			inactivePods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "pod-0",
+						DeletionTimestamp: &now,
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+			},
+			expectedDeleteNum: 0,
+		},
+		{
+			name: "Succeeded pod should NOT be deleted",
+			inactivePods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
+				},
+			},
+			expectedDeleteNum: 0,
+		},
+		{
+			name: "Multiple inactive pods - only Failed without DeletionTimestamp",
+			inactivePods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+					Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "pod-2",
+						DeletionTimestamp: &now,
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-3"},
+					Status: corev1.PodStatus{
+						Phase:  corev1.PodFailed,
+						Reason: "Evicted",
 					},
 				},
 			},
-			expected: 3,
+			expectedDeleteNum: 2, // pod-0 and pod-3 (Evicted is also Failed phase)
 		},
 		{
-			name: "Multiple components",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](2)},
-						{Size: ptr.To[int32](3)},
-					},
-				},
-			},
-			expected: 5,
-		},
-		{
-			name: "Component with nil size",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](2)},
-						{Size: nil},
-					},
-				},
-			},
-			expected: 2,
-		},
-		{
-			name: "Empty components",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{},
-				},
-			},
-			expected: 0,
+			name:              "Empty inactive pods",
+			inactivePods:      []*corev1.Pod{},
+			expectedDeleteNum: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := getExpectedPodCount(tt.instance)
-			assert.Equal(t, tt.expected, result)
+			var toDeletePods []*corev1.Pod
+			for _, p := range tt.inactivePods {
+				if p.Status.Phase == corev1.PodFailed && p.DeletionTimestamp == nil {
+					toDeletePods = append(toDeletePods, p)
+				}
+			}
+			assert.Equal(t, tt.expectedDeleteNum, len(toDeletePods))
 		})
 	}
 }

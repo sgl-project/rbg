@@ -93,7 +93,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	// TODO(@yangsoon) add a gc manager to handle inActivePods
-	filteredPods, _, err := r.getOwnedPods(ctx, instance)
+	filteredPods, inactivePods, err := r.getOwnedPods(ctx, instance)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -129,7 +129,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 	*newStatus.CollisionCount = collisionCount
 
-	res := r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods)
+	res := r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {
 		logger.Error(err, "Failed to update instance status")
@@ -144,7 +144,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
 	currentRevision, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision,
-	filteredPods []*v1.Pod) syncResult {
+	filteredPods []*v1.Pod, inactivePods []*v1.Pod) syncResult {
 	if instance.DeletionTimestamp != nil {
 		return syncResult{}
 	}
@@ -161,7 +161,7 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		requeueDuration time.Duration
 	)
 
-	scaling, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods)
+	scaling, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsScaleErr != nil {
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
