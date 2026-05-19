@@ -517,7 +517,7 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
 	return ConstructWorkloadRoleStatus(ctx, rbg, role,
-		*sts.Spec.Replicas, sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas,
+		sts.Status.Replicas, sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas,
 		sts.Generation, sts.Status.ObservedGeneration), nil
 }
 
