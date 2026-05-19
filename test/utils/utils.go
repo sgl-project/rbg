@@ -18,7 +18,6 @@ package utils
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/onsi/gomega"
@@ -77,72 +76,6 @@ func CreatePatioRuntime(ctx context.Context, rclient client.Client) error {
 	return nil
 }
 
-func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbgName string) error {
-	logger := log.FromContext(ctx)
-	// list pod
-	podList := &v1.PodList{}
-	if err := rclient.List(
-		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
-			constants.GroupNameLabelKey: rbgName,
-		},
-	); err != nil {
-		logger.V(1).Error(err, "list pod error")
-		return err
-	}
-
-	if len(podList.Items) == 0 {
-		err := fmt.Errorf("no pod belongs to rbg %s, can not delete pod", rbgName)
-		logger.V(1).Error(err, "pod is empty")
-		return err
-	}
-
-	err := rclient.Delete(
-		ctx, &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podList.Items[0].Name,
-				Namespace: namespace,
-			},
-		},
-	)
-	if err != nil {
-		logger.V(1).Error(err, "delete pod error")
-	}
-	return err
-}
-
-// DeletePodV2 deletes one pod belonging to a v1alpha2 RoleBasedGroup identified by rbgName.
-// It uses the v1alpha2 GroupNameLabelKey ("rbg.workloads.x-k8s.io/group-name") to find the pod.
-func DeletePodV2(ctx context.Context, rclient client.Client, namespace string, rbgName string) error {
-	logger := log.FromContext(ctx)
-	podList := &v1.PodList{}
-	if err := rclient.List(
-		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
-			constants.GroupNameLabelKey: rbgName,
-		},
-	); err != nil {
-		logger.V(1).Error(err, "list pod error")
-		return err
-	}
-
-	if len(podList.Items) == 0 {
-		err := fmt.Errorf("no pod belongs to v1alpha2 rbg %s, can not delete pod", rbgName)
-		logger.V(1).Error(err, "pod is empty")
-		return err
-	}
-
-	err := rclient.Delete(
-		ctx, &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podList.Items[0].Name,
-				Namespace: namespace,
-			},
-		},
-	)
-	if err != nil {
-		logger.V(1).Error(err, "delete pod error")
-	}
-	return err
-}
 
 func UpdateRbg(
 	ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup,
@@ -257,36 +190,3 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 	return count, nil
 }
 
-// SimulateContainerRestart simulates a container restart by updating the container's RestartCount.
-// This is used in e2e tests to trigger container restart handling (Dimension 1).
-func SimulateContainerRestart(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
-	// Ensure pod has container statuses
-	if len(pod.Status.ContainerStatuses) == 0 {
-		pod.Status.ContainerStatuses = []v1.ContainerStatus{
-			{
-				Name:         "main-container",
-				RestartCount: 0,
-				Ready:        true,
-				State: v1.ContainerState{
-					Running: &v1.ContainerStateRunning{
-						StartedAt: metav1.Now(),
-					},
-				},
-			},
-		}
-	}
-
-	// Increment restart count for the first container
-	pod.Status.ContainerStatuses[0].RestartCount = 1
-	pod.Status.ContainerStatuses[0].LastTerminationState = v1.ContainerState{
-		Terminated: &v1.ContainerStateTerminated{
-			ExitCode:   1,
-			Reason:     "Error",
-			Message:    "Container crashed",
-			FinishedAt: metav1.Now(),
-			StartedAt:  metav1.NewTime(metav1.Now().Add(-time.Minute)),
-		},
-	}
-
-	return rclient.Status().Update(ctx, pod)
-}

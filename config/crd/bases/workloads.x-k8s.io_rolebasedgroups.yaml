@@ -8951,7 +8951,6 @@ spec:
                         The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
                       enum:
                       - None
-                      - RecreateRBGOnPodRestart
                       - RecreateRoleInstanceOnPodRestart
                       type: string
                     rolloutStrategy:
@@ -32821,7 +32820,6 @@ spec:
                         failures happen.
                       enum:
                       - None
-                      - RecreateRBGOnPodRestart
                       - RecreateRoleInstanceOnPodRestart
                       type: string
                     rolloutStrategy:

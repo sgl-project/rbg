@@ -111,9 +111,6 @@ func SetupTestEnv() {
 	err = SetupInstanceController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupPodController(TestMgr)
-	Expect(err).NotTo(HaveOccurred())
-
 	err = SetupRBGScalingAdapterController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -201,12 +198,6 @@ func SetupRBGController(mgr manager.Manager) error {
 		return err
 	}
 	return rbgReconciler.SetupWithManager(mgr, controller.Options{})
-}
-
-// SetupPodController sets up the Pod controller
-func SetupPodController(mgr manager.Manager) error {
-	podReconciler := workloadscontroller.NewPodReconciler(mgr)
-	return podReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
 // SetupRBGScalingAdapterController sets up the RoleBasedGroupScalingAdapter controller

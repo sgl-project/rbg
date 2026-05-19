@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -340,100 +338,6 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	}
 }
 
-func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha2.AddToScheme(scheme)
-
-	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
-	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg-test-role",
-			Namespace: "default",
-			UID:       "sts-uid",
-		},
-	}
-
-	tests := []struct {
-		name          string
-		client        client.Client
-		rbg           *workloadsv1alpha2.RoleBasedGroup
-		role          *workloadsv1alpha2.RoleSpec
-		mockReconcile bool
-		expectErr     bool
-	}{
-		{
-			name:          "recreate existing workload",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
-			rbg:           rbg,
-			role:          &role,
-			mockReconcile: true,
-			expectErr:     false,
-		},
-		{
-			name:          "recreate non-existing workload",
-			client:        fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg:           rbg,
-			role:          &role,
-			mockReconcile: true,
-			expectErr:     false,
-		},
-		{
-			name:          "nil rbg",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
-			rbg:           nil,
-			role:          &role,
-			mockReconcile: false,
-			expectErr:     false,
-		},
-		{
-			name:          "nil role",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
-			rbg:           rbg,
-			role:          nil,
-			mockReconcile: false,
-			expectErr:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				r := &StatefulSetReconciler{
-					scheme: scheme,
-					client: tt.client,
-				}
-
-				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
-
-				if tt.mockReconcile {
-					// mock rbg controller reconcile
-					go func() {
-						for i := 0; i < 60; i++ {
-							newSts := &appsv1.StatefulSet{
-								ObjectMeta: metav1.ObjectMeta{
-									Name:      rbg.GetWorkloadName(&role),
-									Namespace: "default",
-								},
-							}
-							err := r.client.Create(ctx, newSts)
-							if err != nil && !apierrors.IsAlreadyExists(err) {
-								t.Logf("create failed: %v", err)
-							}
-							time.Sleep(5 * time.Second)
-						}
-					}()
-				}
-
-				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
-				if (err != nil) != tt.expectErr {
-					t.Errorf("StsReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
-				}
-			},
-		)
-	}
-}
 
 func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	// test 4 replicas sts rolling update process, maxSurge=2, maxUnavailable=2

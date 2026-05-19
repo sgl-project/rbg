@@ -217,12 +217,6 @@ const (
 	// will be restarted on failure and other pods in the group will not be impacted.
 	NoneRestartPolicy RestartPolicyType = "None"
 
-	// RecreateRBGOnPodRestart will recreate all the pods in the rbg if
-	// 1. Any individual pod in the rbg is recreated; 2. Any containers/init-containers
-	// in a pod is restarted. This is to ensure all pods/containers in the group will be
-	// started in the same time.
-	RecreateRBGOnPodRestart RestartPolicyType = "RecreateRBGOnPodRestart"
-
 	// RecreateRoleInstanceOnPodRestart will recreate an instance of role. If role's workload is lws, it means when a pod
 	// failed, we will recreate only one lws instance, not all lws instances.
 	// It equals to RecreateGroupOnPodRestart in lws.spec.LeaderWorkerTemplate.RestartPolicyType

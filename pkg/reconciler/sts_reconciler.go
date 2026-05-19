@@ -565,15 +565,6 @@ func (r *StatefulSetReconciler) getHighestRevision(
 	return utils.GetHighestRevision(revisions), nil
 }
 
-func (r *StatefulSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
-) error {
-	return RecreateObj(ctx, r.client, rbg, role, schema.GroupVersionKind{
-		Group:   "apps",
-		Version: "v1",
-		Kind:    "StatefulSet"})
-}
-
 func semanticallyEqualStatefulSet(oldSts, newSts *appsv1.StatefulSet, checkStatus bool) (bool, error) {
 	if oldSts == nil || oldSts.UID == "" {
 		return false, errors.New("old sts not exist")

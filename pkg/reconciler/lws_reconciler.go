@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -33,7 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -284,15 +282,10 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// RestartPolicy
 	var restartPolicy lwsv1.RestartPolicyType
-	if role.RestartPolicy == "None" {
-		restartPolicy = lwsv1.NoneRestartPolicy
-	} else {
-		// if role has RecreateRBGOnPodRestart or RecreateRoleInstanceOnPodRestart policy,
-		// set RecreateGroupOnPodRestart for lws
-		// it's safe to do so since
-		// 1. RecreateGroupOnPodRestart is the default restart policy for lws
-		// 2. RecreateRBGOnPodRestart will delete lws if pod recreated or containers restarted
+	if role.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		restartPolicy = lwsv1.RecreateGroupOnPodRestart
+	} else {
+		restartPolicy = lwsv1.NoneRestartPolicy
 	}
 
 	lwsSpecConfig := lwsapplyv1.LeaderWorkerSetSpec().WithReplicas(*role.Replicas).
@@ -360,54 +353,6 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		)
 	return lwsConfig, nil
 
-}
-
-func (r *LeaderWorkerSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
-) error {
-	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
-		return nil
-	}
-
-	lwsName := rbg.GetWorkloadName(role)
-	var lws lwsv1.LeaderWorkerSet
-	err := r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, &lws)
-	// if lws is not found, skip delete lws
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	if lws.UID == "" {
-		return nil
-	}
-
-	logger.Info(fmt.Sprintf("Recreate lws workload, delete lws %s", lws.Name))
-	if err := r.client.Delete(ctx, &lws); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	// wait new lws create
-	var retErr error
-	err = wait.PollUntilContextTimeout(
-		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-			var newLws lwsv1.LeaderWorkerSet
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: lwsName, Namespace: rbg.Namespace}, &newLws)
-			if retErr != nil {
-				if apierrors.IsNotFound(retErr) {
-					return false, nil
-				}
-				return false, retErr
-			}
-			return true, nil
-		},
-	)
-
-	if err != nil {
-		logger.Error(retErr, "wait new lws creating error")
-		return retErr
-	}
-
-	return nil
 }
 
 func semanticallyEqualLeaderWorkerSet(oldLws, newLws *lwsv1.LeaderWorkerSet, checkStatus bool) (bool, error) {

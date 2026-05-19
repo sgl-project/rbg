@@ -152,15 +152,10 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 
 	// 1. construct role instance configuration
 	var restartPolicy workloadsv1alpha2.RoleInstanceRestartPolicyType
-	if role.RestartPolicy == "None" {
-		restartPolicy = workloadsv1alpha2.NoneRoleInstanceRestartPolicy
-	} else {
-		// if role has RecreateRBGOnPodRestart or RecreateRoleInstanceOnPodRestart policy,
-		// set RecreateRoleInstanceOnPodRestart for lws
-		// it's safe to do so since
-		// 1. RecreateRoleInstanceOnPodRestart is the default restart policy for lws
-		// 2. RecreateRBGOnPodRestart will delete lws if pod recreated or containers restarted
+	if role.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		restartPolicy = workloadsv1alpha2.RoleInstanceRestartPolicyType(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart)
+	} else {
+		restartPolicy = workloadsv1alpha2.NoneRoleInstanceRestartPolicy
 	}
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate().
 		WithRestartPolicy(restartPolicy)
@@ -465,15 +460,6 @@ func (r *RoleInstanceSetReconciler) CleanupOrphanedWorkloads(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	return CleanupOrphanedObjs(ctx, r.client, rbg, schema.GroupVersionKind{
-		Group:   "workloads.x-k8s.io",
-		Version: "v1alpha2",
-		Kind:    "RoleInstanceSet"})
-}
-
-func (r *RoleInstanceSetReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
-) error {
-	return RecreateObj(ctx, r.client, rbg, role, schema.GroupVersionKind{
 		Group:   "workloads.x-k8s.io",
 		Version: "v1alpha2",
 		Kind:    "RoleInstanceSet"})

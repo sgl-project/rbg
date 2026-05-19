@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
@@ -362,106 +361,6 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestLeaderWorkerSetReconciler_RecreateWorkload tests the RecreateWorkload method
-func TestLeaderWorkerSetReconciler_RecreateWorkload(t *testing.T) {
-	// Create a scheme
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = lwsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha2.AddToScheme(scheme)
-
-	lwsRole := wrappersv2.BuildLeaderWorkerRole("test-role").Obj()
-	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
-		WithRoles([]workloadsv1alpha2.RoleSpec{lwsRole}).Obj()
-
-	lws := &lwsv1.LeaderWorkerSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      rbg.GetWorkloadName(&lwsRole),
-			Namespace: rbg.Namespace,
-			UID:       "lws-uid-1",
-		},
-	}
-
-	tests := []struct {
-		name          string
-		rbg           *workloadsv1alpha2.RoleBasedGroup
-		role          *workloadsv1alpha2.RoleSpec
-		lws           *lwsv1.LeaderWorkerSet
-		mockReconcile bool
-		wantErr       bool
-	}{
-		{
-			name:          "lws recreation",
-			rbg:           rbg,
-			role:          &lwsRole,
-			lws:           lws,
-			mockReconcile: true,
-			wantErr:       false,
-		},
-		{
-			name: "non-existing LWS",
-			rbg:  rbg,
-			role: &lwsRole,
-			lws: &lwsv1.LeaderWorkerSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg-lws-2",
-					Namespace: rbg.Namespace,
-					UID:       "lws-uid-2",
-				},
-			},
-			mockReconcile: true,
-			wantErr:       false,
-		},
-		{
-			name:          "rbg nil",
-			rbg:           nil,
-			role:          &lwsRole,
-			lws:           lws,
-			mockReconcile: false,
-			wantErr:       false,
-		},
-		{
-			name:          "role nil",
-			rbg:           rbg,
-			role:          nil,
-			lws:           lws,
-			mockReconcile: false,
-			wantErr:       false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tt.lws).Build()
-				r := NewLeaderWorkerSetReconciler(scheme, fakeClient)
-				if tt.mockReconcile {
-					// mock rbg controller reconcile
-					go func() {
-						for i := 0; i < 60; i++ {
-							newlws := &lwsv1.LeaderWorkerSet{
-								ObjectMeta: metav1.ObjectMeta{
-									Name:      rbg.GetWorkloadName(&lwsRole),
-									Namespace: "default",
-								},
-							}
-							err := r.client.Create(context.TODO(), newlws)
-							if err != nil && !apierrors.IsAlreadyExists(err) {
-								t.Logf("create failed: %v", err)
-							}
-							time.Sleep(5 * time.Second)
-						}
-					}()
-				}
-				err := r.RecreateWorkload(context.TODO(), tt.rbg, tt.role)
-				if (err != nil) != tt.wantErr {
-					t.Errorf("RecreateWorkload() error = %v, wantErr %v", err, tt.wantErr)
-				}
-			},
-		)
-
-	}
-}
 
 // TestLwsSpecEqual_RolloutStrategyDiff tests that lwsSpecEqual detects RolloutStrategy
 // differences, which is necessary for triggering reconciliation on partition changes (PR #151 fix)

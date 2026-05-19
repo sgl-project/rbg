@@ -329,7 +329,7 @@ type RoleSpec struct {
 
 	// RestartPolicy defines the restart policy when pod failures happen.
 	// The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
-	// +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
@@ -502,10 +502,6 @@ const (
 	// is true when the rbg is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpdateInProgress.
 	RoleBasedGroupRollingUpdateInProgress RoleBasedGroupConditionType = "RollingUpdateInProgress"
-
-	// RoleBasedGroupRestartInProgress means rbg is restarting. RestartInProgress
-	// is true when the rbg is in restart process after the pod is deleted or the container is restarted.
-	RoleBasedGroupRestartInProgress RoleBasedGroupConditionType = "RestartInProgress"
 )
 
 // +kubebuilder:object:root=true

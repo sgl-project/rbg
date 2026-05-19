@@ -22,10 +22,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -287,55 +285,6 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 			}
 		}
 	}
-	return nil
-}
-
-func (r *DeploymentReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
-	role *workloadsv1alpha2.RoleSpec,
-) error {
-	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
-		return nil
-	}
-
-	deployName := rbg.GetWorkloadName(role)
-	var deploy appsv1.Deployment
-	err := r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &deploy)
-	// if deploy is not found, skip delete deploy
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	if deploy.UID == "" {
-		return nil
-	}
-
-	logger.Info(fmt.Sprintf("Recreate deployment workload, delete deployment %s", deployName))
-	if err := r.client.Delete(ctx, &deploy); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	// wait new deployment create
-	var retErr error
-	err = wait.PollUntilContextTimeout(
-		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-			var newDeploy appsv1.Deployment
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &newDeploy)
-			if retErr != nil {
-				if apierrors.IsNotFound(retErr) {
-					return false, nil
-				}
-				return false, retErr
-			}
-			return true, nil
-		},
-	)
-
-	if err != nil {
-		logger.Error(retErr, "wait new deployment creating error")
-		return retErr
-	}
-
 	return nil
 }
 

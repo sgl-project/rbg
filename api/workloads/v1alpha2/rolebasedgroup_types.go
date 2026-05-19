@@ -155,9 +155,6 @@ const (
 	// RestartPolicyNone - No restart policy.
 	RestartPolicyNone RestartPolicyType = "None"
 
-	// RecreateRBGOnPodRestart - Recreate the entire RBG on pod restart.
-	RecreateRBGOnPodRestart RestartPolicyType = "RecreateRBGOnPodRestart"
-
 	// RecreateRoleInstanceOnPodRestart - Recreate the role instance on pod restart.
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
 )
@@ -187,7 +184,7 @@ type RoleSpec struct {
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.
-	// +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
@@ -446,9 +443,6 @@ const (
 
 	// RoleBasedGroupRollingUpdateInProgress means rbg is performing a rolling update.
 	RoleBasedGroupRollingUpdateInProgress RoleBasedGroupConditionType = "RollingUpdateInProgress"
-
-	// RoleBasedGroupRestartInProgress means rbg is restarting.
-	RoleBasedGroupRestartInProgress RoleBasedGroupConditionType = "RestartInProgress"
 )
 
 // +kubebuilder:object:root=true

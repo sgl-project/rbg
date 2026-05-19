@@ -19,7 +19,6 @@ package v1alpha1
 import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
@@ -77,26 +76,5 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
-	ginkgo.It("deploy with restartPolicy", func() {
-		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
-			[]workloadsv1alpha1.RoleSpec{
-				wrappers.BuildBasicRole("role-1").
-					WithReplicas(2).
-					WithWorkload(workloadsv1alpha1.DeploymentWorkloadType).
-					WithRestartPolicy(workloadsv1alpha1.RecreateRBGOnPodRestart).
-					Obj(),
-			}).Obj()
-
-		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
-
-		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-		f.ExpectRbgEqual(rbg)
-
-		gomega.Expect(utils.DeletePod(f.Ctx, f.Client, f.Namespace, rbg.Name)).Should(gomega.Succeed())
-
-		// wait rbg recreate
-		f.ExpectRbgEqual(rbg)
-		f.ExpectRbgCondition(rbg, workloadsv1alpha1.RoleBasedGroupRestartInProgress, metav1.ConditionFalse)
-	})
 
 }
