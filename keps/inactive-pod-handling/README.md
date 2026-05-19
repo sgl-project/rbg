@@ -363,7 +363,8 @@ The `shouldRecreateInstance` function exists to handle a special case:
 //   - restartPolicy = RecreateRoleInstanceOnPodRestart AND any Pod is in Failed phase
 //
 // Note: This function does NOT handle container restart.
-// Container restart with RecreateRoleInstanceOnPodRestart is handled by Pod Controller.
+// Container restart with RecreateRoleInstanceOnPodRestart is handled by the
+// underlying workload controller (e.g. LWS controller).
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
     if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
         return false
@@ -384,7 +385,7 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 }
 ```
 
-**Note**: We DO NOT check `ContainerRestarted` here. Container restart with `RecreateRoleInstanceOnPodRestart` policy is handled by Pod Controller, RBG controller has no action.
+**Note**: We DO NOT check `ContainerRestarted` here. Container restart with `RecreateRoleInstanceOnPodRestart` policy is handled by the underlying workload controller (e.g. LWS controller), RBG controller has no action.
 
 #### How Pod Failed → Replacement Pod Works (Two Levels)
 

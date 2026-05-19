@@ -276,16 +276,6 @@ func wasInstanceReady(instance *workloadsv1alpha2.RoleInstance) bool {
 	return false
 }
 
-// getExpectedPodCount calculates the expected total pod count from instance spec
-func getExpectedPodCount(instance *workloadsv1alpha2.RoleInstance) int {
-	expectedPodCount := 0
-	for _, component := range instance.Spec.Components {
-		if component.Size != nil {
-			expectedPodCount += int(*component.Size)
-		}
-	}
-	return expectedPodCount
-}
 
 // isGangSchedulingEnabled reports whether gang-scheduling constraints are active for the
 // given RoleInstance. The annotation is derived from the parent RBG's gang-scheduling

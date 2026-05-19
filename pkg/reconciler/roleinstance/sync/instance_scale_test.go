@@ -449,67 +449,6 @@ func TestWasInstanceReady(t *testing.T) {
 	}
 }
 
-// TestGetExpectedPodCount tests the getExpectedPodCount helper function
-func TestGetExpectedPodCount(t *testing.T) {
-	tests := []struct {
-		name     string
-		instance *workloadsv1alpha2.RoleInstance
-		expected int
-	}{
-		{
-			name: "Single component with size",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](3)},
-					},
-				},
-			},
-			expected: 3,
-		},
-		{
-			name: "Multiple components",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](2)},
-						{Size: ptr.To[int32](3)},
-					},
-				},
-			},
-			expected: 5,
-		},
-		{
-			name: "Component with nil size",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](2)},
-						{Size: nil},
-					},
-				},
-			},
-			expected: 2,
-		},
-		{
-			name: "Empty components",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{},
-				},
-			},
-			expected: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := getExpectedPodCount(tt.instance)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 // TestFailedPodDeletion tests that Failed pods in inactivePods are included in the delete list
 // so they get cleaned up and replacements can be created on subsequent reconciles.
 func TestFailedPodDeletion(t *testing.T) {
