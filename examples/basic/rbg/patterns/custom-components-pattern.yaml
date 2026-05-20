@@ -2,6 +2,7 @@
 # customComponentsPattern creates instances with multiple different types of pods
 # (components), each component can have a different size and template.
 # Use this for workloads requiring heterogeneous pod groups, e.g. disaggregated inference.
+# Default restartPolicy for customComponentsPattern is RecreateRoleInstanceOnPodRestart.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -11,6 +12,7 @@ spec:
   roles:
     - name: engine
       replicas: 3
+      # restartPolicy defaults to RecreateRoleInstanceOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:

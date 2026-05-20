@@ -32816,8 +32816,9 @@ spec:
                       minimum: 0
                       type: integer
                     restartPolicy:
-                      description: RestartPolicy defines the restart policy when pod
-                        failures happen.
+                      description: |-
+                        RestartPolicy defines the restart policy when pod failures happen.
+                        Default is RecreateRoleInstanceOnPodRestart for all patterns.
                       enum:
                       - None
                       - RecreateRoleInstanceOnPodRestart

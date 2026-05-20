@@ -151,11 +151,10 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	}
 
 	// 1. construct role instance configuration
-	var restartPolicy workloadsv1alpha2.RoleInstanceRestartPolicyType
-	if role.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
-		restartPolicy = workloadsv1alpha2.RoleInstanceRestartPolicyType(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart)
-	} else {
-		restartPolicy = workloadsv1alpha2.NoneRoleInstanceRestartPolicy
+	// Default to RecreateRoleInstanceOnPodRestart for all patterns when not explicitly set.
+	restartPolicy := role.RestartPolicy
+	if restartPolicy == "" {
+		restartPolicy = workloadsv1alpha2.RecreateRoleInstanceOnPodRestart
 	}
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate().
 		WithRestartPolicy(restartPolicy)
@@ -285,7 +284,6 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 			}
 		}
 		roleInstanceTemplateConfig.
-			WithRestartPolicy(workloadsv1alpha2.NoneRoleInstanceRestartPolicy).
 			WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
 				WithName(component.Name).
 				WithServiceName(svcName).
@@ -369,7 +367,6 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 
 	workerSize := utils.NonZeroValue(*lwp.Size - 1)
 	roleInstanceTemplateConfig.
-		WithRestartPolicy(workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart).
 		WithComponents(
 			workloadsv1alpha2client.RoleInstanceComponent().
 				WithName("leader").
@@ -411,7 +408,6 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandaloneP
 	}
 
 	roleInstanceTemplateConfig.
-		WithRestartPolicy(workloadsv1alpha2.NoneRoleInstanceRestartPolicy).
 		WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
 			WithName(role.Name).
 			WithServiceName(svcName).

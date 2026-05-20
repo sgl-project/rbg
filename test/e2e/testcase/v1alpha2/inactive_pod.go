@@ -144,7 +144,8 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
 				WithReplicas(3).
-				Obj(), // RestartPolicy defaults to None
+				WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
+				Obj(),
 		}).Obj()
 
 		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
