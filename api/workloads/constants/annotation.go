@@ -140,8 +140,8 @@ const (
 // Component level annotations
 const (
 	// RestartTriggerPolicyAnnotationKey specifies whether a component's
-	// pod restart/delete events should trigger the role's restart policy actions
-	// (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart).
+	// pod restart/failure events should trigger the role's restart policy
+	// (RecreateRoleInstanceOnPodRestart).
 	// Valid values are:
 	//   - "Inherit" (or empty): Pod events from this component will follow the role's restart policy.
 	//   - "Ignore": Pod events from this component will NOT trigger restart policy.

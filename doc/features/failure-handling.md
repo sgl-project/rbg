@@ -1,6 +1,6 @@
 # Failure Handling
 
-RBG supports multiple failure handling policies: `None`, `RecreateRBGOnPodRestart`, and `RecreateRoleInstanceOnPodRestart`.
+RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanceOnPodRestart`.
 
 ![failure-handling](../img/failure-handling.png)
 
@@ -8,9 +8,8 @@ RBG supports multiple failure handling policies: `None`, `RecreateRBGOnPodRestar
 
 | Policy | Description |
 |--------|-------------|
-| `None` | No automatic restart action; rely on default pod restart behavior. |
-| `RecreateRBGOnPodRestart` | Recreate the entire RoleBasedGroup when any pod in this role restarts. Useful for critical roles that require all pods to be healthy. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod restarts. More granular control for less critical roles. **This is the default policy for all patterns** (standalonePattern, leaderWorkerPattern, customComponentsPattern). |
+| `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails or a container restarts. **This is the default policy for all patterns** (standalonePattern, leaderWorkerPattern, customComponentsPattern). |
 
 ## Configuration
 
@@ -23,22 +22,10 @@ metadata:
   name: restart-policy-demo
 spec:
   roles:
-    # Critical role - recreate entire RBG on restart
-    - name: driver
-      restartPolicy: RecreateRBGOnPodRestart
-      replicas: 1
-      standalonePattern:
-        template:
-          spec:
-            containers:
-              - name: driver
-                image: nginx:latest
-
-    # Worker role - recreate only this instance
+    # Worker role - recreate only this instance on pod failure
     - name: worker
       restartPolicy: RecreateRoleInstanceOnPodRestart
       replicas: 3
-      dependencies: ["driver"]
       standalonePattern:
         template:
           spec:
@@ -100,16 +87,15 @@ spec:
 ```
 
 When this annotation is set to "Ignore" on a component's pod template:
-- Pod restart/delete events from this component will NOT trigger the role's restart policy
-- The restart policy (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart) remains unaffected for other components
+- Pod failure and container restart events from this component will NOT trigger the role's restart policy
+- The restart policy (RecreateRoleInstanceOnPodRestart) remains unaffected for other components
 - Only pods from components WITHOUT this annotation (or with annotation set to "Inherit") will trigger the restart policy
 
 ## Use Cases
 
-- **RecreateRBGOnPodRestart**: Gateway/router roles that require all downstream services to be healthy.
-- **RecreateRoleInstanceOnPodRestart**: Worker roles that can tolerate individual instance failures.
-- **None**: Monitoring/logging sidecars that don't affect the main workload.
-- **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components whose pod failures should not trigger the role's restart policy actions.
+- **RecreateRoleInstanceOnPodRestart**: Worker roles where pod failure or container restart should recreate the affected instance.
+- **None**: Monitoring/logging sidecars that don't affect the main workload. Failed pods are replaced individually.
+- **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components within a multi-component instance whose pod failures should not trigger the role's restart policy for the entire instance.
 
 ## Examples
 

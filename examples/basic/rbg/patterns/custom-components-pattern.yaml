@@ -5,8 +5,8 @@
 #
 # Annotation rbg.workloads.x-k8s.io/restart-trigger-policy:
 # Valid values are "Inherit" (or empty) and "Ignore". When set to "Ignore" on a
-# pod template, pod restart/delete events from that pod will NOT trigger the
-# role's restart policy (RecreateRoleInstanceOnPodRestart or RecreateRBGOnPodRestart).
+# pod template, pod failure and container restart events from that pod will NOT
+# trigger the role's restart policy (RecreateRoleInstanceOnPodRestart).
 # This annotation works with any deployment pattern and is useful for auxiliary
 # components (e.g., monitoring, logging sidecars) whose failures should not
 # affect the main workload.
