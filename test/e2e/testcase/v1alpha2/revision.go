@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -128,17 +129,21 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			f.ExpectRbgV2Equal(rbg)
 
 			// With LeaderWorkerSet workload type, the controller creates a LWS resource.
-			oldLws := &lwsv1.LeaderWorkerSet{}
-			err := f.Client.Get(
-				f.Ctx, client.ObjectKey{
-					Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
-					Namespace: rbg.Namespace,
-				}, oldLws,
-			)
-			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			// Drift the replica count on the underlying LWS
-			oldLws.Spec.Replicas = ptr.To(int32(2))
-			err = f.Client.Update(f.Ctx, oldLws)
+			// Use retry on conflict since the controller may reconcile the LWS concurrently.
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				lws := &lwsv1.LeaderWorkerSet{}
+				if err := f.Client.Get(
+					f.Ctx, client.ObjectKey{
+						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+						Namespace: rbg.Namespace,
+					}, lws,
+				); err != nil {
+					return err
+				}
+				// Drift the replica count on the underlying LWS
+				lws.Spec.Replicas = ptr.To(int32(2))
+				return f.Client.Update(f.Ctx, lws)
+			})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			// wait for controller reconcile
 			time.Sleep(time.Second * 5)
