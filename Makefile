@@ -162,8 +162,8 @@ run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/rbgs/main.go
 
 .PHONY: run-local
-run-local: manifests generate fmt vet ## Run a controller locally for debugging (webhooks disabled, no leader election, insecure metrics).
-	go run ./cmd/rbgs/main.go --enable-webhooks=none --metrics-bind-address=:8080
+run-local: manifests generate fmt vet ## Run a controller locally for debugging (webhooks disabled, no leader election, insecure metrics, port-allocator enabled).
+	go run ./cmd/rbgs/main.go --enable-webhooks=none --metrics-bind-address=:8080 --enable-port-allocator=true
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

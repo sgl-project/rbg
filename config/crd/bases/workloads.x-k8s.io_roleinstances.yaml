@@ -57,6 +57,20 @@ spec:
                   that match the component.
                 items:
                   properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Annotations are additional annotations merged into every pod of this component at
+                        creation time.  These are copied from InstanceComponent.
+                      type: object
+                    labels:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Labels are additional labels merged into every pod of this component at creation time.
+                        These are copied from InstanceComponent.
+                      type: object
                     name:
                       description: Name is the type name of the component.
                       type: string

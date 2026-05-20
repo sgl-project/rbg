@@ -78,6 +78,7 @@ func TestE2E(t *testing.T) {
 			testcasev1alpha2.RunRoleTemplateTestCases(f)
 			testcasev1alpha2.RunPortAllocatorTestCases(f)
 			testcasev1alpha2.RunInactivePodTestCases(f)
+			testcasev1alpha2.RunComponentOrderingTestCases(f)
 		},
 	)
 

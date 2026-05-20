@@ -270,8 +270,30 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podReconciler.SetPodGroupManager(r.podGroupManager)
 	for _, component := range role.GetCustomComponentsPattern().Components {
+		// Deep-copy the pod template and merge component-level labels/annotations into it.
+		// This allows users to set controller-directive annotations (e.g. component-depends-on,
+		// port-allocator, component-discovery) at the component level instead of inside
+		// template.metadata, keeping the pod spec clean.
+		tpl := *component.Template.DeepCopy()
+		if len(component.Annotations) > 0 {
+			if tpl.Annotations == nil {
+				tpl.Annotations = make(map[string]string, len(component.Annotations))
+			}
+			for k, v := range component.Annotations {
+				tpl.Annotations[k] = v
+			}
+		}
+		if len(component.Labels) > 0 {
+			if tpl.Labels == nil {
+				tpl.Labels = make(map[string]string, len(component.Labels))
+			}
+			for k, v := range component.Labels {
+				tpl.Labels[k] = v
+			}
+		}
+
 		podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
-			ctx, rbg, role, maps.Clone(matchLabels), component.Template)
+			ctx, rbg, role, maps.Clone(matchLabels), tpl)
 		if err != nil {
 			return err
 		}
@@ -288,6 +310,8 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 				WithName(component.Name).
 				WithServiceName(svcName).
 				WithSize(*component.Size).
+				WithAnnotations(component.Annotations).
+				WithLabels(component.Labels).
 				WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
 					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *component.Size),
 				})))

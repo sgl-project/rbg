@@ -373,6 +373,20 @@ func (in *InstanceComponent) DeepCopyInto(out *InstanceComponent) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.Labels != nil {
+		in, out := &in.Labels, &out.Labels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.Annotations != nil {
+		in, out := &in.Annotations, &out.Annotations
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	in.Template.DeepCopyInto(&out.Template)
 }
 
@@ -841,6 +855,20 @@ func (in *RoleInstanceComponent) DeepCopyInto(out *RoleInstanceComponent) {
 		in, out := &in.Size, &out.Size
 		*out = new(int32)
 		**out = **in
+	}
+	if in.Labels != nil {
+		in, out := &in.Labels, &out.Labels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.Annotations != nil {
+		in, out := &in.Annotations, &out.Annotations
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
 	}
 	in.Template.DeepCopyInto(&out.Template)
 }
