@@ -233,7 +233,7 @@ The per-component annotation **`rolebasedgroup.workloads.x-k8s.io/component-depe
 
 A component listed in `startAfter` is considered ready when its entry in `RoleInstance.Status.ComponentStatuses` satisfies:
 
-```
+```text
 ReadyReplicas >= Size  &&  Size > 0
 ```
 
@@ -293,7 +293,7 @@ When using `startAfter`, define proper `readinessProbe` on the dependency compon
 
 In multi-component roles, pods often need to discover each other's network addresses and port values at launch time. The opt-in annotation **`rolebasedgroup.workloads.x-k8s.io/component-discovery`** injects these values as environment variables.
 
-#### Annotation Schema
+#### Discovery Annotation Schema
 
 ```json
 {
@@ -328,7 +328,7 @@ In multi-component roles, pods often need to discover each other's network addre
 
 Pod addresses are resolved to a deterministic FQDN:
 
-```
+```text
 <rbg-name>-<role-name>-<instance-index>-<comp-name>-<pod-index>.<headless-svc>.<ns>.svc.cluster.local
 ```
 
