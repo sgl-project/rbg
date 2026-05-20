@@ -295,12 +295,14 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 }
 
 // shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
-// This applies when:
-//   - restartPolicy = RecreateRoleInstanceOnPodRestart AND any Pod is in Failed phase
+// This applies when restartPolicy = RecreateRoleInstanceOnPodRestart AND:
+//   - Any Pod is in Failed phase, OR
+//   - Any container has restarted (RestartCount > 0)
 //
-// Note: This function does NOT handle container restart.
-// Container restart with RecreateRoleInstanceOnPodRestart is handled by the
-// underlying workload controller (e.g. LWS controller).
+// Pods with the restart-trigger-policy annotation set to "Ignore" are excluded —
+// their failures and container restarts will not trigger instance recreation.
+// This is useful for auxiliary components (e.g., monitoring, logging sidecars)
+// whose failures should not affect the main workload.
 //
 // For restartPolicy=None, Pod Failed triggers replacement Pod
 // creation through normal reconciliation (GetActiveAndInactivePods → createPods).
@@ -325,14 +327,39 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		return false
 	}
 
-	// Check if any Pod is in Failed phase (excluding pods being deleted)
 	for _, p := range pods {
+		if hasTriggerPolicyIgnore(p) {
+			continue
+		}
+		// Check if any Pod is in Failed phase (excluding pods being deleted)
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+			return true
+		}
+		// Check if any container has restarted
+		if containerRestarted(p) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// containerRestarted checks if any container in the pod has been restarted.
+func containerRestarted(pod *v1.Pod) bool {
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].RestartCount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTriggerPolicyIgnore checks if the pod has the restart-trigger-policy annotation set to "Ignore".
+func hasTriggerPolicyIgnore(pod *v1.Pod) bool {
+	if pod.Annotations == nil {
+		return false
+	}
+	return pod.Annotations[constants.RestartTriggerPolicyAnnotationKey] == constants.RestartTriggerPolicyIgnore
 }
 
 // wasInstanceReady checks if the Instance was previously in Ready state
