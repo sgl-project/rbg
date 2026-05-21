@@ -176,6 +176,55 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace(t *te
 	assert.Equal(t, "leader", svc.Spec.Selector[constants.ComponentNameLabelKey])
 }
 
+func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace_Reverse(t *testing.T) {
+	s := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
+
+	role := wrappersv2.BuildLeaderWorkerRole("test-role").Obj()
+	role.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+		workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
+	)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
+		[]workloadsv1alpha2.RoleSpec{role},
+	).Obj()
+
+	roleInstanceSet := &workloadsv1alpha2.RoleInstanceSet{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "RoleInstanceSet",
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+			Namespace: rbg.Namespace,
+			UID:       "test-roleinstanceset",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg, roleInstanceSet).Build()
+	reconciler := NewServiceReconciler(cl)
+
+	roleRef := &rbg.Spec.Roles[0]
+
+	// Start with LeaderOnly — should have component label in selector
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+
+	svcName, err := utils.GetCompatibleHeadlessServiceName(context.Background(), cl, rbg, roleRef)
+	require.NoError(t, err)
+
+	svc := &corev1.Service{}
+	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, svc))
+	assert.Equal(t, "leader", svc.Spec.Selector[constants.ComponentNameLabelKey])
+
+	// Switch to nil (All) — component label should be removed from selector
+	roleRef.LeaderWorkerPattern.SharedServiceSelection = nil
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+
+	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, svc))
+	assert.NotContains(t, svc.Spec.Selector, constants.ComponentNameLabelKey)
+}
+
 func TestSemanticallyEqualService(t *testing.T) {
 	baseSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{

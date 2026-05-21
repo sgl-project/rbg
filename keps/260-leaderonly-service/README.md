@@ -95,26 +95,23 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
-This KEP proposes a new role-level networking optional field `SharedServiceSelectionPolicy``, under `RoleSpec.LeaderWorkerPattern`, to control which Pods are selected by the existing shared headless Service of a role.
+This KEP proposes a new optional field `SharedServiceSelection` (of type `SharedServiceSelectionPolicy`) under `LeaderWorkerPattern`, to control which Pods are selected by the existing shared headless Service of a role.
 
 The new field has two values:
 
-- `All`
-- `LeaderOnly`
+- `All` — keeps the current behavior (default)
+- `LeaderOnly` — narrows the Service selector to only target leader Pods
 
-`All` keeps the current behavior and remains the default. `LeaderOnly` preserves the existing shared Service name, 
-but changes the Service selector so that only leader Pods are targeted by that Service.
+When unset or set to `All`, the shared headless Service continues to select all Pods. When set to `LeaderOnly`, the Service selector is updated in place so that only leader Pods are exposed through the shared Service.
 
 
 ## Motivation
 
 RBG currently creates one shared headless Service per role, and the Service selector includes all Pods of that role.
 
-That behavior is acceptable when every Pod behind the Service is a real serving endpoint. But it would make requests for large EP inference engine,
-which only leader Pods are expected to accept, requests abnormal
+That behavior is acceptable when every Pod behind the Service is a real serving endpoint. However, for large-scale inference engines where only leader Pods accept external requests, routing traffic to all Pods causes request failures.
 
-This problem occurs with runtimes such as `sglang`. In a cross-node engine, follower Pods may only run a dummy API server,
-and exposing those Pods through the role level Service causes requests routed to the dummy API servers.
+This problem occurs with runtimes such as `sglang`. In a cross-node engine, worker Pods may only run a dummy API server, and exposing those Pods through the role-level Service causes requests to be routed to non-functional endpoints.
 
 The problem here is different from the per-replica headless Service problem. This KEP aims to keep the role shared headless Service while controlling which Pods are targeted by it.
 
@@ -140,7 +137,7 @@ This makes `LeaderOnly` a selector policy, not a service identity policy.
 
 ## Proposal
 
-Add an optional `SharedServiceSelectionPolicy` field under `RoleSpec.LeaderWorkerPattern`.
+Add an optional `SharedServiceSelection` field (of type `SharedServiceSelectionPolicy`) under `LeaderWorkerPattern`.
 
 - `All` keeps the current shared headless Service behavior. The Service continues to select every Pod in the role.
 - `LeaderOnly` keeps the same shared headless Service object and the same Service name, but narrows its selector so that only leader Pods are exposed
@@ -167,35 +164,54 @@ This lets the gateway keep using Service-level discovery without routing request
 
 
 #### Story 3
-As a platform engineer, although we do support a pod-level model gateway, e.g. `sgalng model gateway`, we still need a fallback in case the gateway is absent.
+As a platform engineer, although we do support a pod-level model gateway (e.g. `sglang` model gateway), we still need a fallback in case the gateway is absent.
 However, I cannot control user behavior, and once they use the `sglang` engine or `vllm` in headless mode to serve a model across nodes, I need to
-configure service manually instead of automatically.
+configure the service manually instead of automatically.
 
 ## Design Details
 
 ### API
 
 ```go
-
 type LeaderWorkerPattern struct {
+    // SharedServiceSelection indicates the service policy of the role
     // +optional
-	SharedServiceSelection  *SharedServiceSelectionPolicy  `json:"sharedServiceSelection,omitempty"`
+    // +kubebuilder:validation:Enum=All;LeaderOnly
+    SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
 
-type SharedServiceSelectionPolicy  string
+type SharedServiceSelectionPolicy string
 
 const (
-    // all pods would be routed to
-    SharedServiceSelectionAll               SharedServiceSelectionPolicy = "All"
+    // SharedServiceSelectionAll - All pods would be routed to
+    SharedServiceSelectionAll SharedServiceSelectionPolicy = "All"
 
-    // the headless service would only target at the leaders
-    SharedServiceSelectionLeaderOnly        SharedServiceSelectionPolicy = "LeaderOnly"
+    // SharedServiceSelectionLeaderOnly - The headless service would only target at the leaders
+    SharedServiceSelectionLeaderOnly SharedServiceSelectionPolicy = "LeaderOnly"
 )
 ```
 
 Default:
 
-- If the field is unset, the policy defaults to `All`.
+- If the field is unset (`nil`), the behavior defaults to `All`.
+
+### Validation
+
+A CEL validation rule on `RoleSpec` ensures that `LeaderOnly` is only valid for `RoleInstanceSet + leaderWorkerPattern`:
+
+```yaml
+x-kubernetes-validations:
+  - rule: >-
+      !has(self.leaderWorkerPattern) ||
+      !has(self.leaderWorkerPattern.sharedServiceSelection) ||
+      self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' ||
+      !has(self.annotations) ||
+      !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) ||
+      self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'
+    message: "leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
+```
+
+This rejects unsupported combinations at admission time rather than silently falling back to `All`.
 
 ### Behavior
 
@@ -240,16 +256,15 @@ In particular:
 - `RBG_LEADER_ADDRESS` keeps the same address shape, and direct Pod DNS names remain unchanged
 - config generation that derives addresses from the shared Service name does not need a new naming mode
 
-The only behavior change is that worker Pods are no longer targeted by in the shared Service endpoints when `LeaderOnly` is enabled.
+The only behavior change is that worker Pods are no longer targeted by the shared Service endpoints when `LeaderOnly` is enabled.
 
 ### Test Plan
 
 ##### Unit tests
 
-- API defaulting for `All`
-- Validation for unsupported combinations using `LeaderOnly`
 - Shared Service selector generation for `All` and `LeaderOnly`
-
+- In-place Service selector update: `nil` → `LeaderOnly` and `LeaderOnly` → `nil`
+- CRD enum validation rejects unsupported combinations via CEL rule
 
 ##### Integration tests
 
@@ -259,8 +274,8 @@ The only behavior change is that worker Pods are no longer targeted by in the sh
 
 ##### e2e tests
 
-- In leader-worker mode, `LeaderOnly` prevents worker Pods from appearing in the shared Service endpoints
-- Switching between `All` and `LeaderOnly` preserves availability and does not recreate Pods
+- In leader-worker mode, `LeaderOnly` prevents worker Pods from appearing in the shared Service EndpointSlice
+- Switching between `LeaderOnly` and `All` preserves Service UID (in-place update) and does not recreate Pods
 
 
 ## Production Readiness Review Questionnaire
