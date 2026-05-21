@@ -17,13 +17,14 @@ limitations under the License.
 package sync
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
-
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -337,8 +338,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Pod with container restart count - should NOT trigger (handled by Pod Controller)",
-			desc: "Container restart should NOT trigger Instance recreation here",
+			name: "Pod with container restart count - should trigger recreation",
+			desc: "Container restart triggers Instance recreation with RecreateRoleInstanceOnPodRestart",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -370,6 +371,172 @@ func TestShouldRecreateInstance(t *testing.T) {
 					},
 				},
 			},
+			expected: true,
+		},
+		{
+			name: "Container restarted with Ignore annotation - should NOT recreate",
+			desc: "Pod with restart-trigger-policy=Ignore annotation should not trigger Instance recreation on container restart",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore,
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "nginx", RestartCount: 3},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod Failed with Ignore annotation - should NOT recreate",
+			desc: "Pod with restart-trigger-policy=Ignore annotation should not trigger Instance recreation",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](2)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					Status: corev1.PodStatus{Phase: corev1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore,
+						},
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Mixed: ignored pod Failed + normal pod Failed - should recreate",
+			desc: "Normal pod without Ignore annotation still triggers recreation",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](3)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore,
+						},
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+				{
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+				{
+					Status: corev1.PodStatus{Phase: corev1.PodRunning},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "All Failed pods have Ignore annotation - should NOT recreate",
+			desc: "When all Failed pods are ignored, no recreation is triggered",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](2)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore,
+						},
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore,
+						},
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodFailed},
+				},
+			},
 			expected: false,
 		},
 	}
@@ -380,6 +547,126 @@ func TestShouldRecreateInstance(t *testing.T) {
 			assert.Equal(t, tt.expected, result, tt.desc)
 		})
 	}
+}
+
+// TestRestartingCachePreventsRecreation tests that the in-memory restarting cache
+// prevents shouldRecreateInstanceGuarded from triggering when the instance is already restarting.
+func TestRestartingCachePreventsRecreation(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-instance",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Size: ptr.To[int32](2)},
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1,
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{
+					Type:   workloadsv1alpha2.RoleInstanceReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+	pods := []*corev1.Pod{
+		{
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{
+					{Name: "main", RestartCount: 1},
+				},
+			},
+		},
+	}
+
+	// Without cache: shouldRecreateInstance returns true
+	assert.True(t, shouldRecreateInstance(instance, pods))
+
+	// Set the in-memory cache to mark instance as restarting
+	restartingCache.Store(instanceKey(instance), true)
+	defer restartingCache.Delete(instanceKey(instance))
+
+	// The guarded version with a nil apiReader (cache hit means no API call needed)
+	ctrl := &realControl{}
+	result := ctrl.shouldRecreateInstanceGuarded(context.Background(), instance, pods)
+	assert.False(t, result, "should not recreate when instance is in restarting cache")
+}
+
+// TestIsInstanceRestarting tests the isInstanceRestarting helper function
+func TestIsInstanceRestarting(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *workloadsv1alpha2.RoleInstance
+		expected bool
+	}{
+		{
+			name: "Restarting condition True",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Restarting condition False",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionFalse},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "No Restarting condition",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isInstanceRestarting(tt.instance)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestSetRestartingCondition tests the setRestartingCondition helper function
+func TestSetRestartingCondition(t *testing.T) {
+	t.Run("sets condition when not present", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{}
+		setRestartingCondition(instance)
+		assert.True(t, isInstanceRestarting(instance))
+	})
+
+	t.Run("updates existing condition", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionFalse},
+				},
+			},
+		}
+		setRestartingCondition(instance)
+		assert.True(t, isInstanceRestarting(instance))
+	})
 }
 
 // TestWasInstanceReady tests the wasInstanceReady helper function
@@ -626,4 +913,128 @@ func TestAllNamedComponentsReady_PartialSetSatisfied(t *testing.T) {
 		makeComponentStatus("worker", 2, 1), // not fully ready, but not depended on
 	}
 	assert.True(t, allNamedComponentsReady([]string{"leader"}, statuses))
+}
+
+func TestHasTriggerPolicyIgnore(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "Pod with Ignore annotation",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore,
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Pod with Inherit annotation",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyInherit,
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod with no annotations",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod with nil annotations map",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: nil,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod with unrecognized annotation value",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.RestartTriggerPolicyAnnotationKey: "unknown",
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasTriggerPolicyIgnore(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestContainerRestarted(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "Container with RestartCount > 0",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 1},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Container with RestartCount = 0",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 0},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Multiple containers, one restarted",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 0},
+						{Name: "sidecar", RestartCount: 2},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "No container statuses",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := containerRestarted(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

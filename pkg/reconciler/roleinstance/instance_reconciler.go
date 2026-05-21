@@ -55,7 +55,7 @@ func NewReconciler(mgr ctrl.Manager) reconcile.Reconciler {
 		controllerHistory: historyutil.NewHistory(mgr.GetClient()),
 		statusUpdater:     newStatusUpdater(mgr.GetClient()),
 		revisionControl:   revisioncontrol.NewRevisionControl(),
-		syncControl:       synccontrol.New(mgr.GetClient(), recorder),
+		syncControl:       synccontrol.New(mgr.GetClient(), mgr.GetAPIReader(), recorder),
 	}
 }
 
@@ -136,6 +136,14 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
+	// Clear the in-memory restarting cache when instance becomes Ready
+	for _, cond := range newStatus.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
+			r.syncControl.ClearRestarting(instance)
+			break
+		}
+	}
+
 	if err = r.truncateHistory(filteredPods, revisions, currentRevision, updateRevision); err != nil {
 		logger.Error(err, "Failed to truncate history for Instance")
 	}
@@ -171,6 +179,16 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		})
 	}
 	if scaling {
+		// Propagate Restarting condition only when scaling is active (restart-policy
+		// triggered deletion or pod creation is still in progress). Once scaling
+		// completes (scaling=false), the condition is no longer propagated so that
+		// setInstanceConditions can clear it when the instance becomes Ready.
+		for _, cond := range updateInstance.Status.Conditions {
+			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
+				newStatus.Conditions = append(newStatus.Conditions, cond)
+				break
+			}
+		}
 		return syncResult{err: podsScaleErr}
 	}
 

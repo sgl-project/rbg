@@ -23,6 +23,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -77,7 +78,9 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
-	if shouldRecreateInstance(updateInstance, allPods) {
+	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods) {
+		// Mark instance as restarting to prevent cascading re-triggers
+		setRestartingCondition(updateInstance)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
 			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))
 		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
@@ -294,13 +297,45 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 	return nil
 }
 
+// shouldRecreateInstanceGuarded wraps shouldRecreateInstance with a deferred guard:
+// when the core logic decides to recreate, a final check ensures the instance isn't
+// already in a restart cycle. This uses an in-memory LRU cache (instant, no informer lag)
+// with a fallback to a direct API server read for the persisted Restarting condition
+// (survives controller restarts).
+func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) (recreate bool) {
+	defer func() {
+		if recreate && c.isAlreadyRestarting(ctx, instance) {
+			recreate = false
+		}
+	}()
+	return shouldRecreateInstance(instance, pods)
+}
+
+// isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
+// recreation. It first checks the in-memory cache (zero latency, immune to informer lag),
+// then falls back to a direct API server read to check the persisted Restarting condition.
+func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) bool {
+	// Fast path: check in-memory cache
+	if _, ok := restartingCache.Load(instanceKey(instance)); ok {
+		return true
+	}
+	// Slow path: read fresh from API server (bypasses informer cache)
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
+		return false
+	}
+	return isInstanceRestarting(fresh)
+}
+
 // shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
-// This applies when:
-//   - restartPolicy = RecreateRoleInstanceOnPodRestart AND any Pod is in Failed phase
+// This applies when restartPolicy = RecreateRoleInstanceOnPodRestart AND:
+//   - Any Pod is in Failed phase, OR
+//   - Any container has restarted (RestartCount > 0)
 //
-// Note: This function does NOT handle container restart.
-// Container restart with RecreateRoleInstanceOnPodRestart is handled by the
-// underlying workload controller (e.g. LWS controller).
+// Pods with the restart-trigger-policy annotation set to "Ignore" are excluded —
+// their failures and container restarts will not trigger instance recreation.
+// This is useful for auxiliary components (e.g., monitoring, logging sidecars)
+// whose failures should not affect the main workload.
 //
 // For restartPolicy=None, Pod Failed triggers replacement Pod
 // creation through normal reconciliation (GetActiveAndInactivePods → createPods).
@@ -325,14 +360,39 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		return false
 	}
 
-	// Check if any Pod is in Failed phase (excluding pods being deleted)
 	for _, p := range pods {
+		if hasTriggerPolicyIgnore(p) {
+			continue
+		}
+		// Check if any Pod is in Failed phase (excluding pods being deleted)
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+			return true
+		}
+		// Check if any container has restarted
+		if containerRestarted(p) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// containerRestarted checks if any container in the pod has been restarted.
+func containerRestarted(pod *v1.Pod) bool {
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].RestartCount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTriggerPolicyIgnore checks if the pod has the restart-trigger-policy annotation set to "Ignore".
+func hasTriggerPolicyIgnore(pod *v1.Pod) bool {
+	if pod.Annotations == nil {
+		return false
+	}
+	return pod.Annotations[constants.RestartTriggerPolicyAnnotationKey] == constants.RestartTriggerPolicyIgnore
 }
 
 // wasInstanceReady checks if the Instance was previously in Ready state
@@ -345,6 +405,50 @@ func wasInstanceReady(instance *workloadsv1alpha2.RoleInstance) bool {
 	return false
 }
 
+// isInstanceRestarting checks if the Instance is currently in a restart-policy recreation cycle.
+func isInstanceRestarting(instance *workloadsv1alpha2.RoleInstance) bool {
+	for _, cond := range instance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// setRestartingCondition marks the instance as currently restarting due to restart policy.
+// It updates both the in-memory cache (for immediate visibility) and the status condition
+// (for persistence across controller restarts).
+func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
+	// Write to in-memory cache first for immediate visibility
+	restartingCache.Store(instanceKey(instance), true)
+
+	for i, cond := range instance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
+			instance.Status.Conditions[i].Status = v1.ConditionTrue
+			instance.Status.Conditions[i].LastTransitionTime = metav1.Now()
+			instance.Status.Conditions[i].Reason = "RestartPolicyTriggered"
+			instance.Status.Conditions[i].Message = "Instance is being recreated due to restart policy"
+			return
+		}
+	}
+	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+		Type:               workloadsv1alpha2.RoleInstanceRestarting,
+		Status:             v1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "RestartPolicyTriggered",
+		Message:            "Instance is being recreated due to restart policy",
+	})
+}
+
+// ClearRestarting removes the instance from the in-memory restarting cache.
+func (c *realControl) ClearRestarting(instance *workloadsv1alpha2.RoleInstance) {
+	restartingCache.Delete(instanceKey(instance))
+}
+
+// instanceKey returns a unique key for the instance used in the restarting cache.
+func instanceKey(instance *workloadsv1alpha2.RoleInstance) string {
+	return instance.Namespace + "/" + instance.Name
+}
 
 // isGangSchedulingEnabled reports whether gang-scheduling constraints are active for the
 // given RoleInstance. The annotation is derived from the parent RBG's gang-scheduling

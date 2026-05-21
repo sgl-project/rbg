@@ -2,7 +2,14 @@
 # customComponentsPattern creates instances with multiple different types of pods
 # (components), each component can have a different size and template.
 # Use this for workloads requiring heterogeneous pod groups, e.g. disaggregated inference.
-# Default restartPolicy for customComponentsPattern is RecreateRoleInstanceOnPodRestart.
+#
+# Annotation rbg.workloads.x-k8s.io/restart-trigger-policy:
+# Valid values are "Inherit" (or empty) and "Ignore". When set to "Ignore" on a
+# pod template, pod failure and container restart events from that pod will NOT
+# trigger the role's restart policy (RecreateRoleInstanceOnPodRestart).
+# This annotation works with any deployment pattern and is useful for auxiliary
+# components (e.g., monitoring, logging sidecars) whose failures should not
+# affect the main workload.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -12,7 +19,7 @@ spec:
   roles:
     - name: engine
       replicas: 3
-      # restartPolicy defaults to RecreateRoleInstanceOnPodRestart
+      restartPolicy: RecreateRoleInstanceOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -46,12 +53,18 @@ spec:
                       requests:
                         cpu: "4"
                         memory: "8Gi"
-          - name: custom-component-3
+          # This monitoring component's pod events will NOT trigger the role's restart policy
+          # When this pod restarts or is deleted, the role/RBG will NOT be recreated
+          - name: monitoring-sidecar
             size: 1
             template:
+              metadata:
+                annotations:
+                  # Set to "Ignore" to prevent this component from triggering restart policy
+                  rbg.workloads.x-k8s.io/restart-trigger-policy: "Ignore"
               spec:
                 containers:
-                  - name: worker
+                  - name: monitor
                     image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                     ports:
-                      - containerPort: 80
+                      - containerPort: 9090
