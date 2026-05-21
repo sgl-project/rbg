@@ -32,6 +32,11 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            {{- if .Values.controllerTuning }}
+            - --max-concurrent-reconciles={{ .Values.controllerTuning.maxConcurrentReconciles | default 10 }}
+            - --kube-api-qps={{ .Values.controllerTuning.kubeApiQPS | default 20 }}
+            - --kube-api-burst={{ .Values.controllerTuning.kubeApiBurst | default 30 }}
+            {{- end }}
             {{- if .Values.portAllocator.enabled }}
             - --enable-port-allocator=true
             - --port-allocate-strategy={{ .Values.portAllocator.strategy | default "random" }}

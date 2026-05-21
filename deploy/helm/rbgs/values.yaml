@@ -39,6 +39,17 @@ tolerations: []
 # Defaults to scheduler-plugins.
 schedulerName: scheduler-plugins
 
+# Controller runtime tuning parameters.
+controllerTuning:
+  # The number of concurrent reconcile workers per controller.
+  maxConcurrentReconciles: 10
+  # Maximum QPS from the controller to the Kubernetes API server.
+  # Increase for large-scale deployments to avoid client-side throttling.
+  kubeApiQPS: 20
+  # Maximum burst for throttle from the controller to the Kubernetes API server.
+  # Should be set higher than kubeApiQPS.
+  kubeApiBurst: 30
+
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)
   enabled: true
