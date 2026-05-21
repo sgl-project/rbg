@@ -1,0 +1,21 @@
+title: Leader-Only Service
+kep-number: 260
+authors:
+  - "@wenqing.he"
+status: provisional
+creation-date: 2026-04-17
+reviewers:
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+
+
+stage: alpha
+
+
+latest-milestone: "v0.8.0"
+
+
+milestone:
+  alpha: "v0.8.0"

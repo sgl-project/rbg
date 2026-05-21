@@ -82,8 +82,8 @@ const (
 type ComponentType string
 
 const (
-	LeaderComponentType ComponentType = "Leader"
-	WorkerComponentType ComponentType = "Worker"
+	LeaderComponentType ComponentType = "leader"
+	WorkerComponentType ComponentType = "worker"
 )
 
 // ========== Compatibility Helper Functions ==========

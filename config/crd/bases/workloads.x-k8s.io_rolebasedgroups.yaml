@@ -25353,6 +25353,13 @@ spec:
                           description: LeaderTemplatePatch indicates patching for
                             the leader template.
                           x-kubernetes-preserve-unknown-fields: true
+                        sharedServiceSelection:
+                          description: SharedServiceSelection indicates the service
+                            policy of the role
+                          enum:
+                          - All
+                          - LeaderOnly
+                          type: string
                         size:
                           default: 1
                           description: |-
@@ -40416,6 +40423,13 @@ spec:
                   - message: standalonePattern and leaderWorkerPattern are mutually
                       exclusive
                     rule: '!(has(self.standalonePattern) && has(self.leaderWorkerPattern))'
+                  - message: leaderWorkerPattern.sharedServiceSelection=LeaderOnly
+                      is only supported for RoleInstanceSet + leaderWorkerPattern
+                    rule: '!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection)
+                      || self.leaderWorkerPattern.sharedServiceSelection != ''LeaderOnly''
+                      || !has(self.annotations) || !(''rbg.workloads.x-k8s.io/role-workload-type''
+                      in self.annotations) || self.annotations[''rbg.workloads.x-k8s.io/role-workload-type'']
+                      == ''workloads.x-k8s.io/v1alpha2/RoleInstanceSet'''
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
