@@ -349,16 +349,3 @@ func countUpdatedRoleInstances(f *framework.Framework, rbg *workloadsv1alpha2.Ro
 	return count
 }
 
-// getRoleStatusFromRBG returns the role status for a given role name from the RBG status.
-func getRoleStatusFromRBG(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) *workloadsv1alpha2.RoleStatus {
-	currentRBG := &workloadsv1alpha2.RoleBasedGroup{}
-	if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), currentRBG); err != nil {
-		return nil
-	}
-	for _, rs := range currentRBG.Status.RoleStatuses {
-		if rs.Name == roleName {
-			return &rs
-		}
-	}
-	return nil
-}

@@ -21,12 +21,9 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
@@ -184,23 +181,3 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 	})
 }
 
-// getPodImagesForRole returns container images for pods of a given role.
-func getPodImagesForRole(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) map[string]string {
-	podList := &corev1.PodList{}
-	err := f.Client.List(f.Ctx, podList,
-		client.InNamespace(rbg.Namespace),
-		client.MatchingLabels{
-			constants.GroupNameLabelKey: rbg.Name,
-			constants.RoleNameLabelKey:  roleName,
-		},
-	)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-
-	result := make(map[string]string, len(podList.Items))
-	for _, pod := range podList.Items {
-		if pod.DeletionTimestamp == nil && len(pod.Spec.Containers) > 0 {
-			result[pod.Name] = pod.Spec.Containers[0].Image
-		}
-	}
-	return result
-}

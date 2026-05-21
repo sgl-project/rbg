@@ -80,7 +80,10 @@ func RunConvergenceTestCases(f *framework.Framework) {
 				"all instances should converge to the same final revision")
 
 			// Verify 3 ready instances with correct count
-			gomega.Expect(countReadyRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(3))
+			gomega.Eventually(func() int {
+				return countReadyRoleInstances(f, rbg, "role-1")
+			}, utils.Timeout, utils.Interval).Should(gomega.Equal(3),
+				"all instances should be ready after convergence")
 			gomega.Expect(countRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(3))
 
 			// Verify stability (no continued churn after convergence)
