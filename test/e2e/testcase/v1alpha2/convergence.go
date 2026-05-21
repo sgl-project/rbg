@@ -86,8 +86,13 @@ func RunConvergenceTestCases(f *framework.Framework) {
 				"all instances should be ready after convergence")
 			gomega.Expect(countRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(3))
 
-			// Verify stability (no continued churn after convergence)
-			finalPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
+			// Verify stability (no continued churn after convergence).
+			// Wait for exactly 3 non-deleting pods before capturing stable state.
+			var finalPodUIDs map[string]types.UID
+			gomega.Eventually(func() int {
+				finalPodUIDs = getPodUIDsForRole(f, rbg, "role-1")
+				return len(finalPodUIDs)
+			}, utils.Timeout, utils.Interval).Should(gomega.Equal(3))
 			gomega.Consistently(func() map[string]types.UID {
 				return getPodUIDsForRole(f, rbg, "role-1")
 			}, 15, 2).Should(gomega.Equal(finalPodUIDs),
@@ -158,8 +163,13 @@ func RunConvergenceTestCases(f *framework.Framework) {
 			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 				"all instances should be on the latest revision after mid-rollout scaling")
 
-			// Verify stability after convergence
-			finalPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
+			// Verify stability after convergence.
+			// Wait for exactly 6 non-deleting pods before capturing stable state.
+			var finalPodUIDs map[string]types.UID
+			gomega.Eventually(func() int {
+				finalPodUIDs = getPodUIDsForRole(f, rbg, "role-1")
+				return len(finalPodUIDs)
+			}, utils.Timeout, utils.Interval).Should(gomega.Equal(6))
 			gomega.Consistently(func() map[string]types.UID {
 				return getPodUIDsForRole(f, rbg, "role-1")
 			}, 15, 2).Should(gomega.Equal(finalPodUIDs),
