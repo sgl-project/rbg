@@ -18,6 +18,7 @@ package sync
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	apps "k8s.io/api/apps/v1"
@@ -33,18 +34,28 @@ import (
 type Interface interface {
 	Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, error)
 	Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error)
+	// ClearRestarting removes the instance from the in-memory restarting cache.
+	// Called when the instance transitions to Ready.
+	ClearRestarting(instance *workloadsv1alpha2.RoleInstance)
 }
+
+// restartingCache tracks instances currently undergoing restart-policy recreation.
+// This in-memory cache provides immediate visibility that doesn't depend on the
+// informer cache catching up with the latest status write.
+var restartingCache sync.Map
 
 type realControl struct {
 	client.Client
+	apiReader        client.Reader
 	inplaceControl   inplaceupdate.Interface
 	recorder         record.EventRecorder
 	lifecycleControl lifecycle.Interface
 }
 
-func New(c client.Client, recorder record.EventRecorder) Interface {
+func New(c client.Client, apiReader client.Reader, recorder record.EventRecorder) Interface {
 	return &realControl{
 		Client:           c,
+		apiReader:        apiReader,
 		inplaceControl:   inplaceupdate.New(c),
 		lifecycleControl: lifecycle.New(c),
 		recorder:         recorder,

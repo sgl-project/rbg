@@ -17,6 +17,7 @@ limitations under the License.
 package sync
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -548,12 +549,13 @@ func TestShouldRecreateInstance(t *testing.T) {
 	}
 }
 
-// TestShouldRecreateInstance_RestartingConditionPreventsRecreation tests that
-// the Restarting condition prevents cascading restart-policy recreations.
-func TestShouldRecreateInstance_RestartingConditionPreventsRecreation(t *testing.T) {
+// TestRestartingCachePreventsRecreation tests that the in-memory restarting cache
+// prevents shouldRecreateInstanceGuarded from triggering when the instance is already restarting.
+func TestRestartingCachePreventsRecreation(t *testing.T) {
 	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-instance",
+			Namespace:  "default",
 			Generation: 1,
 		},
 		Spec: workloadsv1alpha2.RoleInstanceSpec{
@@ -569,11 +571,6 @@ func TestShouldRecreateInstance_RestartingConditionPreventsRecreation(t *testing
 					Type:   workloadsv1alpha2.RoleInstanceReady,
 					Status: corev1.ConditionTrue,
 				},
-				{
-					Type:   workloadsv1alpha2.RoleInstanceRestarting,
-					Status: corev1.ConditionTrue,
-					Reason: "RestartPolicyTriggered",
-				},
 			},
 		},
 	}
@@ -586,14 +583,19 @@ func TestShouldRecreateInstance_RestartingConditionPreventsRecreation(t *testing
 				},
 			},
 		},
-		{
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
 	}
 
-	// Even though a container has RestartCount > 0, the Restarting condition prevents re-trigger
-	result := shouldRecreateInstance(instance, pods)
-	assert.False(t, result, "should not recreate when Restarting condition is True")
+	// Without cache: shouldRecreateInstance returns true
+	assert.True(t, shouldRecreateInstance(instance, pods))
+
+	// Set the in-memory cache to mark instance as restarting
+	restartingCache.Store(instanceKey(instance), true)
+	defer restartingCache.Delete(instanceKey(instance))
+
+	// The guarded version with a nil apiReader (cache hit means no API call needed)
+	ctrl := &realControl{}
+	result := ctrl.shouldRecreateInstanceGuarded(context.Background(), instance, pods)
+	assert.False(t, result, "should not recreate when instance is in restarting cache")
 }
 
 // TestIsInstanceRestarting tests the isInstanceRestarting helper function

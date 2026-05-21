@@ -78,7 +78,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
-	if shouldRecreateInstance(updateInstance, allPods) {
+	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods) {
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
@@ -297,6 +297,36 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 	return nil
 }
 
+// shouldRecreateInstanceGuarded wraps shouldRecreateInstance with a deferred guard:
+// when the core logic decides to recreate, a final check ensures the instance isn't
+// already in a restart cycle. This uses an in-memory LRU cache (instant, no informer lag)
+// with a fallback to a direct API server read for the persisted Restarting condition
+// (survives controller restarts).
+func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) (recreate bool) {
+	defer func() {
+		if recreate && c.isAlreadyRestarting(ctx, instance) {
+			recreate = false
+		}
+	}()
+	return shouldRecreateInstance(instance, pods)
+}
+
+// isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
+// recreation. It first checks the in-memory cache (zero latency, immune to informer lag),
+// then falls back to a direct API server read to check the persisted Restarting condition.
+func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) bool {
+	// Fast path: check in-memory cache
+	if _, ok := restartingCache.Load(instanceKey(instance)); ok {
+		return true
+	}
+	// Slow path: read fresh from API server (bypasses informer cache)
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
+		return false
+	}
+	return isInstanceRestarting(fresh)
+}
+
 // shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
 // This applies when restartPolicy = RecreateRoleInstanceOnPodRestart AND:
 //   - Any Pod is in Failed phase, OR
@@ -327,13 +357,6 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// and spec is not being changed (Generation == ObservedGeneration).
 	// This avoids triggering recreate during initial creation or scaling up.
 	if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
-		return false
-	}
-
-	// If the instance is already in a restart-policy recreation cycle, don't trigger again.
-	// This prevents cascading restarts when newly recreated pods have transient RestartCount > 0.
-	// The Restarting condition is cleared once the instance becomes Ready again.
-	if isInstanceRestarting(instance) {
 		return false
 	}
 
@@ -393,7 +416,12 @@ func isInstanceRestarting(instance *workloadsv1alpha2.RoleInstance) bool {
 }
 
 // setRestartingCondition marks the instance as currently restarting due to restart policy.
+// It updates both the in-memory cache (for immediate visibility) and the status condition
+// (for persistence across controller restarts).
 func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
+	// Write to in-memory cache first for immediate visibility
+	restartingCache.Store(instanceKey(instance), true)
+
 	for i, cond := range instance.Status.Conditions {
 		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
 			instance.Status.Conditions[i].Status = v1.ConditionTrue
@@ -410,6 +438,16 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 		Reason:             "RestartPolicyTriggered",
 		Message:            "Instance is being recreated due to restart policy",
 	})
+}
+
+// ClearRestarting removes the instance from the in-memory restarting cache.
+func (c *realControl) ClearRestarting(instance *workloadsv1alpha2.RoleInstance) {
+	restartingCache.Delete(instanceKey(instance))
+}
+
+// instanceKey returns a unique key for the instance used in the restarting cache.
+func instanceKey(instance *workloadsv1alpha2.RoleInstance) string {
+	return instance.Namespace + "/" + instance.Name
 }
 
 // isGangSchedulingEnabled reports whether gang-scheduling constraints are active for the

@@ -55,7 +55,7 @@ func NewReconciler(mgr ctrl.Manager) reconcile.Reconciler {
 		controllerHistory: historyutil.NewHistory(mgr.GetClient()),
 		statusUpdater:     newStatusUpdater(mgr.GetClient()),
 		revisionControl:   revisioncontrol.NewRevisionControl(),
-		syncControl:       synccontrol.New(mgr.GetClient(), recorder),
+		syncControl:       synccontrol.New(mgr.GetClient(), mgr.GetAPIReader(), recorder),
 	}
 }
 
@@ -134,6 +134,14 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {
 		logger.Error(err, "Failed to update instance status")
 		return reconcile.Result{}, err
+	}
+
+	// Clear the in-memory restarting cache when instance becomes Ready
+	for _, cond := range newStatus.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
+			r.syncControl.ClearRestarting(instance)
+			break
+		}
 	}
 
 	if err = r.truncateHistory(filteredPods, revisions, currentRevision, updateRevision); err != nil {
