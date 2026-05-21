@@ -57,16 +57,27 @@ func RunConvergenceTestCases(f *framework.Framework) {
 				rbg.Spec.Roles[0].StandalonePattern.Template.Labels = map[string]string{"version": "v3"}
 			})
 
-			// Wait for final state to converge
+			// Wait for final state to converge — ExpectRbgV2Equal only checks ReadyReplicas,
+			// so we also need to wait for the rolling update to fully complete.
 			f.ExpectRbgV2Equal(rbg)
 
-			// All instances should be on the same (latest) revision
-			finalRevision := getRoleInstanceRevision(f, rbg, "role-1", 0)
-			gomega.Expect(finalRevision).ShouldNot(gomega.BeEmpty())
-			for i := 1; i < 3; i++ {
-				gomega.Expect(getRoleInstanceRevision(f, rbg, "role-1", i)).Should(gomega.Equal(finalRevision),
-					"all instances should converge to the same final revision")
-			}
+			// All instances should be on the same (latest) revision.
+			// Use Eventually because the rolling update may still be in progress
+			// even after all replicas report Ready.
+			var finalRevision string
+			gomega.Eventually(func() bool {
+				finalRevision = getRoleInstanceRevision(f, rbg, "role-1", 0)
+				if finalRevision == "" {
+					return false
+				}
+				for i := 1; i < 3; i++ {
+					if getRoleInstanceRevision(f, rbg, "role-1", i) != finalRevision {
+						return false
+					}
+				}
+				return true
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+				"all instances should converge to the same final revision")
 
 			// Verify 3 ready instances with correct count
 			gomega.Expect(countReadyRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(3))
@@ -127,12 +138,22 @@ func RunConvergenceTestCases(f *framework.Framework) {
 
 			gomega.Expect(countRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(6))
 
-			// All should be on the same revision
-			finalRevision := getRoleInstanceRevision(f, rbg, "role-1", 0)
-			for i := 1; i < 6; i++ {
-				gomega.Expect(getRoleInstanceRevision(f, rbg, "role-1", i)).Should(gomega.Equal(finalRevision),
-					"all instances should be on the latest revision after mid-rollout scaling")
-			}
+			// All should be on the same revision.
+			// Use Eventually because the rolling update may still be in progress.
+			var finalRevision string
+			gomega.Eventually(func() bool {
+				finalRevision = getRoleInstanceRevision(f, rbg, "role-1", 0)
+				if finalRevision == "" {
+					return false
+				}
+				for i := 1; i < 6; i++ {
+					if getRoleInstanceRevision(f, rbg, "role-1", i) != finalRevision {
+						return false
+					}
+				}
+				return true
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+				"all instances should be on the latest revision after mid-rollout scaling")
 
 			// Verify stability after convergence
 			finalPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
