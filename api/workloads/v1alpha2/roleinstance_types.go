@@ -54,7 +54,6 @@ const (
 	RoleInstanceReadyPolicyTypeNone RoleInstanceReadyPolicyType = "None"
 )
 
-
 type RoleInstanceComponent struct {
 	// Name is the type name of the component.
 	Name string `json:"name"`
@@ -163,6 +162,11 @@ const (
 
 	// RoleInstanceFailedUpdate indicates RoleInstance controller failed to update pods.
 	RoleInstanceFailedUpdate RoleInstanceConditionType = "FailedUpdate"
+
+	// RoleInstanceRestarting indicates the instance is being recreated due to restart policy.
+	// While this condition is True, further restart-policy recreations are suppressed to
+	// prevent cascading restart loops.
+	RoleInstanceRestarting RoleInstanceConditionType = "Restarting"
 )
 
 // RoleInstanceCondition describes the state of a RoleInstance at a certain point.

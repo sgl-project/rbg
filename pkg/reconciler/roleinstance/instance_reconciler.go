@@ -170,6 +170,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 			Message:            podsScaleErr.Error(),
 		})
 	}
+	// Propagate Restarting condition if it was set during Scale (restart-policy triggered)
+	for _, cond := range updateInstance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
+			newStatus.Conditions = append(newStatus.Conditions, cond)
+			break
+		}
+	}
 	if scaling {
 		return syncResult{err: podsScaleErr}
 	}

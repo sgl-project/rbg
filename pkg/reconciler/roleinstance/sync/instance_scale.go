@@ -23,6 +23,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -78,6 +79,8 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
 	if shouldRecreateInstance(updateInstance, allPods) {
+		// Mark instance as restarting to prevent cascading re-triggers
+		setRestartingCondition(updateInstance)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
 			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))
 		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
@@ -327,6 +330,13 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		return false
 	}
 
+	// If the instance is already in a restart-policy recreation cycle, don't trigger again.
+	// This prevents cascading restarts when newly recreated pods have transient RestartCount > 0.
+	// The Restarting condition is cleared once the instance becomes Ready again.
+	if isInstanceRestarting(instance) {
+		return false
+	}
+
 	for _, p := range pods {
 		if hasTriggerPolicyIgnore(p) {
 			continue
@@ -372,6 +382,35 @@ func wasInstanceReady(instance *workloadsv1alpha2.RoleInstance) bool {
 	return false
 }
 
+// isInstanceRestarting checks if the Instance is currently in a restart-policy recreation cycle.
+func isInstanceRestarting(instance *workloadsv1alpha2.RoleInstance) bool {
+	for _, cond := range instance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// setRestartingCondition marks the instance as currently restarting due to restart policy.
+func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
+	for i, cond := range instance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
+			instance.Status.Conditions[i].Status = v1.ConditionTrue
+			instance.Status.Conditions[i].LastTransitionTime = metav1.Now()
+			instance.Status.Conditions[i].Reason = "RestartPolicyTriggered"
+			instance.Status.Conditions[i].Message = "Instance is being recreated due to restart policy"
+			return
+		}
+	}
+	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+		Type:               workloadsv1alpha2.RoleInstanceRestarting,
+		Status:             v1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "RestartPolicyTriggered",
+		Message:            "Instance is being recreated due to restart policy",
+	})
+}
 
 // isGangSchedulingEnabled reports whether gang-scheduling constraints are active for the
 // given RoleInstance. The annotation is derived from the parent RBG's gang-scheduling

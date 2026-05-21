@@ -548,6 +548,125 @@ func TestShouldRecreateInstance(t *testing.T) {
 	}
 }
 
+// TestShouldRecreateInstance_RestartingConditionPreventsRecreation tests that
+// the Restarting condition prevents cascading restart-policy recreations.
+func TestShouldRecreateInstance_RestartingConditionPreventsRecreation(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-instance",
+			Generation: 1,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Size: ptr.To[int32](2)},
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1,
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{
+					Type:   workloadsv1alpha2.RoleInstanceReady,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   workloadsv1alpha2.RoleInstanceRestarting,
+					Status: corev1.ConditionTrue,
+					Reason: "RestartPolicyTriggered",
+				},
+			},
+		},
+	}
+	pods := []*corev1.Pod{
+		{
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{
+					{Name: "main", RestartCount: 1},
+				},
+			},
+		},
+		{
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+	}
+
+	// Even though a container has RestartCount > 0, the Restarting condition prevents re-trigger
+	result := shouldRecreateInstance(instance, pods)
+	assert.False(t, result, "should not recreate when Restarting condition is True")
+}
+
+// TestIsInstanceRestarting tests the isInstanceRestarting helper function
+func TestIsInstanceRestarting(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance *workloadsv1alpha2.RoleInstance
+		expected bool
+	}{
+		{
+			name: "Restarting condition True",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Restarting condition False",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionFalse},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "No Restarting condition",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isInstanceRestarting(tt.instance)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestSetRestartingCondition tests the setRestartingCondition helper function
+func TestSetRestartingCondition(t *testing.T) {
+	t.Run("sets condition when not present", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{}
+		setRestartingCondition(instance)
+		assert.True(t, isInstanceRestarting(instance))
+	})
+
+	t.Run("updates existing condition", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionFalse},
+				},
+			},
+		}
+		setRestartingCondition(instance)
+		assert.True(t, isInstanceRestarting(instance))
+	})
+}
+
 // TestWasInstanceReady tests the wasInstanceReady helper function
 func TestWasInstanceReady(t *testing.T) {
 	tests := []struct {

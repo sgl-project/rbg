@@ -93,6 +93,7 @@ func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceCond
 		workloadsv1alpha2.RoleInstanceAllPodsReady,
 		workloadsv1alpha2.RoleInstanceFailedScale,
 		workloadsv1alpha2.RoleInstanceFailedUpdate,
+		workloadsv1alpha2.RoleInstanceRestarting,
 		// Written externally but always copied into newStatus by setInstanceConditions,
 		// so they are already present and must not be appended again from the live clone.
 		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
@@ -155,6 +156,15 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	if instance.Spec.ReadyPolicy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady && podsReadyCondition != nil {
 		conditions = append(conditions, *podsReadyCondition)
 	}
+	// Determine if the instance is now Ready — used to clear the Restarting condition.
+	instanceReady := false
+	for _, c := range conditions {
+		if c.Type == workloadsv1alpha2.RoleInstanceReady && c.Status == v1.ConditionTrue {
+			instanceReady = true
+			break
+		}
+	}
+
 	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
 	for _, c := range conditions {
 		innerConditionTypes.Insert(c.Type)
@@ -162,6 +172,10 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	var customInstanceConditions []workloadsv1alpha2.RoleInstanceCondition
 	for _, c := range instance.Status.Conditions {
 		if !innerConditionTypes.Has(c.Type) {
+			// Clear Restarting condition when instance becomes Ready
+			if c.Type == workloadsv1alpha2.RoleInstanceRestarting && instanceReady {
+				continue
+			}
 			customInstanceConditions = append(customInstanceConditions, c)
 		}
 	}
