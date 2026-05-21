@@ -19,8 +19,11 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -140,6 +143,9 @@ func main() {
 		kubeAPIBurst int
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
 		schedulerName string
+		// Pprof profiling
+		enablePprof bool
+		pprofAddr   string
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -196,6 +202,8 @@ func main() {
 		"Maximum burst for throttle from this controller to the Kubernetes API server. "+
 			"Should be set higher than --kube-api-qps.",
 	)
+	flag.BoolVar(&enablePprof, "enable-pprof", false, "Enable pprof profiling server for performance debugging.")
+	flag.StringVar(&pprofAddr, "pprof-bind-address", ":6060", "The address the pprof endpoint binds to.")
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
@@ -433,6 +441,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if enablePprof {
+		startPprofServer(pprofAddr)
+	}
+
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
@@ -536,6 +548,43 @@ func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult
 		CRDNames:    rbgwebhook.ConversionWebhookCRDs(),
 	}
 	return webhookCertReconciler.SetupWithManager(mgr, options)
+}
+
+func startPprofServer(pprofAddr string) {
+	setupLog.Info("Enabling pprof", "addr", pprofAddr)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	pprofServer := http.Server{
+		Addr:              pprofAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	setupLog.Info("Starting pprof HTTP server", "addr", pprofServer.Addr)
+
+	go func() {
+		go func() {
+			ctx := context.Background()
+			<-ctx.Done()
+
+			shutdownCtx, cancelFunc := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancelFunc()
+
+			if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+				setupLog.Error(err, "Failed to shutdown pprof HTTP server")
+			}
+		}()
+
+		if err := pprofServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			setupLog.Error(err, "Failed to start pprof HTTP server")
+		}
+	}()
 }
 
 func cacheOptions() cache.Options {
