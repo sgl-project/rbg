@@ -26,6 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
+	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -100,9 +101,21 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 			// Wait for update to complete
 			f.ExpectRbgV2Equal(rbg)
 
-			// Verify pods were recreated (UIDs changed = fallback to recreate)
-			updatedPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
-			gomega.Expect(updatedPodUIDs).ShouldNot(gomega.Equal(initialPodUIDs),
+			// Verify pods were recreated (UIDs changed = fallback to recreate).
+			// Use Eventually because the rolling update may still be in progress.
+			var updatedPodUIDs map[string]types.UID
+			gomega.Eventually(func() bool {
+				updatedPodUIDs = getPodUIDsForRole(f, rbg, "role-1")
+				if len(updatedPodUIDs) != 2 {
+					return false
+				}
+				for name := range updatedPodUIDs {
+					if initialPodUIDs[name] == updatedPodUIDs[name] {
+						return false
+					}
+				}
+				return true
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 				"pod UIDs should change when in-place update is not possible (command change)")
 
 			// Verify pods are stable after recreate (no extra restarts)
@@ -163,13 +176,22 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 			// Wait for all instances to be updated
 			f.ExpectRbgV2Equal(rbg)
 
-			// Verify all instances now have the new revision
-			newRevision := getRoleInstanceRevision(f, rbg, "role-1", 0)
-			gomega.Expect(newRevision).ShouldNot(gomega.Equal(initialRevision),
+			// Verify all instances now have the new revision.
+			// Use Eventually because the rolling update may still be in progress.
+			var newRevision string
+			gomega.Eventually(func() bool {
+				newRevision = getRoleInstanceRevision(f, rbg, "role-1", 0)
+				if newRevision == "" || newRevision == initialRevision {
+					return false
+				}
+				for i := 1; i < 3; i++ {
+					if getRoleInstanceRevision(f, rbg, "role-1", i) != newRevision {
+						return false
+					}
+				}
+				return true
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 				"instances should be updated to new revision after resume")
-			for i := 1; i < 3; i++ {
-				gomega.Expect(getRoleInstanceRevision(f, rbg, "role-1", i)).Should(gomega.Equal(newRevision))
-			}
 
 			// Verify stability after resume (no extra restarts)
 			finalPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
@@ -180,4 +202,3 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 		})
 	})
 }
-

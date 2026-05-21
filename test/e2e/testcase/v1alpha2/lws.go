@@ -98,7 +98,6 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectRbgV2Equal(rbg)
 	})
 
-
 	ginkgo.It("leaderWorkerPattern env variables are correctly injected in default RoleInstanceSet mode", func() {
 		role := wrappersv2.BuildLeaderWorkerRole("role-1").WithSize(3).Obj()
 		// Replace the default nginx container with a busybox one that prints env vars.

@@ -76,7 +76,6 @@ func CreatePatioRuntime(ctx context.Context, rclient client.Client) error {
 	return nil
 }
 
-
 func UpdateRbg(
 	ctx context.Context, rclient client.Client, rbg *workloadsv1alpha1.RoleBasedGroup,
 	updateFunc func(rbg *workloadsv1alpha1.RoleBasedGroup),
@@ -189,4 +188,3 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 	}
 	return count, nil
 }
-

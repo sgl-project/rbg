@@ -338,7 +338,6 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	}
 }
 
-
 func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	// test 4 replicas sts rolling update process, maxSurge=2, maxUnavailable=2
 	schema := runtime.NewScheme()

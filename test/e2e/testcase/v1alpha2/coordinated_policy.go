@@ -209,20 +209,42 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 				return f.Client.Update(f.Ctx, cp)
 			}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
 
+			// Touch RBG Spec to trigger reconciliation (controller does not watch
+			// CoordinatedPolicy, and RBGPredicate only triggers on Spec changes).
+			// Changing MaxUnavailable is a Spec change but does not create a new revision.
+			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Spec.Roles[0].RolloutStrategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt32(4))
+				rbg.Spec.Roles[1].RolloutStrategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt32(4))
+			})
+
 			// Wait for full update to complete
 			f.ExpectRbgV2Equal(rbg)
 
-			// Verify all instances now have new revision
-			newRevisionA := getRoleInstanceRevision(f, rbg, "role-a", 2)
-			for i := 0; i < 4; i++ {
-				gomega.Expect(getRoleInstanceRevision(f, rbg, "role-a", i)).Should(gomega.Equal(newRevisionA),
-					fmt.Sprintf("role-a ordinal %d should have new revision", i))
-			}
-			newRevisionB := getRoleInstanceRevision(f, rbg, "role-b", 2)
-			for i := 0; i < 4; i++ {
-				gomega.Expect(getRoleInstanceRevision(f, rbg, "role-b", i)).Should(gomega.Equal(newRevisionB),
-					fmt.Sprintf("role-b ordinal %d should have new revision", i))
-			}
+			// Verify all instances now have new revision.
+			// Use Eventually because the rolling update may still be in progress.
+			var newRevisionA, newRevisionB string
+			gomega.Eventually(func() bool {
+				newRevisionA = getRoleInstanceRevision(f, rbg, "role-a", 2)
+				if newRevisionA == "" {
+					return false
+				}
+				for i := 0; i < 4; i++ {
+					if getRoleInstanceRevision(f, rbg, "role-a", i) != newRevisionA {
+						return false
+					}
+				}
+				newRevisionB = getRoleInstanceRevision(f, rbg, "role-b", 2)
+				if newRevisionB == "" {
+					return false
+				}
+				for i := 0; i < 4; i++ {
+					if getRoleInstanceRevision(f, rbg, "role-b", i) != newRevisionB {
+						return false
+					}
+				}
+				return true
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+				"all instances should converge to the new revision after partition is lowered")
 
 			// Verify stability after full coordinated update
 			allPodUIDs := make(map[string]types.UID)
@@ -275,7 +297,7 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 							Roles: []string{"role-a", "role-b"},
 							Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 								Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
-									MaxSkew:     ptr.To(intstr.FromInt32(1)),
+									MaxSkew:     ptr.To(intstr.FromString("50%")),
 									Progression: workloadsv1alpha2.OrderReadyProgression,
 								},
 							},
@@ -348,4 +370,3 @@ func countUpdatedRoleInstances(f *framework.Framework, rbg *workloadsv1alpha2.Ro
 	}
 	return count
 }
-

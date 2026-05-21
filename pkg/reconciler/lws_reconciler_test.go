@@ -361,7 +361,6 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-
 // TestLwsSpecEqual_RolloutStrategyDiff tests that lwsSpecEqual detects RolloutStrategy
 // differences, which is necessary for triggering reconciliation on partition changes (PR #151 fix)
 func TestLwsSpecEqual_RolloutStrategyDiff(t *testing.T) {
