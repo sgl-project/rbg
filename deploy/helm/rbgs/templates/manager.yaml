@@ -44,6 +44,10 @@ spec:
             - --port-range={{ .Values.portAllocator.portRange | default 5000 }}
             {{- end }}
             - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
+            {{- if .Values.pprof.enabled }}
+            - --enable-pprof=true
+            - --pprof-bind-address=:{{ .Values.pprof.port | default 6060 }}
+            {{- end }}
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -55,6 +59,12 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.pprof.enabled }}
+          ports:
+            - name: pprof
+              containerPort: {{ .Values.pprof.port | default 6060 }}
+              protocol: TCP
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
