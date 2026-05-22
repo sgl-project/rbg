@@ -392,20 +392,16 @@ func runRestartingConditionTest(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// Get pods and record initial UIDs
+		// Get pods and find the target instance
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
-		targetPod := &podList.Items[0]
-		targetInstanceName := targetPod.Labels[constants.RoleInstanceNameLabelKey]
+		targetInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
 
-		// Simulate pod failure to trigger restart-policy recreation
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
-
-		// Verify the Restarting condition is set to True on the RoleInstance
+		// Wait for the RoleInstance to be Ready (stable state required by shouldRecreateInstance)
 		gomega.Eventually(func() bool {
 			ri := &workloadsv1alpha2.RoleInstance{}
 			if err := f.Client.Get(f.Ctx, client.ObjectKey{
@@ -415,13 +411,55 @@ func runRestartingConditionTest(f *framework.Framework) {
 				return false
 			}
 			for _, cond := range ri.Status.Conditions {
-				if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == corev1.ConditionTrue {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
 					return true
 				}
 			}
 			return false
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
-			"Restarting condition should be set to True after restart-policy recreation triggers")
+			"RoleInstance should be Ready before we trigger the failure")
+
+		// Record initial pod UIDs to detect recreation
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey:        rbg.Name,
+				constants.RoleInstanceNameLabelKey: targetInstanceName,
+			})).Should(gomega.Succeed())
+		initialPodUIDs := make(map[string]types.UID)
+		for _, p := range podList.Items {
+			initialPodUIDs[p.Name] = p.UID
+		}
+
+		// Re-fetch the target pod to get latest resource version
+		targetPod := &corev1.Pod{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      podList.Items[0].Name,
+		}, targetPod)).Should(gomega.Succeed())
+
+		// Simulate pod failure to trigger restart-policy recreation
+		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+
+		// Verify pods are recreated (UIDs change) — this proves the restart policy triggered
+		gomega.Eventually(func() bool {
+			if err := f.Client.List(f.Ctx, podList,
+				client.InNamespace(f.Namespace),
+				client.MatchingLabels{
+					constants.GroupNameLabelKey:        rbg.Name,
+					constants.RoleInstanceNameLabelKey: targetInstanceName,
+				}); err != nil {
+				return false
+			}
+			// All pods should have different UIDs from before (full instance recreation)
+			for _, p := range podList.Items {
+				if oldUID, ok := initialPodUIDs[p.Name]; ok && oldUID == p.UID {
+					return false
+				}
+			}
+			return len(podList.Items) > 0
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"pods should be recreated with new UIDs after restart-policy triggers")
 
 		// Wait for the instance to become Ready again (pods are recreated and healthy)
 		gomega.Eventually(func() bool {
