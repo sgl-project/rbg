@@ -274,6 +274,78 @@ The RGB controller supports local operation or debugging. Before running the con
     $ ./bin/manager --development=true --health-probe-bind-address=:8082
     ```
 
+### Profiling with pprof
+
+The controller has a built-in pprof server that can be enabled for performance debugging and stress testing.
+
+#### Running Locally with pprof
+
+```shell
+# Build and run with pprof enabled
+make build
+./bin/manager --enable-webhooks=none --enable-pprof=true --pprof-bind-address=:6060
+```
+
+#### Deploying with pprof via Helm
+
+Set `pprof.enabled=true` in your Helm values:
+
+```shell
+helm upgrade --install rbgs deploy/helm/rbgs \
+    --namespace rbgs-system \
+    --set pprof.enabled=true \
+    --set pprof.port=6060
+```
+
+Or in `values.yaml`:
+
+```yaml
+pprof:
+  enabled: true
+  port: 6060
+```
+
+#### Collecting Profiles
+
+Once the pprof server is running, collect profiles with:
+
+```shell
+# If running locally
+PPROF_ADDR=localhost:6060
+
+# If deployed in cluster, port-forward first
+kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
+PPROF_ADDR=localhost:6060
+
+# Heap (memory) profile
+curl -s http://${PPROF_ADDR}/debug/pprof/heap > heap.prof
+go tool pprof -top heap.prof
+
+# CPU profile (30 seconds sampling)
+curl -s "http://${PPROF_ADDR}/debug/pprof/profile?seconds=30" > cpu.prof
+go tool pprof -top cpu.prof
+
+# Goroutine profile
+curl -s http://${PPROF_ADDR}/debug/pprof/goroutine > goroutine.prof
+go tool pprof -top goroutine.prof
+
+# Allocation profile
+curl -s http://${PPROF_ADDR}/debug/pprof/allocs > allocs.prof
+go tool pprof -top allocs.prof
+
+# Interactive analysis
+go tool pprof -http=:8888 cpu.prof
+```
+
+#### Available Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-pprof` | `false` | Enable pprof profiling server |
+| `--pprof-bind-address` | `:6060` | Address the pprof endpoint binds to |
+
+> **Note**: pprof exposes runtime internals. Do not enable in production unless behind a network policy or firewall.
+
 ### Debugging RGB Controller
 
 The RBG controller component supports local operation or debugging. Before running the controller component locally, it is necessary to configure kubeconfig in advance in the local environment (configured through the `KUBECONFIG` environment variable or through the `$HOME/.kube/config` file) and be able to access a Kubernetes cluster normally.

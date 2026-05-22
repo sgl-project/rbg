@@ -50,6 +50,15 @@ controllerTuning:
   # Should be set higher than kubeApiQPS.
   kubeApiBurst: 30
 
+# Pprof profiling server configuration.
+# When enabled, exposes pprof endpoints for performance debugging.
+pprof:
+  enabled: false
+  # The address the pprof endpoint binds to.
+  bindAddress: ":6060"
+  # The container port exposed for pprof (used in pod spec).
+  containerPort: 6060
+
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)
   enabled: true
