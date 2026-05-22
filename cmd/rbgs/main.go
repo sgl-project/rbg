@@ -135,6 +135,9 @@ func main() {
 		startPort               int
 		portRange               int
 		enablePortAllocator     bool
+		// Kubernetes API client tuning
+		kubeAPIQPS   float64
+		kubeAPIBurst int
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
 		schedulerName string
 	)
@@ -183,14 +186,18 @@ func main() {
 		"The scheduler name to use for gang scheduling. Supported values: scheduler-plugins, volcano. "+
 			"Defaults to scheduler-plugins.",
 	)
-	flag.Parse()
+	flag.Float64Var(
+		&kubeAPIQPS, "kube-api-qps", 20,
+		"Maximum QPS from this controller to the Kubernetes API server. "+
+			"Increase for large-scale deployments to avoid client-side throttling.",
+	)
+	flag.IntVar(
+		&kubeAPIBurst, "kube-api-burst", 30,
+		"Maximum burst for throttle from this controller to the Kubernetes API server. "+
+			"Should be set higher than --kube-api-qps.",
+	)
 
-	// Validate webhook mode to prevent typos silently disabling webhooks.
-	if err := validateWebhookMode(webhookMode); err != nil {
-		setupLog.Error(err, "invalid --enable-webhooks value")
-		os.Exit(1)
-	}
-
+	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
 		Development: development,
 		EncoderConfigOptions: []zap.EncoderConfigOption{
@@ -209,6 +216,14 @@ func main() {
 		},
 	}
 	opts.BindFlags(flag.CommandLine)
+
+	flag.Parse()
+
+	// Validate webhook mode to prevent typos silently disabling webhooks.
+	if err := validateWebhookMode(webhookMode); err != nil {
+		setupLog.Error(err, "invalid --enable-webhooks value")
+		os.Exit(1)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -287,8 +302,12 @@ func main() {
 		)
 	}
 
+	restConfig := ctrl.GetConfigOrDie()
+	restConfig.QPS = float32(kubeAPIQPS)
+	restConfig.Burst = kubeAPIBurst
+
 	mgr, err := ctrl.NewManager(
-		ctrl.GetConfigOrDie(), newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
+		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
