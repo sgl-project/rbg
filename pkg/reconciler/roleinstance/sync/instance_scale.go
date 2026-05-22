@@ -18,6 +18,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 
@@ -28,11 +29,12 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
+	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
@@ -354,9 +356,15 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	}
 
 	// Only trigger when Instance was previously Ready (stable state)
-	// and spec is not being changed (Generation == ObservedGeneration).
-	// This avoids triggering recreate during initial creation or scaling up.
+	// and is NOT in the middle of any update.
+	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
 	if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
+		return false
+	}
+	// CurrentRevision != UpdateRevision means a rolling update is in progress
+	// (not all pods have converged to the target revision yet). Container restarts
+	// during this window are from the update process, not unexpected failures.
+	if instance.Status.CurrentRevision != instance.Status.UpdateRevision {
 		return false
 	}
 
@@ -364,12 +372,17 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		if hasTriggerPolicyIgnore(p) {
 			continue
 		}
+		// If any pod is currently undergoing an in-place update, skip recreation entirely.
+		// The container restart is expected and should not trigger instance recreation.
+		if isPodInPlaceUpdating(p) {
+			return false
+		}
 		// Check if any Pod is in Failed phase (excluding pods being deleted)
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
 			return true
 		}
-		// Check if any container has restarted
-		if containerRestarted(p) {
+		// Check if any container has restarted beyond what's expected from in-place updates.
+		if containerRestarted(p) && !isContainerRestartExpectedFromInPlaceUpdate(p) {
 			return true
 		}
 	}
@@ -385,6 +398,48 @@ func containerRestarted(pod *v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// isPodInPlaceUpdating checks if a pod is currently undergoing an in-place update
+// by looking at the InPlaceUpdateReady pod condition. When an in-place update starts,
+// this condition is set to False; it returns to True after the update completes.
+func isPodInPlaceUpdating(pod *v1.Pod) bool {
+	cond := podinplace.GetInPlaceCondition(pod)
+	return cond != nil && cond.Status == v1.ConditionFalse
+}
+
+// isContainerRestartExpectedFromInPlaceUpdate checks whether all container restarts
+// in this pod are accounted for by a recent in-place update. It parses the
+// InPlaceUpdateState annotation and compares each updated container's current
+// RestartCount against the pre-update baseline + 1. If any container has restarted
+// more than expected, the extra restart is a real crash and should trigger recreation.
+func isContainerRestartExpectedFromInPlaceUpdate(pod *v1.Pod) bool {
+	if pod.Annotations == nil {
+		return false
+	}
+	stateStr, ok := pod.Annotations[constants.InPlaceUpdateStateKey]
+	if !ok {
+		return false
+	}
+	var state inplaceapi.InPlaceUpdateState
+	if err := json.Unmarshal([]byte(stateStr), &state); err != nil {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.RestartCount == 0 {
+			continue
+		}
+		lastStatus, wasUpdated := state.LastContainerStatuses[cs.Name]
+		if !wasUpdated {
+			// Container was not in-place updated but has restarted → real crash
+			return false
+		}
+		if cs.RestartCount > lastStatus.RestartCount+1 {
+			// More restarts than expected from the in-place update → real crash
+			return false
+		}
+	}
+	return true
 }
 
 // hasTriggerPolicyIgnore checks if the pod has the restart-trigger-policy annotation set to "Ignore".

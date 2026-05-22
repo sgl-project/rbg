@@ -293,7 +293,8 @@ func (c *realControl) updatePodInPlace(pod *v1.Pod, spec *UpdateSpec, opts *Upda
 		for _, c := range clone.Status.ContainerStatuses {
 			if _, ok := spec.ContainerImages[c.Name]; ok {
 				inPlaceUpdateState.LastContainerStatuses[c.Name] = inplaceapi.InPlaceUpdateContainerStatus{
-					ImageID: c.ImageID,
+					ImageID:      c.ImageID,
+					RestartCount: c.RestartCount,
 				}
 			}
 		}
