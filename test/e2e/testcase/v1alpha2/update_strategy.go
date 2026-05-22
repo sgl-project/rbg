@@ -38,6 +38,7 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 				[]workloadsv1alpha2.RoleSpec{
 					wrappersv2.BuildStandaloneRole("role-1").
 						WithReplicas(2).
+						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							Type:           workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
 							MaxUnavailable: ptr.To(intstr.FromInt32(1)),
