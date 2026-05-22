@@ -22,6 +22,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -441,12 +442,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx := ctrl.SetupSignalHandler()
+
 	if enablePprof {
-		startPprofServer(pprofAddr)
+		if err := startPprofServer(ctx, pprofAddr); err != nil {
+			setupLog.Error(err, "unable to start pprof server")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
@@ -550,9 +556,7 @@ func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult
 	return webhookCertReconciler.SetupWithManager(mgr, options)
 }
 
-func startPprofServer(pprofAddr string) {
-	setupLog.Info("Enabling pprof", "addr", pprofAddr)
-
+func startPprofServer(ctx context.Context, pprofAddr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -560,31 +564,34 @@ func startPprofServer(pprofAddr string) {
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
+	listener, err := net.Listen("tcp", pprofAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", pprofAddr, err)
+	}
+
 	pprofServer := http.Server{
-		Addr:              pprofAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	setupLog.Info("Starting pprof HTTP server", "addr", pprofServer.Addr)
+	setupLog.Info("Starting pprof HTTP server", "addr", pprofAddr)
 
 	go func() {
-		go func() {
-			ctx := context.Background()
-			<-ctx.Done()
-
-			shutdownCtx, cancelFunc := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancelFunc()
-
-			if err := pprofServer.Shutdown(shutdownCtx); err != nil {
-				setupLog.Error(err, "Failed to shutdown pprof HTTP server")
-			}
-		}()
-
-		if err := pprofServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			setupLog.Error(err, "Failed to start pprof HTTP server")
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+			setupLog.Error(err, "Failed to shutdown pprof HTTP server")
 		}
 	}()
+
+	go func() {
+		if err := pprofServer.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+			setupLog.Error(err, "pprof HTTP server error")
+		}
+	}()
+
+	return nil
 }
 
 func cacheOptions() cache.Options {

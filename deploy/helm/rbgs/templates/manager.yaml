@@ -46,7 +46,7 @@ spec:
             - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
             {{- if .Values.pprof.enabled }}
             - --enable-pprof=true
-            - --pprof-bind-address=:{{ .Values.pprof.port | default 6060 }}
+            - --pprof-bind-address={{ .Values.pprof.bindAddress | default ":6060" }}
             {{- end }}
           env:
             - name: POD_NAMESPACE
@@ -62,7 +62,7 @@ spec:
           {{- if .Values.pprof.enabled }}
           ports:
             - name: pprof
-              containerPort: {{ .Values.pprof.port | default 6060 }}
+              containerPort: {{ .Values.pprof.containerPort | default 6060 }}
               protocol: TCP
           {{- end }}
           resources:
