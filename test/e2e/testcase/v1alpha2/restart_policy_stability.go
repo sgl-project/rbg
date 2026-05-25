@@ -78,15 +78,34 @@ func RunRestartPolicyStabilityTestCases(f *framework.Framework) {
 			}
 			unaffectedPodUIDs := instancePods[unaffectedInstance]
 
-			// Pick a pod from target instance and simulate failure
-			var targetPod *corev1.Pod
-			for _, pod := range podList.Items {
-				if pod.Labels[constants.RoleInstanceNameLabelKey] == targetInstance {
-					targetPod = &pod
-					break
+			// Wait for target RoleInstance to be Ready (required by shouldRecreateInstance)
+			gomega.Eventually(func() bool {
+				ri := &workloadsv1alpha2.RoleInstance{}
+				if err := f.Client.Get(f.Ctx, client.ObjectKey{
+					Namespace: f.Namespace,
+					Name:      targetInstance,
+				}, ri); err != nil {
+					return false
 				}
-			}
-			gomega.Expect(targetPod).ShouldNot(gomega.BeNil())
+				for _, cond := range ri.Status.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+						return true
+					}
+				}
+				return false
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+				"RoleInstance should be Ready before triggering failure")
+
+			// Re-fetch pods from the target instance to get latest resourceVersion
+			targetPodList := &corev1.PodList{}
+			gomega.Expect(f.Client.List(f.Ctx, targetPodList,
+				client.InNamespace(f.Namespace),
+				client.MatchingLabels{
+					constants.GroupNameLabelKey:        rbg.Name,
+					constants.RoleInstanceNameLabelKey: targetInstance,
+				})).Should(gomega.Succeed())
+			gomega.Expect(targetPodList.Items).ShouldNot(gomega.BeEmpty())
+			targetPod := &targetPodList.Items[0]
 			gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
 			// Wait for the target instance's pods to be fully recreated (new UIDs)

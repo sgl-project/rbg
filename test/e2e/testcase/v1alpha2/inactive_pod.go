@@ -100,7 +100,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			initialPodUIDs[p.Name] = p.UID
 		}
 
-		// Get one pod and simulate Failed status
+		// Get one pod and find the target instance
 		targetPod := &podList.Items[0]
 		targetInstanceName := targetPod.Labels[constants.RoleInstanceNameLabelKey]
 
@@ -113,6 +113,30 @@ func RunInactivePodTestCases(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstanceName,
 			})).Should(gomega.Succeed())
 		expectedPodCount := len(instancePodList.Items)
+
+		// Wait for target RoleInstance to be Ready (required by shouldRecreateInstance)
+		gomega.Eventually(func() bool {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      targetInstanceName,
+			}, ri); err != nil {
+				return false
+			}
+			for _, cond := range ri.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"RoleInstance should be Ready before triggering failure")
+
+		// Re-fetch target pod to get latest resourceVersion
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      targetPod.Name,
+		}, targetPod)).Should(gomega.Succeed())
 
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -194,6 +218,32 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		for _, p := range podList.Items {
 			initialPodUIDs[p.Name] = p.UID
 		}
+
+		// Find the instance name from pods
+		ignoreInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
+
+		// Wait for target RoleInstance to be Ready (required for shouldRecreateInstance to evaluate)
+		gomega.Eventually(func() bool {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      ignoreInstanceName,
+			}, ri); err != nil {
+				return false
+			}
+			for _, cond := range ri.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"RoleInstance should be Ready before triggering failure")
+
+		// Re-fetch pods to get latest resourceVersion
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
 
 		// Find the monitor pod (the one with the Ignore annotation)
 		var monitorPod *corev1.Pod
@@ -280,6 +330,32 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		for _, p := range podList.Items {
 			initialPodUIDs[p.Name] = p.UID
 		}
+
+		// Find the instance name from pods
+		targetInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
+
+		// Wait for target RoleInstance to be Ready (required by shouldRecreateInstance)
+		gomega.Eventually(func() bool {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      targetInstanceName,
+			}, ri); err != nil {
+				return false
+			}
+			for _, cond := range ri.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"RoleInstance should be Ready before triggering failure")
+
+		// Re-fetch pods to get latest resourceVersion
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
 
 		// Find the main pod (the one WITHOUT the Ignore annotation)
 		var mainPod *corev1.Pod
