@@ -212,15 +212,19 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 							),
 						).Should(gomega.Succeed())
 
-						scaleObj := &autoscalingv1.Scale{}
-						gomega.Expect(f.Client.SubResource("scale").Get(f.Ctx, rbgSa, scaleObj)).Should(gomega.Succeed())
 						newReplicas := int32(2)
-						scaleObj.Spec.Replicas = newReplicas
-						gomega.Expect(
-							f.Client.SubResource("scale").Update(
+						// Use Eventually to retry on conflict (409) since the controller
+						// may be updating the ScalingAdapter status concurrently.
+						gomega.Eventually(func() error {
+							scaleObj := &autoscalingv1.Scale{}
+							if err := f.Client.SubResource("scale").Get(f.Ctx, rbgSa, scaleObj); err != nil {
+								return err
+							}
+							scaleObj.Spec.Replicas = newReplicas
+							return f.Client.SubResource("scale").Update(
 								f.Ctx, rbgSa, client.WithSubResourceBody(scaleObj),
-							),
-						).Should(gomega.Succeed())
+							)
+						}, "30s", "1s").Should(gomega.Succeed())
 
 						f.ExpectRoleScalingAdapterV2Equal(rbg, targetRole, &newReplicas)
 					}
