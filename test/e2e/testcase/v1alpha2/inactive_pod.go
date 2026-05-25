@@ -32,8 +32,17 @@ import (
 )
 
 func RunInactivePodTestCases(f *framework.Framework) {
-	// Case 1: Evicted Pod triggers replacement Pod creation
-	// RoleInstance Controller creates replacement Pod through normal reconciliation.
+	runEvictedPodTest(f)
+	runFailedPodRecreationTest(f)
+	runIgnoredComponentTest(f)
+	runNonIgnoredComponentTest(f)
+	runRestartingConditionTest(f)
+	runRestartPolicyNoneTest(f)
+}
+
+// Case 1: Evicted Pod triggers replacement Pod creation
+// RoleInstance Controller creates replacement Pod through normal reconciliation.
+func runEvictedPodTest(f *framework.Framework) {
 	ginkgo.It("evicted pod triggers replacement pod creation", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-evicted-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
@@ -54,11 +63,6 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 		gomega.Expect(podList.Items).Should(gomega.HaveLen(2))
 
-		initialPodUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
-			initialPodUIDs[p.Name] = p.UID
-		}
-
 		// Get one pod and simulate Evicted status
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
@@ -72,10 +76,12 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			return activeCount
 		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2))
 	})
+}
 
-	// Case 2: Failed Pod triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
-	// Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
-	// Only the RoleInstance containing the Failed pod is recreated; other RoleInstances are unaffected.
+// Case 2: Failed Pod triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
+// Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
+// Only the RoleInstance containing the Failed pod is recreated; other RoleInstances are unaffected.
+func runFailedPodRecreationTest(f *framework.Framework) {
 	ginkgo.It("failed pod triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-instance-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
@@ -163,10 +169,12 @@ func RunInactivePodTestCases(f *framework.Framework) {
 
 		f.ExpectRbgV2Equal(rbg)
 	})
+}
 
-	// Case 3: Pod Failed with RestartTriggerPolicy=Ignore does NOT trigger RoleInstance recreation
-	// When a component has the restart-trigger-policy=Ignore annotation, its pod failures
-	// should not trigger the restart policy for the entire RoleInstance.
+// Case 3: Pod Failed with RestartTriggerPolicy=Ignore does NOT trigger RoleInstance recreation
+// When a component has the restart-trigger-policy=Ignore annotation, its pod failures
+// should not trigger the restart policy for the entire RoleInstance.
+func runIgnoredComponentTest(f *framework.Framework) {
 	ginkgo.It("ignored component pod failure does NOT trigger RoleInstance recreation", func() {
 		// Build a customComponentsPattern RBG with two components:
 		// - "main": the primary component (no annotation)
@@ -280,8 +288,10 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			return true
 		}, 15, 2).Should(gomega.BeTrue(), "main pod should NOT be recreated when ignored component fails")
 	})
+}
 
-	// Case 4: Non-ignored component pod failure DOES trigger RoleInstance recreation
+// Case 4: Non-ignored component pod failure DOES trigger RoleInstance recreation
+func runNonIgnoredComponentTest(f *framework.Framework) {
 	ginkgo.It("non-ignored component pod failure triggers RoleInstance recreation", func() {
 		mainTemplate := wrappersv2.BuildBasicPodTemplateSpec()
 		monitorTemplate := wrappersv2.BuildBasicPodTemplateSpec()
@@ -391,11 +401,10 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 			"all pods should be recreated when non-ignored component fails")
 	})
+}
 
-	// Case 5: Restarting condition prevents cascading restart-policy recreations
-	runRestartingConditionTest(f)
-
-	// Case 6: RestartPolicy=None creates replacement pod for inactive pod
+// Case 6: RestartPolicy=None creates replacement pod for inactive pod
+func runRestartPolicyNoneTest(f *framework.Framework) {
 	ginkgo.It("inactive pod triggers replacement pod creation with RestartPolicy=None", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-none-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
@@ -449,7 +458,6 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		}
 		gomega.Expect(foundReplacement).Should(gomega.BeTrue())
 	})
-
 }
 
 // runRestartingConditionTest verifies that the Restarting condition prevents cascading
