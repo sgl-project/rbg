@@ -578,35 +578,12 @@ func runRestartingConditionTest(f *framework.Framework) {
 		}
 
 		// Verify no cascading restarts: pods should remain stable after recovery
-		gomega.Expect(f.Client.List(f.Ctx, podList,
-			client.InNamespace(f.Namespace),
-			client.MatchingLabels{
-				constants.GroupNameLabelKey:        rbg.Name,
-				constants.RoleInstanceNameLabelKey: targetInstanceName,
-			})).Should(gomega.Succeed())
-
-		recoveredPodUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
-			recoveredPodUIDs[p.Name] = p.UID
-		}
+		recoveredPodUIDs := getInstancePodUIDs(f, rbg, targetInstanceName)
 
 		// Pods should remain stable (no further recreation cycles)
-		gomega.Consistently(func() bool {
-			if err := f.Client.List(f.Ctx, podList,
-				client.InNamespace(f.Namespace),
-				client.MatchingLabels{
-					constants.GroupNameLabelKey:        rbg.Name,
-					constants.RoleInstanceNameLabelKey: targetInstanceName,
-				}); err != nil {
-				return false
-			}
-			for _, p := range podList.Items {
-				if uid, ok := recoveredPodUIDs[p.Name]; ok && uid != p.UID {
-					return false
-				}
-			}
-			return true
-		}, 15, 2).Should(gomega.BeTrue(),
+		gomega.Consistently(func() map[string]types.UID {
+			return getInstancePodUIDs(f, rbg, targetInstanceName)
+		}, 15, 2).Should(gomega.Equal(recoveredPodUIDs),
 			"pods should remain stable after recovery - no cascading restarts")
 	})
 }
