@@ -48,6 +48,16 @@ func (rw *StandaloneRoleWrapper) WithDependencies(deps []string) *StandaloneRole
 	return rw
 }
 
+func (rw *StandaloneRoleWrapper) WithAnnotations(annotations map[string]string) *StandaloneRoleWrapper {
+	if rw.Annotations == nil {
+		rw.Annotations = make(map[string]string)
+	}
+	for k, v := range annotations {
+		rw.Annotations[k] = v
+	}
+	return rw
+}
+
 func (rw *StandaloneRoleWrapper) WithEngineRuntime(er []workloadsv1alpha2.EngineRuntime) *StandaloneRoleWrapper {
 	rw.EngineRuntimes = er
 	return rw
