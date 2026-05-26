@@ -76,5 +76,4 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
-
 }

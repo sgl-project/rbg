@@ -98,7 +98,6 @@ func PatchObjectApplyConfiguration(
 	return nil
 }
 
-
 // CalculatePartitionReplicas returns absolute value of partition for workload. This func can solve some
 // corner cases about percentage-type partition, such as:
 // - if partition > "0%" and replicas > 0, we will ensure at least 1 old pod is reserved.

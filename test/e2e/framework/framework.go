@@ -195,6 +195,13 @@ func (f *Framework) AfterEach() {
 		),
 	).Should(gomega.Succeed())
 
+	gomega.Expect(
+		f.Client.DeleteAllOf(
+			f.Ctx, &workloadsv1alpha2.CoordinatedPolicy{},
+			client.InNamespace(f.Namespace),
+		),
+	).Should(gomega.Succeed())
+
 	// Wait for all Pods in the namespace to be fully deleted before next test case
 	gomega.Eventually(
 		func() bool {

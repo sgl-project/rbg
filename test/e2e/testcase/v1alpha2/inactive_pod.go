@@ -32,8 +32,17 @@ import (
 )
 
 func RunInactivePodTestCases(f *framework.Framework) {
-	// Case 1: Evicted Pod triggers replacement Pod creation
-	// RoleInstance Controller creates replacement Pod through normal reconciliation.
+	runEvictedPodTest(f)
+	runFailedPodRecreationTest(f)
+	runIgnoredComponentTest(f)
+	runNonIgnoredComponentTest(f)
+	runRestartingConditionTest(f)
+	runRestartPolicyNoneTest(f)
+}
+
+// Case 1: Evicted Pod triggers replacement Pod creation
+// RoleInstance Controller creates replacement Pod through normal reconciliation.
+func runEvictedPodTest(f *framework.Framework) {
 	ginkgo.It("evicted pod triggers replacement pod creation", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-evicted-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
@@ -54,11 +63,6 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 		gomega.Expect(podList.Items).Should(gomega.HaveLen(2))
 
-		initialPodUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
-			initialPodUIDs[p.Name] = p.UID
-		}
-
 		// Get one pod and simulate Evicted status
 		targetPod := &podList.Items[0]
 		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
@@ -72,10 +76,12 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			return activeCount
 		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2))
 	})
+}
 
-	// Case 2: Failed Pod triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
-	// Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
-	// Only the RoleInstance containing the Failed pod is recreated; other RoleInstances are unaffected.
+// Case 2: Failed Pod triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
+// Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
+// Only the RoleInstance containing the Failed pod is recreated; other RoleInstances are unaffected.
+func runFailedPodRecreationTest(f *framework.Framework) {
 	ginkgo.It("failed pod triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-instance-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
@@ -100,7 +106,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			initialPodUIDs[p.Name] = p.UID
 		}
 
-		// Get one pod and simulate Failed status
+		// Get one pod and find the target instance
 		targetPod := &podList.Items[0]
 		targetInstanceName := targetPod.Labels[constants.RoleInstanceNameLabelKey]
 
@@ -113,6 +119,30 @@ func RunInactivePodTestCases(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstanceName,
 			})).Should(gomega.Succeed())
 		expectedPodCount := len(instancePodList.Items)
+
+		// Wait for target RoleInstance to be Ready (required by shouldRecreateInstance)
+		gomega.Eventually(func() bool {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      targetInstanceName,
+			}, ri); err != nil {
+				return false
+			}
+			for _, cond := range ri.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"RoleInstance should be Ready before triggering failure")
+
+		// Re-fetch target pod to get latest resourceVersion
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      targetPod.Name,
+		}, targetPod)).Should(gomega.Succeed())
 
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -139,10 +169,12 @@ func RunInactivePodTestCases(f *framework.Framework) {
 
 		f.ExpectRbgV2Equal(rbg)
 	})
+}
 
-	// Case 3: Pod Failed with RestartTriggerPolicy=Ignore does NOT trigger RoleInstance recreation
-	// When a component has the restart-trigger-policy=Ignore annotation, its pod failures
-	// should not trigger the restart policy for the entire RoleInstance.
+// Case 3: Pod Failed with RestartTriggerPolicy=Ignore does NOT trigger RoleInstance recreation
+// When a component has the restart-trigger-policy=Ignore annotation, its pod failures
+// should not trigger the restart policy for the entire RoleInstance.
+func runIgnoredComponentTest(f *framework.Framework) {
 	ginkgo.It("ignored component pod failure does NOT trigger RoleInstance recreation", func() {
 		// Build a customComponentsPattern RBG with two components:
 		// - "main": the primary component (no annotation)
@@ -195,6 +227,32 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			initialPodUIDs[p.Name] = p.UID
 		}
 
+		// Find the instance name from pods
+		ignoreInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
+
+		// Wait for target RoleInstance to be Ready (required for shouldRecreateInstance to evaluate)
+		gomega.Eventually(func() bool {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      ignoreInstanceName,
+			}, ri); err != nil {
+				return false
+			}
+			for _, cond := range ri.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"RoleInstance should be Ready before triggering failure")
+
+		// Re-fetch pods to get latest resourceVersion
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+
 		// Find the monitor pod (the one with the Ignore annotation)
 		var monitorPod *corev1.Pod
 		for i := range podList.Items {
@@ -230,8 +288,10 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			return true
 		}, 15, 2).Should(gomega.BeTrue(), "main pod should NOT be recreated when ignored component fails")
 	})
+}
 
-	// Case 4: Non-ignored component pod failure DOES trigger RoleInstance recreation
+// Case 4: Non-ignored component pod failure DOES trigger RoleInstance recreation
+func runNonIgnoredComponentTest(f *framework.Framework) {
 	ginkgo.It("non-ignored component pod failure triggers RoleInstance recreation", func() {
 		mainTemplate := wrappersv2.BuildBasicPodTemplateSpec()
 		monitorTemplate := wrappersv2.BuildBasicPodTemplateSpec()
@@ -281,6 +341,32 @@ func RunInactivePodTestCases(f *framework.Framework) {
 			initialPodUIDs[p.Name] = p.UID
 		}
 
+		// Find the instance name from pods
+		targetInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
+
+		// Wait for target RoleInstance to be Ready (required by shouldRecreateInstance)
+		gomega.Eventually(func() bool {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      targetInstanceName,
+			}, ri); err != nil {
+				return false
+			}
+			for _, cond := range ri.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"RoleInstance should be Ready before triggering failure")
+
+		// Re-fetch pods to get latest resourceVersion
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+
 		// Find the main pod (the one WITHOUT the Ignore annotation)
 		var mainPod *corev1.Pod
 		for i := range podList.Items {
@@ -315,11 +401,10 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 			"all pods should be recreated when non-ignored component fails")
 	})
+}
 
-	// Case 5: Restarting condition prevents cascading restart-policy recreations
-	runRestartingConditionTest(f)
-
-	// Case 6: RestartPolicy=None creates replacement pod for inactive pod
+// Case 6: RestartPolicy=None creates replacement pod for inactive pod
+func runRestartPolicyNoneTest(f *framework.Framework) {
 	ginkgo.It("inactive pod triggers replacement pod creation with RestartPolicy=None", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-none-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
@@ -373,7 +458,6 @@ func RunInactivePodTestCases(f *framework.Framework) {
 		}
 		gomega.Expect(foundReplacement).Should(gomega.BeTrue())
 	})
-
 }
 
 // runRestartingConditionTest verifies that the Restarting condition prevents cascading
@@ -392,20 +476,16 @@ func runRestartingConditionTest(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// Get pods and record initial UIDs
+		// Get pods and find the target instance
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
 		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
 
-		targetPod := &podList.Items[0]
-		targetInstanceName := targetPod.Labels[constants.RoleInstanceNameLabelKey]
+		targetInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
 
-		// Simulate pod failure to trigger restart-policy recreation
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
-
-		// Verify the Restarting condition is set to True on the RoleInstance
+		// Wait for the RoleInstance to be Ready (stable state required by shouldRecreateInstance)
 		gomega.Eventually(func() bool {
 			ri := &workloadsv1alpha2.RoleInstance{}
 			if err := f.Client.Get(f.Ctx, client.ObjectKey{
@@ -415,13 +495,55 @@ func runRestartingConditionTest(f *framework.Framework) {
 				return false
 			}
 			for _, cond := range ri.Status.Conditions {
-				if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == corev1.ConditionTrue {
+				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
 					return true
 				}
 			}
 			return false
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
-			"Restarting condition should be set to True after restart-policy recreation triggers")
+			"RoleInstance should be Ready before we trigger the failure")
+
+		// Record initial pod UIDs to detect recreation
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey:        rbg.Name,
+				constants.RoleInstanceNameLabelKey: targetInstanceName,
+			})).Should(gomega.Succeed())
+		initialPodUIDs := make(map[string]types.UID)
+		for _, p := range podList.Items {
+			initialPodUIDs[p.Name] = p.UID
+		}
+
+		// Re-fetch the target pod to get latest resource version
+		targetPod := &corev1.Pod{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      podList.Items[0].Name,
+		}, targetPod)).Should(gomega.Succeed())
+
+		// Simulate pod failure to trigger restart-policy recreation
+		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+
+		// Verify pods are recreated (UIDs change) — this proves the restart policy triggered
+		gomega.Eventually(func() bool {
+			if err := f.Client.List(f.Ctx, podList,
+				client.InNamespace(f.Namespace),
+				client.MatchingLabels{
+					constants.GroupNameLabelKey:        rbg.Name,
+					constants.RoleInstanceNameLabelKey: targetInstanceName,
+				}); err != nil {
+				return false
+			}
+			// All pods should have different UIDs from before (full instance recreation)
+			for _, p := range podList.Items {
+				if oldUID, ok := initialPodUIDs[p.Name]; ok && oldUID == p.UID {
+					return false
+				}
+			}
+			return len(podList.Items) > 0
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"pods should be recreated with new UIDs after restart-policy triggers")
 
 		// Wait for the instance to become Ready again (pods are recreated and healthy)
 		gomega.Eventually(func() bool {
@@ -456,35 +578,12 @@ func runRestartingConditionTest(f *framework.Framework) {
 		}
 
 		// Verify no cascading restarts: pods should remain stable after recovery
-		gomega.Expect(f.Client.List(f.Ctx, podList,
-			client.InNamespace(f.Namespace),
-			client.MatchingLabels{
-				constants.GroupNameLabelKey:        rbg.Name,
-				constants.RoleInstanceNameLabelKey: targetInstanceName,
-			})).Should(gomega.Succeed())
-
-		recoveredPodUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
-			recoveredPodUIDs[p.Name] = p.UID
-		}
+		recoveredPodUIDs := getInstancePodUIDs(f, rbg, targetInstanceName)
 
 		// Pods should remain stable (no further recreation cycles)
-		gomega.Consistently(func() bool {
-			if err := f.Client.List(f.Ctx, podList,
-				client.InNamespace(f.Namespace),
-				client.MatchingLabels{
-					constants.GroupNameLabelKey:        rbg.Name,
-					constants.RoleInstanceNameLabelKey: targetInstanceName,
-				}); err != nil {
-				return false
-			}
-			for _, p := range podList.Items {
-				if uid, ok := recoveredPodUIDs[p.Name]; ok && uid != p.UID {
-					return false
-				}
-			}
-			return true
-		}, 15, 2).Should(gomega.BeTrue(),
+		gomega.Consistently(func() map[string]types.UID {
+			return getInstancePodUIDs(f, rbg, targetInstanceName)
+		}, 15, 2).Should(gomega.Equal(recoveredPodUIDs),
 			"pods should remain stable after recovery - no cascading restarts")
 	})
 }

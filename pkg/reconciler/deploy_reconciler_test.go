@@ -431,7 +431,6 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	}
 }
 
-
 // TestDeploymentReconciler_constructDeployApplyConfiguration tests the constructDeployApplyConfiguration method
 func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 	scheme := runtime.NewScheme()
