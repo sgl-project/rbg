@@ -18,7 +18,6 @@ package sync
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +25,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -34,11 +32,12 @@ import (
 // which handles Pod Failed → RoleInstance recreation
 func TestShouldRecreateInstance(t *testing.T) {
 	tests := []struct {
-		name     string
-		instance *workloadsv1alpha2.RoleInstance
-		pods     []*corev1.Pod
-		expected bool
-		desc     string
+		name      string
+		instance  *workloadsv1alpha2.RoleInstance
+		pods      []*corev1.Pod
+		baselines map[string]map[string]int32
+		expected  bool
+		desc      string
 	}{
 		{
 			name: "RestartPolicy is RecreateOnPodRestart AND Pod Failed - should recreate",
@@ -632,176 +631,305 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Container restart expected from in-place update (RestartCount = last+1) - should NOT recreate",
+			name: "Container restart expected from in-place update (RestartCount = baseline+1) - should NOT recreate",
 			desc: "After in-place update completes, a single restart per updated container is expected",
-			instance: func() *workloadsv1alpha2.RoleInstance {
-				return &workloadsv1alpha2.RoleInstance{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-instance",
-						Generation: 1,
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
 					},
-					Spec: workloadsv1alpha2.RoleInstanceSpec{
-						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
-						Components: []workloadsv1alpha2.RoleInstanceComponent{
-							{Size: ptr.To[int32](1)},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
 						},
 					},
-					Status: workloadsv1alpha2.RoleInstanceStatus{
-						ObservedGeneration: 1,
-						CurrentRevision:    "rev-2",
-						UpdateRevision:     "rev-2",
-						Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-							{
-								Type:   workloadsv1alpha2.RoleInstanceReady,
-								Status: corev1.ConditionTrue,
-							},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
 						},
 					},
-				}
-			}(),
-			pods: func() []*corev1.Pod {
-				state := inplaceapi.InPlaceUpdateState{
-					Revision: "rev-2",
-					LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{
-						"main": {ImageID: "old-image-id", RestartCount: 0},
-					},
-				}
-				stateJSON, _ := json.Marshal(state)
-				return []*corev1.Pod{
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "pod-0",
-							Annotations: map[string]string{
-								constants.InPlaceUpdateStateKey: string(stateJSON),
-							},
-						},
-						Status: corev1.PodStatus{
-							Phase: corev1.PodRunning,
-							ContainerStatuses: []corev1.ContainerStatus{
-								{Name: "main", RestartCount: 1},
-							},
-						},
-					},
-				}
-			}(),
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
 			expected: false,
 		},
 		{
-			name: "Container restart exceeds expected from in-place update (RestartCount > last+1) - should recreate",
+			name: "Container restart exceeds expected from in-place update (RestartCount > baseline+1) - should recreate",
 			desc: "After in-place update, additional restarts beyond the expected one indicate a real crash",
-			instance: func() *workloadsv1alpha2.RoleInstance {
-				return &workloadsv1alpha2.RoleInstance{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-instance",
-						Generation: 1,
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
 					},
-					Spec: workloadsv1alpha2.RoleInstanceSpec{
-						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
-						Components: []workloadsv1alpha2.RoleInstanceComponent{
-							{Size: ptr.To[int32](1)},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
 						},
 					},
-					Status: workloadsv1alpha2.RoleInstanceStatus{
-						ObservedGeneration: 1,
-						CurrentRevision:    "rev-2",
-						UpdateRevision:     "rev-2",
-						Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-							{
-								Type:   workloadsv1alpha2.RoleInstanceReady,
-								Status: corev1.ConditionTrue,
-							},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 3},
 						},
 					},
-				}
-			}(),
-			pods: func() []*corev1.Pod {
-				state := inplaceapi.InPlaceUpdateState{
-					Revision: "rev-2",
-					LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{
-						"main": {ImageID: "old-image-id", RestartCount: 0},
-					},
-				}
-				stateJSON, _ := json.Marshal(state)
-				return []*corev1.Pod{
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "pod-0",
-							Annotations: map[string]string{
-								constants.InPlaceUpdateStateKey: string(stateJSON),
-							},
-						},
-						Status: corev1.PodStatus{
-							Phase: corev1.PodRunning,
-							ContainerStatuses: []corev1.ContainerStatus{
-								{Name: "main", RestartCount: 3},
-							},
-						},
-					},
-				}
-			}(),
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
 			expected: true,
 		},
 		{
 			name: "Container not in-place updated but restarted - should recreate",
-			desc: "Container not tracked in InPlaceUpdateState but has restarts indicates a crash",
-			instance: func() *workloadsv1alpha2.RoleInstance {
-				return &workloadsv1alpha2.RoleInstance{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-instance",
-						Generation: 1,
+			desc: "Container not tracked in baselines but has restarts indicates a crash",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
 					},
-					Spec: workloadsv1alpha2.RoleInstanceSpec{
-						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
-						Components: []workloadsv1alpha2.RoleInstanceComponent{
-							{Size: ptr.To[int32](1)},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
 						},
 					},
-					Status: workloadsv1alpha2.RoleInstanceStatus{
-						ObservedGeneration: 1,
-						CurrentRevision:    "rev-2",
-						UpdateRevision:     "rev-2",
-						Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-							{
-								Type:   workloadsv1alpha2.RoleInstanceReady,
-								Status: corev1.ConditionTrue,
-							},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+							{Name: "sidecar", RestartCount: 2},
 						},
 					},
-				}
-			}(),
-			pods: func() []*corev1.Pod {
-				state := inplaceapi.InPlaceUpdateState{
-					Revision: "rev-2",
-					LastContainerStatuses: map[string]inplaceapi.InPlaceUpdateContainerStatus{
-						"main": {ImageID: "old-image-id", RestartCount: 0},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+			expected: true,
+		},
+		{
+			name: "Multi-container: updated container expected restart, non-updated container crash - should recreate",
+			desc: "Container A was in-place updated (restart expected), but container B crashed independently",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
 					},
-				}
-				stateJSON, _ := json.Marshal(state)
-				return []*corev1.Pod{
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "pod-0",
-							Annotations: map[string]string{
-								constants.InPlaceUpdateStateKey: string(stateJSON),
-							},
-						},
-						Status: corev1.PodStatus{
-							Phase: corev1.PodRunning,
-							ContainerStatuses: []corev1.ContainerStatus{
-								{Name: "main", RestartCount: 1},
-								{Name: "sidecar", RestartCount: 2},
-							},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
 						},
 					},
-				}
-			}(),
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "inference", RestartCount: 1}, // expected from in-place update
+							{Name: "monitor", RestartCount: 1},   // NOT in baselines → crash
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"inference": 0},
+			},
+			expected: true,
+		},
+		{
+			name: "Multi-container: all containers in-place updated, all expected restarts - should NOT recreate",
+			desc: "Both containers were in-place updated and restarted within expected range",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "inference", RestartCount: 3},
+							{Name: "router", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"inference": 2, "router": 0},
+			},
+			expected: false,
+		},
+		{
+			name: "No baselines (nil map) with container restart - should recreate",
+			desc: "Backward compatibility: no baselines means no in-place update protection",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: nil,
+			expected:  true,
+		},
+		{
+			name: "Baselines for different pod name - should recreate",
+			desc: "Baselines exist but for a different pod; the restarted pod has no baseline protection",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{
+							Type:   workloadsv1alpha2.RoleInstanceReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
 			expected: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := shouldRecreateInstance(tt.instance, tt.pods)
+			result := shouldRecreateInstance(tt.instance, tt.pods, tt.baselines)
 			assert.Equal(t, tt.expected, result, tt.desc)
 		})
 	}
@@ -844,7 +972,7 @@ func TestRestartingCachePreventsRecreation(t *testing.T) {
 	}
 
 	// Without cache: shouldRecreateInstance returns true
-	assert.True(t, shouldRecreateInstance(instance, pods))
+	assert.True(t, shouldRecreateInstance(instance, pods, nil))
 
 	// Set the in-memory cache to mark instance as restarting
 	restartingCache.Store(instanceKey(instance), true)
@@ -852,7 +980,7 @@ func TestRestartingCachePreventsRecreation(t *testing.T) {
 
 	// The guarded version with a nil apiReader (cache hit means no API call needed)
 	ctrl := &realControl{}
-	result := ctrl.shouldRecreateInstanceGuarded(context.Background(), instance, pods)
+	result := ctrl.shouldRecreateInstanceGuarded(context.Background(), instance, pods, nil)
 	assert.False(t, result, "should not recreate when instance is in restarting cache")
 }
 
@@ -1292,6 +1420,159 @@ func TestContainerRestarted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := containerRestarted(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestIsContainerRestartExpected(t *testing.T) {
+	tests := []struct {
+		name      string
+		pod       *corev1.Pod
+		baselines map[string]map[string]int32
+		expected  bool
+	}{
+		{
+			name: "nil baselines",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 1},
+					},
+				},
+			},
+			baselines: nil,
+			expected:  false,
+		},
+		{
+			name: "pod not in baselines",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 1},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+			expected: false,
+		},
+		{
+			name: "restart within expected range (baseline+1)",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 1},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+			expected: true,
+		},
+		{
+			name: "restart exceeds expected range",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 3},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+			expected: false,
+		},
+		{
+			name: "container not in baselines but restarted",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "sidecar", RestartCount: 1},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+			expected: false,
+		},
+		{
+			name: "container with RestartCount=0 is skipped",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 0},
+						{Name: "sidecar", RestartCount: 0},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+			expected: true,
+		},
+		{
+			name: "non-zero baseline: restart within range",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 6},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"main": 5},
+			},
+			expected: true,
+		},
+		{
+			name: "multi-container: all within range",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "inference", RestartCount: 3},
+						{Name: "router", RestartCount: 1},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"inference": 2, "router": 0},
+			},
+			expected: true,
+		},
+		{
+			name: "multi-container: one exceeds range",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "inference", RestartCount: 3},
+						{Name: "router", RestartCount: 5},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"inference": 2, "router": 0},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isContainerRestartExpected(tt.pod, tt.baselines)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

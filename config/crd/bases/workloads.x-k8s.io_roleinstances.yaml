@@ -210,6 +210,16 @@ spec:
                 description: CurrentRevision is a hash value that changes when the
                   spec is changed.
                 type: string
+              inPlaceUpdateContainerRestartCounts:
+                additionalProperties:
+                  additionalProperties:
+                    format: int32
+                    type: integer
+                  type: object
+                description: |-
+                  InPlaceUpdateContainerRestartCounts records the pre-update RestartCount
+                  baseline for containers that were in-place updated.
+                type: object
               labelSelector:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.

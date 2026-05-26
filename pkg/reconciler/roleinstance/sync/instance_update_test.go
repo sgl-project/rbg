@@ -162,7 +162,8 @@ func TestUpdatePod(t *testing.T) {
 				lifecycleControl: &fakeLifecycleControl{},
 			}
 
-			_, err := ctrl.updatePod(context.Background(), instance, updateRevision, revisions, pod)
+			newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+			_, err := ctrl.updatePod(context.Background(), instance, newStatus, updateRevision, revisions, pod)
 			if err != nil {
 				t.Fatalf("updatePod returned unexpected error: %v", err)
 			}
@@ -178,5 +179,161 @@ func TestUpdatePod(t *testing.T) {
 				t.Errorf("expected pod deleted=%v, got deleted=%v (err=%v)", tt.expectPodDeleted, podDeleted, getErr)
 			}
 		})
+	}
+}
+
+func TestRecordInPlaceUpdateBaselines(t *testing.T) {
+	t.Run("records baselines for all containers", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+			Status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{Name: "main", RestartCount: 0},
+					{Name: "sidecar", RestartCount: 3},
+				},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+		recordInPlaceUpdateBaselines(pod, newStatus)
+
+		if newStatus.InPlaceUpdateContainerRestartCounts == nil {
+			t.Fatal("expected baselines to be set")
+		}
+		baselines := newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]
+		if baselines == nil {
+			t.Fatal("expected baselines for pod-0")
+		}
+		if baselines["main"] != 0 {
+			t.Errorf("expected main baseline=0, got %d", baselines["main"])
+		}
+		if baselines["sidecar"] != 3 {
+			t.Errorf("expected sidecar baseline=3, got %d", baselines["sidecar"])
+		}
+	})
+
+	t.Run("overwrites existing baselines for same pod", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+			Status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{Name: "main", RestartCount: 2},
+				},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+			InPlaceUpdateContainerRestartCounts: map[string]map[string]int32{
+				"pod-0": {"main": 0},
+			},
+		}
+		recordInPlaceUpdateBaselines(pod, newStatus)
+
+		if newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"] != 2 {
+			t.Errorf("expected main baseline=2 after overwrite, got %d",
+				newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"])
+		}
+	})
+
+	t.Run("preserves baselines for other pods", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+			Status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{Name: "main", RestartCount: 0},
+				},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+			InPlaceUpdateContainerRestartCounts: map[string]map[string]int32{
+				"pod-0": {"main": 5},
+			},
+		}
+		recordInPlaceUpdateBaselines(pod, newStatus)
+
+		if newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"] != 5 {
+			t.Error("baselines for pod-0 should be preserved")
+		}
+		if newStatus.InPlaceUpdateContainerRestartCounts["pod-1"]["main"] != 0 {
+			t.Error("baselines for pod-1 should be recorded")
+		}
+	})
+}
+
+func TestUpdatePodRecordsBaselines(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-instance",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "test-pod",
+			Namespace:       "default",
+			UID:             "pod-uid",
+			ResourceVersion: "1",
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey: "rev-abc123",
+			},
+		},
+		Status: v1.PodStatus{
+			ContainerStatuses: []v1.ContainerStatus{
+				{Name: "inference", RestartCount: 2},
+				{Name: "router", RestartCount: 0},
+			},
+		},
+	}
+	t.Cleanup(func() {
+		instanceutil.ResourceVersionExpectations.Delete(pod)
+	})
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+
+	ctrl := &realControl{
+		Client: fakeClient,
+		inplaceControl: &fakeInplaceControl{
+			updateFn: func(_ context.Context, _ *v1.Pod, _, _ *apps.ControllerRevision, _ *podinplaceupdate.UpdateOptions) podinplaceupdate.UpdateResult {
+				return podinplaceupdate.UpdateResult{InPlaceUpdate: true, NewResourceVersion: "999"}
+			},
+		},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+
+	revisions := []*apps.ControllerRevision{
+		{ObjectMeta: metav1.ObjectMeta{Name: "rev-abc123", Namespace: "default"}},
+	}
+	updateRevision := &apps.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "rev-def456", Namespace: "default"},
+	}
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	_, err := ctrl.updatePod(context.Background(), instance, newStatus, updateRevision, revisions, pod)
+	if err != nil {
+		t.Fatalf("updatePod returned unexpected error: %v", err)
+	}
+
+	// Verify baselines were recorded
+	if newStatus.InPlaceUpdateContainerRestartCounts == nil {
+		t.Fatal("expected baselines to be recorded after successful in-place update")
+	}
+	baselines := newStatus.InPlaceUpdateContainerRestartCounts["test-pod"]
+	if baselines == nil {
+		t.Fatal("expected baselines for test-pod")
+	}
+	if baselines["inference"] != 2 {
+		t.Errorf("expected inference baseline=2, got %d", baselines["inference"])
+	}
+	if baselines["router"] != 0 {
+		t.Errorf("expected router baseline=0, got %d", baselines["router"])
 	}
 }

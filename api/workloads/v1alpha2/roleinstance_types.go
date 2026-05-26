@@ -114,6 +114,16 @@ type RoleInstanceStatus struct {
 	// uses this field as a collision avoidance mechanism when it needs to create the name for the
 	// newest ControllerRevision.
 	CollisionCount *int32 `json:"collisionCount,omitempty"`
+
+	// InPlaceUpdateContainerRestartCounts records the pre-update RestartCount
+	// baseline for containers that were in-place updated. Outer key is pod name,
+	// inner key is container name, value is the RestartCount before the update.
+	// Set by the Update flow when an in-place update is performed.
+	// Cleared when all pods converge to UpdateRevision and the instance becomes Ready.
+	// Used by shouldRecreateInstance to distinguish expected container restarts
+	// (from in-place image changes) from real crashes.
+	// +optional
+	InPlaceUpdateContainerRestartCounts map[string]map[string]int32 `json:"inPlaceUpdateContainerRestartCounts,omitempty"`
 }
 
 type RoleInstanceComponentStatus struct {

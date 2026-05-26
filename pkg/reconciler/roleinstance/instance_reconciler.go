@@ -121,11 +121,12 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	newStatus := workloadsv1alpha2.RoleInstanceStatus{
-		ObservedGeneration: instance.Generation,
-		CurrentRevision:    currentRevision.Name,
-		UpdateRevision:     updateRevision.Name,
-		CollisionCount:     new(int32),
-		LabelSelector:      selector.String(),
+		ObservedGeneration:                  instance.Generation,
+		CurrentRevision:                     currentRevision.Name,
+		UpdateRevision:                      updateRevision.Name,
+		CollisionCount:                      new(int32),
+		LabelSelector:                       selector.String(),
+		InPlaceUpdateContainerRestartCounts: instance.Status.InPlaceUpdateContainerRestartCounts,
 	}
 	*newStatus.CollisionCount = collisionCount
 
@@ -192,7 +193,7 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		return syncResult{err: podsScaleErr}
 	}
 
-	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, currentRevision, updateRevision, revisions, filteredPods)
+	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
 	if podsUpdateErr != nil {
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedUpdate,

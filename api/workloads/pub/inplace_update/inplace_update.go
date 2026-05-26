@@ -37,10 +37,6 @@ type InPlaceUpdateState struct {
 // to determine whether the InPlaceUpdate is completed.
 type InPlaceUpdateContainerStatus struct {
 	ImageID string `json:"imageID,omitempty"`
-	// RestartCount records the container's RestartCount before the in-place update.
-	// Used by shouldRecreateInstance to distinguish expected restarts (from in-place
-	// updates) from unexpected crashes when RestartPolicy=RecreateRoleInstanceOnPodRestart.
-	RestartCount int32 `json:"restartCount,omitempty"`
 }
 
 // RuntimeContainerMetaSet contains all the containers' meta of the Pod.

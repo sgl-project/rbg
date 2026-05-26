@@ -18,7 +18,6 @@ package sync
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync/atomic"
 
@@ -29,7 +28,6 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
-	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
 	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
 	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
@@ -80,7 +78,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
-	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods) {
+	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerRestartCounts) {
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
@@ -304,13 +302,13 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 // already in a restart cycle. This uses an in-memory LRU cache (instant, no informer lag)
 // with a fallback to a direct API server read for the persisted Restarting condition
 // (survives controller restarts).
-func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) (recreate bool) {
+func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]int32) (recreate bool) {
 	defer func() {
 		if recreate && c.isAlreadyRestarting(ctx, instance) {
 			recreate = false
 		}
 	}()
-	return shouldRecreateInstance(instance, pods)
+	return shouldRecreateInstance(instance, pods, baselines)
 }
 
 // isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
@@ -344,7 +342,7 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 //
 // Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
 // and should not trigger Instance recreation.
-func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
+func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]int32) bool {
 	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
 	if instance.Spec.RestartPolicy != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
@@ -382,7 +380,7 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 			return true
 		}
 		// Check if any container has restarted beyond what's expected from in-place updates.
-		if containerRestarted(p) && !isContainerRestartExpectedFromInPlaceUpdate(p) {
+		if containerRestarted(p) && !isContainerRestartExpected(p, baselines) {
 			return true
 		}
 	}
@@ -408,33 +406,29 @@ func isPodInPlaceUpdating(pod *v1.Pod) bool {
 	return cond != nil && cond.Status == v1.ConditionFalse
 }
 
-// isContainerRestartExpectedFromInPlaceUpdate checks whether all container restarts
-// in this pod are accounted for by a recent in-place update. It parses the
-// InPlaceUpdateState annotation and compares each updated container's current
-// RestartCount against the pre-update baseline + 1. If any container has restarted
-// more than expected, the extra restart is a real crash and should trigger recreation.
-func isContainerRestartExpectedFromInPlaceUpdate(pod *v1.Pod) bool {
-	if pod.Annotations == nil {
+// isContainerRestartExpected checks whether all container restarts in this pod
+// are accounted for by a recent in-place update, using the pre-update RestartCount
+// baselines recorded in RoleInstance status.
+// If any container has restarted beyond what's expected (baseline + 1), or if a
+// container not tracked in baselines has restarted, it indicates a real crash.
+func isContainerRestartExpected(pod *v1.Pod, baselines map[string]map[string]int32) bool {
+	if baselines == nil {
 		return false
 	}
-	stateStr, ok := pod.Annotations[constants.InPlaceUpdateStateKey]
+	containerBaselines, ok := baselines[pod.Name]
 	if !ok {
-		return false
-	}
-	var state inplaceapi.InPlaceUpdateState
-	if err := json.Unmarshal([]byte(stateStr), &state); err != nil {
 		return false
 	}
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.RestartCount == 0 {
 			continue
 		}
-		lastStatus, wasUpdated := state.LastContainerStatuses[cs.Name]
+		baseline, wasUpdated := containerBaselines[cs.Name]
 		if !wasUpdated {
 			// Container was not in-place updated but has restarted → real crash
 			return false
 		}
-		if cs.RestartCount > lastStatus.RestartCount+1 {
+		if cs.RestartCount > baseline+1 {
 			// More restarts than expected from the in-place update → real crash
 			return false
 		}

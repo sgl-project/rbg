@@ -139,6 +139,9 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 	}
 	if newStatusUpdatedReplicas == newStatusReplicas && newStatusReplicas == componentSize {
 		newStatus.CurrentRevision = newStatus.UpdateRevision
+		// All pods have converged to the update revision — clear in-place update
+		// baselines so that any future container restart is treated as a real crash.
+		newStatus.InPlaceUpdateContainerRestartCounts = nil
 	}
 	r.setInstanceConditions(instance, newStatus, conditions)
 }
@@ -314,7 +317,29 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 			return true
 		}
 	}
-	return inconsistentCondition(oldStatus.Conditions, newStatus.Conditions)
+	if inconsistentCondition(oldStatus.Conditions, newStatus.Conditions) {
+		return true
+	}
+	return inconsistentBaselines(oldStatus.InPlaceUpdateContainerRestartCounts, newStatus.InPlaceUpdateContainerRestartCounts)
+}
+
+// inconsistentBaselines checks whether InPlaceUpdateContainerRestartCounts has changed.
+func inconsistentBaselines(old, new map[string]map[string]int32) bool {
+	if len(old) != len(new) {
+		return true
+	}
+	for podName, oldContainers := range old {
+		newContainers, ok := new[podName]
+		if !ok || len(oldContainers) != len(newContainers) {
+			return true
+		}
+		for cName, oldCount := range oldContainers {
+			if newCount, exists := newContainers[cName]; !exists || oldCount != newCount {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func inconsistentComponentStatus(oldRoleStatus, newRoleStatus workloadsv1alpha2.RoleInstanceComponentStatus) bool {

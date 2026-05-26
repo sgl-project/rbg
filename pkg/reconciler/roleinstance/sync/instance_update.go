@@ -32,7 +32,7 @@ import (
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
-func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error) {
+func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error) {
 	logger := log.FromContext(ctx)
 	requeueDuration := requeueduration.Duration{}
 	coreControl := instancecore.New(instance)
@@ -52,7 +52,7 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 	for componentName := range waitUpdateComponentPods {
 		componentPods := waitUpdateComponentPods[componentName]
 		for i := range componentPods {
-			if duration, err := c.updatePod(ctx, instance, updateRevision, revisions, componentPods[i]); err != nil {
+			if duration, err := c.updatePod(ctx, instance, newStatus, updateRevision, revisions, componentPods[i]); err != nil {
 				return requeueDuration.Get(), err
 			} else if duration > 0 {
 				requeueDuration.Update(duration)
@@ -63,6 +63,7 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 }
 
 func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance,
+	newStatus *workloadsv1alpha2.RoleInstanceStatus,
 	updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pod *v1.Pod) (time.Duration, error) {
 	logger := log.FromContext(ctx)
 	var oldRevision *apps.ControllerRevision
@@ -91,6 +92,8 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 		if res.UpdateErr == nil {
 			c.recorder.Eventf(instance, v1.EventTypeNormal, "SuccessfulUpdatePodInPlace", "successfully update pod %s in-place", pod.Name)
 			instanceutil.ResourceVersionExpectations.Expect(&metav1.ObjectMeta{UID: pod.UID, ResourceVersion: res.NewResourceVersion})
+			// Record pre-update RestartCount baselines for restart-policy awareness.
+			recordInPlaceUpdateBaselines(pod, newStatus)
 			return res.DelayDuration, nil
 		}
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodInPlace", "failed to update pod %s in-place: %v", pod.Name, res.UpdateErr)
@@ -102,4 +105,19 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 		return 0, err
 	}
 	return 0, nil
+}
+
+// recordInPlaceUpdateBaselines records the pre-update RestartCount for each container
+// in the pod into newStatus.InPlaceUpdateContainerRestartCounts. This baseline is used
+// by shouldRecreateInstance to distinguish expected restarts (from in-place image changes)
+// from real crashes.
+func recordInPlaceUpdateBaselines(pod *v1.Pod, newStatus *workloadsv1alpha2.RoleInstanceStatus) {
+	if newStatus.InPlaceUpdateContainerRestartCounts == nil {
+		newStatus.InPlaceUpdateContainerRestartCounts = make(map[string]map[string]int32)
+	}
+	containerBaselines := make(map[string]int32, len(pod.Status.ContainerStatuses))
+	for _, cs := range pod.Status.ContainerStatuses {
+		containerBaselines[cs.Name] = cs.RestartCount
+	}
+	newStatus.InPlaceUpdateContainerRestartCounts[pod.Name] = containerBaselines
 }

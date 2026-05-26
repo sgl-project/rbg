@@ -20,13 +20,14 @@ package v1alpha2
 // RoleInstanceStatusApplyConfiguration represents a declarative configuration of the RoleInstanceStatus type for use
 // with apply.
 type RoleInstanceStatusApplyConfiguration struct {
-	ObservedGeneration *int64                                          `json:"observedGeneration,omitempty"`
-	Conditions         []RoleInstanceConditionApplyConfiguration       `json:"conditions,omitempty"`
-	ComponentStatuses  []RoleInstanceComponentStatusApplyConfiguration `json:"componentStatuses,omitempty"`
-	LabelSelector      *string                                         `json:"labelSelector,omitempty"`
-	CurrentRevision    *string                                         `json:"currentRevision,omitempty"`
-	UpdateRevision     *string                                         `json:"updateRevision,omitempty"`
-	CollisionCount     *int32                                          `json:"collisionCount,omitempty"`
+	ObservedGeneration                  *int64                                          `json:"observedGeneration,omitempty"`
+	Conditions                          []RoleInstanceConditionApplyConfiguration       `json:"conditions,omitempty"`
+	ComponentStatuses                   []RoleInstanceComponentStatusApplyConfiguration `json:"componentStatuses,omitempty"`
+	LabelSelector                       *string                                         `json:"labelSelector,omitempty"`
+	CurrentRevision                     *string                                         `json:"currentRevision,omitempty"`
+	UpdateRevision                      *string                                         `json:"updateRevision,omitempty"`
+	CollisionCount                      *int32                                          `json:"collisionCount,omitempty"`
+	InPlaceUpdateContainerRestartCounts map[string]map[string]int32                     `json:"inPlaceUpdateContainerRestartCounts,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -98,5 +99,19 @@ func (b *RoleInstanceStatusApplyConfiguration) WithUpdateRevision(value string) 
 // If called multiple times, the CollisionCount field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithCollisionCount(value int32) *RoleInstanceStatusApplyConfiguration {
 	b.CollisionCount = &value
+	return b
+}
+
+// WithInPlaceUpdateContainerRestartCounts puts the entries into the InPlaceUpdateContainerRestartCounts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the InPlaceUpdateContainerRestartCounts field,
+// overwriting an existing map entries in InPlaceUpdateContainerRestartCounts field with the same key.
+func (b *RoleInstanceStatusApplyConfiguration) WithInPlaceUpdateContainerRestartCounts(entries map[string]map[string]int32) *RoleInstanceStatusApplyConfiguration {
+	if b.InPlaceUpdateContainerRestartCounts == nil && len(entries) > 0 {
+		b.InPlaceUpdateContainerRestartCounts = make(map[string]map[string]int32, len(entries))
+	}
+	for k, v := range entries {
+		b.InPlaceUpdateContainerRestartCounts[k] = v
+	}
 	return b
 }
