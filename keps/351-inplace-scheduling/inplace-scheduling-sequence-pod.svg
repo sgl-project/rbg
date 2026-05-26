@@ -1,0 +1,109 @@
+<svg viewBox="0 0 1100 830" xmlns="http://www.w3.org/2000/svg" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ffffff;">
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6b7280"/></marker>
+<marker id="arr-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/></marker>
+<marker id="arr-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#16a34a"/></marker>
+<marker id="arr-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#ef4444"/></marker>
+</defs>
+
+<!-- Title -->
+<text x="530" y="32" text-anchor="middle" fill="#1a1a2e" font-size="18" font-weight="500">Inplace Scheduling: Pod Strategy (Per-Pod Binding)</text>
+
+<!-- Participants -->
+<rect x="30" y="48" width="80" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="70" y="66" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">User</text>
+<line x1="70" y1="76" x2="70" y2="810" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="190" y="48" width="110" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="245" y="66" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">RBG Controller</text>
+<line x1="245" y1="76" x2="245" y2="810" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="400" y="48" width="130" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="465" y="66" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">Instance Controller</text>
+<line x1="465" y1="76" x2="465" y2="810" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="620" y="48" width="100" height="28" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="670" y="66" text-anchor="middle" fill="#7c3aed" font-size="11" font-weight="500">Binding Store</text>
+<line x1="670" y1="76" x2="670" y2="810" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="810" y="48" width="110" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="865" y="66" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">K8s Scheduler</text>
+<line x1="865" y1="76" x2="865" y2="810" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<!-- ===== Phase 1: RBG Creation ===== -->
+<rect x="12" y="95" width="1040" height="24" rx="3" fill="#eff6ff"/>
+<text x="22" y="112" fill="#2563eb" font-size="12" font-weight="500">Phase 1: RBG Creation (Stateful mode, per-Pod granularity)</text>
+
+<line x1="70" y1="140" x2="238" y2="140" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="155" y="134" text-anchor="middle" fill="#1a1a2e" font-size="10">Create RBG (annotation: inplace-scheduling=Preferred)</text>
+
+<line x1="245" y1="168" x2="458" y2="168" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="352" y="162" text-anchor="middle" fill="#1a1a2e" font-size="10">Create RoleInstanceSet + RoleInstances (stable names)</text>
+
+<line x1="465" y1="196" x2="858" y2="196" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="662" y="190" text-anchor="middle" fill="#1a1a2e" font-size="10">Create Pods: prefill-0, prefill-1 (no affinity - store empty)</text>
+
+<rect x="840" y="210" width="50" height="18" rx="3" fill="#dcfce7" stroke="#22c55e" stroke-width="1"/>
+<text x="865" y="223" text-anchor="middle" fill="#16a34a" font-size="9">Schedule</text>
+<text x="920" y="240" text-anchor="end" fill="#6b7280" font-size="9">prefill-0@node-A, prefill-1@node-B</text>
+
+<!-- ===== Phase 2: Record Bindings ===== -->
+<rect x="12" y="265" width="1040" height="24" rx="3" fill="#f5f3ff"/>
+<text x="22" y="282" fill="#7c3aed" font-size="12" font-weight="500">Phase 2: Pods Running - Record Per-Pod Bindings</text>
+
+<line x1="865" y1="312" x2="472" y2="312" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="668" y="306" text-anchor="middle" fill="#16a34a" font-size="10">Pods Running (prefill-0/node-A, prefill-1/node-B)</text>
+
+<line x1="465" y1="340" x2="663" y2="340" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr-a)"/>
+<text x="564" y="334" text-anchor="middle" fill="#7c3aed" font-size="10">Record: prefill-0&#x2192;node-A, prefill-1&#x2192;node-B (per-Pod)</text>
+
+<rect x="630" y="352" width="80" height="22" rx="3" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1"/>
+<text x="670" y="367" text-anchor="middle" fill="#7c3aed" font-size="9" font-weight="500">Bindings stored</text>
+<text x="725" y="367" fill="#6b7280" font-size="9">(in-memory, per-Pod)</text>
+
+<rect x="220" y="390" width="620" height="24" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1"/>
+<text x="530" y="406" text-anchor="middle" fill="#6b7280" font-size="10">System is stable. All Pods running. Per-Pod node bindings recorded.</text>
+
+<!-- ===== Phase 3: Rolling Upgrade ===== -->
+<rect x="12" y="438" width="1040" height="24" rx="3" fill="#fffbeb"/>
+<text x="22" y="455" fill="#d97706" font-size="12" font-weight="500">Phase 3: Rolling Upgrade (old Pod deleted)</text>
+
+<line x1="70" y1="482" x2="238" y2="482" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="155" y="476" text-anchor="middle" fill="#1a1a2e" font-size="10">Update RBG spec (new image/config)</text>
+
+<line x1="245" y1="510" x2="458" y2="510" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arr-d)"/>
+<text x="352" y="504" text-anchor="middle" fill="#ef4444" font-size="10">Old Pod deleted (rolling upgrade)</text>
+
+<line x1="465" y1="540" x2="858" y2="540" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arr-d)"/>
+<text x="662" y="534" text-anchor="middle" fill="#ef4444" font-size="10">Old prefill-0, prefill-1 terminated (graceful shutdown)</text>
+
+<text x="920" y="560" text-anchor="end" fill="#6b7280" font-size="9">Per-Pod state remains on node disks</text>
+
+<!-- ===== Phase 4: Create New Pods with Per-Pod Affinity ===== -->
+<rect x="12" y="585" width="1040" height="24" rx="3" fill="#f0fdf4"/>
+<text x="22" y="602" fill="#16a34a" font-size="12" font-weight="500">Phase 4: Create New Pods with Per-Pod Affinity</text>
+
+<line x1="465" y1="632" x2="663" y2="632" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr-a)"/>
+<text x="564" y="626" text-anchor="middle" fill="#7c3aed" font-size="10">Read: prefill-0&#x2192;node-A, prefill-1&#x2192;node-B</text>
+
+<line x1="668" y1="654" x2="472" y2="654" stroke="#7c3aed" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-a)"/>
+<text x="568" y="648" text-anchor="middle" fill="#7c3aed" font-size="9">Returns per-Pod nodes</text>
+
+<line x1="465" y1="680" x2="858" y2="680" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="662" y="674" text-anchor="middle" fill="#16a34a" font-size="10">Create prefill-0 (prefer node-A), prefill-1 (prefer node-B)</text>
+
+<rect x="840" y="694" width="50" height="18" rx="3" fill="#dcfce7" stroke="#22c55e" stroke-width="1"/>
+<text x="865" y="707" text-anchor="middle" fill="#16a34a" font-size="9" font-weight="500">Schedule</text>
+<text x="920" y="724" text-anchor="end" fill="#16a34a" font-size="9" font-weight="500">prefill-0@node-A, prefill-1@node-B</text>
+
+<!-- ===== Phase 5: Cache Reuse ===== -->
+<rect x="12" y="738" width="1040" height="24" rx="3" fill="#f0fdf4"/>
+<text x="22" y="755" fill="#16a34a" font-size="12" font-weight="500">Phase 5: Per-Pod State Reuse</text>
+
+<line x1="865" y1="780" x2="472" y2="780" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="668" y="774" text-anchor="middle" fill="#16a34a" font-size="10">New Pods Ready (Per-Pod state reused from disk in ~5s)</text>
+
+<rect x="220" y="795" width="620" height="24" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1"/>
+<text x="530" y="811" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="500">Upgrade complete. Each Pod returned to its exact previous node.</text>
+
+</svg>
