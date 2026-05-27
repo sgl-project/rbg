@@ -87,13 +87,17 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 		return 0, nil
 	}
 	coreControl := instancecore.New(instance)
-	res := c.inplaceControl.Update(ctx, pod, oldRevision, updateRevision, coreControl.GetUpdateOptions())
+	opts := coreControl.GetUpdateOptions()
+	res := c.inplaceControl.Update(ctx, pod, oldRevision, updateRevision, opts)
 	if res.InPlaceUpdate {
 		if res.UpdateErr == nil {
 			c.recorder.Eventf(instance, v1.EventTypeNormal, "SuccessfulUpdatePodInPlace", "successfully update pod %s in-place", pod.Name)
 			instanceutil.ResourceVersionExpectations.Expect(&metav1.ObjectMeta{UID: pod.UID, ResourceVersion: res.NewResourceVersion})
-			// Record pre-update RestartCount baselines for restart-policy awareness.
-			recordInPlaceUpdateBaselines(pod, newStatus)
+			// Record pre-update RestartCount baselines only for containers that were
+			// actually in-place updated (image changed). Non-updated containers should
+			// not be protected — their restarts indicate real crashes.
+			updatedContainers := c.inplaceControl.GetUpdatedContainerNames(ctx, pod, oldRevision, updateRevision, opts)
+			recordInPlaceUpdateBaselines(pod, newStatus, updatedContainers)
 			return res.DelayDuration, nil
 		}
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodInPlace", "failed to update pod %s in-place: %v", pod.Name, res.UpdateErr)
@@ -107,17 +111,26 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 	return 0, nil
 }
 
-// recordInPlaceUpdateBaselines records the pre-update RestartCount for each container
-// in the pod into newStatus.InPlaceUpdateContainerRestartCounts. This baseline is used
-// by shouldRecreateInstance to distinguish expected restarts (from in-place image changes)
-// from real crashes.
-func recordInPlaceUpdateBaselines(pod *v1.Pod, newStatus *workloadsv1alpha2.RoleInstanceStatus) {
+// recordInPlaceUpdateBaselines records the pre-update RestartCount for containers
+// that were actually in-place updated (image changed) into
+// newStatus.InPlaceUpdateContainerRestartCounts. Only updated containers are recorded
+// so that crashes in non-updated containers are still correctly detected.
+func recordInPlaceUpdateBaselines(pod *v1.Pod, newStatus *workloadsv1alpha2.RoleInstanceStatus, updatedContainers []string) {
+	if len(updatedContainers) == 0 {
+		return
+	}
 	if newStatus.InPlaceUpdateContainerRestartCounts == nil {
 		newStatus.InPlaceUpdateContainerRestartCounts = make(map[string]map[string]int32)
 	}
-	containerBaselines := make(map[string]int32, len(pod.Status.ContainerStatuses))
+	updatedSet := make(map[string]bool, len(updatedContainers))
+	for _, name := range updatedContainers {
+		updatedSet[name] = true
+	}
+	containerBaselines := make(map[string]int32, len(updatedContainers))
 	for _, cs := range pod.Status.ContainerStatuses {
-		containerBaselines[cs.Name] = cs.RestartCount
+		if updatedSet[cs.Name] {
+			containerBaselines[cs.Name] = cs.RestartCount
+		}
 	}
 	newStatus.InPlaceUpdateContainerRestartCounts[pod.Name] = containerBaselines
 }

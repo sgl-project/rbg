@@ -370,10 +370,12 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		if hasTriggerPolicyIgnore(p) {
 			continue
 		}
-		// If any pod is currently undergoing an in-place update, skip recreation entirely.
+		// If this pod is currently undergoing an in-place update, skip it.
 		// The container restart is expected and should not trigger instance recreation.
+		// We continue checking other pods so that a genuine PodFailed on a sibling
+		// is not masked by one pod's in-place update state.
 		if isPodInPlaceUpdating(p) {
-			return false
+			continue
 		}
 		// Check if any Pod is in Failed phase (excluding pods being deleted)
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {

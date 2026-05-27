@@ -37,7 +37,8 @@ import (
 
 // fakeInplaceControl implements inplaceupdate.Interface for testing.
 type fakeInplaceControl struct {
-	updateFn func(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) podinplaceupdate.UpdateResult
+	updateFn                func(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) podinplaceupdate.UpdateResult
+	updatedContainerNamesFn func(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) []string
 }
 
 func (f *fakeInplaceControl) CanUpdateInPlace(_ context.Context, _, _ *apps.ControllerRevision, _ *podinplaceupdate.UpdateOptions) bool {
@@ -53,6 +54,18 @@ func (f *fakeInplaceControl) Update(ctx context.Context, pod *v1.Pod, oldRevisio
 		return f.updateFn(ctx, pod, oldRevision, newRevision, opts)
 	}
 	return podinplaceupdate.UpdateResult{}
+}
+
+func (f *fakeInplaceControl) GetUpdatedContainerNames(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) []string {
+	if f.updatedContainerNamesFn != nil {
+		return f.updatedContainerNamesFn(ctx, pod, oldRevision, newRevision, opts)
+	}
+	// Default: return all container names from the pod (backward-compatible behavior for existing tests)
+	names := make([]string, 0, len(pod.Status.ContainerStatuses))
+	for _, cs := range pod.Status.ContainerStatuses {
+		names = append(names, cs.Name)
+	}
+	return names
 }
 
 // fakeLifecycleControl implements lifecycle.Interface for testing.
@@ -183,7 +196,7 @@ func TestUpdatePod(t *testing.T) {
 }
 
 func TestRecordInPlaceUpdateBaselines(t *testing.T) {
-	t.Run("records baselines for all containers", func(t *testing.T) {
+	t.Run("records baselines only for updated containers", func(t *testing.T) {
 		pod := &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 			Status: v1.PodStatus{
@@ -194,7 +207,7 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 			},
 		}
 		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
-		recordInPlaceUpdateBaselines(pod, newStatus)
+		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main"})
 
 		if newStatus.InPlaceUpdateContainerRestartCounts == nil {
 			t.Fatal("expected baselines to be set")
@@ -206,8 +219,47 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 		if baselines["main"] != 0 {
 			t.Errorf("expected main baseline=0, got %d", baselines["main"])
 		}
+		if _, exists := baselines["sidecar"]; exists {
+			t.Error("sidecar should NOT be in baselines (not updated)")
+		}
+	})
+
+	t.Run("records baselines for multiple updated containers", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+			Status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{Name: "main", RestartCount: 0},
+					{Name: "sidecar", RestartCount: 3},
+				},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main", "sidecar"})
+
+		baselines := newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]
+		if baselines["main"] != 0 {
+			t.Errorf("expected main baseline=0, got %d", baselines["main"])
+		}
 		if baselines["sidecar"] != 3 {
 			t.Errorf("expected sidecar baseline=3, got %d", baselines["sidecar"])
+		}
+	})
+
+	t.Run("no-op when updatedContainers is empty", func(t *testing.T) {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+			Status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{Name: "main", RestartCount: 1},
+				},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+		recordInPlaceUpdateBaselines(pod, newStatus, nil)
+
+		if newStatus.InPlaceUpdateContainerRestartCounts != nil {
+			t.Error("expected no baselines when updatedContainers is nil")
 		}
 	})
 
@@ -225,7 +277,7 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 				"pod-0": {"main": 0},
 			},
 		}
-		recordInPlaceUpdateBaselines(pod, newStatus)
+		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main"})
 
 		if newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"] != 2 {
 			t.Errorf("expected main baseline=2 after overwrite, got %d",
@@ -247,7 +299,7 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 				"pod-0": {"main": 5},
 			},
 		}
-		recordInPlaceUpdateBaselines(pod, newStatus)
+		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main"})
 
 		if newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"] != 5 {
 			t.Error("baselines for pod-0 should be preserved")

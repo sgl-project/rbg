@@ -139,9 +139,24 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 	}
 	if newStatusUpdatedReplicas == newStatusReplicas && newStatusReplicas == componentSize {
 		newStatus.CurrentRevision = newStatus.UpdateRevision
-		// All pods have converged to the update revision — clear in-place update
-		// baselines so that any future container restart is treated as a real crash.
-		newStatus.InPlaceUpdateContainerRestartCounts = nil
+		// Garbage-collect in-place update baselines for pods that no longer exist.
+		// Keep baselines for existing pods so that the expected restart (RestartCount
+		// = baseline+1) remains protected against false recreation on subsequent
+		// reconciles. Baselines are naturally overwritten on the next in-place update.
+		if newStatus.InPlaceUpdateContainerRestartCounts != nil {
+			activePodNames := make(map[string]bool, len(pods))
+			for _, pod := range pods {
+				activePodNames[pod.Name] = true
+			}
+			for podName := range newStatus.InPlaceUpdateContainerRestartCounts {
+				if !activePodNames[podName] {
+					delete(newStatus.InPlaceUpdateContainerRestartCounts, podName)
+				}
+			}
+			if len(newStatus.InPlaceUpdateContainerRestartCounts) == 0 {
+				newStatus.InPlaceUpdateContainerRestartCounts = nil
+			}
+		}
 	}
 	r.setInstanceConditions(instance, newStatus, conditions)
 }

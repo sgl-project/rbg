@@ -126,6 +126,49 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 				"pods should remain stable after recreate completes (no extra restarts)")
 		})
 
+		ginkgo.It("[RoleInstanceSet] InPlaceIfPossible with RecreateRoleInstanceOnPodRestart does not trigger false recreation", func() {
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildStandaloneRole("role-1").
+						WithReplicas(2).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
+							Type:           workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+							MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+						}).Obj(),
+				}).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+			f.ExpectRbgV2Equal(rbg)
+
+			// Record pod UIDs before update
+			initialPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
+			gomega.Expect(initialPodUIDs).Should(gomega.HaveLen(2))
+
+			// Update only the container image (in-place updatable field)
+			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Image = "nginx:1.25"
+			})
+
+			// Wait for update to complete
+			f.ExpectRbgV2Equal(rbg)
+
+			// Verify pods were NOT recreated (UIDs unchanged = in-place update, not restart-policy recreation)
+			updatedPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
+			gomega.Expect(updatedPodUIDs).Should(gomega.Equal(initialPodUIDs),
+				"pod UIDs should not change during in-place update even with RecreateRoleInstanceOnPodRestart")
+
+			// Verify pods remain stable after convergence for an extended period.
+			// This catches the case where baselines are prematurely cleared and a
+			// subsequent reconcile falsely triggers recreation.
+			gomega.Consistently(func() map[string]types.UID {
+				return getPodUIDsForRole(f, rbg, "role-1")
+			}, 30, 3).Should(gomega.Equal(initialPodUIDs),
+				"pods should remain stable after in-place update completes (no false recreation from restart policy)")
+		})
+
 		ginkgo.It("[RoleInstanceSet] rolling update paused blocks update progress and resumes correctly", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
