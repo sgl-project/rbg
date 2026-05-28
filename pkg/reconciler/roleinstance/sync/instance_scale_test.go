@@ -1122,6 +1122,488 @@ func TestShouldRecreateInstance(t *testing.T) {
 			},
 			expected: true,
 		},
+		// ---- Multi-component and complex scenario tests ----
+		{
+			name: "Multi-component (inference+router): inference in-place updating, router pod crashed - should recreate",
+			desc: "Different named components: inference is updating (skip), router crashed (detect). Tests cross-component fault detection.",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "inference", Size: ptr.To[int32](1)},
+						{Name: "router", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-0"},
+					Spec: corev1.PodSpec{
+						ReadinessGates: []corev1.PodReadinessGate{
+							{ConditionType: constants.InPlaceUpdateReady},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: constants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+						},
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "inference", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-router-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "router", RestartCount: 2},
+						},
+					},
+				},
+			},
+			baselines: nil,
+			expected:  true,
+		},
+		{
+			name: "Multi-component: all components simultaneously in-place updating with baselines - should NOT recreate",
+			desc: "Both inference and router are in-place updating, their restarts are expected",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "inference", Size: ptr.To[int32](1)},
+						{Name: "router", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-0"},
+					Spec: corev1.PodSpec{
+						ReadinessGates: []corev1.PodReadinessGate{
+							{ConditionType: constants.InPlaceUpdateReady},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: constants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+						},
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "inference", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-router-0"},
+					Spec: corev1.PodSpec{
+						ReadinessGates: []corev1.PodReadinessGate{
+							{ConditionType: constants.InPlaceUpdateReady},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: constants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+						},
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "router", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: nil,
+			expected:  false,
+		},
+		{
+			name: "LeaderWorker: leader in-place updating, worker PodFailed - should recreate",
+			desc: "In LeaderWorker pattern, leader is updating but worker has failed",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "leader", Size: ptr.To[int32](1)},
+						{Name: "worker", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-0"},
+					Spec: corev1.PodSpec{
+						ReadinessGates: []corev1.PodReadinessGate{
+							{ConditionType: constants.InPlaceUpdateReady},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: constants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+						},
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-1"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodFailed,
+					},
+				},
+			},
+			baselines: nil,
+			expected:  true,
+		},
+		{
+			name: "Non-zero baseline: RestartCount at baseline+1 is expected - should NOT recreate",
+			desc: "Pod had RestartCount=2 before update, now RestartCount=3 is expected (2+1)",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "nginx", RestartCount: 3},
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"nginx": 2},
+			},
+			expected: false,
+		},
+		{
+			name: "Non-zero baseline: RestartCount at baseline+2 is crash - should recreate",
+			desc: "Pod had RestartCount=2 before update, now RestartCount=4 exceeds expected (2+1)",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "nginx", RestartCount: 4},
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"pod-0": {"nginx": 2},
+			},
+			expected: true,
+		},
+		{
+			name: "Ignore pod in-place updating + non-ignore pod crashed - should recreate",
+			desc: "Ignored pod's in-place update state doesn't matter; non-ignored pod's crash triggers recreation",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "monitor", Size: ptr.To[int32](1)},
+						{Name: "inference", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:        "test-instance-monitor-0",
+						Annotations: map[string]string{constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore},
+					},
+					Spec: corev1.PodSpec{
+						ReadinessGates: []corev1.PodReadinessGate{
+							{ConditionType: constants.InPlaceUpdateReady},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: constants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+						},
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "monitor", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "inference", RestartCount: 2},
+						},
+					},
+				},
+			},
+			baselines: nil,
+			expected:  true,
+		},
+		{
+			name: "Ignore pod Failed + non-ignore pod in-place updating - should NOT recreate",
+			desc: "Ignored pod failure is skipped, non-ignored pod is in-place updating so also skipped",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "monitor", Size: ptr.To[int32](1)},
+						{Name: "inference", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:        "test-instance-monitor-0",
+						Annotations: map[string]string{constants.RestartTriggerPolicyAnnotationKey: constants.RestartTriggerPolicyIgnore},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodFailed,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-0"},
+					Spec: corev1.PodSpec{
+						ReadinessGates: []corev1.PodReadinessGate{
+							{ConditionType: constants.InPlaceUpdateReady},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: constants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+						},
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "inference", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: nil,
+			expected:  false,
+		},
+		{
+			name: "Multi-pod multi-component: baselines protect updated pods, non-updated pod crash detected - should recreate",
+			desc: "2 inference pods + 1 router; inference pods have baselines (updated), router crashed without baselines",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "inference", Size: ptr.To[int32](2)},
+						{Name: "router", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-1"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-router-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"test-instance-inference-0": {"main": 0},
+				"test-instance-inference-1": {"main": 0},
+				// router has no baseline → its restart is a real crash
+			},
+			expected: true,
+		},
+		{
+			name: "Multi-pod multi-component: all pods have baselines, all restarts expected - should NOT recreate",
+			desc: "All pods in all components were in-place updated and restarted within expected range",
+			instance: &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-instance",
+					Generation: 1,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "inference", Size: ptr.To[int32](2)},
+						{Name: "router", Size: ptr.To[int32](1)},
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					ObservedGeneration: 1,
+					CurrentRevision:    "rev-2",
+					UpdateRevision:     "rev-2",
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-inference-1"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-instance-router-0"},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+			},
+			baselines: map[string]map[string]int32{
+				"test-instance-inference-0": {"main": 0},
+				"test-instance-inference-1": {"main": 0},
+				"test-instance-router-0":    {"main": 0},
+			},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
