@@ -35,7 +35,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		name      string
 		instance  *workloadsv1alpha2.RoleInstance
 		pods      []*corev1.Pod
-		baselines map[string]map[string]int32
+		baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline
 		expected  bool
 		desc      string
 	}{
@@ -859,13 +859,13 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
 						ContainerStatuses: []corev1.ContainerStatus{
-							{Name: "main", RestartCount: 1},
+							{Name: "main", RestartCount: 1, ImageID: "img-v2"},
 						},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: false,
 		},
@@ -901,13 +901,13 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
 						ContainerStatuses: []corev1.ContainerStatus{
-							{Name: "main", RestartCount: 3},
+							{Name: "main", RestartCount: 3, ImageID: "img-v2"},
 						},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: true,
 		},
@@ -943,14 +943,14 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
 						ContainerStatuses: []corev1.ContainerStatus{
-							{Name: "main", RestartCount: 1},
+							{Name: "main", RestartCount: 1, ImageID: "img-v2"},
 							{Name: "sidecar", RestartCount: 2},
 						},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: true,
 		},
@@ -986,14 +986,14 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
 						ContainerStatuses: []corev1.ContainerStatus{
-							{Name: "inference", RestartCount: 1}, // expected from in-place update
-							{Name: "monitor", RestartCount: 1},   // NOT in baselines → crash
+							{Name: "inference", RestartCount: 1, ImageID: "img-inf-v2"}, // expected from in-place update
+							{Name: "monitor", RestartCount: 1},                          // NOT in baselines → crash
 						},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"inference": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"inference": {RestartCount: 0, ImageID: "img-inf-v1"}},
 			},
 			expected: true,
 		},
@@ -1029,14 +1029,14 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
 						ContainerStatuses: []corev1.ContainerStatus{
-							{Name: "inference", RestartCount: 3},
-							{Name: "router", RestartCount: 1},
+							{Name: "inference", RestartCount: 3, ImageID: "img-inf-v2"},
+							{Name: "router", RestartCount: 1, ImageID: "img-rtr-v2"},
 						},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"inference": 2, "router": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"inference": {RestartCount: 2, ImageID: "img-inf-v1"}, "router": {RestartCount: 0, ImageID: "img-rtr-v1"}},
 			},
 			expected: false,
 		},
@@ -1117,8 +1117,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
 			},
 			expected: true,
 		},
@@ -1626,7 +1626,7 @@ func TestIsContainerRestartExpected(t *testing.T) {
 	tests := []struct {
 		name      string
 		pod       *corev1.Pod
-		baselines map[string]map[string]int32
+		baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline
 		expected  bool
 	}{
 		{
@@ -1652,8 +1652,8 @@ func TestIsContainerRestartExpected(t *testing.T) {
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
 			},
 			expected: false,
 		},
@@ -1663,12 +1663,12 @@ func TestIsContainerRestartExpected(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					ContainerStatuses: []corev1.ContainerStatus{
-						{Name: "main", RestartCount: 1},
+						{Name: "main", RestartCount: 1, ImageID: "img-v2"},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: true,
 		},
@@ -1678,12 +1678,12 @@ func TestIsContainerRestartExpected(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					ContainerStatuses: []corev1.ContainerStatus{
-						{Name: "main", RestartCount: 3},
+						{Name: "main", RestartCount: 3, ImageID: "img-v2"},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: false,
 		},
@@ -1697,8 +1697,8 @@ func TestIsContainerRestartExpected(t *testing.T) {
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: false,
 		},
@@ -1713,8 +1713,8 @@ func TestIsContainerRestartExpected(t *testing.T) {
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
 			},
 			expected: true,
 		},
@@ -1724,12 +1724,12 @@ func TestIsContainerRestartExpected(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					ContainerStatuses: []corev1.ContainerStatus{
-						{Name: "main", RestartCount: 6},
+						{Name: "main", RestartCount: 6, ImageID: "img-v2"},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"main": 5},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 5, ImageID: "img-v1"}},
 			},
 			expected: true,
 		},
@@ -1739,13 +1739,13 @@ func TestIsContainerRestartExpected(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					ContainerStatuses: []corev1.ContainerStatus{
-						{Name: "inference", RestartCount: 3},
-						{Name: "router", RestartCount: 1},
+						{Name: "inference", RestartCount: 3, ImageID: "img-inf-v2"},
+						{Name: "router", RestartCount: 1, ImageID: "img-rtr-v2"},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"inference": 2, "router": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"inference": {RestartCount: 2, ImageID: "img-inf-v1"}, "router": {RestartCount: 0, ImageID: "img-rtr-v1"}},
 			},
 			expected: true,
 		},
@@ -1755,13 +1755,43 @@ func TestIsContainerRestartExpected(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 				Status: corev1.PodStatus{
 					ContainerStatuses: []corev1.ContainerStatus{
-						{Name: "inference", RestartCount: 3},
-						{Name: "router", RestartCount: 5},
+						{Name: "inference", RestartCount: 3, ImageID: "img-inf-v2"},
+						{Name: "router", RestartCount: 5, ImageID: "img-rtr-v2"},
 					},
 				},
 			},
-			baselines: map[string]map[string]int32{
-				"pod-0": {"inference": 2, "router": 0},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"inference": {RestartCount: 2, ImageID: "img-inf-v1"}, "router": {RestartCount: 0, ImageID: "img-rtr-v1"}},
+			},
+			expected: false,
+		},
+		{
+			name: "stale baseline after pod recreation (RestartCount < baseline)",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 1, ImageID: "img-v2"},
+					},
+				},
+			},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 5, ImageID: "img-v1"}},
+			},
+			expected: false,
+		},
+		{
+			name: "same ImageID means no restart allowance",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{Name: "main", RestartCount: 1, ImageID: "img-v1"},
+					},
+				},
+			},
+			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
 			},
 			expected: false,
 		},

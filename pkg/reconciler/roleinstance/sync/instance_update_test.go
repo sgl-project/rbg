@@ -201,23 +201,23 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 			Status: v1.PodStatus{
 				ContainerStatuses: []v1.ContainerStatus{
-					{Name: "main", RestartCount: 0},
-					{Name: "sidecar", RestartCount: 3},
+					{Name: "main", RestartCount: 0, ImageID: "img-main-v1"},
+					{Name: "sidecar", RestartCount: 3, ImageID: "img-sidecar-v1"},
 				},
 			},
 		}
 		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
 		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main"})
 
-		if newStatus.InPlaceUpdateContainerRestartCounts == nil {
+		if newStatus.InPlaceUpdateContainerBaselines == nil {
 			t.Fatal("expected baselines to be set")
 		}
-		baselines := newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]
+		baselines := newStatus.InPlaceUpdateContainerBaselines["pod-0"]
 		if baselines == nil {
 			t.Fatal("expected baselines for pod-0")
 		}
-		if baselines["main"] != 0 {
-			t.Errorf("expected main baseline=0, got %d", baselines["main"])
+		if baselines["main"].RestartCount != 0 || baselines["main"].ImageID != "img-main-v1" {
+			t.Errorf("expected main baseline={0, img-main-v1}, got %+v", baselines["main"])
 		}
 		if _, exists := baselines["sidecar"]; exists {
 			t.Error("sidecar should NOT be in baselines (not updated)")
@@ -229,20 +229,20 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 			Status: v1.PodStatus{
 				ContainerStatuses: []v1.ContainerStatus{
-					{Name: "main", RestartCount: 0},
-					{Name: "sidecar", RestartCount: 3},
+					{Name: "main", RestartCount: 0, ImageID: "img-main-v1"},
+					{Name: "sidecar", RestartCount: 3, ImageID: "img-sidecar-v1"},
 				},
 			},
 		}
 		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
 		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main", "sidecar"})
 
-		baselines := newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]
-		if baselines["main"] != 0 {
-			t.Errorf("expected main baseline=0, got %d", baselines["main"])
+		baselines := newStatus.InPlaceUpdateContainerBaselines["pod-0"]
+		if baselines["main"].RestartCount != 0 {
+			t.Errorf("expected main baseline RestartCount=0, got %d", baselines["main"].RestartCount)
 		}
-		if baselines["sidecar"] != 3 {
-			t.Errorf("expected sidecar baseline=3, got %d", baselines["sidecar"])
+		if baselines["sidecar"].RestartCount != 3 {
+			t.Errorf("expected sidecar baseline RestartCount=3, got %d", baselines["sidecar"].RestartCount)
 		}
 	})
 
@@ -258,30 +258,37 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 		newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
 		recordInPlaceUpdateBaselines(pod, newStatus, nil)
 
-		if newStatus.InPlaceUpdateContainerRestartCounts != nil {
+		if newStatus.InPlaceUpdateContainerBaselines != nil {
 			t.Error("expected no baselines when updatedContainers is nil")
 		}
 	})
 
-	t.Run("overwrites existing baselines for same pod", func(t *testing.T) {
+	t.Run("merges baselines across sequential updates", func(t *testing.T) {
 		pod := &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
 			Status: v1.PodStatus{
 				ContainerStatuses: []v1.ContainerStatus{
-					{Name: "main", RestartCount: 2},
+					{Name: "main", RestartCount: 2, ImageID: "img-main-v2"},
+					{Name: "sidecar", RestartCount: 0, ImageID: "img-sidecar-v1"},
 				},
 			},
 		}
+		// Prior update recorded baseline for "main"
 		newStatus := &workloadsv1alpha2.RoleInstanceStatus{
-			InPlaceUpdateContainerRestartCounts: map[string]map[string]int32{
-				"pod-0": {"main": 0},
+			InPlaceUpdateContainerBaselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-main-v1"}},
 			},
 		}
-		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main"})
+		// Sequential update now targets "sidecar"
+		recordInPlaceUpdateBaselines(pod, newStatus, []string{"sidecar"})
 
-		if newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"] != 2 {
-			t.Errorf("expected main baseline=2 after overwrite, got %d",
-				newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"])
+		// main's baseline should be preserved from the prior update
+		if newStatus.InPlaceUpdateContainerBaselines["pod-0"]["main"].RestartCount != 0 {
+			t.Error("main baseline should be preserved from prior update")
+		}
+		// sidecar's baseline should be newly added
+		if newStatus.InPlaceUpdateContainerBaselines["pod-0"]["sidecar"].RestartCount != 0 {
+			t.Error("sidecar baseline should be recorded")
 		}
 	})
 
@@ -290,21 +297,21 @@ func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
 			Status: v1.PodStatus{
 				ContainerStatuses: []v1.ContainerStatus{
-					{Name: "main", RestartCount: 0},
+					{Name: "main", RestartCount: 0, ImageID: "img-v1"},
 				},
 			},
 		}
 		newStatus := &workloadsv1alpha2.RoleInstanceStatus{
-			InPlaceUpdateContainerRestartCounts: map[string]map[string]int32{
-				"pod-0": {"main": 5},
+			InPlaceUpdateContainerBaselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 5, ImageID: "img-v1"}},
 			},
 		}
 		recordInPlaceUpdateBaselines(pod, newStatus, []string{"main"})
 
-		if newStatus.InPlaceUpdateContainerRestartCounts["pod-0"]["main"] != 5 {
+		if newStatus.InPlaceUpdateContainerBaselines["pod-0"]["main"].RestartCount != 5 {
 			t.Error("baselines for pod-0 should be preserved")
 		}
-		if newStatus.InPlaceUpdateContainerRestartCounts["pod-1"]["main"] != 0 {
+		if newStatus.InPlaceUpdateContainerBaselines["pod-1"]["main"].RestartCount != 0 {
 			t.Error("baselines for pod-1 should be recorded")
 		}
 	})
@@ -375,17 +382,17 @@ func TestUpdatePodRecordsBaselines(t *testing.T) {
 	}
 
 	// Verify baselines were recorded
-	if newStatus.InPlaceUpdateContainerRestartCounts == nil {
+	if newStatus.InPlaceUpdateContainerBaselines == nil {
 		t.Fatal("expected baselines to be recorded after successful in-place update")
 	}
-	baselines := newStatus.InPlaceUpdateContainerRestartCounts["test-pod"]
+	baselines := newStatus.InPlaceUpdateContainerBaselines["test-pod"]
 	if baselines == nil {
 		t.Fatal("expected baselines for test-pod")
 	}
-	if baselines["inference"] != 2 {
-		t.Errorf("expected inference baseline=2, got %d", baselines["inference"])
+	if baselines["inference"].RestartCount != 2 {
+		t.Errorf("expected inference baseline RestartCount=2, got %d", baselines["inference"].RestartCount)
 	}
-	if baselines["router"] != 0 {
-		t.Errorf("expected router baseline=0, got %d", baselines["router"])
+	if baselines["router"].RestartCount != 0 {
+		t.Errorf("expected router baseline RestartCount=0, got %d", baselines["router"].RestartCount)
 	}
 }

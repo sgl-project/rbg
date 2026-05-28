@@ -97,6 +97,9 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 			// actually in-place updated (image changed). Non-updated containers should
 			// not be protected — their restarts indicate real crashes.
 			updatedContainers := c.inplaceControl.GetUpdatedContainerNames(ctx, pod, oldRevision, updateRevision, opts)
+			if len(updatedContainers) == 0 {
+				klog.Warningf("GetUpdatedContainerNames returned empty for pod %s/%s; baselines will not be recorded", pod.Namespace, pod.Name)
+			}
 			recordInPlaceUpdateBaselines(pod, newStatus, updatedContainers)
 			return res.DelayDuration, nil
 		}
@@ -111,26 +114,36 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 	return 0, nil
 }
 
-// recordInPlaceUpdateBaselines records the pre-update RestartCount for containers
-// that were actually in-place updated (image changed) into
-// newStatus.InPlaceUpdateContainerRestartCounts. Only updated containers are recorded
+// recordInPlaceUpdateBaselines records the pre-update RestartCount and ImageID
+// for containers that were actually in-place updated (image changed) into
+// newStatus.InPlaceUpdateContainerBaselines. Only updated containers are recorded
 // so that crashes in non-updated containers are still correctly detected.
+// Baselines are merged into existing entries to preserve baselines from prior
+// in-place updates of different containers (sequential update support).
 func recordInPlaceUpdateBaselines(pod *v1.Pod, newStatus *workloadsv1alpha2.RoleInstanceStatus, updatedContainers []string) {
 	if len(updatedContainers) == 0 {
 		return
 	}
-	if newStatus.InPlaceUpdateContainerRestartCounts == nil {
-		newStatus.InPlaceUpdateContainerRestartCounts = make(map[string]map[string]int32)
+	if newStatus.InPlaceUpdateContainerBaselines == nil {
+		newStatus.InPlaceUpdateContainerBaselines = make(map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline)
 	}
 	updatedSet := make(map[string]bool, len(updatedContainers))
 	for _, name := range updatedContainers {
 		updatedSet[name] = true
 	}
-	containerBaselines := make(map[string]int32, len(updatedContainers))
+	// Merge into existing baselines instead of overwriting — preserves
+	// baselines from prior in-place updates of different containers.
+	existing := newStatus.InPlaceUpdateContainerBaselines[pod.Name]
+	if existing == nil {
+		existing = make(map[string]workloadsv1alpha2.ContainerUpdateBaseline, len(updatedContainers))
+	}
 	for _, cs := range pod.Status.ContainerStatuses {
 		if updatedSet[cs.Name] {
-			containerBaselines[cs.Name] = cs.RestartCount
+			existing[cs.Name] = workloadsv1alpha2.ContainerUpdateBaseline{
+				RestartCount: cs.RestartCount,
+				ImageID:      cs.ImageID,
+			}
 		}
 	}
-	newStatus.InPlaceUpdateContainerRestartCounts[pod.Name] = containerBaselines
+	newStatus.InPlaceUpdateContainerBaselines[pod.Name] = existing
 }

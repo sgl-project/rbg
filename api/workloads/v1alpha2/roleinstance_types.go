@@ -115,15 +115,26 @@ type RoleInstanceStatus struct {
 	// newest ControllerRevision.
 	CollisionCount *int32 `json:"collisionCount,omitempty"`
 
-	// InPlaceUpdateContainerRestartCounts records the pre-update RestartCount
-	// baseline for containers that were in-place updated. Outer key is pod name,
-	// inner key is container name, value is the RestartCount before the update.
+	// InPlaceUpdateContainerBaselines records the pre-update baseline for
+	// containers that were in-place updated. Outer key is pod name, inner key
+	// is container name.
 	// Set by the Update flow when an in-place update is performed.
-	// Cleared when all pods converge to UpdateRevision and the instance becomes Ready.
+	// Baselines for deleted pods are garbage-collected when all replicas converge.
+	// Baselines for existing pods are retained and naturally overwritten on next update.
 	// Used by shouldRecreateInstance to distinguish expected container restarts
 	// (from in-place image changes) from real crashes.
 	// +optional
-	InPlaceUpdateContainerRestartCounts map[string]map[string]int32 `json:"inPlaceUpdateContainerRestartCounts,omitempty"`
+	InPlaceUpdateContainerBaselines map[string]map[string]ContainerUpdateBaseline `json:"inPlaceUpdateContainerBaselines,omitempty"`
+}
+
+// ContainerUpdateBaseline records the pre-update state of a container for
+// distinguishing expected restarts (from in-place image changes) from real crashes.
+type ContainerUpdateBaseline struct {
+	// RestartCount is the container's RestartCount before the in-place update.
+	RestartCount int32 `json:"restartCount"`
+	// ImageID is the container's ImageID before the in-place update.
+	// Used to determine if the image actually changed for this container.
+	ImageID string `json:"imageID,omitempty"`
 }
 
 type RoleInstanceComponentStatus struct {

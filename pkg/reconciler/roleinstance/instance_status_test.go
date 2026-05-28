@@ -20,13 +20,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestInconsistentBaselines(t *testing.T) {
 	tests := []struct {
 		name     string
-		old      map[string]map[string]int32
-		new      map[string]map[string]int32
+		old      map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline
+		new      map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline
 		expected bool
 	}{
 		{
@@ -36,51 +38,86 @@ func TestInconsistentBaselines(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "old nil, new non-nil",
-			old:      nil,
-			new:      map[string]map[string]int32{"pod-0": {"main": 0}},
+			name: "old nil, new non-nil",
+			old:  nil,
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+			},
 			expected: true,
 		},
 		{
-			name:     "old non-nil, new nil",
-			old:      map[string]map[string]int32{"pod-0": {"main": 0}},
+			name: "old non-nil, new nil",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+			},
 			new:      nil,
 			expected: true,
 		},
 		{
-			name:     "same content",
-			old:      map[string]map[string]int32{"pod-0": {"main": 0, "sidecar": 2}},
-			new:      map[string]map[string]int32{"pod-0": {"main": 0, "sidecar": 2}},
+			name: "same content",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}, "sidecar": {RestartCount: 2}},
+			},
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}, "sidecar": {RestartCount: 2}},
+			},
 			expected: false,
 		},
 		{
-			name:     "different pod names",
-			old:      map[string]map[string]int32{"pod-0": {"main": 0}},
-			new:      map[string]map[string]int32{"pod-1": {"main": 0}},
+			name: "different pod names",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+			},
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-1": {"main": {RestartCount: 0}},
+			},
 			expected: true,
 		},
 		{
-			name:     "different container names",
-			old:      map[string]map[string]int32{"pod-0": {"main": 0}},
-			new:      map[string]map[string]int32{"pod-0": {"sidecar": 0}},
+			name: "different container names",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+			},
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"sidecar": {RestartCount: 0}},
+			},
 			expected: true,
 		},
 		{
-			name:     "different restart counts",
-			old:      map[string]map[string]int32{"pod-0": {"main": 0}},
-			new:      map[string]map[string]int32{"pod-0": {"main": 1}},
+			name: "different restart counts",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+			},
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 1}},
+			},
 			expected: true,
 		},
 		{
-			name:     "extra pod in new",
-			old:      map[string]map[string]int32{"pod-0": {"main": 0}},
-			new:      map[string]map[string]int32{"pod-0": {"main": 0}, "pod-1": {"main": 0}},
+			name: "different ImageIDs",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v1"}},
+			},
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0, ImageID: "img-v2"}},
+			},
+			expected: true,
+		},
+		{
+			name: "extra pod in new",
+			old: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+			},
+			new: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				"pod-0": {"main": {RestartCount: 0}},
+				"pod-1": {"main": {RestartCount: 0}},
+			},
 			expected: true,
 		},
 		{
 			name:     "both empty maps",
-			old:      map[string]map[string]int32{},
-			new:      map[string]map[string]int32{},
+			old:      map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{},
+			new:      map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{},
 			expected: false,
 		},
 	}

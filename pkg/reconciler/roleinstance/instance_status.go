@@ -143,18 +143,18 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 		// Keep baselines for existing pods so that the expected restart (RestartCount
 		// = baseline+1) remains protected against false recreation on subsequent
 		// reconciles. Baselines are naturally overwritten on the next in-place update.
-		if newStatus.InPlaceUpdateContainerRestartCounts != nil {
+		if newStatus.InPlaceUpdateContainerBaselines != nil {
 			activePodNames := make(map[string]bool, len(pods))
 			for _, pod := range pods {
 				activePodNames[pod.Name] = true
 			}
-			for podName := range newStatus.InPlaceUpdateContainerRestartCounts {
+			for podName := range newStatus.InPlaceUpdateContainerBaselines {
 				if !activePodNames[podName] {
-					delete(newStatus.InPlaceUpdateContainerRestartCounts, podName)
+					delete(newStatus.InPlaceUpdateContainerBaselines, podName)
 				}
 			}
-			if len(newStatus.InPlaceUpdateContainerRestartCounts) == 0 {
-				newStatus.InPlaceUpdateContainerRestartCounts = nil
+			if len(newStatus.InPlaceUpdateContainerBaselines) == 0 {
+				newStatus.InPlaceUpdateContainerBaselines = nil
 			}
 		}
 	}
@@ -335,11 +335,11 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 	if inconsistentCondition(oldStatus.Conditions, newStatus.Conditions) {
 		return true
 	}
-	return inconsistentBaselines(oldStatus.InPlaceUpdateContainerRestartCounts, newStatus.InPlaceUpdateContainerRestartCounts)
+	return inconsistentBaselines(oldStatus.InPlaceUpdateContainerBaselines, newStatus.InPlaceUpdateContainerBaselines)
 }
 
-// inconsistentBaselines checks whether InPlaceUpdateContainerRestartCounts has changed.
-func inconsistentBaselines(old, new map[string]map[string]int32) bool {
+// inconsistentBaselines checks whether InPlaceUpdateContainerBaselines has changed.
+func inconsistentBaselines(old, new map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
 	if len(old) != len(new) {
 		return true
 	}
@@ -348,8 +348,9 @@ func inconsistentBaselines(old, new map[string]map[string]int32) bool {
 		if !ok || len(oldContainers) != len(newContainers) {
 			return true
 		}
-		for cName, oldCount := range oldContainers {
-			if newCount, exists := newContainers[cName]; !exists || oldCount != newCount {
+		for cName, oldBaseline := range oldContainers {
+			newBaseline, exists := newContainers[cName]
+			if !exists || oldBaseline.RestartCount != newBaseline.RestartCount || oldBaseline.ImageID != newBaseline.ImageID {
 				return true
 			}
 		}

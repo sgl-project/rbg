@@ -210,15 +210,31 @@ spec:
                 description: CurrentRevision is a hash value that changes when the
                   spec is changed.
                 type: string
-              inPlaceUpdateContainerRestartCounts:
+              inPlaceUpdateContainerBaselines:
                 additionalProperties:
                   additionalProperties:
-                    format: int32
-                    type: integer
+                    description: |-
+                      ContainerUpdateBaseline records the pre-update state of a container for
+                      distinguishing expected restarts (from in-place image changes) from real crashes.
+                    properties:
+                      imageID:
+                        description: |-
+                          ImageID is the container's ImageID before the in-place update.
+                          Used to determine if the image actually changed for this container.
+                        type: string
+                      restartCount:
+                        description: RestartCount is the container's RestartCount
+                          before the in-place update.
+                        format: int32
+                        type: integer
+                    required:
+                    - restartCount
+                    type: object
                   type: object
                 description: |-
-                  InPlaceUpdateContainerRestartCounts records the pre-update RestartCount
-                  baseline for containers that were in-place updated.
+                  InPlaceUpdateContainerBaselines records the pre-update baseline for
+                  containers that were in-place updated. Outer key is pod name, inner key
+                  is container name.
                 type: object
               labelSelector:
                 description: LabelSelector of a RoleInstance is a label query over

@@ -121,12 +121,12 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	newStatus := workloadsv1alpha2.RoleInstanceStatus{
-		ObservedGeneration:                  instance.Generation,
-		CurrentRevision:                     currentRevision.Name,
-		UpdateRevision:                      updateRevision.Name,
-		CollisionCount:                      new(int32),
-		LabelSelector:                       selector.String(),
-		InPlaceUpdateContainerRestartCounts: instance.Status.InPlaceUpdateContainerRestartCounts,
+		ObservedGeneration:              instance.Generation,
+		CurrentRevision:                 currentRevision.Name,
+		UpdateRevision:                  updateRevision.Name,
+		CollisionCount:                  new(int32),
+		LabelSelector:                   selector.String(),
+		InPlaceUpdateContainerBaselines: deepCopyBaselines(instance.Status.InPlaceUpdateContainerBaselines),
 	}
 	*newStatus.CollisionCount = collisionCount
 
@@ -314,4 +314,21 @@ func handleCrash(ctx context.Context, additionalHandlers ...func(interface{})) {
 type syncResult struct {
 	requeue time.Duration
 	err     error
+}
+
+// deepCopyBaselines returns a deep copy of the baselines map to prevent aliasing
+// between instance.Status and newStatus.
+func deepCopyBaselines(src map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline, len(src))
+	for podName, containers := range src {
+		dstContainers := make(map[string]workloadsv1alpha2.ContainerUpdateBaseline, len(containers))
+		for cName, baseline := range containers {
+			dstContainers[cName] = baseline
+		}
+		dst[podName] = dstContainers
+	}
+	return dst
 }

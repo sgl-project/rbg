@@ -137,6 +137,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.ClusterEngineRuntimeProfileApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
 		return &workloadsv1alpha2.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ContainerUpdateBaseline"):
+		return &workloadsv1alpha2.ContainerUpdateBaselineApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
 		return &workloadsv1alpha2.CoordinatedPolicyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicyRule"):
