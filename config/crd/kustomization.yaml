@@ -9,6 +9,7 @@ resources:
 - bases/workloads.x-k8s.io_roleinstances.yaml
 - bases/workloads.x-k8s.io_roleinstancesets.yaml
 - bases/workloads.x-k8s.io_coordinatedpolicies.yaml
+- bases/workloads.x-k8s.io_rolebasedgroupwarmups.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
