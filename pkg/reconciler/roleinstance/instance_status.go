@@ -139,6 +139,24 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 	}
 	if newStatusUpdatedReplicas == newStatusReplicas && newStatusReplicas == componentSize {
 		newStatus.CurrentRevision = newStatus.UpdateRevision
+		// Garbage-collect in-place update baselines for pods that no longer exist.
+		// Keep baselines for existing pods so that the expected restart (RestartCount
+		// = baseline+1) remains protected against false recreation on subsequent
+		// reconciles. Baselines are naturally overwritten on the next in-place update.
+		if newStatus.InPlaceUpdateContainerBaselines != nil {
+			activePodNames := make(map[string]bool, len(pods))
+			for _, pod := range pods {
+				activePodNames[pod.Name] = true
+			}
+			for podName := range newStatus.InPlaceUpdateContainerBaselines {
+				if !activePodNames[podName] {
+					delete(newStatus.InPlaceUpdateContainerBaselines, podName)
+				}
+			}
+			if len(newStatus.InPlaceUpdateContainerBaselines) == 0 {
+				newStatus.InPlaceUpdateContainerBaselines = nil
+			}
+		}
 	}
 	r.setInstanceConditions(instance, newStatus, conditions)
 }
@@ -314,7 +332,30 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 			return true
 		}
 	}
-	return inconsistentCondition(oldStatus.Conditions, newStatus.Conditions)
+	if inconsistentCondition(oldStatus.Conditions, newStatus.Conditions) {
+		return true
+	}
+	return inconsistentBaselines(oldStatus.InPlaceUpdateContainerBaselines, newStatus.InPlaceUpdateContainerBaselines)
+}
+
+// inconsistentBaselines checks whether InPlaceUpdateContainerBaselines has changed.
+func inconsistentBaselines(old, new map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
+	if len(old) != len(new) {
+		return true
+	}
+	for podName, oldContainers := range old {
+		newContainers, ok := new[podName]
+		if !ok || len(oldContainers) != len(newContainers) {
+			return true
+		}
+		for cName, oldBaseline := range oldContainers {
+			newBaseline, exists := newContainers[cName]
+			if !exists || oldBaseline.RestartCount != newBaseline.RestartCount || oldBaseline.ImageID != newBaseline.ImageID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func inconsistentComponentStatus(oldRoleStatus, newRoleStatus workloadsv1alpha2.RoleInstanceComponentStatus) bool {

@@ -48,6 +48,9 @@ type Interface interface {
 	CanUpdateInPlace(ctx context.Context, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) bool
 	Refresh(ctx context.Context, pod *v1.Pod, opts *podinplaceupdate.UpdateOptions) podinplaceupdate.RefreshResult
 	Update(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) podinplaceupdate.UpdateResult
+	// GetUpdatedContainerNames returns the names of containers that will have their
+	// images changed by an in-place update from oldRevision to newRevision for the given pod.
+	GetUpdatedContainerNames(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) []string
 }
 
 func New(c client.Client) Interface {
@@ -110,6 +113,32 @@ func (c *realControl) Update(ctx context.Context, pod *v1.Pod, oldRevision, newR
 		return podinplaceupdate.UpdateResult{InPlaceUpdate: true, UpdateErr: err}
 	}
 	return podinplaceupdate.UpdateResult{InPlaceUpdate: true, NewResourceVersion: newResourceVersion}
+}
+
+func (c *realControl) GetUpdatedContainerNames(ctx context.Context, pod *v1.Pod, oldRevision, newRevision *apps.ControllerRevision, opts *podinplaceupdate.UpdateOptions) []string {
+	componentsRvHistory, err := c.groupComponentControllerRevision(ctx, oldRevision, newRevision)
+	if err != nil {
+		return nil
+	}
+	componentName := instanceutil.GetPodComponentName(pod)
+	rvHistory, ok := componentsRvHistory[componentName]
+	if !ok {
+		return nil
+	}
+	oldPodTemplateRevision := rvHistory.GetOldPodTemplateRevision()
+	newPodTemplateRevision := rvHistory.GetNewPodTemplateRevision()
+	if opts == nil {
+		opts = podinplaceupdate.SetOptionsDefaults(opts)
+	}
+	spec := opts.CalculateSpec(oldPodTemplateRevision, newPodTemplateRevision, opts)
+	if spec == nil {
+		return nil
+	}
+	names := make([]string, 0, len(spec.ContainerImages))
+	for name := range spec.ContainerImages {
+		names = append(names, name)
+	}
+	return names
 }
 
 func isComponentExtensionSpecChanged(rH revisionHistory) bool {

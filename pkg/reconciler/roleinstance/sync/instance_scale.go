@@ -29,10 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
+	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
@@ -78,7 +78,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
-	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods) {
+	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
@@ -302,13 +302,13 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 // already in a restart cycle. This uses an in-memory LRU cache (instant, no informer lag)
 // with a fallback to a direct API server read for the persisted Restarting condition
 // (survives controller restarts).
-func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) (recreate bool) {
+func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) (recreate bool) {
 	defer func() {
 		if recreate && c.isAlreadyRestarting(ctx, instance) {
 			recreate = false
 		}
 	}()
-	return shouldRecreateInstance(instance, pods)
+	return shouldRecreateInstance(instance, pods, baselines)
 }
 
 // isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
@@ -342,7 +342,7 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 //
 // Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
 // and should not trigger Instance recreation.
-func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
+func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
 	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
 	if instance.Spec.RestartPolicy != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
@@ -354,9 +354,15 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	}
 
 	// Only trigger when Instance was previously Ready (stable state)
-	// and spec is not being changed (Generation == ObservedGeneration).
-	// This avoids triggering recreate during initial creation or scaling up.
+	// and is NOT in the middle of any update.
+	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
 	if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
+		return false
+	}
+	// CurrentRevision != UpdateRevision means a rolling update is in progress
+	// (not all pods have converged to the target revision yet). Container restarts
+	// during this window are from the update process, not unexpected failures.
+	if instance.Status.CurrentRevision != instance.Status.UpdateRevision {
 		return false
 	}
 
@@ -364,12 +370,19 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		if hasTriggerPolicyIgnore(p) {
 			continue
 		}
+		// If this pod is currently undergoing an in-place update, skip it.
+		// The container restart is expected and should not trigger instance recreation.
+		// We continue checking other pods so that a genuine PodFailed on a sibling
+		// is not masked by one pod's in-place update state.
+		if isPodInPlaceUpdating(p) {
+			continue
+		}
 		// Check if any Pod is in Failed phase (excluding pods being deleted)
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
 			return true
 		}
-		// Check if any container has restarted
-		if containerRestarted(p) {
+		// Check if any container has restarted beyond what's expected from in-place updates.
+		if containerRestarted(p) && !isContainerRestartExpected(p, baselines) {
 			return true
 		}
 	}
@@ -385,6 +398,55 @@ func containerRestarted(pod *v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// isPodInPlaceUpdating checks if a pod is currently undergoing an in-place update
+// by looking at the InPlaceUpdateReady pod condition. When an in-place update starts,
+// this condition is set to False; it returns to True after the update completes.
+func isPodInPlaceUpdating(pod *v1.Pod) bool {
+	cond := podinplace.GetInPlaceCondition(pod)
+	return cond != nil && cond.Status == v1.ConditionFalse
+}
+
+// isContainerRestartExpected checks whether all container restarts in this pod
+// are accounted for by a recent in-place update, using the pre-update baselines
+// recorded in RoleInstance status.
+// A container is granted +1 restart allowance only if its ImageID actually changed
+// (indicating the in-place update pulled a new image). Non-updated containers
+// tracked in baselines get no allowance — any restart on them is a real crash.
+func isContainerRestartExpected(pod *v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
+	if baselines == nil {
+		return false
+	}
+	containerBaselines, ok := baselines[pod.Name]
+	if !ok {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.RestartCount == 0 {
+			continue
+		}
+		baseline, wasUpdated := containerBaselines[cs.Name]
+		if !wasUpdated {
+			// Container was not in-place updated but has restarted → real crash
+			return false
+		}
+		if cs.RestartCount < baseline.RestartCount {
+			// Pod was likely recreated (RestartCount reset to a lower value).
+			// The baseline is stale; treat any restart as real.
+			return false
+		}
+		allowed := baseline.RestartCount
+		if cs.ImageID != baseline.ImageID {
+			// Image actually changed; one kubelet-driven restart is expected
+			allowed++
+		}
+		if cs.RestartCount > allowed {
+			// More restarts than expected → real crash
+			return false
+		}
+	}
+	return true
 }
 
 // hasTriggerPolicyIgnore checks if the pod has the restart-trigger-policy annotation set to "Ignore".
