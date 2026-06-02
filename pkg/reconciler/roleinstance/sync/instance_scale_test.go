@@ -1328,7 +1328,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 				},
 			},
 			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
-				"pod-0": {"nginx": {RestartCount: 2}},
+				"pod-0": {"nginx": {RestartCount: 2, ImageID: "img-old"}},
 			},
 			expected: false,
 		},
@@ -1367,7 +1367,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 				},
 			},
 			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
-				"pod-0": {"nginx": {RestartCount: 2}},
+				"pod-0": {"nginx": {RestartCount: 2, ImageID: "img-old"}},
 			},
 			expected: true,
 		},
@@ -1538,8 +1538,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 				},
 			},
 			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
-				"test-instance-inference-0": {"main": {RestartCount: 0}},
-				"test-instance-inference-1": {"main": {RestartCount: 0}},
+				"test-instance-inference-0": {"main": {RestartCount: 0, ImageID: "img-old"}},
+				"test-instance-inference-1": {"main": {RestartCount: 0, ImageID: "img-old"}},
 				// router has no baseline → its restart is a real crash
 			},
 			expected: true,
@@ -1598,9 +1598,9 @@ func TestShouldRecreateInstance(t *testing.T) {
 				},
 			},
 			baselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
-				"test-instance-inference-0": {"main": {RestartCount: 0}},
-				"test-instance-inference-1": {"main": {RestartCount: 0}},
-				"test-instance-router-0":    {"main": {RestartCount: 0}},
+				"test-instance-inference-0": {"main": {RestartCount: 0, ImageID: "img-old"}},
+				"test-instance-inference-1": {"main": {RestartCount: 0, ImageID: "img-old"}},
+				"test-instance-router-0":    {"main": {RestartCount: 0, ImageID: "img-old"}},
 			},
 			expected: false,
 		},
