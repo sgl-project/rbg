@@ -1,7 +1,8 @@
 # Example: Basic RoleBasedGroup with two roles
 # This example demonstrates the fundamental usage of RoleBasedGroup v1alpha2.
 # Each role uses standalonePattern for single-pod-per-instance deployment.
-# Default restartPolicy for standalonePattern is RecreateRoleInstanceOnPodRestart.
+# standalonePattern has no restartPolicy field (always None, since recreating
+# a single-pod instance is equivalent to normal pod replacement).
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -11,7 +12,6 @@ spec:
   roles:
     - name: frontend
       replicas: 1
-      # restartPolicy defaults to RecreateRoleInstanceOnPodRestart
       standalonePattern:
         template:
           spec:

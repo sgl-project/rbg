@@ -269,6 +269,26 @@ func (r *RoleSpec) GetWorkerTemplatePatch() *runtime.RawExtension {
 	return r.LeaderWorkerPattern.WorkerTemplatePatch
 }
 
+// GetRestartPolicy returns the effective restart policy for this role based on its pattern.
+// StandalonePattern always returns None (single pod, no instance-level restart).
+// LeaderWorkerPattern and CustomComponentsPattern default to RecreateRoleInstanceOnPodRestart.
+func (r *RoleSpec) GetRestartPolicy() RestartPolicyType {
+	if r.LeaderWorkerPattern != nil {
+		if r.LeaderWorkerPattern.RestartPolicy != "" {
+			return r.LeaderWorkerPattern.RestartPolicy
+		}
+		return RecreateRoleInstanceOnPodRestart
+	}
+	if r.CustomComponentsPattern != nil {
+		if r.CustomComponentsPattern.RestartPolicy != "" {
+			return r.CustomComponentsPattern.RestartPolicy
+		}
+		return RecreateRoleInstanceOnPodRestart
+	}
+	// StandalonePattern or no pattern: single pod, no instance-level restart
+	return RestartPolicyNone
+}
+
 // GetLeaderWorkerSize returns the size of the leader-worker group.
 // Returns nil if not using LeaderWorkerPattern.
 func (r *RoleSpec) GetLeaderWorkerSize() *int32 {

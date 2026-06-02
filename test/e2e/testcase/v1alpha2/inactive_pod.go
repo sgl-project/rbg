@@ -189,11 +189,11 @@ func runIgnoredComponentTest(f *framework.Framework) {
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-ignore-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			{
-				Name:          "role-1",
-				Replicas:      ptr.To(int32(1)),
-				RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				Name:     "role-1",
+				Replicas: ptr.To(int32(1)),
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
 								Name:     "main",
@@ -303,11 +303,11 @@ func runNonIgnoredComponentTest(f *framework.Framework) {
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-noignore-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			{
-				Name:          "role-1",
-				Replicas:      ptr.To(int32(1)),
-				RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				Name:     "role-1",
+				Replicas: ptr.To(int32(1)),
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
 								Name:     "main",
@@ -410,7 +410,6 @@ func runRestartPolicyNoneTest(f *framework.Framework) {
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
 				WithReplicas(3).
-				WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 				Obj(),
 		}).Obj()
 

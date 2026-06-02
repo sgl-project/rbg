@@ -69,7 +69,6 @@ spec:
     # Prefill: 2 instances, tensor parallel size = 4 (1 leader + 3 workers)
     - name: prefill
       replicas: 2
-      restartPolicy: None
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -77,6 +76,7 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 4   # 1 leader + 3 workers per instance
+        restartPolicy: None
         template:
           metadata:
             labels:
@@ -133,7 +133,6 @@ spec:
     # Decode: 4 instances, tensor parallel size = 2 (1 leader + 1 worker)
     - name: decode
       replicas: 4
-      restartPolicy: None
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -141,6 +140,7 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
+        restartPolicy: None
         template:
           metadata:
             labels:

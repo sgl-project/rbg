@@ -20,19 +20,17 @@ package v1alpha2
 import (
 	v1 "k8s.io/api/core/v1"
 	constants "sigs.k8s.io/rbgs/api/workloads/constants"
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // RoleSpecApplyConfiguration represents a declarative configuration of the RoleSpec type for use
 // with apply.
 type RoleSpecApplyConfiguration struct {
-	Name                      *string                              `json:"name,omitempty"`
-	Labels                    map[string]string                    `json:"labels,omitempty"`
-	Annotations               map[string]string                    `json:"annotations,omitempty"`
-	Replicas                  *int32                               `json:"replicas,omitempty"`
-	RolloutStrategy           *RolloutStrategyApplyConfiguration   `json:"rolloutStrategy,omitempty"`
-	RestartPolicy             *workloadsv1alpha2.RestartPolicyType `json:"restartPolicy,omitempty"`
-	Dependencies              []string                             `json:"dependencies,omitempty"`
+	Name                      *string                            `json:"name,omitempty"`
+	Labels                    map[string]string                  `json:"labels,omitempty"`
+	Annotations               map[string]string                  `json:"annotations,omitempty"`
+	Replicas                  *int32                             `json:"replicas,omitempty"`
+	RolloutStrategy           *RolloutStrategyApplyConfiguration `json:"rolloutStrategy,omitempty"`
+	Dependencies              []string                           `json:"dependencies,omitempty"`
 	PatternApplyConfiguration `json:",inline"`
 	ServicePorts              []v1.ServicePort                   `json:"servicePorts,omitempty"`
 	EngineRuntimes            []EngineRuntimeApplyConfiguration  `json:"engineRuntimes,omitempty"`
@@ -96,14 +94,6 @@ func (b *RoleSpecApplyConfiguration) WithReplicas(value int32) *RoleSpecApplyCon
 // If called multiple times, the RolloutStrategy field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithRolloutStrategy(value *RolloutStrategyApplyConfiguration) *RoleSpecApplyConfiguration {
 	b.RolloutStrategy = value
-	return b
-}
-
-// WithRestartPolicy sets the RestartPolicy field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RestartPolicy field is set to the value of the last call.
-func (b *RoleSpecApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *RoleSpecApplyConfiguration {
-	b.RestartPolicy = &value
 	return b
 }
 

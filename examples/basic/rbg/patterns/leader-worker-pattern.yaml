@@ -1,7 +1,7 @@
 # Example: LeaderWorkerPattern - multi-pod pattern with leader and workers (v1alpha2)
 # leaderWorkerPattern creates grouped instances where each instance has one leader
 # and multiple workers. Use this for LLM inference with tensor parallelism.
-# Default restartPolicy for leaderWorkerPattern is RecreateRoleInstanceOnPodRestart.
+# restartPolicy is set on leaderWorkerPattern (default: RecreateRoleInstanceOnPodRestart).
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -11,9 +11,10 @@ spec:
   roles:
     - name: prefill
       replicas: 2
-      # restartPolicy defaults to RecreateRoleInstanceOnPodRestart
       # leaderWorkerPattern: each replica creates 1 leader + (size-1) workers
       leaderWorkerPattern:
+        # restartPolicy defaults to RecreateRoleInstanceOnPodRestart
+        restartPolicy: RecreateRoleInstanceOnPodRestart
         size: 4    # total pods per instance: 1 leader + 3 workers
         template:
           metadata:

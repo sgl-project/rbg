@@ -38,7 +38,6 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 				[]workloadsv1alpha2.RoleSpec{
 					wrappersv2.BuildStandaloneRole("role-1").
 						WithReplicas(2).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							Type:           workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
 							MaxUnavailable: ptr.To(intstr.FromInt32(1)),
@@ -129,7 +128,7 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 		ginkgo.It("[RoleInstanceSet] InPlaceIfPossible with RecreateRoleInstanceOnPodRestart does not trigger false recreation", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole("role-1").
+					wrappersv2.BuildLeaderWorkerRole("role-1").
 						WithReplicas(2).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
@@ -145,11 +144,11 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 
 			// Record pod UIDs before update
 			initialPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
-			gomega.Expect(initialPodUIDs).Should(gomega.HaveLen(2))
+			gomega.Expect(initialPodUIDs).Should(gomega.HaveLen(4))
 
 			// Update only the container image (in-place updatable field)
 			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
-				rbg.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Image = "nginx:1.25"
+				rbg.Spec.Roles[0].LeaderWorkerPattern.Template.Spec.Containers[0].Image = "nginx:1.25"
 			})
 
 			// Wait for update to complete
@@ -174,7 +173,6 @@ func RunUpdateStrategyTestCases(f *framework.Framework) {
 				[]workloadsv1alpha2.RoleSpec{
 					wrappersv2.BuildStandaloneRole("role-1").
 						WithReplicas(3).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 							Paused:         true,

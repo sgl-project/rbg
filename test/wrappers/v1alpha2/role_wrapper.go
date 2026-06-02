@@ -66,11 +66,6 @@ func (rw *StandaloneRoleWrapper) WithRollingUpdate(ru workloadsv1alpha2.RollingU
 	return rw
 }
 
-func (rw *StandaloneRoleWrapper) WithRestartPolicy(rp workloadsv1alpha2.RestartPolicyType) *StandaloneRoleWrapper {
-	rw.RestartPolicy = rp
-	return rw
-}
-
 func (rw *StandaloneRoleWrapper) WithWorkload(apiVersion, kind string) *StandaloneRoleWrapper {
 	if rw.Annotations == nil {
 		rw.Annotations = make(map[string]string)
@@ -165,7 +160,7 @@ func (rw *LeaderWorkerRoleWrapper) WithRollingUpdate(ru workloadsv1alpha2.Rollin
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithRestartPolicy(rp workloadsv1alpha2.RestartPolicyType) *LeaderWorkerRoleWrapper {
-	rw.RestartPolicy = rp
+	rw.LeaderWorkerPattern.RestartPolicy = rp
 	return rw
 }
 

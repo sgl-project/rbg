@@ -282,7 +282,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// RestartPolicy
 	var restartPolicy lwsv1.RestartPolicyType
-	if role.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if role.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		restartPolicy = lwsv1.RecreateGroupOnPodRestart
 	} else {
 		restartPolicy = lwsv1.NoneRestartPolicy

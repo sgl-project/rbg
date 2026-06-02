@@ -1,7 +1,8 @@
 # Example: RoleBasedGroup with restart policies (v1alpha2)
 # Demonstrates different restart policy configurations for roles.
-# - RecreateRBGOnPodRestart: Recreate the entire RBG when any pod restarts
-# - RecreateRoleInstanceOnPodRestart: Recreate only the affected role instance
+# restartPolicy is only available on leaderWorkerPattern and customComponentsPattern.
+# standalonePattern always uses None (single pod, no instance-level restart).
+# - RecreateRoleInstanceOnPodRestart: Recreate only the affected role instance (default for multi-pod patterns)
 # - None: No automatic restart action (follow default pod restart behavior)
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
@@ -10,28 +11,12 @@ metadata:
   namespace: default
 spec:
   roles:
-    # RecreateRBGOnPodRestart: critical role that should trigger full group restart
-    - name: driver
-      restartPolicy: RecreateRBGOnPodRestart
-      replicas: 1
-      standalonePattern:
-        template:
-          metadata:
-            labels:
-              appVersion: v1
-          spec:
-            containers:
-              - name: driver
-                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
-                ports:
-                  - containerPort: 80
-
-    # RecreateRoleInstanceOnPodRestart: recreate only this instance on pod restart
+    # LeaderWorkerPattern with RecreateRoleInstanceOnPodRestart (default)
     - name: worker
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       replicas: 3
-      dependencies: ["driver"]
-      standalonePattern:
+      leaderWorkerPattern:
+        size: 2
+        restartPolicy: RecreateRoleInstanceOnPodRestart
         template:
           metadata:
             labels:
@@ -43,9 +28,25 @@ spec:
                 ports:
                   - containerPort: 8080
 
-    # None: no restart action, rely on default pod restart behavior
+    # LeaderWorkerPattern with None
+    - name: auxiliary
+      replicas: 1
+      leaderWorkerPattern:
+        size: 2
+        restartPolicy: None
+        template:
+          metadata:
+            labels:
+              appVersion: v1
+          spec:
+            containers:
+              - name: auxiliary
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 9090
+
+    # StandalonePattern: no restartPolicy field (always None)
     - name: monitor
-      restartPolicy: None
       replicas: 1
       standalonePattern:
         template:

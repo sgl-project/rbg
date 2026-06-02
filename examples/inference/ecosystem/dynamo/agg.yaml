@@ -104,7 +104,6 @@ spec:
     # Backend: Dynamo SGLang engine (tp-size=1, with scalingAdapter)
     - name: backend
       replicas: 1
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       scalingAdapter:
         enable: true
       rolloutStrategy:

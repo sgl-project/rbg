@@ -36,7 +36,6 @@ spec:
     # Backend: SGLang engine for both prefill and decode
     - name: backend
       replicas: 1
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       scalingAdapter:
         enable: true
       rolloutStrategy:

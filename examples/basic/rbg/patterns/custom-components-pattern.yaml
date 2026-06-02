@@ -19,13 +19,13 @@ spec:
   roles:
     - name: engine
       replicas: 3
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
           type: InPlaceIfPossible
       # customComponentsPattern: define heterogeneous components per instance
       customComponentsPattern:
+        restartPolicy: RecreateRoleInstanceOnPodRestart
         components:
           - name: custom-component-1
             size: 1

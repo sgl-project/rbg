@@ -22,8 +22,6 @@
 #   - InPlaceIfPossible enables hot update without pod recreation when only
 #     container image or resource limits change
 #   - gracePeriodSeconds defines the waiting time before forced update
-#   - restartPolicy: RecreateRoleInstanceOnPodRestart ensures instance state
-#     consistency when pod restarts
 #
 # Prerequisites:
 #   - SGLang docker image: lmsysorg/sglang:v0.5.5 (or later)
@@ -201,7 +199,6 @@ spec:
     - name: prefill
       replicas: 1
       dependencies: ["mooncake-master"]
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       standalonePattern:
         templateRef:
           name: sglang-base
@@ -289,7 +286,6 @@ spec:
     - name: decode
       replicas: 1
       dependencies: ["mooncake-master"]
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:

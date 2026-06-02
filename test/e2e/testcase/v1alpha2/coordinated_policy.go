@@ -45,14 +45,12 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 					wrappersv2.BuildStandaloneRole("role-a").
 						WithReplicas(4).
 						WithTemplate(&template).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 						}).Obj(),
 					wrappersv2.BuildStandaloneRole("role-b").
 						WithReplicas(4).
 						WithTemplate(&template).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 						}).Obj(),
@@ -124,13 +122,11 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 				[]workloadsv1alpha2.RoleSpec{
 					wrappersv2.BuildStandaloneRole("role-a").
 						WithReplicas(4).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 						}).Obj(),
 					wrappersv2.BuildStandaloneRole("role-b").
 						WithReplicas(4).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 						}).Obj(),
@@ -275,12 +271,10 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 					wrappersv2.BuildStandaloneRole("role-a").
 						WithReplicas(1).
 						WithTemplate(&template).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						Obj(),
 					wrappersv2.BuildStandaloneRole("role-b").
 						WithReplicas(1).
 						WithTemplate(&template).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						Obj(),
 				}).Obj()
 

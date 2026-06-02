@@ -74,7 +74,6 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 				wrappersv2.BuildStandaloneRole("role-1").
 					WithReplicas(4).
 					WithTemplate(&initialTemplate).
-					WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 					WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(0)),
 						MaxSurge:       ptr.To(intstr.FromInt32(2)),
@@ -130,7 +129,6 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 				wrappersv2.BuildStandaloneRole("role-1").
 					WithReplicas(4).
 					WithTemplate(&initialTemplate).
-					WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 					WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(2)),
 						MaxSurge:       ptr.To(intstr.FromInt32(2)),
