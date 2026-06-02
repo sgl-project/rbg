@@ -410,7 +410,17 @@ func lwsSpecEqual(lws1, lws2 lwsv1.LeaderWorkerSetSpec) (bool, error) {
 	if *lws1.Replicas != *lws2.Replicas {
 		return false, fmt.Errorf("LeaderWorkerSetSpec replicas not equal")
 	}
-	if !reflect.DeepEqual(lws1.RolloutStrategy, lws2.RolloutStrategy) {
+	// Normalize RolloutStrategy.Type: the LWS API defaults Type to "RollingUpdate"
+	// via +kubebuilder:default, but our apply configuration may leave it empty.
+	rs1 := lws1.RolloutStrategy
+	rs2 := lws2.RolloutStrategy
+	if rs1.Type == "" {
+		rs1.Type = lwsv1.RollingUpdateStrategyType
+	}
+	if rs2.Type == "" {
+		rs2.Type = lwsv1.RollingUpdateStrategyType
+	}
+	if !reflect.DeepEqual(rs1, rs2) {
 		return false, fmt.Errorf("RolloutStrategy not equal")
 	}
 
