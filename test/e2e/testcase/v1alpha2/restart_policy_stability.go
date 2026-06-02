@@ -165,7 +165,6 @@ func RunRestartPolicyStabilityTestCases(f *framework.Framework) {
 				[]workloadsv1alpha2.RoleSpec{
 					wrappersv2.BuildStandaloneRole("role-1").
 						WithReplicas(3).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						Obj(),
 				}).Obj()
 

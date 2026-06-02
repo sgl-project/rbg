@@ -195,12 +195,6 @@ type RoleSpec struct {
 	// +optional
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
-	// RestartPolicy defines the restart policy when pod failures happen.
-	// Default is RecreateRoleInstanceOnPodRestart for all patterns.
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
-	// +optional
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
-
 	// Dependencies of the role
 	// +optional
 	Dependencies []string `json:"dependencies,omitempty"`
@@ -338,11 +332,23 @@ type LeaderWorkerPattern struct {
 	// +optional
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
+
+	// RestartPolicy defines the restart policy when pod failures happen.
+	// Default is RecreateRoleInstanceOnPodRestart.
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +optional
+	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 }
 
 type CustomComponentsPattern struct {
 	// +optional
 	Components []InstanceComponent `json:"components,omitempty"`
+
+	// RestartPolicy defines the restart policy when pod failures happen.
+	// Default is RecreateRoleInstanceOnPodRestart.
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +optional
+	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 }
 
 type WorkloadSpec struct {

@@ -24445,6 +24445,14 @@ spec:
                                     - template
                                     type: object
                                   type: array
+                                restartPolicy:
+                                  description: |-
+                                    RestartPolicy defines the restart policy when pod failures happen.
+                                    Default is RecreateRoleInstanceOnPodRestart.
+                                  enum:
+                                  - None
+                                  - RecreateRoleInstanceOnPodRestart
+                                  type: string
                               type: object
                             dependencies:
                               description: Dependencies of the role
@@ -25882,6 +25890,14 @@ spec:
                                   description: LeaderTemplatePatch indicates patching
                                     for the leader template.
                                   x-kubernetes-preserve-unknown-fields: true
+                                restartPolicy:
+                                  description: |-
+                                    RestartPolicy defines the restart policy when pod failures happen.
+                                    Default is RecreateRoleInstanceOnPodRestart.
+                                  enum:
+                                  - None
+                                  - RecreateRoleInstanceOnPodRestart
+                                  type: string
                                 sharedServiceSelection:
                                   description: SharedServiceSelection indicates the
                                     service policy of the role
@@ -33651,14 +33667,6 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
-                            restartPolicy:
-                              description: |-
-                                RestartPolicy defines the restart policy when pod failures happen.
-                                Default is RecreateRoleInstanceOnPodRestart for all patterns.
-                              enum:
-                              - None
-                              - RecreateRoleInstanceOnPodRestart
-                              type: string
                             rolloutStrategy:
                               description: RolloutStrategy defines the strategy that
                                 will be applied to update replicas.

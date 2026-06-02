@@ -151,13 +151,8 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	}
 
 	// 1. construct role instance configuration
-	// Default to RecreateRoleInstanceOnPodRestart for all patterns when not explicitly set.
-	restartPolicy := role.RestartPolicy
-	if restartPolicy == "" {
-		restartPolicy = workloadsv1alpha2.RecreateRoleInstanceOnPodRestart
-	}
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate().
-		WithRestartPolicy(restartPolicy)
+		WithRestartPolicy(role.GetRestartPolicy())
 	var constructErr error
 	switch {
 	case role.GetStandalonePattern() != nil:

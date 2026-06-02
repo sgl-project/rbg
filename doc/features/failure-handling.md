@@ -9,11 +9,12 @@ RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanc
 | Policy | Description |
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails or a container restarts. **This is the default policy for all patterns** (standalonePattern, leaderWorkerPattern, customComponentsPattern). |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails or a container restarts. Default for `leaderWorkerPattern` and `customComponentsPattern`. |
 
 ## Configuration
 
-Set the `restartPolicy` field in each role's spec:
+Set the `restartPolicy` field on the pattern (`leaderWorkerPattern` or `customComponentsPattern`).
+`standalonePattern` has no `restartPolicy` field — it is always `None` (single pod, recreating the instance is equivalent to normal pod replacement).
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -22,20 +23,32 @@ metadata:
   name: restart-policy-demo
 spec:
   roles:
-    # Worker role - recreate only this instance on pod failure
+    # Worker role with leaderWorkerPattern - recreate instance on pod failure (default)
     - name: worker
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       replicas: 3
-      standalonePattern:
+      leaderWorkerPattern:
+        size: 2
+        restartPolicy: RecreateRoleInstanceOnPodRestart
         template:
           spec:
             containers:
               - name: worker
                 image: nginx:latest
 
-    # Monitor role - no restart action
+    # Worker role with explicit None - no restart action
+    - name: auxiliary
+      replicas: 1
+      leaderWorkerPattern:
+        size: 2
+        restartPolicy: None
+        template:
+          spec:
+            containers:
+              - name: auxiliary
+                image: nginx:latest
+
+    # StandalonePattern - no restartPolicy field (always None)
     - name: monitor
-      restartPolicy: None
       replicas: 1
       standalonePattern:
         template:
@@ -60,8 +73,8 @@ spec:
   roles:
     - name: engine
       replicas: 2
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       customComponentsPattern:
+        restartPolicy: RecreateRoleInstanceOnPodRestart
         components:
           # Main inference component - will trigger restart policy on pod failure
           - name: inference

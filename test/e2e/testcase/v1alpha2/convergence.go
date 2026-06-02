@@ -36,7 +36,6 @@ func RunConvergenceTestCases(f *framework.Framework) {
 				[]workloadsv1alpha2.RoleSpec{
 					wrappersv2.BuildStandaloneRole("role-1").
 						WithReplicas(3).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 						}).Obj(),
@@ -107,7 +106,6 @@ func RunConvergenceTestCases(f *framework.Framework) {
 					wrappersv2.BuildStandaloneRole("role-1").
 						WithReplicas(4).
 						WithTemplate(&template).
-						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
 						WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 							MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 						}).Obj(),

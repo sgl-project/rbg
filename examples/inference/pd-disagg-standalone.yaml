@@ -95,7 +95,6 @@ spec:
     # Uses --disaggregation-mode=prefill for PD disaggregation
     - name: prefill
       replicas: 1
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
@@ -166,7 +165,6 @@ spec:
     # Uses --disaggregation-mode=decode for PD disaggregation
     - name: decode
       replicas: 1
-      restartPolicy: RecreateRoleInstanceOnPodRestart
       standalonePattern:
         template:
           metadata:

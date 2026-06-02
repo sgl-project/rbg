@@ -129,7 +129,6 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	// when writing conversion-only keys (e.g. RoleWorkloadTypeAnnotationKey).
 	dst.Annotations = copyAnnotations(src.Annotations)
 	dst.Replicas = src.Replicas
-	dst.RestartPolicy = v2.RestartPolicyType(src.RestartPolicy)
 	dst.Dependencies = src.Dependencies
 	dst.ServicePorts = src.ServicePorts
 	dst.MinReadySeconds = src.MinReadySeconds
@@ -161,6 +160,7 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
+			RestartPolicy:       convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
 		}
 		// Template source
 		if src.TemplateSource.Template != nil || src.TemplateSource.TemplateRef != nil {
@@ -186,7 +186,10 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			}
 		}
 		dst.Pattern = v2.Pattern{
-			CustomComponentsPattern: &v2.CustomComponentsPattern{Components: components},
+			CustomComponentsPattern: &v2.CustomComponentsPattern{
+				Components:    components,
+				RestartPolicy: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
+			},
 		}
 
 	default:
@@ -203,6 +206,16 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	}
 
 	return nil
+}
+
+// convertRestartPolicyV1alpha1ToV2 converts a v1alpha1 RestartPolicyType to v1alpha2.
+// In v1alpha1, empty RestartPolicy means None. We must explicitly set this so
+// that GetRestartPolicy() does not apply the v1alpha2 pattern-specific default.
+func convertRestartPolicyV1alpha1ToV2(src RestartPolicyType) v2.RestartPolicyType {
+	if src == "" || src == NoneRestartPolicy {
+		return v2.RestartPolicyNone
+	}
+	return v2.RestartPolicyType(src)
 }
 
 // convertTemplateRefV1alpha1ToV2 converts a v1alpha1 TemplateRef (+patch) to a v1alpha2 TemplateRef.
@@ -312,7 +325,7 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.Labels = src.Labels
 	dst.Annotations = src.Annotations
 	dst.Replicas = src.Replicas
-	dst.RestartPolicy = RestartPolicyType(src.RestartPolicy)
+	dst.RestartPolicy = RestartPolicyType(src.GetRestartPolicy())
 	dst.Dependencies = src.Dependencies
 	dst.ServicePorts = src.ServicePorts
 	dst.MinReadySeconds = src.MinReadySeconds

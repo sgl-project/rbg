@@ -97,7 +97,6 @@ spec:
     # Prefill: 1 instance, tensor parallel size = 2 (1 leader + 1 worker)
     - name: prefill
       replicas: 1
-      restartPolicy: None
       scalingAdapter:
         enable: true
       rolloutStrategy:
@@ -107,6 +106,7 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
+        restartPolicy: None
         templateRef:
           name: dynamo-base
           patch:
@@ -162,7 +162,6 @@ spec:
     # Decode: 1 instance, tensor parallel size = 2 (1 leader + 1 worker)
     - name: decode
       replicas: 1
-      restartPolicy: None
       scalingAdapter:
         enable: true
       rolloutStrategy:
@@ -172,6 +171,7 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
+        restartPolicy: None
         templateRef:
           name: dynamo-base
           patch:

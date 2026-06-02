@@ -30,7 +30,6 @@ This document describes the API fields for RoleBasedGroup and related CRDs in v1
 | `leaderWorkerPattern` | *LeaderWorkerPattern — leader + workers per instance |
 | `customComponentsPattern` | *CustomComponentsPattern — heterogeneous pod groups |
 | `rolloutStrategy` | *RolloutStrategy — update strategy configuration |
-| `restartPolicy` | RestartPolicyType — restart behavior enum (default: `RecreateRoleInstanceOnPodRestart` for all patterns) |
 | `minReadySeconds` | *int32 — minimum seconds before considered ready |
 | `scalingAdapter` | *ScalingAdapter — external autoscaling config |
 | `engineRuntimes` | []EngineRuntime — runtime profiles to inject |
@@ -53,6 +52,7 @@ Leader + workers per instance (for tensor parallelism):
 | Field | Description |
 |-------|-------------|
 | `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
+| `restartPolicy` | RestartPolicyType — restart behavior (default: `RecreateRoleInstanceOnPodRestart`) |
 | `template` | PodTemplateSpec — base pod template |
 | `templateRef` | *TemplateRef — reference to roleTemplate |
 | `leaderTemplatePatch` | runtime.RawExtension — patch for leader pod |
@@ -65,6 +65,7 @@ Heterogeneous pod groups per instance:
 | Field | Description |
 |-------|-------------|
 | `components` | []ComponentSpec — list of component definitions |
+| `restartPolicy` | RestartPolicyType — restart behavior (default: `RecreateRoleInstanceOnPodRestart`) |
 
 ### ComponentSpec
 
