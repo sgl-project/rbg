@@ -38,6 +38,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
@@ -183,6 +184,9 @@ func WaitForReconcile() {
 func SetupManager(ctx context.Context) (manager.Manager, error) {
 	mgr, err := ctrl.NewManager(Cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: "0", // disable metrics server to avoid port conflicts in tests
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -222,6 +226,49 @@ func SetupInstanceController(mgr manager.Manager) error {
 func SetupInstanceSetController(mgr manager.Manager) error {
 	instanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
 	return instanceSetReconciler.SetupWithManager(mgr, controller.Options{})
+}
+
+// SetPodRunningAndReady updates a pod's status to Running with Ready condition
+// and proper ContainerStatuses. This simulates kubelet behavior in envtest.
+func SetPodRunningAndReady(pod *corev1.Pod) {
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{
+		{
+			Type:               corev1.PodReady,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+		},
+		{
+			Type:               corev1.ContainersReady,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+	// Build ContainerStatuses from pod spec containers
+	pod.Status.ContainerStatuses = make([]corev1.ContainerStatus, len(pod.Spec.Containers))
+	for i, c := range pod.Spec.Containers {
+		pod.Status.ContainerStatuses[i] = corev1.ContainerStatus{
+			Name:         c.Name,
+			Image:        c.Image,
+			Ready:        true,
+			Started:      boolPtr(true),
+			RestartCount: 0,
+		}
+	}
+}
+
+// SetPodContainerRestarted sets a specific container's RestartCount on a pod.
+func SetPodContainerRestarted(pod *corev1.Pod, containerName string, restartCount int32) {
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].Name == containerName {
+			pod.Status.ContainerStatuses[i].RestartCount = restartCount
+			return
+		}
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // EventuallyWithTimeout returns an Eventually assertion with default timeout
