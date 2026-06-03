@@ -159,8 +159,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
@@ -226,18 +227,18 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 	})
 
 	Context("RecreateRoleInstanceOnPodRestart", func() {
-		It("should recreate pod when it fails in standalone pattern", func() {
+		It("should recreate pod when it fails with single-pod LeaderWorker pattern", func() {
 			rbgName := "test-recreate-standalone"
 			roleName := defaultRoleName
 
-			// Use replicas=1: standalone replicas=N creates N separate RoleInstance
-			// objects each with 1 pod. Restart policy operates per-RoleInstance, so
-			// "recreate all pods" within one instance is a single pod here. The
-			// multi-pod "recreate ALL" scenario is covered by the LeaderWorker test.
+			// Use LeaderWorker with Size=1 (single pod per instance) to test
+			// restart policy. StandalonePattern does not support RestartPolicy.
+			// The multi-pod "recreate ALL" scenario is covered by the LeaderWorker test below.
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
@@ -359,8 +360,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
@@ -425,8 +427,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(2).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
@@ -474,8 +477,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(2).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).Obj(),
 				}).Obj()
 
@@ -513,6 +517,69 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		})
 	})
 
+	Context("StandalonePattern defaults to RestartPolicy=None", func() {
+		It("should not trigger instance recreation when pod fails", func() {
+			rbgName := "test-standalone-none"
+			roleName := defaultRoleName
+
+			// StandalonePattern does not support RestartPolicy field;
+			// it always defaults to None. Verify that pod failure does NOT
+			// trigger RoleInstance-level recreation.
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildStandaloneRole(roleName).
+						WithReplicas(2).Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 2)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Record UIDs
+			originalUIDs := getPodUIDs(listRolePods(rbgName, roleName))
+			Expect(originalUIDs).Should(HaveLen(2))
+
+			// Fail one pod
+			podList := listRolePods(rbgName, roleName)
+			survivorName := podList.Items[1].Name
+			survivorUID := podList.Items[1].UID
+
+			failPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), failPod)).Should(Succeed())
+			failPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, failPod)).Should(Succeed())
+
+			// Verify the surviving pod is NOT deleted (no instance-level recreation)
+			Consistently(func() types.UID {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx,
+					types.NamespacedName{Name: survivorName, Namespace: testNs}, pod); err != nil {
+					return ""
+				}
+				return pod.UID
+			}, 10*time.Second, interval).Should(Equal(survivorUID),
+				"standalone pattern should default to RestartPolicy=None, surviving pod should NOT be deleted")
+
+			// Verify Restarting condition is NOT set
+			Consistently(func() bool {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return false
+				}
+				for _, cond := range ri.Status.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == corev1.ConditionTrue {
+						return true // Restarting condition found — unexpected
+					}
+				}
+				return false
+			}, 10*time.Second, interval).Should(BeFalse(),
+				"standalone pattern should not set Restarting condition")
+		})
+	})
+
 	Context("Container restart (not PodFailed)", func() {
 		It("should recreate all pods when container RestartCount > 0", func() {
 			rbgName := "test-container-restart"
@@ -520,8 +587,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
@@ -564,8 +632,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole(roleName).
+					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(2).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
@@ -604,11 +673,13 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
-					wrappersv2.BuildStandaloneRole("role-1").
+					wrappersv2.BuildLeaderWorkerRole("role-1").
 						WithReplicas(1).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
-					wrappersv2.BuildStandaloneRole("role-2").
+					wrappersv2.BuildLeaderWorkerRole("role-2").
 						WithReplicas(1).
+						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
 				}).Obj()
 
