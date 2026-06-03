@@ -302,12 +302,6 @@ type StandalonePattern struct {
 	// TemplateSource defines the Pod template source, either inline or via reference.
 	// +optional
 	TemplateSource `json:",inline"`
-
-	// RestartPolicy defines the restart policy when pod failures happen.
-	// Default is None.
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
-	// +optional
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 }
 
 // LeaderWorkerPattern defines the leader-worker deployment pattern (multiple pods per replica).

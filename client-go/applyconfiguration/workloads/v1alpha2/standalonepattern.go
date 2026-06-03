@@ -19,14 +19,12 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/client-go/applyconfigurations/core/v1"
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // StandalonePatternApplyConfiguration represents a declarative configuration of the StandalonePattern type for use
 // with apply.
 type StandalonePatternApplyConfiguration struct {
 	TemplateSourceApplyConfiguration `json:",inline"`
-	RestartPolicy                    *workloadsv1alpha2.RestartPolicyType `json:"restartPolicy,omitempty"`
 }
 
 // StandalonePatternApplyConfiguration constructs a declarative configuration of the StandalonePattern type for use with
@@ -48,13 +46,5 @@ func (b *StandalonePatternApplyConfiguration) WithTemplate(value *v1.PodTemplate
 // If called multiple times, the TemplateRef field is set to the value of the last call.
 func (b *StandalonePatternApplyConfiguration) WithTemplateRef(value *TemplateRefApplyConfiguration) *StandalonePatternApplyConfiguration {
 	b.TemplateSourceApplyConfiguration.TemplateRef = value
-	return b
-}
-
-// WithRestartPolicy sets the RestartPolicy field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RestartPolicy field is set to the value of the last call.
-func (b *StandalonePatternApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *StandalonePatternApplyConfiguration {
-	b.RestartPolicy = &value
 	return b
 }
