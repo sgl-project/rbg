@@ -32980,6 +32980,14 @@ spec:
                     standalonePattern:
                       description: StandalonePattern defines a single-pod pattern.
                       properties:
+                        restartPolicy:
+                          description: |-
+                            RestartPolicy defines the restart policy when pod failures happen.
+                            Default is None.
+                          enum:
+                          - None
+                          - RecreateRoleInstanceOnPodRestart
+                          type: string
                         template:
                           description: Template defines the Pod template specification
                             inline.
