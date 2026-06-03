@@ -1,7 +1,7 @@
 name: Build Image on Helm Release Update
 
 on:
-  push:
+  pull_request:
     branches:
       - main
     paths:
@@ -18,6 +18,11 @@ permissions:
 jobs:
   check-appversion-change:
     runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["Syspretor", "cheyang"]'), github.event.pull_request.user.login)) ||
+      (github.event_name == 'workflow_dispatch' &&
+       contains(fromJSON('["Syspretor", "cheyang"]'), github.actor))
     outputs:
       changed: ${{ steps.check.outputs.changed }}
       app_version: ${{ steps.check.outputs.app_version }}
@@ -26,18 +31,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Check if appVersion changed
         id: check
         run: |
-          # Get current appVersion
+          # Get current appVersion from PR branch
           CURRENT_APP_VERSION=$(grep '^appVersion:' deploy/helm/rbgs/Chart.yaml | awk '{print $2}')
           echo "Current appVersion: $CURRENT_APP_VERSION"
 
-          # Get previous appVersion
-          PREV_APP_VERSION=$(git show HEAD~1:deploy/helm/rbgs/Chart.yaml 2>/dev/null | grep '^appVersion:' | awk '{print $2}' || echo "")
-          echo "Previous appVersion: $PREV_APP_VERSION"
+          # Get appVersion from base branch (main)
+          PREV_APP_VERSION=$(git show origin/main:deploy/helm/rbgs/Chart.yaml 2>/dev/null | grep '^appVersion:' | awk '{print $2}' || echo "")
+          echo "Base branch appVersion: $PREV_APP_VERSION"
 
           if [ "$CURRENT_APP_VERSION" != "$PREV_APP_VERSION" ]; then
             echo "appVersion changed from '$PREV_APP_VERSION' to '$CURRENT_APP_VERSION'"
