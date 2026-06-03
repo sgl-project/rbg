@@ -1,7 +1,7 @@
 name: Build Image on Helm Release Update
 
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - main
     paths:
@@ -19,7 +19,7 @@ jobs:
   check-appversion-change:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request_target' &&
        contains(fromJSON('["Syspretor", "cheyang"]'), github.event.pull_request.user.login)) ||
       (github.event_name == 'workflow_dispatch' &&
        contains(fromJSON('["Syspretor", "cheyang"]'), github.actor))
@@ -28,9 +28,10 @@ jobs:
       app_version: ${{ steps.check.outputs.app_version }}
       commit_hash: ${{ steps.check.outputs.commit_hash }}
     steps:
-      - name: Checkout code
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Check if appVersion changed
@@ -41,6 +42,7 @@ jobs:
           echo "Current appVersion: $CURRENT_APP_VERSION"
 
           # Get appVersion from base branch (main)
+          git fetch origin main
           PREV_APP_VERSION=$(git show origin/main:deploy/helm/rbgs/Chart.yaml 2>/dev/null | grep '^appVersion:' | awk '{print $2}' || echo "")
           echo "Base branch appVersion: $PREV_APP_VERSION"
 
