@@ -43,19 +43,21 @@ import (
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
 
 func NewReconciler(mgr ctrl.Manager) reconcile.Reconciler {
 	recorder := mgr.GetEventRecorderFor("instance-controller")
+	c := utilclient.NewClientWithUserAgent(mgr, "roleinstance")
 	return &reconciler{
-		Client:            mgr.GetClient(),
+		Client:            c,
 		scheme:            mgr.GetScheme(),
 		recorder:          recorder,
-		controllerHistory: historyutil.NewHistory(mgr.GetClient()),
-		statusUpdater:     newStatusUpdater(mgr.GetClient()),
+		controllerHistory: historyutil.NewHistory(c),
+		statusUpdater:     newStatusUpdater(c),
 		revisionControl:   revisioncontrol.NewRevisionControl(),
-		syncControl:       synccontrol.New(mgr.GetClient(), mgr.GetAPIReader(), recorder),
+		syncControl:       synccontrol.New(c, mgr.GetAPIReader(), recorder),
 	}
 }
 

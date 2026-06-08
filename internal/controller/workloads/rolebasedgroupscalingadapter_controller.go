@@ -48,6 +48,7 @@ import (
 	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 )
 
 // RoleBasedGroupScalingAdapterReconciler reconciles a RoleBasedGroupScalingAdapter object
@@ -60,7 +61,7 @@ type RoleBasedGroupScalingAdapterReconciler struct {
 
 func NewRoleBasedGroupScalingAdapterReconciler(mgr ctrl.Manager) *RoleBasedGroupScalingAdapterReconciler {
 	return &RoleBasedGroupScalingAdapterReconciler{
-		client:    mgr.GetClient(),
+		client:    utilclient.NewClientWithUserAgent(mgr, "rolebasedgroupscalingadapter"),
 		apiReader: mgr.GetAPIReader(),
 		scheme:    mgr.GetScheme(),
 		recorder:  mgr.GetEventRecorderFor("RoleBasedGroupScalingAdapter"),
