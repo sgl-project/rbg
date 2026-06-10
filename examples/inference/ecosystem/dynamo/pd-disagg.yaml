@@ -20,6 +20,15 @@
 #   - GPU nodes with CUDA support
 #   - ETCD and NATS services deployed (required for Dynamo runtime)
 #   - Model weights mounted at /models or use HuggingFace download
+#   - (Optional) Model Express server for accelerated model distribution.
+#     Model Express (https://github.com/ai-dynamo/modelexpress) is a standalone
+#     service that coordinates P2P model weight transfers across nodes.
+#     Deploy MX Server via one of:
+#       1. Dynamo Helm chart: --set "global.model-express.enabled=true"
+#       2. Manual: docker run -d --name redis -p 6379:6379 redis:8-alpine
+#                  MX_METADATA_BACKEND=redis cargo run --bin modelexpress-server
+#     Then set MODEL_EXPRESS_URL below to the MX gRPC endpoint.
+#     If not deployed, workers fall back to direct HuggingFace download.
 
 ---
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -52,6 +61,14 @@ spec:
                   value: http://etcd:2379
                 - name: NATS_SERVER
                   value: nats://nats:4222
+                # Model Express (https://github.com/ai-dynamo/modelexpress):
+                # Accelerated model distribution via gRPC. Workers download model
+                # weights through the MX Server, which coordinates P2P transfers
+                # (GPU-to-GPU via NIXL RDMA) across nodes.
+                # Falls back to direct HuggingFace download if MX Server is unavailable.
+                # To disable, remove or leave empty.
+                - name: MODEL_EXPRESS_URL
+                  value: model-express-server:8001
 
   roles:
     # Processor: Dynamo frontend for request routing and HTTP API
