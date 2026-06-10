@@ -1374,6 +1374,9 @@ func calculateNextRollingTarget(
 	// Due to the synchronization between rbg and workloads, the rbg may not get the least updatedReplicas correctly here.
 	// We add maxSkew/2 to the next rolling step to make sure the skew is not too large.
 	nextRollingStep := max(distance2Balance, maxSkew>>1)
+	if nextRollingStep == 0 && updatedReplicas[slowestRole] < desiredReplicas[slowestRole] {
+		nextRollingStep = 1
+	}
 
 	// If balance reached and the fastest role is ready, we add 1 to the next rolling step to make sure the slowest role is updated.
 	if readyReplicas[fastestRole] == desiredReplicas[fastestRole] {

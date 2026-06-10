@@ -19,6 +19,8 @@ package v1alpha2
 import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -126,6 +128,94 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 			)
 
 			ginkgo.It(
+				"coordinated rolling update can start with single-replica roles", func() {
+					maxSkew := intstr.FromString("10%")
+					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
+						WithRoles(
+							[]workloadsv1alpha2.RoleSpec{
+								wrappersv2.BuildStandaloneRole("prefill").Obj(),
+								wrappersv2.BuildStandaloneRole("decode").Obj(),
+							},
+						).Obj()
+					policy := &workloadsv1alpha2.CoordinatedPolicy{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      rbg.Name,
+							Namespace: rbg.Namespace,
+						},
+						Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+							Policies: []workloadsv1alpha2.CoordinatedPolicyRule{
+								{
+									Name:  "prefill-decode",
+									Roles: []string{"prefill", "decode"},
+									Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+										RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+											MaxSkew: &maxSkew,
+										},
+									},
+								},
+							},
+						},
+					}
+
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
+					ginkgo.DeferCleanup(func() {
+						gomega.Expect(client.IgnoreNotFound(f.Client.Delete(f.Ctx, policy))).Should(gomega.Succeed())
+					})
+
+					gomega.Expect(f.Client.Create(f.Ctx, policy)).Should(gomega.Succeed())
+					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+					updateRbgV2(
+						f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+							for i := range rbg.Spec.Roles {
+								template := rbg.Spec.Roles[i].StandalonePattern.Template
+								if template.Labels == nil {
+									template.Labels = make(map[string]string)
+								}
+								template.Labels["rollout-version"] = "v2"
+							}
+						},
+					)
+
+					roleInstanceSets := make([]workloadsv1alpha2.RoleInstanceSet, 0, len(rbg.Spec.Roles))
+					gomega.Eventually(
+						func() bool {
+							roleInstanceSets = roleInstanceSets[:0]
+							for i := range rbg.Spec.Roles {
+								role := &rbg.Spec.Roles[i]
+								ris := &workloadsv1alpha2.RoleInstanceSet{}
+								err := f.Client.Get(
+									f.Ctx,
+									client.ObjectKey{
+										Name:      rbg.GetWorkloadName(role),
+										Namespace: rbg.Namespace,
+									},
+									ris,
+								)
+								if err != nil {
+									return false
+								}
+								roleInstanceSets = append(roleInstanceSets, *ris)
+							}
+							return true
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+
+					coordinatedPartitions := 0
+					progressAllowed := 0
+					for _, ris := range roleInstanceSets {
+						if ris.Spec.UpdateStrategy.Partition != nil {
+							coordinatedPartitions++
+						}
+						if roleInstanceSetAllowsRollingProgress(&ris) {
+							progressAllowed++
+						}
+					}
+					gomega.Expect(coordinatedPartitions).Should(gomega.Equal(len(rbg.Spec.Roles)))
+					gomega.Expect(progressAllowed).Should(gomega.BeNumerically(">", 0))
+				},
+			)
+
+			ginkgo.It(
 				"rbg with kube gang scheduling", func() {
 					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithGangScheduling().
@@ -222,6 +312,25 @@ func updateRbgV2(
 			return f.Client.Update(f.Ctx, rbg) == nil
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
+}
+
+func roleInstanceSetAllowsRollingProgress(ris *workloadsv1alpha2.RoleInstanceSet) bool {
+	if ris.Spec.Replicas == nil {
+		return false
+	}
+	if ris.Spec.UpdateStrategy.Partition == nil {
+		return true
+	}
+
+	partition, err := intstr.GetScaledValueFromIntOrPercent(
+		ris.Spec.UpdateStrategy.Partition,
+		int(*ris.Spec.Replicas),
+		true,
+	)
+	if err != nil {
+		return false
+	}
+	return int32(partition) < *ris.Spec.Replicas
 }
 
 // updateRbgSetV2 updates a v1alpha2 RoleBasedGroupSet with the given update function.
