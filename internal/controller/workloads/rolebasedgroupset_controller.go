@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 )
 
 // RoleBasedGroupSetReconciler reconciles a RoleBasedGroupSet object
@@ -52,7 +53,7 @@ type RoleBasedGroupSetReconciler struct {
 
 func NewRoleBasedGroupSetReconciler(mgr ctrl.Manager) *RoleBasedGroupSetReconciler {
 	return &RoleBasedGroupSetReconciler{
-		client:    mgr.GetClient(),
+		client:    utilclient.NewClientWithUserAgent(mgr, "rolebasedgroupset"),
 		apiReader: mgr.GetAPIReader(),
 		scheme:    mgr.GetScheme(),
 		recorder:  mgr.GetEventRecorderFor("rbgset-controller"),

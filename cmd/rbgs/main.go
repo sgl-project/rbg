@@ -61,6 +61,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 	rbgwebhook "sigs.k8s.io/rbgs/pkg/webhook"
 	"sigs.k8s.io/rbgs/version"
@@ -548,7 +549,7 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 // the conversion-webhook CRDs and keeps caBundle in sync with the self-signed CA certificate.
 func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult, options controller.Options) error {
 	webhookCertReconciler := &workloadscontroller.WebhookCertReconciler{
-		Client:      mgr.GetClient(),
+		Client:      utilclient.NewClientWithUserAgent(mgr, "webhook-cert"),
 		CertManager: result.certMgr,
 		CACert:      result.caCert,
 		CRDNames:    rbgwebhook.ConversionWebhookCRDs(),

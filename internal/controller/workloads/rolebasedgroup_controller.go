@@ -63,6 +63,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
@@ -88,12 +89,13 @@ type RoleBasedGroupReconciler struct {
 }
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType) (*RoleBasedGroupReconciler, error) {
-	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, mgr.GetClient())
+	c := utilclient.NewClientWithUserAgent(mgr, "rolebasedgroup")
+	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, c)
 	if err != nil {
 		return nil, err
 	}
 	return &RoleBasedGroupReconciler{
-		client:             mgr.GetClient(),
+		client:             c,
 		apiReader:          mgr.GetAPIReader(),
 		scheme:             mgr.GetScheme(),
 		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),

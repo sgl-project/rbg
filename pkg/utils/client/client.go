@@ -18,10 +18,15 @@ package client
 
 import (
 	"fmt"
+	"runtime"
+	"strings"
 
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/version"
 )
 
 func NewClientFromManager(mgr manager.Manager, name string) client.Client {
@@ -35,4 +40,45 @@ func NewClientFromManager(mgr manager.Manager, name string) client.Client {
 		},
 	})
 	return delegatingClient
+}
+
+func NewClientWithUserAgent(mgr manager.Manager, name string) client.Client {
+	cfg := rest.CopyConfig(mgr.GetConfig())
+	cfg.UserAgent = buildUserAgent(name)
+
+	delegatingClient, _ := client.New(cfg, client.Options{
+		Scheme: mgr.GetScheme(),
+		Mapper: mgr.GetRESTMapper(),
+		Cache: &client.CacheOptions{
+			Reader: mgr.GetCache(),
+		},
+	})
+	return delegatingClient
+}
+
+func buildUserAgent(name string) string {
+	return fmt.Sprintf("%s/%s (%s/%s) %s/%s",
+		name,
+		adjustVersion(version.Version),
+		runtime.GOOS,
+		runtime.GOARCH,
+		constants.ControllerName,
+		adjustCommit(version.GitCommit))
+}
+
+func adjustVersion(v string) string {
+	if len(v) == 0 {
+		return "unknown"
+	}
+	return strings.SplitN(v, "-", 2)[0]
+}
+
+func adjustCommit(c string) string {
+	if len(c) == 0 {
+		return "unknown"
+	}
+	if len(c) > 7 {
+		return c[:7]
+	}
+	return c
 }
