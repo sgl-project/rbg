@@ -22,9 +22,7 @@
 
 | 日期 | 版本 | 亮点 |
 |:----:|:----:|:-----|
-| 2026-04-22 | [v0.7.0-alpha.3](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.3) | `v1alpha2` 转换 webhook、CLI 多节点 LLM 服务 |
-| 2026-03-31 | [v0.7.0-alpha.2](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.2) | Pod 端口分配器、CLI 基础功能 |
-| 2026-03-18 | [v0.7.0-alpha.1](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.1) | `v1alpha2` API、协同策略、gang 调度 |
+| 2026-06-11 | [v0.7.0](https://github.com/sgl-project/rbg/releases/tag/v0.7.0) | `v1alpha2` API 正式发布、转换 webhook、CLI 多节点 LLM 服务、Pod 端口分配器、协同策略、gang 调度 |
 | 2026-02-18 | [v0.6.0](https://github.com/sgl-project/rbg/releases/tag/v0.6.0) | 协同伸缩、有状态 InstanceSet |
 | 2025-12-03 | [v0.5.0](https://github.com/sgl-project/rbg/releases/tag/v0.5.0) | 原生 InstanceSet、原地更新、Mooncake 集成 |
 | 2025-09-23 | [v0.4.0](https://github.com/sgl-project/rbg/releases/tag/v0.4.0) | RBGS 伸缩、Volcano podgroup 支持 |
@@ -268,10 +266,23 @@ RBG 集成生态组件用于生产级 LLM 推理：
 
 | RBG 版本 | Kubernetes | LeaderWorkerSet |
 |:---------|:----------:|:---------------:|
-| main / v0.7.0-alpha.x | >=v1.22.x | 不依赖 |
+| v0.7.0 | >=v1.22.x | 不依赖 |
 | v0.6.0 | >=v1.28.x | >=v0.7.0 |
 | v0.5.0 | >=v1.28.x | >=v0.6.0 |
 | v0.4.0 | >=v1.28.x | >=v0.7.0 |
+
+---
+
+## 🌐 生态项目
+
+[rolebasedgroup](https://github.com/rolebasedgroup) GitHub 组织托管了一系列配套项目，为 RBG 提供自动伸缩、CLI 工具、AI Agent 集成和文档支持：
+
+| 项目 | 说明 |
+|:-----|:-----|
+| [**rbg-planner**](https://github.com/rolebasedgroup/rbg-planner) | 引擎无关的 SLA 驱动 LLM 推理自动伸缩器。通过可插拔指标适配器支持 SGLang、vLLM、NVIDIA Dynamo，基于 ARIMA 负载预测和自动 SLA 画像，扩缩 prefill/decode 角色以满足 TTFT/ITL 延迟目标。 |
+| [**inference-ext-cli**](https://github.com/rolebasedgroup/inference-ext-cli) | RBG CLI 扩展（`llmctl`），用于 LLM 推理工作负载管理。提供服务/模型管理、基准测试编排、自动参数搜索（Optuna）、收敛分析及实验可视化 Web 面板。 |
+| [**rbg-agent-guide**](https://github.com/rolebasedgroup/rbg-agent-guide) | RBG 运维 AI Agent 技能指南。为 AI 编程助手（如 Claude Code）提供部署技能，帮助用户通过 RBG CRD 和 CLI 将 LLM 模型部署到 Kubernetes。 |
+| [**rolebasedgroup.github.io**](https://github.com/rolebasedgroup/rolebasedgroup.github.io) | RBG 官方文档网站，基于 Docusaurus 构建，部署于 [rolebasedgroup.github.io](https://rolebasedgroup.github.io)。 |
 
 ---
 

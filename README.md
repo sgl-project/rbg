@@ -22,9 +22,7 @@ English | [简体中文](./README-zh_CN.md)
 
 | Date | Release | Highlights |
 |:----:|:-------:|:-----------|
-| 2026-04-22 | [v0.7.0-alpha.3](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.3) | `v1alpha2` conversion webhooks, CLI multi-node LLM serving |
-| 2026-03-31 | [v0.7.0-alpha.2](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.2) | Pod port allocator, CLI foundations |
-| 2026-03-18 | [v0.7.0-alpha.1](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.1) | `v1alpha2` API, coordinated policies, gang scheduling |
+| 2026-06-11 | [v0.7.0](https://github.com/sgl-project/rbg/releases/tag/v0.7.0) | `v1alpha2` API stable release, conversion webhooks, CLI multi-node LLM serving, pod port allocator, coordinated policies, gang scheduling |
 | 2026-02-18 | [v0.6.0](https://github.com/sgl-project/rbg/releases/tag/v0.6.0) | Coordinated scaling, stateful InstanceSet |
 | 2025-12-03 | [v0.5.0](https://github.com/sgl-project/rbg/releases/tag/v0.5.0) | Native InstanceSet, in-place updates, Mooncake integration |
 | 2025-09-23 | [v0.4.0](https://github.com/sgl-project/rbg/releases/tag/v0.4.0) | RBGS scaling, Volcano podgroup support |
@@ -268,10 +266,23 @@ RBG integrates with ecosystem components for production LLM inference:
 
 | RBG Version | Kubernetes | LeaderWorkerSet |
 |:------------|:----------:|:---------------:|
-| main / v0.7.0-alpha.x | >=v1.22.x | Not Required |
+| v0.7.0 | >=v1.22.x | Not Required |
 | v0.6.0 | >=v1.28.x | >=v0.7.0 |
 | v0.5.0 | >=v1.28.x | >=v0.6.0 |
 | v0.4.0 | >=v1.28.x | >=v0.7.0 |
+
+---
+
+## 🌐 Ecosystem Projects
+
+The [rolebasedgroup](https://github.com/rolebasedgroup) GitHub organization hosts companion projects that extend RBG with autoscaling, CLI tooling, AI agent integration, and documentation:
+
+| Project | Description |
+|:--------|:------------|
+| [**rbg-planner**](https://github.com/rolebasedgroup/rbg-planner) | Engine-agnostic, SLA-driven autoscaler for LLM inference on Kubernetes. Supports SGLang, vLLM, NVIDIA Dynamo via pluggable metrics adapters. Uses ARIMA-based load prediction and automatic SLA profiling to scale prefill/decode roles to meet TTFT/ITL latency targets. |
+| [**inference-ext-cli**](https://github.com/rolebasedgroup/inference-ext-cli) | RBG CLI extension (`llmctl`) for LLM inference workload management. Provides service/model management, benchmark orchestration, automated parameter search (Optuna), convergence analysis, and web dashboards for experiment visualization. |
+| [**rbg-agent-guide**](https://github.com/rolebasedgroup/rbg-agent-guide) | AI agent skill guides for RBG operations. Provides deployment skills for AI coding assistants (e.g., Claude Code) to help users deploy LLM models to Kubernetes using RBG CRD and CLI. |
+| [**rolebasedgroup.github.io**](https://github.com/rolebasedgroup/rolebasedgroup.github.io) | Official RBG documentation website built with Docusaurus, deployed at [rolebasedgroup.github.io](https://rolebasedgroup.github.io). |
 
 ---
 
