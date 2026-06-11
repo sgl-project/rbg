@@ -83,5 +83,4 @@ jobs:
           echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-controller:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-upgrade-crd:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-patio-runtime:${{ steps.version.outputs.tag }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-benchmark-dashboard:${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
