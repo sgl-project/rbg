@@ -1,0 +1,109 @@
+<svg viewBox="0 0 1100 870" xmlns="http://www.w3.org/2000/svg" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ffffff;">
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6b7280"/></marker>
+<marker id="arr-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#7c3aed"/></marker>
+<marker id="arr-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#16a34a"/></marker>
+<marker id="arr-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#ef4444"/></marker>
+</defs>
+
+<!-- Title -->
+<text x="530" y="32" text-anchor="middle" fill="#1a1a2e" font-size="18" font-weight="500">Inplace Scheduling: Component Strategy</text>
+<text x="530" y="50" text-anchor="middle" fill="#6b7280" font-size="11">2 replicas, standalone pattern (only one component), model weights cached per node</text>
+
+<!-- Participants -->
+<rect x="30" y="62" width="80" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="70" y="80" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">User</text>
+<line x1="70" y1="90" x2="70" y2="850" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="190" y="62" width="110" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="245" y="80" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">RBG Controller</text>
+<line x1="245" y1="90" x2="245" y2="850" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="400" y="62" width="130" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="465" y="80" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">Instance Controller</text>
+<line x1="465" y1="90" x2="465" y2="850" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="620" y="62" width="100" height="28" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="670" y="80" text-anchor="middle" fill="#7c3aed" font-size="11" font-weight="500">Binding Store</text>
+<line x1="670" y1="90" x2="670" y2="850" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<rect x="810" y="62" width="110" height="28" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1.5"/>
+<text x="865" y="80" text-anchor="middle" fill="#1a1a2e" font-size="11" font-weight="500">K8s Scheduler</text>
+<line x1="865" y1="90" x2="865" y2="850" stroke="#dee2e6" stroke-width="1" stroke-dasharray="4,3"/>
+
+<!-- ===== Phase 1: RBG Creation ===== -->
+<rect x="12" y="105" width="1040" height="24" rx="3" fill="#eff6ff"/>
+<text x="22" y="122" fill="#2563eb" font-size="12" font-weight="500">Phase 1: RBG Creation (2 replicas, maxSurge=2)</text>
+
+<line x1="70" y1="150" x2="238" y2="150" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="155" y="144" text-anchor="middle" fill="#1a1a2e" font-size="10">Create RBG (inplace-scheduling=Preferred, granularity=Component)</text>
+
+<line x1="245" y1="178" x2="458" y2="178" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="352" y="172" text-anchor="middle" fill="#1a1a2e" font-size="10">Create RoleInstanceSet + RoleInstances</text>
+
+<line x1="465" y1="206" x2="858" y2="206" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="662" y="200" text-anchor="middle" fill="#1a1a2e" font-size="10">Create Pods: abc-Prefill-0, abc-Prefill-1 (no affinity - store empty)</text>
+
+<rect x="840" y="220" width="50" height="18" rx="3" fill="#dcfce7" stroke="#22c55e" stroke-width="1"/>
+<text x="865" y="233" text-anchor="middle" fill="#16a34a" font-size="9">Schedule</text>
+<text x="920" y="252" text-anchor="end" fill="#6b7280" font-size="9">abc-Prefill-0&#x2192;A, abc-Prefill-1&#x2192;B</text>
+
+<!-- ===== Phase 2: Record Bindings ===== -->
+<rect x="12" y="270" width="1040" height="24" rx="3" fill="#f5f3ff"/>
+<text x="22" y="287" fill="#7c3aed" font-size="12" font-weight="500">Phase 2: Pods Running - Record Component-Level Bindings</text>
+
+<line x1="865" y1="317" x2="472" y2="317" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="668" y="311" text-anchor="middle" fill="#16a34a" font-size="10">Pods Running: abc-Prefill-0@A, abc-Prefill-1@B</text>
+
+<line x1="465" y1="345" x2="663" y2="345" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr-a)"/>
+<text x="564" y="339" text-anchor="middle" fill="#7c3aed" font-size="10">Record component-level: prefill &#x2192; {A, B}</text>
+
+<rect x="620" y="357" width="100" height="28" rx="3" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1"/>
+<text x="670" y="375" text-anchor="middle" fill="#7c3aed" font-size="9" font-weight="500">prefill: {A, B}</text>
+
+<rect x="220" y="398" width="620" height="24" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1"/>
+<text x="530" y="414" text-anchor="middle" fill="#6b7280" font-size="10">All Pods running. Each node has 140GB model weights cached locally.</text>
+
+<!-- ===== Phase 3: Rolling Upgrade (MaxSurge) ===== -->
+<rect x="12" y="445" width="1040" height="24" rx="3" fill="#fffbeb"/>
+<text x="22" y="462" fill="#d97706" font-size="12" font-weight="500">Phase 3: Rolling Upgrade - MaxSurge Creates Surge Pods First</text>
+
+<line x1="70" y1="490" x2="238" y2="490" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="155" y="484" text-anchor="middle" fill="#1a1a2e" font-size="10">Update RBG spec (new image)</text>
+
+<line x1="245" y1="518" x2="458" y2="518" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="352" y="512" text-anchor="middle" fill="#1a1a2e" font-size="10">New revision, ReCreate, maxSurge=2: create surge Pods first</text>
+
+<line x1="465" y1="546" x2="663" y2="546" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr-a)"/>
+<text x="564" y="540" text-anchor="middle" fill="#7c3aed" font-size="10">Read: prefill &#x2192; {A, B}</text>
+
+<line x1="668" y1="568" x2="472" y2="568" stroke="#7c3aed" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-a)"/>
+<text x="568" y="562" text-anchor="middle" fill="#7c3aed" font-size="9">Returns component node set {A, B}</text>
+
+<line x1="465" y1="596" x2="858" y2="596" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="662" y="590" text-anchor="middle" fill="#16a34a" font-size="10">Create def-Prefill-0, def-Prefill-1 (v2, surge, prefer {A, B})</text>
+
+<rect x="840" y="610" width="50" height="18" rx="3" fill="#dcfce7" stroke="#22c55e" stroke-width="1"/>
+<text x="865" y="623" text-anchor="middle" fill="#16a34a" font-size="9" font-weight="500">Schedule</text>
+<text x="920" y="642" text-anchor="end" fill="#16a34a" font-size="9" font-weight="500">def-Prefill-0&#x2192;A, def-Prefill-1&#x2192;B (surge)</text>
+
+<!-- ===== Phase 4: Cache Reuse & Completion ===== -->
+<rect x="12" y="660" width="1040" height="24" rx="3" fill="#f0fdf4"/>
+<text x="22" y="677" fill="#16a34a" font-size="12" font-weight="500">Phase 4: Cache Reuse - Surge Pods Ready, Delete Old Pods</text>
+
+<line x1="865" y1="705" x2="472" y2="705" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="668" y="699" text-anchor="middle" fill="#16a34a" font-size="10">def-Prefill-0, def-Prefill-1 Ready (cache loaded in ~5s)</text>
+
+<line x1="465" y1="733" x2="858" y2="733" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arr-d)"/>
+<text x="662" y="727" text-anchor="middle" fill="#ef4444" font-size="10">Delete old Pods: abc-Prefill-1, abc-Prefill-0 (v1)</text>
+
+<line x1="465" y1="760" x2="663" y2="760" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr-a)"/>
+<text x="564" y="753" text-anchor="middle" fill="#7c3aed" font-size="10">Update component binding: prefill &#x2192; {A, B} (refreshed)</text>
+
+<rect x="220" y="775" width="620" height="30" rx="4" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1"/>
+<text x="530" y="793" text-anchor="middle" fill="#16a34a" font-size="11" font-weight="500">Upgrade complete. New Pods on same nodes, cache reused.</text>
+
+<line x1="465" y1="828" x2="252" y2="828" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr-s)"/>
+<text x="359" y="822" text-anchor="middle" fill="#16a34a" font-size="10">Upgrade complete</text>
+
+</svg>

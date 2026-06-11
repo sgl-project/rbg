@@ -1,0 +1,19 @@
+title: Inplace Scheduling
+kep-number: 351
+authors:
+  - "@noobdream2568"
+status: provisional
+creation-date: 2026-05-26
+reviewers:
+  - "@syspretor"
+  - "@cheyang"
+approvers:
+  - "@syspretor"
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.8.0"
+
+milestone:
+  alpha: "v0.8.0"
