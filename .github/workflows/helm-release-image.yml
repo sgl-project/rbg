@@ -1,0 +1,151 @@
+name: Build Image on Helm Release Update
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    paths:
+      - 'deploy/helm/rbgs/Chart.yaml'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  GO_VERSION: 1.24.1
+  MULTIARCH_PLATFORMS: linux/amd64,linux/arm64
+
+permissions:
+  contents: read
+
+jobs:
+  check-appversion-change:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request_target' &&
+       contains(fromJSON('["Syspretor", "cheyang"]'), github.event.pull_request.user.login)) ||
+      (github.event_name == 'workflow_dispatch' &&
+       contains(fromJSON('["Syspretor", "cheyang"]'), github.actor))
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      app_version: ${{ steps.check.outputs.app_version }}
+      commit_hash: ${{ steps.check.outputs.commit_hash }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Check if appVersion changed
+        id: check
+        run: |
+          # Get current appVersion from PR branch
+          CURRENT_APP_VERSION=$(grep '^appVersion:' deploy/helm/rbgs/Chart.yaml | awk '{print $2}')
+          echo "Current appVersion: $CURRENT_APP_VERSION"
+
+          # Get appVersion from base branch (main)
+          git fetch origin main
+          PREV_APP_VERSION=$(git show origin/main:deploy/helm/rbgs/Chart.yaml 2>/dev/null | grep '^appVersion:' | awk '{print $2}' || echo "")
+          echo "Base branch appVersion: $PREV_APP_VERSION"
+
+          if [ "$CURRENT_APP_VERSION" != "$PREV_APP_VERSION" ]; then
+            echo "appVersion changed from '$PREV_APP_VERSION' to '$CURRENT_APP_VERSION'"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "app_version=$CURRENT_APP_VERSION" >> $GITHUB_OUTPUT
+
+            # Extract commit hash from appVersion (format: x.y.z-<hash>)
+            COMMIT_HASH=$(echo "$CURRENT_APP_VERSION" | sed 's/.*-//')
+            echo "Extracted commit hash: $COMMIT_HASH"
+            echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          else
+            echo "appVersion not changed, skipping build"
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    needs: check-appversion-change
+    if: needs.check-appversion-change.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Find target commit on main branch
+        id: target
+        run: |
+          COMMIT_HASH="${{ needs.check-appversion-change.outputs.commit_hash }}"
+          echo "Looking for commit: $COMMIT_HASH"
+
+          # Find the full commit hash
+          FULL_HASH=$(git rev-parse "$COMMIT_HASH")
+          echo "Full commit hash: $FULL_HASH"
+
+          # Find the merge commit that brought this commit into main.
+          # The commit referenced by appVersion is the HEAD of a feature branch
+          # that was merged into main. We want the main branch commit just before
+          # that merge (i.e., the parent of the merge commit on main side).
+          MERGE_COMMIT=$(git log --merges --ancestry-path "${FULL_HASH}..main" --format='%H' --reverse | head -n 1)
+
+          if [ -n "$MERGE_COMMIT" ]; then
+            # Get the first parent of the merge commit (the main branch side)
+            TARGET_COMMIT=$(git rev-parse "${MERGE_COMMIT}^1")
+            echo "Merge commit: $MERGE_COMMIT"
+            echo "Target commit (main before merge): $TARGET_COMMIT"
+          else
+            # If no merge commit found, the commit might already be on main directly.
+            # Use the commit's parent on main as the target.
+            TARGET_COMMIT=$(git rev-parse "${FULL_HASH}~1")
+            echo "No merge commit found, using parent: $TARGET_COMMIT"
+          fi
+
+          echo "target_commit=$TARGET_COMMIT" >> $GITHUB_OUTPUT
+          echo "target_short=$(git rev-parse --short $TARGET_COMMIT)" >> $GITHUB_OUTPUT
+
+      - name: Checkout target commit
+        run: |
+          git checkout ${{ steps.target.outputs.target_commit }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_SECRET }}
+
+      - name: Build and push multi-arch images
+        env:
+          TAG: ${{ needs.check-appversion-change.outputs.app_version }}
+          IMG_REPO: ${{ secrets.DOCKERHUB_USERNAME }}
+          PLATFORMS: ${{ env.MULTIARCH_PLATFORMS }}
+        run: |
+          echo "Building images at commit: ${{ steps.target.outputs.target_commit }}"
+          echo "Image tag: $TAG"
+          echo "Target platforms: $PLATFORMS"
+          make docker-buildx-push
+
+      - name: Summary
+        run: |
+          echo "## Helm Release Image Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **appVersion:** ${{ needs.check-appversion-change.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit Hash (from appVersion):** ${{ needs.check-appversion-change.outputs.commit_hash }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Commit (main before merge):** ${{ steps.target.outputs.target_short }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** ${{ needs.check-appversion-change.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Multi-arch platforms:** ${{ env.MULTIARCH_PLATFORMS }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-controller:${{ needs.check-appversion-change.outputs.app_version }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-upgrade-crd:${{ needs.check-appversion-change.outputs.app_version }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/rbgs-patio-runtime:${{ needs.check-appversion-change.outputs.app_version }}\` (multi-arch)" >> $GITHUB_STEP_SUMMARY

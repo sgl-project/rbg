@@ -15,7 +15,9 @@ env:
   SCHEDULER_PLUGINS_VERSION: v0.32.7
 
 # Declare default permissions as read only.
-permissions: read-all
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   check-changes:
@@ -250,6 +252,54 @@ jobs:
       run:
         working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
     steps:
+      - name: Wait for image build workflow (if running)
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Checking if 'Build Image on Helm Release Update' workflow is running for this PR..."
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          # Wait a bit for the other workflow to be queued
+          echo "Waiting 60s for image build workflow to be queued..."
+          sleep 60
+
+          # Wait up to 30 minutes for the image build workflow to complete
+          MAX_ATTEMPTS=60
+          SLEEP_INTERVAL=30
+          STATUS=""
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            # Find the latest workflow run for this commit
+            RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/helm-release-image.yml/runs?head_sha=$HEAD_SHA" \
+              --jq '.workflow_runs[0].id // empty' 2>/dev/null)
+
+            if [ -z "$RUN_ID" ]; then
+              echo "No image build workflow run found for this PR, proceeding."
+              break
+            fi
+
+            STATUS=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq '.status' 2>/dev/null)
+            CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" --jq '.conclusion // empty' 2>/dev/null)
+
+            if [ "$STATUS" == "completed" ]; then
+              if [ "$CONCLUSION" == "success" ]; then
+                echo "Image build workflow completed successfully (run: $RUN_ID)."
+              else
+                echo "::warning::Image build workflow completed with conclusion: $CONCLUSION (run: $RUN_ID)"
+              fi
+              break
+            fi
+
+            echo "Image build workflow is still running (status: $STATUS, run: $RUN_ID). Waiting ${SLEEP_INTERVAL}s... (attempt $i/$MAX_ATTEMPTS)"
+            sleep $SLEEP_INTERVAL
+          done
+
+          if [ "$i" -eq "$MAX_ATTEMPTS" ] && [ "$STATUS" != "completed" ]; then
+            echo "::warning::Timed out waiting for image build workflow. Proceeding anyway."
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5.5.0
         with:
