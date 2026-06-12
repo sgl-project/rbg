@@ -37,17 +37,16 @@ import (
 
 func TestEnsureDiscoveryConfigMode(t *testing.T) {
 	type testCase struct {
-		name               string
-		mutateRBG          func(*workloadsv1alpha2.RoleBasedGroup)
-		buildExtraObjects  func(*workloadsv1alpha2.RoleBasedGroup) []runtime.Object
-		wantRequeue        bool
-		wantMode           constants.DiscoveryConfigMode
-		wantModeAnnotation bool
+		name              string
+		mutateRBG         func(*workloadsv1alpha2.RoleBasedGroup)
+		buildExtraObjects func(*workloadsv1alpha2.RoleBasedGroup) []runtime.Object
+		wantRequeue       bool
+		wantMode          constants.DiscoveryConfigMode
 	}
 
 	tests := []testCase{
 		{
-			name: "missing annotation with legacy role configmap should set legacy mode without requeue",
+			name: "missing annotation with legacy role configmap sets legacy mode",
 			buildExtraObjects: func(rbg *workloadsv1alpha2.RoleBasedGroup) []runtime.Object {
 				return []runtime.Object{
 					&corev1.ConfigMap{
@@ -58,33 +57,37 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 					},
 				}
 			},
-			wantRequeue:        false,
-			wantMode:           constants.LegacyDiscoveryConfigMode,
-			wantModeAnnotation: true,
+			wantRequeue: false,
+			wantMode:    constants.LegacyDiscoveryConfigMode,
 		},
 		{
-			name:               "missing annotation without legacy signal should set refine mode without requeue",
-			wantRequeue:        false,
-			wantMode:           constants.RefineDiscoveryConfigMode,
-			wantModeAnnotation: true,
+			name: "missing annotation with observed generation sets legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+			},
+			wantRequeue: false,
+			wantMode:    constants.LegacyDiscoveryConfigMode,
 		},
 		{
-			name: "existing legacy annotation should not requeue",
+			name:        "missing annotation without legacy signal sets refine mode",
+			wantRequeue: false,
+			wantMode:    constants.RefineDiscoveryConfigMode,
+		},
+		{
+			name: "existing legacy annotation is a no-op",
 			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
 				rbg.SetDiscoveryConfigMode(constants.LegacyDiscoveryConfigMode)
 			},
-			wantRequeue:        false,
-			wantMode:           constants.LegacyDiscoveryConfigMode,
-			wantModeAnnotation: true,
+			wantRequeue: false,
+			wantMode:    constants.LegacyDiscoveryConfigMode,
 		},
 		{
-			name: "existing refine annotation should not requeue",
+			name: "existing refine annotation is a no-op",
 			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
 				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 			},
-			wantRequeue:        false,
-			wantMode:           constants.RefineDiscoveryConfigMode,
-			wantModeAnnotation: true,
+			wantRequeue: false,
+			wantMode:    constants.RefineDiscoveryConfigMode,
 		},
 	}
 
@@ -111,7 +114,7 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 			current := &workloadsv1alpha2.RoleBasedGroup{}
 			key := types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}
 			if err := client.Get(context.Background(), key, current); err != nil {
-				t.Fatalf("get rbg error: %v", err)
+				t.Fatalf("get rbg: %v", err)
 			}
 
 			requeue, err := reconciler.ensureDiscoveryConfigMode(context.Background(), current)
@@ -122,16 +125,16 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 				t.Fatalf("requeue = %v, want %v", requeue, tt.wantRequeue)
 			}
 
+			if got := current.GetDiscoveryConfigMode(); got != tt.wantMode {
+				t.Fatalf("in-memory mode = %s, want %s", got, tt.wantMode)
+			}
+
 			persisted := &workloadsv1alpha2.RoleBasedGroup{}
 			if err := client.Get(context.Background(), key, persisted); err != nil {
-				t.Fatalf("get persisted rbg error: %v", err)
+				t.Fatalf("get persisted rbg: %v", err)
 			}
 			if got := persisted.GetDiscoveryConfigMode(); got != tt.wantMode {
-				t.Fatalf("mode = %s, want %s", got, tt.wantMode)
-			}
-			_, hasModeAnnotation := persisted.Annotations[constants.DiscoveryConfigModeAnnotationKey]
-			if hasModeAnnotation != tt.wantModeAnnotation {
-				t.Fatalf("has discovery-config-mode annotation = %v, want %v", hasModeAnnotation, tt.wantModeAnnotation)
+				t.Fatalf("persisted mode = %s, want %s", got, tt.wantMode)
 			}
 		})
 	}
