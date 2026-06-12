@@ -1,0 +1,140 @@
+# KWOK Stage resources to simulate Pod lifecycle for stress testing.
+# These stages automatically transition Pods to Ready state and handle deletion.
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-initialize
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: '.metadata.deletionTimestamp'
+        operator: 'DoesNotExist'
+      - key: '.status.podIP'
+        operator: 'DoesNotExist'
+  next:
+    event:
+      type: Normal
+      reason: Scheduled
+      message: "Successfully assigned Pod to kwok-node"
+    statusTemplate: |
+      {{ $now := Now }}
+      hostIP: 10.0.0.1
+      podIP: {{ printf "10.0.%d.%d" (mod .index 256) (mod (add .index 1) 256) | Quote }}
+      startTime: {{ $now | Quote }}
+      conditions:
+        - type: Initialized
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: Ready
+          status: "False"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: ContainersReady
+          status: "False"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: PodScheduled
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+      phase: Pending
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      hostIP: 10.0.0.1
+      podIP: {{ printf "10.0.%d.%d" (mod .index 256) (mod (add .index 1) 256) | Quote }}
+      startTime: {{ $now | Quote }}
+      conditions:
+        - type: Initialized
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: Ready
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: ContainersReady
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: PodScheduled
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+      phase: Running
+      containerStatuses:
+        {{ range .spec.containers }}
+        - name: {{ .name | Quote }}
+          ready: true
+          restartCount: 0
+          started: true
+          image: {{ .image | Quote }}
+          imageID: {{ .image | Quote }}
+          state:
+            running:
+              startedAt: {{ $now | Quote }}
+        {{ end }}
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-ready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: '.metadata.deletionTimestamp'
+        operator: 'DoesNotExist'
+      - key: '.status.podIP'
+        operator: 'Exists'
+      - key: '.status.conditions.[] | select( .type == "Ready" ) | .status'
+        operator: 'NotIn'
+        values:
+          - "True"
+  delay:
+    durationMilliseconds: 1000
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      conditions:
+        - type: Initialized
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: Ready
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: ContainersReady
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: PodScheduled
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+      phase: Running
+      containerStatuses:
+        {{ range .spec.containers }}
+        - name: {{ .name | Quote }}
+          ready: true
+          restartCount: 0
+          started: true
+          image: {{ .image | Quote }}
+          imageID: {{ .image | Quote }}
+          state:
+            running:
+              startedAt: {{ $now | Quote }}
+        {{ end }}
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-delete
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: '.metadata.deletionTimestamp'
+        operator: 'Exists'
+  delay:
+    durationMilliseconds: 500
+  next:
+    delete: true

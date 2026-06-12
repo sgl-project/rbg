@@ -26,14 +26,14 @@ main
 .idea
 .vscode
 .qoder
-.claude
+.claude/*
+!.claude/skills/
 *.swp
 *.swo
 *~
 .devcontainer
 **/*.tgz
 **/.DS_Store
-.claude/
 
 
 # python
