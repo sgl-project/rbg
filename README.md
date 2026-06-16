@@ -280,6 +280,7 @@ The [rolebasedgroup](https://github.com/rolebasedgroup) GitHub organization host
 | Project | Description |
 |:--------|:------------|
 | [**rbg-planner**](https://github.com/rolebasedgroup/rbg-planner) | Engine-agnostic, SLA-driven autoscaler for LLM inference on Kubernetes. Supports SGLang, vLLM, NVIDIA Dynamo via pluggable metrics adapters. Uses ARIMA-based load prediction and automatic SLA profiling to scale prefill/decode roles to meet TTFT/ITL latency targets. |
+| [**inference-engine-runtime**](https://github.com/rolebasedgroup/inference-engine-runtime) | Python-based sidecar runtime for AI inference engines. Provides LoRA adapter management, unified Prometheus metrics, and distributed topology management for SGLang and vLLM engines. |
 | [**inference-ext-cli**](https://github.com/rolebasedgroup/inference-ext-cli) | RBG CLI extension (`llmctl`) for LLM inference workload management. Provides service/model management, benchmark orchestration, automated parameter search (Optuna), convergence analysis, and web dashboards for experiment visualization. |
 | [**rbg-agent-guide**](https://github.com/rolebasedgroup/rbg-agent-guide) | AI agent skill guides for RBG operations. Provides deployment skills for AI coding assistants (e.g., Claude Code) to help users deploy LLM models to Kubernetes using RBG CRD and CLI. |
 | [**rolebasedgroup.github.io**](https://github.com/rolebasedgroup/rolebasedgroup.github.io) | Official RBG documentation website built with Docusaurus, deployed at [rolebasedgroup.github.io](https://rolebasedgroup.github.io). |

@@ -280,6 +280,7 @@ RBG 集成生态组件用于生产级 LLM 推理：
 | 项目 | 说明 |
 |:-----|:-----|
 | [**rbg-planner**](https://github.com/rolebasedgroup/rbg-planner) | 引擎无关的 SLA 驱动 LLM 推理自动伸缩器。通过可插拔指标适配器支持 SGLang、vLLM、NVIDIA Dynamo，基于 ARIMA 负载预测和自动 SLA 画像，扩缩 prefill/decode 角色以满足 TTFT/ITL 延迟目标。 |
+| [**inference-engine-runtime**](https://github.com/rolebasedgroup/inference-engine-runtime) | Python 推理引擎 Sidecar 运行时。为 SGLang 和 vLLM 引擎提供 LoRA 适配器管理、统一 Prometheus 指标及分布式拓扑管理。 |
 | [**inference-ext-cli**](https://github.com/rolebasedgroup/inference-ext-cli) | RBG CLI 扩展（`llmctl`），用于 LLM 推理工作负载管理。提供服务/模型管理、基准测试编排、自动参数搜索（Optuna）、收敛分析及实验可视化 Web 面板。 |
 | [**rbg-agent-guide**](https://github.com/rolebasedgroup/rbg-agent-guide) | RBG 运维 AI Agent 技能指南。为 AI 编程助手（如 Claude Code）提供部署技能，帮助用户通过 RBG CRD 和 CLI 将 LLM 模型部署到 Kubernetes。 |
 | [**rolebasedgroup.github.io**](https://github.com/rolebasedgroup/rolebasedgroup.github.io) | RBG 官方文档网站，基于 Docusaurus 构建，部署于 [rolebasedgroup.github.io](https://rolebasedgroup.github.io)。 |
