@@ -18,6 +18,7 @@ package sync
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
@@ -28,47 +29,117 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
-// NodeBindingStore is an in-memory store that maps binding keys to sets of
-// node names. A single unified structure handles both granularities; the
-// difference is determined entirely by the key format:
+// NodeBindingStore is a two-level in-memory store that maps binding keys to
+// sets of node names. The outer key is the RBG UID, enabling O(1) eviction
+// of all bindings for a deleted RBG via EvictByUID.
 //
-//   - Pod-level:       {rbgUID}/{podName}              → set of size 1
-//   - Component-level: {rbgUID}/{roleName}-{component} → set of all nodes
-//     that have hosted the same component type
+// Inner structure per UID:
+//
+//	Pod-level:       {podName}              → set of size 1
+//	Component-level: {roleName}-{component} → set of all nodes that have
+//	                                         hosted the same component type
 //
 // Using the RBG's real Kubernetes object UID (RBGOwnerUIDLabelKey) ensures
 // that when an RBG is deleted and recreated with the same name, the new RBG
 // gets a different UID and does not inherit stale bindings.
 //
-// The store is naturally bounded and self-correcting after controller restart.
+// Concurrency: a single sync.RWMutex protects both map levels. All operations
+// (Add, Load, EvictByUID) hold the lock for very short durations (map lookups
+// and set inserts), so contention is negligible in practice.
 type NodeBindingStore struct {
 	mu       sync.RWMutex
-	bindings map[string]sets.Set[string]
+	bindings map[string]*rbgBindings
+}
+
+// rbgBindings holds all node bindings for a single RBG, keyed by sub-key
+// (pod name or role-component name). Each RBG's bindings are isolated so
+// that EvictByUID can remove them all in O(1).
+type rbgBindings struct {
+	keys map[string]sets.Set[string]
 }
 
 // NewNodeBindingStore creates a new empty NodeBindingStore.
 func NewNodeBindingStore() *NodeBindingStore {
 	return &NodeBindingStore{
-		bindings: make(map[string]sets.Set[string]),
+		bindings: make(map[string]*rbgBindings),
 	}
 }
 
-// Add inserts nodeName into the set for key. Idempotent — calling it
-// repeatedly with the same (key, node) pair is a no-op.
+// Add inserts nodeName into the set for key. The key format is
+// "{rbgUID}/{subKey}". Idempotent — calling it repeatedly with the same
+// (key, node) pair is a no-op.
 func (s *NodeBindingStore) Add(key, nodeName string) {
+	uid, subKey, ok := splitKey(key)
+	if !ok {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.bindings[key] == nil {
-		s.bindings[key] = sets.New[string]()
+
+	rb := s.bindings[uid]
+	if rb == nil {
+		rb = &rbgBindings{keys: make(map[string]sets.Set[string])}
+		s.bindings[uid] = rb
 	}
-	s.bindings[key].Insert(nodeName)
+	if rb.keys[subKey] == nil {
+		rb.keys[subKey] = sets.New[string]()
+	}
+	rb.keys[subKey].Insert(nodeName)
 }
 
-// Load returns the set of node names for key. Returns nil if no binding exists.
+// Load returns a clone of the node name set for key. Returns nil if no
+// binding exists. The returned set is a snapshot safe for concurrent
+// iteration — callers do not need to hold any lock.
+// The key format is "{rbgUID}/{subKey}".
 func (s *NodeBindingStore) Load(key string) sets.Set[string] {
+	uid, subKey, ok := splitKey(key)
+	if !ok {
+		return nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.bindings[key]
+
+	rb := s.bindings[uid]
+	if rb == nil {
+		return nil
+	}
+	v := rb.keys[subKey]
+	if v == nil {
+		return nil
+	}
+	return v.Clone()
+}
+
+// EvictByUID removes all bindings for the given RBG UID in O(1).
+// Intended to be called from an RBG delete event handler so that
+// bindings are cleaned up immediately when an RBG is deleted.
+func (s *NodeBindingStore) EvictByUID(uid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, existed := s.bindings[uid]; existed {
+		klog.InfoS("in-place scheduling: evicted all node bindings for RBG", "uid", uid)
+		delete(s.bindings, uid)
+	}
+}
+
+// Len returns the number of RBG UIDs tracked in the store.
+// Exposed primarily for testing and debugging.
+func (s *NodeBindingStore) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.bindings)
+}
+
+// splitKey splits a "{uid}/{subKey}" string into its components.
+// Returns ("", "", false) if the key does not contain a "/".
+func splitKey(key string) (uid, subKey string, ok bool) {
+	uid, subKey, ok = strings.Cut(key, "/")
+	if !ok || uid == "" || subKey == "" {
+		return "", "", false
+	}
+	return uid, subKey, true
 }
 
 // buildKey constructs the binding store key based on the given granularity.

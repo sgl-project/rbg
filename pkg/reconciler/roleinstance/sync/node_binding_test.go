@@ -72,6 +72,85 @@ func TestNodeBindingStore_LoadMissing(t *testing.T) {
 	assert.Len(t, got, 0) // nil set has len 0
 }
 
+func TestNodeBindingStore_EvictByUID(t *testing.T) {
+	store := NewNodeBindingStore()
+
+	// Two UIDs with multiple sub-keys each.
+	store.Add("uid-1/prefill-0", "node-A")
+	store.Add("uid-1/prefill-1", "node-B")
+	store.Add("uid-2/decode-0", "node-C")
+
+	// Evict uid-1 — should remove all its bindings.
+	store.EvictByUID("uid-1")
+	assert.Nil(t, store.Load("uid-1/prefill-0"))
+	assert.Nil(t, store.Load("uid-1/prefill-1"))
+
+	// uid-2 should be unaffected.
+	got := store.Load("uid-2/decode-0")
+	assert.Equal(t, []string{"node-C"}, got.UnsortedList())
+}
+
+func TestNodeBindingStore_EvictByUID_NonExistent(t *testing.T) {
+	store := NewNodeBindingStore()
+	// Should not panic.
+	store.EvictByUID("nonexistent")
+}
+
+func TestNodeBindingStore_EvictByUID_AddAfterEvict(t *testing.T) {
+	store := NewNodeBindingStore()
+
+	store.Add("uid-1/prefill-0", "node-A")
+	store.EvictByUID("uid-1")
+	assert.Nil(t, store.Load("uid-1/prefill-0"))
+
+	// Re-adding after eviction should work.
+	store.Add("uid-1/prefill-0", "node-B")
+	got := store.Load("uid-1/prefill-0")
+	assert.Equal(t, []string{"node-B"}, got.UnsortedList())
+}
+
+func TestNodeBindingStore_Len(t *testing.T) {
+	store := NewNodeBindingStore()
+	assert.Equal(t, 0, store.Len())
+
+	store.Add("uid-1/prefill-0", "node-A")
+	store.Add("uid-1/prefill-1", "node-B")
+	assert.Equal(t, 1, store.Len(), "two sub-keys under same UID = 1 RBG entry")
+
+	store.Add("uid-2/decode-0", "node-C")
+	assert.Equal(t, 2, store.Len(), "two distinct UIDs = 2 RBG entries")
+
+	store.EvictByUID("uid-1")
+	assert.Equal(t, 1, store.Len(), "uid-1 evicted, only uid-2 remains")
+
+	store.EvictByUID("uid-2")
+	assert.Equal(t, 0, store.Len(), "all UIDs evicted")
+}
+
+// ---------------------------------------------------------------------------
+// splitKey
+// ---------------------------------------------------------------------------
+
+func TestSplitKey_Valid(t *testing.T) {
+	uid, subKey, ok := splitKey("uid-123/prefill-0")
+	assert.True(t, ok)
+	assert.Equal(t, "uid-123", uid)
+	assert.Equal(t, "prefill-0", subKey)
+}
+
+func TestSplitKey_NoSlash(t *testing.T) {
+	_, _, ok := splitKey("noslash")
+	assert.False(t, ok)
+}
+
+func TestSplitKey_EmptyParts(t *testing.T) {
+	_, _, ok := splitKey("/subkey")
+	assert.False(t, ok)
+
+	_, _, ok = splitKey("uid/")
+	assert.False(t, ok)
+}
+
 // ---------------------------------------------------------------------------
 // buildKey
 // ---------------------------------------------------------------------------

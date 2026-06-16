@@ -45,9 +45,9 @@ type Interface interface {
 var restartingCache sync.Map
 
 // nodeBindings is the package-level node binding store shared across all
-// RoleInstance reconcile loops. It uses a unified map[string]sets.Set[string]
-// structure for both Pod-level and Component-level in-place scheduling
-// granularities; the difference is determined by the key format.
+// RoleInstance reconcile loops. It uses a two-level map keyed by RBG UID,
+// enabling O(1) eviction of all bindings when an RBG is deleted via
+// EvictByUID (called from the RBG delete event handler).
 var nodeBindings = NewNodeBindingStore()
 
 type realControl struct {
@@ -56,6 +56,13 @@ type realControl struct {
 	inplaceControl   inplaceupdate.Interface
 	recorder         record.EventRecorder
 	lifecycleControl lifecycle.Interface
+}
+
+// EvictNodeBindings removes all in-place scheduling bindings for the
+// given RBG UID. Intended to be called from the RBG delete event handler
+// so that bindings are cleaned up immediately when an RBG is deleted.
+func EvictNodeBindings(uid string) {
+	nodeBindings.EvictByUID(uid)
 }
 
 func New(c client.Client, apiReader client.Reader, recorder record.EventRecorder) Interface {
