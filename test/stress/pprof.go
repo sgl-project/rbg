@@ -47,7 +47,7 @@ func (p *PprofCollector) IsAvailable() bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -167,7 +167,7 @@ func (p *PprofCollector) fetchProfile(url, outFile string, timeout time.Duration
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
@@ -177,7 +177,7 @@ func (p *PprofCollector) fetchProfile(url, outFile string, timeout time.Duration
 	if err != nil {
 		return fmt.Errorf("create %s: %w", outFile, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		return fmt.Errorf("write %s: %w", outFile, err)

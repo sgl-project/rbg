@@ -122,7 +122,7 @@ func (r *TimingRecorder) Summary() string {
 func computeStats(operation string, records []OperationRecord) PhaseStats {
 	stats := PhaseStats{Operation: operation, Total: len(records)}
 
-	var durations []float64
+	durations := make([]float64, 0, len(records))
 	var firstStart, lastEnd time.Time
 
 	for _, rec := range records {
@@ -189,7 +189,7 @@ func writeCSV(filename string, records []OperationRecord) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	w := csv.NewWriter(f)
 	defer w.Flush()

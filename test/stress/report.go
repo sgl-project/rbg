@@ -119,7 +119,7 @@ func GenerateHTMLReport(outputDir string, scenario *Scenario, recorder *TimingRe
 	if err != nil {
 		return fmt.Errorf("create report file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	funcMap := template.FuncMap{
 		"pct": func(val, max float64) float64 {
@@ -327,9 +327,6 @@ func detectIssues(phases []PhaseReport, logAnalysis LogAnalysis) []string {
 		if p.P99Ms > 10000 {
 			issues = append(issues, fmt.Sprintf("[%s] P99 latency %.0fms exceeds 10s threshold — controller may be overloaded",
 				p.Name, p.P99Ms))
-		}
-		if p.Total > 0 && p.ActualQPS < p.ActualQPS*0.5 {
-			// This check doesn't make sense as written, fix below
 		}
 	}
 

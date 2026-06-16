@@ -81,7 +81,7 @@ func RunDeletePhase(ctx context.Context, client *StressClient, scenario *Scenari
 	wg.Wait()
 	close(errCh)
 
-	var errs []error
+	errs := make([]error, 0, len(errCh))
 	for err := range errCh {
 		errs = append(errs, err)
 	}
