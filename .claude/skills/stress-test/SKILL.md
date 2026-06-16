@@ -64,7 +64,7 @@ Use AskUserQuestion to gather parameters:
 
 1. **Deploy kwok in-cluster** (installs kwok controller + stage-fast + creates fake nodes):
    ```bash
-   FAKE_NODE_COUNT=5 bash .claude/skills/stress-test/scripts/setup-kwok.sh
+   FAKE_NODE_COUNT=5 bash test/stress/scripts/setup-kwok.sh
    ```
 
 2. **Deploy/upgrade RBG controller** via Helm with user-specified resources and params:
@@ -72,7 +72,7 @@ Use AskUserQuestion to gather parameters:
    CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
    MAX_RECONCILES=10 KUBE_API_QPS=50 KUBE_API_BURST=100 \
    PPROF_ENABLED=true \
-   bash .claude/skills/stress-test/scripts/deploy-controller.sh
+   bash test/stress/scripts/deploy-controller.sh
    ```
 
 3. **Verify controller is ready**:
@@ -123,7 +123,7 @@ If pprof is not available (controller image without pprof support), omit the `--
 Alternatively, use the standalone script for manual collection:
 ```bash
 PHASE=create OUTPUT_DIR=/tmp/rbg-stress-results \
-bash .claude/skills/stress-test/scripts/collect-profiling.sh
+bash test/stress/scripts/collect-profiling.sh
 ```
 
 ### Phase 5: Report Generation (automatic)
@@ -352,10 +352,10 @@ Synthesize all findings into a brief summary:
 
 ```bash
 # Remove fake nodes and stress test namespace
-bash .claude/skills/stress-test/scripts/teardown-kwok.sh
+bash test/stress/scripts/teardown-kwok.sh
 
 # To also uninstall kwok:
-UNINSTALL_KWOK=true bash .claude/skills/stress-test/scripts/teardown-kwok.sh
+UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
 ```
 
 ### Auto-Tuning Mode (if selected)

@@ -46,6 +46,8 @@ func main() {
 	flag.StringVar(&scenario.PprofAddr, "pprof-addr", "", "Controller pprof address (e.g. localhost:6060). Empty to skip profiling.")
 	flag.StringVar(&scenario.OutputDir, "output-dir", "/tmp/rbg-stress-results", "Directory for output files")
 	flag.DurationVar(&scenario.Timeout, "timeout", 30*time.Minute, "Overall timeout for the stress test")
+	flag.StringVar(&scenario.ControllerNamespace, "controller-namespace", "rbgs-system", "Namespace where the RBG controller is deployed")
+	flag.StringVar(&scenario.ControllerLabel, "controller-label", "control-plane=rbgs-controller", "Label selector for the RBG controller pods")
 
 	flag.Parse()
 
@@ -85,7 +87,7 @@ func main() {
 	recorder := NewTimingRecorder()
 
 	// Collect controller info
-	scenario.ControllerInfo = client.GetControllerInfo(ctx)
+	scenario.ControllerInfo = client.GetControllerInfo(ctx, scenario.ControllerNamespace, scenario.ControllerLabel)
 
 	// Record test start time for log collection
 	testStartTime := time.Now().UTC()
@@ -184,7 +186,7 @@ func main() {
 
 	// Collect controller logs (only from test period)
 	fmt.Println("--- Collecting Controller Logs ---")
-	collectControllerLogs(scenario.OutputDir, testStartTime)
+	collectControllerLogs(scenario.OutputDir, testStartTime, scenario.ControllerNamespace, scenario.ControllerLabel)
 
 	// Parse controller logs for analysis
 	logAnalysis := ParseLogAnalysis(scenario.OutputDir)
@@ -201,10 +203,10 @@ func main() {
 }
 
 // collectControllerLogs fetches controller logs via kubectl.
-func collectControllerLogs(outputDir string, sinceTime time.Time) {
+func collectControllerLogs(outputDir string, sinceTime time.Time, controllerNamespace, controllerLabel string) {
 	// Fetch logs from test start time
-	cmd := exec.Command("kubectl", "logs", "-n", "rbgs-system",
-		"-l", "control-plane=rbgs-controller",
+	cmd := exec.Command("kubectl", "logs", "-n", controllerNamespace,
+		"-l", controllerLabel,
 		"--since-time="+sinceTime.Format(time.RFC3339), "--tail=-1")
 	output, err := cmd.Output()
 	if err != nil {

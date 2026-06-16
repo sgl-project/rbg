@@ -113,10 +113,13 @@ func (c *StressClient) CreateRBG(ctx context.Context, namespace string, rbg *uns
 	return err
 }
 
-// UpdateRBG updates an RBG resource.
-func (c *StressClient) UpdateRBG(ctx context.Context, namespace string, rbg *unstructured.Unstructured) error {
-	_, err := c.dynamic.Resource(rbgGVR).Namespace(namespace).Update(ctx, rbg, metav1.UpdateOptions{})
-	return err
+// UpdateRBG updates an RBG resource and returns the new metadata.generation.
+func (c *StressClient) UpdateRBG(ctx context.Context, namespace string, rbg *unstructured.Unstructured) (int64, error) {
+	result, err := c.dynamic.Resource(rbgGVR).Namespace(namespace).Update(ctx, rbg, metav1.UpdateOptions{})
+	if err != nil {
+		return 0, err
+	}
+	return result.GetGeneration(), nil
 }
 
 // GetRBG gets an RBG resource.
@@ -151,6 +154,29 @@ func (c *StressClient) WaitForRBGReady(ctx context.Context, namespace, name stri
 	}
 }
 
+// WaitForRBGObservedGeneration polls until status.observedGeneration >= generation.
+func (c *StressClient) WaitForRBGObservedGeneration(ctx context.Context, namespace, name string, generation int64) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		rbg, err := c.GetRBG(ctx, namespace, name)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		observed, found, _ := unstructured.NestedInt64(rbg.Object, "status", "observedGeneration")
+		if found && observed >= generation {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
 // WaitForRBGDeleted polls until the RBG is gone or context is done.
 func (c *StressClient) WaitForRBGDeleted(ctx context.Context, namespace, name string) error {
 	for {
@@ -174,10 +200,10 @@ func (c *StressClient) WatchRBGs(ctx context.Context, namespace string) (watch.I
 }
 
 // GetControllerInfo fetches details about the deployed RBG controller.
-func (c *StressClient) GetControllerInfo(ctx context.Context) ControllerInfo {
+func (c *StressClient) GetControllerInfo(ctx context.Context, controllerNamespace, controllerLabel string) ControllerInfo {
 	info := ControllerInfo{}
 
-	deploy, err := c.clientset.AppsV1().Deployments("rbgs-system").Get(ctx, "rbgs-controller-manager", metav1.GetOptions{})
+	deploy, err := c.clientset.AppsV1().Deployments(controllerNamespace).Get(ctx, "rbgs-controller-manager", metav1.GetOptions{})
 	if err != nil {
 		return info
 	}
@@ -208,8 +234,8 @@ func (c *StressClient) GetControllerInfo(ctx context.Context) ControllerInfo {
 	}
 
 	// Get node where controller is running
-	pods, err := c.clientset.CoreV1().Pods("rbgs-system").List(ctx, metav1.ListOptions{
-		LabelSelector: "control-plane=rbgs-controller",
+	pods, err := c.clientset.CoreV1().Pods(controllerNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: controllerLabel,
 	})
 	if err == nil && len(pods.Items) > 0 {
 		info.NodeName = pods.Items[0].Spec.NodeName

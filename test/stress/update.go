@@ -70,7 +70,8 @@ func RunUpdatePhase(ctx context.Context, client *StressClient, scenario *Scenari
 			}
 
 			// Update the RBG
-			if err := client.UpdateRBG(ctx, scenario.Namespace, rbg); err != nil {
+			generation, err := client.UpdateRBG(ctx, scenario.Namespace, rbg)
+			if err != nil {
 				rec.EndTime = time.Now()
 				rec.Error = err.Error()
 				recorder.Record(rec)
@@ -78,9 +79,17 @@ func RunUpdatePhase(ctx context.Context, client *StressClient, scenario *Scenari
 				return
 			}
 
-			// Wait for Ready condition (after update propagates)
+			// Wait for controller to observe the new generation, then wait for Ready
 			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
+
+			if err := client.WaitForRBGObservedGeneration(waitCtx, scenario.Namespace, name, generation); err != nil {
+				rec.EndTime = time.Now()
+				rec.Error = fmt.Sprintf("wait observedGeneration: %v", err)
+				recorder.Record(rec)
+				errCh <- fmt.Errorf("wait observedGeneration %s: %w", name, err)
+				return
+			}
 
 			if err := client.WaitForRBGReady(waitCtx, scenario.Namespace, name); err != nil {
 				rec.EndTime = time.Now()
