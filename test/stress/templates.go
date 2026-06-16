@@ -25,6 +25,7 @@ import (
 const (
 	testImage        = "registry.k8s.io/pause:3.9"
 	testImageUpdated = "registry.k8s.io/pause:3.10"
+	labelValueTrue   = "true"
 )
 
 // GenerateRBG creates an unstructured RBG object for stress testing.
@@ -55,7 +56,7 @@ func GenerateRBG(index int, scenario *Scenario) *unstructured.Unstructured {
 				"name":      name,
 				"namespace": scenario.Namespace,
 				"labels": map[string]interface{}{
-					"stress-test": "true",
+					"stress-test": labelValueTrue,
 					"test-index":  fmt.Sprintf("%d", index),
 				},
 			},
@@ -90,7 +91,7 @@ func buildStandaloneRole(name string, scenario *Scenario) map[string]interface{}
 			"template": map[string]interface{}{
 				"metadata": map[string]interface{}{
 					"labels": map[string]interface{}{
-						"stress-test": "true",
+						"stress-test": labelValueTrue,
 						"role":        name,
 					},
 				},
@@ -112,7 +113,7 @@ func buildLWSRole(name string, scenario *Scenario) map[string]interface{} {
 			"template": map[string]interface{}{
 				"metadata": map[string]interface{}{
 					"labels": map[string]interface{}{
-						"stress-test": "true",
+						"stress-test": labelValueTrue,
 						"role":        name,
 					},
 				},
@@ -210,7 +211,7 @@ func updateAnnotationInRole(role map[string]interface{}) {
 		if ann == nil {
 			ann = map[string]string{}
 		}
-		ann["stress-test-update"] = "true"
+		ann["stress-test-update"] = labelValueTrue
 		_ = unstructured.SetNestedStringMap(role, ann, "standalonePattern", "template", "metadata", "annotations")
 	}
 
@@ -219,7 +220,7 @@ func updateAnnotationInRole(role map[string]interface{}) {
 		if ann == nil {
 			ann = map[string]string{}
 		}
-		ann["stress-test-update"] = "true"
+		ann["stress-test-update"] = labelValueTrue
 		_ = unstructured.SetNestedStringMap(role, ann, "leaderWorkerPattern", "template", "metadata", "annotations")
 	}
 }
