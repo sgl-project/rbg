@@ -46,7 +46,7 @@ func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alph
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, error) {
 	// Record node bindings for in-place scheduling.
 	// Piggybacks on the already-fetched pods — no additional API calls.
-	RecordNodeBindings(nodeBindings, updateInstance, pods)
+	RecordNodeBindings(c.bindings, updateInstance, pods)
 
 	diffRes, err := c.calculateDiffsWithExpectation(ctx, updateInstance, currentRevision, updateRevision, revisions, pods, inactivePods)
 	if err != nil {
@@ -255,7 +255,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 		}
 
 		// Handle in-place scheduling: inject nodeAffinity to prefer historical nodes
-		InjectInPlaceScheduling(p, updateInstance, nodeBindings)
+		InjectInPlaceScheduling(p, updateInstance, c.bindings)
 
 		toCreatePodNum++
 		podsCreationChan <- p

@@ -1346,3 +1346,33 @@ func TestInjectInPlaceScheduling_RequiredAvoidFoldWithPreExistingTerms(t *testin
 	assert.Equal(t, "avoid-key", exprs[2].Key)
 	assert.Equal(t, corev1.NodeSelectorOpDoesNotExist, exprs[2].Operator)
 }
+
+func TestInjectInPlaceScheduling_InvalidAvoidKeySkipped(t *testing.T) {
+	store := NewNodeBindingStore()
+	store.Add("uid-1/prefill-0", "node-A")
+
+	instance := statefulInstance("uid-1", "prefill")
+	instance.Annotations = map[string]string{
+		constants.RoleInplaceSchedulingAnnotationKey:      constants.InplaceSchedulingPreferred,
+		constants.RoleInplaceSchedulingAvoidAnnotationKey: "valid-key, invalid key with spaces, also/bad!",
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-0",
+			Labels: map[string]string{
+				constants.ComponentNameLabelKey: "Prefill",
+			},
+		},
+	}
+
+	InjectInPlaceScheduling(pod, instance, store)
+
+	na := pod.Spec.Affinity.NodeAffinity
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	// Only "valid-key" passes validation; the other two are skipped.
+	assert.Len(t, req.NodeSelectorTerms, 1)
+	assert.Len(t, req.NodeSelectorTerms[0].MatchExpressions, 1)
+	assert.Equal(t, "valid-key", req.NodeSelectorTerms[0].MatchExpressions[0].Key)
+}

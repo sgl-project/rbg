@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance"
+	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -34,8 +35,8 @@ type RoleInstanceReconciler struct {
 	apiReader     client.Reader
 }
 
-func NewRoleInstanceReconciler(mgr ctrl.Manager) *RoleInstanceReconciler {
-	reconciler := roleinstance.NewReconciler(mgr)
+func NewRoleInstanceReconciler(mgr ctrl.Manager, bindings *synccontrol.NodeBindingStore) *RoleInstanceReconciler {
+	reconciler := roleinstance.NewReconciler(mgr, bindings)
 	return &RoleInstanceReconciler{
 		reconcileFunc: reconciler.Reconcile,
 		apiReader:     mgr.GetAPIReader(),

@@ -47,7 +47,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
 
-func NewReconciler(mgr ctrl.Manager) reconcile.Reconciler {
+func NewReconciler(mgr ctrl.Manager, bindings *synccontrol.NodeBindingStore) reconcile.Reconciler {
 	recorder := mgr.GetEventRecorderFor("instance-controller")
 	c := utilclient.NewClientWithUserAgent(mgr, "roleinstance")
 	return &reconciler{
@@ -57,7 +57,7 @@ func NewReconciler(mgr ctrl.Manager) reconcile.Reconciler {
 		controllerHistory: historyutil.NewHistory(c),
 		statusUpdater:     newStatusUpdater(c),
 		revisionControl:   revisioncontrol.NewRevisionControl(),
-		syncControl:       synccontrol.New(c, mgr.GetAPIReader(), recorder),
+		syncControl:       synccontrol.New(c, mgr.GetAPIReader(), recorder, bindings),
 	}
 }
 

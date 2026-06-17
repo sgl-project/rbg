@@ -23,6 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -287,6 +288,8 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 
 	// 2. Check exclusive topology conflict
 	if pod.Annotations[constants.GroupExclusiveTopologyKey] != "" {
+		klog.V(4).InfoS("in-place scheduling: skipped due to exclusive topology, no affinity injected",
+			"pod", klog.KObj(pod), "instance", klog.KObj(instance))
 		return
 	}
 
@@ -302,6 +305,11 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		for _, key := range strings.Split(raw, ",") {
 			key = strings.TrimSpace(key)
 			if key == "" {
+				continue
+			}
+			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+				klog.InfoS("in-place scheduling: invalid avoid label key, skipping",
+					"key", key, "instance", klog.KObj(instance), "errors", errs)
 				continue
 			}
 			avoidExprs = append(avoidExprs, v1.NodeSelectorRequirement{

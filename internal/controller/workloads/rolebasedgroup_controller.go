@@ -89,9 +89,13 @@ type RoleBasedGroupReconciler struct {
 	workloadReconciler map[string]reconciler.WorkloadReconciler
 	reconcilerMu       sync.RWMutex
 	podGroupManager    scheduler.PodGroupManager
+	// NodeBindings is the in-place scheduling binding store, shared with
+	// the RoleInstance reconciler. Injected at wire-up time so both consumers
+	// operate on the same instance.
+	NodeBindings *instancesync.NodeBindingStore
 }
 
-func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType) (*RoleBasedGroupReconciler, error) {
+func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
 	c := utilclient.NewClientWithUserAgent(mgr, "rolebasedgroup")
 	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, c)
 	if err != nil {
@@ -104,6 +108,7 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
 		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 		podGroupManager:    podGroupManager,
+		NodeBindings:       bindings,
 	}, nil
 }
 
@@ -1027,9 +1032,9 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 			// in-memory bindings using the UID (which is only available
 			// from the delete event, not from a subsequent Get).
 			DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-				if e.Object != nil {
+				if e.Object != nil && r.NodeBindings != nil {
 					uid := string(e.Object.GetUID())
-					instancesync.EvictNodeBindings(uid)
+					r.NodeBindings.EvictByUID(uid)
 				}
 			},
 		}).
