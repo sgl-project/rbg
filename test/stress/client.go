@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -132,30 +133,32 @@ func (c *StressClient) DeleteRBG(ctx context.Context, namespace, name string) er
 	return c.dynamic.Resource(rbgGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-// WaitForRBGReady polls until the RBG has Ready=True condition or context is done.
+// WaitForRBGReady waits until the RBG has Ready=True condition using a watch-based approach.
+// Falls back to polling on watch errors.
 func (c *StressClient) WaitForRBGReady(ctx context.Context, namespace, name string) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		rbg, err := c.GetRBG(ctx, namespace, name)
-		if err != nil {
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-
-		if isRBGReady(rbg) {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+	return c.watchAndWait(ctx, namespace, name, func(rbg *unstructured.Unstructured) bool {
+		return isRBGReady(rbg)
+	})
 }
 
-// WaitForRBGObservedGeneration polls until status.observedGeneration >= generation.
+// WaitForRBGObservedGeneration waits until status.observedGeneration >= generation using a watch.
+// Falls back to polling on watch errors.
 func (c *StressClient) WaitForRBGObservedGeneration(ctx context.Context, namespace, name string, generation int64) error {
+	return c.watchAndWait(ctx, namespace, name, func(rbg *unstructured.Unstructured) bool {
+		observed, found, _ := unstructured.NestedInt64(rbg.Object, "status", "observedGeneration")
+		return found && observed >= generation
+	})
+}
+
+// WaitForRBGDeleted waits until the RBG is gone using a watch-based approach.
+// Falls back to polling on watch errors.
+func (c *StressClient) WaitForRBGDeleted(ctx context.Context, namespace, name string) error {
+	return c.watchAndWait(ctx, namespace, name, nil)
+}
+
+// watchAndWait uses a watch on a single RBG to wait for a condition (or deletion if check is nil).
+// On watch errors it falls back to a single poll before retrying the watch.
+func (c *StressClient) watchAndWait(ctx context.Context, namespace, name string, check func(*unstructured.Unstructured) bool) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -163,34 +166,76 @@ func (c *StressClient) WaitForRBGObservedGeneration(ctx context.Context, namespa
 		default:
 		}
 
+		// Get current state and check condition before starting watch.
 		rbg, err := c.GetRBG(ctx, namespace, name)
 		if err != nil {
+			if apierrors.IsNotFound(err) && check == nil {
+				return nil // deleted
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if check == nil {
+			// Waiting for deletion but resource still exists — start watch.
+		} else if check(rbg) {
+			return nil
+		}
+
+		// Start watch from the current resourceVersion.
+		rv := rbg.GetResourceVersion()
+		w, err := c.dynamic.Resource(rbgGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+			FieldSelector:   "metadata.name=" + name,
+			ResourceVersion: rv,
+		})
+		if err != nil {
+			log.Printf("[watch] failed to start watch for %s: %v, falling back to poll", name, err)
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		observed, found, _ := unstructured.NestedInt64(rbg.Object, "status", "observedGeneration")
-		if found && observed >= generation {
+		done, err := c.processWatchEvents(ctx, w, check)
+		w.Stop()
+		if err != nil {
+			return err
+		}
+		if done {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		// Watch closed without satisfying condition — loop and retry.
 	}
 }
 
-// WaitForRBGDeleted polls until the RBG is gone or context is done.
-func (c *StressClient) WaitForRBGDeleted(ctx context.Context, namespace, name string) error {
+// processWatchEvents reads events from a watch and returns true when the condition is met.
+// Returns (false, nil) when the watch channel closes.
+func (c *StressClient) processWatchEvents(ctx context.Context, w watch.Interface, check func(*unstructured.Unstructured) bool) (bool, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		default:
+			return false, ctx.Err()
+		case ev, ok := <-w.ResultChan():
+			if !ok {
+				return false, nil // watch closed
+			}
+			switch ev.Type {
+			case watch.Deleted:
+				if check == nil {
+					return true, nil
+				}
+			case watch.Modified, watch.Added:
+				if check == nil {
+					continue
+				}
+				obj, ok := ev.Object.(*unstructured.Unstructured)
+				if !ok {
+					continue
+				}
+				if check(obj) {
+					return true, nil
+				}
+			case watch.Error:
+				return false, nil // retry watch
+			}
 		}
-
-		_, err := c.GetRBG(ctx, namespace, name)
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
 	}
 }
 

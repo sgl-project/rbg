@@ -48,6 +48,7 @@ func main() {
 	flag.DurationVar(&scenario.Timeout, "timeout", 30*time.Minute, "Overall timeout for the stress test")
 	flag.StringVar(&scenario.ControllerNamespace, "controller-namespace", "rbgs-system", "Namespace where the RBG controller is deployed")
 	flag.StringVar(&scenario.ControllerLabel, "controller-label", "control-plane=rbgs-controller", "Label selector for the RBG controller pods")
+	flag.IntVar(&scenario.MaxConcurrentWaiters, "max-concurrent-waiters", 0, "Max concurrent goroutines waiting for RBG readiness (0=unlimited)")
 
 	flag.Parse()
 

@@ -29,6 +29,7 @@ import (
 // RunDeletePhase deletes all RBGs at the configured QPS and waits for each to be fully removed.
 func RunDeletePhase(ctx context.Context, client *StressClient, scenario *Scenario, recorder *TimingRecorder) error {
 	limiter := rate.NewLimiter(rate.Limit(scenario.DeleteQPS), 1)
+	sem := newSemaphore(scenario.MaxConcurrentWaiters)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, scenario.TotalRBGs)
@@ -38,9 +39,11 @@ func RunDeletePhase(ctx context.Context, client *StressClient, scenario *Scenari
 			return fmt.Errorf("rate limiter: %w", err)
 		}
 
+		sem.Acquire(ctx)
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
+			defer sem.Release()
 
 			name := fmt.Sprintf("stress-rbg-%04d", index)
 

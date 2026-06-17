@@ -39,6 +39,7 @@ type Scenario struct {
 	Timeout             time.Duration
 	ControllerNamespace string
 	ControllerLabel     string
+	MaxConcurrentWaiters int
 
 	// Collected at runtime
 	ControllerInfo ControllerInfo

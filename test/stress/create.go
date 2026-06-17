@@ -29,6 +29,7 @@ import (
 // RunCreatePhase creates RBGs at the configured QPS and waits for each to become Ready.
 func RunCreatePhase(ctx context.Context, client *StressClient, scenario *Scenario, recorder *TimingRecorder) error {
 	limiter := rate.NewLimiter(rate.Limit(scenario.CreateQPS), 1)
+	sem := newSemaphore(scenario.MaxConcurrentWaiters)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, scenario.TotalRBGs)
@@ -38,9 +39,11 @@ func RunCreatePhase(ctx context.Context, client *StressClient, scenario *Scenari
 			return fmt.Errorf("rate limiter: %w", err)
 		}
 
+		sem.Acquire(ctx)
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
+			defer sem.Release()
 
 			rbg := GenerateRBG(index, scenario)
 			name := rbg.GetName()
