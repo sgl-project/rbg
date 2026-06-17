@@ -42,6 +42,7 @@ import (
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
+	instancesync "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
@@ -103,13 +104,17 @@ func SetupTestEnv() {
 	Expect(err).NotTo(HaveOccurred())
 
 	// Setup all controllers
-	err = SetupRBGController(TestMgr)
+	// Share one NodeBindingStore between RBG (eviction on delete) and
+	// RoleInstance (record + inject) controllers.
+	nodeBindings := instancesync.NewNodeBindingStore()
+
+	err = SetupRBGController(TestMgr, nodeBindings)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupInstanceSetController(TestMgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupInstanceController(TestMgr)
+	err = SetupInstanceController(TestMgr, nodeBindings)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupRBGScalingAdapterController(TestMgr)
@@ -196,8 +201,8 @@ func SetupManager(ctx context.Context) (manager.Manager, error) {
 }
 
 // SetupRBGController sets up the RoleBasedGroup controller
-func SetupRBGController(mgr manager.Manager) error {
-	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin)
+func SetupRBGController(mgr manager.Manager, bindings *instancesync.NodeBindingStore) error {
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin, bindings)
 	if err != nil {
 		return err
 	}
@@ -217,8 +222,8 @@ func SetupRBGSController(mgr manager.Manager) error {
 }
 
 // SetupInstanceController sets up the Instance controller
-func SetupInstanceController(mgr manager.Manager) error {
-	instanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr)
+func SetupInstanceController(mgr manager.Manager, bindings *instancesync.NodeBindingStore) error {
+	instanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr, bindings)
 	return instanceReconciler.SetupWithManager(mgr, controller.Options{})
 }
 

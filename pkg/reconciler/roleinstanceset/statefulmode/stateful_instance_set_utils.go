@@ -215,6 +215,20 @@ func newVersionedInstance(
 		instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] = v
 	}
 
+	// Propagate in-place scheduling annotation from RoleInstanceSet to RoleInstance so that
+	// the instance controller can inject nodeAffinity when recreating pods.
+	if v, ok := currentSet.Annotations[constants.RoleInplaceSchedulingAnnotationKey]; ok {
+		instance.Annotations[constants.RoleInplaceSchedulingAnnotationKey] = v
+	}
+	// Propagate in-place scheduling granularity annotation (Pod vs Component).
+	if v, ok := currentSet.Annotations[constants.RoleInplaceSchedulingGranularityAnnotationKey]; ok {
+		instance.Annotations[constants.RoleInplaceSchedulingGranularityAnnotationKey] = v
+	}
+	// Propagate in-place scheduling avoid annotation (hard-exclude nodes carrying a specific label).
+	if v, ok := currentSet.Annotations[constants.RoleInplaceSchedulingAvoidAnnotationKey]; ok {
+		instance.Annotations[constants.RoleInplaceSchedulingAvoidAnnotationKey] = v
+	}
+
 	portallocator.AllocatePortsForInstance(instance, currentSet)
 
 	return instance

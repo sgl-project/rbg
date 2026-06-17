@@ -144,6 +144,14 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	roleInstanceSetLabel := maps.Clone(matchLabels)
 	roleInstanceSetLabel[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
+	// When in-place scheduling is enabled for this role, propagate the real
+	// RBG UID (Kubernetes object UID) as a label. This enables the node
+	// binding store to use a globally unique key that changes on RBG
+	// delete/recreate, preventing stale binding inheritance.
+	if role.Annotations[constants.RoleInplaceSchedulingAnnotationKey] != "" {
+		roleInstanceSetLabel[constants.RBGOwnerUIDLabelKey] = string(rbg.UID)
+	}
+
 	// set default instance pattern annotation to Stateful only if not explicitly set in role.Annotations
 	roleInstanceSetAnnotation := maps.Clone(rbg.GetCommonAnnotationsFromRole(role))
 	if role.Annotations[constants.RoleInstancePatternKey] == "" {

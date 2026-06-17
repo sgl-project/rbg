@@ -60,6 +60,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
+	instancesync "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
@@ -346,7 +347,12 @@ func main() {
 		setupLog.Info("Webhooks are disabled: cert bootstrap, conversion and admission webhooks will not be started")
 	}
 
-	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName))
+	// Create the in-place scheduling binding store once and inject into both
+	// the RBG controller (for delete-time eviction) and the RoleInstance
+	// controller (for recording and injection during reconcile).
+	nodeBindings := instancesync.NewNodeBindingStore()
+
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName), nodeBindings)
 	if err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)
@@ -382,7 +388,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	roleInstanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr)
+	roleInstanceReconciler := workloadscontroller.NewRoleInstanceReconciler(mgr, nodeBindings)
 	if err = roleInstanceReconciler.CheckCrdExists(); err != nil {
 		setupLog.Error(err, "unable to create roleinstance controller", "controller", "RoleInstance")
 		os.Exit(1)

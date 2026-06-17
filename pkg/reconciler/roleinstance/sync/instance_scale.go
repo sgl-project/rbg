@@ -44,6 +44,10 @@ const (
 
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, error) {
+	// Record node bindings for in-place scheduling.
+	// Piggybacks on the already-fetched pods — no additional API calls.
+	RecordNodeBindings(c.bindings, updateInstance, pods)
+
 	diffRes, err := c.calculateDiffsWithExpectation(ctx, updateInstance, currentRevision, updateRevision, revisions, pods, inactivePods)
 	if err != nil {
 		return true, err
@@ -249,6 +253,9 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 				return false, fmt.Errorf("failed to inject component discovery into pod %s: %w", p.Name, err)
 			}
 		}
+
+		// Handle in-place scheduling: inject nodeAffinity to prefer historical nodes
+		InjectInPlaceScheduling(p, updateInstance, c.bindings)
 
 		toCreatePodNum++
 		podsCreationChan <- p

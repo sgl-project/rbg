@@ -37,6 +37,13 @@ const (
 	// Used as the match label for topology affinity.
 	GroupUIDLabelKey = RBGPrefix + "group-uid"
 
+	// RBGOwnerUIDLabelKey carries the real Kubernetes UID of the owning
+	// RoleBasedGroup. Unlike GroupUIDLabelKey (which is a deterministic hash
+	// of namespace/name), this UID is globally unique and changes when the
+	// RBG is deleted and recreated. Used by in-place scheduling to isolate
+	// node bindings across RBG lifecycles.
+	RBGOwnerUIDLabelKey = RBGPrefix + "rbg-owner-uid"
+
 	// GroupRevisionLabelKey is the labels key used to store the revision hash of the
 	// RoleBasedGroup Roles's template.
 	GroupRevisionLabelKey = RBGPrefix + "group-revision"

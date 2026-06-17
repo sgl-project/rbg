@@ -50,14 +50,16 @@ type realControl struct {
 	inplaceControl   inplaceupdate.Interface
 	recorder         record.EventRecorder
 	lifecycleControl lifecycle.Interface
+	bindings         *NodeBindingStore
 }
 
-func New(c client.Client, apiReader client.Reader, recorder record.EventRecorder) Interface {
+func New(c client.Client, apiReader client.Reader, recorder record.EventRecorder, bindings *NodeBindingStore) Interface {
 	return &realControl{
 		Client:           c,
 		apiReader:        apiReader,
 		inplaceControl:   inplaceupdate.New(c),
 		lifecycleControl: lifecycle.New(c),
 		recorder:         recorder,
+		bindings:         bindings,
 	}
 }

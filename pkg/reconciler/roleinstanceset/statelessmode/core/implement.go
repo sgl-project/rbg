@@ -214,6 +214,12 @@ func GenInstanceFromTemplate(template *workloadsv1alpha2.RoleInstanceTemplate, s
 	annotationsToCopy := []string{
 		// Gang-scheduling: enables orphan-pod checks and atomic pod recreation.
 		constants.RoleInstanceGangSchedulingAnnotationKey,
+		// In-place scheduling: injects nodeAffinity for cache reuse on recreation.
+		constants.RoleInplaceSchedulingAnnotationKey,
+		// In-place scheduling granularity: controls Pod vs Component binding.
+		constants.RoleInplaceSchedulingGranularityAnnotationKey,
+		// In-place scheduling avoid: hard-excludes nodes carrying a specific label.
+		constants.RoleInplaceSchedulingAvoidAnnotationKey,
 	}
 	for _, key := range annotationsToCopy {
 		if v, ok := set.Annotations[key]; ok {
