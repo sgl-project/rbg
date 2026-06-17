@@ -1017,6 +1017,10 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		Owns(&corev1.Service{}).
 		Owns(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.MatchEveryOwner, builder.WithPredicates(RBGScalingAdapterPredicate())).
 		Watches(&workloadsv1alpha2.RoleBasedGroup{}, handler.Funcs{
+			// CreateFunc, UpdateFunc, GenericFunc are intentionally nil (no-op).
+			// .For() already handles reconcile enqueue for those event types.
+			// This Watches exists solely for the DeleteFunc side-effect below.
+			//
 			// Clean up in-place scheduling bindings when an RBG is deleted.
 			// We don't enqueue a reconcile here — .For() already does that.
 			// This handler exists purely for the side-effect of freeing

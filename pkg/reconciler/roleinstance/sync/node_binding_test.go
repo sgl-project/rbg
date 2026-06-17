@@ -684,7 +684,14 @@ func TestInjectInPlaceScheduling_NoBinding(t *testing.T) {
 	}
 
 	InjectInPlaceScheduling(pod, instance, store)
-	assert.Nil(t, pod.Spec.Affinity)
+	// No binding and no avoid → no affinity terms injected.
+	// ensureNodeAffinity is called early, so Affinity may be non-nil,
+	// but it must contain no scheduling terms.
+	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil {
+		na := pod.Spec.Affinity.NodeAffinity
+		assert.Nil(t, na.RequiredDuringSchedulingIgnoredDuringExecution)
+		assert.Empty(t, na.PreferredDuringSchedulingIgnoredDuringExecution)
+	}
 }
 
 func TestInjectInPlaceScheduling_ComponentMissingLabel(t *testing.T) {
@@ -1016,4 +1023,326 @@ func TestInjectInPlaceScheduling_AvoidSkippedWhenNoMode(t *testing.T) {
 	InjectInPlaceScheduling(pod, instance, store)
 	// No mode annotation → entire injection skipped (including avoid)
 	assert.Nil(t, pod.Spec.Affinity)
+}
+
+func TestInjectInPlaceScheduling_AvoidFoldWithPreExistingRequired_NoBinding(t *testing.T) {
+	store := NewNodeBindingStore()
+	// Empty store — no bindings
+
+	instance := statefulInstance("uid-1", "prefill")
+	instance.Annotations = map[string]string{
+		constants.RoleInplaceSchedulingAnnotationKey:      constants.InplaceSchedulingPreferred,
+		constants.RoleInplaceSchedulingAvoidAnnotationKey: "workloads.x-k8s.io/heavy-tenant",
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-0",
+			Labels: map[string]string{
+				constants.ComponentNameLabelKey: "Prefill",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "topology.kubernetes.io/zone",
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{"us-east-1"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	InjectInPlaceScheduling(pod, instance, store)
+
+	na := pod.Spec.Affinity.NodeAffinity
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	// Avoid is folded into the pre-existing required term (AND semantics).
+	assert.Len(t, req.NodeSelectorTerms, 1,
+		"avoid must be folded into existing term, not appended as a separate OR'd term")
+	exprs := req.NodeSelectorTerms[0].MatchExpressions
+	assert.Len(t, exprs, 2,
+		"term should have zone (original) + avoid (folded)")
+	assert.Equal(t, "topology.kubernetes.io/zone", exprs[0].Key)
+	assert.Equal(t, "workloads.x-k8s.io/heavy-tenant", exprs[1].Key)
+	assert.Equal(t, corev1.NodeSelectorOpDoesNotExist, exprs[1].Operator)
+}
+
+func TestInjectInPlaceScheduling_AvoidFoldWithPreExistingRequired_Preferred(t *testing.T) {
+	store := NewNodeBindingStore()
+	store.Add("uid-1/prefill-0", "node-A")
+
+	instance := statefulInstance("uid-1", "prefill")
+	instance.Annotations = map[string]string{
+		constants.RoleInplaceSchedulingAnnotationKey:      constants.InplaceSchedulingPreferred,
+		constants.RoleInplaceSchedulingAvoidAnnotationKey: "workloads.x-k8s.io/heavy-tenant",
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-0",
+			Labels: map[string]string{
+				constants.ComponentNameLabelKey: "Prefill",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "topology.kubernetes.io/zone",
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{"us-east-1"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	InjectInPlaceScheduling(pod, instance, store)
+
+	na := pod.Spec.Affinity.NodeAffinity
+
+	// Preferred term is injected
+	assert.Len(t, na.PreferredDuringSchedulingIgnoredDuringExecution, 1)
+	assert.Equal(t, int32(100), na.PreferredDuringSchedulingIgnoredDuringExecution[0].Weight)
+
+	// Avoid is folded into the pre-existing required term (AND semantics).
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	assert.Len(t, req.NodeSelectorTerms, 1,
+		"avoid must be folded into existing term, not appended as a separate OR'd term")
+	exprs := req.NodeSelectorTerms[0].MatchExpressions
+	assert.Len(t, exprs, 2,
+		"term should have zone (original) + avoid (folded)")
+	assert.Equal(t, "topology.kubernetes.io/zone", exprs[0].Key)
+	assert.Equal(t, "workloads.x-k8s.io/heavy-tenant", exprs[1].Key)
+	assert.Equal(t, corev1.NodeSelectorOpDoesNotExist, exprs[1].Operator)
+}
+
+func TestFoldAvoidIntoRequired_NoExistingTerms(t *testing.T) {
+	na := &corev1.NodeAffinity{}
+	avoidExprs := []corev1.NodeSelectorRequirement{
+		{
+			Key:      "workloads.x-k8s.io/heavy-tenant",
+			Operator: corev1.NodeSelectorOpDoesNotExist,
+		},
+	}
+
+	foldIntoRequired(na, avoidExprs)
+
+	// When no required terms exist, a standalone avoid term is created.
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	assert.Len(t, req.NodeSelectorTerms, 1)
+	assert.Len(t, req.NodeSelectorTerms[0].MatchExpressions, 1)
+	assert.Equal(t, "workloads.x-k8s.io/heavy-tenant", req.NodeSelectorTerms[0].MatchExpressions[0].Key)
+}
+
+func TestFoldAvoidIntoRequired_WithExistingTerms(t *testing.T) {
+	na := &corev1.NodeAffinity{
+		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"us-east-1"}},
+					},
+				},
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"us-west-2"}},
+					},
+				},
+			},
+		},
+	}
+	avoidExprs := []corev1.NodeSelectorRequirement{
+		{
+			Key:      "workloads.x-k8s.io/heavy-tenant",
+			Operator: corev1.NodeSelectorOpDoesNotExist,
+		},
+	}
+
+	foldIntoRequired(na, avoidExprs)
+
+	// Avoid is folded into EACH existing term (AND semantics).
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, req.NodeSelectorTerms, 2)
+	for i, term := range req.NodeSelectorTerms {
+		assert.Len(t, term.MatchExpressions, 2, "term %d should have zone + avoid", i)
+		assert.Equal(t, "zone", term.MatchExpressions[0].Key)
+		assert.Equal(t, "workloads.x-k8s.io/heavy-tenant", term.MatchExpressions[1].Key)
+		assert.Equal(t, corev1.NodeSelectorOpDoesNotExist, term.MatchExpressions[1].Operator)
+	}
+}
+
+func TestInjectInPlaceScheduling_MultiKeyAvoid_Preferred(t *testing.T) {
+	store := NewNodeBindingStore()
+	store.Add("uid-1/prefill-0", "node-A")
+
+	instance := statefulInstance("uid-1", "prefill")
+	instance.Annotations = map[string]string{
+		constants.RoleInplaceSchedulingAnnotationKey:      constants.InplaceSchedulingPreferred,
+		constants.RoleInplaceSchedulingAvoidAnnotationKey: "key1, key2,key3",
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-0",
+			Labels: map[string]string{
+				constants.ComponentNameLabelKey: "Prefill",
+			},
+		},
+	}
+
+	InjectInPlaceScheduling(pod, instance, store)
+
+	na := pod.Spec.Affinity.NodeAffinity
+
+	// Preferred term: hostname affinity
+	assert.Len(t, na.PreferredDuringSchedulingIgnoredDuringExecution, 1)
+
+	// Required terms: all 3 avoid keys folded in
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	assert.Len(t, req.NodeSelectorTerms, 1)
+	exprs := req.NodeSelectorTerms[0].MatchExpressions
+	assert.Len(t, exprs, 3)
+	for i, want := range []string{"key1", "key2", "key3"} {
+		assert.Equal(t, want, exprs[i].Key)
+		assert.Equal(t, corev1.NodeSelectorOpDoesNotExist, exprs[i].Operator)
+	}
+}
+
+func TestInjectInPlaceScheduling_MultiKeyAvoid_Required(t *testing.T) {
+	store := NewNodeBindingStore()
+	store.Add("uid-1/prefill-0", "node-A")
+
+	instance := statefulInstance("uid-1", "prefill")
+	instance.Annotations = map[string]string{
+		constants.RoleInplaceSchedulingAnnotationKey:      constants.InplaceSchedulingRequired,
+		constants.RoleInplaceSchedulingAvoidAnnotationKey: "key1,key2",
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-0",
+			Labels: map[string]string{
+				constants.ComponentNameLabelKey: "Prefill",
+			},
+		},
+	}
+
+	InjectInPlaceScheduling(pod, instance, store)
+
+	na := pod.Spec.Affinity.NodeAffinity
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	assert.Len(t, req.NodeSelectorTerms, 1)
+	exprs := req.NodeSelectorTerms[0].MatchExpressions
+	// hostname + 2 avoid keys = 3 expressions in a single term (AND)
+	assert.Len(t, exprs, 3)
+	assert.Equal(t, hostnameLabelKey, exprs[0].Key)
+	assert.Equal(t, "key1", exprs[1].Key)
+	assert.Equal(t, "key2", exprs[2].Key)
+}
+
+func TestFoldAvoidIntoRequired_MultiKey(t *testing.T) {
+	na := &corev1.NodeAffinity{
+		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{
+				{
+					MatchExpressions: []corev1.NodeSelectorRequirement{
+						{Key: "zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"us-east-1"}},
+					},
+				},
+			},
+		},
+	}
+	avoidExprs := []corev1.NodeSelectorRequirement{
+		{Key: "avoid-a", Operator: corev1.NodeSelectorOpDoesNotExist},
+		{Key: "avoid-b", Operator: corev1.NodeSelectorOpDoesNotExist},
+	}
+
+	foldIntoRequired(na, avoidExprs)
+
+	req := na.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.Len(t, req.NodeSelectorTerms, 1)
+	exprs := req.NodeSelectorTerms[0].MatchExpressions
+	// zone + avoid-a + avoid-b = 3 expressions
+	assert.Len(t, exprs, 3)
+	assert.Equal(t, "zone", exprs[0].Key)
+	assert.Equal(t, "avoid-a", exprs[1].Key)
+	assert.Equal(t, "avoid-b", exprs[2].Key)
+}
+
+func TestInjectInPlaceScheduling_RequiredAvoidFoldWithPreExistingTerms(t *testing.T) {
+	store := NewNodeBindingStore()
+	store.Add("uid-1/prefill-0", "node-A")
+
+	instance := statefulInstance("uid-1", "prefill")
+	instance.Annotations = map[string]string{
+		constants.RoleInplaceSchedulingAnnotationKey:      constants.InplaceSchedulingRequired,
+		constants.RoleInplaceSchedulingAvoidAnnotationKey: "avoid-key",
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "prefill-0",
+			Labels: map[string]string{
+				constants.ComponentNameLabelKey: "Prefill",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{Key: "zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"us-east-1"}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	InjectInPlaceScheduling(pod, instance, store)
+
+	req := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	assert.NotNil(t, req)
+	// All expressions folded into the user's existing term (AND semantics).
+	// No separate term is appended — that would create OR semantics.
+	assert.Len(t, req.NodeSelectorTerms, 1,
+		"hostname + avoid must be folded into existing term, not appended as a separate OR'd term")
+
+	exprs := req.NodeSelectorTerms[0].MatchExpressions
+	// zone (original) + hostname (in-place affinity) + avoid (anti-affinity) = 3
+	assert.Len(t, exprs, 3)
+	assert.Equal(t, "zone", exprs[0].Key)
+	assert.Equal(t, hostnameLabelKey, exprs[1].Key)
+	assert.Equal(t, corev1.NodeSelectorOpIn, exprs[1].Operator)
+	assert.Equal(t, "avoid-key", exprs[2].Key)
+	assert.Equal(t, corev1.NodeSelectorOpDoesNotExist, exprs[2].Operator)
 }

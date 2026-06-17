@@ -115,6 +115,9 @@ func (s *NodeBindingStore) Load(key string) sets.Set[string] {
 // EvictByUID removes all bindings for the given RBG UID in O(1).
 // Intended to be called from an RBG delete event handler so that
 // bindings are cleaned up immediately when an RBG is deleted.
+//
+// NOTE: A small race window exists if RecordNodeBindings runs concurrently
+// with eviction. Persisting bindings in a CRD would eliminate this.
 func (s *NodeBindingStore) EvictByUID(uid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,6 +176,9 @@ func buildKey(granularity string, instance *workloadsv1alpha2.RoleInstance, pod 
 		return fmt.Sprintf("%s/%s-%s", rbgUID, roleName, componentName)
 
 	default:
+		klog.InfoS("in-place scheduling: unrecognized granularity, skipping injection",
+			"instance", klog.KObj(instance), "granularity", granularity,
+			"validValues", fmt.Sprintf("%q or %q", constants.InplaceSchedulingGranularityPod, constants.InplaceSchedulingGranularityComponent))
 		return ""
 	}
 }
@@ -220,6 +226,9 @@ func RecordNodeBindings(store *NodeBindingStore, instance *workloadsv1alpha2.Rol
 
 		// Log when a key is first recorded — helps operators debug scheduling
 		// decisions without noise at default log levels.
+		// NOTE: TOCTOU race between Load and Add — concurrent reconciles on the
+		// same key may both log "new binding". Benign: Add is idempotent, and the
+		// log is informational only.
 		if store.Load(key) == nil {
 			klog.V(4).InfoS("in-place scheduling: recording new node binding",
 				"key", key, "node", pod.Spec.NodeName,
@@ -281,16 +290,24 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		return
 	}
 
-	// 3. Build avoid expression if configured (used in step 6).
-	// In Required mode, this expression is merged into the same NodeSelectorTerm
-	// as the in-place hostname constraint (AND semantics within a single term).
-	// In Preferred mode (or when no binding exists), it is injected as a
-	// standalone required term — the scheduler ANDs required and preferred types.
-	var avoidExpr *v1.NodeSelectorRequirement
-	if avoidLabelKey := instance.Annotations[constants.RoleInplaceSchedulingAvoidAnnotationKey]; avoidLabelKey != "" {
-		avoidExpr = &v1.NodeSelectorRequirement{
-			Key:      avoidLabelKey,
-			Operator: v1.NodeSelectorOpDoesNotExist,
+	// 3. Build avoid expressions if configured (used in steps 6 and 7).
+	// The avoid annotation value may be a single label key or a comma-separated
+	// list (e.g. "key1,key2"). Each key generates a DoesNotExist expression.
+	// In Required mode, these are merged into the same NodeSelectorTerm as the
+	// in-place hostname constraint (AND semantics within a single term).
+	// In Preferred mode (or when no binding exists), they are folded into every
+	// existing required term to preserve AND semantics across all constraints.
+	var avoidExprs []v1.NodeSelectorRequirement
+	if raw := instance.Annotations[constants.RoleInplaceSchedulingAvoidAnnotationKey]; raw != "" {
+		for _, key := range strings.Split(raw, ",") {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			avoidExprs = append(avoidExprs, v1.NodeSelectorRequirement{
+				Key:      key,
+				Operator: v1.NodeSelectorOpDoesNotExist,
+			})
 		}
 	}
 
@@ -301,43 +318,28 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		return
 	}
 
-	// 5. Load binding
+	// 5. Ensure node affinity exists (needed for both binding and avoid injection).
+	ensureNodeAffinity(pod)
+
+	// 6. Load binding
 	nodes := store.Load(key)
 	if len(nodes) == 0 {
-		// No binding — if avoid is configured, inject it as a standalone
-		// hard constraint so the pod still avoids labelled nodes.
-		if avoidExpr != nil {
-			ensureNodeAffinity(pod)
-			na := pod.Spec.Affinity.NodeAffinity
-			if na.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-				na.RequiredDuringSchedulingIgnoredDuringExecution = &v1.NodeSelector{}
-			}
-			na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(
-				na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
-				v1.NodeSelectorTerm{MatchExpressions: []v1.NodeSelectorRequirement{*avoidExpr}},
-			)
+		// No binding — if avoid is configured, fold it into every existing
+		// required term (AND semantics). If no required terms exist, add it
+		// as a standalone term.
+		if len(avoidExprs) > 0 {
+			foldIntoRequired(pod.Spec.Affinity.NodeAffinity, avoidExprs)
 		}
 		return
 	}
 
-	// 6. Inject affinity
-	ensureNodeAffinity(pod)
+	// 7. Inject affinity
 	nodeAffinity := pod.Spec.Affinity.NodeAffinity
 	values := sets.List(nodes) // sorted for deterministic output
 
 	switch mode {
 	case constants.InplaceSchedulingPreferred:
-		// In Preferred mode, avoid (if any) is a separate required term.
-		// The scheduler ANDs required and preferred affinity types.
-		if avoidExpr != nil {
-			if nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-				nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &v1.NodeSelector{}
-			}
-			nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(
-				nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
-				v1.NodeSelectorTerm{MatchExpressions: []v1.NodeSelectorRequirement{*avoidExpr}},
-			)
-		}
+		// In Preferred mode, inject a preferred term for historical nodes.
 		term := v1.PreferredSchedulingTerm{
 			Weight: 100,
 			Preference: v1.NodeSelectorTerm{
@@ -353,27 +355,30 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		nodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
 			nodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution, term)
 
+		// Fold avoid into every required term (AND semantics). If no
+		// required terms exist, a standalone avoid term is created.
+		// This ensures the avoid constraint is never weakened by OR
+		// semantics when the user has pre-existing required terms.
+		if len(avoidExprs) > 0 {
+			foldIntoRequired(nodeAffinity, avoidExprs)
+		}
+
 	case constants.InplaceSchedulingRequired:
-		// In Required mode, merge avoid into the SAME NodeSelectorTerm as the
-		// hostname constraint. Within a single term, MatchExpressions are ANDed.
-		// Separate terms would be ORed, which is semantically wrong here.
-		expressions := []v1.NodeSelectorRequirement{
+		// In Required mode, ALL our expressions (hostname affinity + avoid
+		// anti-affinity) must be folded into every existing required term.
+		// Within a single term, MatchExpressions are ANDed. Appending as a
+		// separate term would create OR semantics, allowing the scheduler to
+		// bypass both the hostname constraint (Required mode degraded) and
+		// the avoid constraint (avoid weakened).
+		inPlaceExprs := []v1.NodeSelectorRequirement{
 			{
 				Key:      hostnameLabelKey,
 				Operator: v1.NodeSelectorOpIn,
 				Values:   values,
 			},
 		}
-		if avoidExpr != nil {
-			expressions = append(expressions, *avoidExpr)
-		}
-		if nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-			nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &v1.NodeSelector{}
-		}
-		nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(
-			nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
-			v1.NodeSelectorTerm{MatchExpressions: expressions},
-		)
+		inPlaceExprs = append(inPlaceExprs, avoidExprs...)
+		foldIntoRequired(nodeAffinity, inPlaceExprs)
 	}
 }
 
@@ -384,5 +389,27 @@ func ensureNodeAffinity(pod *v1.Pod) {
 	}
 	if pod.Spec.Affinity.NodeAffinity == nil {
 		pod.Spec.Affinity.NodeAffinity = &v1.NodeAffinity{}
+	}
+}
+
+// foldIntoRequired folds the given expressions into every existing required
+// NodeSelectorTerm (AND semantics within a term). If no required terms exist,
+// it creates a single new term containing only the given expressions.
+//
+// This prevents the OR semantics of separate NodeSelectorTerms from weakening
+// constraints when the user has pre-existing required nodeAffinity.
+func foldIntoRequired(na *v1.NodeAffinity, exprs []v1.NodeSelectorRequirement) {
+	if na.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		na.RequiredDuringSchedulingIgnoredDuringExecution = &v1.NodeSelector{}
+	}
+	terms := na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) == 0 {
+		na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = []v1.NodeSelectorTerm{
+			{MatchExpressions: exprs},
+		}
+		return
+	}
+	for i := range terms {
+		terms[i].MatchExpressions = append(terms[i].MatchExpressions, exprs...)
 	}
 }

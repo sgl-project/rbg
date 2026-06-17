@@ -175,6 +175,12 @@ const (
 	//   - "Preferred": inject preferredDuringSchedulingIgnoredDuringExecution with weight 100.
 	//   - "Required": inject requiredDuringSchedulingIgnoredDuringExecution.
 	// When not set, no in-place scheduling affinity is injected.
+	//
+	// Note: when adding to an existing RBG, old RoleInstances lack the label so
+	// they are unaffected. New RoleInstances start recording bindings,
+	// but no affinity is injected on the first recreation (empty binding).
+	// Affinity takes effect on subsequent recreations.
+	//
 	// Example: rbg.workloads.x-k8s.io/role-inplace-scheduling: "Preferred"
 	RoleInplaceSchedulingAnnotationKey = RBGPrefix + "role-inplace-scheduling"
 
@@ -185,7 +191,9 @@ const (
 
 	// InplaceSchedulingRequired injects requiredDuringSchedulingIgnoredDuringExecution
 	// nodeAffinity, requiring recreated Pods to land on a historical node.
-	// If no historical node is available, the Pod remains Pending.
+	// If a binding exists but no historical node is healthy, the Pod remains Pending.
+	// On cold start (empty binding store, e.g. after controller restart), no
+	// affinity is injected until RecordNodeBindings reseeds the store.
 	InplaceSchedulingRequired = "Required"
 
 	// RoleInplaceSchedulingGranularityAnnotationKey controls the binding granularity
@@ -204,13 +212,11 @@ const (
 	// Key: {rbgUID}/{roleName}-{componentName} → node set.
 	InplaceSchedulingGranularityComponent = "Component"
 
-	// RoleInplaceSchedulingAvoidAnnotationKey specifies a node label key. When set,
-	// a RequiredDuringSchedulingIgnoredDuringExecution term with DoesNotExist
-	// operator is injected into the Pod's nodeAffinity, hard-excluding nodes
-	// that carry this label.
-	// This is useful to steer Pods away from nodes with certain characteristics
-	// (e.g., nodes running other heavy workloads).
-	// The annotation value is the label key to match against.
-	// Example: rbg.workloads.x-k8s.io/role-inplace-scheduling-avoid: "workloads.x-k8s.io/heavy-tenant"
+	// RoleInplaceSchedulingAvoidAnnotationKey specifies one or more node label
+	// keys. When set, a RequiredDuringSchedulingIgnoredDuringExecution term
+	// with DoesNotExist operator is injected for each key, hard-excluding nodes
+	// that carry any of these labels.
+	// The annotation value is a single label key or a comma-separated list.
+	// Example: rbg.workloads.x-k8s.io/role-inplace-scheduling-avoid: "key1,key2"
 	RoleInplaceSchedulingAvoidAnnotationKey = RBGPrefix + "role-inplace-scheduling-avoid"
 )
