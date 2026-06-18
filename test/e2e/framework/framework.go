@@ -197,6 +197,13 @@ func (f *Framework) AfterEach() {
 
 	gomega.Expect(
 		f.Client.DeleteAllOf(
+			f.Ctx, &workloadsv1alpha2.RoleBasedGroupWarmup{},
+			client.InNamespace(f.Namespace),
+		),
+	).Should(gomega.Succeed())
+
+	gomega.Expect(
+		f.Client.DeleteAllOf(
 			f.Ctx, &workloadsv1alpha2.CoordinatedPolicy{},
 			client.InNamespace(f.Namespace),
 		),

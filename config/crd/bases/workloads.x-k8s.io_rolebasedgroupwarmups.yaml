@@ -40,13 +40,69 @@ spec:
           spec:
             description: spec defines the desired state of RoleBasedGroupWarmup
             properties:
+              paused:
+                description: |-
+                  Paused suspends the warmup job. When set to true, no new warmup Pods will be created,
+                  but existing Pods are not affected.
+                type: boolean
+              policies:
+                description: Policies controls parallelism, TTL and other execution
+                  behavior.
+                properties:
+                  backoffLimitPerNode:
+                    description: |-
+                      BackoffLimitPerNode specifies the maximum number of retries for each node
+                      before marking that node as permanently failed.
+                      If not set (nil), nodes are retried indefinitely.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  globalTimeoutSeconds:
+                    description: |-
+                      GlobalTimeoutSeconds specifies the overall timeout for the warmup job,
+                      measured from the time the first Pod is created (status.startTime).
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  maxFailedNodes:
+                    description: |-
+                      MaxFailedNodes specifies the maximum number of permanently-failed nodes
+                      that can be tolerated before the entire warmup job is marked as Failed.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  parallelism:
+                    description: |-
+                      Parallelism limits how many nodes are warmed up concurrently.
+                      If not set, all nodes are warmed up in parallel.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  ttlSecondsAfterFinished:
+                    description: |-
+                      TTLSecondsAfterFinished is the time-to-live in seconds after the warmup job
+                      reaches a terminal phase (Completed or Failed).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: backoffLimitPerNode must be set when maxFailedNodes is
+                    specified
+                  rule: '!has(self.maxFailedNodes) || has(self.backoffLimitPerNode)'
               targetNodes:
                 description: TargetNodes specifies explicit nodes and warmup actions
                   to perform on them.
                 properties:
                   customizedAction:
+                    description: CustomizedAction runs user-defined containers for
+                      custom warmup logic.
                     properties:
                       containers:
+                        description: |-
+                          Containers to run as part of the warmup Pod. Each container runs alongside
+                          image preload containers. The warmup is considered complete when all containers
+                          finish successfully.
                         items:
                           description: A single application container that you want
                             to run within a pod.
@@ -1395,6 +1451,7 @@ spec:
                         minItems: 1
                         type: array
                       volumes:
+                        description: Volumes to mount into the customized containers.
                         items:
                           description: Volume represents a named volume in a pod that
                             may be accessed by any container in the pod.
@@ -3024,13 +3081,20 @@ spec:
                     - containers
                     type: object
                   imagePreload:
+                    description: ImagePreload pulls container images onto the node
+                      ahead of time.
                     properties:
-                      items:
+                      images:
+                        description: |-
+                          Images specifies the container images to be preloaded onto target nodes.
+                          Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
                         items:
                           type: string
                         minItems: 1
                         type: array
                       pullSecrets:
+                        description: PullSecrets is a list of references to secrets
+                          used for pulling any of the images above.
                         items:
                           description: |-
                             LocalObjectReference contains enough information to let you locate the
@@ -3048,29 +3112,57 @@ spec:
                           x-kubernetes-map-type: atomic
                         type: array
                     required:
-                    - items
+                    - images
                     type: object
                   nodeNames:
+                    description: |-
+                      NodeNames is an explicit list of node names to warm up.
+                      Mutually exclusive with NodeSelector.
                     items:
                       type: string
+                    minItems: 1
                     type: array
                   nodeSelector:
                     additionalProperties:
                       type: string
+                    description: |-
+                      NodeSelector selects nodes by their labels.
+                      Mutually exclusive with NodeNames.
+                    minProperties: 1
                     type: object
                 type: object
+                x-kubernetes-validations:
+                - message: either nodeNames or nodeSelector must be specified
+                  rule: has(self.nodeNames) || has(self.nodeSelector)
+                - message: nodeNames and nodeSelector are mutually exclusive
+                  rule: '!(has(self.nodeNames) && has(self.nodeSelector))'
+                - message: at least one of imagePreload or customizedAction must be
+                    specified
+                  rule: has(self.imagePreload) || has(self.customizedAction)
               targetRoleBasedGroup:
                 description: TargetRoleBasedGroup specifies a RoleBasedGroup resource
                   to discover nodes from.
                 properties:
                   name:
+                    description: Name of the RoleBasedGroup resource in the same namespace.
+                    minLength: 1
                     type: string
                   roles:
                     additionalProperties:
+                      description: |-
+                        WarmupActions defines what warmup operations to perform on a node.
+                        At least one of imagePreload or customizedAction must be specified.
+                        NOTE: update this rule when adding new action types.
                       properties:
                         customizedAction:
+                          description: CustomizedAction runs user-defined containers
+                            for custom warmup logic.
                           properties:
                             containers:
+                              description: |-
+                                Containers to run as part of the warmup Pod. Each container runs alongside
+                                image preload containers. The warmup is considered complete when all containers
+                                finish successfully.
                               items:
                                 description: A single application container that you
                                   want to run within a pod.
@@ -4440,6 +4532,7 @@ spec:
                               minItems: 1
                               type: array
                             volumes:
+                              description: Volumes to mount into the customized containers.
                               items:
                                 description: Volume represents a named volume in a
                                   pod that may be accessed by any container in the
@@ -6096,13 +6189,20 @@ spec:
                           - containers
                           type: object
                         imagePreload:
+                          description: ImagePreload pulls container images onto the
+                            node ahead of time.
                           properties:
-                            items:
+                            images:
+                              description: |-
+                                Images specifies the container images to be preloaded onto target nodes.
+                                Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
                               items:
                                 type: string
                               minItems: 1
                               type: array
                             pullSecrets:
+                              description: PullSecrets is a list of references to
+                                secrets used for pulling any of the images above.
                               items:
                                 description: |-
                                   LocalObjectReference contains enough information to let you locate the
@@ -6120,28 +6220,80 @@ spec:
                                 x-kubernetes-map-type: atomic
                               type: array
                           required:
-                          - items
+                          - images
                           type: object
                       type: object
+                      x-kubernetes-validations:
+                      - message: at least one of imagePreload or customizedAction
+                          must be specified
+                        rule: has(self.imagePreload) || has(self.customizedAction)
+                    description: Roles maps role names to their warmup actions. Only
+                      roles listed here will be warmed up.
+                    minProperties: 1
                     type: object
                 required:
                 - name
                 - roles
                 type: object
+              tolerations:
+                description: |-
+                  Tolerations allow warmup Pods to be scheduled on tainted nodes (e.g., GPU nodes).
+                  If not specified, warmup Pods will not tolerate any taints.
+                items:
+                  description: |-
+                    The pod this Toleration is attached to tolerates any taint that matches
+                    the triple <key,value,effect> using the matching operator <operator>.
+                  properties:
+                    effect:
+                      description: |-
+                        Effect indicates the taint effect to match. Empty means match all taint effects.
+                        When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                      type: string
+                    key:
+                      description: |-
+                        Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                        If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                      type: string
+                    operator:
+                      description: |-
+                        Operator represents a key's relationship to the value.
+                        Valid operators are Exists and Equal. Defaults to Equal.
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        TolerationSeconds represents the period of time the toleration (which must be
+                        of effect NoExecute, otherwise this field is ignored) tolerates the taint.
+                      format: int64
+                      type: integer
+                    value:
+                      description: |-
+                        Value is the taint value the toleration matches to.
+                        If the operator is Exists, the value should be empty, otherwise just a regular string.
+                      type: string
+                  type: object
+                type: array
             type: object
+            x-kubernetes-validations:
+            - message: either targetNodes or targetRoleBasedGroup must be specified
+              rule: has(self.targetNodes) || has(self.targetRoleBasedGroup)
+            - message: targetNodes and targetRoleBasedGroup are mutually exclusive
+              rule: '!(has(self.targetNodes) && has(self.targetRoleBasedGroup))'
           status:
             description: status defines the observed state of RoleBasedGroupWarmup
             properties:
               active:
+                description: Active is the number of nodes with warmup Pods currently
+                  running.
                 format: int32
                 type: integer
               completionTime:
+                description: CompletionTime is the time when all warmup Pods reached
+                  a terminal state.
                 format: date-time
                 type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the RoleBasedGroupWarmup resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
+                description: Conditions represent the latest observations of the warmup
+                  job's state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -6196,24 +6348,32 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               desired:
+                description: Desired is the total number of nodes that need to be
+                  warmed up.
                 format: int32
                 type: integer
               failed:
+                description: Failed is the number of nodes whose warmup Pod failed.
                 format: int32
                 type: integer
               phase:
+                description: Phase is the current phase of the warmup job.
                 type: string
-              ready:
-                format: int32
-                type: integer
               startTime:
+                description: StartTime is the time when the first warmup Pod was created.
                 format: date-time
                 type: string
               succeeded:
+                description: Succeeded is the number of nodes whose warmup Pod completed
+                  successfully.
                 format: int32
                 type: integer
             required:
+            - active
+            - desired
+            - failed
             - phase
+            - succeeded
             type: object
         required:
         - spec
