@@ -26,14 +26,15 @@ main
 .idea
 .vscode
 .qoder
-.claude
+# Track shared skills (team assets), ignore personal .claude/ content (memory, settings, etc.)
+.claude/*
+!.claude/skills/
 *.swp
 *.swo
 *~
 .devcontainer
 **/*.tgz
 **/.DS_Store
-.claude/
 
 
 # python
