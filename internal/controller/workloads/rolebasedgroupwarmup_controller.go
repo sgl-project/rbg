@@ -518,16 +518,6 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	return nil
 }
 
-// isPodReady checks if all containers in a Pod are ready
-func isPodReady(pod *corev1.Pod) bool {
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
-}
-
 // statusEqual compares two status objects for equality
 func statusEqual(a, b workloadsv1alpha2.RoleBasedGroupWarmupStatus) bool {
 	return a.Desired == b.Desired &&
