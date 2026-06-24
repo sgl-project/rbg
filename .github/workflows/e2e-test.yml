@@ -318,10 +318,15 @@ jobs:
 
           kubectl get deploy -n rbgs-system
 
-      - name: Enable portAllocator on controller deployment
+      - name: Build and load controller image
         run: |
-          # Patch controller deployment to enable portAllocator, equivalent to helm --set portAllocator.enabled=true
+          make docker-build-controller TAG=e2e-test
+          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-manifest-e2e
+
+      - name: Patch controller deployment with built image and enable portAllocator
+        run: |
           kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
+            {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "rolebasedgroup/rbgs-controller:e2e-test"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-allocate-strategy=random"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--start-port=30000"},
