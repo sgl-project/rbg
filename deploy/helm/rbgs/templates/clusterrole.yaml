@@ -132,6 +132,7 @@ rules:
   - rolebasedgroups/status
   - rolebasedgroupscalingadapters/status
   - rolebasedgroupsets/status
+  - rolebasedgroupwarmups/status
   - roleinstances/status
   - roleinstancesets/status
   verbs:
@@ -147,6 +148,7 @@ rules:
   - rolebasedgroups
   - rolebasedgroupscalingadapters
   - rolebasedgroupsets
+  - rolebasedgroupwarmups
   - roleinstances
   - roleinstancesets
   verbs:
@@ -163,6 +165,7 @@ rules:
   - instancesets/finalizers
   - rolebasedgroups/finalizers
   - rolebasedgroupsets/finalizers
+  - rolebasedgroupwarmups/finalizers
   - roleinstances/finalizers
   - roleinstancesets/finalizers
   verbs:

@@ -19,18 +19,16 @@ package inplaceupdate
 import (
 	"encoding/json"
 	"fmt"
-	"hash"
-	"hash/fnv"
 	"strconv"
 	"strings"
 
 	"github.com/appscode/jsonpatch"
-	"github.com/davecgh/go-spew/spew"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/klog/v2"
 	inplaceapi "sigs.k8s.io/rbgs/api/workloads/pub/inplace_update"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 func SetOptionsDefaults(opts *UpdateOptions) *UpdateOptions {
@@ -232,7 +230,7 @@ func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *inpl
 			return false
 		}
 
-		if containerMeta.Hashes.PlainHash != HashContainer(containerSpec) {
+		if containerMeta.Hashes.PlainHash != utils.HashContainer(containerSpec) {
 			klog.Warningf("Find container %s in runtime-container-meta for Pod %s/%s has different plain hash with spec %s != %s",
 				containerSpec.Name, pod.Namespace, pod.Name, containerMeta.ContainerID, containerStatus.ContainerID)
 			return false
@@ -240,30 +238,4 @@ func checkAllContainersHashConsistent(pod *v1.Pod, runtimeContainerMetaSet *inpl
 	}
 
 	return true
-}
-
-// HashContainer returns the hash of the container. It is used to compare
-// the running container with its desired spec.
-// Note: remember to update hashValues in container_hash_test.go as well.
-func HashContainer(container *v1.Container) uint64 {
-	hash := fnv.New32a()
-	// Omit nil or empty field when calculating hash value
-	// Please see https://github.com/kubernetes/kubernetes/issues/53644
-	containerJSON, _ := json.Marshal(container)
-	DeepHashObject(hash, containerJSON)
-	return uint64(hash.Sum32())
-}
-
-// DeepHashObject writes specified object to hash using the spew library
-// which follows pointers and prints actual values of the nested objects
-// ensuring the hash does not change when a pointer changes.
-func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
-	hasher.Reset()
-	printer := spew.ConfigState{
-		Indent:         " ",
-		SortKeys:       true,
-		DisableMethods: true,
-		SpewKeys:       true,
-	}
-	_, _ = printer.Fprintf(hasher, "%#v", objectToWrite)
 }
