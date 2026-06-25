@@ -1,10 +1,8 @@
-name: E2E Test
+name: Release Test
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  issue_comment:
+    types: [created]
 
 env:
   GO_VERSION: 1.24.1
@@ -18,71 +16,44 @@ env:
 permissions: read-all
 
 jobs:
-  check-changes:
+  check-command:
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/release-test')
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     outputs:
-      should_run: ${{ steps.filter.outputs.should_run }}
+      pr_head_sha: ${{ steps.get-pr.outputs.head_sha }}
+      pr_ref: ${{ steps.get-pr.outputs.ref }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5.0.0
+      - name: React to comment
+        uses: actions/github-script@v7
         with:
-          fetch-depth: 0
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            })
 
-      - name: Check if changes require e2e tests
-        id: filter
-        run: |
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            BASE_REF="origin/${{ github.base_ref }}"
-          else
-            BASE_REF="HEAD^1"
-          fi
+      - name: Get PR info
+        id: get-pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('ref', pr.data.head.ref);
 
-          # Get changed files
-          CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD)
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
-
-          # Define patterns for files that DO require e2e tests (code and config files)
-          # - Go source code (*.go)
-          # - Build files (Makefile, Dockerfile, go.mod, go.sum)
-          # - CRD definitions (config/crd/**/*.yaml)
-          # - RBAC config (config/rbac/**/*.yaml)
-          # - Helm charts (deploy/helm/**/*.yaml)
-          # - CI workflows (.github/workflows/*.yml)
-          # - Test files (test/**/*)
-          CODE_PATTERNS='\.go$|^Makefile|^Dockerfile|go\.mod|go\.sum|\.sh$|^config/crd/|^config/rbac/|^deploy/helm/|^\.github/workflows/|^test/'
-          SKIP_DIRS='^(examples|doc|python)/'
-
-          SHOULD_RUN="false"
-
-          if [ -n "$CHANGED_FILES" ]; then
-            # Filter out files in skip directories
-            NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
-
-            if [ -z "$NON_SKIP_FILES" ]; then
-              echo "All changed files are in skip directories ($SKIP_DIRS). Skipping e2e tests."
-            else
-              # Check if any non-skipped file matches code patterns
-              CODE_FILES=$(echo "$NON_SKIP_FILES" | grep -E "$CODE_PATTERNS" || true)
-
-              if [ -n "$CODE_FILES" ]; then
-                echo "Found code/config files that require e2e tests:"
-                echo "$CODE_FILES"
-                SHOULD_RUN="true"
-              else
-                echo "All changed files are non-code files (docs, examples, yaml configs, etc). Skipping e2e tests."
-              fi
-            fi
-          else
-            # No changed files detected, run tests by default
-            SHOULD_RUN="true"
-          fi
-
-          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
-
-  e2e-test:
-    needs: check-changes
-    if: needs.check-changes.outputs.should_run == 'true'
+  # E2E test using Helm installation with default chart images (no build)
+  e2e-test-helm:
+    needs: check-command
     runs-on: ubuntu-latest
     env:
       GOPATH: ${{ github.workspace }}
@@ -99,6 +70,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
         with:
+          ref: ${{ needs.check-command.outputs.pr_head_sha }}
           path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
 
       - name: Install Kind
@@ -140,26 +112,11 @@ jobs:
           curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           helm version
 
-      - name: Build and load controller image
-        run: |
-          make manifests
-          make docker-build-controller TAG=e2e-test
-          docker images | grep rbgs-controller || true
-          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-e2e
-
-      - name: Build and load CRD Upgrader image
-        run: |
-          make docker-build-crd-upgrader TAG=e2e-test
-          docker images | grep rbgs-upgrade-crd || true
-          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-test --name rbgs-e2e
-
-      - name: Deploy controller
+      - name: Deploy controller using default chart images
         run: |
           helm upgrade --install rbgs deploy/helm/rbgs \
             --create-namespace \
             --namespace rbgs-system \
-            --set image.tag=e2e-test \
-            --set crdUpgrade.tag=e2e-test \
             --set portAllocator.enabled=true \
             --wait
           kubectl get deploy -n rbgs-system
@@ -180,7 +137,6 @@ jobs:
 
       - name: Pre-load e2e test images
         run: |
-          # Pull and load e2e test images to avoid image pull timeout during tests
           E2E_IMAGES=(
             "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
             "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
@@ -211,14 +167,14 @@ jobs:
           echo "=== Events ==="
           kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
           echo "=== Kind cluster info ==="
-          kind export logs /tmp/kind-logs --name rbgs-e2e || true
+          kind export logs /tmp/kind-helm-logs --name rbgs-e2e || true
 
       - name: Upload Kind logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kind-logs
-          path: /tmp/kind-logs
+          name: kind-helm-release-logs
+          path: /tmp/kind-helm-logs
           retention-days: 7
 
       - name: Cleanup
@@ -226,10 +182,9 @@ jobs:
         run: |
           kind delete cluster --name rbgs-e2e || true
 
-  # E2E test using manifest installation (runs on every PR, builds images from PR branch)
+  # E2E test using manifest installation with default manifest images (no build)
   e2e-test-manifest:
-    needs: check-changes
-    if: needs.check-changes.outputs.should_run == 'true'
+    needs: check-command
     runs-on: ubuntu-latest
     env:
       GOPATH: ${{ github.workspace }}
@@ -246,6 +201,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
         with:
+          ref: ${{ needs.check-command.outputs.pr_head_sha }}
           path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
 
       - name: Install Kind
@@ -284,7 +240,6 @@ jobs:
 
       - name: Validate and deploy manifests
         run: |
-          # Validate CRD conversion webhook configuration in committed manifests
           echo "Validating CRD conversion webhook configuration..."
 
           CONV_COUNT=$(grep -c "conversion:" deploy/kubectl/manifests.yaml || echo "0")
@@ -301,20 +256,12 @@ jobs:
 
           echo "Manifests validation passed - CRDs contain correct conversion webhook configuration"
 
-          # Apply manifests with server-side apply (required for large CRD annotations)
           kubectl apply --server-side -f deploy/kubectl/manifests.yaml
-
           kubectl get deploy -n rbgs-system
 
-      - name: Build and load controller image
-        run: |
-          make docker-build-controller TAG=e2e-test
-          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-manifest-e2e
-
-      - name: Patch controller deployment with built image and enable portAllocator
+      - name: Patch controller deployment to enable portAllocator
         run: |
           kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
-            {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "rolebasedgroup/rbgs-controller:e2e-test"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-allocate-strategy=random"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--start-port=30000"},
@@ -371,7 +318,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kind-manifest-logs
+          name: kind-manifest-release-logs
           path: /tmp/kind-manifest-logs
           retention-days: 7
 
