@@ -361,9 +361,8 @@ func getRoleInstanceSetReadyReplicas(f *framework.Framework, rbg *workloadsv1alp
 		Name:      fmt.Sprintf("%s-%s", rbg.Name, roleName),
 		Namespace: rbg.Namespace,
 	}, ris)
-	if err != nil {
-		return 0
-	}
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(),
+		"failed to get RoleInstanceSet for role %s", roleName)
 	return ris.Status.ReadyReplicas
 }
 
