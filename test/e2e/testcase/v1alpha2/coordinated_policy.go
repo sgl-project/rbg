@@ -313,9 +313,11 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 			})
 
 			// During scaling, verify skew constraint is respected
+			// Use RoleInstanceSet.Status.ReadyReplicas (the signal the controller uses)
+			// instead of counting RoleInstance conditions to avoid reconcile latency flakiness.
 			gomega.Consistently(func() bool {
-				roleAReady := countReadyRoleInstances(f, rbg, "role-a")
-				roleBReady := countReadyRoleInstances(f, rbg, "role-b")
+				roleAReady := getRoleInstanceSetReadyReplicas(f, rbg, "role-a")
+				roleBReady := getRoleInstanceSetReadyReplicas(f, rbg, "role-b")
 				skew := int(math.Abs(float64(roleAReady - roleBReady)))
 				return skew <= 1
 			}, 30, 2).Should(gomega.BeTrue(),
@@ -325,8 +327,8 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 			f.ExpectRbgV2Equal(rbg)
 
 			// Verify both roles have 3 ready instances
-			gomega.Expect(countReadyRoleInstances(f, rbg, "role-a")).Should(gomega.Equal(3))
-			gomega.Expect(countReadyRoleInstances(f, rbg, "role-b")).Should(gomega.Equal(3))
+			gomega.Expect(getRoleInstanceSetReadyReplicas(f, rbg, "role-a")).Should(gomega.Equal(int32(3)))
+			gomega.Expect(getRoleInstanceSetReadyReplicas(f, rbg, "role-b")).Should(gomega.Equal(int32(3)))
 
 			// Verify stability after coordinated scaling
 			finalPodUIDs := getPodUIDsForRole(f, rbg, "role-a")

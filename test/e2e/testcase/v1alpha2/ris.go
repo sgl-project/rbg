@@ -353,6 +353,19 @@ func countReadyRoleInstances(f *framework.Framework, rbg *workloadsv1alpha2.Role
 	return ready
 }
 
+// getRoleInstanceSetReadyReplicas returns the RoleInstanceSet.Status.ReadyReplicas for the given role.
+// This is the authoritative signal used by the controller's coordination algorithm.
+func getRoleInstanceSetReadyReplicas(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) int32 {
+	ris := &workloadsv1alpha2.RoleInstanceSet{}
+	err := f.Client.Get(f.Ctx, client.ObjectKey{
+		Name:      fmt.Sprintf("%s-%s", rbg.Name, roleName),
+		Namespace: rbg.Namespace,
+	}, ris)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(),
+		"failed to get RoleInstanceSet for role %s", roleName)
+	return ris.Status.ReadyReplicas
+}
+
 // getReadyOrdinals returns the set of ordinal indices for Ready RoleInstances.
 func getReadyOrdinals(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) sets.Set[int] {
 	instances := listRoleInstances(f, rbg, roleName)
