@@ -1,16 +1,20 @@
-title: KEP Template
-kep-number: 30
+title: Image and Volume Warmup for RoleBasedGroup
+kep-number: 129
 authors:
-  - "zibai.gj@alibaba-inc.com"
-  - "tongyuguo@outlook.com"
-status: implementable
-creation-date: 2025-10-17
+  - "@TrafalgarZZZ"
+  - "@noobdream2568"
+status: provisional
+creation-date: 2025-12-18
 reviewers:
-  - "cheyang.cy@alibaba-inc.com"
+  - "@syspretor"
+  - "@cheyang"
+approvers:
+  - "@syspretor"
+  - "@cheyang"
 
 stage: alpha
 
-latest-milestone: "v0.5.0"
+latest-milestone: "v0.8.0"
 
 milestone:
-  alpha: "v0.5.0"
+  alpha: "v0.8.0"
