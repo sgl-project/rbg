@@ -33,10 +33,10 @@ func TestGenerateRBG(t *testing.T) {
 		{
 			name: "basic standalone",
 			scenario: &Scenario{
-				Namespace:   "test-ns",
-				RolesPerRBG: 2,
-				LWSRoles:    0,
-				LWSSize:     4,
+				Namespace:    "test-ns",
+				RolesPerRBG:  2,
+				LWSRoles:     0,
+				LWSSize:      4,
 				UseKwokNodes: true,
 			},
 			index:    0,
@@ -59,10 +59,10 @@ func TestGenerateRBG(t *testing.T) {
 		{
 			name: "mixed lws and standalone",
 			scenario: &Scenario{
-				Namespace:   "test-ns",
-				RolesPerRBG: 3,
-				LWSRoles:    1,
-				LWSSize:     4,
+				Namespace:    "test-ns",
+				RolesPerRBG:  3,
+				LWSRoles:     1,
+				LWSSize:      4,
 				UseKwokNodes: false,
 			},
 			index:    42,
@@ -97,9 +97,11 @@ func TestGenerateRBG(t *testing.T) {
 			index:    0,
 			wantName: "stress-rbg-0000",
 			checkFn: func(t *testing.T, rbg *unstructured.Unstructured) {
-				strategy, found, _ := unstructured.NestedMap(rbg.Object, "spec", "rolloutStrategy")
+				roles, _, _ := unstructured.NestedSlice(rbg.Object, "spec", "roles")
+				role := roles[0].(map[string]interface{})
+				strategy, found, _ := unstructured.NestedMap(role, "rolloutStrategy")
 				if !found {
-					t.Fatal("expected rolloutStrategy when InPlaceUpdate is true")
+					t.Fatal("expected rolloutStrategy on role when InPlaceUpdate is true")
 				}
 				if strategy["type"] != "RollingUpdate" {
 					t.Errorf("expected RollingUpdate type, got %v", strategy["type"])
