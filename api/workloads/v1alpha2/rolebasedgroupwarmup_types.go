@@ -21,9 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 type WarmupJobPhase string
 
 const (
@@ -35,51 +32,138 @@ const (
 )
 
 type ImagePreloadAction struct {
+	// Images specifies the container images to be preloaded onto target nodes.
+	// Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
 	// +kubebuilder:validation:MinItems=1
 	// +required
-	Items []string `json:"items"`
+	Images []string `json:"images"`
 
+	// PullSecrets is a list of references to secrets used for pulling any of the images above.
 	// +optional
 	PullSecrets []corev1.LocalObjectReference `json:"pullSecrets,omitempty"`
 }
 
+// CustomizedAction defines user-provided containers to run custom warmup logic
+// (e.g., CUDA kernel compilation).
 type CustomizedAction struct {
+	// Containers to run as part of the warmup Pod. Each container runs alongside
+	// image preload containers. The warmup is considered complete when all containers
+	// finish successfully.
 	// +kubebuilder:validation:MinItems=1
 	// +required
 	Containers []corev1.Container `json:"containers"`
 
+	// Volumes to mount into the customized containers.
 	// +optional
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 }
 
+// WarmupActions defines what warmup operations to perform on a node.
+// At least one of imagePreload or customizedAction must be specified.
+// NOTE: update this rule when adding new action types.
+// +kubebuilder:validation:XValidation:rule="has(self.imagePreload) || has(self.customizedAction)",message="at least one of imagePreload or customizedAction must be specified"
 type WarmupActions struct {
+	// ImagePreload pulls container images onto the node ahead of time.
 	// +optional
 	ImagePreload *ImagePreloadAction `json:"imagePreload,omitempty"`
 
+	// CustomizedAction runs user-defined containers for custom warmup logic.
 	// +optional
 	CustomizedAction *CustomizedAction `json:"customizedAction,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="has(self.nodeNames) || has(self.nodeSelector)",message="either nodeNames or nodeSelector must be specified"
+// +kubebuilder:validation:XValidation:rule="!(has(self.nodeNames) && has(self.nodeSelector))",message="nodeNames and nodeSelector are mutually exclusive"
+
+// TargetNodes specifies a set of nodes and the warmup actions to perform on them.
 type TargetNodes struct {
+	// NodeNames is an explicit list of node names to warm up.
+	// Mutually exclusive with NodeSelector.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
 	NodeNames []string `json:"nodeNames,omitempty"`
 
+	// NodeSelector selects nodes by their labels.
+	// Mutually exclusive with NodeNames.
+	// +optional
+	// +kubebuilder:validation:MinProperties=1
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
 	WarmupActions `json:",inline"`
 }
 
+// TargetRoleBasedGroup discovers target nodes from an existing RoleBasedGroup resource.
+// The controller finds all scheduled Pods in the RBG, groups them by role, and applies
+// the corresponding warmup actions to each node.
 type TargetRoleBasedGroup struct {
+	// Name of the RoleBasedGroup resource in the same namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
+	// Roles maps role names to their warmup actions. Only roles listed here will be warmed up.
+	// +kubebuilder:validation:MinProperties=1
 	Roles map[string]WarmupActions `json:"roles"`
 }
 
-// RoleBasedGroupWarmupSpec defines the desired state of RoleBasedGroupWarmup
+// WarmupPolicies controls the execution behavior of the warmup job.
+// +kubebuilder:validation:XValidation:rule="!has(self.maxFailedNodes) || has(self.backoffLimitPerNode)",message="backoffLimitPerNode must be set when maxFailedNodes is specified"
+type WarmupPolicies struct {
+	// Parallelism limits how many nodes are warmed up concurrently.
+	// If not set, all nodes are warmed up in parallel.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Parallelism *int32 `json:"parallelism,omitempty"`
+
+	// BackoffLimitPerNode specifies the maximum number of retries for each node
+	// before marking that node as permanently failed.
+	// If not set (nil), nodes are retried indefinitely.
+	// If set to 0, no retries are attempted (fail on first failure).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	BackoffLimitPerNode *int32 `json:"backoffLimitPerNode,omitempty"`
+
+	// MaxFailedNodes specifies the maximum number of permanently-failed nodes
+	// that can be tolerated before the entire warmup job is marked as Failed.
+	// A node is permanently failed when its failure count exceeds BackoffLimitPerNode.
+	// If not set (nil), any number of node failures is tolerated and the job
+	// will still be marked Completed once all nodes reach a terminal state.
+	// If set to 0, the job fails immediately when any node permanently fails.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxFailedNodes *int32 `json:"maxFailedNodes,omitempty"`
+
+	// GlobalTimeoutSeconds specifies the overall timeout for the warmup job,
+	// measured from the time the first Pod is created (status.startTime).
+	// When the timeout is exceeded, all active Pods are deleted and the job
+	// is marked as Failed regardless of other settings.
+	// If not set (nil), no timeout is applied.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	GlobalTimeoutSeconds *int64 `json:"globalTimeoutSeconds,omitempty"`
+
+	// TTLSecondsAfterFinished is the time-to-live in seconds after the warmup job
+	// reaches a terminal phase (Completed or Failed). When the TTL expires, the
+	// RoleBasedGroupWarmup resource and its owned Pods are automatically deleted.
+	// If not set, the resource is NOT auto-deleted.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
+}
+
+// RoleBasedGroupWarmupSpec defines the desired state of RoleBasedGroupWarmup.
+// Exactly one of targetNodes or targetRoleBasedGroup must be specified.
+// +kubebuilder:validation:XValidation:rule="has(self.targetNodes) || has(self.targetRoleBasedGroup)",message="either targetNodes or targetRoleBasedGroup must be specified"
+// +kubebuilder:validation:XValidation:rule="!(has(self.targetNodes) && has(self.targetRoleBasedGroup))",message="targetNodes and targetRoleBasedGroup are mutually exclusive"
 type RoleBasedGroupWarmupSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// Paused suspends the warmup job. When set to true, no new warmup Pods will be created,
+	// but existing Pods are not affected.
+	// +optional
+	Paused *bool `json:"paused,omitempty"`
+
+	// Policies controls parallelism, TTL and other execution behavior.
+	// +optional
+	Policies *WarmupPolicies `json:"policies,omitempty"`
 
 	// TargetNodes specifies explicit nodes and warmup actions to perform on them.
 	// +optional
@@ -91,41 +175,39 @@ type RoleBasedGroupWarmupSpec struct {
 	// will be merged into a single warmup Pod.
 	// +optional
 	TargetRoleBasedGroup *TargetRoleBasedGroup `json:"targetRoleBasedGroup,omitempty"`
+
+	// Tolerations allow warmup Pods to be scheduled on tainted nodes (e.g., GPU nodes).
+	// If not specified, warmup Pods will not tolerate any taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // RoleBasedGroupWarmupStatus defines the observed state of RoleBasedGroupWarmup.
 type RoleBasedGroupWarmupStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// StartTime is the time when the first warmup Pod was created.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// CompletionTime is the time when all warmup Pods reached a terminal state.
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
-	StartTime metav1.Time `json:"startTime,omitempty"`
-
-	CompletionTime metav1.Time `json:"completionTime,omitempty"`
-
-	Desired int32 `json:"desired,omitempty"`
-
-	Succeeded int32 `json:"succeeded,omitempty"`
-
-	Failed int32 `json:"failed,omitempty"`
-
-	Active int32 `json:"active,omitempty"`
-
-	Ready int32 `json:"ready,omitempty"`
-
+	// Phase is the current phase of the warmup job.
 	Phase WarmupJobPhase `json:"phase"`
 
-	// conditions represent the current state of the RoleBasedGroupWarmup resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// Desired is the total number of nodes that need to be warmed up.
+	Desired int32 `json:"desired"`
+
+	// Active is the number of nodes with warmup Pods currently running.
+	Active int32 `json:"active"`
+
+	// Succeeded is the number of nodes whose warmup Pod completed successfully.
+	Succeeded int32 `json:"succeeded"`
+
+	// Failed is the number of nodes whose warmup Pod failed.
+	Failed int32 `json:"failed"`
+
+	// Conditions represent the latest observations of the warmup job's state.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

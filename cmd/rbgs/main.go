@@ -437,7 +437,6 @@ func main() {
 		}
 	}
 
-
 	// +kubebuilder:scaffold:builder
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")

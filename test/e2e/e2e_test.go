@@ -86,6 +86,7 @@ func TestE2E(t *testing.T) {
 			testcasev1alpha2.RunCoordinatedPolicyTestCases(f)
 			testcasev1alpha2.RunConvergenceTestCases(f)
 			testcasev1alpha2.RunInplaceSchedulingTestCases(f)
+			testcasev1alpha2.RunWarmupTestCases(f)
 		},
 	)
 
