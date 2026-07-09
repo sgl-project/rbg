@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -285,6 +286,59 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_TemplateIsolation(t *test
 	// This is the key test for the DeepCopy fix
 	assert.Len(t, roleTemplate.Template.Spec.Containers[0].Env, 1)
 	assert.Equal(t, "COMMON", roleTemplate.Template.Spec.Containers[0].Env[0].Name)
+}
+
+func TestRoleInstanceSetReconciler_RoundsUpMaxUnavailableWhenMaxSurgeIsZero(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	role := wrappersv2.BuildStandaloneRole("test-role").
+		WithReplicas(3).
+		WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet").
+		WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
+			MaxUnavailable: ptr.To(intstr.FromString("30%")),
+			MaxSurge:       ptr.To(intstr.FromInt32(0)),
+			Partition:      ptr.To(intstr.FromInt32(0)),
+		}).
+		Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+		Obj()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+
+	ctx := context.Background()
+	err := reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
+
+	assert.NoError(t, err)
+	ris := &workloadsv1alpha2.RoleInstanceSet{}
+	err = fakeClient.Get(
+		ctx,
+		types.NamespacedName{
+			Name:      rbg.GetWorkloadName(&role),
+			Namespace: rbg.Namespace,
+		},
+		ris,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, "30%", ris.Spec.UpdateStrategy.MaxUnavailable.String())
+	assert.Equal(t, "0", ris.Spec.UpdateStrategy.MaxSurge.String())
+}
+
+func TestRoleInstanceSetReconciler_ValidateRolloutStrategyRoundsUpMaxUnavailableWhenMaxSurgeIsZero(t *testing.T) {
+	strategy := &workloadsv1alpha2.RolloutStrategy{
+		Type: workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+			MaxUnavailable: ptr.To(intstr.FromString("30%")),
+			MaxSurge:       ptr.To(intstr.FromInt32(0)),
+			Partition:      ptr.To(intstr.FromInt32(0)),
+		},
+	}
+
+	_, err := validateRolloutStrategy(strategy, 3)
+
+	assert.NoError(t, err)
 }
 
 // TestRoleInstanceSetReconciler_ValidateRoleTemplateReferences tests that
