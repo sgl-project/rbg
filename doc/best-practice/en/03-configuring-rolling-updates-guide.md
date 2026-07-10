@@ -5,6 +5,7 @@
 ## Objectives
 
 Validate RBG's `rolloutStrategy` rolling update strategy, including:
+
 1. Basic rolling update configuration (maxUnavailable / maxSurge)
 2. Partition canary release
 3. Paused pause and resume updates
@@ -64,7 +65,7 @@ kubectl patch rbg rolling-update-demo --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Rolling Update Triggered)
 
 - Instances are updated one by one from high to low ordinal (3 → 2 → 1 → 0)
 - `maxUnavailable: 1`: At most 1 instance unavailable at a time
@@ -113,6 +114,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rolling-update-demo -o jso
 ```
 
 **Expected output:**
+
 - 3 Pods always Ready during the update process
 - After update completes, all 4 Pods have command `["sleep","7200"]`
 
@@ -163,13 +165,13 @@ kubectl patch rbg canary-deployment --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Partition=4)
 
 - Since `partition: 4`, only instances with ordinal >= 4 will be updated
 - Ordinals 0-3 are all less than 4, so **no instances are updated**
 - All Pods still use the old command `["sleep","3600"]`
 
-### Verification
+### Verification (Partition=4)
 
 ```bash
 # Confirm all Pods still use the old command
@@ -190,12 +192,12 @@ kubectl patch rbg canary-deployment --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/rolloutStrategy/rollingUpdate/partition", "value": 3}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Partition=3)
 
 - Instances with ordinal >= 3 (i.e., instance 3) are updated to the new command
 - Ordinals 0-2 remain on the old configuration
 
-### Verification
+### Verification (Partition=3)
 
 ```bash
 # Check each Pod's command
@@ -208,6 +210,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=canary-deployment -o jsonp
 ```
 
 **Expected output:**
+
 - `canary-deployment-backend-3` uses `["sleep","7200"]`
 - `canary-deployment-backend-0` through `2` use `["sleep","3600"]`
 
@@ -218,11 +221,11 @@ kubectl patch rbg canary-deployment --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/rolloutStrategy/rollingUpdate/partition", "value": 0}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Partition=0)
 
 - All instances with ordinal >= 0 are updated to the new command
 
-### Verification
+### Verification (Partition=0)
 
 ```bash
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=canary-deployment -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].command}{"\n"}{end}'
@@ -235,7 +238,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=canary-deployment -o jsonp
 
 **Expected output:** All 4 Pods have command `["sleep","7200"]`
 
-### Cleanup
+### Cleanup (Canary Release)
 
 ```bash
 kubectl delete rbg canary-deployment
@@ -281,12 +284,12 @@ kubectl patch rbg paused-update --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Paused)
 
 - Since `paused: true`, the update is paused
 - All Pods remain on the old configuration
 
-### Verification
+### Verification (Paused)
 
 ```bash
 # Confirm all Pods still use the old command
@@ -307,12 +310,12 @@ kubectl patch rbg paused-update --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/rolloutStrategy/rollingUpdate/paused", "value": false}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Resumed)
 
 - Updates resume
 - Pods are updated to the new command one by one
 
-### Verification
+### Verification (Resumed)
 
 ```bash
 # Wait for update to complete, confirm all Pods use the new command
@@ -326,7 +329,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=paused-update -o jsonpath=
 
 **Expected output:** All 4 Pods have command `["sleep","7200"]`
 
-### Cleanup
+### Cleanup (Pause and Resume)
 
 ```bash
 kubectl delete rbg paused-update
@@ -409,7 +412,7 @@ kubectl patch rbg pd-rollout-demo --type='json' \
        {"op": "replace", "path": "/spec/roles/1/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### Expected Behavior
+### Expected Behavior (Coordinated Upgrade)
 
 - Prefill and Decode start updating simultaneously
 - `maxSkew: "10%"` constrains the update progress difference between the two roles to within 10%
@@ -417,7 +420,7 @@ kubectl patch rbg pd-rollout-demo --type='json' \
 - Both roles' update progress remains close at all times
 - `command` is a non-image field, so the update proceeds via Pod rebuild (Pods terminate and are recreated with the same ordinals one by one)
 
-### Verification
+### Verification (Coordinated Upgrade)
 
 ```bash
 # Observe the Pod update process
@@ -479,7 +482,6 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -w
 
 From the update cadence, you can observe the coordination steps: 1p1d (1 prefill + 1 decode) - 1p - 1p1d - 1p - 1p1d - 1p - 1p, with the progress difference between the two roles always constrained by `maxSkew`.
 
-
 ```bash
 # After update completes, confirm all Pods use the new command
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].command}{"\n"}{end}'
@@ -497,11 +499,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -o jsonpat
 ```
 
 **Expected output:**
+
 - During the update process, the progress difference between the two roles remains <= 10%
 - After update completes, all Pods have command `["sleep","7200"]`
 - CoordinatedPolicy's status shows the coordination state
 
-### Cleanup
+### Cleanup (Coordinated Upgrade)
 
 ```bash
 kubectl delete cpolicy pd-rollout-demo

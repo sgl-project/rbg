@@ -5,6 +5,7 @@
 ## 目标
 
 验证 RBG 的 `rolloutStrategy` 滚动更新策略，包括：
+
 1. 基础滚动更新配置（maxUnavailable / maxSurge）
 2. Partition 金丝雀发布
 3. Paused 暂停和恢复更新
@@ -64,7 +65,7 @@ kubectl patch rbg rolling-update-demo --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### 预期行为
+### 预期行为（滚动更新触发）
 
 - 按序号从高到低逐个更新实例（3 → 2 → 1 → 0）
 - `maxUnavailable: 1`：同一时间最多 1 个实例不可用
@@ -113,6 +114,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rolling-update-demo -o jso
 ```
 
 **预期输出：**
+
 - 更新过程中始终有 3 个 Pod Ready
 - 更新完成后 4 个 Pod 的 command 均为 `["sleep","7200"]`
 
@@ -163,13 +165,13 @@ kubectl patch rbg canary-deployment --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### 预期行为
+### 预期行为（Partition=4）
 
 - 由于 `partition: 4`，序号 >= 4 的实例才会更新
 - 序号 0~3 均小于 4，所以**不更新任何实例**
 - 所有 Pod 仍使用旧 command `["sleep","3600"]`
 
-### 验证
+### 验证（Partition=4）
 
 ```bash
 # 确认所有 Pod 仍使用旧 command
@@ -190,12 +192,12 @@ kubectl patch rbg canary-deployment --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/rolloutStrategy/rollingUpdate/partition", "value": 3}]'
 ```
 
-### 预期行为
+### 预期行为（Partition=3）
 
 - 序号 >= 3 的实例（即实例 3）被更新到新 command
 - 序号 0~2 保持旧配置
 
-### 验证
+### 验证（Partition=3）
 
 ```bash
 # 查看各 Pod 的 command
@@ -208,6 +210,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=canary-deployment -o jsonp
 ```
 
 **预期输出：**
+
 - `canary-deployment-backend-3` 使用 `["sleep","7200"]`
 - `canary-deployment-backend-0` ~ `2` 使用 `["sleep","3600"]`
 
@@ -218,11 +221,11 @@ kubectl patch rbg canary-deployment --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/rolloutStrategy/rollingUpdate/partition", "value": 0}]'
 ```
 
-### 预期行为
+### 预期行为（Partition=0）
 
 - 序号 >= 0 的全部实例被更新到新 command
 
-### 验证
+### 验证（Partition=0）
 
 ```bash
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=canary-deployment -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].command}{"\n"}{end}'
@@ -235,7 +238,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=canary-deployment -o jsonp
 
 **预期输出：** 4 个 Pod 的 command 均为 `["sleep","7200"]`
 
-### 清理
+### 清理（金丝雀发布）
 
 ```bash
 kubectl delete rbg canary-deployment
@@ -281,12 +284,12 @@ kubectl patch rbg paused-update --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### 预期行为
+### 预期行为（已暂停）
 
 - 由于 `paused: true`，更新被暂停
 - 所有 Pod 保持旧配置
 
-### 验证
+### 验证（已暂停）
 
 ```bash
 # 确认所有 Pod 仍使用旧 command
@@ -307,12 +310,12 @@ kubectl patch rbg paused-update --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/rolloutStrategy/rollingUpdate/paused", "value": false}]'
 ```
 
-### 预期行为
+### 预期行为（已恢复）
 
 - 更新恢复执行
 - Pod 逐个更新到新 command
 
-### 验证
+### 验证（已恢复）
 
 ```bash
 # 等待更新完成，确认所有 Pod 使用新 command
@@ -326,7 +329,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=paused-update -o jsonpath=
 
 **预期输出：** 4 个 Pod 的 command 均为 `["sleep","7200"]`
 
-### 清理
+### 清理（暂停和恢复）
 
 ```bash
 kubectl delete rbg paused-update
@@ -409,7 +412,7 @@ kubectl patch rbg pd-rollout-demo --type='json' \
        {"op": "replace", "path": "/spec/roles/1/standalonePattern/template/spec/containers/0/command", "value": ["sleep", "7200"]}]'
 ```
 
-### 预期行为
+### 预期行为（协作升级）
 
 - Prefill 和 Decode 同时开始更新
 - `maxSkew: "10%"` 约束两个角色的更新进度差异不超过 10%
@@ -417,7 +420,7 @@ kubectl patch rbg pd-rollout-demo --type='json' \
 - 两个角色的更新进度始终保持接近
 - command 为非镜像字段，更新以 Pod 重建方式进行（Pod 逐个终止并按序号重建）
 
-### 验证
+### 验证（协作升级）
 
 ```bash
 # 观察 Pod 更新过程
@@ -479,7 +482,6 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -w
 
 通过更新节奏，可以观测到协作步骤：1p1d（1 prefill + 1 decode）- 1p - 1p1d - 1p - 1p1d - 1p - 1p，两个角色的进度差异始终受 `maxSkew` 约束。
 
-
 ```bash
 # 更新完成后确认所有 Pod 使用新 command
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].command}{"\n"}{end}'
@@ -497,11 +499,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -o jsonpat
 ```
 
 **预期输出：**
+
 - 更新过程中两个角色的进度差异始终 <= 10%
 - 更新完成后所有 Pod 的 command 均为 `["sleep","7200"]`
 - CoordinatedPolicy 的 status 中显示协作状态
 
-### 清理
+### 清理（协作升级）
 
 ```bash
 kubectl delete cpolicy pd-rollout-demo
