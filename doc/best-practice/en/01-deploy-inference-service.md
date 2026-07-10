@@ -257,7 +257,7 @@ Corresponding DNS address resolution:
 > **Note**: The Headless Service (`s-{rbgName}-{roleName}`) is automatically created and managed by RBG Controller, no manual configuration needed. The Service's `publishNotReadyAddresses: true` ensures DNS records are resolvable even when Pods are not ready. When `replicas` is greater than 1, each instance's address increments by `{roleName}-{ordinal}` (e.g., `prefill-0`, `prefill-1`, ...), and can be configured individually in the Router's startup parameters.
 >
 
-#### Parameter Description
+#### Parameter Description (PD-Disaggregated)
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `spec.roles[].name` | string | Yes | - | Role name, unique within the RBG |
@@ -383,7 +383,7 @@ spec:
                   sizeLimit: 30Gi
 ```
 
-#### Parameter Description
+#### Parameter Description (leaderWorkerPattern)
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `leaderWorkerPattern.size` | int32 | No | 1 | Total number of Pods per instance (including Leader). Set to N for 1 Leader + (N-1) Workers |
@@ -554,8 +554,8 @@ kubectl get pods -l app=llm-inference
 ```
 
 ## Related Documents
-+ [Using RoleTemplates to Reduce Configuration Duplication](#)
-+ [Configuring HPA Autoscaling](#)
-+ [Gang Scheduling Configuration](#)
-+ [Rolling Updates and Canary Releases](#)
-+ [PD-Disaggregated Coordinated Scaling (CoordinatedPolicy)](#)
++ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
++ [Configuring HPA Autoscaling](08-configuring-autoscaling.md)
++ Gang Scheduling Configuration
++ [Rolling Updates and Canary Releases](03-configuring-rolling-updates.md)
++ PD-Disaggregated Coordinated Scaling (CoordinatedPolicy)

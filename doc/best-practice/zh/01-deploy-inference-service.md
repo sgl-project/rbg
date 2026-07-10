@@ -257,7 +257,7 @@ spec:
 > **说明**：Headless Service（`s-{rbgName}-{roleName}`）由 RBG Controller 自动创建和管理，无需手动配置。Service 的 `publishNotReadyAddresses: true` 确保 DNS 记录在 Pod 未就绪时也可解析。当 `replicas` 大于 1 时，每个实例的地址按 `{roleName}-{ordinal}` 递增（如 `prefill-0`、`prefill-1`、...），在 Router 启动参数中逐个配置即可。
 >
 
-#### 参数说明
+#### 参数说明（PD 分离部署）
 | 参数 | 类型 | 是否必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `spec.roles[].name` | string | 是 | - | 角色名称，在 RBG 内唯一 |
@@ -383,7 +383,7 @@ spec:
                   sizeLimit: 30Gi
 ```
 
-#### 参数说明
+#### 参数说明（leaderWorkerPattern）
 | 参数 | 类型 | 是否必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `leaderWorkerPattern.size` | int32 | 否 | 1 | 每个实例的 Pod 总数（含 Leader）。设为 N 表示 1 Leader + (N-1) Workers |
@@ -554,9 +554,9 @@ kubectl get pods -l app=llm-inference
 ```
 
 ## 相关文档
-+ [使用 RoleTemplates 减少配置重复](#)
-+ [配置 HPA 弹性伸缩](#)
-+ [Gang 调度配置](#)
-+ [滚动更新与金丝雀发布](#)
-+ [PD 分离协调扩缩容（CoordinatedPolicy）](#)
++ [使用 RoleTemplates 减少配置重复](02-using-role-templates.md)
++ [配置 HPA 弹性伸缩](08-configuring-autoscaling.md)
++ Gang 调度配置
++ [滚动更新与金丝雀发布](03-configuring-rolling-updates.md)
++ PD 分离协调扩缩容（CoordinatedPolicy）
 

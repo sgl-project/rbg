@@ -248,7 +248,7 @@ spec:
 EOF
 ```
 
-### 预期行为
+### 预期行为（PD 分离部署）
 
 - 3 个角色（router、prefill、decode）各自创建 1 个 Pod
 - Controller 自动创建 3 个 Headless Service：
@@ -257,7 +257,7 @@ EOF
   - `s-pd-inference-decode`
 - Router 可通过 DNS 地址访问 Prefill 和 Decode 实例
 
-### 验证
+### 验证（PD 分离部署）
 
 ```bash
 # 查看 RBG 状态
@@ -306,7 +306,7 @@ kubectl exec -it pd-inference-router-0 -- python3 -c "import urllib.request; pri
 - 3 个 Headless Service，ClusterIP 均为 None
 - DNS 解析成功，Prefill 和 Decode 的 health API 均返回 `200`
 
-### 清理
+### 清理（PD 分离部署）
 
 ```bash
 kubectl delete rbg pd-inference
@@ -372,14 +372,14 @@ spec:
 EOF
 ```
 
-### 预期行为
+### 预期行为（张量并行部署）
 
 - 创建 1 个 RoleInstance，包含 2 个 Pod（1 Leader + 1 Worker）
 - 每个 Pod 请求 1 张 GPU，总共使用 2 张 GPU
 - RBG 自动注入环境变量 `RBG_LWP_LEADER_ADDRESS`、`RBG_LWP_GROUP_SIZE`、`RBG_LWP_WORKER_INDEX`
 - Leader Pod（index=0）和 Worker Pod（index=1）通过张量并行协同工作
 
-### 验证
+### 验证（张量并行部署）
 
 ```bash
 # 查看 RBG 状态
@@ -426,7 +426,7 @@ kubectl exec -it agg-tp-inference-backend-0-1 -- env | grep RBG_LWP
 - 两个 Pod 的 `RBG_LWP_GROUP_SIZE=2`
 - `RBG_LWP_LEADER_ADDRESS` 指向 Leader Pod 的 FQDN
 
-### 清理
+### 清理（张量并行部署）
 
 ```bash
 kubectl delete rbg agg-tp-inference

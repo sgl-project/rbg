@@ -248,7 +248,7 @@ spec:
 EOF
 ```
 
-### Expected Behavior
+### Expected Behavior (PD-Disaggregated Deployment)
 
 - Each of the 3 roles (router, prefill, decode) creates 1 Pod
 - Controller automatically creates 3 Headless Services:
@@ -257,7 +257,7 @@ EOF
   - `s-pd-inference-decode`
 - Router can access Prefill and Decode instances via DNS addresses
 
-### Verification
+### Verification (PD-Disaggregated Deployment)
 
 ```bash
 # Check RBG status
@@ -306,7 +306,7 @@ kubectl exec -it pd-inference-router-0 -- python3 -c "import urllib.request; pri
 - 3 Headless Services, all with ClusterIP set to None
 - DNS resolution succeeds, both Prefill and Decode health APIs return `200`
 
-### Cleanup
+### Cleanup (PD-Disaggregated Deployment)
 
 ```bash
 kubectl delete rbg pd-inference
@@ -372,14 +372,14 @@ spec:
 EOF
 ```
 
-### Expected Behavior
+### Expected Behavior (Tensor Parallel Deployment)
 
 - 1 RoleInstance created, containing 2 Pods (1 Leader + 1 Worker)
 - Each Pod requests 1 GPU, totaling 2 GPUs
 - RBG automatically injects environment variables `RBG_LWP_LEADER_ADDRESS`, `RBG_LWP_GROUP_SIZE`, `RBG_LWP_WORKER_INDEX`
 - Leader Pod (index=0) and Worker Pod (index=1) work together via tensor parallelism
 
-### Verification
+### Verification (Tensor Parallel Deployment)
 
 ```bash
 # Check RBG status
@@ -426,7 +426,7 @@ kubectl exec -it agg-tp-inference-backend-0-1 -- env | grep RBG_LWP
 - Both Pods have `RBG_LWP_GROUP_SIZE=2`
 - `RBG_LWP_LEADER_ADDRESS` points to the Leader Pod's FQDN
 
-### Cleanup
+### Cleanup (Tensor Parallel Deployment)
 
 ```bash
 kubectl delete rbg agg-tp-inference
