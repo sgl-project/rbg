@@ -5,6 +5,7 @@
 ## Objectives
 
 Validate RBG's autoscaling mechanism, including:
+
 1. Enabling ScalingAdapter and manual scaling via Scale subresource
 2. Configuring HPA for metric-driven scaling
 3. Configuring KEDA for event-driven scaling
@@ -105,10 +106,11 @@ kubectl get rbgsa scaling-demo-backend -o yaml
 ```
 
 **Expected output:**
+
 - RBGSA `scaling-demo-backend` auto-created (naming convention: `<rbg-name>-<role-name>`)
 - RBGSA's `status.replicas` is 2
 - RBGSA's `status.selector` contains Pod label selector
-- RBGSA's `status.phase` is `Ready`
+- RBGSA's `status.phase` is `Bound`
 
 ### Step 3: Manual Scaling via Scale Subresource
 
@@ -153,6 +155,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=scaling-demo
 ```
 
 **Expected output:**
+
 - After scaling up, Pod count increases from 2 to 4
 - RBG's `spec.roles[0].replicas` syncs to 4
 - After scaling down, Pod count decreases to 1
@@ -167,7 +170,7 @@ kubectl delete rbg scaling-demo
 
 ## Operation 2: HPA Metric-Driven Scaling
 
-### Step 1: Create an RBG with ScalingAdapter Enabled
+### Step 1: Create an RBG with ScalingAdapter Enabled (HPA)
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -309,6 +312,7 @@ kubectl get rbgsa hpa-demo-backend
 ```
 
 **Expected output:**
+
 - HPA's `TARGETS` column shows current CPU utilization and target value (e.g., `0%/50%`)
 - HPA's `scaleTargetRef.kind` is `RoleBasedGroupScalingAdapter`
 - HPA's `scaleTargetRef.name` is `hpa-demo-backend`
@@ -353,9 +357,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=hpa-demo -w
 > hpa-demo-backend-3   0/1     ContainerCreating   0          0s
 ```
 
-> **Note**: `sleep 3600` itself does not consume CPU. To trigger HPA scale-up, replace the command with a CPU-intensive command (e.g., `python3 -c "while True: pass"`), or use custom metrics. This section primarily validates HPA configuration correctness.
-
-### Cleanup
+### Cleanup (HPA)
 
 ```bash
 kubectl delete hpa hpa-demo-backend
@@ -547,6 +549,7 @@ kubectl wait --for=condition=ready pod -l rbg.workloads.x-k8s.io/group-name=keda
 ```
 
 > **Note**: A Python HTTP server runs inside the Pod, simulating SGLang's Prometheus metrics endpoint:
+>
 > - `GET /metrics`: Returns `sglang_num_queue_requests{rbg="keda-demo",role="backend"} 0`
 > - `GET /set?value=200`: Sets the metric value to 200 (for triggering scale-up)
 > - `GET /set?value=0`: Sets the metric value to 0 (for triggering scale-down)
@@ -605,6 +608,7 @@ kubectl get hpa -l scaledobject.keda.sh/name=keda-demo-backend
 ```
 
 **Expected output:**
+
 - Prometheus query returns `sglang_num_queue_requests` value as `0`
 - ScaledObject `READY=True`, `ACTIVE=False` (metric value 0 < threshold 100)
 - KEDA auto-creates HPA (named `keda-hpa-keda-demo-backend`) pointing to RBGSA, `TARGETS` shows `0/100 (avg)`
@@ -661,7 +665,7 @@ kubectl get hpa -l scaledobject.keda.sh/name=keda-demo-backend
 
 > **Note**: After the metric drops to 0, HPA detects the metric below threshold within 1-3 minutes and completes the scale-down. KEDA does not set a custom scaleDown behavior by default — the scale-down speed depends on the HPA controller's default downscale stabilization window (usually within 5 minutes).
 
-### Cleanup
+### Cleanup (KEDA)
 
 ```bash
 kubectl delete scaledobject keda-demo-backend
@@ -834,6 +838,7 @@ kubectl get rbgsa -n inference
 ```
 
 **Expected output:**
+
 - AutoScaler status is `Ready` or `Profiling` (first run requires Profiling)
 - Planner Pod running normally
 - Logs show observed TTFT, ITL metrics and predicted replica counts
@@ -856,7 +861,7 @@ kubectl get pods -n inference -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler
 
 > **Note**: After disabling dryRun, the Planner automatically adjusts Prefill and Decode replica counts based on SLA targets and load predictions. Observe for a while — if the scaling behavior meets expectations, the configuration is complete. For tuning, refer to the "Recommended Tuning Process" in the concept document.
 
-### Cleanup
+### Cleanup (RBG Planner)
 
 ```bash
 kubectl delete autoscaler pd-autoscaler-demo -n inference

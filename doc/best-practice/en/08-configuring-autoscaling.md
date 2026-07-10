@@ -1,5 +1,7 @@
 # Configuring Autoscaling for RBG Services
+
 ## Overview
+
 RBG inference service autoscaling is implemented through `scalingAdapter` — it exposes a standard Kubernetes Scale subresource for each role, allowing any scaling strategy to deliver replica count decisions to RBG. `scalingAdapter` itself does not provide a scaling strategy; it is simply an execution channel.
 
 Different scaling strategies drive this channel through their respective decision logic, mainly falling into two categories:
@@ -29,6 +31,7 @@ Scaling Strategy (Decision Layer)
 ```
 
 ## Prerequisites
+
 + Kubernetes cluster version >= 1.24
 + RBG Controller installed (see [Installation Guide](https://github.com/sgl-project/rbg))
 + Metrics Server installed (HPA resource metrics dependency)
@@ -37,7 +40,9 @@ Scaling Strategy (Decision Layer)
 ---
 
 ## ScalingAdapter: Unified Scaling Execution Channel
+
 ### How It Works
+
 Each role in RBG can enable autoscaling via `scalingAdapter.enable: true`. Once enabled, RBG Controller automatically creates a `RoleBasedGroupScalingAdapter` (RBGSA for short) resource that implements the standard Kubernetes `/scale` subresource interface. Whether HPA, KEDA, or RBG Planner, they all deliver replica count decisions to RBG roles through this Scale subresource.
 
 ```plain
@@ -53,6 +58,7 @@ RoleBasedGroup → Role Pod scaling
 ```
 
 ### Enabling ScalingAdapter
+
 Set `scalingAdapter.enable: true` in the role's spec:
 
 ```yaml
@@ -84,14 +90,15 @@ spec:
                     memory: "1Gi"
 ```
 
-#### Parameter Description
+#### Parameter Description (ScalingAdapter)
+
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `scalingAdapter.enable` | bool | No | `false` | Whether to enable autoscaling |
 | `scalingAdapter.labels` | map[string]string | No | - | Custom labels attached to the RBGSA resource |
 
-
 ### Auto-Created RBGSA Naming Convention
+
 When `scalingAdapter.enable: true`, the Controller auto-created RBGSA resource follows this naming convention:
 
 ```plain
@@ -106,9 +113,11 @@ For example, if the RBG name is `inference-cluster` and the role name is `prefil
 ---
 
 ## Scenario 1: Metric-Driven Scaling — HPA
+
 HPA (Horizontal Pod Autoscaler) is Kubernetes' built-in autoscaler that supports reactive scaling based on CPU and memory utilization. This is the simplest scaling approach, suitable for scenarios with clear resource utilization thresholds.
 
-### Configuration Example
+### Configuration Example (HPA)
+
 ```yaml
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -131,6 +140,7 @@ spec:
 ```
 
 #### HPA Key Fields
+
 | Field | Description |
 | --- | --- |
 | `scaleTargetRef.apiVersion` | Fixed as `workloads.x-k8s.io/v1alpha2` |
@@ -140,11 +150,11 @@ spec:
 | `maxReplicas` | Maximum replica count |
 | `metrics` | List of scaling metrics |
 
-
 > **Note**: HPA obtains the Pod label selector via RBGSA's `status.selector` to collect metric data — no additional labelSelector configuration needed.
 >
 
 ### HPA Configuration Recommendations for GPU Inference Services
+
 For GPU inference services, CPU utilization typically does not accurately reflect load. It is recommended to follow community practices (such as KServe, vLLM production deployment solutions) and use custom metrics for scaling:
 
 ```yaml
@@ -178,16 +188,17 @@ Common custom metrics for inference services (need to be exposed to HPA via Prom
 | `inference_tokens_per_second` | Tokens processed per second | Throughput-driven scaling |
 | `inference_kv_cache_usage` | KV Cache usage rate | VRAM-driven scaling |
 
-
 > **Note**: Custom metrics require the inference engine to expose Prometheus-format metrics at the `/metrics` endpoint, and use [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to convert them to Custom Metrics API consumable by HPA. The specific metric names and configuration methods vary by inference engine — please refer to the corresponding engine's documentation.
 >
 
 ---
 
 ## Scenario 2: Event-Driven Scaling — KEDA
+
 KEDA (Kubernetes Event-Driven Autoscaling) supports richer external metric sources, suitable for scaling based on message queue depth, external API latency, and other metrics.
 
-### Configuration Example
+### Configuration Example (KEDA)
+
 ```yaml
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -213,6 +224,7 @@ spec:
 ```
 
 #### KEDA Key Fields
+
 | Field | Description |
 | --- | --- |
 | `scaleTargetRef` | Same as HPA, points to RBGSA |
@@ -220,17 +232,19 @@ spec:
 | `cooldownPeriod` | Scale-down cooldown period (seconds), prevents frequent scale-downs |
 | `triggers` | Trigger list, supports prometheus, kafka, redis, and many other types |
 
-
 > **Note**: KEDA's `cooldownPeriod` is particularly important for inference services. Inference engines have long startup times (model loading, KV Cache initialization), and overly frequent scale-downs cause service jitter. It is recommended to set `cooldownPeriod` to 5-10 minutes.
 >
 
 ---
 
 ## Scenario 3: SLA-Driven Scaling — RBG Planner
+
 ### Aggregated Deployment: HPA/KEDA Is Sufficient
+
 For aggregated (non-PD-disaggregated) inference services, HPA or KEDA can meet most scaling needs. The inference engine serves as a single role, and scaling decisions are relatively simple — just focus on a single role's resource utilization or custom metrics.
 
 ### PD Disaggregation: HPA/KEDA Falls Short
+
 In PD-disaggregated architecture, Prefill and Decode are two independent roles, each with its own HPA. Although CoordinatedPolicy can coordinate scaling progress, the fundamental problem with this approach is: **HPA/KEDA does not understand the characteristics of inference workloads**.
 
 1. **Asymmetric resource requirements for Prefill and Decode**: Prefill is compute-intensive (processing long prompts), Decode is memory-intensive (generating tokens one by one). Under the same request pattern, their resource consumption is completely different — simple progress coordination cannot solve the resource ratio problem
@@ -241,6 +255,7 @@ In PD-disaggregated architecture, Prefill and Decode are two independent roles, 
 These problems cannot be solved by CoordinatedPolicy — it only controls scaling progress synchronization, not scaling decision intelligence. PD-disaggregated inference needs a scaling strategy that **understands inference workloads and can simultaneously consider the relationship between Prefill and Decode**.
 
 ### RBG Planner: Intelligent Scaling Designed for PD-Disaggregated Inference
+
 [RBG Planner](https://github.com/sgl-project/rbg-planner) is an independent Kubernetes Operator that provides **SLA-driven predictive scaling** specifically for PD-disaggregated inference. Its core algorithm originates from the [NVIDIA Dynamo](https://github.com/ai-dynamo/dynamo) project, adapted to native Kubernetes RBG API. Like HPA/KEDA, RBG Planner delivers replica count decisions to RBG through the ScalingAdapter's Scale subresource.
 
 Unlike HPA/KEDA which independently scale each role, RBG Planner makes scaling decisions for Prefill and Decode as a whole — based on the characteristics of the request load (input length, output length), it separately calculates the optimal replica count for both roles.
@@ -274,6 +289,7 @@ RBG Planner's working loop:
 ```
 
 ### Key Capabilities
+
 | Capability | Description |
 | --- | --- |
 | SLA target driven | Uses TTFT and ITL latency targets (milliseconds) as scaling constraints |
@@ -283,14 +299,15 @@ RBG Planner's working loop:
 | GPU budget control | Sets total GPU limit, allocates resources proportionally within budget |
 | Correction factor | Real-time comparison of observed vs. expected values, auto-corrects scaling decisions |
 
-
 ### Installing RBG Planner
+
 ```bash
 helm install rbg-planner oci://ghcr.io/sgl-project/charts/rbg-planner \
   -n rbg-system --create-namespace
 ```
 
 ### Prerequisite: PD-Disaggregated Inference Service
+
 RBG Planner requires the inference service to be deployed in PD-disaggregated architecture, with both roles having ScalingAdapter enabled:
 
 ```yaml
@@ -339,6 +356,7 @@ spec:
 ```
 
 ### Creating AutoScaler CR
+
 ```yaml
 apiVersion: inference-extension.rolebasedgroup.io/v1alpha1
 kind: AutoScaler
@@ -385,13 +403,14 @@ spec:
         port: 9091             # Metrics port
 ```
 
-#### Parameter Description
+#### Parameter Description (AutoScaler)
+
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `spec.scalingInterval` | int | Scaling decision interval (seconds), default 180 |
 | `spec.pattern.PDDisaggregated.prefill.roleName` | string | Prefill role name, must match the role name in RBG |
-| `spec.pattern.PDDisAggregated.prefill.minReplicas` | int | Prefill minimum replicas |
-| `spec.pattern.PDDisAggregated.prefill.maxReplicas` | int | Prefill maximum replicas |
+| `spec.pattern.PDDisaggregated.prefill.minReplicas` | int | Prefill minimum replicas |
+| `spec.pattern.PDDisaggregated.prefill.maxReplicas` | int | Prefill maximum replicas |
 | `spec.implementation.DynamoPlanner.modelName` | string | Model name, used for Profiling |
 | `spec.implementation.DynamoPlanner.ttft` | float | TTFT SLA target (milliseconds) |
 | `spec.implementation.DynamoPlanner.itl` | float | ITL SLA target (milliseconds) |
@@ -403,8 +422,8 @@ spec:
 | `spec.implementation.DynamoPlanner.metricsEndpoint.metricSource` | string | Inference engine type |
 | `spec.implementation.DynamoPlanner.metricsEndpoint.port` | int | Inference engine metrics port |
 
-
 ### Profiling Process
+
 After creating the AutoScaler, the Operator automatically executes the following process:
 
 ```plain
@@ -427,6 +446,7 @@ The performance profile generated by the Profiler includes:
 >
 
 ### Verifying Planner Running Status
+
 ```bash
 # Check AutoScaler status
 kubectl get autoscaler -n inference
@@ -442,6 +462,7 @@ kubectl get rbg pd-inference -n inference -o jsonpath='{range .spec.roles[*]}{.n
 ```
 
 ### Recommended Tuning Process
+
 1. **Start with dryRun**: Set `dryRun: true`, Planner only observes and computes without executing scaling. Observe through logs whether predictions and computed results are reasonable.
 2. **Adjust SLA targets**: Based on observations during dryRun, set reasonable TTFT/ITL targets. Targets that are too low cause over-scaling, too high degrades user experience.
 3. **Disable dryRun**: After confirming the configuration is reasonable, set `dryRun: false` to enable actual scaling.
@@ -450,14 +471,16 @@ kubectl get rbg pd-inference -n inference -o jsonpath='{range .spec.roles[*]}{.n
 ---
 
 ## Solution Selection Recommendations
+
 ### By Deployment Architecture
+
 | Deployment Architecture | Recommended Solution | Rationale |
 | --- | --- | --- |
 | **Aggregated** (non-PD-disaggregated) | HPA or KEDA | Inference engine as a single role, simple scaling decisions, resource utilization or custom metrics meet the needs |
 | **PD-disaggregated** | RBG Planner | HPA/KEDA scales each role independently, cannot understand the resource ratio relationship between Prefill and Decode; RBG Planner makes SLA-driven scaling decisions for both as a whole |
 
-
 ### Capability Comparison
+
 | Dimension | HPA | KEDA | RBG Planner |
 | --- | --- | --- | --- |
 | Decision type | Reactive (metric threshold) | Reactive (external events) | Predictive (SLA + load prediction) |
@@ -470,12 +493,12 @@ kubectl get rbg pd-inference -n inference -o jsonpath='{range .spec.roles[*]}{.n
 | Execution channel | ScalingAdapter | ScalingAdapter | ScalingAdapter |
 | Applicable architecture | Aggregated | Aggregated | PD-disaggregated |
 
-
 **Key difference**: HPA/KEDA creates independent scalers for each role. Even with CoordinatedPolicy, it can only control scaling progress synchronization — it cannot make intelligent resource ratio decisions based on inference workload characteristics (e.g., Prefill compute-intensive vs Decode memory-intensive). RBG Planner treats Prefill and Decode as a whole, calculating optimal replica counts for both roles based on request characteristics (input length, output length) and performance profiles.
 
 ---
 
 ## Verify Scaling Status
+
 ```bash
 # Check HPA status
 kubectl get hpa
@@ -494,7 +517,11 @@ kubectl get rbg -o wide
 ```
 
 ## Related Documents
-+ [Deploying Inference Services with RBG](#)
-+ [Configuring Rolling Update Strategies](#)
-+ [In-Place Update and In-Place Scheduling](#)
+
+<!-- TODO: The following documents have not been created yet; links will be added once they are complete -->
+
++ Deploying Inference Services with RBG
++ Using RoleTemplates to Reduce Configuration Duplication
++ Configuring Rolling Update Strategies
++ In-Place Update and In-Place Scheduling
 + [RBG Planner Project](https://github.com/sgl-project/rbg-planner)

@@ -5,6 +5,7 @@
 ## 目标
 
 验证 RBG 的弹性伸缩机制，包括：
+
 1. 启用 ScalingAdapter 并通过 Scale 子资源手动伸缩
 2. 配置 HPA 实现指标驱动伸缩
 3. 配置 KEDA 实现事件驱动伸缩
@@ -105,10 +106,11 @@ kubectl get rbgsa scaling-demo-backend -o yaml
 ```
 
 **预期输出：**
+
 - RBGSA `scaling-demo-backend` 自动创建（命名规则：`<rbg-name>-<role-name>`）
 - RBGSA 的 `status.replicas` 为 2
 - RBGSA 的 `status.selector` 包含 Pod 标签选择器
-- RBGSA 的 `status.phase` 为 `Ready`
+- RBGSA 的 `status.phase` 为 `Bound`
 
 ### 步骤 3：通过 Scale 子资源手动伸缩
 
@@ -153,6 +155,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=scaling-demo
 ```
 
 **预期输出：**
+
 - 扩容后 Pod 数量从 2 增加到 4
 - RBG 的 `spec.roles[0].replicas` 同步更新为 4
 - 缩容后 Pod 数量减少到 1
@@ -167,7 +170,7 @@ kubectl delete rbg scaling-demo
 
 ## 操作二：HPA 指标驱动伸缩
 
-### 步骤 1：创建启用 ScalingAdapter 的 RBG
+### 步骤 1：创建启用 ScalingAdapter 的 RBG（HPA）
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -309,6 +312,7 @@ kubectl get rbgsa hpa-demo-backend
 ```
 
 **预期输出：**
+
 - HPA 的 `TARGETS` 列显示当前 CPU 利用率和目标值（如 `0%/50%`）
 - HPA 的 `scaleTargetRef.kind` 为 `RoleBasedGroupScalingAdapter`
 - HPA 的 `scaleTargetRef.name` 为 `hpa-demo-backend`
@@ -353,9 +357,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=hpa-demo -w
 > hpa-demo-backend-3   0/1     ContainerCreating   0          0s
 ```
 
-> **说明**：`sleep 3600` 本身不消耗 CPU。如需触发 HPA 扩容，可替换 command 为 CPU 密集型命令（如 `python3 -c "while True: pass"`），或使用自定义指标。此处主要验证 HPA 配置正确性。
-
-### 清理
+### 清理（HPA）
 
 ```bash
 kubectl delete hpa hpa-demo-backend
@@ -547,6 +549,7 @@ kubectl wait --for=condition=ready pod -l rbg.workloads.x-k8s.io/group-name=keda
 ```
 
 > **说明**：Pod 内运行 Python HTTP 服务器，模拟 SGLang 的 Prometheus 指标端点：
+>
 > - `GET /metrics`：返回 `sglang_num_queue_requests{rbg="keda-demo",role="backend"} 0`
 > - `GET /set?value=200`：将指标值设为 200（用于触发扩容）
 > - `GET /set?value=0`：将指标值设为 0（用于触发缩容）
@@ -605,6 +608,7 @@ kubectl get hpa -l scaledobject.keda.sh/name=keda-demo-backend
 ```
 
 **预期输出：**
+
 - Prometheus 查询返回 `sglang_num_queue_requests` 值为 `0`
 - ScaledObject `READY=True`，`ACTIVE=False`（指标值 0 < 阈值 100）
 - KEDA 自动创建 HPA（名为 `keda-hpa-keda-demo-backend`）指向 RBGSA，`TARGETS` 显示 `0/100 (avg)`
@@ -661,7 +665,7 @@ kubectl get hpa -l scaledobject.keda.sh/name=keda-demo-backend
 
 > **说明**：指标降为 0 后，HPA 在 1-3 分钟内检测到指标低于阈值并完成缩容。KEDA 默认不设置自定义 scaleDown behavior，缩容速度取决于 HPA 控制器的默认 downscale stabilization 窗口（通常 5 分钟内）。
 
-### 清理
+### 清理（KEDA）
 
 ```bash
 kubectl delete scaledobject keda-demo-backend
@@ -834,6 +838,7 @@ kubectl get rbgsa -n inference
 ```
 
 **预期输出：**
+
 - AutoScaler 状态为 `Ready` 或 `Profiling`（首次运行需进行 Profiling）
 - Planner Pod 正常运行
 - 日志中显示观测到的 TTFT、ITL 指标和预测的副本数
@@ -856,7 +861,7 @@ kubectl get pods -n inference -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler
 
 > **说明**：关闭 dryRun 后，Planner 会根据 SLA 目标和负载预测自动调整 Prefill 和 Decode 的副本数。观察一段时间后，如果伸缩行为符合预期，则配置完成。如需调参，可参考概念文档中的「推荐的调参流程」。
 
-### 清理
+### 清理（RBG Planner）
 
 ```bash
 kubectl delete autoscaler pd-autoscaler-demo -n inference
