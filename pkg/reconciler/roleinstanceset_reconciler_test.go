@@ -321,7 +321,7 @@ func TestRoleInstanceSetReconciler_ValidateRoleTemplateReferences(t *testing.T) 
 			useTemplateRef:   true,
 			useTemplatePatch: false,
 			expectError:      true,
-			errorMsg:         "templatePatch: required when templateRef is set",
+			errorMsg:         "templateRef.patch is required when templateRef is set",
 		},
 		{
 			name:           "LeaderWorkerSet with templateRef should fail",
