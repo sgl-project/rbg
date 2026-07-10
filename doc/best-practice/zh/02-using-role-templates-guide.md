@@ -5,6 +5,7 @@
 ## 目标
 
 验证 RBG 的 `roleTemplates` 机制，包括：
+
 1. 定义模板并通过 `templateRef` 引用
 2. 通过 `patch` 进行差异化覆盖（Strategic Merge Patch）
 3. 与 `leaderWorkerPattern` 结合使用
@@ -104,6 +105,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rbg-with-templates -o json
 ```
 
 **预期输出：**
+
 - Pod 镜像为 `lmsysorg/sglang:v0.5.9`（来自模板）
 - Pod 使用 `sleep 3600` 命令保持运行（来自模板）
 - Pod 请求 CPU 和内存资源（来自模板）
@@ -203,13 +205,13 @@ spec:
 EOF
 ```
 
-### 预期行为
+### 预期行为（PD 分离 Patch 覆盖）
 
 - Prefill 和 Decode 角色共享模板 `engine-base` 的基础配置（镜像、端口、资源、卷）
 - Patch 仅添加各自不同的 `command` 启动参数
 - 两个角色的 Pod 镜像相同（来自模板），启动参数不同（来自 patch）
 
-### 验证
+### 验证（PD 分离 Patch 覆盖）
 
 ```bash
 # 查看 RBG 状态
@@ -251,6 +253,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-with-templates -o jsonp
 ```
 
 **预期输出：**
+
 - 2 个 Pod 均为 Running
 - Prefill Pod 的 command 包含 `--disaggregation-mode prefill`
 - Decode Pod 的 command 包含 `--disaggregation-mode decode`
@@ -345,13 +348,13 @@ spec:
 EOF
 ```
 
-### 预期行为
+### 预期行为（Patch 合并规则）
 
 - Prefill Pod 的内存请求被 patch 覆盖为 `16Gi`
 - Prefill Pod 的 GPU 请求保持模板中的 `1`（未被覆盖）
 - Decode Pod 的内存请求保持模板中的 `8Gi`（无 patch 覆盖）
 
-### 验证
+### 验证（Patch 合并规则）
 
 ```bash
 # 验证 Prefill Pod 内存请求为 16Gi（被 patch 覆盖）
@@ -375,11 +378,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/role-name=decode -o jsonpath='{.items
 ```
 
 **预期输出：**
+
 - Prefill memory: `16Gi`
 - Prefill gpu: `1`
 - Decode memory: `8Gi`
 
-### 清理
+### 清理（PD 分离 Patch 覆盖）
 
 ```bash
 kubectl delete rbg pd-with-templates
@@ -459,7 +463,7 @@ spec:
 EOF
 ```
 
-### 预期行为
+### 预期行为（leaderWorkerPattern）
 
 - 模板 `engine-base` 提供基础配置（镜像、资源、卷）
 - `templateRef.patch` 添加启动命令和张量并行参数
@@ -467,7 +471,7 @@ EOF
 - `workerTemplatePatch` 为 Worker Pod 添加 `role: worker` 标签
 - 配置应用顺序：`roleTemplates` → `templateRef.patch` → `leaderTemplatePatch` / `workerTemplatePatch`
 
-### 验证
+### 验证（leaderWorkerPattern）
 
 ```bash
 # 查看 Pod 状态（应看到 2 个 Pod：Leader + Worker）
@@ -510,13 +514,14 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates -o j
 ```
 
 **预期输出：**
+
 - 2 个 Pod 均为 Running
 - 1 个 Pod 带有 `role=leader` 标签
 - 1 个 Pod 带有 `role=worker` 标签
 - 两个 Pod 镜像均为 `lmsysorg/sglang:v0.5.9`
 - command 包含 `--tp-size 2` 等参数（来自 patch）
 
-### 清理
+### 清理（leaderWorkerPattern）
 
 ```bash
 kubectl delete rbg agg-tp-with-templates

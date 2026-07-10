@@ -1,8 +1,11 @@
 # Simplifying Configuration with RoleTemplates
+
 ## Overview
+
 In RBG, multiple roles often share the same Pod configuration (such as image, environment variables, resource limits, etc.). `roleTemplates` allows you to define reusable Pod templates at the RBG level. Each role references a template via `templateRef` and can apply differential overrides via `patch`, avoiding the need to repeatedly write the same configuration.
 
 ## Prerequisites
+
 + Kubernetes cluster version >= 1.24
 + RBG Controller installed (see [Installation Guide](https://github.com/sgl-project/rbg))
 
@@ -12,6 +15,7 @@ In RBG, multiple roles often share the same Pod configuration (such as image, en
 ---
 
 ## The Problem Without RoleTemplates
+
 In multi-role inference services, the engine image version, model volume configuration, etc. are the same for each role. For example, in PD-disaggregated deployment, Prefill and Decode roles typically use the same inference engine image, the same GPU resource requests, and the same shared memory mount, with only different startup parameters.
 
 When these common configurations need to be updated (e.g., upgrading the engine image version), you must modify each role's `template` one by one — this is operationally complex and error-prone, as it's easy to miss a role and cause version inconsistency. `roleTemplates` centralizes these common configurations — when updating, you only need to modify the template definition, and all roles referencing that template take effect automatically.
@@ -19,9 +23,11 @@ When these common configurations need to be updated (e.g., upgrading the engine 
 ---
 
 ## Using RoleTemplates
+
 `roleTemplates` defines reusable Pod templates at the RBG's `spec` level. Roles reference them via `templateRef`.
 
 ### Define a Template and Reference It Directly
+
 Define templates in `spec.roleTemplates`, and roles reference them via `templateRef.name`:
 
 ```yaml
@@ -66,6 +72,7 @@ spec:
 ```
 
 #### Parameter Description
+
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `spec.roleTemplates` | []object | No | - | List of reusable Pod templates |
@@ -73,11 +80,11 @@ spec:
 | `spec.roleTemplates[].template` | object | Yes | - | Pod template, follows standard Kubernetes `PodTemplateSpec` |
 | `spec.roles[].standalonePattern.templateRef.name` | string | Yes | - | Name of the referenced template |
 
-
 > **Note**: `templateRef` and `template` are mutually exclusive — a role either uses `templateRef` to reference a template, or uses `template` to define directly, but not both.
 >
 
 ### Override Template via Patch
+
 After referencing a template, roles can apply differential overrides via `templateRef.patch`. Patch uses Kubernetes standard **Strategic Merge Patch** semantics, which can add, modify, or override fields in the template.
 
 Taking PD-disaggregated deployment as an example, Prefill and Decode share the same base configuration but have different startup parameters:
@@ -164,14 +171,15 @@ spec:
                     - "1"
 ```
 
-#### Parameter Description
+#### Parameter Description (templateRef + patch)
+
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `spec.roles[].standalonePattern.templateRef.name` | string | Yes | - | Name of the referenced template |
 | `spec.roles[].standalonePattern.templateRef.patch` | object | No | - | Strategic Merge Patch, used to override fields in the template |
 
-
 ### Patch Merge Rules
+
 Patch follows Kubernetes standard Strategic Merge Patch semantics:
 
 | Field Type | Merge Behavior | Example |
@@ -179,7 +187,6 @@ Patch follows Kubernetes standard Strategic Merge Patch semantics:
 | Scalar fields (string, int, bool) | Override | `resources.requests.memory: "128Mi"` overrides the template's value |
 | List fields (matched by name) | Merge by name | `containers` list matches by `name` field, merging corresponding container fields |
 | Map fields | Recursive merge | `metadata.labels` merges rather than overrides |
-
 
 Taking resource request override as an example:
 
@@ -203,6 +210,7 @@ patch:
 ```
 
 ### Combining with leaderWorkerPattern
+
 `templateRef` also works with `leaderWorkerPattern`. The template defines the base Pod configuration, while `leaderTemplatePatch` and `workerTemplatePatch` further differentiate Leader and Worker on top of that:
 
 ```yaml
@@ -279,6 +287,7 @@ spec:
 ---
 
 ## Verify Deployment
+
 ```bash
 # Check RBG status
 kubectl get rbg
@@ -291,7 +300,8 @@ kubectl get rbg <rbg-name> -o yaml | grep templateRef
 ```
 
 ## Related Documents
-+ [Deploying Inference Services with RBG](#)
-+ [Configuring HPA Autoscaling](#)
-+ [Gang Scheduling Configuration](#)
-+ [Rolling Updates and Canary Releases](#)
+
++ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
++ [Configuring HPA Autoscaling](08-configuring-autoscaling.md)
++ Gang Scheduling Configuration
++ [Rolling Updates and Canary Releases](03-configuring-rolling-updates.md)

@@ -5,6 +5,7 @@
 ## Objectives
 
 Validate RBG's `roleTemplates` mechanism, including:
+
 1. Defining templates and referencing them via `templateRef`
 2. Overriding via `patch` for differentiation (Strategic Merge Patch)
 3. Combining with `leaderWorkerPattern`
@@ -104,6 +105,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=rbg-with-templates -o json
 ```
 
 **Expected output:**
+
 - Pod image is `lmsysorg/sglang:v0.5.9` (from template)
 - Pod uses `sleep 3600` command to stay running (from template)
 - Pod requests CPU and memory resources (from template)
@@ -203,13 +205,13 @@ spec:
 EOF
 ```
 
-### Expected Behavior
+### Expected Behavior (PD-Disaggregated Patch)
 
 - Prefill and Decode roles share the base configuration from template `engine-base` (image, ports, resources, volumes)
 - Patch only adds the differing `command` startup parameters for each
 - Both roles' Pods have the same image (from template) but different startup parameters (from patch)
 
-### Verification
+### Verification (PD-Disaggregated Patch)
 
 ```bash
 # Check RBG status
@@ -251,6 +253,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-with-templates -o jsonp
 ```
 
 **Expected output:**
+
 - Both Pods are Running
 - Prefill Pod's command includes `--disaggregation-mode prefill`
 - Decode Pod's command includes `--disaggregation-mode decode`
@@ -345,13 +348,13 @@ spec:
 EOF
 ```
 
-### Expected Behavior
+### Expected Behavior (Patch Merge Rules)
 
 - Prefill Pod's memory request is overridden by patch to `16Gi`
 - Prefill Pod's GPU request remains `1` from template (not overridden)
 - Decode Pod's memory request remains `8Gi` from template (no patch override)
 
-### Verification
+### Verification (Patch Merge Rules)
 
 ```bash
 # Verify Prefill Pod memory request is 16Gi (overridden by patch)
@@ -375,11 +378,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/role-name=decode -o jsonpath='{.items
 ```
 
 **Expected output:**
+
 - Prefill memory: `16Gi`
 - Prefill gpu: `1`
 - Decode memory: `8Gi`
 
-### Cleanup
+### Cleanup (PD-Disaggregated Patch)
 
 ```bash
 kubectl delete rbg pd-with-templates
@@ -459,7 +463,7 @@ spec:
 EOF
 ```
 
-### Expected Behavior
+### Expected Behavior (leaderWorkerPattern)
 
 - Template `engine-base` provides base configuration (image, resources, volumes)
 - `templateRef.patch` adds startup command and tensor parallelism parameters
@@ -467,7 +471,7 @@ EOF
 - `workerTemplatePatch` adds `role: worker` label to Worker Pod
 - Configuration application order: `roleTemplates` → `templateRef.patch` → `leaderTemplatePatch` / `workerTemplatePatch`
 
-### Verification
+### Verification (leaderWorkerPattern)
 
 ```bash
 # Check Pod status (should see 2 Pods: Leader + Worker)
@@ -510,13 +514,14 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates -o j
 ```
 
 **Expected output:**
+
 - Both Pods are Running
 - 1 Pod with `role=leader` label
 - 1 Pod with `role=worker` label
 - Both Pods' image is `lmsysorg/sglang:v0.5.9`
 - Command includes `--tp-size 2` and other parameters (from patch)
 
-### Cleanup
+### Cleanup (leaderWorkerPattern)
 
 ```bash
 kubectl delete rbg agg-tp-with-templates
