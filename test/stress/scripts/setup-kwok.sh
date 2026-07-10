@@ -1,7 +1,8 @@
 #!/bin/bash
 # Deploy kwok into an existing Kubernetes cluster for stress testing.
-# This installs kwok controller + stage-fast via Helm, then creates
-# fake nodes that simulate Pod Ready without real containers.
+# This installs kwok controller + stage-fast via Helm, applies custom Pod
+# lifecycle stages for precise delay control, then creates fake nodes
+# that simulate Pod Ready without real containers.
 set -euo pipefail
 
 KWOK_NAMESPACE="${KWOK_NAMESPACE:-kube-system}"
@@ -16,12 +17,12 @@ echo "Fake nodes: ${FAKE_NODE_COUNT} (each ${FAKE_NODE_CPU} CPU, ${FAKE_NODE_MEM
 echo ""
 
 # 1. Add kwok Helm repo
-echo "[1/4] Adding kwok Helm repo..."
+echo "[1/5] Adding kwok Helm repo..."
 helm repo add kwok https://kwok.sigs.k8s.io/charts 2>/dev/null || true
 helm repo update kwok
 
 # 2. Install kwok controller (skip if already installed)
-echo "[2/4] Installing kwok controller..."
+echo "[2/5] Installing kwok controller..."
 if helm status kwok -n "${KWOK_NAMESPACE}" >/dev/null 2>&1; then
     echo "  kwok already installed, skipping"
 else
@@ -29,7 +30,7 @@ else
 fi
 
 # 3. Install stage-fast (Pod simulation stages)
-echo "[3/4] Installing kwok stage-fast..."
+echo "[3/5] Installing kwok stage-fast..."
 if helm status kwok-stage-fast -n "${KWOK_NAMESPACE}" >/dev/null 2>&1; then
     echo "  stage-fast already installed, skipping"
 else
@@ -41,8 +42,21 @@ echo "  Waiting for kwok controller..."
 kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=kwok -n "${KWOK_NAMESPACE}" --timeout=60s 2>/dev/null || \
 kubectl wait --for=condition=Ready pod -l app=kwok-controller -n "${KWOK_NAMESPACE}" --timeout=60s 2>/dev/null || true
 
-# 4. Create fake nodes
-echo "[4/4] Creating ${FAKE_NODE_COUNT} fake nodes..."
+# 4. Apply custom Pod lifecycle stages (overrides pod-ready/pod-delete from stage-fast,
+#    adds pod-initialize/pod-running with specific delays for stress testing)
+echo "[4/5] Applying custom Pod lifecycle stages..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STAGE_FILE="${SCRIPT_DIR}/../templates/kwok-stage.yaml"
+if [ -f "${STAGE_FILE}" ]; then
+    kubectl apply -f "${STAGE_FILE}"
+    # Remove pod-complete from stage-fast to avoid conflict with custom pod-running stage
+    kubectl delete stage pod-complete --ignore-not-found=true
+else
+    echo "  WARNING: Custom stage file not found at ${STAGE_FILE}, using stage-fast defaults"
+fi
+
+# 5. Create fake nodes
+echo "[5/5] Creating ${FAKE_NODE_COUNT} fake nodes..."
 for i in $(seq 0 $((FAKE_NODE_COUNT - 1))); do
     NODE_NAME="kwok-node-${i}"
     if kubectl get node "${NODE_NAME}" >/dev/null 2>&1; then

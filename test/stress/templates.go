@@ -66,14 +66,19 @@ func GenerateRBG(index int, scenario *Scenario) *unstructured.Unstructured {
 		},
 	}
 
-	// Add rollout strategy if in-place update is enabled
+	// Add rollout strategy to each role if in-place update is enabled
 	if scenario.InPlaceUpdate {
 		spec := rbg.Object["spec"].(map[string]interface{})
-		spec["rolloutStrategy"] = map[string]interface{}{
-			"type": "RollingUpdate",
-			"rollingUpdate": map[string]interface{}{
-				"type": "InPlaceIfPossible",
-			},
+		roles := spec["roles"].([]interface{})
+		for i, r := range roles {
+			role := r.(map[string]interface{})
+			role["rolloutStrategy"] = map[string]interface{}{
+				"type": "RollingUpdate",
+				"rollingUpdate": map[string]interface{}{
+					"type": "InPlaceIfPossible",
+				},
+			}
+			roles[i] = role
 		}
 	}
 
@@ -84,9 +89,6 @@ func buildStandaloneRole(name string, scenario *Scenario) map[string]interface{}
 	return map[string]interface{}{
 		"name":     name,
 		"replicas": int64(1),
-		"annotations": map[string]interface{}{
-			"rbg.workloads.x-k8s.io/role-workload-type": "apps/v1/Deployment",
-		},
 		"standalonePattern": map[string]interface{}{
 			"template": map[string]interface{}{
 				"metadata": map[string]interface{}{
@@ -105,9 +107,6 @@ func buildLWSRole(name string, scenario *Scenario) map[string]interface{} {
 	return map[string]interface{}{
 		"name":     name,
 		"replicas": int64(1),
-		"annotations": map[string]interface{}{
-			"rbg.workloads.x-k8s.io/role-workload-type": "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
-		},
 		"leaderWorkerPattern": map[string]interface{}{
 			"size": int64(scenario.LWSSize),
 			"template": map[string]interface{}{
