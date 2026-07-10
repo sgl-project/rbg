@@ -1,10 +1,13 @@
 # 操作文档：大规模集群资源评估、配置与压测
 
+> **目标读者**：平台管理员 / 集群运维人员。本文档面向负责 RBG Controller 部署和性能调优的平台管理员，而非普通推理服务用户。
+>
 > 对应概念文档：[9. 大规模集群资源评估、配置与压测](09-stress-testing-and-tuning.md)
 
 ## 目标
 
 验证 RBG Controller 的压测工具链，包括：
+
 1. 搭建 KWOK 模拟环境
 2. 部署 Controller 并配置资源参数
 3. 运行压测（Create / Update / Delete 三阶段）
@@ -13,9 +16,11 @@
 
 ## 前提条件
 
+- 已克隆 RBG 仓库并进入项目根目录 `git clone https://github.com/sgl-project/rbg && cd rbg`
 - Kubernetes 集群版本 >= 1.24
 - 已安装 RBG CRD
-- 本地工具：`helm`、`kubectl`、`go`、`curl`
+- 本地工具：`helm`、`kubectl`、`go`（>= 1.22）、`curl`
+- **本文档中所有命令均假设在 RBG 仓库根目录下执行**
 - （可选）Controller 镜像支持 `--enable-pprof`
 
 ---
@@ -65,6 +70,7 @@ kubectl get stages
 ```
 
 **预期输出：**
+
 - 5 个 Ready 状态的 KWOK 节点
 - 6 个 Stage：2 个 Node 相关（`node-heartbeat-with-lease`、`node-initialize`）+ 4 个 Pod 相关（`pod-initialize`、`pod-running`、`pod-ready`、`pod-delete`）
 - Pod 生命周期 Stage 延迟：`pod-initialize` 即时 → `pod-running` 500ms → `pod-ready` 1000ms → `pod-delete` 500ms
@@ -104,7 +110,7 @@ pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
 kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
-### 预期行为
+### 预期行为（部署 Controller）
 
 - 跳过镜像构建（使用集群中已有的镜像）
 - 通过 Helm 升级 Controller，仅更新资源限制和运行时参数
@@ -114,7 +120,7 @@ kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 - 等待 Controller Pod 就绪
 - 建立 pprof 端口转发（`localhost:6060`）
 
-### 验证
+### 验证（部署 Controller）
 
 ```bash
 # 确认 Controller Pod 就绪
@@ -142,6 +148,7 @@ kubectl get deploy -n rbgs-system rbgs-controller-manager -o jsonpath='{.spec.te
 ```
 
 **预期输出：**
+
 - Controller Pod 处于 Running 且 Ready
 - 资源配置为 8 CPU / 16Gi
 - 启动参数包含 `--max-concurrent-reconciles=20`、`--kube-api-qps=100`、`--kube-api-burst=200`
@@ -169,7 +176,7 @@ go run ./test/stress/ \
     --timeout=30m
 ```
 
-### 预期行为
+### 预期行为（运行压测）
 
 压测分三个阶段执行：
 
@@ -181,7 +188,7 @@ go run ./test/stress/ \
 
 > **说明**：`--lws-roles=1` 表示前 1 个角色使用 `leaderWorkerPattern`（多 Pod 组模式），底层由 RBG 内置的 `RoleInstanceSet` 控制器实现，无需安装外部 LeaderWorkerSet CRD。
 
-### 验证
+### 验证（运行压测）
 
 ```bash
 # 查看压测过程中的 Pod 数量
@@ -196,6 +203,7 @@ kubectl logs -n rbgs-system -l control-plane=rbgs-controller -f
 ```
 
 **预期行为：**
+
 - Create 阶段：100 个 RBG 逐步创建，Pod 调度到 KWOK 模拟节点
 - Update 阶段：所有 RBG 镜像更新，原地升级
 - Delete 阶段：所有 RBG 清除完毕
@@ -359,6 +367,7 @@ cat /tmp/rbg-stress-results/goroutine-create-top.txt
 ```
 
 **参考判定：**
+
 - 协程数 < 100：健康
 - 协程数 100~500：高并发正常范围
 - 协程数 > 1000：可能存在泄漏
@@ -388,7 +397,7 @@ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
 
 helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set image.tag=${IMAGE_TAG} \
-    --set resources.limits.cpu=16 --set resources.limits.memory=16Gi \
+    --set resources.limits.cpu=16 --set resources.limits.memory=32Gi \
     --set controllerTuning.maxConcurrentReconciles=50 \
     --set controllerTuning.kubeApiQPS=200 --set controllerTuning.kubeApiBurst=400 \
     --set pprof.enabled=true --set pprof.port=6060 \
@@ -441,9 +450,9 @@ for item in data:
 "
 ```
 
-### 预期行为
+### 预期行为（调优并重新压测）
 
-```
+```text
 === 第一轮（8c/16g, Reconciles=20, QPS=100）===
 create: P50=4080.5 P99=7062.680000000001 QPS=3.99
 update: P50=393 P99=769.6400000000003 QPS=4.93
@@ -469,13 +478,13 @@ bash test/stress/scripts/teardown-kwok.sh
 UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
 ```
 
-### 预期行为
+### 预期行为（清理环境）
 
 - 压测命名空间 `stress-test` 被删除
 - KWOK 模拟节点被删除
 - （可选）KWOK Controller 被卸载
 
-### 验证
+### 验证（清理环境）
 
 ```bash
 # 确认模拟节点已删除
@@ -502,8 +511,8 @@ kubectl get namespace stress-test
 
 | 操作 | 验证点 | 关键预期 |
 | --- | --- | --- |
-| 搭建 KWOK 环境 | 模拟节点和 Pod 生命周期 | 5 个 Ready 节点 + 6 个 Stage（2 Node + 4 Pod）|
+| 搭建 KWOK 环境 | 模拟节点和 Pod 生命周期 | 5 个 Ready 节点 + 6 个 Stage（2 Node + 4 Pod） |
 | 部署 Controller | 资源和参数配置 | Pod Ready，参数正确 |
 | 运行压测 | Create/Update/Delete 三阶段 | 100 RBG 全部创建、更新、删除成功 |
-| 分析报告 | 吞吐量、延迟、错误、pprof | Create QPS 3.97（⚠ 落后），Update/Delete 达标，371 协程，76MB 堆内存，无严重错误 |
+| 分析报告 | 吞吐量、延迟、错误、pprof | Create QPS 3.99（⚠ 落后），Update/Delete 达标，371 协程，76MB 堆内存，无严重错误 |
 | 调优重测 | 参数调优效果验证 | 调优后 QPS 提升，延迟降低 |
