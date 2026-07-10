@@ -1,5 +1,9 @@
 # Large-Scale Cluster Resource Estimation, Configuration, and Stress Testing
+
+> **Target audience**: Platform administrators / cluster operators. This document is intended for platform administrators responsible for RBG Controller deployment and performance tuning, not for general inference service users.
+
 ## Overview
+
 Before deploying RBG Controller to a large-scale cluster (hundreds to thousands of RBG instances), three questions need to be answered:
 
 1. **How many resources does the Controller need?** How to configure CPU, memory, concurrent Reconciles, and API QPS
@@ -8,7 +12,7 @@ Before deploying RBG Controller to a large-scale cluster (hundreds to thousands 
 
 RBG provides a complete stress testing toolchain to answer these questions:
 
-+ `/stress-test`** Skill**: Claude Code's built-in stress testing Skill, completing the entire workflow from environment setup to result analysis through conversational interaction
++ `/stress-test`**Skill**: Claude Code's built-in stress testing Skill, completing the entire workflow from environment setup to result analysis through conversational interaction
 + **Stress test client** (`test/stress/`): A Go-written stress testing driver, supporting rate-controlled load testing across Create/Update/Delete three phases
 + **KWOK simulation**: Uses [KWOK](https://kwok.sigs.k8s.io/) to simulate thousands of Pods in a real cluster without actual GPU resources
 
@@ -42,14 +46,18 @@ RBG provides a complete stress testing toolchain to answer these questions:
 ```
 
 ## Prerequisites
+
++ Clone the RBG repository and navigate to the project root `git clone https://github.com/sgl-project/rbg && cd rbg`
 + Kubernetes cluster version >= 1.24
 + RBG CRD installed (see [Installation Guide](https://github.com/sgl-project/rbg))
-+ Local tools: `helm`, `kubectl`, `go`, `curl`
++ Local tools: `helm`, `kubectl`, `go` (>= 1.22), `curl`
++ **All commands in this document assume execution from the RBG repository root**
 + (Optional) Controller image supports `--enable-pprof` (for performance profile collection)
 
 ---
 
 ## Background: Why Stress Testing Is Needed
+
 RBG Controller manages the full lifecycle of all RBG instances — creating sub-resources (Deployment/LeaderWorkerSet/Service), monitoring Pod status, executing rolling updates, coordinating role dependencies. Each RBG instance's Reconcile loop involves multiple API Server interactions. When managing hundreds of RBGs, the Controller's processing capacity directly affects:
 
 | Impact Dimension | Description |
@@ -58,7 +66,6 @@ RBG Controller manages the full lifecycle of all RBG instances — creating sub-
 | **Rolling update speed** | Total time for all instances to complete updates in large-scale update scenarios |
 | **Status sync timeliness** | Time for Controller to perceive and respond after Pod status changes |
 | **API Server pressure** | Controller's read/write frequency to API Server — too high causes throttling |
-
 
 Without stress testing data, configuring Controller parameters based on experience often leads to two extremes:
 
@@ -70,9 +77,11 @@ The goal of stress testing is to find the **optimal configuration for the target
 ---
 
 ## Stress Testing Architecture: KWOK Simulation
+
 The stress test uses [KWOK](https://kwok.sigs.k8s.io/) (Kubernetes WithOut Kubelet) to simulate workload Pods in a real cluster without actual GPU or compute resources.
 
 ### How It Works
+
 ```plain
 Real Nodes                              KWOK Simulated Nodes
 ┌─────────────────────────┐         ┌─────────────────────────┐
@@ -92,8 +101,8 @@ KWOK simulates Pod lifecycle through the Stage CRD.
 
 The `setup-kwok.sh` script installs two sets of Stages:
 
-- **Official `stage-fast` chart**: Provides Node-related Stages (`node-heartbeat-with-lease`, `node-initialize`), simulating node heartbeat and initialization
-- **Project-custom Pod lifecycle Stages** (`test/stress/templates/kwok-stage.yaml`): Overrides official default Pod Stages, providing more precise delay control
++ **Official `stage-fast` chart**: Provides Node-related Stages (`node-heartbeat-with-lease`, `node-initialize`), simulating node heartbeat and initialization
++ **Project-custom Pod lifecycle Stages** (`test/stress/templates/kwok-stage.yaml`): Overrides official default Pod Stages, providing more precise delay control
 
 Pod lifecycle Stages are as follows:
 
@@ -104,10 +113,10 @@ Pod lifecycle Stages are as follows:
 | `pod-ready` | Sets Ready condition to True | 1000ms |
 | `pod-delete` | Deletes Pod | 500ms |
 
-
 This means each simulated Pod takes about 1.5 seconds from creation to Ready, simulating the readiness process of large-scale Pods.
 
 ### Simulated Node Configuration
+
 Each KWOK simulated node's default capacity:
 
 | Resource | Default | Description |
@@ -116,16 +125,17 @@ Each KWOK simulated node's default capacity:
 | Memory | 512Gi | Simulated memory capacity |
 | Pods | 1000 | Maximum Pods per node |
 
-
 > **Note**: The simulated node's capacity is "virtual" — it only affects the scheduler's scheduling decisions. Actual Pods do not run real containers and do not consume these resources.
 >
 
 ---
 
 ## Resource Estimation: How Many Resources Does the Controller Need
+
 Before running stress tests, you need to estimate the Controller's resource requirements for the target scale. The following is a resource estimation method based on RBG Controller's architecture.
 
 ### Compute Resource Scale
+
 Each RBG instance's management overhead depends on the number of roles and role types:
 
 | Sub-resource | API Operations per Role per Reconcile |
@@ -136,7 +146,6 @@ Each RBG instance's management overhead depends on the number of roles and role 
 | Status update | 1 Patch |
 | **Total** | **~4-8 API operations/role/Reconcile** |
 
-
 Assuming 500 RBGs are managed, each with 3 roles:
 
 ```plain
@@ -145,6 +154,7 @@ API operations/round = 1500 × 6 (average) = 9000
 ```
 
 ### Parameter Configuration Guide
+
 | Parameter | Description | Recommended Formula | Example (500 RBG × 3 roles) |
 | --- | --- | --- | --- |
 | `max-concurrent-reconciles` | Parallel Reconcile worker threads | `total_roles / target_P99_seconds` | 1500 / 30 = 50 |
@@ -153,8 +163,8 @@ API operations/round = 1500 × 6 (average) = 9000
 | CPU | Controller compute resources | Based on concurrency and API call volume | 8-16 cores |
 | Memory | Controller memory resources | Informer cache proportional to object count | 16-32Gi |
 
-
 ### Recommended Configuration Tiers
+
 | Scale | RBG Count | Total Roles | Recommended Configuration |
 | --- | --- | --- | --- |
 | Small | < 50 | < 150 | CPU 4 cores / Memory 8Gi / Reconciles 10 / QPS 50 / Burst 100 |
@@ -162,83 +172,25 @@ API operations/round = 1500 × 6 (average) = 9000
 | Large | 200-500 | 600-1500 | CPU 16 cores / Memory 32Gi / Reconciles 50 / QPS 200 / Burst 400 |
 | Ultra-large | 500-1000+ | 1500+ | CPU 32 cores / Memory 64Gi / Reconciles 100 / QPS 500 / Burst 1000 |
 
-
 > **Note**: The above configurations are starting points. The actual optimal configuration needs to be validated through stress testing — which is exactly what the subsequent sections of this document cover.
 >
 
 ### Controller Key Parameter Description
+
 | Parameter | Description | Impact |
 | --- | --- | --- |
 | `max-concurrent-reconciles` | Number of worker threads for parallel Reconcile processing | Higher values mean higher throughput, but increased CPU and memory consumption, and may exacerbate API Server conflicts |
 | `kube-api-qps` | Sustained request rate limit to API Server | Too low causes client-side throttling (`Throttling request took Xs`), too high puts pressure on API Server |
 | `kube-api-burst` | Burst request capacity above QPS | Allows short-term request spikes, avoids throttling during Reconcile peaks |
 
-
----
-
-## Quick Start: Using the /stress-test Skill
-`/stress-test` is a Claude Code built-in Skill that completes the entire stress testing workflow through conversational interaction. Enter `/stress-test` in Claude Code to launch it.
-
-### Usage Flow
-```plain
-/stress-test
-```
-
-The Skill will sequentially ask for the following configuration items:
-
-| Configuration Item | Options | Description |
-| --- | --- | --- |
-| **Test mode** | Manual mode / Auto-tuning mode | Manual mode runs one round of stress testing and outputs a report; auto-tuning mode runs multiple rounds and recommends the optimal configuration |
-| **Controller resources** | 4c/8g, 8c/16g, 16c/32g, 32c/64g | Controller Pod resource limits |
-| **Controller parameters** | Reconciles / QPS / Burst | Controller runtime parameters |
-| **Workload template** | Roles / LWS roles / LWS size / Total RBGs | Simulated RBG workload structure |
-| **Operation QPS** | Create / Update / Delete QPS | Submission rate for each phase |
-| **Update strategy** | In-place update / Rebuild update | Update method for the Update phase |
-
-
-The Skill automatically executes the following phases:
-
-```plain
-┌──────────────────────────────────────────────────────────────────┐
-│                    /stress-test Execution Flow                     │
-│                                                                  │
-│  Phase 1: Environment Setup                                       │
-│  ├── Deploy KWOK Controller + Stage (simulate Pod lifecycle)      │
-│  ├── Create KWOK simulated nodes (default 5, each 128 CPU / 512Gi)│
-│  └── Deploy/upgrade RBG Controller via Helm (configure resources, │
-│      parameters, pprof)                                           │
-│                                                                  │
-│  Phase 2: Execute Stress Test                                     │
-│  ├── Create phase: Create N RBGs at target QPS, wait for all Ready│
-│  ├── Update phase: Update all RBGs at target QPS, wait for all done│
-│  └── Delete phase: Delete all RBGs at target QPS, wait for cleared│
-│                                                                  │
-│  Phase 3: Profiling (optional)                                    │
-│  ├── CPU Profile: 30s CPU profile per phase (parallel with test)  │
-│  ├── Heap/Allocs/Goroutine: Memory snapshot after each phase      │
-│  └── Generate Top-N text reports                                  │
-│                                                                  │
-│  Phase 4: Report Generation                                       │
-│  ├── HTML report: latency distribution charts, error classification│
-│  ├── summary.json: P50/P90/P99/Max/Avg/actual QPS                │
-│  ├── timing-*.csv: precise latency data per operation             │
-│  └── errors.log + controller-full.log: Controller logs            │
-│                                                                  │
-│  Phase 5: AI-Driven Analysis                                      │
-│  ├── Throughput gap analysis (actual QPS vs target QPS)           │
-│  ├── Latency distribution classification (uniform / tail / queue) │
-│  ├── Bottleneck identification (Reconciles / API QPS / CPU / mem) │
-│  └── Specific tuning suggestions (param name + recommended value  │
-│      + rationale)                                                 │
-└──────────────────────────────────────────────────────────────────┘
-```
-
 ---
 
 ## Manual Stress Testing
+
 If not using the Skill, you can also manually execute each step of the stress test.
 
 ### Step 1: Set Up KWOK Environment
+
 ```bash
 # Install KWOK Controller + Stage (official stage-fast + project-custom Pod lifecycle), create 5 simulated nodes
 FAKE_NODE_COUNT=5 bash test/stress/scripts/setup-kwok.sh
@@ -258,6 +210,7 @@ bash test/stress/scripts/setup-kwok.sh
 ```
 
 ### Step 2: Deploy Controller
+
 ```bash
 # Deploy Controller, configure resources, parameters, and pprof
 CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
@@ -274,6 +227,7 @@ The deploy script will:
 4. Establish pprof port forwarding (`localhost:6060`)
 
 ### Step 3: Run Stress Test
+
 ```bash
 go run ./test/stress/ \
     --namespace=stress-test \
@@ -292,6 +246,7 @@ go run ./test/stress/ \
 ```
 
 #### Stress Test Client Parameters
+
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--namespace` | string | `stress-test` | Stress test namespace |
@@ -311,8 +266,8 @@ go run ./test/stress/ \
 | `--controller-namespace` | string | `rbgs-system` | Controller namespace |
 | `--controller-label` | string | `control-plane=rbgs-controller` | Controller Pod label selector |
 
-
 ### Step 4: View Results
+
 ```bash
 # Open HTML report
 open /tmp/rbg-stress-results/report.html
@@ -322,6 +277,7 @@ cat /tmp/rbg-stress-results/summary.json
 ```
 
 ### Step 5: Clean Up Environment
+
 ```bash
 # Delete simulated nodes and stress test namespace
 bash test/stress/scripts/teardown-kwok.sh
@@ -333,9 +289,11 @@ UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
 ---
 
 ## Stress Test Output and Result Analysis
+
 The stress test client generates the following files in the output directory:
 
 ### Output Files
+
 | File | Description |
 | --- | --- |
 | `report.html` | **Main report** — open in browser, includes latency charts, error classification, pprof data |
@@ -351,8 +309,8 @@ The stress test client generates the following files in the output directory:
 | `goroutine-{phase}.prof` | Goroutine pprof binary profile |
 | `*-top.txt` | Human-readable pprof Top-N text reports |
 
-
 ### Analysis Dimension 1: Throughput and Latency
+
 Read `summary.json`, compare each phase's actual QPS with target QPS:
 
 ```plain
@@ -372,6 +330,7 @@ Read `summary.json`, compare each phase's actual QPS with target QPS:
 **Judgment rule**: Actual QPS < 90% of target QPS indicates the Controller's processing capacity cannot keep up with the submission rate.
 
 ### Analysis Dimension 2: Latency Distribution Patterns
+
 | Latency Pattern | Characteristic | Meaning |
 | --- | --- | --- |
 | Uniform distribution | P50 ≈ P99 | Stable processing, no bottleneck |
@@ -379,14 +338,15 @@ Read `summary.json`, compare each phase's actual QPS with target QPS:
 | Queue saturation | P99 > 10s | All Reconcile worker threads busy |
 | Anomalous outlier | Max >> P99 | API Server jitter or Leader election |
 
-
 ### Analysis Dimension 3: Latency Trend
+
 Read operation timestamps and latencies from `timing-*.csv`, observe whether latency increases monotonically over time:
 
 + **Stable latency**: Controller processing capacity is sufficient, queue not building up
 + **Linearly increasing latency**: Submission rate exceeds processing capacity, Reconcile queue continuously expanding
 
 ### Analysis Dimension 4: Controller Logs
+
 Error classification and root causes in `errors.log`:
 
 | Error Type | Log Characteristic | Root Cause | Recommendation |
@@ -397,10 +357,10 @@ Error classification and root causes in `errors.log`:
 | Workload type | `unsupported workload type` | Role missing `role-workload-type` annotation | Stress test template needs correct annotation |
 | Panic | `panic` / `runtime error` | Controller internal error | Critical issue, needs code investigation |
 
-
 **Error rate reference**: < 1% acceptable (transient conflicts), > 5% indicates a systemic problem.
 
 ### Analysis Dimension 5: Pprof Performance Profile
+
 If pprof is enabled (`--pprof-addr`), you can analyze performance bottlenecks through Top-N reports.
 
 **CPU profile** (`cpu-{phase}-top.txt`):
@@ -410,7 +370,6 @@ If pprof is enabled (`--pprof-addr`), you can analyze performance bottlenecks th
 | `crypto/tls`, `net/http`, `runtime.*` | Infrastructure overhead | Normal, no tuning needed |
 | Reconciler functions, dependency resolution | Controller business logic | `max-concurrent-reconciles` may be the bottleneck |
 | `encoding/json`, `Unmarshal`, `Marshal` | Object serialization | High object flow volume, consider reducing unnecessary Updates |
-
 
 **Heap memory profile** (`heap-{phase}-top.txt`):
 
@@ -426,10 +385,10 @@ If pprof is enabled (`--pprof-addr`), you can analyze performance bottlenecks th
 | 100-500 | Normal range for high-concurrency Controllers |
 | > 1000 | Possible goroutine leak, needs investigation |
 
-
 ---
 
 ## Tuning Decision Tree
+
 Based on stress test results, follow this decision tree to locate bottlenecks and tune:
 
 ```plain
@@ -462,45 +421,21 @@ Based on stress test results, follow this decision tree to locate bottlenecks an
 ```
 
 ### Tuning Formula Reference
+
 | Scenario | Formula | Description |
 | --- | --- | --- |
 | Insufficient Reconcile concurrency | `max-concurrent-reconciles = total_roles / target_P99_seconds` | Ensure all roles processed within target latency |
 | API QPS throttling | `kube-api-qps >= max-concurrent-reconciles × 3` | ~3 API calls per Reconcile |
 | Insufficient API Burst | `kube-api-burst >= kube-api-qps × 2` | Allow burst traffic through |
 
-
----
-
-## Auto-Tuning Mode
-Using the `/stress-test` Skill's auto-tuning mode, the Skill automatically runs multiple rounds of stress testing, gradually approaching the optimal configuration:
-
-| Round | Strategy | Purpose |
-| --- | --- | --- |
-| Round 1 | User's initial configuration | Establish baseline |
-| Round 2 | Increase `kube-api-qps` / `kube-api-burst` | Test if API throttling is the bottleneck |
-| Round 3 | Increase `max-concurrent-reconciles` | Test if worker thread count is the bottleneck |
-| Round 4 | Combine optimal settings from previous rounds | Validate optimal configuration |
-
-
-The Skill compares the following metrics across rounds, recommending the final configuration:
-
-+ Lowest P99 latency
-+ No OOM or excessive memory growth
-+ Fewest API throttling errors
-+ Best resource efficiency (latency performance per CPU core)
-
 ---
 
 ## Complete Workflow
-The following are the operational steps to complete a full stress test from scratch:
+
+The following are the operational steps to complete a full stress test from scratch (all commands assume execution from the RBG repository root):
 
 ```plain
-Step 1: Launch stress test (recommended approach)
-    $ claude    # Launch Claude Code
-    > /stress-test
-    # Follow prompts to select test scenarios and parameters
-
-Step 1': Or execute manually
+Step 1: Set up environment and run stress test
     $ FAKE_NODE_COUNT=10 bash test/stress/scripts/setup-kwok.sh
     $ CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
       MAX_RECONCILES=20 KUBE_API_QPS=100 KUBE_API_BURST=200 \
@@ -533,6 +468,7 @@ Step 5: Clean up environment
 ```
 
 ### Reference Stress Test Configurations by Scale
+
 | Scale | RBG Count | Roles/RBG | LWS Roles | Create QPS | Recommended Controller Config |
 | --- | --- | --- | --- | --- | --- |
 | Small validation | 10 | 2 | 0 | 5 | 4c/8g, Reconciles 10, QPS 50 |
@@ -540,9 +476,52 @@ Step 5: Clean up environment
 | Large stress | 500 | 3 | 1 | 10 | 16c/32g, Reconciles 50, QPS 200 |
 | Ultra-large | 1000 | 5 | 2 | 10 | 32c/64g, Reconciles 100, QPS 500 |
 
+---
+
+## Appendix: Using the /stress-test Skill (Optional)
+
+> The following content applies to users of Claude Code. If you are not using Claude Code, you can skip this section and use the manual workflow described above.
+
+### Quick Start
+
+`/stress-test` is a Claude Code built-in Skill that completes the entire stress testing workflow through conversational interaction. Enter `/stress-test` in Claude Code to launch it.
+
+The Skill will sequentially ask for the following configuration items:
+
+| Configuration Item | Options | Description |
+| --- | --- | --- |
+| **Test mode** | Manual mode / Auto-tuning mode | Manual mode runs one round of stress testing and outputs a report; auto-tuning mode runs multiple rounds and recommends the optimal configuration |
+| **Controller resources** | 4c/8g, 8c/16g, 16c/32g, 32c/64g | Controller Pod resource limits |
+| **Controller parameters** | Reconciles / QPS / Burst | Controller runtime parameters |
+| **Workload template** | Roles / LWS roles / LWS size / Total RBGs | Simulated RBG workload structure |
+| **Operation QPS** | Create / Update / Delete QPS | Submission rate for each phase |
+| **Update strategy** | In-place update / Rebuild update | Update method for the Update phase |
+
+### Auto-Tuning Mode
+
+Using the `/stress-test` Skill's auto-tuning mode, the Skill automatically runs multiple rounds of stress testing, gradually approaching the optimal configuration:
+
+| Round | Strategy | Purpose |
+| --- | --- | --- |
+| Round 1 | User's initial configuration | Establish baseline |
+| Round 2 | Increase `kube-api-qps` / `kube-api-burst` | Test if API throttling is the bottleneck |
+| Round 3 | Increase `max-concurrent-reconciles` | Test if worker thread count is the bottleneck |
+| Round 4 | Combine optimal settings from previous rounds | Validate optimal configuration |
+
+The Skill compares the following metrics across rounds, recommending the final configuration:
+
++ Lowest P99 latency
++ No OOM or excessive memory growth
++ Fewest API throttling errors
++ Best resource efficiency (latency performance per CPU core)
+
+---
+
+<!-- TODO: The following documents have not been created yet; links will be added once they are available -->
 
 ## Related Documents
-+ [Deploying Inference Services with RBG](#)
-+ [Configuring Rolling Update Strategies](#)
-+ [In-Place Update and In-Place Scheduling](#)
-+ [Configuring Autoscaling Strategies for RBG Services](#)
+
++ Deploying Inference Services with RBG
++ Configuring Rolling Update Strategies
++ In-Place Update and In-Place Scheduling
++ Configuring Autoscaling Strategies for RBG Services
