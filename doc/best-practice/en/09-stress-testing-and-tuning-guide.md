@@ -1,10 +1,13 @@
 # Operations Guide: Large-Scale Cluster Resource Estimation, Configuration, and Stress Testing
 
+> **Target audience**: Platform administrators / cluster operators. This document is intended for platform administrators responsible for RBG Controller deployment and performance tuning, not for general inference service users.
+>
 > Corresponding concept document: [9. Large-Scale Cluster Resource Estimation, Configuration, and Stress Testing](09-stress-testing-and-tuning.md)
 
 ## Objectives
 
 Validate RBG Controller's stress testing toolchain, including:
+
 1. Setting up a KWOK simulation environment
 2. Deploying Controller and configuring resource parameters
 3. Running stress tests (Create / Update / Delete — three phases)
@@ -13,9 +16,11 @@ Validate RBG Controller's stress testing toolchain, including:
 
 ## Prerequisites
 
+- Clone the RBG repository and navigate to the project root `git clone https://github.com/sgl-project/rbg && cd rbg`
 - Kubernetes cluster version >= 1.24
 - RBG CRD installed
-- Local tools: `helm`, `kubectl`, `go`, `curl`
+- Local tools: `helm`, `kubectl`, `go` (>= 1.22), `curl`
+- **All commands in this document assume execution from the RBG repository root**
 - (Optional) Controller image supports `--enable-pprof`
 
 ---
@@ -65,6 +70,7 @@ kubectl get stages
 ```
 
 **Expected output:**
+
 - 5 KWOK nodes in Ready status
 - 6 Stages: 2 Node-related (`node-heartbeat-with-lease`, `node-initialize`) + 4 Pod-related (`pod-initialize`, `pod-running`, `pod-ready`, `pod-delete`)
 - Pod lifecycle Stage delays: `pod-initialize` immediate → `pod-running` 500ms → `pod-ready` 1000ms → `pod-delete` 500ms
@@ -104,7 +110,7 @@ pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
 kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
-### Expected Behavior
+### Expected Behavior (Deploy Controller)
 
 - Skips image build (uses existing image in the cluster)
 - Upgrades Controller via Helm, only updating resource limits and runtime parameters
@@ -114,7 +120,7 @@ kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 - Waits for Controller Pod to be ready
 - Establishes pprof port forwarding (`localhost:6060`)
 
-### Verification
+### Verification (Deploy Controller)
 
 ```bash
 # Confirm Controller Pod is ready
@@ -142,6 +148,7 @@ kubectl get deploy -n rbgs-system rbgs-controller-manager -o jsonpath='{.spec.te
 ```
 
 **Expected output:**
+
 - Controller Pod is Running and Ready
 - Resource configuration is 8 CPU / 16Gi
 - Startup parameters include `--max-concurrent-reconciles=20`, `--kube-api-qps=100`, `--kube-api-burst=200`
@@ -169,7 +176,7 @@ go run ./test/stress/ \
     --timeout=30m
 ```
 
-### Expected Behavior
+### Expected Behavior (Run Stress Test)
 
 The stress test executes in three phases:
 
@@ -181,7 +188,7 @@ Each simulated Pod takes about 1.5 seconds from creation to Ready (KWOK Stage si
 
 > **Note**: `--lws-roles=1` means the first 1 role uses `leaderWorkerPattern` (multi-Pod group mode), backed by RBG's built-in `RoleInstanceSet` controller — no external LeaderWorkerSet CRD installation needed.
 
-### Verification
+### Verification (Run Stress Test)
 
 ```bash
 # Check Pod count during stress test
@@ -196,6 +203,7 @@ kubectl logs -n rbgs-system -l control-plane=rbgs-controller -f
 ```
 
 **Expected behavior:**
+
 - Create phase: 100 RBGs created progressively, Pods scheduled to KWOK simulated nodes
 - Update phase: All RBG images updated, in-place upgrade
 - Delete phase: All RBGs cleaned up
@@ -320,7 +328,7 @@ cat /tmp/rbg-stress-results/errors.log | head -3
 
 > {"level":"ERROR","time":"2026-07-08T09:47:41.869Z","caller":"workloads/rolebasedgroup_controller.go:544","message":"Failed to reconcile workload",...,"error":"RoleInstanceSet.workloads.x-k8s.io \"stress-rbg-0000-role-0\" not found",...}
 > {"level":"ERROR","time":"2026-07-08T09:47:41.879Z","caller":"workloads/rolebasedgroup_controller.go:544","message":"Failed to reconcile workload",...,"error":"RoleInstanceSet.workloads.x-k8s.io \"stress-rbg-0000-role-1\" not found",...}
-> {"level":"ERROR","time6-07-08T09:47:42.374Z","caller":"workloads/rolebasedgroup_controller.go:544","message":"Failed to reconcile workload",...,"error":"RoleInstanceSet.workloads.x-k8s.io \"stress-rbg-0003-role-1\" not found",...}
+> {"level":"ERROR","time":"2026-07-08T09:47:42.374Z","caller":"workloads/rolebasedgroup_controller.go:544","message":"Failed to reconcile workload",...,"error":"RoleInstanceSet.workloads.x-k8s.io \"stress-rbg-0003-role-1\" not found",...}
 ```
 
 | Error Type | Log Characteristic | Recommendation |
@@ -332,7 +340,7 @@ cat /tmp/rbg-stress-results/errors.log | head -3
 
 **Actual error statistics:**
 
-```
+```text
 Controller logs: 19826 lines, of which 265 are errors
 Error type distribution:
   175 × "Failed to reconcile workload"
@@ -361,6 +369,7 @@ cat /tmp/rbg-stress-results/goroutine-create-top.txt
 ```
 
 **Reference thresholds:**
+
 - Goroutines < 100: Healthy
 - Goroutines 100-500: Normal range for high concurrency
 - Goroutines > 1000: Possible leak
@@ -390,7 +399,7 @@ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
 
 helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set image.tag=${IMAGE_TAG} \
-    --set resources.limits.cpu=16 --set resources.limits.memory=16Gi \
+    --set resources.limits.cpu=16 --set resources.limits.memory=32Gi \
     --set controllerTuning.maxConcurrentReconciles=50 \
     --set controllerTuning.kubeApiQPS=200 --set controllerTuning.kubeApiBurst=400 \
     --set pprof.enabled=true --set pprof.port=6060 \
@@ -443,9 +452,9 @@ for item in data:
 "
 ```
 
-### Expected Behavior
+### Expected Behavior (Tune and Re-run)
 
-```
+```text
 === Round 1 (8c/16g, Reconciles=20, QPS=100) ===
 create: P50=4080.5 P99=7062.680000000001 QPS=3.99
 update: P50=393 P99=769.6400000000003 QPS=4.93
@@ -471,13 +480,13 @@ bash test/stress/scripts/teardown-kwok.sh
 UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
 ```
 
-### Expected Behavior
+### Expected Behavior (Clean Up)
 
 - Stress test namespace `stress-test` deleted
 - KWOK simulated nodes deleted
 - (Optional) KWOK Controller uninstalled
 
-### Verification
+### Verification (Clean Up)
 
 ```bash
 # Confirm simulated nodes are deleted
@@ -507,5 +516,5 @@ kubectl get namespace stress-test
 | Set up KWOK environment | Simulated nodes and Pod lifecycle | 5 Ready nodes + 6 Stages (2 Node + 4 Pod) |
 | Deploy Controller | Resource and parameter configuration | Pod Ready, parameters correct |
 | Run stress test | Create/Update/Delete three phases | 100 RBGs all created, updated, deleted successfully |
-| Analyze report | Throughput, latency, errors, pprof | Create QPS 3.97 (⚠ behind), Update/Delete met, 371 goroutines, 76MB heap, no critical errors |
+| Analyze report | Throughput, latency, errors, pprof | Create QPS 3.99 (⚠ behind), Update/Delete met, 371 goroutines, 76MB heap, no critical errors |
 | Tune and re-test | Parameter tuning effect validation | After tuning, QPS improved, latency reduced |
