@@ -18,6 +18,7 @@ limitations under the License.
 package v1alpha2
 
 import (
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -32,6 +33,8 @@ type RoleInstanceStatusApplyConfiguration struct {
 	UpdateRevision                  *string                                                         `json:"updateRevision,omitempty"`
 	CollisionCount                  *int32                                                          `json:"collisionCount,omitempty"`
 	InPlaceUpdateContainerBaselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline `json:"inPlaceUpdateContainerBaselines,omitempty"`
+	RestartCount                    *int32                                                          `json:"restartCount,omitempty"`
+	LastRestartTime                 *v1.Time                                                        `json:"lastRestartTime,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -117,5 +120,21 @@ func (b *RoleInstanceStatusApplyConfiguration) WithInPlaceUpdateContainerBaselin
 	for k, v := range entries {
 		b.InPlaceUpdateContainerBaselines[k] = v
 	}
+	return b
+}
+
+// WithRestartCount sets the RestartCount field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RestartCount field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithRestartCount(value int32) *RoleInstanceStatusApplyConfiguration {
+	b.RestartCount = &value
+	return b
+}
+
+// WithLastRestartTime sets the LastRestartTime field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LastRestartTime field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithLastRestartTime(value v1.Time) *RoleInstanceStatusApplyConfiguration {
+	b.LastRestartTime = &value
 	return b
 }

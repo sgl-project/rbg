@@ -36,12 +36,37 @@ type RoleInstanceSpec struct {
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
+
+	// BaseDelaySeconds is the base delay between restart attempts (seconds).
+	// Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+	// +optional
+	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
+
+	// MaxDelaySeconds caps the exponential backoff delay (seconds).
+	// +optional
+	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
 }
 
 // RoleInstanceReadinessGate contains the reference to a RoleInstance condition
 type RoleInstanceReadinessGate struct {
 	// ConditionType refers to a condition in the pod's condition list with matching type.
 	ConditionType RoleInstanceConditionType `json:"conditionType"`
+}
+
+// GetBaseDelaySeconds returns the configured base delay or the default (30).
+func (s *RoleInstanceSpec) GetBaseDelaySeconds() int32 {
+	if s.BaseDelaySeconds != nil {
+		return *s.BaseDelaySeconds
+	}
+	return DefaultBaseDelaySeconds
+}
+
+// GetMaxDelaySeconds returns the configured max delay or the default (600).
+func (s *RoleInstanceSpec) GetMaxDelaySeconds() int32 {
+	if s.MaxDelaySeconds != nil {
+		return *s.MaxDelaySeconds
+	}
+	return DefaultMaxDelaySeconds
 }
 
 type RoleInstanceReadyPolicyType string
@@ -125,6 +150,16 @@ type RoleInstanceStatus struct {
 	// (from in-place image changes) from real crashes.
 	// +optional
 	InPlaceUpdateContainerBaselines map[string]map[string]ContainerUpdateBaseline `json:"inPlaceUpdateContainerBaselines,omitempty"`
+
+	// RestartCount tracks the number of times the restart policy has triggered
+	// a full RoleInstance recreation.
+	// +optional
+	RestartCount int32 `json:"restartCount,omitempty"`
+
+	// LastRestartTime is the timestamp of the most recent restart-policy-triggered
+	// recreation. Used to compute exponential backoff between restart attempts.
+	// +optional
+	LastRestartTime *metav1.Time `json:"lastRestartTime,omitempty"`
 }
 
 // ContainerUpdateBaseline records the pre-update state of a container for

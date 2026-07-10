@@ -294,6 +294,42 @@ func (r *RoleSpec) GetRestartPolicy() RestartPolicyType {
 	return RestartPolicyNone
 }
 
+// Default values for restart policy delay configuration.
+const (
+	DefaultBaseDelaySeconds int32 = 30
+	DefaultMaxDelaySeconds  int32 = 600
+)
+
+// GetBaseDelaySeconds returns the configured base delay seconds,
+// or the default (30) if not set.
+func (r *RoleSpec) GetBaseDelaySeconds() int32 {
+	if r == nil {
+		return DefaultBaseDelaySeconds
+	}
+	if r.LeaderWorkerPattern != nil && r.LeaderWorkerPattern.BaseDelaySeconds != nil {
+		return *r.LeaderWorkerPattern.BaseDelaySeconds
+	}
+	if r.CustomComponentsPattern != nil && r.CustomComponentsPattern.BaseDelaySeconds != nil {
+		return *r.CustomComponentsPattern.BaseDelaySeconds
+	}
+	return DefaultBaseDelaySeconds
+}
+
+// GetMaxDelaySeconds returns the configured max delay seconds,
+// or the default (600) if not set.
+func (r *RoleSpec) GetMaxDelaySeconds() int32 {
+	if r == nil {
+		return DefaultMaxDelaySeconds
+	}
+	if r.LeaderWorkerPattern != nil && r.LeaderWorkerPattern.MaxDelaySeconds != nil {
+		return *r.LeaderWorkerPattern.MaxDelaySeconds
+	}
+	if r.CustomComponentsPattern != nil && r.CustomComponentsPattern.MaxDelaySeconds != nil {
+		return *r.CustomComponentsPattern.MaxDelaySeconds
+	}
+	return DefaultMaxDelaySeconds
+}
+
 // GetLeaderWorkerSize returns the size of the leader-worker group.
 // Returns nil if not using LeaderWorkerPattern.
 func (r *RoleSpec) GetLeaderWorkerSize() *int32 {

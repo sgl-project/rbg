@@ -129,6 +129,8 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		CollisionCount:                  new(int32),
 		LabelSelector:                   selector.String(),
 		InPlaceUpdateContainerBaselines: deepCopyBaselines(instance.Status.InPlaceUpdateContainerBaselines),
+		RestartCount:                    instance.Status.RestartCount,
+		LastRestartTime:                 instance.Status.LastRestartTime,
 	}
 	*newStatus.CollisionCount = collisionCount
 
@@ -172,7 +174,8 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		requeueDuration time.Duration
 	)
 
-	scaling, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
+	var scaleRequeue time.Duration
+	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsScaleErr != nil {
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
@@ -192,7 +195,21 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 				break
 			}
 		}
+		// Propagate restart tracking updated by updateRestartTracking during Scale.
+		newStatus.RestartCount = updateInstance.Status.RestartCount
+		newStatus.LastRestartTime = updateInstance.Status.LastRestartTime
 		return syncResult{err: podsScaleErr}
+	}
+	// Restart backoff: delay not elapsed, skip Update and just requeue.
+	// Also propagate Restarting condition and restart tracking so they persist.
+	if scaleRequeue > 0 {
+		for _, cond := range updateInstance.Status.Conditions {
+			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
+				newStatus.Conditions = append(newStatus.Conditions, cond)
+				break
+			}
+		}
+		return syncResult{requeue: scaleRequeue}
 	}
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)

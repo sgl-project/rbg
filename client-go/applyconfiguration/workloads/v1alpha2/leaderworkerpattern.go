@@ -32,6 +32,8 @@ type LeaderWorkerPatternApplyConfiguration struct {
 	WorkerTemplatePatch              *runtime.RawExtension                           `json:"workerTemplatePatch,omitempty"`
 	SharedServiceSelection           *workloadsv1alpha2.SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 	RestartPolicy                    *workloadsv1alpha2.RestartPolicyType            `json:"restartPolicy,omitempty"`
+	BaseDelaySeconds                 *int32                                          `json:"baseDelaySeconds,omitempty"`
+	MaxDelaySeconds                  *int32                                          `json:"maxDelaySeconds,omitempty"`
 }
 
 // LeaderWorkerPatternApplyConfiguration constructs a declarative configuration of the LeaderWorkerPattern type for use with
@@ -93,5 +95,21 @@ func (b *LeaderWorkerPatternApplyConfiguration) WithSharedServiceSelection(value
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
 func (b *LeaderWorkerPatternApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *LeaderWorkerPatternApplyConfiguration {
 	b.RestartPolicy = &value
+	return b
+}
+
+// WithBaseDelaySeconds sets the BaseDelaySeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the BaseDelaySeconds field is set to the value of the last call.
+func (b *LeaderWorkerPatternApplyConfiguration) WithBaseDelaySeconds(value int32) *LeaderWorkerPatternApplyConfiguration {
+	b.BaseDelaySeconds = &value
+	return b
+}
+
+// WithMaxDelaySeconds sets the MaxDelaySeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxDelaySeconds field is set to the value of the last call.
+func (b *LeaderWorkerPatternApplyConfiguration) WithMaxDelaySeconds(value int32) *LeaderWorkerPatternApplyConfiguration {
+	b.MaxDelaySeconds = &value
 	return b
 }

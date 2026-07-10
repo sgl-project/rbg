@@ -23911,6 +23911,14 @@ spec:
                       description: CustomComponentsPattern defines a pattern with
                         custom components.
                       properties:
+                        baseDelaySeconds:
+                          default: 30
+                          description: |-
+                            BaseDelaySeconds is the base delay between restart attempts (seconds).
+                            Default is 30.
+                          format: int32
+                          minimum: 0
+                          type: integer
                         components:
                           items:
                             properties:
@@ -23951,6 +23959,14 @@ spec:
                             - template
                             type: object
                           type: array
+                        maxDelaySeconds:
+                          default: 600
+                          description: |-
+                            MaxDelaySeconds caps the exponential backoff delay (seconds).
+                            Default is 600.
+                          format: int32
+                          minimum: 0
+                          type: integer
                         restartPolicy:
                           description: |-
                             RestartPolicy defines the restart policy when pod failures happen.
@@ -25357,10 +25373,27 @@ spec:
                       description: LeaderWorkerPattern defines a multi-pod pattern
                         with leader and workers.
                       properties:
+                        baseDelaySeconds:
+                          default: 30
+                          description: |-
+                            BaseDelaySeconds is the base delay between restart attempts (seconds).
+                            Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+                            Default is 30.
+                          format: int32
+                          minimum: 0
+                          type: integer
                         leaderTemplatePatch:
                           description: LeaderTemplatePatch indicates patching for
                             the leader template.
                           x-kubernetes-preserve-unknown-fields: true
+                        maxDelaySeconds:
+                          default: 600
+                          description: |-
+                            MaxDelaySeconds caps the exponential backoff delay (seconds).
+                            Default is 600.
+                          format: int32
+                          minimum: 0
+                          type: integer
                         restartPolicy:
                           description: |-
                             RestartPolicy defines the restart policy when pod failures happen.

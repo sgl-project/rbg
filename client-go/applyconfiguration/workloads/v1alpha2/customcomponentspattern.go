@@ -24,8 +24,10 @@ import (
 // CustomComponentsPatternApplyConfiguration represents a declarative configuration of the CustomComponentsPattern type for use
 // with apply.
 type CustomComponentsPatternApplyConfiguration struct {
-	Components    []InstanceComponentApplyConfiguration `json:"components,omitempty"`
-	RestartPolicy *workloadsv1alpha2.RestartPolicyType  `json:"restartPolicy,omitempty"`
+	Components       []InstanceComponentApplyConfiguration `json:"components,omitempty"`
+	RestartPolicy    *workloadsv1alpha2.RestartPolicyType  `json:"restartPolicy,omitempty"`
+	BaseDelaySeconds *int32                                `json:"baseDelaySeconds,omitempty"`
+	MaxDelaySeconds  *int32                                `json:"maxDelaySeconds,omitempty"`
 }
 
 // CustomComponentsPatternApplyConfiguration constructs a declarative configuration of the CustomComponentsPattern type for use with
@@ -52,5 +54,21 @@ func (b *CustomComponentsPatternApplyConfiguration) WithComponents(values ...*In
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
 func (b *CustomComponentsPatternApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *CustomComponentsPatternApplyConfiguration {
 	b.RestartPolicy = &value
+	return b
+}
+
+// WithBaseDelaySeconds sets the BaseDelaySeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the BaseDelaySeconds field is set to the value of the last call.
+func (b *CustomComponentsPatternApplyConfiguration) WithBaseDelaySeconds(value int32) *CustomComponentsPatternApplyConfiguration {
+	b.BaseDelaySeconds = &value
+	return b
+}
+
+// WithMaxDelaySeconds sets the MaxDelaySeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxDelaySeconds field is set to the value of the last call.
+func (b *CustomComponentsPatternApplyConfiguration) WithMaxDelaySeconds(value int32) *CustomComponentsPatternApplyConfiguration {
+	b.MaxDelaySeconds = &value
 	return b
 }
