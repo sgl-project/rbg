@@ -51,6 +51,12 @@ spec:
           spec:
             description: RoleInstanceSpec defines the desired state of RoleInstance
             properties:
+              baseDelaySeconds:
+                description: |-
+                  BaseDelaySeconds is the base delay between restart attempts (seconds).
+                  Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+                format: int32
+                type: integer
               components:
                 description: Components is a list of components, each of which specifies
                   a component and the number of replicas and template for RoleInstance
@@ -93,6 +99,10 @@ spec:
                   - template
                   type: object
                 type: array
+              maxDelaySeconds:
+                description: MaxDelaySeconds caps the exponential backoff delay (seconds).
+                format: int32
+                type: integer
               readinessGates:
                 description: ReadinessGates is an optional list of PodReadinessGates
                   for the whole RoleInstance.
@@ -240,11 +250,23 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastRestartTime:
+                description: |-
+                  LastRestartTime is the timestamp of the most recent restart-policy-triggered
+                  recreation. Used to compute exponential backoff between restart attempts.
+                format: date-time
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this RoleInstance. It corresponds to the
                   RoleInstance's generation, which is updated on mutation by the API Server.
                 format: int64
+                type: integer
+              restartCount:
+                description: |-
+                  RestartCount tracks the number of times the restart policy has triggered
+                  a full RoleInstance recreation.
+                format: int32
                 type: integer
               updateRevision:
                 description: UpdateRevision is a hash value that changes when the

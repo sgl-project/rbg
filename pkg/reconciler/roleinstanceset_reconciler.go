@@ -160,7 +160,9 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 
 	// 1. construct role instance configuration
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate().
-		WithRestartPolicy(role.GetRestartPolicy())
+		WithRestartPolicy(role.GetRestartPolicy()).
+		WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
+		WithMaxDelaySeconds(role.GetMaxDelaySeconds())
 	var constructErr error
 	switch {
 	case role.GetStandalonePattern() != nil:

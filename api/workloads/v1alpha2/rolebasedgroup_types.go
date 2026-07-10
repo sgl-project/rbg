@@ -338,6 +338,21 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// BaseDelaySeconds is the base delay between restart attempts (seconds).
+	// Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+	// Default is 30.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=30
+	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
+
+	// MaxDelaySeconds caps the exponential backoff delay (seconds).
+	// Default is 600.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=600
+	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
 }
 
 type CustomComponentsPattern struct {
@@ -349,6 +364,20 @@ type CustomComponentsPattern struct {
 	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// BaseDelaySeconds is the base delay between restart attempts (seconds).
+	// Default is 30.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=30
+	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
+
+	// MaxDelaySeconds caps the exponential backoff delay (seconds).
+	// Default is 600.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=600
+	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
 }
 
 type WorkloadSpec struct {

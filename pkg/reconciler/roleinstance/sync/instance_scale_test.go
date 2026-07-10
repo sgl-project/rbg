@@ -19,6 +19,7 @@ package sync
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -2285,4 +2286,110 @@ func TestIsContainerRestartExpected(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestCalculateRestartDelay(t *testing.T) {
+	tests := []struct {
+		name          string
+		baseDelay     int32
+		maxDelay      int32
+		restartCount  int32
+		expectedDelay int32
+	}{
+		{name: "base=0 returns 0", baseDelay: 0, maxDelay: 600, restartCount: 0, expectedDelay: 0},
+		{name: "round 0: base", baseDelay: 30, maxDelay: 600, restartCount: 0, expectedDelay: 30},
+		{name: "round 1: 2x", baseDelay: 30, maxDelay: 600, restartCount: 1, expectedDelay: 60},
+		{name: "round 2: 4x", baseDelay: 30, maxDelay: 600, restartCount: 2, expectedDelay: 120},
+		{name: "round 3: 8x", baseDelay: 30, maxDelay: 600, restartCount: 3, expectedDelay: 240},
+		{name: "round 4: 16x", baseDelay: 30, maxDelay: 600, restartCount: 4, expectedDelay: 480},
+		{name: "round 5: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 5, expectedDelay: 600},
+		{name: "round 10: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 10, expectedDelay: 600},
+		{name: "overflow boundary (27): capped at max", baseDelay: 30, maxDelay: 600, restartCount: 27, expectedDelay: 600},
+		{name: "large restart count: no overflow", baseDelay: 30, maxDelay: 600, restartCount: 50, expectedDelay: 600},
+		{name: "maxDelay=0: no cap", baseDelay: 10, maxDelay: 0, restartCount: 5, expectedDelay: 320},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := calculateRestartDelay(tt.baseDelay, tt.maxDelay, tt.restartCount)
+			assert.Equal(t, tt.expectedDelay, result)
+		})
+	}
+}
+
+func TestCheckRestartBackoff(t *testing.T) {
+	// Helper to create a realControl with a fake client
+	c := &realControl{}
+
+	// Create an instance that would trigger recreation
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "main", Size: ptr.To(int32(1))},
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1,
+			CurrentRevision:    "rev-1",
+			UpdateRevision:     "rev-1",
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	// Set Generation to match ObservedGeneration
+	instance.Generation = 1
+
+	failedPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+		Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+	}
+
+	t.Run("RestartPolicy=None: no backoff", func(t *testing.T) {
+		inst := instance.DeepCopy()
+		inst.Spec.RestartPolicy = workloadsv1alpha2.RestartPolicyNone
+		result := c.checkRestartBackoff(context.Background(), inst, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result)
+	})
+
+	t.Run("no crash detected: no backoff", func(t *testing.T) {
+		inst := instance.DeepCopy()
+		runningPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+		result := c.checkRestartBackoff(context.Background(), inst, []*corev1.Pod{runningPod}, nil)
+		assert.Equal(t, time.Duration(0), result)
+	})
+
+	t.Run("no LastRestartTime: no backoff (first restart)", func(t *testing.T) {
+		inst := instance.DeepCopy()
+		result := c.checkRestartBackoff(context.Background(), inst, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result)
+	})
+
+	t.Run("delay not elapsed: returns remaining duration", func(t *testing.T) {
+		inst := instance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 0
+		inst.Spec.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.MaxDelaySeconds = ptr.To(int32(600))
+		result := c.checkRestartBackoff(context.Background(), inst, []*corev1.Pod{failedPod}, nil)
+		assert.Greater(t, result, time.Duration(0))
+		assert.LessOrEqual(t, result, 30*time.Second)
+	})
+
+	t.Run("delay elapsed: no backoff", func(t *testing.T) {
+		inst := instance.DeepCopy()
+		past := metav1.NewTime(metav1.Now().Add(-60 * time.Second))
+		inst.Status.LastRestartTime = &past
+		inst.Status.RestartCount = 0
+		inst.Spec.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.MaxDelaySeconds = ptr.To(int32(600))
+		result := c.checkRestartBackoff(context.Background(), inst, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result)
+	})
 }

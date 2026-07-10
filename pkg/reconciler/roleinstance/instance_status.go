@@ -321,7 +321,9 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 	if newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
 		newStatus.LabelSelector != oldStatus.LabelSelector ||
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
-		newStatus.UpdateRevision != oldStatus.UpdateRevision {
+		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
+		newStatus.RestartCount != oldStatus.RestartCount ||
+		inconsistentRestartTime(oldStatus.LastRestartTime, newStatus.LastRestartTime) {
 		return true
 	}
 	if len(oldStatus.ComponentStatuses) != len(newStatus.ComponentStatuses) {
@@ -356,6 +358,17 @@ func inconsistentBaselines(old, new map[string]map[string]workloadsv1alpha2.Cont
 		}
 	}
 	return false
+}
+
+// inconsistentRestartTime checks whether LastRestartTime has changed.
+func inconsistentRestartTime(old, new *metav1.Time) bool {
+	if old == nil && new == nil {
+		return false
+	}
+	if old == nil || new == nil {
+		return true
+	}
+	return !old.Equal(new)
 }
 
 func inconsistentComponentStatus(oldRoleStatus, newRoleStatus workloadsv1alpha2.RoleInstanceComponentStatus) bool {
