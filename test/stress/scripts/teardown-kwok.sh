@@ -25,6 +25,11 @@ if [ "${UNINSTALL_KWOK}" = "true" ]; then
     echo "[3/3] Uninstalling kwok..."
     helm uninstall kwok-stage-fast -n "${KWOK_NAMESPACE}" 2>/dev/null || true
     helm uninstall kwok -n "${KWOK_NAMESPACE}" 2>/dev/null || true
+    # Also delete custom stages applied via kubectl apply (not managed by Helm)
+    kubectl delete stage pod-initialize --ignore-not-found=true 2>/dev/null || true
+    kubectl delete stage pod-running --ignore-not-found=true 2>/dev/null || true
+    kubectl delete stage pod-ready --ignore-not-found=true 2>/dev/null || true
+    kubectl delete stage pod-delete --ignore-not-found=true 2>/dev/null || true
 else
     echo "[3/3] Keeping kwok installed (set UNINSTALL_KWOK=true to remove)"
 fi
