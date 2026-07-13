@@ -361,8 +361,14 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 	}
 
 	// Check if already restarting — skip backoff to let the in-progress restart continue.
-	// Use the instance's current conditions (from the informer cache, fetched at Reconcile start).
-	if isInstanceRestarting(instance) {
+	// Use the in-memory restarting cache (set by setRestartingCondition, cleared by
+	// ClearRestarting when the instance becomes Ready) for accurate detection.
+	// The persisted Restarting condition can be stale during the creation phase
+	// (after pods are recreated but before they become Running+Ready), which would
+	// incorrectly skip backoff on a subsequent crash. The in-memory cache is
+	// cleared as soon as the instance reaches Ready, providing a more accurate
+	// signal of whether a restart cycle is truly in progress.
+	if c.isAlreadyRestarting(ctx, instance) {
 		return 0
 	}
 
@@ -422,6 +428,9 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 		return true
 	}
 	// Slow path: read fresh from API server (bypasses informer cache)
+	if c.apiReader == nil {
+		return false
+	}
 	fresh := &workloadsv1alpha2.RoleInstance{}
 	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
 		return false

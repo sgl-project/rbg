@@ -293,6 +293,14 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 		// Wait for full recovery
 		f.ExpectRbgV2Equal(rbg)
 
+		// Wait for RoleInstance to be fully recovered: Ready=True AND
+		// Restarting condition cleared. The Restarting condition persists in
+		// status during the creation phase (scaling=true) until pods become
+		// Running+Ready, which causes checkRestartBackoff to skip backoff on
+		// the next crash. We must wait for it to be cleared to ensure the
+		// backoff mechanism works correctly for the second crash.
+		waitForInstanceFullyRecovered(f, targetInstanceName)
+
 		// --- Second crash: backoff should delay recreation ---
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
@@ -435,6 +443,37 @@ func waitForInstancePodsRecreated(f *framework.Framework, rbg *workloadsv1alpha2
 		return true
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 		"pods should be recreated with new UIDs")
+}
+
+// waitForInstanceFullyRecovered waits until the RoleInstance has Ready=True and
+// the Restarting condition is absent or False. This ensures the controller has
+// fully converged: pods are Running, status is stable, and the in-memory
+// restarting cache has been cleared. Without this wait, a subsequent crash
+// might occur while the Restarting condition is still True in status (set
+// during the creation phase), causing checkRestartBackoff to skip the backoff
+// delay and allowing immediate recreation.
+func waitForInstanceFullyRecovered(f *framework.Framework, instanceName string) {
+	gomega.Eventually(func() bool {
+		ri := &workloadsv1alpha2.RoleInstance{}
+		if err := f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      instanceName,
+		}, ri); err != nil {
+			return false
+		}
+		readyFound := false
+		for _, cond := range ri.Status.Conditions {
+			if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+				readyFound = true
+			}
+			// Restarting condition must be absent or explicitly False
+			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == corev1.ConditionTrue {
+				return false
+			}
+		}
+		return readyFound
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+		"RoleInstance should be fully recovered (Ready=True, Restarting cleared)")
 }
 
 // filterActivePods returns pods that are not terminating and not in terminal phase.
