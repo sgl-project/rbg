@@ -301,7 +301,9 @@ kubectl get rbg <rbg-name> -o yaml | grep templateRef
 
 ## 相关文档
 
-+ [使用 RBG 部署推理服务](01-deploy-inference-service.md)
-+ [配置 HPA 弹性伸缩](08-configuring-autoscaling.md)
+<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
+
++ 使用 RBG 部署推理服务
++ 配置 HPA 弹性伸缩
 + Gang 调度配置
-+ [滚动更新与金丝雀发布](03-configuring-rolling-updates.md)
++ 滚动更新与金丝雀发布

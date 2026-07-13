@@ -227,7 +227,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-with-templates -o wide
 
 > NAME                          READY   STATUS    RESTARTS     AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
 > pd-with-templates-decode-0    1/1     Running   0            46s   10.xx.xx.xx  e01-xxxxxxxxxxxxxx   <none>           2/2
-> pd-with-templates-prefill-0   1/1     Running   1 (2s ago)   46s   10.xx.xx.xx  e01-xxxxxxxxxxxxxx   <none>           2/2
+> pd-with-templates-prefill-0   1/1     Running   1            46s   10.xx.xx.xx  e01-xxxxxxxxxxxxxx   <none>           2/2
 ```
 
 ```bash
@@ -244,20 +244,11 @@ kubectl get pods -l rbg.workloads.x-k8s.io/role-name=decode -o jsonpath='{.items
 > ["python3","-m","sglang.launch_server","--model-path","Qwen/Qwen3-0.6B","--host","0.0.0.0","--port","8000","--disaggregation-mode","decode","--tp-size","1"]
 ```
 
-```bash
-# Verify both roles have the same image (from template)
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-with-templates -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].image}{"\n"}{end}'
-
-> pd-with-templates-decode-0=lmsysorg/sglang:v0.5.9
-> pd-with-templates-prefill-0=lmsysorg/sglang:v0.5.9
-```
-
 **Expected output:**
 
 - Both Pods are Running
 - Prefill Pod's command includes `--disaggregation-mode prefill`
 - Decode Pod's command includes `--disaggregation-mode decode`
-- Both Pods' image is `lmsysorg/sglang:v0.5.9`
 
 ### Step 2: Verify Patch Merge Rules (Scalar Override)
 
@@ -360,7 +351,7 @@ EOF
 # Verify Prefill Pod memory request is 16Gi (overridden by patch)
 kubectl get pods -l rbg.workloads.x-k8s.io/role-name=prefill -o jsonpath='{.items[0].spec.containers[0].resources.requests.memory}'
 
-> 8Gi
+> 16Gi
 ```
 
 ```bash

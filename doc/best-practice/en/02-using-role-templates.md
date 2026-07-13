@@ -301,7 +301,9 @@ kubectl get rbg <rbg-name> -o yaml | grep templateRef
 
 ## Related Documents
 
-+ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
-+ [Configuring HPA Autoscaling](08-configuring-autoscaling.md)
+<!-- TODO: The following documents have not been created yet; links will be added once they are complete -->
+
++ Deploying Inference Services with RBG
++ Configuring HPA Autoscaling
 + Gang Scheduling Configuration
-+ [Rolling Updates and Canary Releases](03-configuring-rolling-updates.md)
++ Rolling Updates and Canary Releases

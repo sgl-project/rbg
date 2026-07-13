@@ -227,7 +227,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-with-templates -o wide
 
 > NAME                          READY   STATUS    RESTARTS     AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
 > pd-with-templates-decode-0    1/1     Running   0            46s   10.xx.xx.xx  e01-xxxxxxxxxxxxxx   <none>           2/2
-> pd-with-templates-prefill-0   1/1     Running   1 (2s ago)   46s   10.xx.xx.xx  e01-xxxxxxxxxxxxxx   <none>           2/2
+> pd-with-templates-prefill-0   1/1     Running   1            46s   10.xx.xx.xx  e01-xxxxxxxxxxxxxx   <none>           2/2
 ```
 
 ```bash
@@ -244,20 +244,11 @@ kubectl get pods -l rbg.workloads.x-k8s.io/role-name=decode -o jsonpath='{.items
 > ["python3","-m","sglang.launch_server","--model-path","Qwen/Qwen3-0.6B","--host","0.0.0.0","--port","8000","--disaggregation-mode","decode","--tp-size","1"]
 ```
 
-```bash
-# 验证两个角色的镜像相同（均来自模板）
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-with-templates -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].image}{"\n"}{end}'
-
-> pd-with-templates-decode-0=lmsysorg/sglang:v0.5.9
-> pd-with-templates-prefill-0=lmsysorg/sglang:v0.5.9
-```
-
 **预期输出：**
 
 - 2 个 Pod 均为 Running
 - Prefill Pod 的 command 包含 `--disaggregation-mode prefill`
 - Decode Pod 的 command 包含 `--disaggregation-mode decode`
-- 两个 Pod 的镜像均为 `lmsysorg/sglang:v0.5.9`
 
 ### 步骤 2：验证 patch 合并规则（标量覆盖）
 
@@ -360,7 +351,7 @@ EOF
 # 验证 Prefill Pod 内存请求为 16Gi（被 patch 覆盖）
 kubectl get pods -l rbg.workloads.x-k8s.io/role-name=prefill -o jsonpath='{.items[0].spec.containers[0].resources.requests.memory}'
 
-> 8Gi
+> 16Gi
 ```
 
 ```bash
