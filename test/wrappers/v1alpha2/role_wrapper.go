@@ -174,6 +174,16 @@ func (rw *LeaderWorkerRoleWrapper) WithRestartPolicy(rp workloadsv1alpha2.Restar
 	return rw
 }
 
+func (rw *LeaderWorkerRoleWrapper) WithBaseDelaySeconds(seconds int32) *LeaderWorkerRoleWrapper {
+	rw.LeaderWorkerPattern.BaseDelaySeconds = ptr.To(seconds)
+	return rw
+}
+
+func (rw *LeaderWorkerRoleWrapper) WithMaxDelaySeconds(seconds int32) *LeaderWorkerRoleWrapper {
+	rw.LeaderWorkerPattern.MaxDelaySeconds = ptr.To(seconds)
+	return rw
+}
+
 func (rw *LeaderWorkerRoleWrapper) WithSize(size int32) *LeaderWorkerRoleWrapper {
 	rw.LeaderWorkerPattern.Size = ptr.To(size)
 	return rw
