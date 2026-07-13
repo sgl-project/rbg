@@ -806,4 +806,297 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				"instance should be stable after recovery from restart")
 		})
 	})
+
+	Context("Exponential Backoff", func() {
+		It("should track RestartCount and LastRestartTime after recreation", func() {
+			rbgName := "test-backoff-tracking"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(1).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(2).
+						WithMaxDelaySeconds(10).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 1)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Verify initial state: RestartCount=0, LastRestartTime=nil
+			ri := getRoleInstance(rbgName, roleName)
+			Expect(ri).NotTo(BeNil())
+			Expect(ri.Status.RestartCount).Should(Equal(int32(0)))
+			Expect(ri.Status.LastRestartTime).Should(BeNil())
+
+			// Fail the pod to trigger recreation
+			podList := listRolePods(rbgName, roleName)
+			freshPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Wait for recreation to happen (pods get new UIDs)
+			originalUID := podList.Items[0].UID
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == originalUID {
+						return false
+					}
+				}
+				return len(active) >= 1
+			}, timeout, interval).Should(BeTrue(),
+				"pod should be recreated after failure")
+
+			// Verify RestartCount incremented and LastRestartTime set
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)),
+				"RestartCount should be 1 after first recreation")
+
+			ri = getRoleInstance(rbgName, roleName)
+			Expect(ri.Status.LastRestartTime).ShouldNot(BeNil(),
+				"LastRestartTime should be set after recreation")
+		})
+
+		It("should delay second recreation due to backoff", func() {
+			rbgName := "test-backoff-delay"
+			roleName := defaultRoleName
+			baseDelay := int32(3)
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(1).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(baseDelay).
+						WithMaxDelaySeconds(30).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 1)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// --- First crash: no backoff (RestartCount=0, LastRestartTime=nil) ---
+			podList := listRolePods(rbgName, roleName)
+			firstUID := podList.Items[0].UID
+			freshPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Wait for first recreation
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == firstUID {
+						return false
+					}
+				}
+				return len(active) >= 1
+			}, timeout, interval).Should(BeTrue(),
+				"first recreation should happen without backoff")
+
+			// Recover: make replacement pods Ready
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Verify RestartCount=1
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)))
+
+			// --- Second crash: backoff should delay recreation ---
+			podList = listRolePods(rbgName, roleName)
+			secondUID := podList.Items[0].UID
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// During backoff window, pods should NOT be recreated.
+			// backoff delay = baseDelay * 2^restartCount = 3 * 2^1 = 6 seconds
+			backoffDelay := time.Duration(baseDelay) * 2 * time.Second
+			Consistently(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == secondUID {
+						return true // Original pod still exists — backoff working
+					}
+				}
+				return false
+			}, backoffDelay-time.Second, interval).Should(BeTrue(),
+				"pod should NOT be recreated during backoff window")
+
+			// After backoff elapses, recreation should proceed
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == secondUID {
+						return false
+					}
+				}
+				return len(active) >= 1
+			}, timeout, interval).Should(BeTrue(),
+				"pod should be recreated after backoff elapses")
+
+			// Verify RestartCount=2
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(2)),
+				"RestartCount should be 2 after second recreation")
+		})
+
+		It("should propagate BaseDelaySeconds and MaxDelaySeconds from RBG to RoleInstance", func() {
+			rbgName := "test-backoff-propagate"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(1).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(15).
+						WithMaxDelaySeconds(120).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			// Wait for RoleInstance to be created and verify delay config propagation
+			Eventually(func() bool {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return false
+				}
+				return ri.Spec.BaseDelaySeconds != nil && *ri.Spec.BaseDelaySeconds == 15 &&
+					ri.Spec.MaxDelaySeconds != nil && *ri.Spec.MaxDelaySeconds == 120
+			}, timeout, interval).Should(BeTrue(),
+				"BaseDelaySeconds and MaxDelaySeconds should propagate from RBG to RoleInstance")
+		})
+
+		It("should reset RestartCount after stable period", func() {
+			rbgName := "test-backoff-reset"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(1).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(1).
+						WithMaxDelaySeconds(2).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 1)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Trigger first recreation to set RestartCount=1
+			podList := listRolePods(rbgName, roleName)
+			originalUID := podList.Items[0].UID
+			freshPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Wait for recreation
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == originalUID {
+						return false
+					}
+				}
+				return len(active) >= 1
+			}, timeout, interval).Should(BeTrue())
+
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Verify RestartCount=1
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)))
+
+			// Simulate a long stable period by backdating LastRestartTime to 11 minutes ago.
+			// The reset threshold is max(maxDelaySeconds*2, 10min) = max(4, 600) = 600s = 10min.
+			// Setting LastRestartTime to 11 minutes ago exceeds this threshold.
+			ri := getRoleInstance(rbgName, roleName)
+			Expect(ri).NotTo(BeNil())
+			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+
+			// Trigger another recreation
+			podList = listRolePods(rbgName, roleName)
+			secondUID := podList.Items[0].UID
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Wait for recreation
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == secondUID {
+						return false
+					}
+				}
+				return len(active) >= 1
+			}, timeout, interval).Should(BeTrue())
+
+			// RestartCount should be reset to 1 (not 2), because the stable period
+			// caused the counter to reset before incrementing.
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)),
+				"RestartCount should reset to 1 after long stable period (not continue from previous value)")
+		})
+	})
 })
