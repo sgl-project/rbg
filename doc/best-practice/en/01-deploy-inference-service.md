@@ -1,5 +1,7 @@
 # Deploying Inference Services with RBG
+
 ## Overview
+
 RoleBasedGroup (RBG) is a Kubernetes API for orchestrating distributed, stateful AI inference workloads. RBG abstracts an inference service as a **role-based group** — composed of multiple roles (Roles) that collaborate to form a complete inference service.
 
 Deploying an inference service involves two core decisions:
@@ -10,6 +12,7 @@ Deploying an inference service involves two core decisions:
 This document uses the [SGLang](https://github.com/sgl-project/sglang) inference engine as an example. The same topology patterns apply to any inference engine (such as vLLM, TensorRT-LLM, etc.).
 
 ## Prerequisites
+
 + Kubernetes cluster version >= 1.24
 + RBG Controller installed (see [Installation Guide](https://github.com/sgl-project/rbg))
 + GPU nodes in the cluster (`nvidia.com/gpu` resource available)
@@ -21,9 +24,11 @@ This document uses the [SGLang](https://github.com/sgl-project/sglang) inference
 ---
 
 ## Multi-Role Definition
-The core concept of RBG is the **Role**. An inference service can consist of one or more roles, each承担ing different responsibilities. Depending on the inference architecture, the number and division of roles varies.
+
+The core concept of RBG is the **Role**. An inference service can consist of one or more roles, each bearing different responsibilities. Depending on the inference architecture, the number and division of roles varies.
 
 ### Aggregated Deployment: Single Role
+
 Aggregated deployment treats the entire inference engine as a single role. Prefill (prompt encoding) and Decode (token generation) are completed within the same engine instance. This is the simplest deployment approach.
 
 ```plain
@@ -82,13 +87,14 @@ spec:
 ```
 
 #### Parameter Description
+
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `spec.roles[].name` | string | Yes | - | Role name, unique within the RBG |
 | `spec.roles[].replicas` | int32 | No | 1 | Number of role instance replicas |
 
-
 ### PD-Disaggregated Deployment: Multi-Role Collaboration
+
 PD disaggregation (Prefill-Decode Disaggregated) splits the inference process into multiple roles, each with its own responsibility:
 
 + **Router**: Request router (CPU), distributes requests to Prefill or Decode instances
@@ -230,6 +236,7 @@ spec:
 ```
 
 #### Service Discovery Between Roles
+
 In a multi-role architecture, the Router typically needs to be configured with the addresses of downstream inference instances. RBG Controller automatically creates a **Headless Service** for each role, and the Router can access Prefill and Decode instances directly via DNS addresses. The DNS address naming convention is as follows:
 
 ```plain
@@ -253,16 +260,15 @@ Corresponding DNS address resolution:
 | Prefill instance 0 | `pd-inference-prefill-0.s-pd-inference-prefill.default.svc.cluster.local` |
 | Decode instance 0 | `pd-inference-decode-0.s-pd-inference-decode.default.svc.cluster.local` |
 
-
 > **Note**: The Headless Service (`s-{rbgName}-{roleName}`) is automatically created and managed by RBG Controller, no manual configuration needed. The Service's `publishNotReadyAddresses: true` ensures DNS records are resolvable even when Pods are not ready. When `replicas` is greater than 1, each instance's address increments by `{roleName}-{ordinal}` (e.g., `prefill-0`, `prefill-1`, ...), and can be configured individually in the Router's startup parameters.
 >
 
 #### Parameter Description (PD-Disaggregated)
+
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `spec.roles[].name` | string | Yes | - | Role name, unique within the RBG |
 | `spec.roles[].replicas` | int32 | No | 1 | Number of role instance replicas |
-
 
 > **Note**: In PD-disaggregated architecture, Prefill and Decode `replicas` can be configured independently. It is generally recommended to have fewer Prefill instances (encoding is compute-intensive) and more Decode instances (generation phase can handle more requests in parallel).
 >
@@ -270,6 +276,7 @@ Corresponding DNS address resolution:
 ---
 
 ## Role Topology Definition
+
 After determining the role architecture, you also need to select a deployment pattern for each role, defining the Pod topology within role instances. RBG provides three patterns:
 
 | Pattern | Description | Typical Scenario |
@@ -278,11 +285,11 @@ After determining the role architecture, you also need to select a deployment pa
 | `leaderWorkerPattern` | Each instance = 1 Leader + N Workers | Multi-GPU tensor parallelism |
 | `customComponentsPattern` | Each instance = multiple heterogeneous components | Complex hybrid orchestration |
 
-
 > **Note**: The examples in scenario 1 above all use `standalonePattern`. This section focuses on how to use `leaderWorkerPattern` for multi-GPU tensor parallelism.
 >
 
 ### standalonePattern: Single-Node Deployment
+
 `standalonePattern` is the simplest pattern, where each role instance corresponds to a single Pod. Suitable for scenarios where the model can be loaded on a single GPU.
 
 ```plain
@@ -306,8 +313,8 @@ The scenario 1 example above has already demonstrated the usage of `standalonePa
 | `spec.roles[].standalonePattern` | object | Yes (one of three) | - | Single-node mode, 1 Pod per instance |
 | `spec.roles[].standalonePattern.template` | object | Yes | - | Pod template, follows standard Kubernetes `PodTemplateSpec` |
 
-
 ### leaderWorkerPattern: Multi-Node Tensor Parallelism
+
 When the model is too large for a single GPU's memory to load the complete model, use `leaderWorkerPattern` for tensor parallelism. Each role instance consists of a group of Pods: 1 Leader + N Workers, with each Pod bound to one GPU.
 
 ```plain
@@ -328,6 +335,7 @@ When the model is too large for a single GPU's memory to load the complete model
 ```
 
 #### YAML Example
+
 Taking aggregated deployment + tensor parallelism as an example:
 
 ```yaml
@@ -384,6 +392,7 @@ spec:
 ```
 
 #### Parameter Description (leaderWorkerPattern)
+
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `leaderWorkerPattern.size` | int32 | No | 1 | Total number of Pods per instance (including Leader). Set to N for 1 Leader + (N-1) Workers |
@@ -392,8 +401,8 @@ spec:
 | `leaderWorkerPattern.workerTemplatePatch` | object | No | - | Strategic Merge Patch applied only to Worker Pod |
 | `leaderWorkerPattern.restartPolicy` | string | No | `RecreateRoleInstanceOnPodRestart` | Policy on Pod failure: `None` or `RecreateRoleInstanceOnPodRestart` (recreate entire instance) |
 
-
 #### RBG Auto-Injected Environment Variables
+
 When using `leaderWorkerPattern`, RBG Controller automatically injects the following environment variables into each Pod. Inference engines can use these variables for distributed initialization — specific parameter names vary by engine.
 
 | Environment Variable | Description |
@@ -402,11 +411,11 @@ When using `leaderWorkerPattern`, RBG Controller automatically injects the follo
 | `$(RBG_LWP_GROUP_SIZE)` | Total number of Pods in the instance (= size) |
 | `$(RBG_LWP_WORKER_INDEX)` | Index of the current Pod (Leader = 0) |
 
-
 > **Important**: The inference engine's tensor parallelism degree must match `leaderWorkerPattern.size`, with each Pod requesting 1 GPU.
 >
 
 #### PD Disaggregation + Tensor Parallelism Example
+
 `leaderWorkerPattern` also applies to inference roles in PD-disaggregated architecture. Router uses `standalonePattern` (no GPU needed), while Prefill and Decode use `leaderWorkerPattern`:
 
 ```yaml
@@ -542,6 +551,7 @@ spec:
 ---
 
 ## Verify Deployment
+
 ```bash
 # Check RBG status
 kubectl get rbg
@@ -550,12 +560,15 @@ kubectl get rbg
 kubectl get rbg <rbg-name> -o wide
 
 # Check Pod status
-kubectl get pods -l app=llm-inference
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=<rbg-name>
 ```
 
 ## Related Documents
-+ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
-+ [Configuring HPA Autoscaling](08-configuring-autoscaling.md)
+
+<!-- TODO: The following documents have not been created yet; links will be added once the documents are complete -->
+
++ Using RoleTemplates to Reduce Configuration Duplication
++ Configuring HPA Autoscaling
 + Gang Scheduling Configuration
-+ [Rolling Updates and Canary Releases](03-configuring-rolling-updates.md)
++ Rolling Updates and Canary Releases
 + PD-Disaggregated Coordinated Scaling (CoordinatedPolicy)

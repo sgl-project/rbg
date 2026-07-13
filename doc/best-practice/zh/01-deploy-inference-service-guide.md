@@ -5,6 +5,7 @@
 ## 目标
 
 验证 RBG 的多角色定义和角色拓扑配置能力，包括：
+
 1. 单角色聚合部署（standalonePattern）
 2. PD 分离多角色部署（Router + Prefill + Decode）
 3. 多 GPU 张量并行部署（leaderWorkerPattern）
@@ -302,6 +303,7 @@ kubectl exec -it pd-inference-router-0 -- python3 -c "import urllib.request; pri
 ```
 
 **预期输出：**
+
 - 3 个 Pod 全部 Running 且 Ready
 - 3 个 Headless Service，ClusterIP 均为 None
 - DNS 解析成功，Prefill 和 Decode 的 health API 均返回 `200`
@@ -420,6 +422,7 @@ kubectl exec -it agg-tp-inference-backend-0-1 -- env | grep RBG_LWP
 ```
 
 **预期输出：**
+
 - 2 个 Pod 处于 Running 且 Ready
 - Leader Pod 的 `RBG_LWP_WORKER_INDEX=0`
 - Worker Pod 的 `RBG_LWP_WORKER_INDEX=1`

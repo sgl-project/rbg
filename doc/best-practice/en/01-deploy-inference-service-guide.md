@@ -5,6 +5,7 @@
 ## Objectives
 
 Validate RBG's multi-role definition and role topology configuration capabilities, including:
+
 1. Single-role aggregated deployment (standalonePattern)
 2. PD-disaggregated multi-role deployment (Router + Prefill + Decode)
 3. Multi-GPU tensor parallel deployment (leaderWorkerPattern)
@@ -302,6 +303,7 @@ kubectl exec -it pd-inference-router-0 -- python3 -c "import urllib.request; pri
 ```
 
 **Expected output:**
+
 - All 3 Pods are Running and Ready
 - 3 Headless Services, all with ClusterIP set to None
 - DNS resolution succeeds, both Prefill and Decode health APIs return `200`
@@ -420,6 +422,7 @@ kubectl exec -it agg-tp-inference-backend-0-1 -- env | grep RBG_LWP
 ```
 
 **Expected output:**
+
 - 2 Pods are Running and Ready
 - Leader Pod's `RBG_LWP_WORKER_INDEX=0`
 - Worker Pod's `RBG_LWP_WORKER_INDEX=1`
