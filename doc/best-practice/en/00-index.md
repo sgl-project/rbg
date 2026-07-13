@@ -1,4 +1,5 @@
 # Documentation Index
+
 This best practice documentation series covers the full range of scenarios from deployment to operations. Below is a quick index of all documents:
 
 | # | Document | Core Content |
@@ -10,13 +11,14 @@ This best practice documentation series covers the full range of scenarios from 
 | 9 | [Large-Scale Cluster Resource Estimation, Configuration, and Stress Testing](09-stress-testing-and-tuning.md) | Controller resource estimation and stress testing tools |
 | 10 | [Deploying Mooncake Store with RBG](10-deploy-mooncake-store-with-rbg.md) | Deployment and management of distributed KV Cache storage |
 
-
 ---
 
-# Choosing Documents by Model Size
+## Choosing Documents by Model Size
+
 Model size determines deployment topology and resource requirements — this is the first dimension for selecting documents.
 
-## Small Models (<7B, Single GPU)
+### Small Models (<7B, Single GPU)
+
 **Typical models**: Qwen-1.8B, Llama-3-8B, GLM-4-9B
 
 | Scenario | Recommended Document | Notes |
@@ -24,14 +26,14 @@ Model size determines deployment topology and resource requirements — this is 
 | **First deployment** | Document 1 (Aggregated deployment + single-node single-GPU) | Simplest approach, 1 role 1 Pod |
 | **Configuration simplification** | Document 2 | Use RoleTemplate to reuse common configuration |
 | **Basic operations** | Document 3 | Learn basic rolling update parameters |
-| **Service discovery** | Document 10 (Layers 1-2) | Headless Service + ConfigMap is sufficient |
-
+| **Service discovery** | Document 5 (Layers 1-2) | Headless Service + ConfigMap is sufficient |
 
 **Not needed**: Multi-node tensor parallelism, Mooncake Store, CoordinatedPolicy, port allocation.
 
 ---
 
-## Medium Models (7B-70B, Single-Node Multi-GPU)
+### Medium Models (7B-70B, Single-Node Multi-GPU)
+
 **Typical models**: Qwen-72B, Llama-3-70B, DeepSeek-V2-Lite
 
 | Scenario | Recommended Document | Notes |
@@ -40,39 +42,40 @@ Model size determines deployment topology and resource requirements — this is 
 | **Configuration simplification** | Document 2 | RoleTemplate to reuse tensor parallelism configuration |
 | **Basic operations** | Document 3 | Rolling update parameter configuration |
 | **Upgrade acceleration** | Document 4 | In-place update avoids Pod rebuild, preserves KV Cache |
-| **Warmup acceleration** | Document 5 | Pre-download large model weights to nodes, shorten first readiness time |
-| **Service discovery** | Document 10 (Layers 1-2) | DNS + ConfigMap for cluster topology |
-| **Autoscaling** | Document 7 (HPA/KEDA sections) | Aggregated deployment can use HPA/KEDA |
-
+| **Service discovery** | Document 5 (Layers 1-2) | DNS + ConfigMap for cluster topology |
+| **Warmup acceleration** | Document 6 | Pre-download large model weights to nodes, shorten first readiness time |
+| **Autoscaling** | Document 8 (HPA/KEDA sections) | Aggregated deployment can use HPA/KEDA |
 
 **As needed**:
 
-+ If KV Cache reuse is needed → Document 6 (Mooncake Store)
++ If KV Cache reuse is needed → Document 10 (Mooncake Store)
 + If upgrade speed is critical → Document 4 (In-place update)
 
 ---
 
-## Large Models (>70B, Multi-Node)
+### Large Models (>70B, Multi-Node)
+
 **Typical models**: DeepSeek-R1-671B, Llama-3-405B, Qwen-110B
 
 | Scenario | Recommended Document | Notes |
 | --- | --- | --- |
 | **First deployment** | Document 1 (Aggregated deployment + multi-node multi-GPU) | LeaderWorkerPattern, TP=8 or higher |
 | **Configuration simplification** | Document 2 | RoleTemplate to reuse multi-node configuration |
-| **Warmup acceleration** | Document 5 (**strongly recommended**) | 671B model cold start takes 20-40 minutes, Warmup reduces to 5 minutes |
-| **Upgrade acceleration** | Document 4 (**strongly recommended**) | In-place update avoids model reload, in-place scheduling reuses node cache |
-| **KV Cache reuse** | Document 6 (**strongly recommended**) | Mooncake Store distributed KV Cache, cross-Pod reuse |
 | **Basic operations** | Document 3 | Rolling update parameter configuration |
-| **Service discovery** | Document 10 (Layers 1-2) | DNS + ConfigMap |
-| **Autoscaling** | Document 7 (HPA/KEDA sections) | Aggregated deployment uses HPA/KEDA |
-
+| **Upgrade acceleration** | Document 4 (**strongly recommended**) | In-place update avoids model reload, in-place scheduling reuses node cache |
+| **Service discovery** | Document 5 (Layers 1-2) | DNS + ConfigMap |
+| **Warmup acceleration** | Document 6 (**strongly recommended**) | 671B model cold start takes 20-40 minutes, Warmup reduces to 5 minutes |
+| **Autoscaling** | Document 8 (HPA/KEDA sections) | Aggregated deployment uses HPA/KEDA |
+| **KV Cache reuse** | Document 10 (**strongly recommended**) | Mooncake Store distributed KV Cache, cross-Pod reuse |
 
 ---
 
-# Choosing Documents by Deployment Architecture
+## Choosing Documents by Deployment Architecture
+
 Deployment architecture (Aggregated vs. PD-disaggregated) determines operational complexity — this is the second dimension for selecting documents.
 
-## Aggregated Deployment
+### Aggregated Deployment
+
 The inference engine serves as a single role, making deployment and operations relatively simple.
 
 | Operational Need | Recommended Document | Notes |
@@ -80,34 +83,35 @@ The inference engine serves as a single role, making deployment and operations r
 | **First deployment** | Document 1 | Choose single-node or multi-node topology |
 | **Rolling update** | Document 3 | Basic rolling update configuration |
 | **Upgrade acceleration** | Document 4 | In-place update + in-place scheduling |
-| **Warmup acceleration** | Document 5 | Recommended for large models |
-| **Autoscaling** | Document 7 (HPA/KEDA) | Metric- or event-driven scaling |
-| **KV Cache** | Document 6 (optional) | If cross-Pod KV Cache reuse is needed |
-
+| **Warmup acceleration** | Document 6 | Recommended for large models |
+| **Autoscaling** | Document 8 (HPA/KEDA) | Metric- or event-driven scaling |
+| **KV Cache** | Document 10 (optional) | If cross-Pod KV Cache reuse is needed |
 
 **Not needed**: CoordinatedPolicy (single role requires no coordination).
 
 ---
 
-## PD-Disaggregated Deployment
+### PD-Disaggregated Deployment
+
 Prefill and Decode are independent roles that require coordinated scaling and upgrades.
 
 | Operational Need | Recommended Document | Notes |
 | --- | --- | --- |
 | **First deployment** | Document 1 (PD-disaggregated topology) | Single-node or multi-node PD disaggregation |
-| **Coordinated deployment** | Document 8 (**required**) | CoordinatedPolicy controls progressive creation during initial deployment |
-| **Coordinated upgrade** | Document 8 (**required**) | CoordinatedPolicy controls multi-role synchronized upgrades |
 | **Rolling update** | Document 3 | Rolling update strategy per role |
 | **Upgrade acceleration** | Document 4 | In-place update + in-place scheduling |
-| **Warmup acceleration** | Document 5 | Recommended for large models |
-| **Autoscaling** | Document 7 (RBG Planner, **strongly recommended**) | PD disaggregation requires SLA-driven predictive scaling |
-| **KV Cache** | Document 6 (**strongly recommended**) | KV Cache generated by Prefill needs to be passed to Decode |
-
+| **Warmup acceleration** | Document 6 | Recommended for large models |
+| **Coordinated deployment** | Document 7 (**required**) | CoordinatedPolicy controls progressive creation during initial deployment |
+| **Coordinated upgrade** | Document 7 (**required**) | CoordinatedPolicy controls multi-role synchronized upgrades |
+| **Autoscaling** | Document 8 (RBG Planner, **strongly recommended**) | PD disaggregation requires SLA-driven predictive scaling |
+| **KV Cache** | Document 10 (**strongly recommended**) | KV Cache generated by Prefill needs to be passed to Decode |
 
 ---
 
-# Choosing Documents by Operational Need
-## First Deployment
+## Choosing Documents by Operational Need
+
+### First Deployment
+
 | Scenario | Recommended Document |
 | --- | --- |
 | Quick start, deploy your first inference service | Document 1 |
@@ -115,10 +119,10 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | PD-disaggregated first deployment, ensure proportional role creation | Document 8 |
 | Large model warmup, shorten first readiness time | Document 5 |
 
-
 ---
 
-## Upgrades and Updates
+### Upgrades and Updates
+
 | Scenario | Recommended Document |
 | --- | --- |
 | Configure rolling update strategy (maxUnavailable, partition) | Document 3 |
@@ -126,20 +130,20 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | In-place scheduling, schedule back to original node on Pod rebuild | Document 4 |
 | PD-disaggregated multi-role synchronized upgrade | Document 8 |
 
-
 ---
 
-## Autoscaling
+### Autoscaling
+
 | Scenario | Recommended Document |
 | --- | --- |
 | Aggregated deployment, scale based on CPU/memory/custom metrics | Document 7 (HPA/KEDA) |
 | PD disaggregation, predictive scaling based on SLA (TTFT/ITL) | Document 7 (RBG Planner) |
 | PD disaggregation, ensure synchronized Prefill and Decode scaling | Document 7 + Document 8 |
 
-
 ---
 
-## Performance Optimization
+### Performance Optimization
+
 | Scenario | Recommended Document |
 | --- | --- |
 | Large model cold start is slow, warmup needed | Document 5 |
@@ -147,10 +151,10 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | Cross-Pod KV Cache reuse | Document 6 |
 | hostNetwork + RDMA port conflicts | Document 10 (Layer 3: Port Allocation) |
 
-
 ---
 
-## Large-Scale Production
+### Large-Scale Production
+
 | Scenario | Recommended Document |
 | --- | --- |
 | Controller resource estimation and configuration | Document 9 |
@@ -158,36 +162,36 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | Controller parameter tuning (Reconciles, QPS, Burst) | Document 9 |
 | Service discovery and cluster topology management | Document 10 |
 
-
 ---
 
-# Quick Decision Matrix
+## Quick Decision Matrix
+
 The following matrix quickly locates the documents you need to read based on **model size** and **deployment architecture**:
 
 ```plain
                     Aggregated                    PD-Disaggregated
-                ┌─────────────────┐        ┌─────────────────┐
-                │  Small (<7B)     │        │  Small (<7B)     │
-                │                 │        │  (not recommended)│
-                │  Docs: 1,2,3,10 │        │                 │
-                └─────────────────┘        └─────────────────┘
+                ┌─────────────────┐        ┌──────────────────┐
+                │  Small (<7B)    │        │  Small (<7B)     │
+                │                 │        │ (not recommended)│
+                │  Docs: 1,2,3,5  │        │                  │
+                └─────────────────┘        └──────────────────┘
 
-                ┌─────────────────┐        ┌─────────────────┐
-                │  Medium          │        │  Medium          │
-                │  (7B-70B)        │        │  (7B-70B)        │
+                ┌─────────────────┐        ┌──────────────────┐
+                │  Medium         │        │  Medium          │
+                │  (7B-70B)       │        │  (7B-70B)        │
                 │                 │        │                  │
                 │  Docs: 1,2,3,   │        │  Docs: 1,2,3,    │
-                │        4,5,7,10 │        │        4,5,6,7,8 │
-                └─────────────────┘        └─────────────────┘
+                │        4,5,6,8  │        │        4,6,7,8,10│
+                └─────────────────┘        └──────────────────┘
 
-                ┌─────────────────┐        ┌─────────────────┐
-                │  Large           │        │  Large           │
-                │  (>70B)          │        │  (>70B)          │
+                ┌─────────────────┐        ┌──────────────────┐
+                │  Large          │        │  Large           │
+                │  (>70B)         │        │  (>70B)          │
                 │                 │        │                  │
                 │  Docs: 1,2,3,   │        │  Docs: 1,2,3,    │
-                │        4,5,6,   │        │        4,5,6,7,8 │
-                │        7,10     │        │                  │
-                └─────────────────┘        └─────────────────┘
+                │        4,5,6,   │        │        4,6,7,8,10│
+                │        8,10     │        │                  │
+                └─────────────────┘        └──────────────────┘
 ```
 
 **Legend**:
@@ -197,8 +201,10 @@ The following matrix quickly locates the documents you need to read based on **m
 
 ---
 
-# Typical Scenario Recommended Paths
-## Scenario A: Quick Deployment of Qwen-72B Inference Service
+## Typical Scenario Recommended Paths
+
+### Scenario A: Quick Deployment of Qwen-72B Inference Service
+
 **Goal**: Deploy Qwen-72B in production to provide stable inference service.
 
 **Recommended path**:
@@ -207,7 +213,7 @@ The following matrix quickly locates the documents you need to read based on **m
 1. Read Document 1 (Aggregated deployment + multi-node multi-GPU)
    ↓ Understand LeaderWorkerPattern topology
 
-2. Read Document 5 (Warmup pre-warming)
+2. Read Document 6 (Warmup pre-warming)
    ↓ Pre-warm model weights, shorten first readiness time
 
 3. Read Document 3 (Rolling update)
@@ -216,16 +222,17 @@ The following matrix quickly locates the documents you need to read based on **m
 4. Read Document 4 (In-place update)
    ↓ Configure in-place update, avoid model reload on rebuild
 
-5. Read Document 7 (Autoscaling)
+5. Read Document 8 (Autoscaling)
    ↓ Configure HPA/KEDA for elastic scaling
 
-6. Read Document 10 (Service discovery)
+6. Read Document 5 (Service discovery)
    ↓ Understand DNS and ConfigMap service discovery
 ```
 
 ---
 
-## Scenario B: Deploying DeepSeek-R1 PD-Disaggregated Inference Service
+### Scenario B: Deploying DeepSeek-R1 PD-Disaggregated Inference Service
+
 **Goal**: Deploy DeepSeek-R1 671B PD-disaggregated architecture, ensuring coordinated Prefill and Decode operation.
 
 **Recommended path**:
@@ -234,28 +241,29 @@ The following matrix quickly locates the documents you need to read based on **m
 1. Read Document 1 (PD disaggregation + multi-node multi-GPU)
    ↓ Understand PD-disaggregated topology and LeaderWorkerPattern
 
-2. Read Document 8 (CoordinatedPolicy)
+2. Read Document 7 (CoordinatedPolicy)
    ↓ Configure progressive creation and synchronized upgrades
 
-3. Read Document 5 (Warmup pre-warming)
+3. Read Document 6 (Warmup pre-warming)
    ↓ Pre-warm 671B model weights and DeepGEMM pre-compilation
 
-4. Read Document 6 (Mooncake Store)
+4. Read Document 10 (Mooncake Store)
    ↓ Deploy distributed KV Cache, Prefill → Decode transfer
 
 5. Read Document 4 (In-place update)
    ↓ Configure in-place update, preserve KV Cache
 
-6. Read Document 7 (RBG Planner)
+6. Read Document 8 (RBG Planner)
    ↓ Configure SLA-driven predictive scaling
 
-7. Read Document 10 (Service discovery)
+7. Read Document 5 (Service discovery)
    ↓ Understand service discovery between Prefill and Decode
 ```
 
 ---
 
-## Scenario C: Large-Scale Cluster Controller Performance Tuning
+### Scenario C: Large-Scale Cluster Controller Performance Tuning
+
 **Goal**: Ensure Controller performance meets targets in a large-scale cluster managing 500+ RBG instances.
 
 **Recommended path**:
@@ -276,13 +284,14 @@ The following matrix quickly locates the documents you need to read based on **m
 
 ---
 
-## Scenario D: hostNetwork + RDMA Inference Service
+### Scenario D: hostNetwork + RDMA Inference Service
+
 **Goal**: Deploy RDMA inference service using hostNetwork, avoiding port conflicts.
 
 **Recommended path**:
 
 ```plain
-1. Read Document 10 (Port allocation and service discovery)
+1. Read Document 5 (Port allocation and service discovery)
    ↓ Focus on Layer 3: Port allocation and component discovery
 
 2. Enable Controller port allocator
@@ -300,7 +309,8 @@ The following matrix quickly locates the documents you need to read based on **m
 
 ---
 
-# Document Dependencies
+## Document Dependencies
+
 Some documents have dependencies on others. It is recommended to read them in order:
 
 ```plain
@@ -312,32 +322,32 @@ Document 3 (Rolling update) ──→ Basic operations
     ↓
 Document 4 (In-place update) ──→ Upgrade acceleration, depends on Document 3
     ↓
-Document 5 (Warmup) ──→ First deployment acceleration, independent
+Document 5 (Service discovery) ──→ Spans all scenarios, independent
     ↓
-Document 6 (Mooncake Store) ──→ KV Cache optimization, independent
+Document 6 (Warmup) ──→ First deployment acceleration, independent
     ↓
-Document 7 (Autoscaling) ──→ Runtime scaling
+Document 7 (CoordinatedPolicy) ──→ Required for PD disaggregation, depends on Document 1
     ↓
-Document 8 (CoordinatedPolicy) ──→ Required for PD disaggregation, depends on Document 1
+Document 8 (Autoscaling) ──→ Runtime scaling
     ↓
 Document 9 (Stress testing) ──→ Large-scale production, independent
     ↓
-Document 10 (Service discovery) ──→ Spans all scenarios, independent
+Document 10 (Mooncake Store) ──→ KV Cache optimization, independent
 ```
 
 ---
 
-# Quick FAQ
+## Quick FAQ
+
 | Question | Reference Document |
 | --- | --- |
 | How to deploy Qwen-72B? | Document 1 (Aggregated deployment + multi-node multi-GPU) |
-| How to deploy DeepSeek-R1? | Document 1 (PD disaggregation + multi-node multi-GPU) + Document 5 + Document 6 + Document 8 |
-| KV Cache lost during rolling update? | Document 4 (in-place update) + Document 6 (Mooncake Store) |
-| How to configure autoscaling? | Document 7 |
-| How to synchronize Prefill and Decode upgrades in PD disaggregation? | Document 8 |
-| How to warm up large models? | Document 5 |
+| How to deploy DeepSeek-R1? | Document 1 (PD disaggregation + multi-node multi-GPU) + Document 6 + Document 7 + Document 10 |
+| KV Cache lost during rolling update? | Document 4 (in-place update) + Document 10 (Mooncake Store) |
+| How to configure autoscaling? | Document 8 |
+| How to synchronize Prefill and Decode upgrades in PD disaggregation? | Document 7 |
+| How to warm up large models? | Document 6 |
 | How to configure Controller resources? | Document 9 |
-| Port conflicts in hostNetwork scenarios? | Document 10 (Layer 3) |
-| How to get cluster topology information? | Document 10 (Layer 2: ConfigMap) |
+| Port conflicts in hostNetwork scenarios? | Document 5 (Layer 3) |
+| How to get cluster topology information? | Document 5 (Layer 2: ConfigMap) |
 | How to simplify repetitive role configuration? | Document 2 |
-
