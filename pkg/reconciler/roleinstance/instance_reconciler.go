@@ -195,9 +195,17 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 				break
 			}
 		}
-		// Propagate restart tracking updated by updateRestartTracking during Scale.
-		newStatus.RestartCount = updateInstance.Status.RestartCount
-		newStatus.LastRestartTime = updateInstance.Status.LastRestartTime
+		// Propagate restart tracking only when updateRestartTracking modified
+		// the values during Scale (i.e., a restart-policy-triggered deletion
+		// was triggered). ApplyRevision produces zero-value status fields, so
+		// unconditional propagation would clobber the correct values from the
+		// live object during the pod creation phase.
+		if updateInstance.Status.RestartCount > 0 {
+			newStatus.RestartCount = updateInstance.Status.RestartCount
+		}
+		if updateInstance.Status.LastRestartTime != nil {
+			newStatus.LastRestartTime = updateInstance.Status.LastRestartTime
+		}
 		return syncResult{err: podsScaleErr}
 	}
 	// Restart backoff: delay not elapsed, skip Update and just requeue.
