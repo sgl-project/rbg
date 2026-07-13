@@ -209,14 +209,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		return syncResult{err: podsScaleErr}
 	}
 	// Restart backoff: delay not elapsed, skip Update and just requeue.
-	// Also propagate Restarting condition and restart tracking so they persist.
+	// Do NOT propagate the Restarting condition here. The Restarting condition
+	// should only be set when a restart is actually in progress (scaling=true
+	// for deletion/creation). Propagating it during backoff causes the Ready
+	// condition to become False (pods are Failed), which then prevents
+	// shouldRecreateInstance from triggering on the next reconcile because
+	// wasInstanceReady() returns false.
 	if scaleRequeue > 0 {
-		for _, cond := range updateInstance.Status.Conditions {
-			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
-				newStatus.Conditions = append(newStatus.Conditions, cond)
-				break
-			}
-		}
 		return syncResult{requeue: scaleRequeue}
 	}
 

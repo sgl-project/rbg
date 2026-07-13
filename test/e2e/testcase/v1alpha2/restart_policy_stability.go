@@ -330,13 +330,18 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 				}); err != nil {
 				return false
 			}
-			// Check if any active pod still has the old UID (backoff working)
-			for _, p := range filterActivePods(pods.Items) {
-				if secondUIDs[p.Name] == p.UID {
-					return true // Original pod still exists — backoff is working
+			// During backoff, the original (Failed) pods should still exist and
+			// no new pods should have been created. Check that no pod has a UID
+			// different from the originals — any new UID means recreation happened.
+			for _, p := range pods.Items {
+				if p.DeletionTimestamp != nil {
+					continue
+				}
+				if secondUIDs[p.Name] != p.UID {
+					return false // New pod with different UID — recreation happened
 				}
 			}
-			return false
+			return true
 		}, 4, 1).Should(gomega.BeTrue(),
 			"pod should NOT be recreated immediately during backoff window")
 
