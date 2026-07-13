@@ -5,6 +5,7 @@
 ## 目标
 
 验证通过 RBG 部署 Mooncake Store 分布式 KV Cache 存储引擎，并实现推理服务的 KV Cache Offload 和跨实例复用，包括：
+
 1. 部署独立的 Mooncake Store 服务（Master + Store 节点）
 2. 部署推理服务连接 Mooncake Store
 3. 验证角色依赖启动顺序
@@ -160,6 +161,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 ```
 
 **预期输出：**
+
 - Master Pod 1 个，Running 且 Ready
 - Store Pod 1 个，Running 且 Ready
 - Master 日志中显示存储池容量：`Storage: 0 B / 100.00 GB (0.0%)`
@@ -259,13 +261,13 @@ spec:
 EOF
 ```
 
-### 预期行为
+### 预期行为（部署推理服务）
 
 - 推理引擎启动时通过 `--enable-hierarchical-cache` 和 `--hicache-storage-backend mooncake` 启用分层缓存
 - 引擎通过 `MOONCAKE_MASTER` 和 `MOONCAKE_TE_META_DATA_SERVER` 环境变量连接 Mooncake Store
 - 引擎使用 Headless Service DNS 地址（`s-mooncake-service-mooncake-master`）连接 Master
 
-### 验证
+### 验证（部署推理服务）
 
 ```bash
 # 等待推理引擎就绪
@@ -281,6 +283,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/group-name=inference-with-mooncake -c eng
 ```
 
 **预期输出：**
+
 - 推理引擎 Pod Running 且 Ready
 - 日志中显示 Mooncake 连接成功的信息
 
@@ -334,7 +337,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 > I0709 07:22:43.712549    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 487 (soft-pinned: 0) | Clients: 2 | Requests (Success/Total): PutStart=8/8, PutEnd=6/6, PutRevoke=2/2, Get=6/6, Exist=6/6, Del=0/0, DelAll=0/0, Ping=3211/3211, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask:(Req=0/0), CreateCopyTask:(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
 ```
 
-### 预期行为
+### 预期行为（验证 KV Cache Offload）
 
 - 请求前：`Mem Storage: 4.00 KB / 100.00 GB`
 - 请求后：`Mem Storage: 26.58 MB / 100.00 GB (0.0%)`
@@ -392,7 +395,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 > I0709 08:00:59.104270    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 48.46 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 888 (soft-pinned: 0) | Clients: 3 | Requests (Success/Total): PutStart=2/2, PutEnd=2/2, PutRevoke=0/0, Get=2/2, Exist=2/2, Del=0/0, DelAll=0/0, Ping=928/928, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=7/0/7, Item=886/886), PutEnd:(Req=7/0/7, Item=886/886), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=7/0/7, Item=886/886), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask:(Req=0/0), CreateCopyTask:(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
 ```
 
-### 预期行为
+### 预期行为（验证跨实例复用）
 
 - 如果两个实例独立计算 KV Cache，Keys 数量应成倍增长
 - 如果 KV Cache 被共享，Keys 没有翻倍，说明第二个实例复用了第一个实例的 KV Cache

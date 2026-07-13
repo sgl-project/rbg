@@ -10,6 +10,7 @@ RBG orchestrates Mooncake Store's Master and Store nodes as roles within the inf
 >
 
 ## Prerequisites
+
 + Kubernetes cluster version >= 1.24
 + RBG Controller installed (refer to the [Installation Guide](https://github.com/sgl-project/rbg))
 + Mooncake Store does not require GPUs; it only needs CPU nodes with sufficient memory
@@ -20,7 +21,9 @@ RBG orchestrates Mooncake Store's Master and Store nodes as roles within the inf
 ---
 
 ## Background: Why KV Cache Offload and Reuse Are Needed
+
 ### The Role of KV Cache in Inference
+
 LLM inference consists of two phases:
 
 1. **Prefill**: Processes the input prompt and computes Key-Value pairs (KV Cache) for each token
@@ -29,6 +32,7 @@ LLM inference consists of two phases:
 KV Cache computation is expensive, especially for long prompts. If the same prompt prefix appears across multiple requests (e.g., system prompts in multi-turn conversations, shared context), recomputing the KV Cache is wasteful.
 
 ### GPU Memory Bottleneck
+
 KV Cache is stored in GPU memory, but memory capacity is limited:
 
 + A 70B model in FP16 occupies approximately 140 GB of GPU memory
@@ -50,6 +54,7 @@ KV Cache is stored in GPU memory, but memory capacity is limited:
 ```
 
 ### Hierarchical Cache Architecture
+
 SGLang's HiCache (Hierarchical Cache) provides a tiered caching mechanism that extends KV Cache beyond GPU memory:
 
 ```plain
@@ -80,16 +85,17 @@ SGLang's HiCache (Hierarchical Cache) provides a tiered caching mechanism that e
 ```
 
 ### Typical Beneficial Scenarios
+
 | Scenario | Description | Without L3 Cache | With Mooncake L3 Cache |
 | --- | --- | --- | --- |
 | Multi-turn conversation | User sends multiple consecutive messages, sharing historical context | Each turn recomputes KV Cache for all previous tokens | Retrieves historical KV Cache from Mooncake, only computes new tokens |
 | Shared system prompt | Multiple users use the same system prompt | Each request independently computes the system prompt's KV Cache | The system prompt's KV Cache is shared across all instances in Mooncake |
 | Long document analysis | Multiple requests analyze the same long document | Each request must re-encode the entire document | The document's KV Cache is computed only once; subsequent requests reuse it directly |
 
-
 ---
 
 ## Mooncake Store Capabilities
+
 Mooncake Store is a distributed KV Cache storage engine built on Transfer Engine, designed specifically for LLM inference:
 
 + **Distributed memory pool**: Memory from multiple Store nodes is aggregated into a unified storage space with horizontally scalable capacity
@@ -99,6 +105,7 @@ Mooncake Store is a distributed KV Cache storage engine built on Transfer Engine
 + **Flexible protocols**: Supports both TCP and RDMA transport protocols; RDMA mode enables zero-copy, low-latency transfers
 
 ### Role Composition
+
 Mooncake Store consists of two types of roles:
 
 | Role | Function | GPU | Description |
@@ -106,10 +113,10 @@ Mooncake Store consists of two types of roles:
 | `mooncake-master` | Metadata server | Not required | Manages storage pools, handles Store node join/leave, object space allocation, eviction policies |
 | `mooncake-store` | Storage node | Not required | Contributes memory to the global storage pool; acts as passive storage only, does not initiate KV Cache operations |
 
-
 ---
 
 ## Why Deploy Mooncake Store with RBG
+
 While manually deploying Mooncake Store as a standalone service is feasible, it faces the following challenges in production environments:
 
 1. **Service discovery**: The inference engine needs to know the Mooncake Master's address; manual configuration is error-prone
@@ -148,9 +155,11 @@ RBG addresses all these issues through role dependencies, automatic service disc
 ---
 
 ## Deploying Mooncake Store Service
+
 When multiple inference services need to share the same KV Cache storage pool, Mooncake Store can be deployed as a standalone RBG, and each inference service connects via Service references.
 
 ### Deploying a Standalone Mooncake Store
+
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
@@ -264,6 +273,7 @@ spec:
 ```
 
 ### Inference Service Connecting to a Standalone Mooncake Store
+
 In the inference service's RBG, point `MOONCAKE_MASTER` and `MOONCAKE_TE_META_DATA_SERVER` to the standalone Mooncake service's Headless Service address:
 
 ```yaml
@@ -316,6 +326,7 @@ In the inference service's RBG, point `MOONCAKE_MASTER` and `MOONCAKE_TE_META_DA
 ---
 
 ## RDMA Mode Configuration
+
 For production environments, using the RDMA protocol is recommended for lower transfer latency and higher bandwidth. Enabling RDMA requires configuring the following parameters in both Store and inference engine:
 
 ```yaml
@@ -336,6 +347,7 @@ resources:
 ---
 
 ## KV Cache Capacity Planning
+
 The total cache capacity of Mooncake Store = number of Store replicas × `MOONCAKE_GLOBAL_SEGMENT_SIZE` per Store.
 
 | Configuration | Total L3 Cache Capacity | Applicable Scenarios |
@@ -344,14 +356,15 @@ The total cache capacity of Mooncake Store = number of Store replicas × `MOONCA
 | 3 replicas × 50 GB | 150 GB | Medium-scale production environments |
 | 6 replicas × 50 GB | 300 GB | Large-scale multi-tenant shared cache |
 
-
 > **Note**: Each Store node's `resources.limits.memory` should be greater than or equal to `MOONCAKE_GLOBAL_SEGMENT_SIZE` to ensure the container has sufficient memory to hold the allocated cache space.
 >
 
 ---
 
 ## Testing and Verifying KV Cache Offloading and Reuse
+
 ### Step 1: Verify Mooncake Store Readiness
+
 Check the Master logs to confirm that Store nodes have joined the storage pool:
 
 ```bash
@@ -367,6 +380,7 @@ Master Metrics: Storage: 0 B / 30.00 GB (0.0%) | Keys: 0 (soft-pinned: 0)
 `30.00 GB` indicates that 3 Store nodes each contribute 10 GB, totaling 30 GB of L3 cache space.
 
 ### Step 2: Send Requests and Verify KV Cache Offload
+
 Send multi-turn conversation requests to the inference service:
 
 ```bash
@@ -415,6 +429,7 @@ Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%)
 Non-zero `Storage` and `Keys` values indicate that KV Cache has been successfully offloaded to Mooncake Store.
 
 ### Step 3: Benchmark to Verify Performance Improvement
+
 Use SGLang's built-in `bench_serving` tool to run multi-turn conversation benchmarks, comparing SLO metrics with and without Mooncake:
 
 ```bash
@@ -427,6 +442,7 @@ python3 -m sglang.bench_serving --backend sglang-oai \
 ```
 
 #### Expected Results
+
 Benchmark data based on KEP-74 (Qwen3-32B, 3 Store × 10 GiB L3 cache):
 
 | Metric | Without Mooncake | With Mooncake | Improvement |
@@ -436,11 +452,11 @@ Benchmark data based on KEP-74 (Qwen3-32B, 3 Store × 10 GiB L3 cache):
 | **Multi-turn ITL** | 140 ms | 58 ms | **-58.83%** |
 | **Multi-turn throughput** | 1385 tok/s | 1936 tok/s | **+39.80%** |
 
-
 > **Note**: The first turn has no reusable KV Cache, so performance is roughly the same. In multi-turn conversations, the historical context's KV Cache is retrieved from the Mooncake L3 cache, avoiding recomputation and significantly reducing TTFT.
 >
 
 ### Step 4: Verify KV Cache Cross-Instance Reuse (Optional)
+
 Deploy multiple inference engine replicas and verify KV Cache sharing across different instances:
 
 ```bash
@@ -454,6 +470,7 @@ Send requests with the same prefix to different instances and observe the `Keys`
 ---
 
 ## Verify Deployment
+
 ```bash
 # Check RBG status
 kubectl get rbg inference-with-mooncake
@@ -473,7 +490,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 
 ## Related Documentation
 
-+ [Deploying Inference Services with RBG](#01-deploy-inference-service.md)
-* [Using RoleTemplates to Reduce Configuration Duplication](#02-using-role-templates.md)
-* [In-Place Upgrade and In-Place Scheduling](#TODO)
-* [Configuring Rolling Update Strategies](#03-configuring-rolling-updates.md)
++ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
++ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
++ In-Place Upgrade and In-Place Scheduling
++ [Configuring Rolling Update Strategies](03-configuring-rolling-updates.md)

@@ -5,6 +5,7 @@
 ## Objective
 
 Verify the deployment of Mooncake Store distributed KV Cache storage engine through RBG, and achieve KV Cache Offload and cross-instance reuse for inference services, including:
+
 1. Deploy a standalone Mooncake Store service (Master + Store nodes)
 2. Deploy an inference service connected to Mooncake Store
 3. Verify role dependency startup ordering
@@ -160,6 +161,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 ```
 
 **Expected output:**
+
 - 1 Master Pod, Running and Ready
 - 1 Store Pod, Running and Ready
 - Master logs show storage pool capacity: `Storage: 0 B / 100.00 GB (0.0%)`
@@ -259,13 +261,13 @@ spec:
 EOF
 ```
 
-### Expected Behavior
+### Expected Behavior (Deploy Inference Service)
 
 - The inference engine enables hierarchical cache via `--enable-hierarchical-cache` and `--hicache-storage-backend mooncake`
 - The engine connects to Mooncake Store via `MOONCAKE_MASTER` and `MOONCAKE_TE_META_DATA_SERVER` environment variables
 - The engine uses the Headless Service DNS address (`s-mooncake-service-mooncake-master`) to connect to the Master
 
-### Verification
+### Verification (Deploy Inference Service)
 
 ```bash
 # Wait for inference engine to be ready
@@ -281,6 +283,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/group-name=inference-with-mooncake -c eng
 ```
 
 **Expected output:**
+
 - Inference engine Pod Running and Ready
 - Logs show Mooncake connection success message
 
@@ -334,7 +337,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 > I0709 07:22:43.712549    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 487 (soft-pinned: 0) | Clients: 2 | Requests (Success/Total): PutStart=8/8, PutEnd=6/6, PutRevoke=2/2, Get=6/6, Exist=6/6, Del=0/0, DelAll=0/0, Ping=3211/3211, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke=(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
 ```
 
-### Expected Behavior
+### Expected Behavior (Verify KV Cache Offload)
 
 - Before requests: `Mem Storage: 4.00 KB / 100.00 GB`
 - After requests: `Mem Storage: 26.58 MB / 100.00 GB (0.0%)`
@@ -396,7 +399,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 > I0709 07:33:13.721725    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.59 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 488 (soft-pinned: 0) | Clients: 2 | Requests (Success/Total): PutStart=9/9, PutEnd=7/7, PutRevoke=2/2, Get=7/7, Exist=7/7, Del=0/0, DelAll=0/0, Ping=4284/4284, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
 ```
 
-### Expected Behavior
+### Expected Behavior (Verify Cross-Instance Reuse)
 
 - If both instances compute KV Cache independently, the Keys count should double
 - If KV Cache is shared, the Keys count changes minimally, indicating the second instance reused the first instance's KV Cache
