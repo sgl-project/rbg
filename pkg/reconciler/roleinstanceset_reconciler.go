@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
@@ -186,6 +187,13 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	if portallocator.IsEnabled() {
 		if err := allocateRoleScopedPortAnnotations(roleInstanceTemplateConfig.Components, old, roleInstanceSetAnnotation); err != nil {
 			return nil, err
+		}
+	}
+
+	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
+		if role.RolloutStrategy.RollingUpdate.InPlaceUpdateStrategy != nil {
+			// Propagate grace period as annotation so RoleInstance controller can read it.
+			roleInstanceSetAnnotation[constants.RoleInplaceUpdateGracePeriodSecondsKey] = strconv.Itoa(int(role.RolloutStrategy.RollingUpdate.InPlaceUpdateStrategy.GracePeriodSeconds))
 		}
 	}
 

@@ -744,9 +744,13 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	klog.InfoS("Updating instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(target),
 		"from", getInstanceRevision(target), "to", updateRevision.Name,
 		"isSurge", isSurgeSlot, "free", isFree)
-	inplacing, err := ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
-	if err != nil {
-		return false, err
+	var inplacing bool
+	var err error
+	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
+		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
+		if err != nil {
+			return false, err
+		}
 	}
 	transitioned := inplacing
 	if !inplacing {

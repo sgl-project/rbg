@@ -19,6 +19,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
@@ -163,6 +165,11 @@ func (c *commonControl) setComponentPodIdentity(component *workloadsv1alpha2.Rol
 func (c *commonControl) GetUpdateOptions() *podinplaceupdate.UpdateOptions {
 	opts := &podinplaceupdate.UpdateOptions{}
 	podinplaceupdate.SetOptionsDefaults(opts)
+	if v, ok := c.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey]; ok {
+		if seconds, err := strconv.Atoi(v); err == nil {
+			opts.GracePeriodSeconds = int32(seconds)
+		}
+	}
 	return opts
 }
 

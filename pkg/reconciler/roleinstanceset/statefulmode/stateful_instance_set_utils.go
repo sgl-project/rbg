@@ -228,6 +228,11 @@ func newVersionedInstance(
 	if v, ok := currentSet.Annotations[constants.RoleInplaceSchedulingAvoidAnnotationKey]; ok {
 		instance.Annotations[constants.RoleInplaceSchedulingAvoidAnnotationKey] = v
 	}
+	// Propagate in-place update grace period seconds so the RoleInstance controller
+	// can honour the configured drain delay when updating Pods.
+	if v, ok := currentSet.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey]; ok {
+		instance.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey] = v
+	}
 
 	portallocator.AllocatePortsForInstance(instance, currentSet)
 

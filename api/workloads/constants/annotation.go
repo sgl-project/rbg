@@ -132,6 +132,12 @@ const (
 	// InPlaceUpdateGraceKey identifies the in-place update grace period configuration
 	InPlaceUpdateGraceKey = RBGPrefix + "inplace-update-grace"
 
+	// RoleInplaceUpdateGracePeriodSecondsKey propagates the in-place update grace
+	// period (seconds) from RoleInstanceSet to RoleInstance, so the RoleInstance
+	// controller can honor the configured delay.
+	// Example: rbg.workloads.x-k8s.io/inplace-update-grace-period-seconds: "30"
+	RoleInplaceUpdateGracePeriodSecondsKey = RBGPrefix + "inplace-update-grace-period-seconds"
+
 	// RuntimeContainerMetaKey is a key in pod annotations. Some inplace update scene should report the
 	// states of runtime containers into its value, which is a structure JSON of RuntimeContainerMetaSet type.
 	RuntimeContainerMetaKey = "workloads.x-k8s.io/runtime-containers-meta"
