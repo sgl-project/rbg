@@ -4,12 +4,18 @@ This best practice documentation series covers the full range of scenarios from 
 
 | # | Document | Core Content |
 | --- | --- | --- |
-| 1 | [Multi-Role Configuration & Role Topology](01-deploy-inference-service.md) | 4 deployment topologies (Aggregated/PD-disaggregated × single-node/multi-node) |
-| 2 | [Simplifying Configuration with RoleTemplates](02-using-role-templates.md) | Reuse role configuration via RoleTemplate |
-| 3 | [Configuring Rolling Update Strategies](03-configuring-rolling-updates.md) | Rolling update parameters and strategy selection |
-| 8 | [Configuring Autoscaling for RBG Services](08-configuring-autoscaling.md) | HPA/KEDA/RBG Planner — three scaling solutions |
-| 9 | [Large-Scale Cluster Resource Estimation, Configuration, and Stress Testing](09-stress-testing-and-tuning.md) | Controller resource estimation and stress testing tools |
-| 10 | [Deploying Mooncake Store with RBG](10-deploy-mooncake-store-with-rbg.md) | Deployment and management of distributed KV Cache storage |
+| 1 | Multi-Role Configuration & Role Topology | 4 deployment topologies (Aggregated/PD-disaggregated × single-node/multi-node) |
+| 2 | Simplifying Configuration with RoleTemplates | Reuse role configuration via RoleTemplate |
+| 3 | Configuring Rolling Update Strategies | Rolling update parameters and strategy selection |
+| 4 | In-Place Update & Scheduling | Container-level fast update and node affinity scheduling |
+| 5 | Service Discovery & Port Allocation | DNS, environment variables, ConfigMap, dynamic ports |
+| 6 | Large Model Warmup | Pre-warm images, models, and pre-compiled files |
+| 7 | CoordinatedPolicy Management | Control multi-role scaling and upgrade synchronization |
+| 8 | Configuring Autoscaling for RBG Services | HPA/KEDA/RBG Planner — three scaling solutions |
+| 9 | Large-Scale Cluster Resource Estimation, Configuration, and Stress Testing | Controller resource estimation and stress testing tools |
+| 10 | Deploying Mooncake Store with RBG | Deployment and management of distributed KV Cache storage |
+
+<!-- TODO: The following documents have not been created yet; links will be added once they are complete -->
 
 ---
 
@@ -17,7 +23,7 @@ This best practice documentation series covers the full range of scenarios from 
 
 Model size determines deployment topology and resource requirements — this is the first dimension for selecting documents.
 
-### Small Models (<7B, Single GPU)
+### Small Models (<10B, Single GPU)
 
 **Typical models**: Qwen-1.8B, Llama-3-8B, GLM-4-9B
 
@@ -32,7 +38,7 @@ Model size determines deployment topology and resource requirements — this is 
 
 ---
 
-### Medium Models (7B-70B, Single-Node Multi-GPU)
+### Medium Models (10B-70B, Multi-GPU)
 
 **Typical models**: Qwen-72B, Llama-3-70B, DeepSeek-V2-Lite
 
@@ -116,8 +122,8 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | --- | --- |
 | Quick start, deploy your first inference service | Document 1 |
 | Simplify configuration, reuse role templates | Document 2 |
-| PD-disaggregated first deployment, ensure proportional role creation | Document 8 |
-| Large model warmup, shorten first readiness time | Document 5 |
+| PD-disaggregated first deployment, ensure proportional role creation | Document 7 |
+| Large model warmup, shorten first readiness time | Document 6 |
 
 ---
 
@@ -128,7 +134,7 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | Configure rolling update strategy (maxUnavailable, partition) | Document 3 |
 | In-place update, avoid Pod rebuild, preserve KV Cache | Document 4 |
 | In-place scheduling, schedule back to original node on Pod rebuild | Document 4 |
-| PD-disaggregated multi-role synchronized upgrade | Document 8 |
+| PD-disaggregated multi-role synchronized upgrade | Document 7 |
 
 ---
 
@@ -136,8 +142,8 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 
 | Scenario | Recommended Document |
 | --- | --- |
-| Aggregated deployment, scale based on CPU/memory/custom metrics | Document 7 (HPA/KEDA) |
-| PD disaggregation, predictive scaling based on SLA (TTFT/ITL) | Document 7 (RBG Planner) |
+| Aggregated deployment, scale based on CPU/memory/custom metrics | Document 8 (HPA/KEDA) |
+| PD disaggregation, predictive scaling based on SLA (TTFT/ITL) | Document 8 (RBG Planner) |
 | PD disaggregation, ensure synchronized Prefill and Decode scaling | Document 7 + Document 8 |
 
 ---
@@ -146,10 +152,10 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 
 | Scenario | Recommended Document |
 | --- | --- |
-| Large model cold start is slow, warmup needed | Document 5 |
-| KV Cache loss during upgrades, TTFT fluctuation | Document 4 (in-place update) + Document 6 (Mooncake Store) |
-| Cross-Pod KV Cache reuse | Document 6 |
-| hostNetwork + RDMA port conflicts | Document 10 (Layer 3: Port Allocation) |
+| Large model cold start is slow, warmup needed | Document 6 |
+| KV Cache loss during upgrades, TTFT fluctuation | Document 4 (in-place update) + Document 10 (Mooncake Store) |
+| Cross-Pod KV Cache reuse | Document 10 |
+| hostNetwork + RDMA port conflicts | Document 5 (Layer 3: Port Allocation) |
 
 ---
 
@@ -160,7 +166,7 @@ Prefill and Decode are independent roles that require coordinated scaling and up
 | Controller resource estimation and configuration | Document 9 |
 | Stress test to validate Controller performance | Document 9 |
 | Controller parameter tuning (Reconciles, QPS, Burst) | Document 9 |
-| Service discovery and cluster topology management | Document 10 |
+| Service discovery and cluster topology management | Document 5 |
 
 ---
 
@@ -171,14 +177,14 @@ The following matrix quickly locates the documents you need to read based on **m
 ```plain
                     Aggregated                    PD-Disaggregated
                 ┌─────────────────┐        ┌──────────────────┐
-                │  Small (<7B)    │        │  Small (<7B)     │
+                │  Small (<10B)   │        │  Small (<10B)    │
                 │                 │        │ (not recommended)│
                 │  Docs: 1,2,3,5  │        │                  │
                 └─────────────────┘        └──────────────────┘
 
                 ┌─────────────────┐        ┌──────────────────┐
                 │  Medium         │        │  Medium          │
-                │  (7B-70B)       │        │  (7B-70B)        │
+                │  (10B-70B)      │        │  (10B-70B)       │
                 │                 │        │                  │
                 │  Docs: 1,2,3,   │        │  Docs: 1,2,3,    │
                 │        4,5,6,8  │        │        4,6,7,8,10│
