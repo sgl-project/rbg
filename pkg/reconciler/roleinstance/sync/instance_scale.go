@@ -372,20 +372,36 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 	if baseDelay == 0 && maxDelay == 0 {
 		return 0
 	}
-	if instance.Status.LastRestartTime == nil {
+
+	// Read fresh from API server for restart tracking fields. The informer cache
+	// may be stale: the deletion phase of a prior reconcile persisted updated
+	// RestartCount/LastRestartTime, but the informer hasn't synced yet for the
+	// current (creation-phase) reconcile. Using stale values would cause backoff
+	// to be skipped entirely (LastRestartTime=nil → no delay).
+	restartCount := instance.Status.RestartCount
+	lastRestartTime := instance.Status.LastRestartTime
+	if c.apiReader != nil {
+		fresh := &workloadsv1alpha2.RoleInstance{}
+		if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err == nil {
+			restartCount = fresh.Status.RestartCount
+			lastRestartTime = fresh.Status.LastRestartTime
+		}
+	}
+
+	if lastRestartTime == nil {
 		return 0
 	}
 
-	delay := calculateRestartDelay(baseDelay, maxDelay, instance.Status.RestartCount)
+	delay := calculateRestartDelay(baseDelay, maxDelay, restartCount)
 	if delay == 0 {
 		return 0
 	}
 
-	elapsed := time.Since(instance.Status.LastRestartTime.Time)
+	elapsed := time.Since(lastRestartTime.Time)
 	remaining := time.Duration(delay)*time.Second - elapsed
 	if remaining > 0 {
 		klog.Infof("Restart backoff: instance %s waiting %v (restartCount=%d, delay=%ds)",
-			klog.KObj(instance), remaining.Round(time.Second), instance.Status.RestartCount, delay)
+			klog.KObj(instance), remaining.Round(time.Second), restartCount, delay)
 		return remaining
 	}
 	return 0

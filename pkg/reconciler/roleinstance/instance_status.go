@@ -425,8 +425,25 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 				liveCustomConditions = append(liveCustomConditions, c)
 			}
 		}
+		// Snapshot live restart tracking before overwriting clone.Status.
+		// The informer cache may be stale: a previous reconcile (e.g. the
+		// deletion phase) may have already persisted a higher RestartCount,
+		// but the current reconcile read a lower value from the stale cache.
+		// We must never roll back RestartCount or LastRestartTime.
+		liveRestartCount := clone.Status.RestartCount
+		liveLastRestartTime := clone.Status.LastRestartTime
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
+		// Preserve live restart tracking if it's ahead of our precomputed
+		// newStatus. This prevents a stale-cache reconcile from clobbering
+		// a RestartCount that was already incremented by a prior reconcile.
+		if liveRestartCount > newStatus.RestartCount {
+			clone.Status.RestartCount = liveRestartCount
+		}
+		if liveLastRestartTime != nil && (newStatus.LastRestartTime == nil ||
+			liveLastRestartTime.After(newStatus.LastRestartTime.Time)) {
+			clone.Status.LastRestartTime = liveLastRestartTime
+		}
 		return r.Status().Update(ctx, clone)
 	})
 }
