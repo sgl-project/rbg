@@ -634,13 +634,13 @@ func validateRolloutStrategy(
 	if err != nil {
 		return nil, err
 	}
-	maxAvailable, err := intstr.GetScaledValueFromIntOrPercent(
-		rollingStrategy.RollingUpdate.MaxUnavailable, replicas, false,
+	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(
+		rollingStrategy.RollingUpdate.MaxUnavailable, replicas, maxSurge == 0,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if maxAvailable == 0 && maxSurge == 0 {
+	if maxUnavailable == 0 && maxSurge == 0 {
 		return nil, fmt.Errorf(
 			"RollingUpdate is invalid: " +
 				"rolloutStrategy.rollingUpdate.maxUnavailable may not be 0 when maxSurge is 0",

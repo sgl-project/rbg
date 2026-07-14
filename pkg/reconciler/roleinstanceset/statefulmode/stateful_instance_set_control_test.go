@@ -949,3 +949,16 @@ func TestIsStablyUnhealthyEdgeCases(t *testing.T) {
 		t.Errorf("instance not yet in the map must return false")
 	}
 }
+
+func TestComputeMaxUnavailable_RoundsUpWhenMaxSurgeIsZero(t *testing.T) {
+	set := buildSet("s", 3, ptr.To(intstrutil.FromInt32(0)), ptr.To(intstrutil.FromString("30%")))
+
+	got, err := computeMaxUnavailable(set, 0)
+
+	if err != nil {
+		t.Fatalf("computeMaxUnavailable() error = %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("computeMaxUnavailable() = %d, want 1", got)
+	}
+}
