@@ -475,18 +475,57 @@ func (f *fakeInstanceObjectManager) DeleteInstance(instance *workloadsv1alpha2.R
 	return nil
 }
 
-// fakeInplaceControl always returns CanUpdateInPlace=false so progressUpdate
-// falls through to delete-and-recreate (the path we want to observe).
-type fakeInplaceControl struct{}
+// fakeInplaceControl returns CanUpdateInPlace=false by default so progressUpdate
+// falls through to delete-and-recreate when the strategy allows fallback.
+type fakeInplaceControl struct {
+	canUpdateCalls int
+	updateCalls    int
+}
 
 func (f *fakeInplaceControl) CanUpdateInPlace(_, _ *apps.ControllerRevision, _ *instanceinplace.UpdateOptions) bool {
+	f.canUpdateCalls++
 	return false
 }
 func (f *fakeInplaceControl) Update(_ *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, _ *instanceinplace.UpdateOptions) instanceinplace.UpdateResult {
+	f.updateCalls++
 	return instanceinplace.UpdateResult{InPlaceUpdate: false}
 }
 func (f *fakeInplaceControl) Refresh(_ *workloadsv1alpha2.RoleInstance, _ *instanceinplace.UpdateOptions) instanceinplace.RefreshResult {
 	return instanceinplace.RefreshResult{}
+}
+
+func TestApplyTargetUpdateRecreatePodSkipsInPlace(t *testing.T) {
+	set := buildSet("s", 1, nil, nil)
+	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+	target := buildInst("s", 0, testOldRev, true, true)
+	objectManager := &fakeInstanceObjectManager{}
+	inplaceControl := &fakeInplaceControl{}
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objectManager, record.NewFakeRecorder(10)),
+		inplaceControl:  inplaceControl,
+	}
+
+	transitioned, err := control.applyTargetUpdate(
+		set,
+		target,
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}},
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testUpdateRev}},
+		[]*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}}},
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("applyTargetUpdate() error = %v", err)
+	}
+	if !transitioned {
+		t.Fatal("expected target to transition via recreate")
+	}
+	if inplaceControl.canUpdateCalls != 0 || inplaceControl.updateCalls != 0 {
+		t.Fatalf("expected in-place control not called, got canUpdate=%d update=%d", inplaceControl.canUpdateCalls, inplaceControl.updateCalls)
+	}
+	if len(objectManager.deleted) != 1 || objectManager.deleted[0] != target.Name {
+		t.Fatalf("expected target deleted, got %v", objectManager.deleted)
+	}
 }
 
 func TestProgressUpdateBudget(t *testing.T) {

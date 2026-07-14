@@ -220,6 +220,8 @@ func GenInstanceFromTemplate(template *workloadsv1alpha2.RoleInstanceTemplate, s
 		constants.RoleInplaceSchedulingGranularityAnnotationKey,
 		// In-place scheduling avoid: hard-excludes nodes carrying a specific label.
 		constants.RoleInplaceSchedulingAvoidAnnotationKey,
+		// In-place update grace period: drain delay before patching container image.
+		constants.RoleInplaceUpdateGracePeriodSecondsKey,
 	}
 	for _, key := range annotationsToCopy {
 		if v, ok := set.Annotations[key]; ok {

@@ -179,7 +179,7 @@ func (rc *realControl) updateInstance(set *workloadsv1alpha2.RoleInstanceSet, co
 	instance *workloadsv1alpha2.RoleInstance,
 ) (time.Duration, error) {
 
-	if set.Spec.UpdateStrategy.Type == workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType {
+	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
 		var oldRevision *apps.ControllerRevision
 		for _, r := range revisions {
 			if utils.EqualToRevisionHash("", instance, r.Name) {
