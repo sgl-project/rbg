@@ -100,6 +100,23 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
+
+	// Read fresh restart tracking from API server before shouldRecreateInstance.
+	// The informer cache may not have synced the LastRestartTime that was persisted
+	// by a prior reconcile. Without LastRestartTime, shouldRecreateInstance cannot
+	// bypass the wasInstanceReady check, causing it to return false when the instance
+	// status shows Ready=False (set during the previous backoff status update).
+	if updateInstance.Spec.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart &&
+		updateInstance.Status.LastRestartTime == nil && c.apiReader != nil {
+		fresh := &workloadsv1alpha2.RoleInstance{}
+		if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(updateInstance), fresh); err == nil {
+			if fresh.Status.LastRestartTime != nil {
+				updateInstance.Status.LastRestartTime = fresh.Status.LastRestartTime
+				updateInstance.Status.RestartCount = fresh.Status.RestartCount
+			}
+		}
+	}
+
 	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
@@ -352,40 +369,63 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 		return 0
 	}
 
-	// Only check backoff if a restart would actually be triggered
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
+
+	// Fast path: if shouldRecreateInstance returns true, backoff is applicable.
+	// Slow path: if it returns false but there are failed pods and a recent
+	// restart, we still need to apply backoff. This handles the case where
+	// the instance status was just updated (Ready=False) from the previous
+	// reconcile, making wasInstanceReady() return false on the next reconcile,
+	// which would cause shouldRecreateInstance to skip the restart entirely.
 	if !shouldRecreateInstance(instance, allPods, instance.Status.InPlaceUpdateContainerBaselines) {
-		return 0
+		hasFailedPods := false
+		for _, p := range allPods {
+			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+				hasFailedPods = true
+				break
+			}
+		}
+		if !hasFailedPods {
+			return 0
+		}
+		// No previous restart tracking from informer — check fresh data below
+		if instance.Status.LastRestartTime == nil {
+			// Also check fresh from API server below
+		}
 	}
 
-	// Check if already restarting — skip backoff to let the in-progress restart continue.
-	// Use the instance's current conditions (from the informer cache, fetched at Reconcile start).
-	if isInstanceRestarting(instance) {
-		return 0
-	}
-
-	// No previous restart or delay config is zero — proceed immediately
-	baseDelay := instance.Spec.GetBaseDelaySeconds()
-	maxDelay := instance.Spec.GetMaxDelaySeconds()
-	if baseDelay == 0 && maxDelay == 0 {
-		return 0
-	}
-
-	// Read fresh from API server for restart tracking fields. The informer cache
-	// may be stale: the deletion phase of a prior reconcile persisted updated
-	// RestartCount/LastRestartTime, but the informer hasn't synced yet for the
-	// current (creation-phase) reconcile. Using stale values would cause backoff
-	// to be skipped entirely (LastRestartTime=nil → no delay).
+	// Read fresh from API server for ALL restart-related fields. The informer
+	// cache may be stale for RestartCount, LastRestartTime, AND the Restarting
+	// condition. Stale Restarting=True (from a previous restart that has since
+	// completed) would incorrectly block both backoff and recreation.
 	restartCount := instance.Status.RestartCount
 	lastRestartTime := instance.Status.LastRestartTime
+	restarting := isInstanceRestarting(instance)
 	if c.apiReader != nil {
 		fresh := &workloadsv1alpha2.RoleInstance{}
 		if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err == nil {
 			restartCount = fresh.Status.RestartCount
 			lastRestartTime = fresh.Status.LastRestartTime
+			restarting = isInstanceRestarting(fresh)
 		}
+	}
+
+	// Check if already restarting — skip backoff to let the in-progress restart continue.
+	// Use FRESH data: the informer may still show Restarting=True from a previous
+	// restart that has since completed (condition cleared on API server but informer
+	// hasn't synced yet). This stale Restarting=True would incorrectly block both
+	// backoff (here) and recreation (in isAlreadyRestarting).
+	if restarting {
+		return 0
+	}
+
+	// No delay config — proceed immediately
+	baseDelay := instance.Spec.GetBaseDelaySeconds()
+	maxDelay := instance.Spec.GetMaxDelaySeconds()
+	if baseDelay == 0 && maxDelay == 0 {
+		return 0
 	}
 
 	if lastRestartTime == nil {
@@ -477,7 +517,12 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// Only trigger when Instance was previously Ready (stable state)
 	// and is NOT in the middle of any update.
 	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
-	if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
+	// Exception: if LastRestartTime is set, a previous restart-policy recreation occurred,
+	// meaning the instance WAS stable before. The status update during backoff may have set
+	// Ready=False (because pods are Failed), so wasInstanceReady() returns false. We bypass
+	// this check to allow the recreation to proceed after backoff expires.
+	if (!wasInstanceReady(instance) && instance.Status.LastRestartTime == nil) ||
+		instance.Generation != instance.Status.ObservedGeneration {
 		return false
 	}
 	// CurrentRevision != UpdateRevision means a rolling update is in progress
