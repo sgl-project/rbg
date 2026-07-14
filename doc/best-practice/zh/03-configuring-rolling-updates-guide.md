@@ -15,7 +15,7 @@
 
 - Kubernetes 集群版本 >= 1.24
 - 已安装 RBG Controller
-- 镜像可访问：`lmsysorg/sglang:v0.5.9`
+- 镜像可访问：`alpine:3.23.5`
 
 > **说明**：本文档使用 `sleep 3600` 作为占位命令，专注于验证 RBG 滚动更新控制面行为，无需 GPU。如需测试真实推理功能，请替换为完整的推理引擎启动命令。
 
@@ -45,10 +45,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -150,10 +148,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -270,10 +266,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -360,10 +354,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 
     - name: decode
       replicas: 3
@@ -376,10 +368,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -469,12 +459,10 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -w
 > pd-rollout-demo-decode-0    1/1     Running             0          38s
 > pd-rollout-demo-prefill-2   1/1     Running             0          48s
 > pd-rollout-demo-prefill-1   1/1     Terminating         0          49m
-> pd-rollout-demo-prefill-1   0/1     Error               0          49m
 > pd-rollout-demo-prefill-1   0/1     Pending             0          0s
 > pd-rollout-demo-prefill-1   0/1     ContainerCreating   0          0s
 > pd-rollout-demo-prefill-1   1/1     Running             0          30s
 > pd-rollout-demo-prefill-0   1/1     Terminating         0          50m
-> pd-rollout-demo-prefill-0   0/1     Error               0          50mm
 > pd-rollout-demo-prefill-0   0/1     Pending             0          0s
 > pd-rollout-demo-prefill-0   0/1     ContainerCreating   0          0s
 > pd-rollout-demo-prefill-0   1/1     Running             0          29s

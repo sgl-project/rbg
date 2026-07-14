@@ -37,10 +37,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 ```
 
 ### 参数说明
@@ -89,17 +87,15 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 ```
 
 ### 参数说明（金丝雀发布）
 
 | 参数 | 类型 | 是否必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `rolloutStrategy.rollingUpdate.partition` | int | 否 | `0` | 分区值。只有序号 >= partition 的实例会被更新 |
+| `rolloutStrategy.rollingUpdate.partition` | intOrString | 否 | `0` | 分区值。只有序号 >= partition 的实例会被更新。可以是绝对值（如 `2`）或百分比（如 `"25%"`） |
 
 ### 金丝雀发布流程
 
@@ -138,10 +134,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 ```
 
 ### 参数说明（暂停和恢复）
@@ -198,10 +192,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 
     - name: decode
       replicas: 3
@@ -214,10 +206,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 
 ---
 # CoordinatedPolicy 定义协作升级
@@ -282,7 +272,7 @@ spec:
 kubectl get rbg
 
 # 查看角色实例的更新状态
-kubectl get roleinstances -l rbg-name=<rbg-name>
+kubectl get roleinstances -l rbg.workloads.x-k8s.io/group-name=<rbg-name>
 
 # 查看 CoordinatedPolicy 状态
 kubectl get coordinatedpolicy
@@ -290,7 +280,9 @@ kubectl get coordinatedpolicy
 
 ## 相关文档
 
-+ [使用 RBG 部署推理服务](01-deploy-inference-service.md)
-+ [使用 RoleTemplates 减少配置重复](02-using-role-templates.md)
+<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
+
++ 使用 RBG 部署推理服务
++ 使用 RoleTemplates 减少配置重复
 + 原地升级（In-Place Update）
-+ [配置 HPA 弹性伸缩](08-configuring-autoscaling.md)
++ 配置 HPA 弹性伸缩

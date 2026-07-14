@@ -15,7 +15,7 @@ Validate RBG's `rolloutStrategy` rolling update strategy, including:
 
 - Kubernetes cluster version >= 1.24
 - RBG Controller installed
-- Images accessible: `lmsysorg/sglang:v0.5.9`
+- Images accessible: `alpine:3.23.5`
 
 > **Note**: This document uses `sleep 3600` as a placeholder command, focusing on validating RBG rolling update control plane behavior without requiring GPU. To test real inference functionality, replace with the full inference engine startup command.
 
@@ -45,10 +45,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -150,10 +148,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -270,10 +266,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -360,10 +354,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 
     - name: decode
       replicas: 3
@@ -376,10 +368,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 EOF
 ```
 
@@ -469,7 +459,6 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-rollout-demo -w
 > pd-rollout-demo-decode-0    1/1     Running             0          38s
 > pd-rollout-demo-prefill-2   1/1     Running             0          48s
 > pd-rollout-demo-prefill-1   1/1     Terminating         0          49m
-> pd-rollout-demo-prefill-1   0/1     Error               0          49m
 > pd-rollout-demo-prefill-1   0/1     Pending             0          0s
 > pd-rollout-demo-prefill-1   0/1     ContainerCreating   0          0s
 > pd-rollout-demo-prefill-1   1/1     Running             0          30s

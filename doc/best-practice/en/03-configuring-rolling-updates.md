@@ -37,10 +37,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 ```
 
 ### Parameter Description
@@ -89,17 +87,15 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 ```
 
 ### Parameter Description (Canary Release)
 
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `rolloutStrategy.rollingUpdate.partition` | int | No | `0` | Partition value. Only instances with ordinal >= partition are updated |
+| `rolloutStrategy.rollingUpdate.partition` | intOrString | No | `0` | Partition value. Only instances with ordinal >= partition are updated. Can be an absolute value (e.g., `2`) or a percentage (e.g., `"25%"`) |
 
 ### Canary Release Flow
 
@@ -138,10 +134,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 ```
 
 ### Parameter Description (Pause and Resume)
@@ -198,10 +192,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
 
     - name: decode
       replicas: 3
@@ -214,11 +206,8 @@ spec:
           spec:
             containers:
               - name: engine
-                image: lmsysorg/sglang:v0.5.9
+                image: alpine:3.23.5
                 command: ["sleep", "3600"]
-                ports:
-                  - containerPort: 8000
-
 
 ---
 # CoordinatedPolicy defines coordinated upgrade
@@ -283,7 +272,7 @@ Assume Prefill has 7 instances, Decode has 3 instances, `maxSkew: "10%"`:
 kubectl get rbg
 
 # Check role instance update status
-kubectl get roleinstances -l rbg-name=<rbg-name>
+kubectl get roleinstances -l rbg.workloads.x-k8s.io/group-name=<rbg-name>
 
 # Check CoordinatedPolicy status
 kubectl get coordinatedpolicy
@@ -291,7 +280,9 @@ kubectl get coordinatedpolicy
 
 ## Related Documents
 
-+ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
-+ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
+<!-- TODO: The following documents have not been created yet; links will be added once they are complete -->
+
++ Deploying Inference Services with RBG
++ Using RoleTemplates to Reduce Configuration Duplication
 + In-Place Update (In-Place Update)
-+ [Configuring HPA Autoscaling](08-configuring-autoscaling.md)
++ Configuring HPA Autoscaling
