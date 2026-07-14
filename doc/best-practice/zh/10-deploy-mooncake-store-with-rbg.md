@@ -15,7 +15,7 @@ RBG 将 Mooncake Store 的 Master 和 Store 节点作为推理服务中的角色
 + 已安装 RBG Controller（参考 [安装指南](https://github.com/sgl-project/rbg)）
 + Mooncake Store 不需要 GPU，仅需 CPU 节点和充足内存
 
-> **说明**：以下示例使用 SGLang 引擎（`lmsysorg/sglang:v0.5.5`）演示 Mooncake Store 的集成。Mooncake Store 也支持其他推理引擎（如 vLLM）。
+> **说明**：以下示例使用 SGLang 引擎（`lmsysorg/sglang:v0.5.9`）演示 Mooncake Store 的集成。Mooncake Store 也支持其他推理引擎（如 vLLM）。
 >
 
 ---
@@ -76,7 +76,6 @@ SGLang 的 HiCache（Hierarchical Cache）提供了分层缓存机制，将 KV C
 │  └── 存储长期可复用的 KV Cache，跨实例共享                       │
 │                                                              │
 │  命中 L3 时：从 Mooncake Store 取回 KV Cache，避免重新计算       │
-│  效果：TTFT 降低 90%+，吞吐量提升 40%+                         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -108,43 +107,6 @@ Mooncake Store 由两类角色组成：
 | --- | --- | --- | --- |
 | `mooncake-master` | 元数据服务器 | 不需要 | 管理存储池、处理 Store 节点的加入/离开、对象空间分配、驱逐策略 |
 | `mooncake-store` | 存储节点 | 不需要 | 贡献内存到全局存储池，仅作为被动存储，不发起 KV Cache 操作 |
-
----
-
-## 为什么通过 RBG 部署 Mooncake Store
-
-将 Mooncake Store 作为独立服务手动部署虽然可行，但在生产环境中面临以下问题：
-
-1. **服务发现**：推理引擎需要知道 Mooncake Master 的地址，手动配置容易出错
-2. **启动顺序**：Store 节点必须在 Master 就绪后才能启动，推理引擎必须在 Master 就绪后才能连接
-3. **一体化更新**：更新推理引擎镜像时，Mooncake Store 的 KV Cache 数据需要保留，避免缓存冷启动
-4. **生命周期管理**：Mooncake Store 和推理引擎应该作为一个整体进行部署、扩缩和清理
-
-RBG 通过角色依赖、自动服务发现和无损更新，解决上述所有问题：
-
-```plain
-┌──────────────────────────────────────────────────────────────────┐
-│  RoleBasedGroup (一体化管理)                                      │
-│                                                                  │
-│  ┌─────────────────┐                                             │
-│  │ mooncake-master  │  ← 无依赖，最先启动                          │
-│  │ (CPU, 1 副本)    │                                             │
-│  └────────┬────────┘                                             │
-│           │ 就绪后                                                │
-│           ├──→ ┌─────────────────┐                               │
-│           │    │ mooncake-store   │  ← 依赖 master               │
-│           │    │ (CPU, 3 副本)    │                               │
-│           │    └─────────────────┘                               │
-│           │                                                      │
-│           └──→ ┌─────────────────┐                               │
-│                │ worker           │  ← 依赖 master               │
-│                │ (GPU, 推理引擎)   │                               │
-│                └─────────────────┘                               │
-│                                                                  │
-│  服务发现：RBG 自动创建 Headless Service，各角色通过 DNS 互访       │
-│  无损更新：InPlaceIfPossible 保留 KV Cache 数据                    │
-└──────────────────────────────────────────────────────────────────┘
-```
 
 ---
 
@@ -279,7 +241,7 @@ spec:
       spec:
         containers:
           - name: engine
-            image: lmsysorg/sglang:v0.5.5
+            image: lmsysorg/sglang:v0.5.9
             env:
               # 指向独立 Mooncake 服务的地址
               - name: MOONCAKE_MASTER
@@ -362,7 +324,7 @@ Mooncake Store 的总缓存容量 = Store 副本数 × 每个 Store 的 `MOONCAK
 检查 Master 日志，确认 Store 节点已加入存储池：
 
 ```bash
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake
 ```
 
 预期输出：
@@ -411,13 +373,7 @@ curl -s http://localhost:8000/v1/chat/completions \
 再次查看 Master 日志，确认 KV Cache 已被 offload 到存储池：
 
 ```bash
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master
-```
-
-预期输出：
-
-```plain
-Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%)
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake
 ```
 
 `Storage` 和 `Keys` 的非零值说明 KV Cache 已成功 offload 到 Mooncake Store。
@@ -429,7 +385,7 @@ Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%)
 ```bash
 # 将 worker 副本数扩展到 2
 kubectl patch rbg inference-with-mooncake --type='json' \
-  -p='[{"op": "replace", "path": "/spec/roles/2/replicas", "value": 2}]'
+  -p='[{"op": "replace", "path": "/spec/roles/0/replicas", "value": 2}]'
 ```
 
 向不同实例发送相同前缀的请求，观察 Master 日志中 `Keys` 的变化。如果 Keys 数量没有成倍增长，说明多个实例共享了同一份 KV Cache，而非各自独立计算。
@@ -452,12 +408,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/role-name=mooncake-master
 kubectl get pods -l rbg.workloads.x-k8s.io/role-name=mooncake-store
 
 # 查看 Master 日志中的存储池状态
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tail -5
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake | tail -5
 ```
 
 ## 相关文档
 
-+ [使用 RBG 部署推理服务](01-deploy-inference-service.md)
-+ [使用 RoleTemplates 减少配置重复](02-using-role-templates.md)
++ 使用 RBG 部署推理服务
++ 使用 RoleTemplates 减少配置重复
 + 原地升级与原地调度
-+ [配置滚动更新策略](03-configuring-rolling-updates.md)
++ 配置滚动更新策略

@@ -1,6 +1,6 @@
 # Operations Guide: Deploying Mooncake Store with RBG for KV Cache Reuse
 
-> Corresponding concept document: [10. Deploying Mooncake Store with RBG for KV Cache Reuse](../10.%20通过%20RBG%20部署%20Mooncake%20Store%20实现%20KV%20Cache%20复用.md)
+> Corresponding concept document: [10. Deploying Mooncake Store with RBG](10-deploy-mooncake-store-with-rbg.md)
 
 ## Objective
 
@@ -127,8 +127,8 @@ EOF
 
 1. **mooncake-master** role has no dependencies, starts first
 2. **mooncake-store** role declares `dependencies: ["mooncake-master"]`, waits for Master to be ready before starting
-3. After Store nodes start, they register with the Master and contribute memory to the global storage pool
-4. Total L3 cache capacity = 3 replicas × 10 GB = 30 GB
+3. After the Store node starts, it registers with the Master and contributes memory to the global storage pool
+4. Total L3 cache capacity = 1 replica × 100 GB = 100 GB
 5. Controller automatically creates Headless Services:
    - `s-mooncake-service-mooncake-master`
    - `s-mooncake-service-mooncake-store`
@@ -339,7 +339,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 
 ### Expected Behavior (Verify KV Cache Offload)
 
-- Before requests: `Mem Storage: 4.00 KB / 100.00 GB`
+- Before requests: `Mem Storage: 0.00 KB / 100.00 GB`
 - After requests: `Mem Storage: 26.58 MB / 100.00 GB (0.0%)`
 - The increase in `Storage` and `Keys` indicates KV Cache has been successfully offloaded to Mooncake Store
 
@@ -390,13 +390,9 @@ curl -s http://localhost:8000/v1/chat/completions \
 
 ```bash
 # Check Keys count changes in Master logs
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tail -5
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tail -1
 
-> I0709 07:32:33.721189    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 487 (soft-pinned: 0) | Clients: 1 | Requests (Success/Total): PutStart=8/8, PutEnd=6/6, PutRevoke=2/2, Get=6/6, Exist=6/6, Del=0/0, DelAll=0/0, Ping=4228/4228, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
-> I0709 07:32:43.721324    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 487 (soft-pinned: 0) | Clients: 1 | Requests (Success/Total): PutStart=8/8, PutEnd=6/6, PutRevoke=2/2, Get=6/6, Exist=6/6, Del=0/0, DelAll=0/0, Ping=4238/4238, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
-> I0709 07:32:53.721458    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 487 (soft-pinned: 0) | Clients: 1 | Requests (Success/Total): PutStart=8/8, PutEnd=6/6, PutRevoke=2/2, Get=6/6, Exist=6/6, Del=0/0, DelAll=0/0, Ping=4248/4248, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
-> I0709 07:33:03.721589    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.59 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 488 (soft-pinned: 0) | Clients: 2 | Requests (Success/Total): PutStart=9/9, PutEnd=7/7, PutRevoke=2/2, Get=7/7, Exist=7/7, Del=0/0, DelAll=0/0, Ping=4264/4264, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
-> I0709 07:33:13.721725    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 26.59 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 488 (soft-pinned: 0) | Clients: 2 | Requests (Success/Total): PutStart=9/9, PutEnd=7/7, PutRevoke=2/2, Get=7/7, Exist=7/7, Del=0/0, DelAll=0/0, Ping=4284/4284, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=5/0/5, Item=486/486), PutEnd:(Req=5/0/5, Item=486/486), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=5/0/5, Item=486/486), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask=(Req=0/0), CreateCopyTask=(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
+> I0709 08:00:59.104270    30 rpc_service.cpp:41] Master Metrics: Mem Storage: 48.46 MB / 100.00 GB (0.0%) | SSD Storage: 0 B / 0 B | Keys: 888 (soft-pinned: 0) | Clients: 3 | Requests (Success/Total): PutStart=2/2, PutEnd=2/2, PutRevoke=0/0, Get=2/2, Exist=2/2, Del=0/0, DelAll=0/0, Ping=928/928, CopyStart=0/0, CopyEnd=0/0, CopyRevoke=0/0, MoveStart=0/0, MoveEnd=0/0, MoveRevoke=0/0 | Batch Requests (Req=Success/PartialSuccess/Total, Item=Success/Total): PutStart:(Req=7/0/7, Item=886/886), PutEnd:(Req=7/0/7, Item=886/886), PutRevoke:(Req=0/0/0, Item=0/0), Get:(Req=0/0/0, Item=0/0), ExistKey:(Req=7/0/7, Item=886/886), QueryIp:(Req=0/0/0, Item=0/0), Clear:(Req=0/0/0, Item=0/0), CreateMoveTask:(Req=0/0), CreateCopyTask:(Req=0/0), QueryTask=(Req=0/0), FetchTasks=(Req=0/0), MarkTaskToComplete= (Req=0/0),  | Eviction: Success/Attempts=0/0, keys=0, size=0 B | Discard: Released/Total=0/0, StagingSize=0 B
 ```
 
 ### Expected Behavior (Verify Cross-Instance Reuse)
@@ -423,9 +419,7 @@ kubectl delete rbg mooncake-service
 
 | Operation | Verification Point | Key Expected Result |
 | --- | --- | --- |
-| Deploy Mooncake Store | Role dependency + service discovery | Master starts first, Store starts after, storage pool 30 GB |
+| Deploy Mooncake Store | Role dependency + service discovery | Master starts first, Store starts after, storage pool 100 GB |
 | Inference service connects to Mooncake | HiCache integration | Engine connects to Master via DNS, hierarchical cache enabled |
 | KV Cache Offload | KV Cache uploaded to storage pool | Master logs show non-zero Storage and Keys |
-| Benchmark | Performance improvement | Multi-turn TTFT reduced by 90%+, throughput increased by 40%+ |
 | Cross-instance reuse | KV Cache sharing | Keys count does not double |
-| Lossless update | In-place upgrade preserves KV Cache | Pod restarts in-place, KV Cache data preserved |

@@ -80,7 +80,6 @@ SGLang's HiCache (Hierarchical Cache) provides a tiered caching mechanism that e
 │                                                              │
 │  On L3 hit: KV Cache retrieved from Mooncake Store,         │
 │  avoiding recomputation                                      │
-│  Effect: TTFT reduced by 90%+, throughput increased by 40%+ │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -112,45 +111,6 @@ Mooncake Store consists of two types of roles:
 | --- | --- | --- | --- |
 | `mooncake-master` | Metadata server | Not required | Manages storage pools, handles Store node join/leave, object space allocation, eviction policies |
 | `mooncake-store` | Storage node | Not required | Contributes memory to the global storage pool; acts as passive storage only, does not initiate KV Cache operations |
-
----
-
-## Why Deploy Mooncake Store with RBG
-
-While manually deploying Mooncake Store as a standalone service is feasible, it faces the following challenges in production environments:
-
-1. **Service discovery**: The inference engine needs to know the Mooncake Master's address; manual configuration is error-prone
-2. **Startup ordering**: Store nodes can only start after the Master is ready; the inference engine can only connect after the Master is ready
-3. **Integrated updates**: When updating the inference engine image, Mooncake Store's KV Cache data should be preserved to avoid cache cold starts
-4. **Lifecycle management**: Mooncake Store and the inference engine should be deployed, scaled, and cleaned up as a unified whole
-
-RBG addresses all these issues through role dependencies, automatic service discovery, and lossless updates:
-
-```plain
-┌──────────────────────────────────────────────────────────────────┐
-│  RoleBasedGroup (Unified Management)                             │
-│                                                                  │
-│  ┌─────────────────┐                                             │
-│  │ mooncake-master  │  ← No dependencies, starts first           │
-│  │ (CPU, 1 replica) │                                             │
-│  └────────┬────────┘                                             │
-│           │ Once ready                                            │
-│           ├──→ ┌─────────────────┐                               │
-│           │    │ mooncake-store   │  ← Depends on master         │
-│           │    │ (CPU, 3 replicas)│                               │
-│           │    └─────────────────┘                               │
-│           │                                                      │
-│           └──→ ┌─────────────────┐                               │
-│                │ worker           │  ← Depends on master         │
-│                │ (GPU, inference  │                               │
-│                │  engine)         │                               │
-│                └─────────────────┘                               │
-│                                                                  │
-│  Service Discovery: RBG auto-creates Headless Service,           │
-│  roles communicate via DNS                                       │
-│  Lossless Update: InPlaceIfPossible preserves KV Cache data      │
-└──────────────────────────────────────────────────────────────────┘
-```
 
 ---
 
@@ -285,7 +245,7 @@ In the inference service's RBG, point `MOONCAKE_MASTER` and `MOONCAKE_TE_META_DA
       spec:
         containers:
           - name: engine
-            image: lmsysorg/sglang:v0.5.5
+            image: lmsysorg/sglang:v0.5.9
             env:
               # Point to the standalone Mooncake service address
               - name: MOONCAKE_MASTER
@@ -368,7 +328,7 @@ The total cache capacity of Mooncake Store = number of Store replicas × `MOONCA
 Check the Master logs to confirm that Store nodes have joined the storage pool:
 
 ```bash
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake
 ```
 
 Expected output:
@@ -417,52 +377,19 @@ curl -s http://localhost:8000/v1/chat/completions \
 Check the Master logs again to confirm that KV Cache has been offloaded to the storage pool:
 
 ```bash
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master
-```
-
-Expected output:
-
-```plain
-Master Metrics: Mem Storage: 26.58 MB / 100.00 GB (0.0%)
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake
 ```
 
 Non-zero `Storage` and `Keys` values indicate that KV Cache has been successfully offloaded to Mooncake Store.
 
-### Step 3: Benchmark to Verify Performance Improvement
-
-Use SGLang's built-in `bench_serving` tool to run multi-turn conversation benchmarks, comparing SLO metrics with and without Mooncake:
-
-```bash
-python3 -m sglang.bench_serving --backend sglang-oai \
-  --num-prompts 300 --random-input 2048 \
-  --random-output 512 --random-range-ratio 0.5 \
-  --host 0.0.0.0 --port 8000 --model Qwen/Qwen3-0.6B \
-  --dataset-path ShareGPT_V3_unfiltered_cleaned_split.json \
-  --request-rate 10 --seed 43
-```
-
-#### Expected Results
-
-Benchmark data based on KEP-74 (Qwen3-32B, 3 Store × 10 GiB L3 cache):
-
-| Metric | Without Mooncake | With Mooncake | Improvement |
-| --- | --- | --- | --- |
-| **First-turn TTFT** | 4808 ms | 5017 ms | Roughly the same (no cache to reuse on first turn) |
-| **Multi-turn TTFT** | 1172 ms | 94 ms | **-91.94%** |
-| **Multi-turn ITL** | 140 ms | 58 ms | **-58.83%** |
-| **Multi-turn throughput** | 1385 tok/s | 1936 tok/s | **+39.80%** |
-
-> **Note**: The first turn has no reusable KV Cache, so performance is roughly the same. In multi-turn conversations, the historical context's KV Cache is retrieved from the Mooncake L3 cache, avoiding recomputation and significantly reducing TTFT.
->
-
-### Step 4: Verify KV Cache Cross-Instance Reuse (Optional)
+### Step 3: Verify KV Cache Cross-Instance Reuse (Optional)
 
 Deploy multiple inference engine replicas and verify KV Cache sharing across different instances:
 
 ```bash
 # Scale worker replicas to 2
 kubectl patch rbg inference-with-mooncake --type='json' \
-  -p='[{"op": "replace", "path": "/spec/roles/2/replicas", "value": 2}]'
+  -p='[{"op": "replace", "path": "/spec/roles/0/replicas", "value": 2}]'
 ```
 
 Send requests with the same prefix to different instances and observe the `Keys` changes in the Master logs. If the number of Keys does not increase proportionally, it indicates that multiple instances are sharing the same KV Cache rather than computing independently.
@@ -485,12 +412,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/role-name=mooncake-master
 kubectl get pods -l rbg.workloads.x-k8s.io/role-name=mooncake-store
 
 # Check storage pool status in Master logs
-kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tail -5
+kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake | tail -5
 ```
 
 ## Related Documentation
 
-+ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
-+ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
++ Deploying Inference Services with RBG
++ Using RoleTemplates to Reduce Configuration Duplication
 + In-Place Upgrade and In-Place Scheduling
-+ [Configuring Rolling Update Strategies](03-configuring-rolling-updates.md)
++ Configuring Rolling Update Strategies

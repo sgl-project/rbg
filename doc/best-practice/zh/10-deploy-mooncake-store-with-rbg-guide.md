@@ -1,6 +1,6 @@
 # 操作文档：通过 RBG 部署 Mooncake Store 实现 KV Cache 复用
 
-> 对应概念文档：[10. 通过 RBG 部署 Mooncake Store 实现 KV Cache 复用](../10.%20通过%20RBG%20部署%20Mooncake%20Store%20实现%20KV%20Cache%20复用.md)
+> 对应概念文档：[10. 通过 RBG 部署 Mooncake Store](10-deploy-mooncake-store-with-rbg.md)
 
 ## 目标
 
@@ -127,8 +127,8 @@ EOF
 
 1. **mooncake-master** 角色无依赖，最先启动
 2. **mooncake-store** 角色声明 `dependencies: ["mooncake-master"]`，等待 Master 就绪后启动
-3. 3 个 Store 节点启动后向 Master 注册，贡献内存到全局存储池
-4. 总 L3 缓存容量 = 3 副本 × 10 GB = 30 GB
+3. 1 个 Store 节点启动后向 Master 注册，贡献内存到全局存储池
+4. 总 L3 缓存容量 = 1 副本 × 100 GB = 100 GB
 5. Controller 自动创建 Headless Service：
    - `s-mooncake-service-mooncake-master`
    - `s-mooncake-service-mooncake-store`
@@ -339,7 +339,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c master | tai
 
 ### 预期行为（验证 KV Cache Offload）
 
-- 请求前：`Mem Storage: 4.00 KB / 100.00 GB`
+- 请求前：`Mem Storage: 0.00 KB / 100.00 GB`
 - 请求后：`Mem Storage: 26.58 MB / 100.00 GB (0.0%)`
 - `Storage` 和 `Keys` 的增加说明 KV Cache 已成功 offload 到 Mooncake Store
 
@@ -419,6 +419,7 @@ kubectl delete rbg mooncake-service
 
 | 操作 | 验证点 | 关键预期 |
 | --- | --- | --- |
-| 部署 Mooncake Store | 角色依赖 + 服务发现 | Master 先启动，Store 后启动，存储池 30 GB |
+| 部署 Mooncake Store | 角色依赖 + 服务发现 | Master 先启动，Store 后启动，存储池 100 GB |
 | 推理服务连接 Mooncake | HiCache 集成 | 引擎通过 DNS 连接 Master，分层缓存启用 |
 | KV Cache Offload | KV Cache 上传到存储池 | Master 日志显示 Storage 和 Keys 非零 |
+| KV Cache 跨实例复用 | KV Cache 共享 | Keys 数量未翻倍，说明跨实例复用生效 |
