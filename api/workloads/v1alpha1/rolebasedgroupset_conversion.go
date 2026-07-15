@@ -64,6 +64,7 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 		ObservedGeneration: src.Status.ObservedGeneration,
 		Replicas:           src.Status.Replicas,
 		ReadyReplicas:      src.Status.ReadyReplicas,
+		Selector:           src.Status.Selector,
 		Conditions:         src.Status.Conditions,
 	}
 
@@ -101,6 +102,7 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		ObservedGeneration: src.Status.ObservedGeneration,
 		Replicas:           src.Status.Replicas,
 		ReadyReplicas:      src.Status.ReadyReplicas,
+		Selector:           src.Status.Selector,
 		Conditions:         src.Status.Conditions,
 	}
 

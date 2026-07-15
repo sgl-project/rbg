@@ -16781,12 +16781,18 @@ spec:
               replicas:
                 format: int32
                 type: integer
+              selector:
+                description: |-
+                  Selector is a label query over child RoleBasedGroups managed by this RoleBasedGroupSet.
+                  It is exposed via the scale subresource so HPA/KEDA can target RoleBasedGroupSet.
+                type: string
             type: object
         type: object
     served: true
     storage: false
     subresources:
       scale:
+        labelSelectorPath: .status.selector
         specReplicasPath: .spec.replicas
         statusReplicasPath: .status.replicas
       status: {}
@@ -41625,12 +41631,18 @@ spec:
               replicas:
                 format: int32
                 type: integer
+              selector:
+                description: |-
+                  Selector is a label query over child RoleBasedGroups managed by this RoleBasedGroupSet.
+                  It is exposed via the scale subresource so HPA/KEDA can target RoleBasedGroupSet.
+                type: string
             type: object
         type: object
     served: true
     storage: true
     subresources:
       scale:
+        labelSelectorPath: .status.selector
         specReplicasPath: .spec.replicas
         statusReplicasPath: .status.replicas
       status: {}
