@@ -20,20 +20,22 @@ import (
 	"context"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rbgwebhook "sigs.k8s.io/rbgs/pkg/webhook"
 )
 
-// WebhookCertReconciler watches the conversion-webhook CRDs and keeps their
-// caBundle patched with the current CA certificate.
+// WebhookCertReconciler watches the conversion-webhook CRDs and the admission
+// webhook configurations and keeps their caBundle patched with the current CA certificate.
 // It also re-patches on a fixed interval to recover from out-of-band changes.
 type WebhookCertReconciler struct {
 	client.Client
@@ -41,9 +43,13 @@ type WebhookCertReconciler struct {
 	CACert      []byte
 	// CRDNames is the list of CRD names whose caBundle should be kept in sync.
 	CRDNames []string
+	// ValidatingWebhookNames is the list of ValidatingWebhookConfiguration names
+	// whose webhooks[*].clientConfig.caBundle should be kept in sync.
+	ValidatingWebhookNames []string
 }
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch;patch
 // Secret access is intentionally namespace-scoped (Role, not ClusterRole) and is managed
 // manually in config/rbac/secret_role.yaml rather than generated from markers below,
 // because kubebuilder markers do not support resourceNames scoping.
@@ -56,37 +62,61 @@ func (r *WebhookCertReconciler) Reconcile(ctx context.Context, req reconcile.Req
 		log.Error(err, "failed to patch caBundle on CRDs")
 		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 	}
+	if err := r.CertManager.PatchValidatingWebhookCABundle(ctx, r.ValidatingWebhookNames, r.CACert); err != nil {
+		log.Error(err, "failed to patch caBundle on ValidatingWebhookConfigurations")
+		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 
-	// Re-check periodically in case the CRD is replaced or the caBundle is removed.
+	// Re-check periodically in case the resource is replaced or the caBundle is removed.
 	return reconcile.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
-// SetupWithManager registers the reconciler to watch the conversion-webhook CRDs.
+// SetupWithManager registers the reconciler to watch the conversion-webhook CRDs
+// and the admission webhook configurations.
 func (r *WebhookCertReconciler) SetupWithManager(mgr ctrl.Manager, opts controller.Options) error {
-	// Only react to the specific CRDs we care about.
-	crdNameSet := make(map[string]bool, len(r.CRDNames))
-	for _, n := range r.CRDNames {
-		crdNameSet[n] = true
-	}
-	nameFilter := predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool {
-			return crdNameSet[e.Object.GetName()]
-		},
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return crdNameSet[e.ObjectNew.GetName()]
-		},
-		DeleteFunc: func(e event.DeleteEvent) bool {
-			return false // CRDs are not deleted in normal operation
-		},
-		GenericFunc: func(e event.GenericEvent) bool {
-			return crdNameSet[e.Object.GetName()]
-		},
-	}
+	crdNameSet := stringSet(r.CRDNames)
+	validatingNameSet := stringSet(r.ValidatingWebhookNames)
+
+	crdFilter := nameFilterPredicate(crdNameSet)
+	validatingFilter := nameFilterPredicate(validatingNameSet)
+
+	// Any reconcile request is a synthetic trigger: the Reconcile loop unconditionally
+	// re-patches all watched objects, so we coalesce all events onto a single key.
+	enqueueAll := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
+		return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: "webhook-cert-sync"}}}
+	})
 
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("webhook-cert").
 		WithOptions(opts).
-		For(&apiextv1.CustomResourceDefinition{}, builder.WithPredicates(nameFilter)).
+		For(&apiextv1.CustomResourceDefinition{}, builder.WithPredicates(crdFilter)).
+		Watches(&admissionregistrationv1.ValidatingWebhookConfiguration{}, enqueueAll, builder.WithPredicates(validatingFilter)).
 		Complete(r)
+}
+
+func stringSet(names []string) map[string]bool {
+	s := make(map[string]bool, len(names))
+	for _, n := range names {
+		s[n] = true
+	}
+	return s
+}
+
+func nameFilterPredicate(names map[string]bool) predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return names[e.Object.GetName()]
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return names[e.ObjectNew.GetName()]
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return false
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return names[e.Object.GetName()]
+		},
+	}
 }
 
 // EnqueueCRDs returns a list of reconcile.Request for all watched CRDs,

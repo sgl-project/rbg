@@ -551,6 +551,12 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 		return nil, fmt.Errorf("unable to patch caBundle on conversion CRDs: %w", err)
 	}
 
+	// Patch caBundle on the admission webhook configurations so the API server
+	// can verify the webhook server's TLS certificate.
+	if err = certMgr.PatchValidatingWebhookCABundle(ctx, rbgwebhook.ValidatingWebhookConfigurations(), caCert); err != nil {
+		return nil, fmt.Errorf("unable to patch caBundle on validating webhook configurations: %w", err)
+	}
+
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
 	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroup: %w", err)
@@ -563,13 +569,14 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 }
 
 // setupWebhookCertController sets up the webhook cert controller that watches
-// the conversion-webhook CRDs and keeps caBundle in sync with the self-signed CA certificate.
+// the webhook CRDs and keeps caBundle in sync with the self-signed CA certificate.
 func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult, options controller.Options) error {
 	webhookCertReconciler := &workloadscontroller.WebhookCertReconciler{
-		Client:      utilclient.NewClientWithUserAgent(mgr, "webhook-cert"),
-		CertManager: result.certMgr,
-		CACert:      result.caCert,
-		CRDNames:    rbgwebhook.ConversionWebhookCRDs(),
+		Client:                 utilclient.NewClientWithUserAgent(mgr, "webhook-cert"),
+		CertManager:            result.certMgr,
+		CACert:                 result.caCert,
+		CRDNames:               rbgwebhook.ConversionWebhookCRDs(),
+		ValidatingWebhookNames: rbgwebhook.ValidatingWebhookConfigurations(),
 	}
 	return webhookCertReconciler.SetupWithManager(mgr, options)
 }

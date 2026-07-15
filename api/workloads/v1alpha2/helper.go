@@ -30,6 +30,11 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
+// GenerateScalingAdapterName returns the RoleBasedGroupScalingAdapter name for a role.
+func GenerateScalingAdapterName(rbgName, roleName string) string {
+	return rbgName + "-" + roleName
+}
+
 // GetCommonLabelsFromRole returns common labels for a role.
 func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]string {
 	// Be careful to change these labels.

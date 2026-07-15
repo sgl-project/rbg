@@ -17,13 +17,17 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
@@ -512,6 +516,164 @@ func TestRoleSpec_GetWorkloadSpec(t *testing.T) {
 			result := role.GetWorkloadSpec()
 			assert.Equal(t, tt.expectedAPIVersion, result.APIVersion)
 			assert.Equal(t, tt.expectedKind, result.Kind)
+		})
+	}
+}
+
+func TestValidateRollingUpdate_AllowsReplicasZero(t *testing.T) {
+	rbg := &RoleBasedGroup{
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To[int32](0),
+					RolloutStrategy: &RolloutStrategy{
+						Type: RollingUpdateStrategyType,
+						RollingUpdate: &RollingUpdate{
+							Partition: ptr.To(intstr.FromInt32(0)),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	assert.NoError(t, ValidateRollingUpdate(rbg))
+}
+
+func TestRoleBasedGroupValidator_ValidateCreateName(t *testing.T) {
+	tests := []struct {
+		name        string
+		rbgName     string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "allows DNS label name",
+			rbgName: "test-rbg",
+		},
+		{
+			name:        "rejects DNS subdomain name with dot",
+			rbgName:     "test.rbg",
+			wantErr:     true,
+			errContains: "metadata.name: \"test.rbg\" is not a valid DNS label",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator := &RoleBasedGroupValidator{}
+			rbg := &RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: tt.rbgName, Namespace: "default"},
+			}
+
+			_, err := validator.ValidateCreate(context.Background(), rbg)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestRoleBasedGroupValidator_ValidateUpdateScalingAdapterReplicas(t *testing.T) {
+	const (
+		rbgName   = "test-rbg"
+		namespace = "default"
+		roleName  = "engine"
+	)
+
+	makeRBG := func(replicas int32, enableScalingAdapter bool) *RoleBasedGroup {
+		role := RoleSpec{
+			Name:     roleName,
+			Replicas: ptr.To(replicas),
+		}
+		if enableScalingAdapter {
+			role.ScalingAdapter = &ScalingAdapter{Enable: true}
+		}
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: rbgName, Namespace: namespace},
+			Spec: RoleBasedGroupSpec{
+				Roles: []RoleSpec{role},
+			},
+		}
+	}
+	makeAdapter := func(replicas *int32) *RoleBasedGroupScalingAdapter {
+		return &RoleBasedGroupScalingAdapter{
+			ObjectMeta: metav1.ObjectMeta{Name: rbgName + "-" + roleName, Namespace: namespace},
+			Spec: RoleBasedGroupScalingAdapterSpec{
+				Replicas: replicas,
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		oldRBG      *RoleBasedGroup
+		newRBG      *RoleBasedGroup
+		adapter     *RoleBasedGroupScalingAdapter
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "rejects manual replicas change when scaling adapter has different replicas",
+			oldRBG:      makeRBG(2, true),
+			newRBG:      makeRBG(3, true),
+			adapter:     makeAdapter(ptr.To[int32](2)),
+			wantErr:     true,
+			errContains: "cannot be changed to 3 while scalingAdapter.enable is true",
+		},
+		{
+			name:    "allows replicas change when scaling adapter already has same replicas",
+			oldRBG:  makeRBG(2, true),
+			newRBG:  makeRBG(3, true),
+			adapter: makeAdapter(ptr.To[int32](3)),
+		},
+		{
+			name:    "allows replicas change when scaling adapter is disabled",
+			oldRBG:  makeRBG(2, false),
+			newRBG:  makeRBG(3, false),
+			adapter: makeAdapter(ptr.To[int32](2)),
+		},
+		{
+			name:    "allows unchanged replicas even when adapter differs",
+			oldRBG:  makeRBG(2, true),
+			newRBG:  makeRBG(2, true),
+			adapter: makeAdapter(ptr.To[int32](4)),
+		},
+		{
+			name:   "allows replicas change before adapter is created",
+			oldRBG: makeRBG(2, true),
+			newRBG: makeRBG(3, true),
+		},
+		{
+			name:    "allows replicas change before adapter replicas is set",
+			oldRBG:  makeRBG(2, true),
+			newRBG:  makeRBG(3, true),
+			adapter: makeAdapter(nil),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			assert.NoError(t, AddToScheme(scheme))
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.adapter != nil {
+				builder = builder.WithObjects(tt.adapter)
+			}
+			validator := &RoleBasedGroupValidator{Client: builder.Build()}
+
+			_, err := validator.ValidateUpdate(context.Background(), tt.oldRBG, tt.newRBG)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			assert.NoError(t, err)
 		})
 	}
 }
