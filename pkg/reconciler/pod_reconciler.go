@@ -124,6 +124,14 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		}
 	}
 
+	groupSetLabels := rbg.GetGroupSetLabels()
+	if len(groupSetLabels) > 0 && podLabels == nil {
+		podLabels = make(map[string]string, len(groupSetLabels))
+	}
+	for k, v := range groupSetLabels {
+		podLabels[k] = v
+	}
+
 	// construct pod template spec configuration
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podTemplateSpec)
 	if err != nil {

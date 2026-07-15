@@ -300,6 +300,9 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 		if err != nil {
 			return err
 		}
+		componentLabels := maps.Clone(podTemplateApplyConfiguration.Labels)
+		componentLabels[constants.ComponentSizeLabelKey] = fmt.Sprintf("%d", *component.Size)
+
 		// construct service name
 		svcName := component.ServiceName
 		if svcName == "" {
@@ -315,9 +318,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 				WithSize(*component.Size).
 				WithAnnotations(component.Annotations).
 				WithLabels(component.Labels).
-				WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
-					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *component.Size),
-				})))
+				WithTemplate(podTemplateApplyConfiguration.WithLabels(componentLabels)))
 	}
 	return nil
 }
@@ -361,7 +362,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	leaderPodReconciler.SetPodGroupManager(r.podGroupManager)
 	leaderPodReconciler.SetInjectors([]string{"config", "sidecar", "common_env", "lwp_env"})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, matchLabels, leaderTemp,
+		ctx, rbg, role, maps.Clone(matchLabels), leaderTemp,
 	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
@@ -380,7 +381,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{"config", "common_env", "lwp_env"})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
-		ctx, rbg, role, matchLabels, workerTemp,
+		ctx, rbg, role, maps.Clone(matchLabels), workerTemp,
 	)
 	if err != nil {
 		logger.Error(err, "patch Construct PodTemplateSpecApplyConfiguration failed", "rbg", keyOfRbg(rbg))
@@ -392,6 +393,14 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 		return err
 	}
 
+	leaderLabels := maps.Clone(leaderTemplateApplyCfg.Labels)
+	leaderLabels[constants.ComponentNameLabelKey] = string(constants.LeaderComponentType)
+	leaderLabels[constants.ComponentSizeLabelKey] = fmt.Sprintf("%d", *lwp.Size)
+
+	workerLabels := maps.Clone(workerTemplateApplyCfg.Labels)
+	workerLabels[constants.ComponentNameLabelKey] = string(constants.WorkerComponentType)
+	workerLabels[constants.ComponentSizeLabelKey] = fmt.Sprintf("%d", *lwp.Size)
+
 	workerSize := utils.NonZeroValue(*lwp.Size - 1)
 	roleInstanceTemplateConfig.
 		WithComponents(
@@ -399,17 +408,11 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 				WithName(string(constants.LeaderComponentType)).
 				WithServiceName(svcName).
 				WithSize(1).
-				WithTemplate(leaderTemplateApplyCfg.WithLabels(map[string]string{
-					constants.ComponentNameLabelKey: string(constants.LeaderComponentType),
-					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
-				})),
+				WithTemplate(leaderTemplateApplyCfg.WithLabels(leaderLabels)),
 			workloadsv1alpha2client.RoleInstanceComponent().
 				WithName(string(constants.WorkerComponentType)).
 				WithSize(workerSize).
-				WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
-					constants.ComponentNameLabelKey: string(constants.WorkerComponentType),
-					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
-				})))
+				WithTemplate(workerTemplateApplyCfg.WithLabels(workerLabels)))
 	return nil
 }
 
@@ -434,13 +437,14 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandaloneP
 		return err
 	}
 
+	podLabels := maps.Clone(podTemplateApplyConfiguration.Labels)
+	podLabels[constants.ComponentSizeLabelKey] = "1"
+
 	roleInstanceTemplateConfig.
 		WithComponents(workloadsv1alpha2client.RoleInstanceComponent().
 			WithName(role.Name).
 			WithServiceName(svcName).
-			WithTemplate(podTemplateApplyConfiguration.WithLabels(map[string]string{
-				constants.ComponentSizeLabelKey: "1",
-			})).
+			WithTemplate(podTemplateApplyConfiguration.WithLabels(podLabels)).
 			WithSize(1))
 	return nil
 }

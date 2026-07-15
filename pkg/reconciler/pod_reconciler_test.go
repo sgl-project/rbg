@@ -496,6 +496,10 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 
 	// Test data
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "test-ns").Obj()
+	rbg.Labels = map[string]string{
+		constants.GroupSetNameLabelKey:  "test-rbgs",
+		constants.GroupSetIndexLabelKey: "0",
+	}
 	role := &rbg.Spec.Roles[0]
 
 	tests := []struct {
@@ -572,6 +576,8 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 							assert.Equal(t, v, result.Labels[k])
 						}
 					}
+					assert.Equal(t, "test-rbgs", result.Labels[constants.GroupSetNameLabelKey])
+					assert.Equal(t, "0", result.Labels[constants.GroupSetIndexLabelKey])
 				}
 			},
 		)
