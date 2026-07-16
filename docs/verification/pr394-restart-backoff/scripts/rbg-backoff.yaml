@@ -1,0 +1,21 @@
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: backoff-demo
+  namespace: rbg-verify
+spec:
+  roles:
+    - name: worker
+      replicas: 1
+      leaderWorkerPattern:
+        size: 1
+        restartPolicy: RecreateRoleInstanceOnPodRestart
+        baseDelaySeconds: 60
+        maxDelaySeconds: 600
+        template:
+          spec:
+            containers:
+              - name: nginx
+                image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
+                ports:
+                  - containerPort: 80

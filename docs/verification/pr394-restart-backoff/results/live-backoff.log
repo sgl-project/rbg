@@ -1,0 +1,27 @@
+[20:50:52] === initial ===
+[20:50:55] restartCount= lastRestartTime= pod=backoff-demo-worker-0-0
+[20:50:56] CRASH on pod=backoff-demo-worker-0-0 (uid=17ebe203-4b01-40b9-9569-4d1d12374758): kill 1
+[20:51:01] crash#1 -> recreation took 5s ; restartCount now=1 lastRestartTime=2026-07-16T12:50:58Z
+[20:51:04] CRASH on pod=backoff-demo-worker-0-0 (uid=8c3ec77d-9fa2-4148-ab03-0afd0670053b): kill 1
+[20:51:09] 5s after crash#2: pods present =
+NAME                      READY   STATUS    RESTARTS     AGE   IP              NODE                        NOMINATED NODE   READINESS GATES
+backoff-demo-worker-0-0   1/1     Running   1 (6s ago)   11s   10.167.14.233   cn-hongkong.10.167.14.221   <none>           2/2
+[20:53:00] crash#2 -> recreation took 117s ; restartCount now=2
+[20:53:00] === controller backoff log lines ===
+I0716 20:46:14.930507   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m57s (restartCount=1, delay=120s)
+I0716 20:48:47.279635   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m59s (restartCount=2, delay=240s)
+I0716 20:48:47.404318   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m59s (restartCount=2, delay=240s)
+I0716 20:48:47.570703   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m58s (restartCount=2, delay=240s)
+I0716 20:48:48.262265   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m58s (restartCount=2, delay=240s)
+I0716 20:51:06.045709   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m52s (restartCount=1, delay=120s)
+I0716 20:51:06.167984   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m52s (restartCount=1, delay=120s)
+I0716 20:51:06.304273   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m52s (restartCount=1, delay=120s)
+I0716 20:51:12.921458   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m45s (restartCount=1, delay=120s)
+I0716 20:51:13.047958   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m45s (restartCount=1, delay=120s)
+I0716 20:51:13.177675   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 1m45s (restartCount=1, delay=120s)
+I0716 20:52:46.065165   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 12s (restartCount=1, delay=120s)
+I0716 20:52:58.508527   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m59s (restartCount=2, delay=240s)
+I0716 20:52:58.568347   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m59s (restartCount=2, delay=240s)
+I0716 20:52:58.744908   37493 instance_scale.go:443] Restart backoff: instance rbg-verify/backoff-demo-worker-0 waiting 3m59s (restartCount=2, delay=240s)
+[20:53:00] === roleinstance status ===
+2	2026-07-16T12:52:58Z

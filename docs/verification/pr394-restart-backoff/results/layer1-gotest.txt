@@ -1,0 +1,124 @@
+=== RUN   TestRestartBackoffVerify_B1_Overflow
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=5) = 600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=27) = 600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=50) = 600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=58) = 600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=59) = 0
+    restart_backoff_verify_test.go:58: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:58
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=59: delay must stay positive (0 or negative disables backoff)
+    restart_backoff_verify_test.go:65: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:65
+        	Error:      	Not equal: 
+        	            	expected: 600
+        	            	actual  : 0
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=59: delay should be capped at maxDelay=600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=60) = 0
+    restart_backoff_verify_test.go:58: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:58
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=60: delay must stay positive (0 or negative disables backoff)
+    restart_backoff_verify_test.go:65: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:65
+        	Error:      	Not equal: 
+        	            	expected: 600
+        	            	actual  : 0
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=60: delay should be capped at maxDelay=600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=63) = 0
+    restart_backoff_verify_test.go:58: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:58
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=63: delay must stay positive (0 or negative disables backoff)
+    restart_backoff_verify_test.go:65: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:65
+        	Error:      	Not equal: 
+        	            	expected: 600
+        	            	actual  : 0
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=63: delay should be capped at maxDelay=600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=64) = 0
+    restart_backoff_verify_test.go:58: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:58
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=64: delay must stay positive (0 or negative disables backoff)
+    restart_backoff_verify_test.go:65: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:65
+        	Error:      	Not equal: 
+        	            	expected: 600
+        	            	actual  : 0
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=64: delay should be capped at maxDelay=600
+    restart_backoff_verify_test.go:55: calculateRestartDelay(base=30, max=600, restartCount=100) = 0
+    restart_backoff_verify_test.go:58: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:58
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=100: delay must stay positive (0 or negative disables backoff)
+    restart_backoff_verify_test.go:65: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:65
+        	Error:      	Not equal: 
+        	            	expected: 600
+        	            	actual  : 0
+        	Test:       	TestRestartBackoffVerify_B1_Overflow
+        	Messages:   	restartCount=100: delay should be capped at maxDelay=600
+--- FAIL: TestRestartBackoffVerify_B1_Overflow (0.00s)
+=== RUN   TestRestartBackoffVerify_B1_NoCapOverflow
+    restart_backoff_verify_test.go:77: calculateRestartDelay(base=10, max=0, restartCount=58) = 2147483647
+    restart_backoff_verify_test.go:77: calculateRestartDelay(base=10, max=0, restartCount=59) = 2147483647
+    restart_backoff_verify_test.go:77: calculateRestartDelay(base=10, max=0, restartCount=60) = 0
+    restart_backoff_verify_test.go:78: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:78
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_NoCapOverflow
+        	Messages:   	restartCount=60: uncapped delay must saturate positive, not overflow to <=0
+    restart_backoff_verify_test.go:77: calculateRestartDelay(base=10, max=0, restartCount=63) = 0
+    restart_backoff_verify_test.go:78: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:78
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_NoCapOverflow
+        	Messages:   	restartCount=63: uncapped delay must saturate positive, not overflow to <=0
+    restart_backoff_verify_test.go:77: calculateRestartDelay(base=10, max=0, restartCount=64) = 0
+    restart_backoff_verify_test.go:78: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:78
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_NoCapOverflow
+        	Messages:   	restartCount=64: uncapped delay must saturate positive, not overflow to <=0
+    restart_backoff_verify_test.go:77: calculateRestartDelay(base=10, max=0, restartCount=100) = 0
+    restart_backoff_verify_test.go:78: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:78
+        	Error:      	"0" is not greater than "0"
+        	Test:       	TestRestartBackoffVerify_B1_NoCapOverflow
+        	Messages:   	restartCount=100: uncapped delay must saturate positive, not overflow to <=0
+--- FAIL: TestRestartBackoffVerify_B1_NoCapOverflow (0.00s)
+=== RUN   TestRestartBackoffVerify_B5_OffByOne
+    restart_backoff_verify_test.go:108: first realized backoff delay = 60s (base=30)
+--- PASS: TestRestartBackoffVerify_B5_OffByOne (0.00s)
+=== RUN   TestRestartBackoffVerify_B5_Count0IsUnreachableAtRuntime
+--- PASS: TestRestartBackoffVerify_B5_Count0IsUnreachableAtRuntime (0.00s)
+=== RUN   TestRestartBackoffVerify_B4_NegativeDelayBypass
+I0716 20:26:53.414965   32750 instance_scale.go:443] Restart backoff: instance default/ri waiting 1m0s (restartCount=1, delay=60s)
+    restart_backoff_verify_test.go:187: checkRestartBackoff with base=-30 => 0s (expected >0 if validated)
+    restart_backoff_verify_test.go:188: 
+        	Error Trace:	/Users/cheyang.cy/Tools/go/src/sigs.k8s.io/rbg/pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go:188
+        	Error:      	"0s" is not greater than "0s"
+        	Test:       	TestRestartBackoffVerify_B4_NegativeDelayBypass
+        	Messages:   	negative baseDelaySeconds should NOT bypass backoff; a negative delay disables it
+--- FAIL: TestRestartBackoffVerify_B4_NegativeDelayBypass (0.00s)
+FAIL
+FAIL	sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync	0.719s
+FAIL
+
+================================================================================
+HARNESS SANITY CHECK (proposed fix applied temporarily, then reverted)
+Patched calculateRestartDelay to short-circuit on restartCount BEFORE the shift.
+Result WITH fix (base=30,max=600): rc=59,60,63,64,100 all return 600 (capped).
+    --- PASS: TestRestartBackoffVerify_B1_Overflow / _B1_NoCapOverflow
+=> B1 tests are meaningful (red on PR head, green under the fix).
+Production instance_scale.go reverted; `git diff pr-394` is empty.

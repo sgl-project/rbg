@@ -1,0 +1,10 @@
+customresourcedefinition.apiextensions.k8s.io/clusterengineruntimeprofiles.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/coordinatedpolicies.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/instances.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/instancesets.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/rolebasedgroups.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/rolebasedgroupscalingadapters.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/rolebasedgroupsets.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/rolebasedgroupwarmups.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/roleinstances.workloads.x-k8s.io serverside-applied
+customresourcedefinition.apiextensions.k8s.io/roleinstancesets.workloads.x-k8s.io serverside-applied

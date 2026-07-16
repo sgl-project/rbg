@@ -1,0 +1,8 @@
+[20:53:38] === (a) RBG with baseDelaySeconds=-30 (expect REJECT) ===
+The RoleBasedGroup "b4-rbg" is invalid: spec.roles[0].leaderWorkerPattern.baseDelaySeconds: Invalid value: -30: spec.roles[0].leaderWorkerPattern.baseDelaySeconds in body should be greater than or equal to 0
+[20:53:39] 
+[20:53:40] === (b) RoleInstance with baseDelaySeconds=-30 (expect ACCEPT = validation gap) ===
+roleinstance.workloads.x-k8s.io/b4-ri created
+[20:53:40] 
+[20:53:40] === resulting objects ===
+b4-ri  baseDelaySeconds=-30
