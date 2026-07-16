@@ -118,3 +118,74 @@ test/envtest/testcase/restart_policy/backoff_bug_verify_test.go   Layer 2 (B2, B
   (and consider a CEL rule `maxDelaySeconds >= baseDelaySeconds`).
 - **B5**: use `1 << (restartCount-1)` to match the documented "first retry = base", or
   correct the docs/PR table to `2×base`.
+
+## Continuing after PR #394 is fixed (possibly on another machine)
+
+The harness lives on the branch `verify/pr394-restart-backoff` (pushed to the
+`cheyang/rbg` fork). Production code is untouched by it, so it grafts cleanly onto
+whatever the fixed code is.
+
+### 1. Get the harness onto the fixed code
+
+```bash
+git clone https://github.com/cheyang/rbg.git && cd rbg   # or your existing clone
+git fetch origin verify/pr394-restart-backoff
+
+# Option A — check out the fixed PR branch, then copy just the harness files in:
+git checkout <fixed-pr-branch>
+git checkout origin/verify/pr394-restart-backoff -- \
+  docs/verification/pr394-restart-backoff \
+  pkg/reconciler/roleinstance/sync/restart_backoff_verify_test.go \
+  test/envtest/testcase/restart_policy/backoff_bug_verify_test.go
+
+# Option B — cherry-pick the harness commit onto the fixed branch:
+git cherry-pick f592f533
+```
+
+### 2. Prerequisites per layer
+
+- Layer 1: Go toolchain only.
+- Layer 2: `make test-envtest` downloads the apiserver/etcd binaries via
+  `setup-envtest` automatically (needs network the first time).
+- Layer 3: `kubectl` + a real cluster. The scripts default to `~/.kube/rbg` but
+  honor `$KUBECONFIG`, so on a new machine just:
+  `export KUBECONFIG=/path/to/your/kubeconfig`. Uses only an aliyun-pullable
+  nginx image; any cluster that can run a pod works.
+
+### 3. Re-run
+
+```bash
+# Layer 1
+go test ./pkg/reconciler/roleinstance/sync/ -run RestartBackoffVerify -v
+# Layer 2 (focus this suite)
+make test-envtest    # or: KUBEBUILDER_ASSETS=$(bin/setup-envtest use 1.31.0 --bin-dir bin -p path) \
+                     #      go test ./test/envtest/testcase/restart_policy/... -run TestRestartPolicy \
+                     #      -ginkgo.focus 'PR394' -v
+# Layer 3
+bash docs/verification/pr394-restart-backoff/scripts/00-setup.sh
+# start controller (see script output), then:
+bash docs/verification/pr394-restart-backoff/scripts/10-live-backoff.sh
+bash docs/verification/pr394-restart-backoff/scripts/20-live-negative-delay.sh
+bash docs/verification/pr394-restart-backoff/scripts/99-teardown.sh
+```
+
+### 4. How to read the results after a fix — test polarity matters
+
+The tests split into two kinds. Do NOT assume "all green = fixed"; check the flips.
+
+| Test | Kind | On buggy code | On correctly-fixed code |
+|------|------|---------------|-------------------------|
+| `B1_Overflow`, `B1_NoCapOverflow` | asserts correct contract | FAIL | **PASS** (delays capped/saturated) |
+| `B2` (envtest reset) | asserts correct contract | FAIL | **PASS** (count resets to 1) |
+| `B4` envtest (RoleInstance rejects `-30`) | asserts correct contract | FAIL | **PASS** — only once `RoleInstanceSpec` gets `Minimum=0` |
+| `B4_NegativeDelayBypass` (unit) | asserts correct *code-level* guard | FAIL | PASS **only if** the code also clamps negatives; a CRD-only fix leaves this red. If the team decides API validation is sufficient, update/remove this unit assertion. |
+| `B5_OffByOne`, `B5_Count0IsUnreachableAtRuntime` | **bug-canaries** (assert the *current* 2×base behavior) | PASS | **FAIL** — expected! When the off-by-one is fixed, flip these assertions to `first delay == base`. |
+
+So after a genuine fix, the expected end state is: **B1/B2/B4 green, and B5 red until you invert its assertions** (or update the docs to accept 2×base and keep them green). The Layer-3 controller log is the live cross-check: `delay=Ns at restartCount=1` should read `base` (not `2*base`) if the off-by-one was addressed by the `1<<(rc-1)` route.
+
+### 5. Sanity that the harness still bites
+
+Before trusting a green run, confirm the harness would still catch a regression: run
+Layer 1 once against the *pre-fix* code (e.g. `git stash` the production fix, or check
+out `pr-394`) and confirm B1/B2/B4 go red again. This guards against a test that was
+accidentally neutered during the merge.
