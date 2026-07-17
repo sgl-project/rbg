@@ -160,13 +160,17 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	}
 
 	// 1. construct role instance configuration
+	rpCfg := role.GetRestartPolicyConfig()
+	restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
+		WithType(role.GetRestartPolicy())
+	if rpCfg.BaseDelaySeconds != nil {
+		restartPolicyApplyConfig = restartPolicyApplyConfig.WithBaseDelaySeconds(*rpCfg.BaseDelaySeconds)
+	}
+	if rpCfg.MaxDelaySeconds != nil {
+		restartPolicyApplyConfig = restartPolicyApplyConfig.WithMaxDelaySeconds(*rpCfg.MaxDelaySeconds)
+	}
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate().
-		WithRestartPolicy(
-			workloadsv1alpha2client.RestartPolicyConfig().
-				WithType(role.GetRestartPolicy()).
-				WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
-				WithMaxDelaySeconds(role.GetMaxDelaySeconds()),
-		)
+		WithRestartPolicy(restartPolicyApplyConfig)
 	var constructErr error
 	switch {
 	case role.GetStandalonePattern() != nil:
