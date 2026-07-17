@@ -106,15 +106,8 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// by a prior reconcile. Without LastRestartTime, shouldRecreateInstance cannot
 	// bypass the wasInstanceReady check, causing it to return false when the instance
 	// status shows Ready=False (set during the previous backoff status update).
-	if updateInstance.Spec.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart &&
-		updateInstance.Status.LastRestartTime == nil && c.apiReader != nil {
-		fresh := &workloadsv1alpha2.RoleInstance{}
-		if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(updateInstance), fresh); err == nil {
-			if fresh.Status.LastRestartTime != nil {
-				updateInstance.Status.LastRestartTime = fresh.Status.LastRestartTime
-				updateInstance.Status.RestartCount = fresh.Status.RestartCount
-			}
-		}
+	if updateInstance.Spec.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+		c.syncRestartTrackingFromAPI(ctx, updateInstance)
 	}
 
 	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
@@ -362,6 +355,26 @@ func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instanc
 // The backoff is computed as: delay = min(baseDelay * 2^restartCount, maxDelay)
 // where restartCount is the number of previous restart-policy recreations.
 // This prevents infinite rapid restart loops while still allowing eventual retry.
+// syncRestartTrackingFromAPI reads fresh restart tracking from the API server
+// when the informer cache may be stale. It updates the instance's RestartCount
+// and LastRestartTime in-place if the API server has newer values.
+func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) {
+	if c.apiReader == nil {
+		return
+	}
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
+		return
+	}
+	if fresh.Status.RestartCount > instance.Status.RestartCount {
+		instance.Status.RestartCount = fresh.Status.RestartCount
+	}
+	if fresh.Status.LastRestartTime != nil && (instance.Status.LastRestartTime == nil ||
+		fresh.Status.LastRestartTime.After(instance.Status.LastRestartTime.Time)) {
+		instance.Status.LastRestartTime = fresh.Status.LastRestartTime
+	}
+}
+
 func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance,
 	pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
 	// Only applies when restart policy is RecreateRoleInstanceOnPodRestart
@@ -389,10 +402,6 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 		}
 		if !hasFailedPods {
 			return 0
-		}
-		// No previous restart tracking from informer — check fresh data below
-		if instance.Status.LastRestartTime == nil {
-			// Also check fresh from API server below
 		}
 	}
 
@@ -440,7 +449,7 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 	elapsed := time.Since(lastRestartTime.Time)
 	remaining := time.Duration(delay)*time.Second - elapsed
 	if remaining > 0 {
-		klog.Infof("Restart backoff: instance %s waiting %v (restartCount=%d, delay=%ds)",
+		klog.V(2).Infof("Restart backoff: instance %s waiting %v (restartCount=%d, delay=%ds)",
 			klog.KObj(instance), remaining.Round(time.Second), restartCount, delay)
 		return remaining
 	}
@@ -454,6 +463,15 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32) int32 {
 	if baseDelaySeconds == 0 {
 		return 0
+	}
+	// Guard against shift overflow: int64(1) << 63 wraps to negative.
+	// With default maxDelay=600, the max-cap triggers at restartCount≈5, so
+	// this branch is only reachable when maxDelay is 0 (unbounded backoff).
+	if restartCount >= 62 {
+		if maxDelaySeconds > 0 {
+			return maxDelaySeconds
+		}
+		return 0x7FFFFFFF
 	}
 	// Use int64 arithmetic to prevent overflow for large restart counts.
 	// Example: baseDelay=30, restartCount=27 → 30 * 2^27 = 4B > int32 max.
@@ -517,10 +535,12 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// Only trigger when Instance was previously Ready (stable state)
 	// and is NOT in the middle of any update.
 	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
-	// Exception: if LastRestartTime is set, a previous restart-policy recreation occurred,
-	// meaning the instance WAS stable before. The status update during backoff may have set
-	// Ready=False (because pods are Failed), so wasInstanceReady() returns false. We bypass
-	// this check to allow the recreation to proceed after backoff expires.
+	// Exception: if LastRestartTime is set, a restart-policy recreation has occurred.
+	// The instance may not yet be Ready (pods still Pending after recreation), so
+	// wasInstanceReady() would return false. We bypass to prevent deadlock where
+	// a pod crash before Ready would block recreation indefinitely.
+	// This bypass is bounded: RestartCount resets after a stable period
+	// (max(maxDelay*2, 10min)), and the normal Ready check resumes.
 	if (!wasInstanceReady(instance) && instance.Status.LastRestartTime == nil) ||
 		instance.Generation != instance.Status.ObservedGeneration {
 		return false

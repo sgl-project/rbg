@@ -55,6 +55,9 @@ type RoleInstanceReadinessGate struct {
 
 // GetBaseDelaySeconds returns the configured base delay or the default (30).
 func (s *RoleInstanceSpec) GetBaseDelaySeconds() int32 {
+	if s == nil {
+		return DefaultBaseDelaySeconds
+	}
 	if s.BaseDelaySeconds != nil {
 		return *s.BaseDelaySeconds
 	}
@@ -63,6 +66,9 @@ func (s *RoleInstanceSpec) GetBaseDelaySeconds() int32 {
 
 // GetMaxDelaySeconds returns the configured max delay or the default (600).
 func (s *RoleInstanceSpec) GetMaxDelaySeconds() int32 {
+	if s == nil {
+		return DefaultMaxDelaySeconds
+	}
 	if s.MaxDelaySeconds != nil {
 		return *s.MaxDelaySeconds
 	}

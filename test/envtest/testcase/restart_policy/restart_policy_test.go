@@ -937,14 +937,15 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			freshPod.Status.Phase = corev1.PodFailed
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
 
-			// During backoff window, pods should NOT be recreated.
+			// During backoff window, the original pod should NOT be deleted.
 			// backoff delay = baseDelay * 2^restartCount = 3 * 2^1 = 6 seconds
+			// We check by UID because getActivePods filters out Failed pods,
+			// but during backoff the failed pod should still exist (not deleted).
 			backoffDelay := time.Duration(baseDelay) * 2 * time.Second
 			Consistently(func() bool {
 				podList := listRolePods(rbgName, roleName)
-				active := getActivePods(podList)
-				for _, p := range active {
-					if p.UID == secondUID {
+				for i := range podList.Items {
+					if podList.Items[i].UID == secondUID {
 						return true // Original pod still exists — backoff working
 					}
 				}
@@ -955,12 +956,13 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// After backoff elapses, recreation should proceed
 			Eventually(func() bool {
 				podList := listRolePods(rbgName, roleName)
-				active := getActivePods(podList)
-				for _, p := range active {
-					if p.UID == secondUID {
+				for i := range podList.Items {
+					if podList.Items[i].UID == secondUID {
 						return false
 					}
 				}
+				// Original pod gone; verify a replacement exists
+				active := getActivePods(podList)
 				return len(active) >= 1
 			}, timeout, interval).Should(BeTrue(),
 				"pod should be recreated after backoff elapses")
