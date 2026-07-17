@@ -875,7 +875,8 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		It("should delay second recreation due to backoff", func() {
 			rbgName := "test-backoff-delay"
 			roleName := defaultRoleName
-			baseDelay := int32(3)
+			// Use baseDelay=10 so backoff=20s, long enough to not expire during test setup
+			baseDelay := int32(10)
 
 			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
 				[]workloadsv1alpha2.RoleSpec{
@@ -884,7 +885,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 						WithSize(1).
 						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
 						WithBaseDelaySeconds(baseDelay).
-						WithMaxDelaySeconds(30).
+						WithMaxDelaySeconds(60).
 						Obj(),
 				}).Obj()
 
@@ -938,10 +939,12 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
 
 			// During backoff window, the original pod should NOT be deleted.
-			// backoff delay = baseDelay * 2^restartCount = 3 * 2^1 = 6 seconds
+			// backoff delay = baseDelay * 2^restartCount = 10 * 2^1 = 20 seconds
+			// The backoff is measured from LastRestartTime (set during first crash),
+			// not from the second crash. So we use a fixed Consistently duration
+			// that's shorter than the remaining backoff time.
 			// We check by UID because getActivePods filters out Failed pods,
 			// but during backoff the failed pod should still exist (not deleted).
-			backoffDelay := time.Duration(baseDelay) * 2 * time.Second
 			Consistently(func() bool {
 				podList := listRolePods(rbgName, roleName)
 				for i := range podList.Items {
@@ -950,7 +953,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					}
 				}
 				return false
-			}, backoffDelay-time.Second, interval).Should(BeTrue(),
+			}, 5*time.Second, interval).Should(BeTrue(),
 				"pod should NOT be recreated during backoff window")
 
 			// After backoff elapses, recreation should proceed
