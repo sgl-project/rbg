@@ -25377,8 +25377,7 @@ spec:
                           default: 30
                           description: |-
                             BaseDelaySeconds is the base delay between restart attempts (seconds).
-                            Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
-                            Default is 30.
+                            Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
                           format: int32
                           minimum: 0
                           type: integer

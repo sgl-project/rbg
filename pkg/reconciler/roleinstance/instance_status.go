@@ -429,18 +429,30 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// The informer cache may be stale: a previous reconcile (e.g. the
 		// deletion phase) may have already persisted a higher RestartCount,
 		// but the current reconcile read a lower value from the stale cache.
-		// We must never roll back RestartCount or LastRestartTime.
+		// We must never roll back RestartCount or LastRestartTime UNLESS a
+		// reset was explicitly triggered by updateRestartTracking.
 		liveRestartCount := clone.Status.RestartCount
 		liveLastRestartTime := clone.Status.LastRestartTime
+		// Detect if a reset occurred during this reconcile. updateRestartTracking
+		// resets RestartCount to 0 then 1 after a stable period. If newStatus
+		// has a lower count than the original instance, it's a reset.
+		isReset := newStatus.RestartCount < instance.Status.RestartCount
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
 		// Preserve live restart tracking if it's ahead of our precomputed
-		// newStatus. This prevents a stale-cache reconcile from clobbering
-		// a RestartCount that was already incremented by a prior reconcile.
-		if liveRestartCount > newStatus.RestartCount {
+		// newStatus AND no reset occurred. This prevents a stale-cache reconcile
+		// from clobbering a RestartCount that was already incremented by a prior
+		// reconcile. When a reset is detected, we trust newStatus (the reset).
+		if !isReset && liveRestartCount > newStatus.RestartCount {
 			clone.Status.RestartCount = liveRestartCount
 		}
-		if liveLastRestartTime != nil && (newStatus.LastRestartTime == nil ||
+		// For LastRestartTime: trust newStatus if it was set during this reconcile
+		// (i.e., differs from the original instance). Otherwise preserve the live
+		// value if it's newer (prevents clobbering from stale cache).
+		if newStatus.LastRestartTime != nil && instance.Status.LastRestartTime != nil &&
+			!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime) {
+			// newStatus.LastRestartTime was updated this reconcile — trust it
+		} else if liveLastRestartTime != nil && (newStatus.LastRestartTime == nil ||
 			liveLastRestartTime.After(newStatus.LastRestartTime.Time)) {
 			clone.Status.LastRestartTime = liveLastRestartTime
 		}

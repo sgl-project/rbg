@@ -340,7 +340,8 @@ type LeaderWorkerPattern struct {
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// BaseDelaySeconds is the base delay between restart attempts (seconds).
-	// Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+	// Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+	// The first recreation after a crash is immediate (no backoff) because LastRestartTime is nil.
 	// Default is 30.
 	// +optional
 	// +kubebuilder:validation:Minimum=0

@@ -38,12 +38,15 @@ type RoleInstanceSpec struct {
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
 
 	// BaseDelaySeconds is the base delay between restart attempts (seconds).
-	// Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+	// Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+	// The first recreation after a crash is immediate (no backoff) because LastRestartTime is nil.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
 
 	// MaxDelaySeconds caps the exponential backoff delay (seconds).
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
 }
 

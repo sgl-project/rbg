@@ -54,8 +54,9 @@ spec:
               baseDelaySeconds:
                 description: |-
                   BaseDelaySeconds is the base delay between restart attempts (seconds).
-                  Subsequent attempts use exponential backoff: delay = min(base * 2^(round-1), maxDelaySeconds).
+                  Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
                 format: int32
+                minimum: 0
                 type: integer
               components:
                 description: Components is a list of components, each of which specifies
@@ -102,6 +103,7 @@ spec:
               maxDelaySeconds:
                 description: MaxDelaySeconds caps the exponential backoff delay (seconds).
                 format: int32
+                minimum: 0
                 type: integer
               readinessGates:
                 description: ReadinessGates is an optional list of PodReadinessGates
