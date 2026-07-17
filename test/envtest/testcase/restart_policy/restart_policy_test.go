@@ -1004,8 +1004,8 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				if ri == nil {
 					return false
 				}
-				return ri.Spec.BaseDelaySeconds != nil && *ri.Spec.BaseDelaySeconds == 15 &&
-					ri.Spec.MaxDelaySeconds != nil && *ri.Spec.MaxDelaySeconds == 120
+				return ri.Spec.RestartPolicy.BaseDelaySeconds != nil && *ri.Spec.RestartPolicy.BaseDelaySeconds == 15 &&
+					ri.Spec.RestartPolicy.MaxDelaySeconds != nil && *ri.Spec.RestartPolicy.MaxDelaySeconds == 120
 			}, timeout, interval).Should(BeTrue(),
 				"BaseDelaySeconds and MaxDelaySeconds should propagate from RBG to RoleInstance")
 		})

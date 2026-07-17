@@ -193,7 +193,7 @@ func runIgnoredComponentTest(f *framework.Framework) {
 				Replicas: ptr.To(int32(1)),
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
-						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+						RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
 								Name:     "main",
@@ -307,7 +307,7 @@ func runNonIgnoredComponentTest(f *framework.Framework) {
 				Replicas: ptr.To(int32(1)),
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
-						RestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+						RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
 								Name:     "main",

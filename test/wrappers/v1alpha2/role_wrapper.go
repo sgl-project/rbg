@@ -170,17 +170,17 @@ func (rw *LeaderWorkerRoleWrapper) WithRollingUpdate(ru workloadsv1alpha2.Rollin
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithRestartPolicy(rp workloadsv1alpha2.RestartPolicyType) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.RestartPolicy = rp
+	rw.LeaderWorkerPattern.RestartPolicy.Type = rp
 	return rw
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithBaseDelaySeconds(seconds int32) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.BaseDelaySeconds = ptr.To(seconds)
+	rw.LeaderWorkerPattern.RestartPolicy.BaseDelaySeconds = ptr.To(seconds)
 	return rw
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithMaxDelaySeconds(seconds int32) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.MaxDelaySeconds = ptr.To(seconds)
+	rw.LeaderWorkerPattern.RestartPolicy.MaxDelaySeconds = ptr.To(seconds)
 	return rw
 }
 

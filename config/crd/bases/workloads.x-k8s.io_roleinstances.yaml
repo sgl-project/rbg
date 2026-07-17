@@ -51,13 +51,6 @@ spec:
           spec:
             description: RoleInstanceSpec defines the desired state of RoleInstance
             properties:
-              baseDelaySeconds:
-                description: |-
-                  BaseDelaySeconds is the base delay between restart attempts (seconds).
-                  Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
-                format: int32
-                minimum: 0
-                type: integer
               components:
                 description: Components is a list of components, each of which specifies
                   a component and the number of replicas and template for RoleInstance
@@ -100,11 +93,6 @@ spec:
                   - template
                   type: object
                 type: array
-              maxDelaySeconds:
-                description: MaxDelaySeconds caps the exponential backoff delay (seconds).
-                format: int32
-                minimum: 0
-                type: integer
               readinessGates:
                 description: ReadinessGates is an optional list of PodReadinessGates
                   for the whole RoleInstance.
@@ -127,9 +115,32 @@ spec:
                   Defaults to `AllPodReady`
                 type: string
               restartPolicy:
-                description: RestartPolicy defines the restart policy for all pods
-                  within the RoleInstance.
-                type: string
+                description: RestartPolicy defines the restart policy and backoff
+                  configuration for all pods within the RoleInstance.
+                properties:
+                  baseDelaySeconds:
+                    description: |-
+                      BaseDelaySeconds is the base delay between restart attempts (seconds).
+                      Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxDelaySeconds:
+                    description: |-
+                      MaxDelaySeconds caps the exponential backoff delay (seconds).
+                      Default is 600.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  type:
+                    description: |-
+                      Type defines the restart policy when pod failures happen.
+                      Default is RecreateRoleInstanceOnPodRestart.
+                    enum:
+                    - None
+                    - RecreateRoleInstanceOnPodRestart
+                    type: string
+                type: object
             required:
             - components
             type: object

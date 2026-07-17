@@ -106,7 +106,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// by a prior reconcile. Without LastRestartTime, shouldRecreateInstance cannot
 	// bypass the wasInstanceReady check, causing it to return false when the instance
 	// status shows Ready=False (set during the previous backoff status update).
-	if updateInstance.Spec.RestartPolicy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if updateInstance.Spec.RestartPolicy.Type == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		c.syncRestartTrackingFromAPI(ctx, updateInstance)
 	}
 
@@ -378,7 +378,7 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance,
 	pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
 	// Only applies when restart policy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.RestartPolicy != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if instance.Spec.RestartPolicy.Type != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return 0
 	}
 
@@ -523,7 +523,7 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 // and should not trigger Instance recreation.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
 	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.RestartPolicy != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if instance.Spec.RestartPolicy.Type != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
 	}
 

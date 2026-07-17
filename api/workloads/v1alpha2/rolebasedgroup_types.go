@@ -159,6 +159,29 @@ const (
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
 )
 
+// RestartPolicyConfig groups restart policy type and backoff configuration.
+type RestartPolicyConfig struct {
+	// Type defines the restart policy when pod failures happen.
+	// Default is RecreateRoleInstanceOnPodRestart.
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +optional
+	Type RestartPolicyType `json:"type,omitempty"`
+
+	// BaseDelaySeconds is the base delay between restart attempts (seconds).
+	// Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+	// The first recreation after a crash is immediate (no backoff) because LastRestartTime is nil.
+	// Default is 30.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
+
+	// MaxDelaySeconds caps the exponential backoff delay (seconds).
+	// Default is 600.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
+}
+
 // SharedServiceSelectionPolicy defines the service policy of service per role
 type SharedServiceSelectionPolicy string
 
@@ -333,52 +356,18 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 
-	// RestartPolicy defines the restart policy when pod failures happen.
-	// Default is RecreateRoleInstanceOnPodRestart.
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// RestartPolicy defines the restart policy and backoff configuration.
 	// +optional
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
-
-	// BaseDelaySeconds is the base delay between restart attempts (seconds).
-	// Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
-	// The first recreation after a crash is immediate (no backoff) because LastRestartTime is nil.
-	// Default is 30.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=30
-	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
-
-	// MaxDelaySeconds caps the exponential backoff delay (seconds).
-	// Default is 600.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=600
-	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
+	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
 }
 
 type CustomComponentsPattern struct {
 	// +optional
 	Components []InstanceComponent `json:"components,omitempty"`
 
-	// RestartPolicy defines the restart policy when pod failures happen.
-	// Default is RecreateRoleInstanceOnPodRestart.
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// RestartPolicy defines the restart policy and backoff configuration.
 	// +optional
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
-
-	// BaseDelaySeconds is the base delay between restart attempts (seconds).
-	// Default is 30.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=30
-	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
-
-	// MaxDelaySeconds caps the exponential backoff delay (seconds).
-	// Default is 600.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=600
-	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
+	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
 }
 
 type WorkloadSpec struct {

@@ -161,6 +161,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.LeaderWorkerPatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("Pattern"):
 		return &workloadsv1alpha2.PatternApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RestartPolicyConfig"):
+		return &workloadsv1alpha2.RestartPolicyConfigApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroup"):
 		return &workloadsv1alpha2.RoleBasedGroupApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleBasedGroupScalingAdapter"):

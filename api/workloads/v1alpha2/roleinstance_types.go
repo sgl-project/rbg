@@ -31,23 +31,12 @@ type RoleInstanceSpec struct {
 	// +kubebuilder:default=AllPodReady
 	ReadyPolicy RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
-	// RestartPolicy defines the restart policy for all pods within the RoleInstance.
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+	// RestartPolicy defines the restart policy and backoff configuration for all pods within the RoleInstance.
+	// +optional
+	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
-
-	// BaseDelaySeconds is the base delay between restart attempts (seconds).
-	// Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
-	// The first recreation after a crash is immediate (no backoff) because LastRestartTime is nil.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	BaseDelaySeconds *int32 `json:"baseDelaySeconds,omitempty"`
-
-	// MaxDelaySeconds caps the exponential backoff delay (seconds).
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
 }
 
 // RoleInstanceReadinessGate contains the reference to a RoleInstance condition
@@ -56,13 +45,21 @@ type RoleInstanceReadinessGate struct {
 	ConditionType RoleInstanceConditionType `json:"conditionType"`
 }
 
+// GetRestartPolicyConfig returns the restart policy configuration.
+func (s *RoleInstanceSpec) GetRestartPolicyConfig() RestartPolicyConfig {
+	if s == nil {
+		return RestartPolicyConfig{}
+	}
+	return s.RestartPolicy
+}
+
 // GetBaseDelaySeconds returns the configured base delay or the default (30).
 func (s *RoleInstanceSpec) GetBaseDelaySeconds() int32 {
 	if s == nil {
 		return DefaultBaseDelaySeconds
 	}
-	if s.BaseDelaySeconds != nil {
-		return *s.BaseDelaySeconds
+	if s.RestartPolicy.BaseDelaySeconds != nil {
+		return *s.RestartPolicy.BaseDelaySeconds
 	}
 	return DefaultBaseDelaySeconds
 }
@@ -72,8 +69,8 @@ func (s *RoleInstanceSpec) GetMaxDelaySeconds() int32 {
 	if s == nil {
 		return DefaultMaxDelaySeconds
 	}
-	if s.MaxDelaySeconds != nil {
-		return *s.MaxDelaySeconds
+	if s.RestartPolicy.MaxDelaySeconds != nil {
+		return *s.RestartPolicy.MaxDelaySeconds
 	}
 	return DefaultMaxDelaySeconds
 }

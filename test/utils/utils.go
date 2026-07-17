@@ -35,7 +35,7 @@ const (
 	Timeout  = 150 * time.Second
 	Interval = time.Millisecond * 250
 
-	DefaultImage                    = "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+	DefaultImage                    = "registry-ap-southeast-1-vpc.ack.aliyuncs.com/acs/pause:3.5"
 	DefaultEngineRuntimeProfileName = "patio-runtime"
 )
 

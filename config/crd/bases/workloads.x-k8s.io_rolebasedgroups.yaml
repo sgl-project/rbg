@@ -23911,14 +23911,6 @@ spec:
                       description: CustomComponentsPattern defines a pattern with
                         custom components.
                       properties:
-                        baseDelaySeconds:
-                          default: 30
-                          description: |-
-                            BaseDelaySeconds is the base delay between restart attempts (seconds).
-                            Default is 30.
-                          format: int32
-                          minimum: 0
-                          type: integer
                         components:
                           items:
                             properties:
@@ -23959,22 +23951,33 @@ spec:
                             - template
                             type: object
                           type: array
-                        maxDelaySeconds:
-                          default: 600
-                          description: |-
-                            MaxDelaySeconds caps the exponential backoff delay (seconds).
-                            Default is 600.
-                          format: int32
-                          minimum: 0
-                          type: integer
                         restartPolicy:
-                          description: |-
-                            RestartPolicy defines the restart policy when pod failures happen.
-                            Default is RecreateRoleInstanceOnPodRestart.
-                          enum:
-                          - None
-                          - RecreateRoleInstanceOnPodRestart
-                          type: string
+                          description: RestartPolicy defines the restart policy and
+                            backoff configuration.
+                          properties:
+                            baseDelaySeconds:
+                              description: |-
+                                BaseDelaySeconds is the base delay between restart attempts (seconds).
+                                Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            maxDelaySeconds:
+                              description: |-
+                                MaxDelaySeconds caps the exponential backoff delay (seconds).
+                                Default is 600.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            type:
+                              description: |-
+                                Type defines the restart policy when pod failures happen.
+                                Default is RecreateRoleInstanceOnPodRestart.
+                              enum:
+                              - None
+                              - RecreateRoleInstanceOnPodRestart
+                              type: string
+                          type: object
                       type: object
                     dependencies:
                       description: Dependencies of the role
@@ -25373,34 +25376,37 @@ spec:
                       description: LeaderWorkerPattern defines a multi-pod pattern
                         with leader and workers.
                       properties:
-                        baseDelaySeconds:
-                          default: 30
-                          description: |-
-                            BaseDelaySeconds is the base delay between restart attempts (seconds).
-                            Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
-                          format: int32
-                          minimum: 0
-                          type: integer
                         leaderTemplatePatch:
                           description: LeaderTemplatePatch indicates patching for
                             the leader template.
                           x-kubernetes-preserve-unknown-fields: true
-                        maxDelaySeconds:
-                          default: 600
-                          description: |-
-                            MaxDelaySeconds caps the exponential backoff delay (seconds).
-                            Default is 600.
-                          format: int32
-                          minimum: 0
-                          type: integer
                         restartPolicy:
-                          description: |-
-                            RestartPolicy defines the restart policy when pod failures happen.
-                            Default is RecreateRoleInstanceOnPodRestart.
-                          enum:
-                          - None
-                          - RecreateRoleInstanceOnPodRestart
-                          type: string
+                          description: RestartPolicy defines the restart policy and
+                            backoff configuration.
+                          properties:
+                            baseDelaySeconds:
+                              description: |-
+                                BaseDelaySeconds is the base delay between restart attempts (seconds).
+                                Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            maxDelaySeconds:
+                              description: |-
+                                MaxDelaySeconds caps the exponential backoff delay (seconds).
+                                Default is 600.
+                              format: int32
+                              minimum: 0
+                              type: integer
+                            type:
+                              description: |-
+                                Type defines the restart policy when pod failures happen.
+                                Default is RecreateRoleInstanceOnPodRestart.
+                              enum:
+                              - None
+                              - RecreateRoleInstanceOnPodRestart
+                              type: string
+                          type: object
                         sharedServiceSelection:
                           description: SharedServiceSelection indicates the service
                             policy of the role

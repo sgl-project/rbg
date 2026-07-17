@@ -160,7 +160,9 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
-			RestartPolicy:       convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
+			RestartPolicy: v2.RestartPolicyConfig{
+				Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
+			},
 		}
 		// Template source
 		if src.TemplateSource.Template != nil || src.TemplateSource.TemplateRef != nil {
@@ -187,8 +189,10 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		}
 		dst.Pattern = v2.Pattern{
 			CustomComponentsPattern: &v2.CustomComponentsPattern{
-				Components:    components,
-				RestartPolicy: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
+				Components: components,
+				RestartPolicy: v2.RestartPolicyConfig{
+					Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
+				},
 			},
 		}
 

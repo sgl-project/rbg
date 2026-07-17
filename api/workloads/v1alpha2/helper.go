@@ -274,20 +274,29 @@ func (r *RoleSpec) GetWorkerTemplatePatch() *runtime.RawExtension {
 	return r.LeaderWorkerPattern.WorkerTemplatePatch
 }
 
+// GetRestartPolicyConfig returns the effective RestartPolicyConfig for this role based on its pattern.
+func (r *RoleSpec) GetRestartPolicyConfig() RestartPolicyConfig {
+	if r == nil {
+		return RestartPolicyConfig{}
+	}
+	if r.LeaderWorkerPattern != nil {
+		return r.LeaderWorkerPattern.RestartPolicy
+	}
+	if r.CustomComponentsPattern != nil {
+		return r.CustomComponentsPattern.RestartPolicy
+	}
+	return RestartPolicyConfig{}
+}
+
 // GetRestartPolicy returns the effective restart policy for this role based on its pattern.
 // StandalonePattern always returns None (single pod, no instance-level restart).
 // LeaderWorkerPattern and CustomComponentsPattern default to RecreateRoleInstanceOnPodRestart.
 func (r *RoleSpec) GetRestartPolicy() RestartPolicyType {
-	if r.LeaderWorkerPattern != nil {
-		if r.LeaderWorkerPattern.RestartPolicy != "" {
-			return r.LeaderWorkerPattern.RestartPolicy
-		}
-		return RecreateRoleInstanceOnPodRestart
+	cfg := r.GetRestartPolicyConfig()
+	if cfg.Type != "" {
+		return cfg.Type
 	}
-	if r.CustomComponentsPattern != nil {
-		if r.CustomComponentsPattern.RestartPolicy != "" {
-			return r.CustomComponentsPattern.RestartPolicy
-		}
+	if r.LeaderWorkerPattern != nil || r.CustomComponentsPattern != nil {
 		return RecreateRoleInstanceOnPodRestart
 	}
 	// StandalonePattern or no pattern: single pod, no instance-level restart
@@ -306,11 +315,9 @@ func (r *RoleSpec) GetBaseDelaySeconds() int32 {
 	if r == nil {
 		return DefaultBaseDelaySeconds
 	}
-	if r.LeaderWorkerPattern != nil && r.LeaderWorkerPattern.BaseDelaySeconds != nil {
-		return *r.LeaderWorkerPattern.BaseDelaySeconds
-	}
-	if r.CustomComponentsPattern != nil && r.CustomComponentsPattern.BaseDelaySeconds != nil {
-		return *r.CustomComponentsPattern.BaseDelaySeconds
+	cfg := r.GetRestartPolicyConfig()
+	if cfg.BaseDelaySeconds != nil {
+		return *cfg.BaseDelaySeconds
 	}
 	return DefaultBaseDelaySeconds
 }
@@ -321,11 +328,9 @@ func (r *RoleSpec) GetMaxDelaySeconds() int32 {
 	if r == nil {
 		return DefaultMaxDelaySeconds
 	}
-	if r.LeaderWorkerPattern != nil && r.LeaderWorkerPattern.MaxDelaySeconds != nil {
-		return *r.LeaderWorkerPattern.MaxDelaySeconds
-	}
-	if r.CustomComponentsPattern != nil && r.CustomComponentsPattern.MaxDelaySeconds != nil {
-		return *r.CustomComponentsPattern.MaxDelaySeconds
+	cfg := r.GetRestartPolicyConfig()
+	if cfg.MaxDelaySeconds != nil {
+		return *cfg.MaxDelaySeconds
 	}
 	return DefaultMaxDelaySeconds
 }

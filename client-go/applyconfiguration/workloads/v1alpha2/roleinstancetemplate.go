@@ -57,8 +57,8 @@ func (b *RoleInstanceTemplateApplyConfiguration) WithReadyPolicy(value workloads
 // WithRestartPolicy sets the RestartPolicy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
-func (b *RoleInstanceTemplateApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *RoleInstanceTemplateApplyConfiguration {
-	b.RoleInstanceSpecApplyConfiguration.RestartPolicy = &value
+func (b *RoleInstanceTemplateApplyConfiguration) WithRestartPolicy(value *RestartPolicyConfigApplyConfiguration) *RoleInstanceTemplateApplyConfiguration {
+	b.RoleInstanceSpecApplyConfiguration.RestartPolicy = value
 	return b
 }
 
@@ -72,21 +72,5 @@ func (b *RoleInstanceTemplateApplyConfiguration) WithReadinessGates(values ...*R
 		}
 		b.RoleInstanceSpecApplyConfiguration.ReadinessGates = append(b.RoleInstanceSpecApplyConfiguration.ReadinessGates, *values[i])
 	}
-	return b
-}
-
-// WithBaseDelaySeconds sets the BaseDelaySeconds field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the BaseDelaySeconds field is set to the value of the last call.
-func (b *RoleInstanceTemplateApplyConfiguration) WithBaseDelaySeconds(value int32) *RoleInstanceTemplateApplyConfiguration {
-	b.RoleInstanceSpecApplyConfiguration.BaseDelaySeconds = &value
-	return b
-}
-
-// WithMaxDelaySeconds sets the MaxDelaySeconds field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaxDelaySeconds field is set to the value of the last call.
-func (b *RoleInstanceTemplateApplyConfiguration) WithMaxDelaySeconds(value int32) *RoleInstanceTemplateApplyConfiguration {
-	b.RoleInstanceSpecApplyConfiguration.MaxDelaySeconds = &value
 	return b
 }

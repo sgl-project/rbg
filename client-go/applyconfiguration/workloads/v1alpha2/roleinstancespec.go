@@ -24,12 +24,10 @@ import (
 // RoleInstanceSpecApplyConfiguration represents a declarative configuration of the RoleInstanceSpec type for use
 // with apply.
 type RoleInstanceSpecApplyConfiguration struct {
-	Components       []RoleInstanceComponentApplyConfiguration      `json:"components,omitempty"`
-	ReadyPolicy      *workloadsv1alpha2.RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
-	RestartPolicy    *workloadsv1alpha2.RestartPolicyType           `json:"restartPolicy,omitempty"`
-	ReadinessGates   []RoleInstanceReadinessGateApplyConfiguration  `json:"readinessGates,omitempty"`
-	BaseDelaySeconds *int32                                         `json:"baseDelaySeconds,omitempty"`
-	MaxDelaySeconds  *int32                                         `json:"maxDelaySeconds,omitempty"`
+	Components     []RoleInstanceComponentApplyConfiguration      `json:"components,omitempty"`
+	ReadyPolicy    *workloadsv1alpha2.RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
+	RestartPolicy  *RestartPolicyConfigApplyConfiguration         `json:"restartPolicy,omitempty"`
+	ReadinessGates []RoleInstanceReadinessGateApplyConfiguration  `json:"readinessGates,omitempty"`
 }
 
 // RoleInstanceSpecApplyConfiguration constructs a declarative configuration of the RoleInstanceSpec type for use with
@@ -62,8 +60,8 @@ func (b *RoleInstanceSpecApplyConfiguration) WithReadyPolicy(value workloadsv1al
 // WithRestartPolicy sets the RestartPolicy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
-func (b *RoleInstanceSpecApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *RoleInstanceSpecApplyConfiguration {
-	b.RestartPolicy = &value
+func (b *RoleInstanceSpecApplyConfiguration) WithRestartPolicy(value *RestartPolicyConfigApplyConfiguration) *RoleInstanceSpecApplyConfiguration {
+	b.RestartPolicy = value
 	return b
 }
 
@@ -77,21 +75,5 @@ func (b *RoleInstanceSpecApplyConfiguration) WithReadinessGates(values ...*RoleI
 		}
 		b.ReadinessGates = append(b.ReadinessGates, *values[i])
 	}
-	return b
-}
-
-// WithBaseDelaySeconds sets the BaseDelaySeconds field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the BaseDelaySeconds field is set to the value of the last call.
-func (b *RoleInstanceSpecApplyConfiguration) WithBaseDelaySeconds(value int32) *RoleInstanceSpecApplyConfiguration {
-	b.BaseDelaySeconds = &value
-	return b
-}
-
-// WithMaxDelaySeconds sets the MaxDelaySeconds field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaxDelaySeconds field is set to the value of the last call.
-func (b *RoleInstanceSpecApplyConfiguration) WithMaxDelaySeconds(value int32) *RoleInstanceSpecApplyConfiguration {
-	b.MaxDelaySeconds = &value
 	return b
 }
