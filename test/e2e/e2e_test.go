@@ -88,6 +88,7 @@ func TestE2E(t *testing.T) {
 			testcasev1alpha2.RunInplaceSchedulingTestCases(f)
 			testcasev1alpha2.RunWarmupTestCases(f)
 			testcasev1alpha2.RunWebhookValidationTestCases(f)
+			testcasev1alpha2.RunRBACAndWebhookBootstrapTestCases(f)
 		},
 	)
 

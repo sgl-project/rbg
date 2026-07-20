@@ -178,6 +178,42 @@ jobs:
           done
           echo "All CRDs verified successfully"
 
+      - name: Verify controller RBAC and webhook-cert bootstrap
+        run: |
+          set -euo pipefail
+          NS=rbgs-system
+          echo "== RBAC objects installed by the chart =="
+          kubectl get clusterrole rbgs-controller-role
+          kubectl get clusterrolebinding rbgs-controller-rolebinding
+          kubectl -n "$NS" get role rbgs-controller-secret-role
+          kubectl -n "$NS" get rolebinding rbgs-controller-secret-rolebinding
+          kubectl -n "$NS" get serviceaccount rbgs-controller-sa
+
+          echo "== webhook-cert secret bootstrapped by the controller (exercises the cert Role) =="
+          for i in $(seq 1 24); do
+            CRT=$(kubectl -n "$NS" get secret rbgs-webhook-cert -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)
+            if [ -n "$CRT" ]; then
+              echo "webhook-cert secret present with non-empty tls.crt"
+              break
+            fi
+            if [ "$i" -eq 24 ]; then
+              echo "::error::webhook-cert secret rbgs-webhook-cert was not bootstrapped (cert Role/RBAC broken?)"
+              kubectl -n "$NS" describe secret rbgs-webhook-cert || true
+              kubectl -n "$NS" logs -l control-plane=rbgs-controller --tail=100 || true
+              exit 1
+            fi
+            echo "waiting for webhook-cert secret... ($i/24)"
+            sleep 5
+          done
+
+          echo "== caBundle injected into the validating webhook =="
+          CA=$(kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o jsonpath='{.webhooks[0].clientConfig.caBundle}')
+          if [ -z "$CA" ]; then
+            echo "::error::caBundle not injected into rbgs-validating-webhook-configuration"
+            exit 1
+          fi
+          echo "RBAC and webhook-cert bootstrap verified"
+
       - name: Pre-load e2e test images
         run: |
           # Pull and load e2e test images to avoid image pull timeout during tests
