@@ -192,12 +192,13 @@ jobs:
           echo "== webhook-cert secret bootstrapped by the controller (exercises the cert Role) =="
           for i in $(seq 1 24); do
             CRT=$(kubectl -n "$NS" get secret rbgs-webhook-cert -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)
-            if [ -n "$CRT" ]; then
-              echo "webhook-cert secret present with non-empty tls.crt"
+            KEY=$(kubectl -n "$NS" get secret rbgs-webhook-cert -o jsonpath='{.data.tls\.key}' 2>/dev/null || true)
+            if [ -n "$CRT" ] && [ -n "$KEY" ]; then
+              echo "webhook-cert secret present with non-empty tls.crt and tls.key"
               break
             fi
             if [ "$i" -eq 24 ]; then
-              echo "::error::webhook-cert secret rbgs-webhook-cert was not bootstrapped (cert Role/RBAC broken?)"
+              echo "::error::webhook-cert secret rbgs-webhook-cert was not fully bootstrapped (missing tls.crt/tls.key; cert Role/RBAC broken?)"
               kubectl -n "$NS" describe secret rbgs-webhook-cert || true
               kubectl -n "$NS" logs -l control-plane=rbgs-controller --tail=100 || true
               exit 1
@@ -206,10 +207,11 @@ jobs:
             sleep 5
           done
 
-          echo "== caBundle injected into the validating webhook =="
-          CA=$(kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o jsonpath='{.webhooks[0].clientConfig.caBundle}')
-          if [ -z "$CA" ]; then
-            echo "::error::caBundle not injected into rbgs-validating-webhook-configuration"
+          echo "== caBundle injected into every webhook of the validating webhook config =="
+          if ! kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o json \
+              | jq -e '(.webhooks | length > 0) and all(.webhooks[]; (.clientConfig.caBundle // "") != "")' >/dev/null; then
+            echo "::error::caBundle not injected into every webhook of rbgs-validating-webhook-configuration"
+            kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o yaml || true
             exit 1
           fi
           echo "RBAC and webhook-cert bootstrap verified"

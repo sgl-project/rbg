@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -103,17 +104,16 @@ func RunRBACAndWebhookBootstrapTestCases(f *framework.Framework) {
 			)
 
 			ginkgo.It(
-				"should scope the webhook-cert Role to secret create + rbgs-webhook-cert get/update", func() {
+				"should scope the webhook-cert Role to exactly secret create + rbgs-webhook-cert get/update", func() {
 					role, err := f.Clientset.RbacV1().Roles(ns).Get(f.Ctx, certRoleName, metav1.GetOptions{})
 					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "Role %s/%s should exist", ns, certRoleName)
 
+					// Assert the exact least-privilege grant set, so this case also fails if the
+					// Role is broadened (extra verbs, unrestricted get/update, wildcards, or any
+					// resource other than core secrets) — not just if a needed verb is missing.
 					secret := rbgwebhook.WebhookCertSecretName
-					gomega.Expect(secretVerbAllowed(role, "create", "")).Should(gomega.BeTrue(),
-						"cert Role must allow creating secrets (to bootstrap %s)", secret)
-					gomega.Expect(secretVerbAllowed(role, "get", secret)).Should(gomega.BeTrue(),
-						"cert Role must allow get on secret %s", secret)
-					gomega.Expect(secretVerbAllowed(role, "update", secret)).Should(gomega.BeTrue(),
-						"cert Role must allow update on secret %s", secret)
+					gomega.Expect(secretRuleViolations(role, secret)).Should(gomega.BeEmpty(),
+						"cert Role must grant exactly: create secrets; get/update on %s only", secret)
 				},
 			)
 
@@ -195,24 +195,44 @@ func subjectsHaveServiceAccount(subjects []rbacv1.Subject, name, namespace strin
 	return false
 }
 
-// secretVerbAllowed reports whether the Role grants verb on core "secrets". When name is
-// non-empty, the matching rule must either be unrestricted or list that resourceName.
-func secretVerbAllowed(role *rbacv1.Role, verb, name string) bool {
+// secretRuleViolations returns human-readable reasons the cert Role deviates from the
+// intended least-privilege grant set — create on secrets (any name), plus get/update on
+// only the named webhook-cert secret. An empty result means the Role is exactly scoped.
+// It reports both missing grants and over-permissive ones (extra verbs, unrestricted
+// get/update, wildcards, or any resource beyond core secrets).
+func secretRuleViolations(role *rbacv1.Role, secretName string) []string {
+	// Expected effective grants keyed as "verb|comma-joined-sorted-resourceNames".
+	expected := map[string]bool{
+		"create|":              true, // create cannot be resourceName-scoped
+		"get|" + secretName:    true,
+		"update|" + secretName: true,
+	}
+
+	var violations []string
+	got := map[string]bool{}
 	for _, r := range role.Rules {
-		if !slices.Contains(r.APIGroups, "") && !slices.Contains(r.APIGroups, "*") {
+		if len(r.APIGroups) != 1 || r.APIGroups[0] != "" || len(r.Resources) != 1 || r.Resources[0] != "secrets" {
+			violations = append(violations, fmt.Sprintf("rule grants beyond core secrets: groups=%v resources=%v", r.APIGroups, r.Resources))
 			continue
 		}
-		if !slices.Contains(r.Resources, "secrets") && !slices.Contains(r.Resources, "*") {
-			continue
-		}
-		if !slices.Contains(r.Verbs, verb) && !slices.Contains(r.Verbs, "*") {
-			continue
-		}
-		if name == "" || len(r.ResourceNames) == 0 || slices.Contains(r.ResourceNames, name) {
-			return true
+		names := append([]string(nil), r.ResourceNames...)
+		slices.Sort(names)
+		scope := strings.Join(names, ",")
+		for _, v := range r.Verbs {
+			got[v+"|"+scope] = true
 		}
 	}
-	return false
+	for g := range got {
+		if !expected[g] {
+			violations = append(violations, "unexpected grant: "+g)
+		}
+	}
+	for e := range expected {
+		if !got[e] {
+			violations = append(violations, "missing grant: "+e)
+		}
+	}
+	return violations
 }
 
 // newCRDClient builds a read client that understands CustomResourceDefinition, which the
