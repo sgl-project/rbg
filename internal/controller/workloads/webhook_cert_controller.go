@@ -51,7 +51,7 @@ type WebhookCertReconciler struct {
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch;patch
 // Secret access is intentionally namespace-scoped (Role, not ClusterRole) and is managed
-// manually in config/rbac/secret_role.yaml rather than generated from markers below,
+// manually in config/rbac/cert_role.yaml rather than generated from markers below,
 // because kubebuilder markers do not support resourceNames scoping.
 // The controller only needs: create secrets (any name, to bootstrap), get+update rbgs-webhook-cert.
 
