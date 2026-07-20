@@ -60,8 +60,8 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
-	cp config/rbac/role.yaml deploy/helm/rbgs/templates/clusterrole.yaml
-	sed -i.bak 's/name: controller-role/name: rbgs-controller-role/' deploy/helm/rbgs/templates/clusterrole.yaml && rm -f deploy/helm/rbgs/templates/clusterrole.yaml.bak
+	cp config/rbac/role.yaml deploy/helm/rbgs/templates/rbac/clusterrole.yaml
+	sed -i.bak 's/name: controller-role/name: rbgs-controller-role/' deploy/helm/rbgs/templates/rbac/clusterrole.yaml && rm -f deploy/helm/rbgs/templates/rbac/clusterrole.yaml.bak
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
 .PHONY: generate
@@ -232,7 +232,6 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
-	$(KUBECTL) delete --ignore-not-found -f deploy/helm/rbgs/templates/engineruntime
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
