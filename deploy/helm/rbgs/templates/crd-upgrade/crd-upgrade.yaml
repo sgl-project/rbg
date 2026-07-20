@@ -15,7 +15,7 @@ spec:
 {{- end }}
   template:
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.crdUpgrade.imagePullSecrets | default .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -30,8 +30,8 @@ spec:
       serviceAccountName: rbgs-crds-upgrade
       containers:
         - name: rbgs-crds-upgrade
-          image: "{{ .Values.crdUpgrade.repository }}:{{ .Values.crdUpgrade.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.crdUpgrade.imagePullPolicy | default "IfNotPresent" }}
+          image: "{{ .Values.crdUpgrade.image.repository }}:{{ .Values.crdUpgrade.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.crdUpgrade.image.pullPolicy | default "IfNotPresent" }}
           env:
             - name: WEBHOOK_NAMESPACE
               value: {{ .Release.Namespace | quote }}

@@ -247,7 +247,7 @@ helm-deploy: manifests ## Deploy controller via Helm to the K8s cluster specifie
 	$(HELM) upgrade --install rbgs deploy/helm/rbgs \
 		--create-namespace \
 		--namespace rbgs-system \
-		--set image.tag=$(TAG) \
+		--set controller.image.tag=$(TAG) \
 		--wait
 
 .PHONY: install-crds

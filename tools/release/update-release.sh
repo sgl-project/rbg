@@ -76,8 +76,9 @@ fi
 
 VALUES_FILE="${CHARTS_DIR}/rbgs/values.yaml"
 if [[ -f "$VALUES_FILE" ]]; then
-    # Update tag field (quoted, to avoid YAML numeric/scientific-notation coercion)
-    sed -i.bak -E "s/^(  tag:[[:space:]]+).*/\1\"$TAG\"/" "$VALUES_FILE"
+    # Update tag fields (controller.image.tag and crdUpgrade.image.tag, both at
+    # 4-space indent). Quoted to avoid YAML numeric/scientific-notation coercion.
+    sed -i.bak -E "s/^(    tag:[[:space:]]+).*/\1\"$TAG\"/" "$VALUES_FILE"
     rm -f "${VALUES_FILE}.bak"
     echo "Updated $VALUES_FILE tag to \"$TAG\""
 else
@@ -110,7 +111,7 @@ echo "Update completed successfully!"
 echo ""
 echo "Summary of changes:"
 echo "  - Helm Chart.yaml: version=$CLEAN_VERSION, appVersion=$APP_VERSION"
-echo "  - Helm values.yaml: image.tag=$TAG"
+echo "  - Helm values.yaml: controller.image.tag=$TAG (and crdUpgrade.image.tag)"
 echo "  - kustomization.yaml: newTag=$TAG"
 echo "  - deploy/kubectl/manifests.yaml: regenerated with conversion webhook"
 echo ""

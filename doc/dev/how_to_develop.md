@@ -288,21 +288,22 @@ make build
 
 #### Deploying with pprof via Helm
 
-Set `pprof.enabled=true` in your Helm values:
+Set `controller.pprof.enabled=true` in your Helm values:
 
 ```shell
 helm upgrade --install rbgs deploy/helm/rbgs \
     --namespace rbgs-system \
-    --set pprof.enabled=true \
-    --set pprof.port=6060
+    --set controller.pprof.enabled=true \
+    --set controller.pprof.containerPort=6060
 ```
 
 Or in `values.yaml`:
 
 ```yaml
-pprof:
-  enabled: true
-  port: 6060
+controller:
+  pprof:
+    enabled: true
+    containerPort: 6060
 ```
 
 #### Collecting Profiles

@@ -6,47 +6,47 @@ metadata:
   labels:
     control-plane: rbgs-controller
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.controller.replicaCount }}
   selector:
     matchLabels:
       control-plane: rbgs-controller
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- with .Values.controller.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
         control-plane: rbgs-controller
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.controller.imagePullSecrets | default .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: rbgs-controller-sa
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
           args:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
-            {{- if .Values.controllerTuning }}
-            - --max-concurrent-reconciles={{ .Values.controllerTuning.maxConcurrentReconciles | default 10 }}
-            - --kube-api-qps={{ .Values.controllerTuning.kubeApiQPS | default 20 }}
-            - --kube-api-burst={{ .Values.controllerTuning.kubeApiBurst | default 30 }}
+            {{- if .Values.controller.tuning }}
+            - --max-concurrent-reconciles={{ .Values.controller.tuning.maxConcurrentReconciles | default 10 }}
+            - --kube-api-qps={{ .Values.controller.tuning.kubeApiQPS | default 20 }}
+            - --kube-api-burst={{ .Values.controller.tuning.kubeApiBurst | default 30 }}
             {{- end }}
-            {{- if .Values.portAllocator.enabled }}
+            {{- if .Values.controller.features.portAllocator.enabled }}
             - --enable-port-allocator=true
-            - --port-allocate-strategy={{ .Values.portAllocator.strategy | default "random" }}
-            - --start-port={{ .Values.portAllocator.startPort | default 30000 }}
-            - --port-range={{ .Values.portAllocator.portRange | default 5000 }}
+            - --port-allocate-strategy={{ .Values.controller.features.portAllocator.strategy | default "random" }}
+            - --start-port={{ .Values.controller.features.portAllocator.startPort | default 30000 }}
+            - --port-range={{ .Values.controller.features.portAllocator.portRange | default 5000 }}
             {{- end }}
-            - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
-            {{- if .Values.pprof.enabled }}
+            - --scheduler-name={{ .Values.controller.features.gangScheduling.schedulerName | default "scheduler-plugins" }}
+            {{- if .Values.controller.pprof.enabled }}
             - --enable-pprof=true
-            - --pprof-bind-address={{ .Values.pprof.bindAddress | default ":6060" }}
+            - --pprof-bind-address={{ .Values.controller.pprof.bindAddress | default ":6060" }}
             {{- end }}
           env:
             - name: POD_NAMESPACE
@@ -56,22 +56,22 @@ spec:
           command:
             - /manager
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- if .Values.pprof.enabled }}
+            {{- toYaml .Values.controller.securityContext | nindent 12 }}
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          {{- if .Values.controller.pprof.enabled }}
           ports:
             - name: pprof
-              containerPort: {{ .Values.pprof.containerPort | default 6060 }}
+              containerPort: {{ .Values.controller.pprof.containerPort | default 6060 }}
               protocol: TCP
           {{- end }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
-      {{- with .Values.nodeSelector }}
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+      {{- with .Values.controller.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with .Values.controller.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
