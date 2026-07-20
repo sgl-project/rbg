@@ -1,0 +1,21 @@
+Harness-bites check (Step 4 of review-finding-verifier)
+=======================================================
+Purpose: prove the contract checks actually catch a regression (not vacuously green).
+
+Method: on a throwaway commit atop the PR head, inject three regressions, then run
+scripts/re-verify.sh against that broken ref:
+  R1  delete deploy/helm/rbgs/templates/rbac/service_account.yaml   (drops a deployed object)
+  R2  append an extra rule to config/rbac/role.yaml                 (changes kustomize output)
+  R3  append a stale "templates/serviceaccount.yaml" ref to Makefile (stale old-path)
+
+Observed result against the broken ref:
+  F1  FAIL  rendered manifests DIFFER (base=12 objs, ref=11 objs)   <- caught R1
+  F2  pass  helm lint still passes                                   (R1-R3 don't break lint syntax)
+  F3  FAIL  stale old-path reference(s) found                        <- caught R3
+  F4  FAIL  unresolved RBAC reference (subject -> missing SA)        <- caught R1
+  F5  FAIL  kustomize config/default DIFFERS                         <- caught R2
+  RESULT: exit 1 (regression detected)
+
+Conclusion: F1, F3, F4, F5 each bite on the regression they target. F2 (lint) is a
+weaker syntactic check and is not expected to catch these semantic regressions.
+The broken commit was discarded; production code on the PR is untouched.

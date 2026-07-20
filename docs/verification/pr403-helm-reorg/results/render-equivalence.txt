@@ -1,0 +1,1 @@
+PASS: rendered helm manifests identical between merge-base and PR head (12 objects). Diff empty after stripping '# Source:' path comments.

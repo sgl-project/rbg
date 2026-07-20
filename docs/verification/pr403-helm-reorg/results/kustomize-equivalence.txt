@@ -1,0 +1,1 @@
+PASS: kustomize build config/default identical between merge-base (d95d4b39) and PR head (2885e3b1): 17 objects both sides, diff empty. (Full render omitted from evidence — 7MB incl. CRDs.)

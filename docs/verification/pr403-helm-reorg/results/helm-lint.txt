@@ -1,0 +1,4 @@
+==> Linting /var/folders/m6/dnh2fpb939xb1w8zfpqg9m_w0000gp/T/tmp.YIyI8pRI22/deploy/helm/rbgs
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed

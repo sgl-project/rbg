@@ -1,0 +1,6 @@
+helm pattern:      templates/(clusterrole\.yaml|manager\.yaml|secret-role|rolebinding\.yaml|serviceaccount\.yaml|webhook-service|upgrade/)
+kustomize pattern: secret_role(_binding)?\.yaml|secret_role\b
+--- helm matches (outside chart templates/) ---
+<none>
+--- kustomize matches (outside docs/verification) ---
+<none>

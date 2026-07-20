@@ -1,0 +1,17 @@
+defined resources:
+  ClusterRole: ['rbgs-controller-role', 'rbgs-crds-upgrade']
+  ClusterRoleBinding: ['rbgs-controller-rolebinding', 'rbgs-crds-upgrade']
+  Deployment: ['rbgs-controller-manager']
+  Job: ['rbgs-crds-upgrade-080-69fe55d']
+  Role: ['rbgs-controller-secret-role']
+  RoleBinding: ['rbgs-controller-secret-rolebinding']
+  Service: ['rbgs-webhook-service']
+  ServiceAccount: ['rbgs-controller-sa', 'rbgs-crds-upgrade']
+  ValidatingWebhookConfiguration: ['rbgs-validating-webhook-configuration']
+references to resolve:
+  [OK ] ClusterRoleBinding roleRef -> ClusterRole/rbgs-controller-role
+  [OK ] ClusterRoleBinding subject -> ServiceAccount/rbgs-controller-sa
+  [OK ] RoleBinding roleRef -> Role/rbgs-controller-secret-role
+  [OK ] RoleBinding subject -> ServiceAccount/rbgs-controller-sa
+  [OK ] ClusterRoleBinding roleRef -> ClusterRole/rbgs-crds-upgrade
+  [OK ] ClusterRoleBinding subject -> ServiceAccount/rbgs-crds-upgrade

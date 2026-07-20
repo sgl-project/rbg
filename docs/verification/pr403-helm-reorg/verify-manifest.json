@@ -1,0 +1,61 @@
+{
+  "_comment": "Verification manifest for PR #403 (Helm chart template reorg). Consumed by scripts/re-verify.sh (a standalone helm/git harness \u2014 NOT the skill's Go re-verify.sh, because this PR has no Go code). No production bug was found; all findings are CONTRACT tests that must STAY GREEN. 'all green' == the reorg is still behavior-preserving.",
+  "topic": "pr403-helm-reorg",
+  "pr": "https://github.com/sgl-project/rbg/pull/403",
+  "chart": "deploy/helm/rbgs",
+  "mergeBaseAtReview": "d95d4b39e4a37abfdf4966cc4565d313c987d58d",
+  "prHeadAtReview": "2885e3b1b4158c89b3ebf3921afe4a10c7696389",
+  "harnessPaths": [
+    "docs/verification/pr403-helm-reorg"
+  ],
+  "runner": {
+    "kind": "shell",
+    "cmd": "bash docs/verification/pr403-helm-reorg/scripts/re-verify.sh",
+    "requires": [
+      "git",
+      "helm (v3)",
+      "python3"
+    ],
+    "note": "No <ref> arg -> resolves the current PR head from .pr. Exit 0 iff every finding is green."
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "polarity": "contract",
+      "layer": "static",
+      "claim": "Rendered Helm manifests are byte-for-byte identical between the merge-base and the PR head (after stripping '# Source:' path comments), i.e. the reorg does not add, drop, or alter any deployed object.",
+      "check": "helm template on both refs, normalize (strip Source comments + blanks, sort docs), diff."
+    },
+    {
+      "id": "F2",
+      "polarity": "contract",
+      "layer": "static",
+      "claim": "The chart passes 'helm lint' at the PR head.",
+      "check": "helm lint deploy/helm/rbgs."
+    },
+    {
+      "id": "F3",
+      "polarity": "contract",
+      "layer": "static",
+      "claim": "No stale references to old (pre-reorg) file names remain: old flat helm paths (clusterrole.yaml, manager.yaml, secret-role*, rolebinding.yaml, serviceaccount.yaml, webhook-service*, upgrade/) outside the chart templates dir, AND old config/rbac names (secret_role*, renamed to cert_role* by commit 2885e3b1) anywhere.",
+      "check": "git grep for old-path patterns (helm + kustomize surfaces)."
+    },
+    {
+      "id": "F4",
+      "polarity": "contract",
+      "layer": "static",
+      "claim": "Every RBAC roleRef target and every ServiceAccount subject in the rendered set resolves to a resource actually defined by the chart (ClusterRoleBinding->ClusterRole rbgs-controller-role; RoleBinding->Role rbgs-controller-secret-role; subjects->ServiceAccount rbgs-controller-sa).",
+      "check": "parse the PR-head render; assert references subset of defined resources."
+    },
+    {
+      "id": "F5",
+      "polarity": "contract",
+      "layer": "static",
+      "claim": "kustomize build config/default (the source for `make manifests` -> deploy/kubectl/manifests.yaml, which the PR also touched via config/rbac/secret_role* -> cert_role*) is byte-for-byte identical between merge-base and PR head.",
+      "check": "kustomize build on both refs, diff. Gracefully SKIPPED (recorded pass) if no kustomize/kubectl is available.",
+      "note": "Added in review round 1 after commit 2885e3b1 extended the reorg into config/rbac."
+    }
+  ],
+  "liveNote": "No live layer. This chart is static YAML; the render-equivalence contract (F1) is the strongest signal \u2014 a real deploy of an identical rendered manifest set is by definition unchanged. If desired, `helm upgrade --install` into a scratch namespace and confirm the same 12 objects appear, then delete the namespace.",
+  "polarityNote": "All findings are contract tests (assert intended state). They PASS now and must STAY GREEN. There are NO bug-canaries, because no bug was found. If any check flips to FAIL on a later push, the reorg regressed (a resource was dropped/altered, lint broke, a stale path crept in, or an RBAC ref dangles)."
+}

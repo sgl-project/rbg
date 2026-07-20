@@ -1,0 +1,426 @@
+---
+# Source: rbgs/templates/rbac/service_account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rbgs-controller-sa
+  namespace: rbgs-system
+---
+# Source: rbgs/templates/rbac/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbgs-controller-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - events
+  - pods
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - controllerrevisions
+  - deployments
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - controllerrevisions/status
+  - deployments/status
+  - statefulsets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments/finalizers
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
+  - leaderworkersets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
+  - leaderworkersets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - scheduling.volcano.sh
+  - scheduling.x-k8s.io
+  resources:
+  - podgroups
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - clusterengineruntimeprofiles
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - clusterengineruntimeprofiles/status
+  - coordinatedpolicies/status
+  - instances/status
+  - instancesets/status
+  - rolebasedgroups/status
+  - rolebasedgroupscalingadapters/status
+  - rolebasedgroupsets/status
+  - rolebasedgroupwarmups/status
+  - roleinstances/status
+  - roleinstancesets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - coordinatedpolicies
+  - instances
+  - instancesets
+  - rolebasedgroups
+  - rolebasedgroupscalingadapters
+  - rolebasedgroupsets
+  - rolebasedgroupwarmups
+  - roleinstances
+  - roleinstancesets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - instancesets/finalizers
+  - rolebasedgroups/finalizers
+  - rolebasedgroupsets/finalizers
+  - rolebasedgroupwarmups/finalizers
+  - roleinstances/finalizers
+  - roleinstancesets/finalizers
+  verbs:
+  - update
+---
+# Source: rbgs/templates/rbac/clusterrole_binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rbgs-controller-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rbgs-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: rbgs-controller-sa
+    namespace: rbgs-system
+---
+# Source: rbgs/templates/rbac/cert_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rbgs-controller-secret-role
+  namespace: rbgs-system
+rules:
+# Allow creating the webhook cert secret if it does not yet exist.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+# Allow reading and updating only the specific webhook cert secret.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  resourceNames:
+  - rbgs-webhook-cert
+  verbs:
+  - get
+  - update
+---
+# Source: rbgs/templates/rbac/cert_role_binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rbgs-controller-secret-rolebinding
+  namespace: rbgs-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rbgs-controller-secret-role
+subjects:
+  - kind: ServiceAccount
+    name: rbgs-controller-sa
+    namespace: rbgs-system
+---
+# Source: rbgs/templates/webhook/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rbgs-webhook-service
+  namespace: rbgs-system
+  labels:
+    control-plane: rbgs-controller
+spec:
+  ports:
+    - port: 443
+      targetPort: 9443
+      protocol: TCP
+      name: webhook
+  selector:
+    control-plane: rbgs-controller
+---
+# Source: rbgs/templates/manager/manager.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rbgs-controller-manager
+  namespace: rbgs-system
+  labels:
+    control-plane: rbgs-controller
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      control-plane: rbgs-controller
+  template:
+    metadata:
+      labels:
+        control-plane: rbgs-controller
+    spec:
+      serviceAccountName: rbgs-controller-sa
+      securityContext:
+        {}
+      containers:
+        - name: rbgs
+          args:
+            - --metrics-bind-address=:8443
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --max-concurrent-reconciles=10
+            - --kube-api-qps=20
+            - --kube-api-burst=30
+            - --scheduler-name=scheduler-plugins
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          command:
+            - /manager
+          securityContext:
+            {}
+          image: "rolebasedgroup/rbgs-controller:v0.8.0-69fe55d"
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1536Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+---
+# Source: rbgs/templates/webhook/manifests.yaml
+# ValidatingWebhookConfiguration for RoleBasedGroup admission validation.
+#
+# NOTE: caBundle is intentionally left empty here. It is patched at runtime by
+# the in-cluster controller (WebhookCertReconciler) using the self-signed CA
+# generated by pkg/webhook.CertManager. Do not pre-populate caBundle; it would
+# be overwritten on the next reconcile cycle anyway.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: rbgs-validating-webhook-configuration
+  labels:
+    control-plane: rbgs-controller
+    app.kubernetes.io/name: rbgs
+    app.kubernetes.io/managed-by: Helm
+webhooks:
+- name: vrolebasedgroup.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroups
+---
+# Source: rbgs/templates/crd-upgrade/crd-upgrade.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: rbgs-system
+  name: rbgs-crds-upgrade-080-69fe55d
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+spec:
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      tolerations:
+        - operator: Exists
+      serviceAccountName: rbgs-crds-upgrade
+      containers:
+        - name: rbgs-crds-upgrade
+          image: "rolebasedgroup/rbgs-upgrade-crd:v0.8.0-69fe55d"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WEBHOOK_NAMESPACE
+              value: "rbgs-system"
+            - name: WEBHOOK_SERVICE
+              value: "rbgs-webhook-service"
+      restartPolicy: OnFailure
+---
+# Source: rbgs/templates/crd-upgrade/crd-upgrade.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbgs-crds-upgrade
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["create", "get", "update", "patch"]
+---
+# Source: rbgs/templates/crd-upgrade/crd-upgrade.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rbgs-crds-upgrade
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rbgs-crds-upgrade
+subjects:
+  - kind: ServiceAccount
+    name: rbgs-crds-upgrade
+    namespace: rbgs-system
+---
+# Source: rbgs/templates/crd-upgrade/crd-upgrade.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rbgs-crds-upgrade
+  namespace: rbgs-system
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
