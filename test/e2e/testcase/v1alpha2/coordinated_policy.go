@@ -291,7 +291,11 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 							Roles: []string{"role-a", "role-b"},
 							Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
 								Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
-									MaxSkew:     ptr.To(intstr.FromString("50%")),
+									// With desiredReplicas=3, maxSkew=33% makes the scaler advance one
+									// replica per batch (1->2->3) instead of jumping 1->3 in a single
+									// batch (which 50% would allow). Combined with OrderReady gating,
+									// this bounds the ready-replicas skew to 1 by design.
+									MaxSkew:     ptr.To(intstr.FromString("33%")),
 									Progression: workloadsv1alpha2.OrderReadyProgression,
 								},
 							},
@@ -312,8 +316,12 @@ func RunCoordinatedPolicyTestCases(f *framework.Framework) {
 				rbg.Spec.Roles[1].Replicas = ptr.To(int32(3))
 			})
 
-			// During scaling, verify skew constraint is respected
-			// Use RoleInstanceSet.Status.ReadyReplicas (the signal the controller uses)
+			// During scaling, verify the coordination constrains the ready-replicas skew.
+			// The scaler bounds currentReplicas progress by maxSkew and OrderReady gates each
+			// batch until every role's current replicas are ready; with maxSkew=33% and
+			// desiredReplicas=3 it advances 1->2->3, so the ready-replicas skew stays <=1 by
+			// design rather than by timing luck.
+			// Read RoleInstanceSet.Status.ReadyReplicas (the signal the controller uses)
 			// instead of counting RoleInstance conditions to avoid reconcile latency flakiness.
 			gomega.Consistently(func() bool {
 				roleAReady := getRoleInstanceSetReadyReplicas(f, rbg, "role-a")
