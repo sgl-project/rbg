@@ -15,7 +15,7 @@ spec:
 {{- end }}
   template:
     spec:
-      {{- with .Values.crdUpgrade.imagePullSecrets | default .Values.global.imagePullSecrets }}
+      {{- with .Values.crdUpgrade.imagePullSecrets | default (.Values.global).imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}

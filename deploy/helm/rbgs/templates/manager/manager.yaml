@@ -19,7 +19,7 @@ spec:
       labels:
         control-plane: rbgs-controller
     spec:
-      {{- with .Values.controller.imagePullSecrets | default .Values.global.imagePullSecrets }}
+      {{- with .Values.controller.imagePullSecrets | default (.Values.global).imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -28,6 +28,7 @@ spec:
         {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
+          {{- $pprof := .Values.controller.pprof | default dict }}
           args:
             - --metrics-bind-address=:8443
             - --leader-elect
@@ -37,16 +38,19 @@ spec:
             - --kube-api-qps={{ .Values.controller.tuning.kubeApiQPS | default 20 }}
             - --kube-api-burst={{ .Values.controller.tuning.kubeApiBurst | default 30 }}
             {{- end }}
-            {{- if .Values.controller.features.portAllocator.enabled }}
+            {{- $features := .Values.controller.features | default dict }}
+            {{- $portAllocator := $features.portAllocator | default dict }}
+            {{- if $portAllocator.enabled }}
             - --enable-port-allocator=true
-            - --port-allocate-strategy={{ .Values.controller.features.portAllocator.strategy | default "random" }}
-            - --start-port={{ .Values.controller.features.portAllocator.startPort | default 30000 }}
-            - --port-range={{ .Values.controller.features.portAllocator.portRange | default 5000 }}
+            - --port-allocate-strategy={{ $portAllocator.strategy | default "random" }}
+            - --start-port={{ $portAllocator.startPort | default 30000 }}
+            - --port-range={{ $portAllocator.portRange | default 5000 }}
             {{- end }}
-            - --scheduler-name={{ .Values.controller.features.gangScheduling.schedulerName | default "scheduler-plugins" }}
-            {{- if .Values.controller.pprof.enabled }}
+            {{- $gangScheduling := $features.gangScheduling | default dict }}
+            - --scheduler-name={{ $gangScheduling.schedulerName | default "scheduler-plugins" }}
+            {{- if $pprof.enabled }}
             - --enable-pprof=true
-            - --pprof-bind-address={{ .Values.controller.pprof.bindAddress | default ":6060" }}
+            - --pprof-bind-address={{ $pprof.bindAddress | default ":6060" }}
             {{- end }}
           env:
             - name: POD_NAMESPACE
@@ -58,11 +62,11 @@ spec:
           securityContext:
             {{- toYaml .Values.controller.securityContext | nindent 12 }}
           image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
-          {{- if .Values.controller.pprof.enabled }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy | default "IfNotPresent" }}
+          {{- if $pprof.enabled }}
           ports:
             - name: pprof
-              containerPort: {{ .Values.controller.pprof.containerPort | default 6060 }}
+              containerPort: {{ $pprof.containerPort | default 6060 }}
               protocol: TCP
           {{- end }}
           resources:

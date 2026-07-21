@@ -76,11 +76,22 @@ fi
 
 VALUES_FILE="${CHARTS_DIR}/rbgs/values.yaml"
 if [[ -f "$VALUES_FILE" ]]; then
-    # Update tag fields (controller.image.tag and crdUpgrade.image.tag, both at
-    # 4-space indent). Quoted to avoid YAML numeric/scientific-notation coercion.
-    sed -i.bak -E "s/^(    tag:[[:space:]]+).*/\1\"$TAG\"/" "$VALUES_FILE"
-    rm -f "${VALUES_FILE}.bak"
-    echo "Updated $VALUES_FILE tag to \"$TAG\""
+    # Update image tags for the controller and crdUpgrade sections only.
+    # We scope the edit by tracking the top-level section and the "image:"
+    # sub-block, so a future unrelated "tag:" at the same indentation level is
+    # never silently overwritten. Quoted to avoid YAML numeric/scientific-notation coercion.
+    awk -v tag="$TAG" '
+        /^[A-Za-z0-9_-]+:/ { section = $1; sub(/:.*/, "", section); subsection = "" }
+        /^  [A-Za-z0-9_-]+:/ { subsection = $1; sub(/:.*/, "", subsection) }
+        {
+            if ((section == "controller" || section == "crdUpgrade") && subsection == "image" && $0 ~ /^    tag:[[:space:]]/) {
+                print "    tag: \"" tag "\""
+                next
+            }
+            print
+        }
+    ' "$VALUES_FILE" > "${VALUES_FILE}.tmp" && mv "${VALUES_FILE}.tmp" "$VALUES_FILE"
+    echo "Updated $VALUES_FILE controller.image.tag and crdUpgrade.image.tag to \"$TAG\""
 else
     echo "Error: $VALUES_FILE not found at ${VALUES_FILE}!"
     exit 1
