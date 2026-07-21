@@ -24,6 +24,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
+	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -76,18 +77,9 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 					f.ExpectRbgV2Equal(rbg)
 					f.ExpectRbgV2ScalingAdapterEqual(rbg)
 
-					newRbg := &workloadsv1alpha2.RoleBasedGroup{}
-					gomega.Expect(
-						f.Client.Get(
-							f.Ctx, client.ObjectKey{
-								Name:      rbg.Name,
-								Namespace: rbg.Namespace,
-							}, newRbg,
-						),
-					).Should(gomega.Succeed())
-
-					newRbg.Spec.Roles = rbg.Spec.Roles[1:]
-					gomega.Expect(f.Client.Update(f.Ctx, newRbg)).Should(gomega.Succeed())
+					updateRbgSpecV2Retry(f, rbg, func(newRbg *workloadsv1alpha2.RoleBasedGroup) {
+						newRbg.Spec.Roles = rbg.Spec.Roles[1:]
+					})
 					f.ExpectScalingAdapterV2NotExist(rbg, rbg.Spec.Roles[0])
 					f.ExpectRoleScalingAdapterV2Equal(rbg, rbg.Spec.Roles[1], nil)
 
@@ -113,21 +105,12 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 					f.ExpectRbgV2Equal(rbg)
 					f.ExpectRbgV2ScalingAdapterEqual(rbg)
 
-					newRbg := &workloadsv1alpha2.RoleBasedGroup{}
-					gomega.Expect(
-						f.Client.Get(
-							f.Ctx, client.ObjectKey{
-								Name:      rbg.Name,
-								Namespace: rbg.Namespace,
-							}, newRbg,
-						),
-					).Should(gomega.Succeed())
-
-					newRbg.Spec.Roles = append(
-						newRbg.Spec.Roles, wrappersv2.BuildStandaloneRole("role-2").
-							WithScalingAdapter(true).Obj(),
-					)
-					gomega.Expect(f.Client.Update(f.Ctx, newRbg)).Should(gomega.Succeed())
+					newRbg := updateRbgSpecV2Retry(f, rbg, func(newRbg *workloadsv1alpha2.RoleBasedGroup) {
+						newRbg.Spec.Roles = append(
+							newRbg.Spec.Roles, wrappersv2.BuildStandaloneRole("role-2").
+								WithScalingAdapter(true).Obj(),
+						)
+					})
 					f.ExpectScalingAdapterV2NotExist(rbg, newRbg.Spec.Roles[0])
 					f.ExpectRoleScalingAdapterV2Equal(rbg, newRbg.Spec.Roles[1], nil)
 
@@ -157,19 +140,10 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 					f.ExpectRbgV2Equal(rbg)
 					f.ExpectRbgV2ScalingAdapterEqual(rbg)
 
-					newRbg := &workloadsv1alpha2.RoleBasedGroup{}
-					gomega.Expect(
-						f.Client.Get(
-							f.Ctx, client.ObjectKey{
-								Name:      rbg.Name,
-								Namespace: rbg.Namespace,
-							}, newRbg,
-						),
-					).Should(gomega.Succeed())
-
-					newRbg.Spec.Roles[0].ScalingAdapter.Enable = false
-					newRbg.Spec.Roles[1].ScalingAdapter = nil
-					gomega.Expect(f.Client.Update(f.Ctx, newRbg)).Should(gomega.Succeed())
+					updateRbgSpecV2Retry(f, rbg, func(newRbg *workloadsv1alpha2.RoleBasedGroup) {
+						newRbg.Spec.Roles[0].ScalingAdapter.Enable = false
+						newRbg.Spec.Roles[1].ScalingAdapter = nil
+					})
 					f.ExpectScalingAdapterV2NotExist(rbg, rbg.Spec.Roles[0])
 					f.ExpectScalingAdapterV2NotExist(rbg, rbg.Spec.Roles[1])
 
@@ -237,4 +211,26 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 			)
 		},
 	)
+}
+
+// updateRbgSpecV2Retry re-fetches the RBG and applies mutate before Update,
+// retrying on a 409 Conflict which can happen when the controller writes to the
+// RBG between our Get and Update (more likely on slower clusters). The caller's
+// original rbg is left untouched so post-update assertions can still reference it.
+func updateRbgSpecV2Retry(
+	f *framework.Framework,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	mutate func(newRbg *workloadsv1alpha2.RoleBasedGroup),
+) *workloadsv1alpha2.RoleBasedGroup {
+	newRbg := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Eventually(func() error {
+		if err := f.Client.Get(
+			f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, newRbg,
+		); err != nil {
+			return err
+		}
+		mutate(newRbg)
+		return f.Client.Update(f.Ctx, newRbg)
+	}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	return newRbg
 }
