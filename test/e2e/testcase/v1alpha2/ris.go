@@ -86,7 +86,9 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 
 		// Wait for all initial pods to become Ready
 		f.ExpectRbgV2Equal(rbg)
-		gomega.Expect(countReadyRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(4))
+		gomega.Eventually(func() int {
+			return countReadyRoleInstances(f, rbg, "role-1")
+		}, utils.Timeout, utils.Interval).Should(gomega.Equal(4))
 
 		time.Sleep(2 * time.Second)
 
@@ -144,7 +146,9 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 
 		// Wait for all initial pods to become Ready
 		f.ExpectRbgV2Equal(rbg)
-		gomega.Expect(countReadyRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(4))
+		gomega.Eventually(func() int {
+			return countReadyRoleInstances(f, rbg, "role-1")
+		}, utils.Timeout, utils.Interval).Should(gomega.Equal(4))
 
 		time.Sleep(2 * time.Second)
 
@@ -229,7 +233,9 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 			return countRoleInstances(f, rbg, "role-1")
 		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2),
 			"surge instances should be cleaned up after rolling update completes")
-		gomega.Expect(countReadyRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(2))
+		gomega.Eventually(func() int {
+			return countReadyRoleInstances(f, rbg, "role-1")
+		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2))
 	})
 
 	// Test 4: Decreasing partition step-by-step must continue to roll the
@@ -259,7 +265,9 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 
 		// Wait for both initial pods to become Ready.
 		f.ExpectRbgV2Equal(rbg)
-		gomega.Expect(countReadyRoleInstances(f, rbg, "role-1")).Should(gomega.Equal(2))
+		gomega.Eventually(func() int {
+			return countReadyRoleInstances(f, rbg, "role-1")
+		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2))
 
 		time.Sleep(2 * time.Second)
 
