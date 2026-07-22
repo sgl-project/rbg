@@ -52,17 +52,18 @@ echo "[2/4] Deploying controller via Helm..."
 helm upgrade --install "${RELEASE_NAME}" "${PROJECT_ROOT}/deploy/helm/rbgs" \
     --create-namespace \
     --namespace "${NAMESPACE}" \
-    --set image.tag="${IMAGE_TAG}" \
-    --set replicaCount="${REPLICAS}" \
-    --set resources.limits.cpu="${CONTROLLER_CPU}" \
-    --set resources.limits.memory="${CONTROLLER_MEMORY}" \
-    --set resources.requests.cpu="${CONTROLLER_CPU_REQUEST}" \
-    --set resources.requests.memory="${CONTROLLER_MEMORY_REQUEST}" \
-    --set controllerTuning.maxConcurrentReconciles="${MAX_RECONCILES}" \
-    --set controllerTuning.kubeApiQPS="${KUBE_API_QPS}" \
-    --set controllerTuning.kubeApiBurst="${KUBE_API_BURST}" \
-    --set pprof.enabled="${PPROF_ENABLED}" \
-    --set pprof.port="${PPROF_PORT}" \
+    --set controller.image.tag="${IMAGE_TAG}" \
+    --set controller.replicaCount="${REPLICAS}" \
+    --set controller.resources.limits.cpu="${CONTROLLER_CPU}" \
+    --set controller.resources.limits.memory="${CONTROLLER_MEMORY}" \
+    --set controller.resources.requests.cpu="${CONTROLLER_CPU_REQUEST}" \
+    --set controller.resources.requests.memory="${CONTROLLER_MEMORY_REQUEST}" \
+    --set controller.tuning.maxConcurrentReconciles="${MAX_RECONCILES}" \
+    --set controller.tuning.kubeApiQPS="${KUBE_API_QPS}" \
+    --set controller.tuning.kubeApiBurst="${KUBE_API_BURST}" \
+    --set controller.pprof.enabled="${PPROF_ENABLED}" \
+    --set controller.pprof.bindAddress=":${PPROF_PORT}" \
+    --set controller.pprof.containerPort="${PPROF_PORT}" \
     --wait --timeout=120s
 
 # Wait for rollout
