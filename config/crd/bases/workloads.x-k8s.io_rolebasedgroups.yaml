@@ -23958,7 +23958,7 @@ spec:
                             baseDelaySeconds:
                               description: |-
                                 BaseDelaySeconds is the base delay between restart attempts (seconds).
-                                Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+                                Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
                               format: int32
                               minimum: 0
                               type: integer
@@ -25387,7 +25387,7 @@ spec:
                             baseDelaySeconds:
                               description: |-
                                 BaseDelaySeconds is the base delay between restart attempts (seconds).
-                                Subsequent attempts use exponential backoff: delay = min(base * 2^restartCount, maxDelaySeconds).
+                                Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
                               format: int32
                               minimum: 0
                               type: integer

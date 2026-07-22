@@ -84,10 +84,19 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (*expectationDiff, error) {
 
+	// Read fresh restart tracking from API server once, before any restart-policy
+	// logic. The informer cache may be stale for RestartCount, LastRestartTime,
+	// and the Restarting condition. A single fresh read is shared between
+	// checkRestartBackoff and shouldRecreateInstance to avoid duplicate API calls.
+	var freshInstance *workloadsv1alpha2.RoleInstance
+	if updateInstance.Spec.RestartPolicy.Type == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
+	}
+
 	// Check restart backoff BEFORE any pod processing (including inactive pod cleanup).
 	// If the delay from the last restart hasn't elapsed, skip all scaling and requeue.
 	// This preserves crashed pods during the backoff window for log observability.
-	if requeue := c.checkRestartBackoff(ctx, updateInstance, pods, inactivePods); requeue > 0 {
+	if requeue := c.checkRestartBackoff(updateInstance, freshInstance, pods, inactivePods); requeue > 0 {
 		return &expectationDiff{requeueAfter: requeue}, nil
 	}
 
@@ -100,15 +109,6 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
-
-	// Read fresh restart tracking from API server before shouldRecreateInstance.
-	// The informer cache may not have synced the LastRestartTime that was persisted
-	// by a prior reconcile. Without LastRestartTime, shouldRecreateInstance cannot
-	// bypass the wasInstanceReady check, causing it to return false when the instance
-	// status shows Ready=False (set during the previous backoff status update).
-	if updateInstance.Spec.RestartPolicy.Type == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
-		c.syncRestartTrackingFromAPI(ctx, updateInstance)
-	}
 
 	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
 		// Mark instance as restarting to prevent cascading re-triggers
@@ -352,19 +352,25 @@ func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instanc
 // delayed due to exponential backoff. It returns the remaining delay duration,
 // or 0 if the recreation can proceed immediately.
 //
-// The backoff is computed as: delay = min(baseDelay * 2^restartCount, maxDelay)
+// The backoff is computed as: delay = min(baseDelay * 2^(restartCount-1), maxDelay)
 // where restartCount is the number of previous restart-policy recreations.
-// This prevents infinite rapid restart loops while still allowing eventual retry.
+// The first backoff (restartCount=1) equals baseDelay, then doubles each round.
+//
+// The fresh parameter is the latest API-server state obtained by
+// syncRestartTrackingFromAPI; it may be nil when apiReader is unavailable
+// (unit tests), in which case the informer-cached instance is used.
 // syncRestartTrackingFromAPI reads fresh restart tracking from the API server
-// when the informer cache may be stale. It updates the instance's RestartCount
-// and LastRestartTime in-place if the API server has newer values.
-func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) {
+// when the informer cache may be stale. It updates the instance's RestartCount,
+// LastRestartTime, and Restarting condition in-place if the API server has
+// newer values. Returns the fresh instance for callers that need additional
+// fields (e.g., checkRestartBackoff needs the Restarting condition).
+func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
 	if c.apiReader == nil {
-		return
+		return nil
 	}
 	fresh := &workloadsv1alpha2.RoleInstance{}
 	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
-		return
+		return nil
 	}
 	if fresh.Status.RestartCount > instance.Status.RestartCount {
 		instance.Status.RestartCount = fresh.Status.RestartCount
@@ -373,10 +379,11 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 		fresh.Status.LastRestartTime.After(instance.Status.LastRestartTime.Time)) {
 		instance.Status.LastRestartTime = fresh.Status.LastRestartTime
 	}
+	return fresh
 }
 
-func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance,
-	pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
+func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstance,
+	fresh *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
 	// Only applies when restart policy is RecreateRoleInstanceOnPodRestart
 	if instance.Spec.RestartPolicy.Type != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return 0
@@ -405,20 +412,16 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 		}
 	}
 
-	// Read fresh from API server for ALL restart-related fields. The informer
-	// cache may be stale for RestartCount, LastRestartTime, AND the Restarting
-	// condition. Stale Restarting=True (from a previous restart that has since
-	// completed) would incorrectly block both backoff and recreation.
+	// Use fresh API data (synced by syncRestartTrackingFromAPI) for restart
+	// tracking fields. The informer cache may be stale for RestartCount,
+	// LastRestartTime, and the Restarting condition.
 	restartCount := instance.Status.RestartCount
 	lastRestartTime := instance.Status.LastRestartTime
 	restarting := isInstanceRestarting(instance)
-	if c.apiReader != nil {
-		fresh := &workloadsv1alpha2.RoleInstance{}
-		if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err == nil {
-			restartCount = fresh.Status.RestartCount
-			lastRestartTime = fresh.Status.LastRestartTime
-			restarting = isInstanceRestarting(fresh)
-		}
+	if fresh != nil {
+		restartCount = fresh.Status.RestartCount
+		lastRestartTime = fresh.Status.LastRestartTime
+		restarting = isInstanceRestarting(fresh)
 	}
 
 	// Check if already restarting — skip backoff to let the in-progress restart continue.
@@ -457,30 +460,29 @@ func (c *realControl) checkRestartBackoff(ctx context.Context, instance *workloa
 }
 
 // calculateRestartDelay computes the exponential backoff delay for a restart attempt.
-// Formula: min(baseDelay * 2^restartCount, maxDelay)
-// Following client-go's workqueue.ItemExponentialFailureRateLimiter convention.
+// Formula: min(baseDelay * 2^(restartCount-1), maxDelay)
+// The first backoff (restartCount=1) equals baseDelay, then doubles each round.
 // When maxDelaySeconds is 0, no cap is applied (unbounded backoff).
 func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32) int32 {
-	if baseDelaySeconds == 0 {
+	if baseDelaySeconds == 0 || restartCount <= 0 {
 		return 0
 	}
-	// Guard against shift overflow: int64(1) << 63 wraps to negative.
-	// With default maxDelay=600, the max-cap triggers at restartCount≈5, so
-	// this branch is only reachable when maxDelay is 0 (unbounded backoff).
-	if restartCount >= 62 {
+	// Use (restartCount-1) so the first backoff equals baseDelay.
+	rc := restartCount - 1
+	// Guard against int64 overflow BEFORE the shift. For any base >= 1,
+	// base * 2^rc overflows int64 when rc >= 63 - bits.Len64(base).
+	// rc >= 62 always overflows; for larger bases the threshold is lower.
+	// In all overflow cases the result far exceeds any practical maxDelay.
+	if rc >= 62 || int64(baseDelaySeconds) > (int64(1)<<(62-rc)) {
 		if maxDelaySeconds > 0 {
 			return maxDelaySeconds
 		}
 		return 0x7FFFFFFF
 	}
-	// Use int64 arithmetic to prevent overflow for large restart counts.
-	// Example: baseDelay=30, restartCount=27 → 30 * 2^27 = 4B > int32 max.
-	delay := int64(baseDelaySeconds) * (int64(1) << restartCount)
-	// Apply maxDelay cap if configured
+	delay := int64(baseDelaySeconds) * (int64(1) << rc)
 	if maxDelaySeconds > 0 && delay > int64(maxDelaySeconds) {
 		return maxDelaySeconds
 	}
-	// If no cap and delay exceeds int32, cap at int32 max to prevent overflow
 	if delay > int64(0x7FFFFFFF) {
 		return 0x7FFFFFFF
 	}

@@ -426,34 +426,33 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 			}
 		}
 		// Snapshot live restart tracking before overwriting clone.Status.
-		// The informer cache may be stale: a previous reconcile (e.g. the
-		// deletion phase) may have already persisted a higher RestartCount,
-		// but the current reconcile read a lower value from the stale cache.
-		// We must never roll back RestartCount or LastRestartTime UNLESS a
-		// reset was explicitly triggered by updateRestartTracking.
+		// The informer cache may be stale: a previous reconcile may have already
+		// persisted a different RestartCount/LastRestartTime. We use the live API
+		// value (clone) as the source of truth and only overwrite when this
+		// reconcile intentionally modified restart tracking (via updateRestartTracking).
 		liveRestartCount := clone.Status.RestartCount
 		liveLastRestartTime := clone.Status.LastRestartTime
-		// Detect if a reset occurred during this reconcile. updateRestartTracking
-		// resets RestartCount to 0 then 1 after a stable period. If newStatus
-		// has a lower count than the original instance, it's a reset.
-		isReset := newStatus.RestartCount < instance.Status.RestartCount
+		// Detect whether updateRestartTracking ran this reconcile by checking if
+		// newStatus.LastRestartTime differs from the informer's value. When
+		// updateRestartTracking runs, it sets LastRestartTime = metav1.Now(), which
+		// always differs from the informer's (stale or not) value. When it didn't
+		// run, newStatus.LastRestartTime equals the informer's value (initialized
+		// from instance.Status at reconcile start).
+		restartTrackingChanged := newStatus.LastRestartTime != nil &&
+			(instance.Status.LastRestartTime == nil ||
+				!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime))
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
-		// Preserve live restart tracking if it's ahead of our precomputed
-		// newStatus AND no reset occurred. This prevents a stale-cache reconcile
-		// from clobbering a RestartCount that was already incremented by a prior
-		// reconcile. When a reset is detected, we trust newStatus (the reset).
-		if !isReset && liveRestartCount > newStatus.RestartCount {
+		if restartTrackingChanged {
+			// updateRestartTracking ran this reconcile — trust newStatus values.
+			// This covers both increments (count goes up) and resets (count goes
+			// down after a stable period). The timestamp is always fresh.
+		} else {
+			// Restart tracking was NOT modified this reconcile. Preserve the live
+			// API values to prevent a stale informer from clobbering them. This
+			// fixes the case where a reset (e.g. 5→1) is persisted by one reconcile
+			// but a subsequent stale-cache reconcile would write back the old count.
 			clone.Status.RestartCount = liveRestartCount
-		}
-		// For LastRestartTime: trust newStatus if it was set during this reconcile
-		// (i.e., differs from the original instance). Otherwise preserve the live
-		// value if it's newer (prevents clobbering from stale cache).
-		if newStatus.LastRestartTime != nil && instance.Status.LastRestartTime != nil &&
-			!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime) {
-			// newStatus.LastRestartTime was updated this reconcile — trust it
-		} else if liveLastRestartTime != nil && (newStatus.LastRestartTime == nil ||
-			liveLastRestartTime.After(newStatus.LastRestartTime.Time)) {
 			clone.Status.LastRestartTime = liveLastRestartTime
 		}
 		return r.Status().Update(ctx, clone)
