@@ -8,10 +8,10 @@ CRD upgrade Job into your Kubernetes cluster.
 
 - **Controller manager** (`rbgs-controller-manager` Deployment) reconciling RBG workloads.
 - **RBAC**: ServiceAccounts, ClusterRole/ClusterRoleBinding, and cert Role/RoleBinding.
-- **Webhooks**: validating/mutating webhook configurations and the webhook Service
+- **Webhooks**: a validating webhook configuration and the webhook Service
   (certificates are bootstrapped by the controller itself, no cert-manager required).
 - **CRD Upgrader Job** (optional, enabled by default): a `pre-install,pre-upgrade` Helm hook Job
-  that applies/upgrades the RBG CRDs before the controller starts.
+  (with its own ServiceAccount and RBAC) that applies/upgrades the RBG CRDs before the controller starts.
 
 ## Prerequisites
 
@@ -58,7 +58,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | --- | ----------- | ------- |
 | `controller.replicaCount` | Number of controller replicas (leader election is enabled) | `2` |
 | `controller.image.repository` | Controller image repository | `rolebasedgroup/rbgs-controller` |
-| `controller.image.tag` | Controller image tag | `.Chart.appVersion` |
+| `controller.image.tag` | Controller image tag | pinned per release in `values.yaml` (falls back to `.Chart.AppVersion` if unset) |
 | `controller.image.pullPolicy` | Controller image pull policy | `IfNotPresent` |
 | `controller.imagePullSecrets` | Overrides `global.imagePullSecrets` for the controller when set | `[]` |
 | `controller.resources` | Controller container resources | see `values.yaml` |
@@ -85,7 +85,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | --- | ----------- | ------- |
 | `crdUpgrade.enabled` | Enable the CRD Upgrader Job (`pre-install,pre-upgrade` hook) | `true` |
 | `crdUpgrade.image.repository` | CRD Upgrader image repository | `rolebasedgroup/rbgs-upgrade-crd` |
-| `crdUpgrade.image.tag` | CRD Upgrader image tag | `.Chart.appVersion` |
+| `crdUpgrade.image.tag` | CRD Upgrader image tag | pinned per release in `values.yaml` (falls back to `.Chart.AppVersion` if unset) |
 | `crdUpgrade.image.pullPolicy` | CRD Upgrader image pull policy | `IfNotPresent` |
 | `crdUpgrade.imagePullSecrets` | Overrides `global.imagePullSecrets` for the Job when set | `[]` |
 | `crdUpgrade.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
