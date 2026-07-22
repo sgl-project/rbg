@@ -158,9 +158,9 @@ jobs:
           helm upgrade --install rbgs deploy/helm/rbgs \
             --create-namespace \
             --namespace rbgs-system \
-            --set image.tag=e2e-test \
-            --set crdUpgrade.tag=e2e-test \
-            --set portAllocator.enabled=true \
+            --set controller.image.tag=e2e-test \
+            --set crdUpgrade.image.tag=e2e-test \
+            --set controller.features.portAllocator.enabled=true \
             --wait
           kubectl get deploy -n rbgs-system
 

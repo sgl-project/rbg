@@ -117,7 +117,7 @@ jobs:
           helm upgrade --install rbgs deploy/helm/rbgs \
             --create-namespace \
             --namespace rbgs-system \
-            --set portAllocator.enabled=true \
+            --set controller.features.portAllocator.enabled=true \
             --wait
           kubectl get deploy -n rbgs-system
 

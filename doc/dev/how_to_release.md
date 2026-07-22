@@ -37,11 +37,11 @@
 
 ### 🔄 What It Updates  
 
-| File               | Field Updated       | Example Value        | Source                     |
-|--------------------|---------------------|----------------------|----------------------------|
-| `Chart.yaml`       | `version`          | `0.5.0-alpha.2`      | Branch name (without `v`)  |
-| `Chart.yaml`       | `appVersion`       | `0.5.0-abc123`       | Image tag without `v`      |
-| `values.yaml`      | `image.tag`        | `v0.5.0-abc123`      | Makefile `VERSION` + Git SHA |
+| File               | Field Updated           | Example Value        | Source                     |
+|--------------------|-------------------------|----------------------|----------------------------|
+| `Chart.yaml`       | `version`              | `0.5.0-alpha.2`      | Branch name (without `v`)  |
+| `Chart.yaml`       | `appVersion`           | `0.5.0-abc123`       | Image tag without `v`      |
+| `values.yaml`      | `controller.image.tag` | `v0.5.0-abc123`      | Makefile `VERSION` + Git SHA |
 
 ---
 
@@ -145,7 +145,7 @@ When releasing a new version, use `update-release.sh` script:
 
    This script updates:
    - `deploy/helm/rbgs/Chart.yaml` (version, appVersion)
-   - `deploy/helm/rbgs/values.yaml` (image.tag)
+   - `deploy/helm/rbgs/values.yaml` (controller.image.tag, crdUpgrade.image.tag)
    - `config/manager/kustomization.yaml` (newTag)
    - `deploy/kubectl/manifests.yaml` (regenerated with conversion webhook)
 

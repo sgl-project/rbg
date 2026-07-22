@@ -72,7 +72,7 @@ spec:
 
 ## Volcano Gang Scheduling
 
-Volcano is a batch scheduling system with advanced gang scheduling features. To use Volcano, configure the controller with `--scheduler-name=volcano` or set `schedulerName: volcano` in Helm values.
+Volcano is a batch scheduling system with advanced gang scheduling features. To use Volcano, configure the controller with `--scheduler-name=volcano` or set `controller.features.gangScheduling.schedulerName: volcano` in Helm values.
 
 ### Enable via Annotations
 

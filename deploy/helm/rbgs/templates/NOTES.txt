@@ -1,0 +1,18 @@
+{{- if .Release.IsInstall }}
+{{ .Chart.Name }} ({{ .Chart.AppVersion }}) installed in namespace "{{ .Release.Namespace }}".
+{{- end }}
+{{- if .Release.IsUpgrade }}
+{{ .Chart.Name }} upgraded to {{ .Chart.AppVersion }} in namespace "{{ .Release.Namespace }}".
+
+Verify your effective values after upgrading:
+  helm -n {{ .Release.Namespace }} get values {{ .Release.Name }}
+{{- end }}
+
+Check the controller:
+  kubectl -n {{ .Release.Namespace }} get deploy rbgs-controller-manager
+  kubectl -n {{ .Release.Namespace }} get pods -l control-plane=rbgs-controller
+
+NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under
+`global`, `controller`, and `crdUpgrade`. Old top-level keys (e.g. `image.*`,
+`replicaCount`, `schedulerName`, `portAllocator.*`) are SILENTLY IGNORED by Helm.
+See the migration table in the chart README.md.
