@@ -129,6 +129,8 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		CollisionCount:                  new(int32),
 		LabelSelector:                   selector.String(),
 		InPlaceUpdateContainerBaselines: deepCopyBaselines(instance.Status.InPlaceUpdateContainerBaselines),
+		RestartCount:                    instance.Status.RestartCount,
+		LastRestartTime:                 instance.Status.LastRestartTime,
 	}
 	*newStatus.CollisionCount = collisionCount
 
@@ -172,7 +174,8 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		requeueDuration time.Duration
 	)
 
-	scaling, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
+	var scaleRequeue time.Duration
+	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsScaleErr != nil {
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
@@ -192,7 +195,28 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 				break
 			}
 		}
+		// Propagate restart tracking only when updateRestartTracking modified
+		// the values during Scale (i.e., a restart-policy-triggered deletion
+		// was triggered). ApplyRevision produces zero-value status fields, so
+		// unconditional propagation would clobber the correct values from the
+		// live object during the pod creation phase.
+		if updateInstance.Status.RestartCount > 0 {
+			newStatus.RestartCount = updateInstance.Status.RestartCount
+		}
+		if updateInstance.Status.LastRestartTime != nil {
+			newStatus.LastRestartTime = updateInstance.Status.LastRestartTime
+		}
 		return syncResult{err: podsScaleErr}
+	}
+	// Restart backoff: delay not elapsed, skip Update and just requeue.
+	// Do NOT propagate the Restarting condition here. The Restarting condition
+	// should only be set when a restart is actually in progress (scaling=true
+	// for deletion/creation). Propagating it during backoff causes the Ready
+	// condition to become False (pods are Failed), which then prevents
+	// shouldRecreateInstance from triggering on the next reconcile because
+	// wasInstanceReady() returns false.
+	if scaleRequeue > 0 {
+		return syncResult{requeue: scaleRequeue}
 	}
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)

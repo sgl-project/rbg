@@ -321,7 +321,9 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 	if newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
 		newStatus.LabelSelector != oldStatus.LabelSelector ||
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
-		newStatus.UpdateRevision != oldStatus.UpdateRevision {
+		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
+		newStatus.RestartCount != oldStatus.RestartCount ||
+		inconsistentRestartTime(oldStatus.LastRestartTime, newStatus.LastRestartTime) {
 		return true
 	}
 	if len(oldStatus.ComponentStatuses) != len(newStatus.ComponentStatuses) {
@@ -356,6 +358,17 @@ func inconsistentBaselines(old, new map[string]map[string]workloadsv1alpha2.Cont
 		}
 	}
 	return false
+}
+
+// inconsistentRestartTime checks whether LastRestartTime has changed.
+func inconsistentRestartTime(old, new *metav1.Time) bool {
+	if old == nil && new == nil {
+		return false
+	}
+	if old == nil || new == nil {
+		return true
+	}
+	return !old.Equal(new)
 }
 
 func inconsistentComponentStatus(oldRoleStatus, newRoleStatus workloadsv1alpha2.RoleInstanceComponentStatus) bool {
@@ -412,8 +425,38 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 				liveCustomConditions = append(liveCustomConditions, c)
 			}
 		}
+		// Snapshot live restart tracking before overwriting clone.Status.
+		// The informer cache may be stale: a previous reconcile may have already
+		// persisted a different RestartCount/LastRestartTime. We use the live API
+		// value (clone) as the source of truth and only overwrite when this
+		// reconcile intentionally modified restart tracking (via updateRestartTracking).
+		liveRestartCount := clone.Status.RestartCount
+		liveLastRestartTime := clone.Status.LastRestartTime
+		// Detect whether updateRestartTracking ran this reconcile. It sets
+		// LastRestartTime = metav1.Now(), producing a timestamp that differs from
+		// BOTH the informer's value AND the live API value. In contrast,
+		// syncRestartTrackingFromAPI copies the API's timestamp, which equals the
+		// live value — so the double-check below correctly identifies that case as
+		// "not changed" and preserves the live (potentially reset) count.
+		restartTrackingChanged := newStatus.LastRestartTime != nil &&
+			(instance.Status.LastRestartTime == nil ||
+				!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime)) &&
+			(liveLastRestartTime == nil ||
+				!newStatus.LastRestartTime.Equal(liveLastRestartTime))
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
+		if restartTrackingChanged {
+			// updateRestartTracking ran this reconcile — trust newStatus values.
+			// This covers both increments (count goes up) and resets (count goes
+			// down after a stable period). The timestamp is always brand-new.
+		} else {
+			// Restart tracking was NOT modified by updateRestartTracking this
+			// reconcile. Preserve the live API values to prevent a stale informer
+			// (or a syncRestartTrackingFromAPI pass-through) from clobbering a
+			// reset that was persisted by a prior reconcile.
+			clone.Status.RestartCount = liveRestartCount
+			clone.Status.LastRestartTime = liveLastRestartTime
+		}
 		return r.Status().Update(ctx, clone)
 	})
 }

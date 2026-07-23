@@ -26,7 +26,7 @@ import (
 type RoleInstanceSpecApplyConfiguration struct {
 	Components     []RoleInstanceComponentApplyConfiguration      `json:"components,omitempty"`
 	ReadyPolicy    *workloadsv1alpha2.RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
-	RestartPolicy  *workloadsv1alpha2.RestartPolicyType           `json:"restartPolicy,omitempty"`
+	RestartPolicy  *RestartPolicyConfigApplyConfiguration         `json:"restartPolicy,omitempty"`
 	ReadinessGates []RoleInstanceReadinessGateApplyConfiguration  `json:"readinessGates,omitempty"`
 }
 
@@ -60,8 +60,8 @@ func (b *RoleInstanceSpecApplyConfiguration) WithReadyPolicy(value workloadsv1al
 // WithRestartPolicy sets the RestartPolicy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
-func (b *RoleInstanceSpecApplyConfiguration) WithRestartPolicy(value workloadsv1alpha2.RestartPolicyType) *RoleInstanceSpecApplyConfiguration {
-	b.RestartPolicy = &value
+func (b *RoleInstanceSpecApplyConfiguration) WithRestartPolicy(value *RestartPolicyConfigApplyConfiguration) *RoleInstanceSpecApplyConfiguration {
+	b.RestartPolicy = value
 	return b
 }
 

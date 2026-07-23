@@ -24446,13 +24446,32 @@ spec:
                                     type: object
                                   type: array
                                 restartPolicy:
-                                  description: |-
-                                    RestartPolicy defines the restart policy when pod failures happen.
-                                    Default is RecreateRoleInstanceOnPodRestart.
-                                  enum:
-                                  - None
-                                  - RecreateRoleInstanceOnPodRestart
-                                  type: string
+                                  description: RestartPolicy defines the restart policy
+                                    and backoff configuration.
+                                  properties:
+                                    baseDelaySeconds:
+                                      description: |-
+                                        BaseDelaySeconds is the base delay between restart attempts (seconds).
+                                        Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
+                                      format: int32
+                                      minimum: 0
+                                      type: integer
+                                    maxDelaySeconds:
+                                      description: |-
+                                        MaxDelaySeconds caps the exponential backoff delay (seconds).
+                                        Default is 600.
+                                      format: int32
+                                      minimum: 0
+                                      type: integer
+                                    type:
+                                      description: |-
+                                        Type defines the restart policy when pod failures happen.
+                                        Default is RecreateRoleInstanceOnPodRestart.
+                                      enum:
+                                      - None
+                                      - RecreateRoleInstanceOnPodRestart
+                                      type: string
+                                  type: object
                               type: object
                             dependencies:
                               description: Dependencies of the role
@@ -25891,13 +25910,32 @@ spec:
                                     for the leader template.
                                   x-kubernetes-preserve-unknown-fields: true
                                 restartPolicy:
-                                  description: |-
-                                    RestartPolicy defines the restart policy when pod failures happen.
-                                    Default is RecreateRoleInstanceOnPodRestart.
-                                  enum:
-                                  - None
-                                  - RecreateRoleInstanceOnPodRestart
-                                  type: string
+                                  description: RestartPolicy defines the restart policy
+                                    and backoff configuration.
+                                  properties:
+                                    baseDelaySeconds:
+                                      description: |-
+                                        BaseDelaySeconds is the base delay between restart attempts (seconds).
+                                        Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
+                                      format: int32
+                                      minimum: 0
+                                      type: integer
+                                    maxDelaySeconds:
+                                      description: |-
+                                        MaxDelaySeconds caps the exponential backoff delay (seconds).
+                                        Default is 600.
+                                      format: int32
+                                      minimum: 0
+                                      type: integer
+                                    type:
+                                      description: |-
+                                        Type defines the restart policy when pod failures happen.
+                                        Default is RecreateRoleInstanceOnPodRestart.
+                                      enum:
+                                      - None
+                                      - RecreateRoleInstanceOnPodRestart
+                                      type: string
+                                  type: object
                                 sharedServiceSelection:
                                   description: SharedServiceSelection indicates the
                                     service policy of the role

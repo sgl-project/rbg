@@ -274,24 +274,65 @@ func (r *RoleSpec) GetWorkerTemplatePatch() *runtime.RawExtension {
 	return r.LeaderWorkerPattern.WorkerTemplatePatch
 }
 
+// GetRestartPolicyConfig returns the effective RestartPolicyConfig for this role based on its pattern.
+func (r *RoleSpec) GetRestartPolicyConfig() RestartPolicyConfig {
+	if r == nil {
+		return RestartPolicyConfig{}
+	}
+	if r.LeaderWorkerPattern != nil {
+		return r.LeaderWorkerPattern.RestartPolicy
+	}
+	if r.CustomComponentsPattern != nil {
+		return r.CustomComponentsPattern.RestartPolicy
+	}
+	return RestartPolicyConfig{}
+}
+
 // GetRestartPolicy returns the effective restart policy for this role based on its pattern.
 // StandalonePattern always returns None (single pod, no instance-level restart).
 // LeaderWorkerPattern and CustomComponentsPattern default to RecreateRoleInstanceOnPodRestart.
 func (r *RoleSpec) GetRestartPolicy() RestartPolicyType {
-	if r.LeaderWorkerPattern != nil {
-		if r.LeaderWorkerPattern.RestartPolicy != "" {
-			return r.LeaderWorkerPattern.RestartPolicy
-		}
-		return RecreateRoleInstanceOnPodRestart
+	cfg := r.GetRestartPolicyConfig()
+	if cfg.Type != "" {
+		return cfg.Type
 	}
-	if r.CustomComponentsPattern != nil {
-		if r.CustomComponentsPattern.RestartPolicy != "" {
-			return r.CustomComponentsPattern.RestartPolicy
-		}
+	if r.LeaderWorkerPattern != nil || r.CustomComponentsPattern != nil {
 		return RecreateRoleInstanceOnPodRestart
 	}
 	// StandalonePattern or no pattern: single pod, no instance-level restart
 	return RestartPolicyNone
+}
+
+// Default values for restart policy delay configuration.
+const (
+	DefaultBaseDelaySeconds int32 = 30
+	DefaultMaxDelaySeconds  int32 = 600
+)
+
+// GetBaseDelaySeconds returns the configured base delay seconds,
+// or the default (30) if not set.
+func (r *RoleSpec) GetBaseDelaySeconds() int32 {
+	if r == nil {
+		return DefaultBaseDelaySeconds
+	}
+	cfg := r.GetRestartPolicyConfig()
+	if cfg.BaseDelaySeconds != nil {
+		return *cfg.BaseDelaySeconds
+	}
+	return DefaultBaseDelaySeconds
+}
+
+// GetMaxDelaySeconds returns the configured max delay seconds,
+// or the default (600) if not set.
+func (r *RoleSpec) GetMaxDelaySeconds() int32 {
+	if r == nil {
+		return DefaultMaxDelaySeconds
+	}
+	cfg := r.GetRestartPolicyConfig()
+	if cfg.MaxDelaySeconds != nil {
+		return *cfg.MaxDelaySeconds
+	}
+	return DefaultMaxDelaySeconds
 }
 
 // GetLeaderWorkerSize returns the size of the leader-worker group.

@@ -31,8 +31,9 @@ type RoleInstanceSpec struct {
 	// +kubebuilder:default=AllPodReady
 	ReadyPolicy RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
-	// RestartPolicy defines the restart policy for all pods within the RoleInstance.
-	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+	// RestartPolicy defines the restart policy and backoff configuration for all pods within the RoleInstance.
+	// +optional
+	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
@@ -42,6 +43,36 @@ type RoleInstanceSpec struct {
 type RoleInstanceReadinessGate struct {
 	// ConditionType refers to a condition in the pod's condition list with matching type.
 	ConditionType RoleInstanceConditionType `json:"conditionType"`
+}
+
+// GetRestartPolicyConfig returns the restart policy configuration.
+func (s *RoleInstanceSpec) GetRestartPolicyConfig() RestartPolicyConfig {
+	if s == nil {
+		return RestartPolicyConfig{}
+	}
+	return s.RestartPolicy
+}
+
+// GetBaseDelaySeconds returns the configured base delay or the default (30).
+func (s *RoleInstanceSpec) GetBaseDelaySeconds() int32 {
+	if s == nil {
+		return DefaultBaseDelaySeconds
+	}
+	if s.RestartPolicy.BaseDelaySeconds != nil {
+		return *s.RestartPolicy.BaseDelaySeconds
+	}
+	return DefaultBaseDelaySeconds
+}
+
+// GetMaxDelaySeconds returns the configured max delay or the default (600).
+func (s *RoleInstanceSpec) GetMaxDelaySeconds() int32 {
+	if s == nil {
+		return DefaultMaxDelaySeconds
+	}
+	if s.RestartPolicy.MaxDelaySeconds != nil {
+		return *s.RestartPolicy.MaxDelaySeconds
+	}
+	return DefaultMaxDelaySeconds
 }
 
 type RoleInstanceReadyPolicyType string
@@ -125,6 +156,16 @@ type RoleInstanceStatus struct {
 	// (from in-place image changes) from real crashes.
 	// +optional
 	InPlaceUpdateContainerBaselines map[string]map[string]ContainerUpdateBaseline `json:"inPlaceUpdateContainerBaselines,omitempty"`
+
+	// RestartCount tracks the number of times the restart policy has triggered
+	// a full RoleInstance recreation.
+	// +optional
+	RestartCount int32 `json:"restartCount,omitempty"`
+
+	// LastRestartTime is the timestamp of the most recent restart-policy-triggered
+	// recreation. Used to compute exponential backoff between restart attempts.
+	// +optional
+	LastRestartTime *metav1.Time `json:"lastRestartTime,omitempty"`
 }
 
 // ContainerUpdateBaseline records the pre-update state of a container for

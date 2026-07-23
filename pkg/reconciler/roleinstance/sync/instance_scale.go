@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -43,22 +44,28 @@ const (
 )
 
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
-	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, error) {
+	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, time.Duration, error) {
 	// Record node bindings for in-place scheduling.
 	// Piggybacks on the already-fetched pods — no additional API calls.
 	RecordNodeBindings(c.bindings, updateInstance, pods)
 
 	diffRes, err := c.calculateDiffsWithExpectation(ctx, updateInstance, currentRevision, updateRevision, revisions, pods, inactivePods)
 	if err != nil {
-		return true, err
+		return true, 0, err
+	}
+	// Backoff requeue: delay not elapsed, skip all scaling and just requeue.
+	if diffRes.requeueAfter > 0 {
+		return false, diffRes.requeueAfter, nil
 	}
 	if diffRes.toDeleteNum > 0 {
-		return c.deletePods(ctx, updateInstance, diffRes.toDeletePod)
+		scaled, scaleErr := c.deletePods(ctx, updateInstance, diffRes.toDeletePod)
+		return scaled, 0, scaleErr
 	}
 	if diffRes.toScaleNum > 0 {
-		return c.createPods(ctx, updateInstance, diffRes.toScaleRoleIDS, updateRevision.Name)
+		scaled, scaleErr := c.createPods(ctx, updateInstance, diffRes.toScaleRoleIDS, updateRevision.Name)
+		return scaled, 0, scaleErr
 	}
-	return false, nil
+	return false, 0, nil
 }
 
 type expectationDiff struct {
@@ -67,11 +74,31 @@ type expectationDiff struct {
 
 	toScaleNum     int
 	toScaleRoleIDS map[string]sets.Set[int32]
+
+	// requeueAfter is set when the reconcile should be requeued after a delay
+	// without performing any scaling actions (used by restart backoff).
+	requeueAfter time.Duration
 }
 
 func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (*expectationDiff, error) {
+
+	// Read fresh restart tracking from API server once, before any restart-policy
+	// logic. The informer cache may be stale for RestartCount, LastRestartTime,
+	// and the Restarting condition. A single fresh read is shared between
+	// checkRestartBackoff and shouldRecreateInstance to avoid duplicate API calls.
+	var freshInstance *workloadsv1alpha2.RoleInstance
+	if updateInstance.Spec.RestartPolicy.Type == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
+	}
+
+	// Check restart backoff BEFORE any pod processing (including inactive pod cleanup).
+	// If the delay from the last restart hasn't elapsed, skip all scaling and requeue.
+	// This preserves crashed pods during the backoff window for log observability.
+	if requeue := c.checkRestartBackoff(updateInstance, freshInstance, pods, inactivePods); requeue > 0 {
+		return &expectationDiff{requeueAfter: requeue}, nil
+	}
 
 	coreControl := instancecore.New(updateInstance)
 
@@ -82,11 +109,14 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
+
 	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
+		// Update restart tracking for exponential backoff
+		updateRestartTracking(updateInstance)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
-			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v", klog.KObj(updateInstance)))
+			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v (restartCount=%d)", klog.KObj(updateInstance), updateInstance.Status.RestartCount))
 		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
 	}
 
@@ -318,6 +348,152 @@ func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instanc
 	return shouldRecreateInstance(instance, pods, baselines)
 }
 
+// checkRestartBackoff checks if a restart-policy-triggered recreation should be
+// delayed due to exponential backoff. It returns the remaining delay duration,
+// or 0 if the recreation can proceed immediately.
+//
+// The backoff is computed as: delay = min(baseDelay * 2^(restartCount-1), maxDelay)
+// where restartCount is the number of previous restart-policy recreations.
+// The first backoff (restartCount=1) equals baseDelay, then doubles each round.
+//
+// The fresh parameter is the latest API-server state obtained by
+// syncRestartTrackingFromAPI; it may be nil when apiReader is unavailable
+// (unit tests), in which case the informer-cached instance is used.
+// syncRestartTrackingFromAPI reads fresh restart tracking from the API server
+// when the informer cache may be stale. It treats (RestartCount, LastRestartTime)
+// as a versioned pair: when the fresh timestamp is newer, BOTH fields are adopted
+// — even if the count is lower (stable-period reset case). This prevents a
+// stale-high count from surviving a reset.
+// Returns the fresh instance for callers that need additional fields
+// (e.g., checkRestartBackoff needs the Restarting condition).
+func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
+	if c.apiReader == nil {
+		return nil
+	}
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
+		return nil
+	}
+	// Adopt the versioned pair when the fresh timestamp is newer.
+	// This carries resets downward (e.g. 5→1) unlike a monotonic-up guard.
+	if fresh.Status.LastRestartTime != nil && (instance.Status.LastRestartTime == nil ||
+		fresh.Status.LastRestartTime.After(instance.Status.LastRestartTime.Time)) {
+		instance.Status.RestartCount = fresh.Status.RestartCount
+		instance.Status.LastRestartTime = fresh.Status.LastRestartTime
+	} else if fresh.Status.RestartCount > instance.Status.RestartCount {
+		// Timestamps equal but count is higher (e.g. same-second writes) — adopt count.
+		instance.Status.RestartCount = fresh.Status.RestartCount
+	}
+	return fresh
+}
+
+func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstance,
+	fresh *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
+	// Only applies when restart policy is RecreateRoleInstanceOnPodRestart
+	if instance.Spec.RestartPolicy.Type != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+		return 0
+	}
+
+	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
+	allPods = append(allPods, pods...)
+	allPods = append(allPods, inactivePods...)
+
+	// Fast path: if shouldRecreateInstance returns true, backoff is applicable.
+	// Slow path: if it returns false but there are failed pods and a recent
+	// restart, we still need to apply backoff. This handles the case where
+	// the instance status was just updated (Ready=False) from the previous
+	// reconcile, making wasInstanceReady() return false on the next reconcile,
+	// which would cause shouldRecreateInstance to skip the restart entirely.
+	if !shouldRecreateInstance(instance, allPods, instance.Status.InPlaceUpdateContainerBaselines) {
+		hasFailedPods := false
+		for _, p := range allPods {
+			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+				hasFailedPods = true
+				break
+			}
+		}
+		if !hasFailedPods {
+			return 0
+		}
+	}
+
+	// Use fresh API data (synced by syncRestartTrackingFromAPI) for restart
+	// tracking fields. The informer cache may be stale for RestartCount,
+	// LastRestartTime, and the Restarting condition.
+	restartCount := instance.Status.RestartCount
+	lastRestartTime := instance.Status.LastRestartTime
+	restarting := isInstanceRestarting(instance)
+	if fresh != nil {
+		restartCount = fresh.Status.RestartCount
+		lastRestartTime = fresh.Status.LastRestartTime
+		restarting = isInstanceRestarting(fresh)
+	}
+
+	// Check if already restarting — skip backoff to let the in-progress restart continue.
+	// Use FRESH data: the informer may still show Restarting=True from a previous
+	// restart that has since completed (condition cleared on API server but informer
+	// hasn't synced yet). This stale Restarting=True would incorrectly block both
+	// backoff (here) and recreation (in isAlreadyRestarting).
+	if restarting {
+		return 0
+	}
+
+	// No delay config — proceed immediately
+	baseDelay := instance.Spec.GetBaseDelaySeconds()
+	maxDelay := instance.Spec.GetMaxDelaySeconds()
+	if baseDelay == 0 && maxDelay == 0 {
+		return 0
+	}
+
+	if lastRestartTime == nil {
+		return 0
+	}
+
+	delay := calculateRestartDelay(baseDelay, maxDelay, restartCount)
+	if delay == 0 {
+		return 0
+	}
+
+	elapsed := time.Since(lastRestartTime.Time)
+	remaining := time.Duration(delay)*time.Second - elapsed
+	if remaining > 0 {
+		klog.V(2).Infof("Restart backoff: instance %s waiting %v (restartCount=%d, delay=%ds)",
+			klog.KObj(instance), remaining.Round(time.Second), restartCount, delay)
+		return remaining
+	}
+	return 0
+}
+
+// calculateRestartDelay computes the exponential backoff delay for a restart attempt.
+// Formula: min(baseDelay * 2^(restartCount-1), maxDelay)
+// The first backoff (restartCount=1) equals baseDelay, then doubles each round.
+// When maxDelaySeconds is 0, no cap is applied (unbounded backoff).
+func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32) int32 {
+	if baseDelaySeconds == 0 || restartCount <= 0 {
+		return 0
+	}
+	// Use (restartCount-1) so the first backoff equals baseDelay.
+	rc := restartCount - 1
+	// Guard against int64 overflow BEFORE the shift. For any base >= 1,
+	// base * 2^rc overflows int64 when rc >= 63 - bits.Len64(base).
+	// rc >= 62 always overflows; for larger bases the threshold is lower.
+	// In all overflow cases the result far exceeds any practical maxDelay.
+	if rc >= 62 || int64(baseDelaySeconds) > (int64(1)<<(62-rc)) {
+		if maxDelaySeconds > 0 {
+			return maxDelaySeconds
+		}
+		return 0x7FFFFFFF
+	}
+	delay := int64(baseDelaySeconds) * (int64(1) << rc)
+	if maxDelaySeconds > 0 && delay > int64(maxDelaySeconds) {
+		return maxDelaySeconds
+	}
+	if delay > int64(0x7FFFFFFF) {
+		return 0x7FFFFFFF
+	}
+	return int32(delay)
+}
+
 // isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
 // recreation. It first checks the in-memory cache (zero latency, immune to informer lag),
 // then falls back to a direct API server read to check the persisted Restarting condition.
@@ -327,6 +503,9 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 		return true
 	}
 	// Slow path: read fresh from API server (bypasses informer cache)
+	if c.apiReader == nil {
+		return false
+	}
 	fresh := &workloadsv1alpha2.RoleInstance{}
 	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
 		return false
@@ -351,7 +530,7 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 // and should not trigger Instance recreation.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
 	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.RestartPolicy != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if instance.Spec.RestartPolicy.Type != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
 	}
 
@@ -363,7 +542,14 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// Only trigger when Instance was previously Ready (stable state)
 	// and is NOT in the middle of any update.
 	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
-	if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
+	// Exception: if LastRestartTime is set, a restart-policy recreation has occurred.
+	// The instance may not yet be Ready (pods still Pending after recreation), so
+	// wasInstanceReady() would return false. We bypass to prevent deadlock where
+	// a pod crash before Ready would block recreation indefinitely.
+	// This bypass is bounded: RestartCount resets after a stable period
+	// (max(maxDelay*2, 10min)), and the normal Ready check resumes.
+	if (!wasInstanceReady(instance) && instance.Status.LastRestartTime == nil) ||
+		instance.Generation != instance.Status.ObservedGeneration {
 		return false
 	}
 	// CurrentRevision != UpdateRevision means a rolling update is in progress
@@ -507,6 +693,32 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 		Reason:             "RestartPolicyTriggered",
 		Message:            "Instance is being recreated due to restart policy",
 	})
+}
+
+// updateRestartTracking increments RestartCount and updates LastRestartTime
+// on the instance status. Called when a restart-policy-triggered recreation
+// is about to happen. The updated values are used by checkRestartBackoff
+// on subsequent reconciles to compute exponential backoff delays.
+//
+// If the instance has been stable for a long period (no restarts for
+// max(maxDelaySeconds*2, 10 minutes)), the RestartCount is reset to 0
+// so that a future crash starts with a short backoff instead of the
+// accumulated maximum.
+func updateRestartTracking(instance *workloadsv1alpha2.RoleInstance) {
+	// Reset counter if the instance has been stable for a long period.
+	if instance.Status.LastRestartTime != nil {
+		maxDelay := instance.Spec.GetMaxDelaySeconds()
+		stableThreshold := time.Duration(maxDelay) * 2 * time.Second
+		if stableThreshold < 10*time.Minute {
+			stableThreshold = 10 * time.Minute
+		}
+		if time.Since(instance.Status.LastRestartTime.Time) > stableThreshold {
+			instance.Status.RestartCount = 0
+		}
+	}
+	instance.Status.RestartCount++
+	now := metav1.Now()
+	instance.Status.LastRestartTime = &now
 }
 
 // ClearRestarting removes the instance from the in-memory restarting cache.

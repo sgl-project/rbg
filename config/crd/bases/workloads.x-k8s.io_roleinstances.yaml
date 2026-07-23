@@ -115,9 +115,32 @@ spec:
                   Defaults to `AllPodReady`
                 type: string
               restartPolicy:
-                description: RestartPolicy defines the restart policy for all pods
-                  within the RoleInstance.
-                type: string
+                description: RestartPolicy defines the restart policy and backoff
+                  configuration for all pods within the RoleInstance.
+                properties:
+                  baseDelaySeconds:
+                    description: |-
+                      BaseDelaySeconds is the base delay between restart attempts (seconds).
+                      Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxDelaySeconds:
+                    description: |-
+                      MaxDelaySeconds caps the exponential backoff delay (seconds).
+                      Default is 600.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  type:
+                    description: |-
+                      Type defines the restart policy when pod failures happen.
+                      Default is RecreateRoleInstanceOnPodRestart.
+                    enum:
+                    - None
+                    - RecreateRoleInstanceOnPodRestart
+                    type: string
+                type: object
             required:
             - components
             type: object
@@ -240,11 +263,23 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastRestartTime:
+                description: |-
+                  LastRestartTime is the timestamp of the most recent restart-policy-triggered
+                  recreation. Used to compute exponential backoff between restart attempts.
+                format: date-time
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this RoleInstance. It corresponds to the
                   RoleInstance's generation, which is updated on mutation by the API Server.
                 format: int64
+                type: integer
+              restartCount:
+                description: |-
+                  RestartCount tracks the number of times the restart policy has triggered
+                  a full RoleInstance recreation.
+                format: int32
                 type: integer
               updateRevision:
                 description: UpdateRevision is a hash value that changes when the
