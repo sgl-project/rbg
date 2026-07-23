@@ -404,6 +404,12 @@ func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstan
 	// the instance status was just updated (Ready=False) from the previous
 	// reconcile, making wasInstanceReady() return false on the next reconcile,
 	// which would cause shouldRecreateInstance to skip the restart entirely.
+	// TODO: the slow path also applies backoff when shouldRecreateInstance
+	// returned false due to Generation != ObservedGeneration or
+	// CurrentRevision != UpdateRevision (rolling update / spec change in
+	// progress). This freezes updates until the backoff window expires.
+	// Fix: only apply slow-path backoff when shouldRecreateInstance returned
+	// false due to wasInstanceReady, not due to Generation/Revision mismatch.
 	if !shouldRecreateInstance(instance, allPods, instance.Status.InPlaceUpdateContainerBaselines) {
 		hasFailedPods := false
 		for _, p := range allPods {
@@ -546,8 +552,9 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// The instance may not yet be Ready (pods still Pending after recreation), so
 	// wasInstanceReady() would return false. We bypass to prevent deadlock where
 	// a pod crash before Ready would block recreation indefinitely.
-	// This bypass is bounded: RestartCount resets after a stable period
-	// (max(maxDelay*2, 10min)), and the normal Ready check resumes.
+	// TODO: this bypass is currently permanent — LastRestartTime is never cleared
+	// once set, so wasInstanceReady() never resumes after the first restart.
+	// Fix: clear LastRestartTime after a sustained Ready period (max(maxDelay*2, 10min)).
 	if (!wasInstanceReady(instance) && instance.Status.LastRestartTime == nil) ||
 		instance.Generation != instance.Status.ObservedGeneration {
 		return false
