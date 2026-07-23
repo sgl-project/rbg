@@ -360,10 +360,12 @@ func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instanc
 // syncRestartTrackingFromAPI; it may be nil when apiReader is unavailable
 // (unit tests), in which case the informer-cached instance is used.
 // syncRestartTrackingFromAPI reads fresh restart tracking from the API server
-// when the informer cache may be stale. It updates the instance's RestartCount,
-// LastRestartTime, and Restarting condition in-place if the API server has
-// newer values. Returns the fresh instance for callers that need additional
-// fields (e.g., checkRestartBackoff needs the Restarting condition).
+// when the informer cache may be stale. It treats (RestartCount, LastRestartTime)
+// as a versioned pair: when the fresh timestamp is newer, BOTH fields are adopted
+// — even if the count is lower (stable-period reset case). This prevents a
+// stale-high count from surviving a reset.
+// Returns the fresh instance for callers that need additional fields
+// (e.g., checkRestartBackoff needs the Restarting condition).
 func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
 	if c.apiReader == nil {
 		return nil
@@ -372,12 +374,15 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
 		return nil
 	}
-	if fresh.Status.RestartCount > instance.Status.RestartCount {
-		instance.Status.RestartCount = fresh.Status.RestartCount
-	}
+	// Adopt the versioned pair when the fresh timestamp is newer.
+	// This carries resets downward (e.g. 5→1) unlike a monotonic-up guard.
 	if fresh.Status.LastRestartTime != nil && (instance.Status.LastRestartTime == nil ||
 		fresh.Status.LastRestartTime.After(instance.Status.LastRestartTime.Time)) {
+		instance.Status.RestartCount = fresh.Status.RestartCount
 		instance.Status.LastRestartTime = fresh.Status.LastRestartTime
+	} else if fresh.Status.RestartCount > instance.Status.RestartCount {
+		// Timestamps equal but count is higher (e.g. same-second writes) — adopt count.
+		instance.Status.RestartCount = fresh.Status.RestartCount
 	}
 	return fresh
 }

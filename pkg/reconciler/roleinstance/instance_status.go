@@ -432,26 +432,28 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// reconcile intentionally modified restart tracking (via updateRestartTracking).
 		liveRestartCount := clone.Status.RestartCount
 		liveLastRestartTime := clone.Status.LastRestartTime
-		// Detect whether updateRestartTracking ran this reconcile by checking if
-		// newStatus.LastRestartTime differs from the informer's value. When
-		// updateRestartTracking runs, it sets LastRestartTime = metav1.Now(), which
-		// always differs from the informer's (stale or not) value. When it didn't
-		// run, newStatus.LastRestartTime equals the informer's value (initialized
-		// from instance.Status at reconcile start).
+		// Detect whether updateRestartTracking ran this reconcile. It sets
+		// LastRestartTime = metav1.Now(), producing a timestamp that differs from
+		// BOTH the informer's value AND the live API value. In contrast,
+		// syncRestartTrackingFromAPI copies the API's timestamp, which equals the
+		// live value — so the double-check below correctly identifies that case as
+		// "not changed" and preserves the live (potentially reset) count.
 		restartTrackingChanged := newStatus.LastRestartTime != nil &&
 			(instance.Status.LastRestartTime == nil ||
-				!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime))
+				!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime)) &&
+			(liveLastRestartTime == nil ||
+				!newStatus.LastRestartTime.Equal(liveLastRestartTime))
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
 		if restartTrackingChanged {
 			// updateRestartTracking ran this reconcile — trust newStatus values.
 			// This covers both increments (count goes up) and resets (count goes
-			// down after a stable period). The timestamp is always fresh.
+			// down after a stable period). The timestamp is always brand-new.
 		} else {
-			// Restart tracking was NOT modified this reconcile. Preserve the live
-			// API values to prevent a stale informer from clobbering them. This
-			// fixes the case where a reset (e.g. 5→1) is persisted by one reconcile
-			// but a subsequent stale-cache reconcile would write back the old count.
+			// Restart tracking was NOT modified by updateRestartTracking this
+			// reconcile. Preserve the live API values to prevent a stale informer
+			// (or a syncRestartTrackingFromAPI pass-through) from clobbering a
+			// reset that was persisted by a prior reconcile.
 			clone.Status.RestartCount = liveRestartCount
 			clone.Status.LastRestartTime = liveLastRestartTime
 		}
