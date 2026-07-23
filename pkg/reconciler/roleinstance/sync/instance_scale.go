@@ -475,7 +475,7 @@ func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstan
 // The first backoff (restartCount=1) equals baseDelay, then doubles each round.
 // When maxDelaySeconds is 0, no cap is applied (unbounded backoff).
 func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32) int32 {
-	if baseDelaySeconds == 0 || restartCount <= 0 {
+	if baseDelaySeconds <= 0 || restartCount <= 0 {
 		return 0
 	}
 	// Use (restartCount-1) so the first backoff equals baseDelay.

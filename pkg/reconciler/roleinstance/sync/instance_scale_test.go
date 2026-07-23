@@ -2351,6 +2351,8 @@ func TestCalculateRestartDelay(t *testing.T) {
 		{name: "int64 overflow at 62: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 62, expectedDelay: 600},
 		{name: "int64 overflow uncapped at 60", baseDelay: 10, maxDelay: 0, restartCount: 60, expectedDelay: 0x7FFFFFFF},
 		{name: "maxDelay=0: no cap", baseDelay: 10, maxDelay: 0, restartCount: 5, expectedDelay: 160},
+		{name: "negative baseDelay returns 0", baseDelay: -1, maxDelay: 600, restartCount: 3, expectedDelay: 0},
+		{name: "negative baseDelay with negative maxDelay returns 0", baseDelay: -30, maxDelay: -1, restartCount: 2, expectedDelay: 0},
 	}
 
 	for _, tt := range tests {
