@@ -18,8 +18,10 @@ package roleinstance
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -126,6 +128,105 @@ func TestInconsistentBaselines(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := inconsistentBaselines(tt.old, tt.new)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRestartTrackingChanged(t *testing.T) {
+	now := metav1.NewTime(time.Now())
+	earlier := metav1.NewTime(now.Add(-1 * time.Minute))
+	later := metav1.NewTime(now.Add(1 * time.Minute))
+
+	tests := []struct {
+		name                  string
+		newLastRestartTime    *metav1.Time
+		instanceLastRestart   *metav1.Time
+		liveLastRestart       *metav1.Time
+		expectedChanged       bool
+	}{
+		{
+			name:                "new is nil: not changed",
+			newLastRestartTime:  nil,
+			instanceLastRestart: &now,
+			liveLastRestart:     &now,
+			expectedChanged:     false,
+		},
+		{
+			name:                "new differs from both informer and live: changed (updateRestartTracking ran)",
+			newLastRestartTime:  &later,
+			instanceLastRestart: &now,
+			liveLastRestart:     &now,
+			expectedChanged:     true,
+		},
+		{
+			name:                "new equals informer but differs from live: not changed (syncRestartTrackingFromAPI pass-through)",
+			newLastRestartTime:  &now,
+			instanceLastRestart: &now,
+			liveLastRestart:     &earlier,
+			expectedChanged:     false,
+		},
+		{
+			name:                "new equals live but differs from informer: not changed (informer stale, live matches)",
+			newLastRestartTime:  &now,
+			instanceLastRestart: &earlier,
+			liveLastRestart:     &now,
+			expectedChanged:     false,
+		},
+		{
+			name:                "new equals both: not changed",
+			newLastRestartTime:  &now,
+			instanceLastRestart: &now,
+			liveLastRestart:     &now,
+			expectedChanged:     false,
+		},
+		{
+			name:                "informer nil, live nil, new set: changed (first restart)",
+			newLastRestartTime:  &now,
+			instanceLastRestart: nil,
+			liveLastRestart:     nil,
+			expectedChanged:     true,
+		},
+		{
+			name:                "informer nil, new equals live: not changed",
+			newLastRestartTime:  &now,
+			instanceLastRestart: nil,
+			liveLastRestart:     &now,
+			expectedChanged:     false,
+		},
+		{
+			name:                "live nil, new differs from informer: changed",
+			newLastRestartTime:  &later,
+			instanceLastRestart: &now,
+			liveLastRestart:     nil,
+			expectedChanged:     true,
+		},
+		{
+			name:                "live nil, new equals informer: not changed",
+			newLastRestartTime:  &now,
+			instanceLastRestart: &now,
+			liveLastRestart:     nil,
+			expectedChanged:     false,
+		},
+		{
+			name:                "informer nil, live set, new differs from live: changed",
+			newLastRestartTime:  &later,
+			instanceLastRestart: nil,
+			liveLastRestart:     &now,
+			expectedChanged:     true,
+		},
+		{
+			name:                "informer nil, live set, new equals live: not changed",
+			newLastRestartTime:  &now,
+			instanceLastRestart: nil,
+			liveLastRestart:     &now,
+			expectedChanged:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := restartTrackingChanged(tt.newLastRestartTime, tt.instanceLastRestart, tt.liveLastRestart)
+			assert.Equal(t, tt.expectedChanged, result)
 		})
 	}
 }

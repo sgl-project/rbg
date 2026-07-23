@@ -24,7 +24,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -2397,5 +2399,677 @@ func TestCheckRestartBackoff(t *testing.T) {
 		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
 		assert.Equal(t, time.Duration(0), result)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// updateRestartTracking
+// ---------------------------------------------------------------------------
+
+func TestUpdateRestartTracking(t *testing.T) {
+	tests := []struct {
+		name            string
+		restartCount    int32
+		lastRestartTime *metav1.Time
+		maxDelaySeconds *int32
+		expectedCount   int32
+		desc            string
+	}{
+		{
+			name:            "first restart: count 0→1, LastRestartTime nil",
+			restartCount:    0,
+			lastRestartTime: nil,
+			maxDelaySeconds: nil,
+			expectedCount:   1,
+			desc:            "When LastRestartTime is nil, RestartCount increments from 0 to 1",
+		},
+		{
+			name:            "recent restart: count 5→6 (no reset, within stable period)",
+			restartCount:    5,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-1 * time.Minute))),
+			maxDelaySeconds: nil, // default 600 → threshold = max(1200s, 600s) = 20min
+			expectedCount:   6,
+			desc:            "1 minute ago is within 20min threshold, no reset, count increments to 6",
+		},
+		{
+			name:            "old restart with default maxDelay: count 5→1 (reset after stable period)",
+			restartCount:    5,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-25 * time.Minute))),
+			maxDelaySeconds: nil, // default 600 → threshold = max(1200s, 600s) = 20min
+			expectedCount:   1,
+			desc:            "25 minutes > 20min threshold, count resets to 0 then increments to 1",
+		},
+		{
+			name:            "within stable period with default maxDelay: count 5→6 (15min < 20min)",
+			restartCount:    5,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-15 * time.Minute))),
+			maxDelaySeconds: nil,
+			expectedCount:   6,
+			desc:            "15 minutes < 20min threshold, no reset, count increments to 6",
+		},
+		{
+			name:            "small maxDelay: threshold = max(20s, 10min) = 10min, old restart resets",
+			restartCount:    5,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-11 * time.Minute))),
+			maxDelaySeconds: ptr.To(int32(10)),
+			expectedCount:   1,
+			desc:            "maxDelay=10 → threshold=max(20s,10min)=10min, 11min > 10min, count resets to 1",
+		},
+		{
+			name:            "small maxDelay: threshold = 10min, within period no reset",
+			restartCount:    5,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-5 * time.Minute))),
+			maxDelaySeconds: ptr.To(int32(10)),
+			expectedCount:   6,
+			desc:            "maxDelay=10 → threshold=10min, 5min < 10min, no reset, count increments to 6",
+		},
+		{
+			name:            "maxDelay=0: threshold = max(0, 10min) = 10min, old restart resets",
+			restartCount:    5,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-15 * time.Minute))),
+			maxDelaySeconds: ptr.To(int32(0)),
+			expectedCount:   1,
+			desc:            "maxDelay=0 → threshold=max(0,10min)=10min, 15min > 10min, count resets to 1",
+		},
+		{
+			name:            "maxDelay=0: threshold = 10min, within period no reset",
+			restartCount:    3,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-5 * time.Minute))),
+			maxDelaySeconds: ptr.To(int32(0)),
+			expectedCount:   4,
+			desc:            "maxDelay=0 → threshold=10min, 5min < 10min, no reset, count increments to 4",
+		},
+		{
+			name:            "large maxDelay: threshold = max(2000s, 600s) = 2000s ≈ 33min",
+			restartCount:    10,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-30 * time.Minute))),
+			maxDelaySeconds: ptr.To(int32(1000)),
+			expectedCount:   11,
+			desc:            "maxDelay=1000 → threshold=max(2000s,600s)=2000s≈33min, 30min < 33min, no reset",
+		},
+		{
+			name:            "large maxDelay: beyond threshold resets",
+			restartCount:    10,
+			lastRestartTime: ptr.To(metav1.NewTime(metav1.Now().Add(-35 * time.Minute))),
+			maxDelaySeconds: ptr.To(int32(1000)),
+			expectedCount:   1,
+			desc:            "maxDelay=1000 → threshold≈33min, 35min > 33min, count resets to 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{
+						Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+						MaxDelaySeconds:  tt.maxDelaySeconds,
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					RestartCount:    tt.restartCount,
+					LastRestartTime: tt.lastRestartTime,
+				},
+			}
+
+			updateRestartTracking(instance)
+
+			assert.Equal(t, tt.expectedCount, instance.Status.RestartCount, tt.desc)
+			assert.NotNil(t, instance.Status.LastRestartTime, "LastRestartTime should always be set after updateRestartTracking")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// syncRestartTrackingFromAPI
+// ---------------------------------------------------------------------------
+
+func TestSyncRestartTrackingFromAPI(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
+	earlier := metav1.NewTime(now.Add(-2 * time.Minute))
+	later := metav1.NewTime(now.Add(2 * time.Minute))
+
+	// assertTimeEqual compares metav1.Time values using time.Time.Equal which
+	// ignores the monotonic clock reading stripped by fake client serialization.
+	assertTimeEqual := func(t *testing.T, expected, actual *metav1.Time, msgAndArgs ...interface{}) {
+		t.Helper()
+		if expected == nil {
+			assert.Nil(t, actual, msgAndArgs...)
+			return
+		}
+		if assert.NotNil(t, actual, msgAndArgs...) {
+			assert.True(t, actual.Time.Equal(expected.Time), msgAndArgs...)
+		}
+	}
+
+	t.Run("nil apiReader: returns nil, instance unchanged", func(t *testing.T) {
+		ctrl := &realControl{}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.Nil(t, result)
+		assert.Equal(t, int32(3), instance.Status.RestartCount)
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("API not found: returns nil, instance unchanged", func(t *testing.T) {
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "missing", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.Nil(t, result)
+		assert.Equal(t, int32(3), instance.Status.RestartCount)
+	})
+
+	t.Run("fresh timestamp newer, count lower (reset): adopt both", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    1,
+				LastRestartTime: &now,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    5,
+				LastRestartTime: &earlier,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(1), instance.Status.RestartCount, "should adopt fresh count (5→1 reset)")
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime, "should adopt fresh timestamp")
+	})
+
+	t.Run("fresh timestamp newer, count higher: adopt both", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    10,
+				LastRestartTime: &now,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &earlier,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(10), instance.Status.RestartCount)
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("fresh timestamp older: do not adopt timestamp, adopt count if higher", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    10,
+				LastRestartTime: &earlier,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(10), instance.Status.RestartCount, "should adopt higher count even when timestamp is older")
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("instance LastRestartTime nil, fresh has one: adopt both", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    2,
+				LastRestartTime: &now,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    0,
+				LastRestartTime: nil,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(2), instance.Status.RestartCount)
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("fresh LastRestartTime nil: do not adopt timestamp, adopt count if higher", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    7,
+				LastRestartTime: nil,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(7), instance.Status.RestartCount, "should adopt higher count even without timestamp")
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime, "should NOT change timestamp when fresh is nil")
+	})
+
+	t.Run("fresh LastRestartTime nil, count not higher: no change", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    2,
+				LastRestartTime: nil,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    5,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(5), instance.Status.RestartCount)
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("same timestamp, fresh count higher: adopt count only", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    8,
+				LastRestartTime: &now,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(8), instance.Status.RestartCount, "should adopt higher count with same timestamp")
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("same timestamp, same count: no change", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(3), instance.Status.RestartCount)
+		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+	})
+
+	t.Run("fresh timestamp newer (later): adopt both even if count same", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &later,
+			},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				RestartCount:    3,
+				LastRestartTime: &now,
+			},
+		}
+		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NotNil(t, result)
+		assert.Equal(t, int32(3), instance.Status.RestartCount)
+		assertTimeEqual(t, &later, instance.Status.LastRestartTime, "should adopt newer timestamp even if count is same")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// shouldRecreateInstance bypass (LastRestartTime set + not Ready)
+// ---------------------------------------------------------------------------
+
+func TestShouldRecreateInstanceBypass(t *testing.T) {
+	someTime := metav1.NewTime(metav1.Now().Add(-1 * time.Minute))
+
+	baseInstance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-instance",
+			Generation: 1,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Size: ptr.To[int32](1)},
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1,
+			CurrentRevision:    "rev-1",
+			UpdateRevision:     "rev-1",
+		},
+	}
+
+	failedPod := []*corev1.Pod{
+		{Status: corev1.PodStatus{Phase: corev1.PodFailed}},
+	}
+	runningPod := []*corev1.Pod{
+		{Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+	}
+	restartedPod := []*corev1.Pod{
+		{
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{
+					{Name: "main", RestartCount: 1},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		modify   func(*workloadsv1alpha2.RoleInstance)
+		pods     []*corev1.Pod
+		expected bool
+		desc     string
+	}{
+		{
+			name: "not Ready + LastRestartTime nil + PodFailed: bypass does NOT apply",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				}
+				inst.Status.LastRestartTime = nil
+			},
+			pods:     failedPod,
+			expected: false,
+			desc:     "Without LastRestartTime, wasInstanceReady=False blocks recreation (no bypass)",
+		},
+		{
+			name: "not Ready + LastRestartTime set + PodFailed: bypass applies",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				}
+				inst.Status.LastRestartTime = &someTime
+			},
+			pods:     failedPod,
+			expected: true,
+			desc:     "LastRestartTime set bypasses wasInstanceReady=False check, PodFailed triggers recreate",
+		},
+		{
+			name: "not Ready + LastRestartTime set + container restart: bypass applies",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				}
+				inst.Status.LastRestartTime = &someTime
+			},
+			pods:     restartedPod,
+			expected: true,
+			desc:     "Bypass applies, container restart triggers recreate",
+		},
+		{
+			name: "not Ready + LastRestartTime set + all running: no crash to detect",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				}
+				inst.Status.LastRestartTime = &someTime
+			},
+			pods:     runningPod,
+			expected: false,
+			desc:     "Bypass applies but no PodFailed or container restart, so no recreate",
+		},
+		{
+			name: "not Ready + LastRestartTime set + Generation mismatch: Generation check still blocks",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				}
+				inst.Status.LastRestartTime = &someTime
+				inst.Generation = 2
+				inst.Status.ObservedGeneration = 1
+			},
+			pods:     failedPod,
+			expected: false,
+			desc:     "Even with bypass, Generation != ObservedGeneration blocks recreation",
+		},
+		{
+			name: "not Ready + LastRestartTime set + revision mismatch: revision check still blocks",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				}
+				inst.Status.LastRestartTime = &someTime
+				inst.Status.CurrentRevision = "rev-1"
+				inst.Status.UpdateRevision = "rev-2"
+			},
+			pods:     failedPod,
+			expected: false,
+			desc:     "Even with bypass, CurrentRevision != UpdateRevision blocks recreation",
+		},
+		{
+			name: "Ready + LastRestartTime nil + PodFailed: normal case (no bypass needed)",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+				}
+				inst.Status.LastRestartTime = nil
+			},
+			pods:     failedPod,
+			expected: true,
+			desc:     "wasInstanceReady=True, normal recreation triggered by PodFailed",
+		},
+		{
+			name: "Ready + LastRestartTime set + PodFailed: both conditions satisfied",
+			modify: func(inst *workloadsv1alpha2.RoleInstance) {
+				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+				}
+				inst.Status.LastRestartTime = &someTime
+			},
+			pods:     failedPod,
+			expected: true,
+			desc:     "Ready=True and LastRestartTime set, PodFailed triggers recreate",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := baseInstance.DeepCopy()
+			tt.modify(inst)
+			result := shouldRecreateInstance(inst, tt.pods, nil)
+			assert.Equal(t, tt.expected, result, tt.desc)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// checkRestartBackoff branches: fresh != nil, restarting == true, baseDelay == 0
+// ---------------------------------------------------------------------------
+
+func TestCheckRestartBackoff_Branches(t *testing.T) {
+	c := &realControl{}
+
+	baseInstance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default", Generation: 1},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "main", Size: ptr.To(int32(1))},
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1,
+			CurrentRevision:    "rev-1",
+			UpdateRevision:     "rev-1",
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	failedPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-0"},
+		Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+	}
+
+	t.Run("restarting == true (from fresh): returns 0", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 1
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+
+		fresh := inst.DeepCopy()
+		fresh.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+			{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue},
+		}
+
+		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result, "fresh Restarting=True should skip backoff")
+	})
+
+	t.Run("restarting == true (from informer, fresh == nil): returns 0", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 1
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Status.Conditions = append(inst.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+			Type:   workloadsv1alpha2.RoleInstanceRestarting,
+			Status: corev1.ConditionTrue,
+		})
+
+		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result, "informer Restarting=True should skip backoff")
+	})
+
+	t.Run("restarting == true from informer overridden by fresh == false: proceeds with backoff", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 1
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Status.Conditions = append(inst.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+			Type:   workloadsv1alpha2.RoleInstanceRestarting,
+			Status: corev1.ConditionTrue,
+		})
+
+		fresh := inst.DeepCopy()
+		fresh.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+			{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
+		}
+
+		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
+		assert.Greater(t, result, time.Duration(0), "fresh Restarting=False should override stale informer Restarting=True")
+	})
+
+	t.Run("baseDelay == 0 && maxDelay == 0: returns 0 (disabled)", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 5
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(0))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(0))
+
+		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result, "backoff disabled when baseDelay=0 and maxDelay=0")
+	})
+
+	t.Run("fresh != nil: uses fresh RestartCount for delay calculation", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 5
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+
+		fresh := inst.DeepCopy()
+		fresh.Status.RestartCount = 1
+
+		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
+		assert.Greater(t, result, time.Duration(0))
+		assert.LessOrEqual(t, result, 30*time.Second,
+			"with fresh RestartCount=1, delay should be ~30s (not 480s from informer's count=5)")
+	})
+
+	t.Run("fresh != nil with nil LastRestartTime: returns 0", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 1
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+
+		fresh := inst.DeepCopy()
+		fresh.Status.LastRestartTime = nil
+
+		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result, "fresh LastRestartTime=nil means no backoff")
 	})
 }

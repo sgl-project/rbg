@@ -371,6 +371,18 @@ func inconsistentRestartTime(old, new *metav1.Time) bool {
 	return !old.Equal(new)
 }
 
+// restartTrackingChanged detects whether updateRestartTracking ran this reconcile.
+// It returns true when newLastRestartTime differs from BOTH the informer-cached
+// value and the live API value, indicating an intentional write by updateRestartTracking
+// (which sets metav1.Now(), producing a timestamp that differs from both stale sources).
+func restartTrackingChanged(newLastRestartTime, instanceLastRestartTime, liveLastRestartTime *metav1.Time) bool {
+	return newLastRestartTime != nil &&
+		(instanceLastRestartTime == nil ||
+			!newLastRestartTime.Equal(instanceLastRestartTime)) &&
+		(liveLastRestartTime == nil ||
+			!newLastRestartTime.Equal(liveLastRestartTime))
+}
+
 func inconsistentComponentStatus(oldRoleStatus, newRoleStatus workloadsv1alpha2.RoleInstanceComponentStatus) bool {
 	return oldRoleStatus.Size != newRoleStatus.Size ||
 		oldRoleStatus.Name != newRoleStatus.Name ||
@@ -438,11 +450,7 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// syncRestartTrackingFromAPI copies the API's timestamp, which equals the
 		// live value — so the double-check below correctly identifies that case as
 		// "not changed" and preserves the live (potentially reset) count.
-		restartTrackingChanged := newStatus.LastRestartTime != nil &&
-			(instance.Status.LastRestartTime == nil ||
-				!newStatus.LastRestartTime.Equal(instance.Status.LastRestartTime)) &&
-			(liveLastRestartTime == nil ||
-				!newStatus.LastRestartTime.Equal(liveLastRestartTime))
+		restartTrackingChanged := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
 		if restartTrackingChanged {
