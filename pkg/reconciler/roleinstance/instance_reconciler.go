@@ -82,6 +82,9 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	instance := new(workloadsv1alpha2.RoleInstance)
 	if err := r.Get(ctx, request.NamespacedName, instance); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.syncControl.ClearRestarting(&workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{Namespace: request.Namespace, Name: request.Name},
+			})
 			logger.Info("Instance has been deleted")
 			return reconcile.Result{}, nil
 		}
@@ -91,6 +94,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// Skip reconcile if the instance is being deleted to avoid StorageError
 	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
 	if instance.DeletionTimestamp != nil {
+		r.syncControl.ClearRestarting(instance)
 		return reconcile.Result{}, nil
 	}
 

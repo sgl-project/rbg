@@ -1737,6 +1737,42 @@ func TestSetRestartingCondition(t *testing.T) {
 	})
 }
 
+// TestClearRestarting tests that ClearRestarting removes the instance from the
+// in-memory cache, preventing stale entries from blocking new instances.
+func TestClearRestarting(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "test-instance"},
+	}
+	ctrl := &realControl{}
+
+	// Seed the cache
+	restartingCache.Store(instanceKey(instance), true)
+	_, ok := restartingCache.Load(instanceKey(instance))
+	assert.True(t, ok, "cache should have entry before clear")
+
+	ctrl.ClearRestarting(instance)
+
+	_, ok = restartingCache.Load(instanceKey(instance))
+	assert.False(t, ok, "cache should not have entry after clear")
+}
+
+// TestClearRestartingPreventsStaleBlock verifies that after ClearRestarting,
+// isAlreadyRestarting does not return true from a stale cache entry.
+func TestClearRestartingPreventsStaleBlock(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "test-instance"},
+	}
+	ctrl := &realControl{}
+
+	// Simulate restart trigger then deletion cleanup
+	setRestartingCondition(instance)
+	ctrl.ClearRestarting(instance)
+
+	// With nil apiReader, isAlreadyRestarting should return false
+	assert.False(t, ctrl.isAlreadyRestarting(context.Background(), instance),
+		"should not be restarting after cache cleared")
+}
+
 // TestWasInstanceReady tests the wasInstanceReady helper function
 func TestWasInstanceReady(t *testing.T) {
 	tests := []struct {
