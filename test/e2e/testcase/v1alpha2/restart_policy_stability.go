@@ -238,13 +238,20 @@ func runRestartPolicyNoneReplaceTest(f *framework.Framework) {
 // the second recreation after a restart-policy-triggered recreation.
 func runRestartBackoffDelayTest(f *framework.Framework) {
 	ginkgo.It("RecreateRoleInstanceOnPodRestart with backoff delays second recreation", func() {
+		// Use a large backoff (90s) so the backoff window is still open after
+		// the first crash cycle completes in CI. In Kind clusters, pod startup
+		// with the preloaded nginx image typically takes 20–40 s; the full
+		// first-recovery path (deletion + creation + Ready + Restarting cleared)
+		// can reach 50 s. baseDelay=90 ensures at least 40 s of backoff remain
+		// when the second crash is triggered, giving the Consistently check a
+		// reliable safety margin.
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-backoff-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
 					WithReplicas(1).
 					WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
-					WithBaseDelaySeconds(5).
-					WithMaxDelaySeconds(30).
+					WithBaseDelaySeconds(90).
+					WithMaxDelaySeconds(300).
 					Obj(),
 			}).Obj()
 
@@ -319,7 +326,9 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 		}, targetPod)).Should(gomega.Succeed())
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
-		// During backoff window (5s), pods should NOT be recreated immediately
+		// During backoff window (90s), pods should NOT be recreated immediately.
+		// Check for 15 s — much shorter than the remaining window (≥40 s) but
+		// long enough to rule out an accidental same-second recreate.
 		gomega.Consistently(func() bool {
 			pods := &corev1.PodList{}
 			if err := f.Client.List(f.Ctx, pods,
@@ -342,7 +351,7 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 				}
 			}
 			return true
-		}, 4, 1).Should(gomega.BeTrue(),
+		}, 15, 2).Should(gomega.BeTrue(),
 			"pod should NOT be recreated immediately during backoff window")
 
 		// After backoff elapses, recreation should proceed
