@@ -119,6 +119,7 @@ spec:
                   configuration for all pods within the RoleInstance.
                 properties:
                   baseDelaySeconds:
+                    default: 30
                     description: |-
                       BaseDelaySeconds is the base delay between restart attempts (seconds).
                       Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
@@ -126,6 +127,7 @@ spec:
                     minimum: 0
                     type: integer
                   maxDelaySeconds:
+                    default: 600
                     description: |-
                       MaxDelaySeconds caps the exponential backoff delay (seconds).
                       Default is 600.
@@ -141,6 +143,10 @@ spec:
                     - RecreateRoleInstanceOnPodRestart
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: maxDelaySeconds must be greater than or equal to baseDelaySeconds
+                  rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
+                    || self.maxDelaySeconds >= self.baseDelaySeconds'
             required:
             - components
             type: object
