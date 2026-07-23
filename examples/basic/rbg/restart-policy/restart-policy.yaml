@@ -16,7 +16,8 @@ spec:
       replicas: 3
       leaderWorkerPattern:
         size: 2
-        restartPolicy: RecreateRoleInstanceOnPodRestart
+        restartPolicy:
+          type: RecreateRoleInstanceOnPodRestart
         template:
           metadata:
             labels:
@@ -33,7 +34,8 @@ spec:
       replicas: 1
       leaderWorkerPattern:
         size: 2
-        restartPolicy: None
+        restartPolicy:
+          type: None
         template:
           metadata:
             labels:

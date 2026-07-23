@@ -123,7 +123,8 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
-        restartPolicy: None
+        restartPolicy:
+          type: None
         templateRef:
           name: dynamo-base
           patch:
@@ -188,7 +189,8 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
-        restartPolicy: None
+        restartPolicy:
+          type: None
         templateRef:
           name: dynamo-base
           patch:

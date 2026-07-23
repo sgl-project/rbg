@@ -14,7 +14,8 @@ spec:
       # leaderWorkerPattern: each replica creates 1 leader + (size-1) workers
       leaderWorkerPattern:
         # restartPolicy defaults to RecreateRoleInstanceOnPodRestart
-        restartPolicy: RecreateRoleInstanceOnPodRestart
+        restartPolicy:
+          type: RecreateRoleInstanceOnPodRestart
         size: 4    # total pods per instance: 1 leader + 3 workers
         template:
           metadata:
