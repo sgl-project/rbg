@@ -399,7 +399,7 @@ spec:
 | `leaderWorkerPattern.template` | object | 是 | - | 所有 Pod（Leader 和 Worker）共享的基础 Pod 模板 |
 | `leaderWorkerPattern.leaderTemplatePatch` | object | 否 | - | 仅应用到 Leader Pod 的 Strategic Merge Patch |
 | `leaderWorkerPattern.workerTemplatePatch` | object | 否 | - | 仅应用到 Worker Pod 的 Strategic Merge Patch |
-| `leaderWorkerPattern.restartPolicy` | string | 否 | `RecreateRoleInstanceOnPodRestart` | Pod 故障时的策略：`None` 或 `RecreateRoleInstanceOnPodRestart`（重建整个实例） |
+| `leaderWorkerPattern.restartPolicy` | object | 否 | `type: RecreateRoleInstanceOnPodRestart` | 重启策略配置：`type`（`None` 或 `RecreateRoleInstanceOnPodRestart`）、`baseDelaySeconds`（默认: 30）、`maxDelaySeconds`（默认: 600） |
 
 #### RBG 自动注入的环境变量
 

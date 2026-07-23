@@ -52,7 +52,7 @@ Leader + workers per instance (for tensor parallelism):
 | Field | Description |
 |-------|-------------|
 | `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
-| `restartPolicy` | RestartPolicyType — restart behavior (default: `RecreateRoleInstanceOnPodRestart`) |
+| `restartPolicy` | RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `template` | PodTemplateSpec — base pod template |
 | `templateRef` | *TemplateRef — reference to roleTemplate |
 | `leaderTemplatePatch` | runtime.RawExtension — patch for leader pod |
@@ -65,7 +65,7 @@ Heterogeneous pod groups per instance:
 | Field | Description |
 |-------|-------------|
 | `components` | []ComponentSpec — list of component definitions |
-| `restartPolicy` | RestartPolicyType — restart behavior (default: `RecreateRoleInstanceOnPodRestart`) |
+| `restartPolicy` | RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 
 ### ComponentSpec
 
