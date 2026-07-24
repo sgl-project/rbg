@@ -1110,3 +1110,42 @@ func TestRBGRoleStatusPredicate(t *testing.T) {
 		}))
 	})
 }
+
+// TestUpdateRoleReplicas only covers behaviors the controller-runtime fake
+// client can faithfully model: that the apply config is accepted and the
+// targeted role's replicas reflect the desired value. SSA list-merge by
+// name and sibling-field preservation are real API-server behaviors and
+// must be verified via envtest or kind.
+func TestUpdateRoleReplicas(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("worker").WithReplicas(1).Obj(),
+		}).Obj()
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg).Build()
+	reconciler := &RoleBasedGroupScalingAdapterReconciler{
+		client:   cl,
+		recorder: record.NewFakeRecorder(10),
+	}
+	ctx := ctrl.LoggerInto(context.Background(), zap.New().WithValues("env", "unit-test"))
+
+	if err := reconciler.updateRoleReplicas(ctx, rbg, "worker", ptr.To(int32(5))); err != nil {
+		t.Fatalf("updateRoleReplicas: %v", err)
+	}
+
+	updated := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, updated); err != nil {
+		t.Fatalf("get updated RBG: %v", err)
+	}
+	role, err := updated.GetRole("worker")
+	if err != nil {
+		t.Fatalf("worker role missing after update: %v", err)
+	}
+	if role.Replicas == nil || *role.Replicas != 5 {
+		t.Errorf("worker replicas = %v, want 5", role.Replicas)
+	}
+}
