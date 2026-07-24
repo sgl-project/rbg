@@ -35,6 +35,7 @@ func RunRestartPolicyStabilityTestCases(f *framework.Framework) {
 		runRestartPolicyNoneReplaceTest(f)
 		runRestartBackoffDelayTest(f)
 		runRestartBackoffPropagationTest(f)
+		runRestartBackoffSpecChangeTest(f)
 	})
 }
 
@@ -410,6 +411,146 @@ func runRestartBackoffPropagationTest(f *framework.Framework) {
 				ri.Spec.RestartPolicy.MaxDelaySeconds != nil && *ri.Spec.RestartPolicy.MaxDelaySeconds == 120
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 			"BaseDelaySeconds=10 and MaxDelaySeconds=120 should propagate from RBG to RoleInstance")
+	})
+}
+
+// runRestartBackoffSpecChangeTest verifies that a spec change (rolling update)
+// during an active backoff window is not frozen by the backoff delay.
+// The slow-path backoff check must skip when a Generation/Revision mismatch
+// indicates a spec change or rolling update is in progress.
+func runRestartBackoffSpecChangeTest(f *framework.Framework) {
+	ginkgo.It("RecreateRoleInstanceOnPodRestart rolling update proceeds during backoff", func() {
+		// baseDelay=120 ensures the backoff window (120s) is much longer than
+		// the time needed for spec propagation and pod creation, so the test
+		// can reliably distinguish between frozen (old behavior) and proceeding
+		// (fixed behavior) within a 30s window.
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-backoff-spec", f.Namespace).WithRoles(
+			[]workloadsv1alpha2.RoleSpec{
+				wrappersv2.BuildLeaderWorkerRole("role-1").
+					WithReplicas(1).
+					WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+					WithBaseDelaySeconds(120).
+					WithMaxDelaySeconds(300).
+					Obj(),
+			}).Obj()
+
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
+
+		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+		f.ExpectRbgV2Equal(rbg)
+
+		podList := &corev1.PodList{}
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.RoleNameLabelKey:  "role-1",
+			})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
+
+		targetInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
+		waitForInstanceReady(f, targetInstanceName)
+
+		// --- First crash: no backoff (RestartCount=0) ---
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey:        rbg.Name,
+				constants.RoleInstanceNameLabelKey: targetInstanceName,
+			})).Should(gomega.Succeed())
+		firstUIDs := make(map[string]types.UID)
+		for _, p := range podList.Items {
+			firstUIDs[p.Name] = p.UID
+		}
+
+		targetPod := &corev1.Pod{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      podList.Items[0].Name,
+		}, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+
+		waitForInstancePodsRecreated(f, rbg, targetInstanceName, firstUIDs)
+		f.ExpectRbgV2Equal(rbg)
+		waitForInstanceFullyRecovered(f, targetInstanceName)
+
+		// --- Second crash: backoff should be active (120s delay) ---
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey:        rbg.Name,
+				constants.RoleInstanceNameLabelKey: targetInstanceName,
+			})).Should(gomega.Succeed())
+		secondUIDs := make(map[string]types.UID)
+		for _, p := range podList.Items {
+			secondUIDs[p.Name] = p.UID
+		}
+
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+			Namespace: f.Namespace,
+			Name:      podList.Items[0].Name,
+		}, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+
+		// Verify backoff is active: pods NOT recreated for 15s
+		gomega.Consistently(func() bool {
+			pods := &corev1.PodList{}
+			if err := f.Client.List(f.Ctx, pods,
+				client.InNamespace(f.Namespace),
+				client.MatchingLabels{
+					constants.GroupNameLabelKey:        rbg.Name,
+					constants.RoleInstanceNameLabelKey: targetInstanceName,
+				}); err != nil {
+				return false
+			}
+			for _, p := range pods.Items {
+				if p.DeletionTimestamp != nil {
+					continue
+				}
+				if secondUIDs[p.Name] != p.UID {
+					return false
+				}
+			}
+			return true
+		}, 15, 2).Should(gomega.BeTrue(),
+			"pod should NOT be recreated during backoff window")
+
+		// --- Update spec during backoff: add env var to trigger rolling update ---
+		updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+			rbg.Spec.Roles[0].Pattern.LeaderWorkerPattern.TemplateSource.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+				{Name: "BACKOFF_E2E", Value: "v2"},
+			}
+		})
+
+		// Verify the rolling update proceeds despite backoff.
+		// A new pod with the updated env var should appear within 30s.
+		// The backoff window (120s) is much longer than 30s, so if the
+		// backoff froze the update, no new pod would appear in time.
+		gomega.Eventually(func() bool {
+			pods := &corev1.PodList{}
+			if err := f.Client.List(f.Ctx, pods,
+				client.InNamespace(f.Namespace),
+				client.MatchingLabels{
+					constants.GroupNameLabelKey:        rbg.Name,
+					constants.RoleInstanceNameLabelKey: targetInstanceName,
+				}); err != nil {
+				return false
+			}
+			for _, p := range pods.Items {
+				if p.DeletionTimestamp != nil {
+					continue
+				}
+				for _, c := range p.Spec.Containers {
+					for _, env := range c.Env {
+						if env.Name == "BACKOFF_E2E" && env.Value == "v2" {
+							return true
+						}
+					}
+				}
+			}
+			return false
+		}, 30, 2).Should(gomega.BeTrue(),
+			"rolling update should proceed during backoff (new pod with updated env var should be created)")
 	})
 }
 
