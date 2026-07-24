@@ -2311,7 +2311,13 @@ func TestCalculateRestartDelay(t *testing.T) {
 		{name: "int64 overflow at 60: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 60, expectedDelay: 600},
 		{name: "int64 overflow at 61: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 61, expectedDelay: 600},
 		{name: "int64 overflow at 62: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 62, expectedDelay: 600},
+		{name: "beyond overflow guard at 63: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 63, expectedDelay: 600},
+		{name: "beyond overflow guard at 64: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 64, expectedDelay: 600},
+		{name: "very large restart count: capped at max", baseDelay: 30, maxDelay: 600, restartCount: 100, expectedDelay: 600},
 		{name: "int64 overflow uncapped at 60", baseDelay: 10, maxDelay: 0, restartCount: 60, expectedDelay: 0x7FFFFFFF},
+		{name: "uncapped saturates at int32 max (63)", baseDelay: 10, maxDelay: 0, restartCount: 63, expectedDelay: 0x7FFFFFFF},
+		{name: "uncapped saturates at int32 max (64)", baseDelay: 10, maxDelay: 0, restartCount: 64, expectedDelay: 0x7FFFFFFF},
+		{name: "uncapped saturates at int32 max (100)", baseDelay: 10, maxDelay: 0, restartCount: 100, expectedDelay: 0x7FFFFFFF},
 		{name: "maxDelay=0: no cap", baseDelay: 10, maxDelay: 0, restartCount: 5, expectedDelay: 160},
 	}
 

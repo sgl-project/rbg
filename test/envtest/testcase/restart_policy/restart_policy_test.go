@@ -17,13 +17,18 @@ limitations under the License.
 package restart_policy
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -1067,9 +1072,16 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// Simulate a long stable period by backdating LastRestartTime to 11 minutes ago.
 			// The reset threshold is max(maxDelaySeconds*2, 10min) = max(4, 600) = 600s = 10min.
 			// Setting LastRestartTime to 11 minutes ago exceeds this threshold.
+			//
+			// Also seed RestartCount to a value >1: the reset must apply regardless of how
+			// high the counter has climbed. A count of 1 alone would not distinguish a real
+			// reset from a monotonic "keep the max" of the old and new value.
 			ri := getRoleInstance(rbgName, roleName)
 			Expect(ri).NotTo(BeNil())
-			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
+			ri.Status.RestartCount = 5
+			// Overwrite the pointer rather than mutating LastRestartTime.Time, which
+			// would panic if the field were ever nil.
+			ri.Status.LastRestartTime = &metav1.Time{Time: time.Now().Add(-11 * time.Minute)}
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
 
 			// Trigger another recreation
@@ -1092,8 +1104,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				return len(active) >= 1
 			}, timeout, interval).Should(BeTrue())
 
-			// RestartCount should be reset to 1 (not 2), because the stable period
-			// caused the counter to reset before incrementing.
+			// RestartCount should be reset to 1 (not 6), because the stable period
+			// causes the counter to reset before incrementing — even though it was
+			// seeded to 5.
 			Eventually(func() int32 {
 				ri := getRoleInstance(rbgName, roleName)
 				if ri == nil {
@@ -1101,7 +1114,77 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				}
 				return ri.Status.RestartCount
 			}, timeout, interval).Should(Equal(int32(1)),
-				"RestartCount should reset to 1 after long stable period (not continue from previous value)")
+				"RestartCount should reset to 1 after long stable period (not continue from the seeded value of 5)")
+		})
+
+		It("should reject a negative baseDelaySeconds on both RoleBasedGroup and RoleInstance", func() {
+			// A negative baseDelaySeconds would make the backoff math produce a
+			// negative delay, which the controller treats as "no wait" — silently
+			// disabling backoff. The shared RestartPolicyConfig carries
+			// +kubebuilder:validation:Minimum=0, so the apiserver must reject it on
+			// both the RoleBasedGroup pattern and the RoleInstance spec before it can
+			// ever be persisted.
+			//
+			// Assert on the specific field-level validation cause rather than "any
+			// error", so an unrelated admission/schema failure cannot make this pass
+			// while the Minimum=0 guard is silently gone.
+			expectBaseDelayRejected := func(err error, subject string) {
+				ExpectWithOffset(1, err).To(HaveOccurred(), "%s: negative baseDelaySeconds must be rejected", subject)
+				ExpectWithOffset(1, apierrors.IsInvalid(err)).To(BeTrue(),
+					"%s: expected an Invalid (422) error, got %v", subject, err)
+				var se *apierrors.StatusError
+				ExpectWithOffset(1, errors.As(err, &se)).To(BeTrue(), "%s: error should be a *StatusError", subject)
+				details := se.ErrStatus.Details
+				ExpectWithOffset(1, details).NotTo(BeNil(),
+					"%s: Invalid error should carry Details with field causes, got %v", subject, err)
+				matched := false
+				for _, c := range details.Causes {
+					if c.Type == metav1.CauseTypeFieldValueInvalid && strings.HasSuffix(c.Field, "baseDelaySeconds") {
+						matched = true
+						break
+					}
+				}
+				ExpectWithOffset(1, matched).To(BeTrue(),
+					"%s: expected a FieldValueInvalid cause on a baseDelaySeconds field, got causes %+v",
+					subject, details.Causes)
+			}
+
+			// (a) RoleBasedGroup pattern field.
+			badRBG := wrappersv2.BuildBasicRoleBasedGroup("neg-base-rbg", testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(defaultRoleName).
+						WithReplicas(1).WithSize(1).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(-30).
+						Obj(),
+				}).Obj()
+			expectBaseDelayRejected(testutil.K8sClient.Create(testutil.Ctx, badRBG), "RoleBasedGroup")
+
+			// (b) RoleInstance spec field (same shared RestartPolicyConfig).
+			badRI := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: "neg-base-ri", Namespace: testNs},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{
+						Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+						BaseDelaySeconds: ptr.To(int32(-30)),
+						MaxDelaySeconds:  ptr.To(int32(600)),
+					},
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{
+							Name: "main",
+							Size: ptr.To(int32(1)),
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									Containers: []corev1.Container{
+										{Name: "c", Image: "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			expectBaseDelayRejected(testutil.K8sClient.Create(testutil.Ctx, badRI), "RoleInstance")
 		})
 	})
 })
