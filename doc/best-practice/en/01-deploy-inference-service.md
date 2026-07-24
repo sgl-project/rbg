@@ -399,7 +399,7 @@ spec:
 | `leaderWorkerPattern.template` | object | Yes | - | Base Pod template shared by all Pods (Leader and Workers) |
 | `leaderWorkerPattern.leaderTemplatePatch` | object | No | - | Strategic Merge Patch applied only to Leader Pod |
 | `leaderWorkerPattern.workerTemplatePatch` | object | No | - | Strategic Merge Patch applied only to Worker Pod |
-| `leaderWorkerPattern.restartPolicy` | string | No | `RecreateRoleInstanceOnPodRestart` | Policy on Pod failure: `None` or `RecreateRoleInstanceOnPodRestart` (recreate entire instance) |
+| `leaderWorkerPattern.restartPolicy` | object | No | `type: RecreateRoleInstanceOnPodRestart` | Restart policy config: `type` (`None` or `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 
 #### RBG Auto-Injected Environment Variables
 

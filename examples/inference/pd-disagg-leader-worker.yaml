@@ -76,7 +76,8 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 4   # 1 leader + 3 workers per instance
-        restartPolicy: None
+        restartPolicy:
+          type: None
         template:
           metadata:
             labels:
@@ -140,7 +141,8 @@ spec:
           maxUnavailable: 1
       leaderWorkerPattern:
         size: 2   # 1 leader + 1 worker per instance
-        restartPolicy: None
+        restartPolicy:
+          type: None
         template:
           metadata:
             labels:

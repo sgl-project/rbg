@@ -1103,5 +1103,233 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			}, timeout, interval).Should(Equal(int32(1)),
 				"RestartCount should reset to 1 after long stable period (not continue from previous value)")
 		})
+
+		It("should not bypass wasInstanceReady check after stable threshold", func() {
+			rbgName := "test-bypass-bound"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(2).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(1).
+						WithMaxDelaySeconds(2).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 2)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Trigger first recreation to set LastRestartTime and RestartCount=1
+			podList := listRolePods(rbgName, roleName)
+			originalUIDs := getPodUIDs(podList)
+			freshPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Wait for recreation (both pods recreated)
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				if len(active) < 2 {
+					return false
+				}
+				for _, p := range active {
+					if originalUIDs[p.Name] == p.UID {
+						return false
+					}
+				}
+				return true
+			}, timeout, interval).Should(BeTrue())
+
+			// Recover: make pods Ready, wait for Restarting condition cleared
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Verify RestartCount=1 and LastRestartTime is set
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)))
+
+			// Backdate LastRestartTime past the stable threshold.
+			// stableThreshold = max(maxDelaySeconds*2, 10min) = max(4, 600) = 600s = 10min.
+			// Setting to 11 minutes ago exceeds this threshold, making hasRecentRestart return false.
+			ri := getRoleInstance(rbgName, roleName)
+			Expect(ri).NotTo(BeNil())
+			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+
+			// Make pods not Ready so wasInstanceReady returns false.
+			// Set phase to Pending (IsRunningAndAvailable requires Phase==Running).
+			podList = listRolePods(rbgName, roleName)
+			for i := range podList.Items {
+				freshPod := &corev1.Pod{}
+				Expect(testutil.K8sClient.Get(testutil.Ctx,
+					client.ObjectKeyFromObject(&podList.Items[i]), freshPod)).Should(Succeed())
+				freshPod.Status.Phase = corev1.PodPending
+				freshPod.Status.Conditions = nil
+				Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			}
+
+			// Wait for RoleInstance to become not Ready (wasInstanceReady will return false)
+			Eventually(func() bool {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return false
+				}
+				for _, cond := range ri.Status.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+						return false
+					}
+				}
+				return true
+			}, timeout, interval).Should(BeTrue(),
+				"RoleInstance should become not Ready after pods are set to Pending")
+
+			// Now fail one pod. With the fix:
+			//   wasInstanceReady=false, hasRecentRestart=false → shouldRecreateInstance returns false
+			//   → no recreation, survivor pod should NOT be deleted.
+			// Without the fix (permanent bypass):
+			//   wasInstanceReady=false but LastRestartTime!=nil → bypass applies
+			//   → shouldRecreateInstance returns true → recreation happens, survivor deleted.
+			podList = listRolePods(rbgName, roleName)
+			Expect(podList.Items).Should(HaveLen(2))
+			survivorName := podList.Items[1].Name
+			survivorUID := podList.Items[1].UID
+
+			freshPod = &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Verify the survivor pod is NOT deleted
+			Consistently(func() types.UID {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx,
+					types.NamespacedName{Name: survivorName, Namespace: testNs}, pod); err != nil {
+					return ""
+				}
+				return pod.UID
+			}, 10*time.Second, interval).Should(Equal(survivorUID),
+				"survivor pod should NOT be deleted when wasInstanceReady=false and hasRecentRestart=false")
+		})
+
+		It("should not freeze rolling update when revision mismatch occurs during backoff", func() {
+			// When shouldRecreateInstance returns false due to
+			// CurrentRevision != UpdateRevision (rolling update in progress), the
+			// slow path in checkRestartBackoff must skip the backoff and return 0.
+			// Without the fix, the slow path computes backoff and returns a requeue,
+			// freezing all scaling until the backoff expires.
+			//
+			// The RoleInstance controller only watches RoleInstance and Pod (not
+			// RoleInstanceSet), so a spec change on the RBG doesn't directly trigger
+			// a RoleInstance reconcile. Instead, we simulate the revision mismatch
+			// by setting UpdateRevision in the RoleInstance status, which is what
+			// the controller would observe after a real spec change propagates.
+			rbgName := "test-backoff-rev-mismatch"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(1).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(120).
+						WithMaxDelaySeconds(300).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 1)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// --- First crash: no backoff (RestartCount=0) ---
+			podList := listRolePods(rbgName, roleName)
+			firstUID := podList.Items[0].UID
+			freshPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Wait for first recreation
+			Eventually(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				active := getActivePods(podList)
+				for _, p := range active {
+					if p.UID == firstUID {
+						return false
+					}
+				}
+				return len(active) >= 1
+			}, timeout, interval).Should(BeTrue())
+
+			// Recover
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// Verify RestartCount=1
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)))
+
+			// --- Second crash: backoff should be active (120s delay) ---
+			podList = listRolePods(rbgName, roleName)
+			secondUID := podList.Items[0].UID
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// Verify backoff is active: pod should NOT be recreated for 5s
+			Consistently(func() bool {
+				podList := listRolePods(rbgName, roleName)
+				for i := range podList.Items {
+					if podList.Items[i].UID == secondUID {
+						return true
+					}
+				}
+				return false
+			}, 5*time.Second, interval).Should(BeTrue(),
+				"pod should NOT be recreated during backoff window")
+
+			// Simulate a revision mismatch by setting UpdateRevision to a different
+			// value. This triggers a reconcile where shouldRecreateInstance returns
+			// false (CurrentRevision != UpdateRevision). The slow path must skip
+			// the backoff (return 0) to allow replacement pod creation.
+			ri := getRoleInstance(rbgName, roleName)
+			Expect(ri).NotTo(BeNil())
+			ri.Status.UpdateRevision = "fake-revision-during-backoff"
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+
+			// With the fix: slow path detects revision mismatch → returns 0
+			// → controller creates a replacement pod.
+			// Without the fix: slow path computes backoff (120s) → returns requeue
+			// → all scaling frozen, no replacement pod within 30s.
+			Eventually(func() int {
+				podList := listRolePods(rbgName, roleName)
+				return len(getActivePods(podList))
+			}, 30*time.Second, interval).Should(BeNumerically(">=", 1),
+				"replacement pod should be created when revision mismatch overrides backoff")
+		})
 	})
 })

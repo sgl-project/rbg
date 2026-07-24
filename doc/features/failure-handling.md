@@ -16,6 +16,14 @@ RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanc
 Set the `restartPolicy` field on the pattern (`leaderWorkerPattern` or `customComponentsPattern`).
 `standalonePattern` has no `restartPolicy` field — it is always `None` (single pod, recreating the instance is equivalent to normal pod replacement).
 
+`restartPolicy` is an object with the following fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None` or `RecreateRoleInstanceOnPodRestart`. |
+| `baseDelaySeconds` | int | `30` | Base delay (seconds) for exponential backoff between restart attempts. Set to `0` with `maxDelaySeconds: 0` to disable backoff entirely. |
+| `maxDelaySeconds` | int | `600` | Cap (seconds) for the exponential backoff delay. |
+
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
@@ -28,7 +36,8 @@ spec:
       replicas: 3
       leaderWorkerPattern:
         size: 2
-        restartPolicy: RecreateRoleInstanceOnPodRestart
+        restartPolicy:
+          type: RecreateRoleInstanceOnPodRestart
         template:
           spec:
             containers:
@@ -40,7 +49,8 @@ spec:
       replicas: 1
       leaderWorkerPattern:
         size: 2
-        restartPolicy: None
+        restartPolicy:
+          type: None
         template:
           spec:
             containers:
@@ -58,6 +68,47 @@ spec:
                 image: nginx:latest
 ```
 
+## Exponential Backoff
+
+When `restartPolicy.type` is `RecreateRoleInstanceOnPodRestart`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
+
+- **First crash**: immediate recreation (no delay).
+- **Second crash** (within the stability window): delayed by `baseDelaySeconds`.
+- **Each subsequent crash**: delay doubles, capped at `maxDelaySeconds`.
+- Formula: `delay = min(baseDelaySeconds * 2^(restartCount-1), maxDelaySeconds)`.
+
+The stability window is `max(maxDelaySeconds * 2, 10 minutes)`. If the instance remains stable (no crashes) for longer than this window, `restartCount` resets to 0 and the next crash starts with immediate recreation again.
+
+### Default Behavior Change
+
+> **Note**: Before the backoff feature, pod crashes always triggered immediate recreation. With default settings (`baseDelaySeconds: 30`, `maxDelaySeconds: 600`), the second and
+> subsequent crashes within the stability window now receive 30s→600s exponential delays. All existing workloads using the default `RecreateRoleInstanceOnPodRestart` policy
+> automatically inherit this behavior.
+
+### Disabling Backoff
+
+To disable backoff entirely and restore the pre-backoff behavior (immediate recreation on every crash), set both `baseDelaySeconds` and `maxDelaySeconds` to `0`:
+
+```yaml
+restartPolicy:
+  type: RecreateRoleInstanceOnPodRestart
+  baseDelaySeconds: 0
+  maxDelaySeconds: 0
+```
+
+### Custom Backoff Configuration
+
+```yaml
+restartPolicy:
+  type: RecreateRoleInstanceOnPodRestart
+  baseDelaySeconds: 10
+  maxDelaySeconds: 120
+```
+
+With the above configuration: first crash is immediate, second crash delayed 10s, third 20s, fourth 40s, fifth 80s, sixth and beyond capped at 120s.
+
+> **Note**: `maxDelaySeconds` must be greater than or equal to `baseDelaySeconds` (enforced by CEL validation at admission). Because `maxDelaySeconds` defaults to 600, setting `baseDelaySeconds` above 600 without explicitly setting `maxDelaySeconds` will be rejected. If you need a base delay above 600s, set `maxDelaySeconds` to the same or higher value.
+
 ## Excluding Components from Restart Policy Trigger
 
 You can prevent specific pods from triggering the role's restart policy by setting an annotation on the pod template. This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose failures should not affect the main workload. The annotation works with any deployment pattern (standalonePattern, leaderWorkerPattern, or customComponentsPattern).
@@ -74,7 +125,8 @@ spec:
     - name: engine
       replicas: 2
       customComponentsPattern:
-        restartPolicy: RecreateRoleInstanceOnPodRestart
+        restartPolicy:
+          type: RecreateRoleInstanceOnPodRestart
         components:
           # Main inference component - will trigger restart policy on pod failure
           - name: inference
