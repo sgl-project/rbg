@@ -1773,6 +1773,74 @@ func TestClearRestartingPreventsStaleBlock(t *testing.T) {
 		"should not be restarting after cache cleared")
 }
 
+// TestHasRecentRestart tests that hasRecentRestart correctly identifies whether
+// the last restart falls within the stable threshold.
+func TestHasRecentRestart(t *testing.T) {
+	oldRestartTime := metav1.NewTime(time.Now().Add(-20 * time.Minute))
+	recentRestartTime := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+
+	tests := []struct {
+		name     string
+		instance *workloadsv1alpha2.RoleInstance
+		expected bool
+	}{
+		{
+			name: "nil LastRestartTime: false",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "recent restart (within default threshold): true",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					LastRestartTime: &recentRestartTime,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "old restart (beyond default threshold 20min < 10min min): false",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					LastRestartTime: &oldRestartTime,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "old restart with custom maxDelay=60 (threshold=10min): false",
+			instance: &workloadsv1alpha2.RoleInstance{
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{
+						Type:            workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+						MaxDelaySeconds: ptr.To(int32(60)),
+					},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					LastRestartTime: &oldRestartTime,
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, hasRecentRestart(tt.instance))
+		})
+	}
+}
+
 // TestWasInstanceReady tests the wasInstanceReady helper function
 func TestWasInstanceReady(t *testing.T) {
 	tests := []struct {
@@ -3109,5 +3177,41 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 
 		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
 		assert.Equal(t, time.Duration(0), result, "fresh LastRestartTime=nil means no backoff")
+	})
+
+	t.Run("Generation mismatch with failed pods: returns 0 (no backoff freeze)", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 3
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		// Simulate spec change: Generation > ObservedGeneration
+		inst.Generation = 2
+		inst.Status.ObservedGeneration = 1
+		// Not Ready so shouldRecreateInstance returns false
+		inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{}
+
+		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result,
+			"backoff should not freeze updates when Generation != ObservedGeneration")
+	})
+
+	t.Run("CurrentRevision != UpdateRevision with failed pods: returns 0 (no backoff freeze)", func(t *testing.T) {
+		inst := baseInstance.DeepCopy()
+		now := metav1.Now()
+		inst.Status.LastRestartTime = &now
+		inst.Status.RestartCount = 3
+		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		// Simulate rolling update: revisions differ
+		inst.Status.CurrentRevision = "rev-1"
+		inst.Status.UpdateRevision = "rev-2"
+		// Not Ready so shouldRecreateInstance returns false
+		inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{}
+
+		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
+		assert.Equal(t, time.Duration(0), result,
+			"backoff should not freeze rolling updates when CurrentRevision != UpdateRevision")
 	})
 }

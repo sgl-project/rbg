@@ -404,13 +404,16 @@ func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstan
 	// the instance status was just updated (Ready=False) from the previous
 	// reconcile, making wasInstanceReady() return false on the next reconcile,
 	// which would cause shouldRecreateInstance to skip the restart entirely.
-	// TODO: the slow path also applies backoff when shouldRecreateInstance
-	// returned false due to Generation != ObservedGeneration or
-	// CurrentRevision != UpdateRevision (rolling update / spec change in
-	// progress). This freezes updates until the backoff window expires.
-	// Fix: only apply slow-path backoff when shouldRecreateInstance returned
-	// false due to wasInstanceReady, not due to Generation/Revision mismatch.
+	//
+	// However, when shouldRecreateInstance returned false due to a rolling
+	// update or spec change (Generation/Revision mismatch), we must NOT apply
+	// backoff — doing so would freeze updates until the backoff window expires.
 	if !shouldRecreateInstance(instance, allPods, instance.Status.InPlaceUpdateContainerBaselines) {
+		// Skip backoff when a spec change or rolling update is in progress
+		if instance.Generation != instance.Status.ObservedGeneration ||
+			instance.Status.CurrentRevision != instance.Status.UpdateRevision {
+			return 0
+		}
 		hasFailedPods := false
 		for _, p := range allPods {
 			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
@@ -548,14 +551,14 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// Only trigger when Instance was previously Ready (stable state)
 	// and is NOT in the middle of any update.
 	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
-	// Exception: if LastRestartTime is set, a restart-policy recreation has occurred.
-	// The instance may not yet be Ready (pods still Pending after recreation), so
-	// wasInstanceReady() would return false. We bypass to prevent deadlock where
-	// a pod crash before Ready would block recreation indefinitely.
-	// TODO: this bypass is currently permanent — LastRestartTime is never cleared
-	// once set, so wasInstanceReady() never resumes after the first restart.
-	// Fix: clear LastRestartTime after a sustained Ready period (max(maxDelay*2, 10min)).
-	if (!wasInstanceReady(instance) && instance.Status.LastRestartTime == nil) ||
+	// Exception: if there was a recent restart (within the stable threshold), a restart-policy
+	// recreation has occurred. The instance may not yet be Ready (pods still Pending after
+	// recreation), so wasInstanceReady() would return false. We bypass to prevent deadlock
+	// where a pod crash before Ready would block recreation indefinitely.
+	// This bypass is bounded: after the stable threshold (max(maxDelay*2, 10min)) elapses
+	// without a restart, hasRecentRestart returns false and the normal wasInstanceReady
+	// check resumes. LastRestartTime is preserved as a historical record.
+	if (!wasInstanceReady(instance) && !hasRecentRestart(instance)) ||
 		instance.Generation != instance.Status.ObservedGeneration {
 		return false
 	}
@@ -702,6 +705,28 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 	})
 }
 
+// stableThreshold returns the duration after which the instance is considered
+// stable: max(maxDelaySeconds*2, 10 minutes). Used by updateRestartTracking to
+// reset RestartCount and by hasRecentRestart to bound the wasInstanceReady bypass.
+func stableThreshold(maxDelaySeconds int32) time.Duration {
+	threshold := time.Duration(maxDelaySeconds) * 2 * time.Second
+	if threshold < 10*time.Minute {
+		threshold = 10 * time.Minute
+	}
+	return threshold
+}
+
+// hasRecentRestart reports whether the instance had a restart within the stable
+// threshold. Used by shouldRecreateInstance to bound the wasInstanceReady bypass:
+// the bypass only applies while a recent restart may still be recovering, not
+// permanently. LastRestartTime is never cleared, preserving the historical record.
+func hasRecentRestart(instance *workloadsv1alpha2.RoleInstance) bool {
+	if instance.Status.LastRestartTime == nil {
+		return false
+	}
+	return time.Since(instance.Status.LastRestartTime.Time) <= stableThreshold(instance.Spec.GetMaxDelaySeconds())
+}
+
 // updateRestartTracking increments RestartCount and updates LastRestartTime
 // on the instance status. Called when a restart-policy-triggered recreation
 // is about to happen. The updated values are used by checkRestartBackoff
@@ -714,12 +739,7 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 func updateRestartTracking(instance *workloadsv1alpha2.RoleInstance) {
 	// Reset counter if the instance has been stable for a long period.
 	if instance.Status.LastRestartTime != nil {
-		maxDelay := instance.Spec.GetMaxDelaySeconds()
-		stableThreshold := time.Duration(maxDelay) * 2 * time.Second
-		if stableThreshold < 10*time.Minute {
-			stableThreshold = 10 * time.Minute
-		}
-		if time.Since(instance.Status.LastRestartTime.Time) > stableThreshold {
+		if time.Since(instance.Status.LastRestartTime.Time) > stableThreshold(instance.Spec.GetMaxDelaySeconds()) {
 			instance.Status.RestartCount = 0
 		}
 	}
