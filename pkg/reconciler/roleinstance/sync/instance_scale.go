@@ -476,7 +476,9 @@ func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstan
 // calculateRestartDelay computes the exponential backoff delay for a restart attempt.
 // Formula: min(baseDelay * 2^(restartCount-1), maxDelay)
 // The first backoff (restartCount=1) equals baseDelay, then doubles each round.
-// When maxDelaySeconds is 0, no cap is applied (unbounded backoff).
+// A maxDelaySeconds of 0 is treated as no cap, but CEL validation requires
+// maxDelaySeconds >= baseDelaySeconds, so this only occurs when both are 0
+// (backoff disabled) — the no-cap branch is effectively unreachable for valid input.
 func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32) int32 {
 	if baseDelaySeconds <= 0 || restartCount <= 0 {
 		return 0

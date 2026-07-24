@@ -450,10 +450,10 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// syncRestartTrackingFromAPI copies the API's timestamp, which equals the
 		// live value — so the double-check below correctly identifies that case as
 		// "not changed" and preserves the live (potentially reset) count.
-		restartTrackingChanged := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
+		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
-		if restartTrackingChanged {
+		if restartTrackingModified {
 			// updateRestartTracking ran this reconcile — trust newStatus values.
 			// This covers both increments (count goes up) and resets (count goes
 			// down after a stable period). The timestamp is always brand-new.

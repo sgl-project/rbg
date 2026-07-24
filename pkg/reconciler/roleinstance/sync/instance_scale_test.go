@@ -1776,7 +1776,7 @@ func TestClearRestartingPreventsStaleBlock(t *testing.T) {
 // TestHasRecentRestart tests that hasRecentRestart correctly identifies whether
 // the last restart falls within the stable threshold.
 func TestHasRecentRestart(t *testing.T) {
-	oldRestartTime := metav1.NewTime(time.Now().Add(-20 * time.Minute))
+	oldRestartTime := metav1.NewTime(time.Now().Add(-21 * time.Minute))
 	recentRestartTime := metav1.NewTime(time.Now().Add(-1 * time.Minute))
 
 	tests := []struct {
@@ -1806,7 +1806,7 @@ func TestHasRecentRestart(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "old restart (beyond default threshold 20min < 10min min): false",
+			name: "old restart (beyond default 20min threshold): false",
 			instance: &workloadsv1alpha2.RoleInstance{
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
 					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
