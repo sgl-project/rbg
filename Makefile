@@ -156,6 +156,26 @@ build: ## Build manager binary.
 	GOPROXY=${GOPROXY} \
 	go build -v -o bin/manager -ldflags $(ldflags) cmd/rbgs/main.go
 
+.PHONY: build-cli
+build-cli:  ## Build cli binary.
+	GOARCH=${TARGETARCH} \
+	GOOS=${TARGETOS} \
+	CGO_ENABLED=0 \
+	GO111MODULE=on \
+	GOPROXY=${GOPROXY} \
+	go build -mod vendor -v -o bin/kubectl-rbg -ldflags $(ldflags) cmd/cli/main.go
+
+CLI_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+.PHONY: build-cli-all
+build-cli-all: ## Build cli binaries for all platforms.
+	@for platform in $(CLI_PLATFORMS); do \
+		GOOS=$${platform%%/*} GOARCH=$${platform##*/} \
+		CGO_ENABLED=0 GO111MODULE=on GOPROXY=${GOPROXY} \
+		go build -mod vendor -v -o bin/kubectl-rbg-$${platform%%/*}-$${platform##*/} -ldflags $(ldflags) cmd/cli/main.go; \
+		echo "Built bin/kubectl-rbg-$${platform%%/*}-$${platform##*/}"; \
+	done
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/rbgs/main.go
