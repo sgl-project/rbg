@@ -46,6 +46,28 @@ func (rbg *RoleBasedGroup) GetCommonLabelsFromRole(role *RoleSpec) map[string]st
 	}
 }
 
+// GetGroupSetLabels returns RoleBasedGroupSet ownership labels propagated from
+// a child RoleBasedGroup to its Pods. These labels intentionally stay out of
+// workload selectors because Deployment/StatefulSet selectors are immutable,
+// but they are added to Pod templates so RoleBasedGroupSet's scale subresource
+// selector can directly select all Pods belonging to the set for HPA metrics.
+func (rbg *RoleBasedGroup) GetGroupSetLabels() map[string]string {
+	if rbg == nil || len(rbg.Labels) == 0 {
+		return nil
+	}
+	labels := make(map[string]string, 2)
+	if value := rbg.Labels[constants.GroupSetNameLabelKey]; value != "" {
+		labels[constants.GroupSetNameLabelKey] = value
+	}
+	if value := rbg.Labels[constants.GroupSetIndexLabelKey]; value != "" {
+		labels[constants.GroupSetIndexLabelKey] = value
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
+}
+
 // GetCommonAnnotationsFromRole returns common annotations for a role.
 // System-managed role annotations (e.g. RoleWorkloadTypeAnnotationKey,
 // RoleSizeAnnotationKey) are filtered out to prevent them from leaking

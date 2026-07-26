@@ -48,6 +48,11 @@ type RoleBasedGroupSetStatus struct {
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas" protobuf:"varint,3,opt,name=readyReplicas"`
 
+	// Selector is a label query over child RoleBasedGroups managed by this RoleBasedGroupSet.
+	// It is exposed via the scale subresource so HPA/KEDA can target RoleBasedGroupSet.
+	// +optional
+	Selector string `json:"selector,omitempty"`
+
 	// Conditions track the condition of the rbgs
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -59,7 +64,7 @@ type RoleBasedGroupSetStatus struct {
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:printcolumn:name="DESIRED",type="string",JSONPath=".status.replicas",description="desired replicas"
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.readyReplicas",description="ready replicas"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"

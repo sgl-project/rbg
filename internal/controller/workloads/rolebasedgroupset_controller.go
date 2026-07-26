@@ -275,6 +275,7 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 	// Create a deep copy of the status to modify.
 	newStatus := *rbgset.Status.DeepCopy()
 	newStatus.Replicas = int32(len(rbglist.Items))
+	newStatus.Selector = labels.Set{constants.GroupSetNameLabelKey: rbgset.Name}.String()
 
 	// Calculate the number of ready replicas.
 	readyReplicas := 0

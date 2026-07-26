@@ -27,6 +27,7 @@ type RoleBasedGroupSetStatusApplyConfiguration struct {
 	ObservedGeneration *int64                           `json:"observedGeneration,omitempty"`
 	Replicas           *int32                           `json:"replicas,omitempty"`
 	ReadyReplicas      *int32                           `json:"readyReplicas,omitempty"`
+	Selector           *string                          `json:"selector,omitempty"`
 	Conditions         []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
@@ -57,6 +58,14 @@ func (b *RoleBasedGroupSetStatusApplyConfiguration) WithReplicas(value int32) *R
 // If called multiple times, the ReadyReplicas field is set to the value of the last call.
 func (b *RoleBasedGroupSetStatusApplyConfiguration) WithReadyReplicas(value int32) *RoleBasedGroupSetStatusApplyConfiguration {
 	b.ReadyReplicas = &value
+	return b
+}
+
+// WithSelector sets the Selector field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Selector field is set to the value of the last call.
+func (b *RoleBasedGroupSetStatusApplyConfiguration) WithSelector(value string) *RoleBasedGroupSetStatusApplyConfiguration {
+	b.Selector = &value
 	return b
 }
 

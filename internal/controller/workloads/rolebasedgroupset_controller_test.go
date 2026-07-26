@@ -1130,6 +1130,11 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 				// Verify status fields
 				assert.Equal(t, tt.expectReplicas, updatedRBGSet.Status.Replicas)
 				assert.Equal(t, tt.expectReadyReplicas, updatedRBGSet.Status.ReadyReplicas)
+				assert.Equal(
+					t,
+					fmt.Sprintf("%s=%s", constants.GroupSetNameLabelKey, tt.initialRBGSet.Name),
+					updatedRBGSet.Status.Selector,
+				)
 
 				// Verify condition
 				assert.NotEmpty(t, updatedRBGSet.Status.Conditions, "Status conditions should not be empty")
