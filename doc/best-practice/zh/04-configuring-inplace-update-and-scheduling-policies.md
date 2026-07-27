@@ -73,7 +73,7 @@ RBG 提供两种更新策略，通过 `rollingUpdate.type` 配置：
 | `InPlaceIfPossible` | 优先原地更新；若变更超出镜像范围，回退到重建 Pod | **推荐**，大多数场景的默认选择 |
 | `RecreatePod` | 删除旧 Pod 并创建新 Pod | 需要完全重建的场景 |
 
-> **说明**：`InPlaceOnly` 策略已废弃（Deprecated），不建议使用。请使用 `InPlaceIfPossible` 替代。
+> **说明**：`InPlaceOnly` 策略在 API 中保留但未单独实现，其行为与 `InPlaceIfPossible` 一致（原地更新不可行时回退到重建 Pod）。请使用 `InPlaceIfPossible` 替代。
 
 
 ### 支持原地更新的变更范围
@@ -368,9 +368,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=<rbg-name> -o wide
 
 ## 相关文档
 
-<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
-
-+ 使用 RBG 部署推理服务
-+ 配置滚动更新策略
++ [使用 RBG 部署推理服务](./01-deploy-inference-service.md)
++ [配置滚动更新策略](./03-configuring-rolling-updates.md)
 + RBG Warmup 预热
 
