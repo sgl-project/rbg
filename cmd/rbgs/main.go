@@ -149,6 +149,8 @@ func main() {
 		// Pprof profiling
 		enablePprof bool
 		pprofAddr   string
+		// Legacy workloads (Deployment, StatefulSet, LeaderWorkerSet) support
+		enableLegacyWorkloads bool
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -207,6 +209,13 @@ func main() {
 	)
 	flag.BoolVar(&enablePprof, "enable-pprof", false, "Enable pprof profiling server for performance debugging.")
 	flag.StringVar(&pprofAddr, "pprof-bind-address", ":6060", "The address the pprof endpoint binds to.")
+	flag.BoolVar(
+		&enableLegacyWorkloads, "enable-legacy-workloads", false,
+		"Enable legacy workload types (Deployment, StatefulSet, LeaderWorkerSet). "+
+			"Set to false to disable watching and reconciling these workload types, "+
+			"reducing required RBAC permissions. Only RoleInstanceSet-based workloads "+
+			"will be managed when disabled.",
+	)
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
@@ -318,7 +327,7 @@ func main() {
 	restConfig.Burst = kubeAPIBurst
 
 	mgr, err := ctrl.NewManager(
-		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
+		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection, enableLegacyWorkloads),
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -352,7 +361,7 @@ func main() {
 	// controller (for recording and injection during reconcile).
 	nodeBindings := instancesync.NewNodeBindingStore()
 
-	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName), nodeBindings)
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName), nodeBindings, enableLegacyWorkloads)
 	if err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)
@@ -497,7 +506,7 @@ func newWebhookServer(webhookMode string, tlsOpts []func(*tls.Config)) webhook.S
 // newManagerOptions builds the controller-runtime manager options.
 // When webhooks are disabled (enable-webhooks=none), webhook server and leader
 // election are disabled, and metrics are served insecurely.
-func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool) ctrl.Options {
+func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool, enableLegacyWorkloads bool) ctrl.Options {
 	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOpts,
@@ -505,7 +514,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       constants.ControllerName,
-		Cache:                  cacheOptions(),
+		Cache:                  cacheOptions(enableLegacyWorkloads),
 	}
 	if !webhooksEnabled(webhookMode) {
 		setupLog.Info("Webhooks disabled: forcing LeaderElection=false, Metrics.SecureServing=false")
@@ -619,25 +628,27 @@ func startPprofServer(ctx context.Context, pprofAddr string) error {
 	return nil
 }
 
-func cacheOptions() cache.Options {
+func cacheOptions(enableLegacyWorkloads bool) cache.Options {
 	keyExistsRequirement, err := labels.NewRequirement(constants.GroupNameLabelKey, selection.Exists, nil)
 	if err != nil {
 		panic(err)
 	}
 	keyExistsSelector := labels.NewSelector().Add(*keyExistsRequirement)
 
-	return cache.Options{
-		Scheme: scheme,
-		ByObject: map[client.Object]cache.ByObject{
-			&appsv1.StatefulSet{}: {
-				Label: keyExistsSelector,
-			},
-			&appsv1.Deployment{}: {
-				Label: keyExistsSelector,
-			},
-			&corev1.Service{}: {
-				Label: keyExistsSelector,
-			},
+	byObject := map[client.Object]cache.ByObject{
+		&corev1.Service{}: {
+			Label: keyExistsSelector,
 		},
+	}
+
+	// Only cache StatefulSet and Deployment when legacy workloads are enabled.
+	if enableLegacyWorkloads {
+		byObject[&appsv1.StatefulSet{}] = cache.ByObject{Label: keyExistsSelector}
+		byObject[&appsv1.Deployment{}] = cache.ByObject{Label: keyExistsSelector}
+	}
+
+	return cache.Options{
+		Scheme:   scheme,
+		ByObject: byObject,
 	}
 }

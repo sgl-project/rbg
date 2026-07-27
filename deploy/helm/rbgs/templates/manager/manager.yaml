@@ -48,6 +48,8 @@ spec:
             {{- end }}
             {{- $gangScheduling := $features.gangScheduling | default dict }}
             - --scheduler-name={{ $gangScheduling.schedulerName | default "scheduler-plugins" }}
+            {{- $legacyWorkloads := $features.legacyWorkloads | default dict }}
+            - --enable-legacy-workloads={{ if hasKey $legacyWorkloads "enabled" }}{{ $legacyWorkloads.enabled }}{{ else }}true{{ end }}
             {{- if $pprof.enabled }}
             - --enable-pprof=true
             - --pprof-bind-address={{ $pprof.bindAddress | default ":6060" }}

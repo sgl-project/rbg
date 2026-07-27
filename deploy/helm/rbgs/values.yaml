@@ -55,6 +55,15 @@ controller:
     gangScheduling:
       # schedulerName selects the gang scheduling scheduler: scheduler-plugins | volcano.
       schedulerName: scheduler-plugins
+    # legacyWorkloads controls support for legacy workload types
+    # (Deployment, StatefulSet, LeaderWorkerSet).
+    # When enabled (default), the controller watches and reconciles these
+    # workload types and the ClusterRole includes the corresponding RBAC
+    # permissions. Set to false to disable legacy workload management and
+    # reduce the RBAC footprint — only RoleInstanceSet-based workloads
+    # will be managed.
+    legacyWorkloads:
+      enabled: true
     # portAllocator configures dynamic port allocation to pods.
     portAllocator:
       # Whether to enable the port allocator feature.
