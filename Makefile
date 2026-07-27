@@ -60,8 +60,10 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
-	cp config/rbac/role.yaml deploy/helm/rbgs/templates/rbac/clusterrole.yaml
-	sed -i.bak 's/name: controller-role/name: rbgs-controller-role/' deploy/helm/rbgs/templates/rbac/clusterrole.yaml && rm -f deploy/helm/rbgs/templates/rbac/clusterrole.yaml.bak
+	# NOTE: The Helm chart's clusterrole.yaml is manually maintained with
+	# Helm conditionals for v1alpha1 indirect workload permissions. Do NOT
+	# overwrite it. Keep it in sync with config/rbac/role.yaml when adding
+	# new permissions.
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
 .PHONY: generate

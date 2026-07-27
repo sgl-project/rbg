@@ -35,6 +35,7 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            - --enable-v1alpha1-compat=true
           env:
             - name: POD_NAMESPACE
               valueFrom:
