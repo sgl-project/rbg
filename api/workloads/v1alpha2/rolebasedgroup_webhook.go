@@ -21,11 +21,16 @@ import (
 )
 
 // SetupWebhookWithManager sets up the conversion and validating webhooks for
-// RoleBasedGroup with the Manager.
-func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager) error {
+// RoleBasedGroup with the Manager. The enableV1Alpha1Compat flag controls
+// whether the admission validator rejects v1alpha1 indirect workload types
+// (Deployment, StatefulSet, LeaderWorkerSet).
+func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager, enableV1Alpha1Compat bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
-		WithValidator(&RoleBasedGroupValidator{Client: mgr.GetClient()}).
+		WithValidator(&RoleBasedGroupValidator{
+			Client:               mgr.GetClient(),
+			EnableV1Alpha1Compat: enableV1Alpha1Compat,
+		}).
 		Complete()
 }
 

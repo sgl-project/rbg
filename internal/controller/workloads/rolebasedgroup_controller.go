@@ -179,7 +179,15 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 0: Pre-check validations
+	// Step 0: Reject legacy workload types when v1alpha1 compat is disabled.
+	// This is a configuration error, not a transient one: set a terminal
+	// status condition so the failure is visible via kubectl, then stop
+	// reconciling without requeue until the spec changes.
+	if stop, err := r.handleLegacyWorkloads(ctx, rbg); err != nil || stop {
+		return ctrl.Result{}, err
+	}
+
+	// Step 0b: Pre-check validations
 	if err := r.preCheck(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -278,6 +286,70 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 	}
 
 	return expectedRolesRevisionHash, nil
+}
+
+func isLegacyWorkloadType(wt string) bool {
+	switch wt {
+	case constants.DeploymentWorkloadType,
+		constants.StatefulSetWorkloadType,
+		constants.LeaderWorkerSetWorkloadType:
+		return true
+	}
+	return false
+}
+
+// handleLegacyWorkloads checks whether any role uses a v1alpha1 indirect
+// workload type when v1alpha1 compat is disabled. If so, it sets a terminal
+// Ready=False condition (reason LegacyWorkloadsDisabled), patches .status,
+// emits an event, and returns stop=true so Reconcile returns without requeue.
+// This prevents infinite backoff for what is a configuration error.
+func (r *RoleBasedGroupReconciler) handleLegacyWorkloads(
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
+) (bool, error) {
+	if r.enableV1Alpha1Compat {
+		return false, nil
+	}
+
+	var legacyRoles []string
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		if isLegacyWorkloadType(role.GetWorkloadType()) {
+			legacyRoles = append(legacyRoles, role.Name)
+		}
+	}
+
+	if len(legacyRoles) == 0 {
+		return false, nil
+	}
+
+	logger := log.FromContext(ctx)
+	logger.Info("RBG uses legacy workload types but v1alpha1 compat is disabled",
+		"roles", legacyRoles)
+
+	oldStatus := *rbg.Status.DeepCopy()
+	apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupReady),
+		Status:             metav1.ConditionFalse,
+		Reason:             LegacyWorkloadsDisabled,
+		Message:            fmt.Sprintf("v1alpha1 compat is disabled (--enable-v1alpha1-compat=false) but roles %v use legacy workload types", legacyRoles),
+		ObservedGeneration: rbg.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
+	rbg.Status.ObservedGeneration = rbg.Generation
+
+	if !reflect.DeepEqual(oldStatus, rbg.Status) {
+		rbgApplyConfig := toRBGApplyConfigurationForStatus(rbg)
+		if err := utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus); err != nil {
+			logger.Error(err, "Failed to patch status with LegacyWorkloadsDisabled condition")
+			return true, err
+		}
+	}
+
+	r.recorder.Eventf(rbg, corev1.EventTypeWarning, LegacyWorkloadsDisabled,
+		"v1alpha1 compat is disabled but roles %v use legacy workload types; update spec to use RoleInstanceSet",
+		legacyRoles)
+
+	return true, nil
 }
 
 func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {

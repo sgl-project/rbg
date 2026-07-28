@@ -33,7 +33,8 @@ import (
 // +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update,versions=v1alpha2,name=vrolebasedgroup.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupValidator struct {
-	Client client.Client
+	Client               client.Client
+	EnableV1Alpha1Compat bool
 }
 
 var _ admission.CustomValidator = &RoleBasedGroupValidator{}
@@ -52,6 +53,11 @@ func (v *RoleBasedGroupValidator) ValidateCreate(_ context.Context, obj runtime.
 	}
 	if err := ValidateRollingUpdate(rbg); err != nil {
 		allErrs = append(allErrs, err)
+	}
+	if !v.EnableV1Alpha1Compat {
+		if err := ValidateWorkloadTypes(rbg); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
@@ -75,6 +81,11 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
+	}
+	if !v.EnableV1Alpha1Compat {
+		if err := ValidateWorkloadTypesUpdate(oldRBG, rbg); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)

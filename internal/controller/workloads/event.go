@@ -45,6 +45,10 @@ const (
 	// override (so it fires once per drift episode, then stops as the adapter
 	// controller writes the value back).
 	ReplicasOverriddenByAdapter = "ReplicasOverriddenByAdapter"
+	// LegacyWorkloadsDisabled is emitted when v1alpha1 compat is disabled but
+	// the RBG spec references legacy workload types (Deployment, StatefulSet,
+	// LeaderWorkerSet). The RBG is not reconciled until the spec is updated.
+	LegacyWorkloadsDisabled = "LegacyWorkloadsDisabled"
 )
 
 // rbg-scaling-adapter events

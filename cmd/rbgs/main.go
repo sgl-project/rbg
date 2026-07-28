@@ -348,7 +348,7 @@ func main() {
 	// ---------------------------------------------------------------------------
 	var webhookResult *webhookBootstrapResult
 	if webhooksEnabled(webhookMode) {
-		webhookResult, err = bootstrapWebhookCerts(mgr)
+		webhookResult, err = bootstrapWebhookCerts(mgr, enableV1Alpha1Compat)
 		if err != nil {
 			setupLog.Error(err, "unable to bootstrap webhook certs")
 			os.Exit(1)
@@ -530,7 +530,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 // bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
 // conversion webhook, patches the caBundle on CRDs, and registers conversion
 // webhooks with the manager. This should only be called when webhook is enabled.
-func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
+func bootstrapWebhookCerts(mgr ctrl.Manager, enableV1Alpha1Compat bool) (*webhookBootstrapResult, error) {
 	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
 	if webhookServiceNamespace == "" {
 		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
@@ -568,7 +568,7 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 	}
 
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
-	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
+	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr, enableV1Alpha1Compat); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroup: %w", err)
 	}
 	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr); err != nil {

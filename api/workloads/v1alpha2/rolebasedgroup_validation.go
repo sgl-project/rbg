@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 func ValidateRoleBasedGroupName(rbg *RoleBasedGroup) error {
@@ -136,6 +138,65 @@ func ValidateScalingAdapterReplicas(ctx context.Context, reader client.Reader, o
 			"spec.roles[%d].replicas (role %q): cannot be changed to %d while scalingAdapter.enable is true and ScalingAdapter %q has spec.replicas %d",
 			i, newRole.Name, *newRole.Replicas, adapterName, *adapter.Spec.Replicas,
 		))
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// isLegacyWorkloadType returns true for v1alpha1 indirect workload types
+// (Deployment, StatefulSet, LeaderWorkerSet).
+func isLegacyWorkloadType(wt string) bool {
+	switch wt {
+	case constants.DeploymentWorkloadType,
+		constants.StatefulSetWorkloadType,
+		constants.LeaderWorkerSetWorkloadType:
+		return true
+	}
+	return false
+}
+
+// ValidateWorkloadTypes checks that no role uses v1alpha1 indirect workload
+// types (Deployment, StatefulSet, LeaderWorkerSet) when v1alpha1 compat is
+// disabled. This provides fast feedback at admission time instead of letting
+// the RBG be created only to fail at reconcile time.
+func ValidateWorkloadTypes(rbg *RoleBasedGroup) error {
+	var allErrs []error
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		wt := role.GetWorkloadType()
+		if isLegacyWorkloadType(wt) {
+			allErrs = append(allErrs, fmt.Errorf(
+				"spec.roles[%d] (%q): workload type %q is a v1alpha1 indirect workload type, "+
+					"which is not supported when v1alpha1 compat is disabled (--enable-v1alpha1-compat=false)",
+				i, role.Name, wt,
+			))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// ValidateWorkloadTypesUpdate checks that no NEW v1alpha1 indirect workload
+// types are introduced on update when v1alpha1 compat is disabled. Existing
+// roles that already had legacy types in the old spec are allowed to remain
+// so users can edit the RBG to migrate away from them.
+func ValidateWorkloadTypesUpdate(oldRBG, newRBG *RoleBasedGroup) error {
+	oldLegacy := make(map[string]bool)
+	for i := range oldRBG.Spec.Roles {
+		role := &oldRBG.Spec.Roles[i]
+		if isLegacyWorkloadType(role.GetWorkloadType()) {
+			oldLegacy[role.Name] = true
+		}
+	}
+	var allErrs []error
+	for i := range newRBG.Spec.Roles {
+		role := &newRBG.Spec.Roles[i]
+		wt := role.GetWorkloadType()
+		if isLegacyWorkloadType(wt) && !oldLegacy[role.Name] {
+			allErrs = append(allErrs, fmt.Errorf(
+				"spec.roles[%d] (%q): workload type %q is a v1alpha1 indirect workload type, "+
+					"which is not supported when v1alpha1 compat is disabled (--enable-v1alpha1-compat=false)",
+				i, role.Name, wt,
+			))
+		}
 	}
 	return utilerrors.NewAggregate(allErrs)
 }
