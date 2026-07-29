@@ -343,11 +343,12 @@ func (r *RoleBasedGroupReconciler) handleLegacyWorkloads(
 			logger.Error(err, "Failed to patch status with LegacyWorkloadsDisabled condition")
 			return true, err
 		}
+		// Only emit the event when the condition is newly set or changed,
+		// not on every reconcile trigger (periodic resync, unrelated updates).
+		r.recorder.Eventf(rbg, corev1.EventTypeWarning, LegacyWorkloadsDisabled,
+			"v1alpha1 compat is disabled but roles %v use legacy workload types; update spec to use RoleInstanceSet",
+			legacyRoles)
 	}
-
-	r.recorder.Eventf(rbg, corev1.EventTypeWarning, LegacyWorkloadsDisabled,
-		"v1alpha1 compat is disabled but roles %v use legacy workload types; update spec to use RoleInstanceSet",
-		legacyRoles)
 
 	return true, nil
 }
