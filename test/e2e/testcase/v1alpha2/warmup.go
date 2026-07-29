@@ -146,13 +146,15 @@ func RunWarmupTestCases(f *framework.Framework) {
 				return true
 			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(), "RBG pods should be scheduled")
 
-			// Get the node where both pods are running
-			ginkgo.By("Getting node name from RBG pods")
+			// Collect unique node names from RBG pods
 			podList := &corev1.PodList{}
 			gomega.Expect(f.Client.List(f.Ctx, podList,
 				client.InNamespace(f.Namespace),
 				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
-			nodeName := podList.Items[0].Spec.NodeName
+			nodeSet := make(map[string]struct{})
+			for _, p := range podList.Items {
+				nodeSet[p.Spec.NodeName] = struct{}{}
+			}
 
 			ginkgo.By("Creating warmup CR with targetRoleBasedGroup mode")
 			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
@@ -211,17 +213,29 @@ func RunWarmupTestCases(f *framework.Framework) {
 				client.MatchingLabels{LabelWarmupName: warmup.Name})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-			// Should have 1 Pod per unique node (both RBG pods on same node → 1 warmup Pod with 2 containers)
-			gomega.Expect(warmupPodList.Items).To(gomega.HaveLen(1))
-			warmupPod := warmupPodList.Items[0]
-			gomega.Expect(warmupPod.Labels[LabelNodeName]).To(gomega.Equal(nodeName))
+			// Should have 1 warmup Pod per unique node
+			uniqueNodeCount := len(nodeSet)
+			gomega.Expect(warmupPodList.Items).To(gomega.HaveLen(uniqueNodeCount))
 
-			// Verify 2 containers (1 image-preload from prefill + 1 customized action from decode)
-			gomega.Expect(warmupPod.Spec.Containers).To(gomega.HaveLen(2))
+			// Each warmup Pod should target a node that has RBG pods
+			for _, wp := range warmupPodList.Items {
+				nodeLabel := wp.Labels[LabelNodeName]
+				_, ok := nodeSet[nodeLabel]
+				gomega.Expect(ok).To(gomega.BeTrue(), "warmup pod targets unexpected node %q", nodeLabel)
+			}
+
+			// When both roles land on the same node, the warmup Pod merges actions from both roles (2 containers).
+			// When they are on different nodes, each warmup Pod has only 1 container (single role action).
+			// Either way, the total number of containers across all warmup Pods equals the number of roles (2).
+			totalContainers := 0
+			for _, wp := range warmupPodList.Items {
+				totalContainers += len(wp.Spec.Containers)
+			}
+			gomega.Expect(totalContainers).To(gomega.Equal(2), "total containers across warmup pods should equal number of roles")
 
 			// Verify status
-			gomega.Expect(warmup.Status.Desired).To(gomega.Equal(int32(1)))
-			gomega.Expect(warmup.Status.Succeeded).To(gomega.Equal(int32(1)))
+			gomega.Expect(warmup.Status.Desired).To(gomega.Equal(int32(uniqueNodeCount)))
+			gomega.Expect(warmup.Status.Succeeded).To(gomega.Equal(int32(uniqueNodeCount)))
 			gomega.Expect(warmup.Status.CompletionTime).ToNot(gomega.BeNil())
 		})
 
