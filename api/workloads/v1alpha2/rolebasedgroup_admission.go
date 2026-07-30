@@ -34,6 +34,9 @@ import (
 // +kubebuilder:object:generate=false
 type RoleBasedGroupValidator struct {
 	Client client.Client
+	// DisableV1alpha1Compatibility, when true, rejects RBGs that use v1alpha1-only
+	// workload types (Deployment, StatefulSet, LeaderWorkerSet).
+	DisableV1alpha1Compatibility bool
 }
 
 var _ admission.CustomValidator = &RoleBasedGroupValidator{}
@@ -52,6 +55,11 @@ func (v *RoleBasedGroupValidator) ValidateCreate(_ context.Context, obj runtime.
 	}
 	if err := ValidateRollingUpdate(rbg); err != nil {
 		allErrs = append(allErrs, err)
+	}
+	if v.DisableV1alpha1Compatibility {
+		if err := validateNoLegacyWorkloads(rbg.Spec.Roles); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
@@ -75,6 +83,11 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
+	}
+	if v.DisableV1alpha1Compatibility {
+		if err := validateNoLegacyWorkloads(rbg.Spec.Roles); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)

@@ -60,8 +60,14 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
-	cp config/rbac/role.yaml deploy/helm/rbgs/templates/rbac/clusterrole.yaml
-	sed -i.bak 's/name: controller-role/name: rbgs-controller-role/' deploy/helm/rbgs/templates/rbac/clusterrole.yaml && rm -f deploy/helm/rbgs/templates/rbac/clusterrole.yaml.bak
+	@echo ""
+	@echo "NOTE: config/rbac/role.yaml has been regenerated."
+	@echo "      If RBAC rules changed, manually sync them to deploy/helm/rbgs/templates/rbac/clusterrole.yaml"
+	@echo "      (rename 'controller-role' to 'rbgs-controller-role') and re-apply the"
+	@echo "      {{- if .Values.compatibility.v1alpha1.enabled }} conditionals around"
+	@echo "      deployments/statefulsets and leaderworkersets rules."
+	@echo "      controllerrevisions rules must remain unconditional."
+	@echo ""
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
 .PHONY: generate

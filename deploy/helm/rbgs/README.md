@@ -18,6 +18,22 @@ CRD upgrade Job into your Kubernetes cluster.
 - Kubernetes >= 1.28
 - Helm 3
 
+## Compatibility
+
+### v1alpha1 API compatibility
+
+| Key | Description | Default |
+| --- | ----------- | ------- |
+| `compatibility.v1alpha1.enabled` | Enable v1alpha1 API compatibility (Deployment/StatefulSet/LeaderWorkerSet workload types). When false, RBAC for these resources is removed, the validating webhook rejects them, and the controller stops watching them. | `false` |
+
+By default (`compatibility.v1alpha1.enabled=false`), the chart ships in restricted mode for security. Set `compatibility.v1alpha1.enabled=true` to preserve full v1alpha1 API compatibility if you have existing v1alpha1 RoleBasedGroup resources that use Deployment, StatefulSet, or LeaderWorkerSet workload types.
+
+### No upgrade support
+
+**This chart version only supports fresh installation (`helm install`).**
+Upgrade (`helm upgrade`) is not supported due to potential API compatibility issues.
+To update to a newer version, uninstall and reinstall.
+
 ## Installing
 
 ```bash
@@ -103,6 +119,10 @@ kubectl delete -f config/crd/bases/
 ```
 
 ## Upgrading
+
+> **Warning**: This chart version does **not** support `helm upgrade`.
+> Only fresh `helm install` is supported. To update, uninstall and reinstall.
+> See the [No upgrade support](#no-upgrade-support) section above.
 
 ### Breaking change: values regrouped in chart v0.8.0
 

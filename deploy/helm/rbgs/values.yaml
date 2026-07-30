@@ -1,5 +1,15 @@
 # Default values for rbgs-controller.
 
+# compatibility controls v1alpha1 API compatibility.
+# When false, v1alpha1 API compatibility is disabled:
+#   - RBAC for Deployment/StatefulSet/LeaderWorkerSet is removed
+#   - Validating webhook rejects RBGs/RBGSets using these workload types
+#   - Controller stops watching these resources
+# Set to true to preserve v1alpha1 API compatibility.
+compatibility:
+  v1alpha1:
+    enabled: true
+
 global:
   # imagePullSecrets is shared by the controller Deployment and the crd-upgrade Job.
   imagePullSecrets: []

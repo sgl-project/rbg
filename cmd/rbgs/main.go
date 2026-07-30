@@ -149,6 +149,8 @@ func main() {
 		// Pprof profiling
 		enablePprof bool
 		pprofAddr   string
+		// v1alpha1 compatibility: when true, disables Deployment/StatefulSet/LeaderWorkerSet support
+		disableV1alpha1Compatibility bool
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -207,6 +209,11 @@ func main() {
 	)
 	flag.BoolVar(&enablePprof, "enable-pprof", false, "Enable pprof profiling server for performance debugging.")
 	flag.StringVar(&pprofAddr, "pprof-bind-address", ":6060", "The address the pprof endpoint binds to.")
+	flag.BoolVar(
+		&disableV1alpha1Compatibility, "disable-v1alpha1-compatibility", false,
+		"Disable v1alpha1 API compatibility: removes support for Deployment, StatefulSet, and LeaderWorkerSet workload types. "+
+			"When true, the controller stops watching these resources and the validating webhook rejects RBGs/RBGSets that use them.",
+	)
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
@@ -318,7 +325,7 @@ func main() {
 	restConfig.Burst = kubeAPIBurst
 
 	mgr, err := ctrl.NewManager(
-		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
+		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection, disableV1alpha1Compatibility),
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -338,7 +345,7 @@ func main() {
 	// ---------------------------------------------------------------------------
 	var webhookResult *webhookBootstrapResult
 	if webhooksEnabled(webhookMode) {
-		webhookResult, err = bootstrapWebhookCerts(mgr)
+		webhookResult, err = bootstrapWebhookCerts(mgr, disableV1alpha1Compatibility)
 		if err != nil {
 			setupLog.Error(err, "unable to bootstrap webhook certs")
 			os.Exit(1)
@@ -362,7 +369,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = rbgReconciler.SetupWithManager(mgr, options); err != nil {
+	if err = rbgReconciler.SetupWithManager(mgr, options, disableV1alpha1Compatibility); err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)
 	}
@@ -497,7 +504,7 @@ func newWebhookServer(webhookMode string, tlsOpts []func(*tls.Config)) webhook.S
 // newManagerOptions builds the controller-runtime manager options.
 // When webhooks are disabled (enable-webhooks=none), webhook server and leader
 // election are disabled, and metrics are served insecurely.
-func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool) ctrl.Options {
+func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool, disableV1alpha1Compatibility bool) ctrl.Options {
 	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOpts,
@@ -505,7 +512,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       constants.ControllerName,
-		Cache:                  cacheOptions(),
+		Cache:                  cacheOptions(disableV1alpha1Compatibility),
 	}
 	if !webhooksEnabled(webhookMode) {
 		setupLog.Info("Webhooks disabled: forcing LeaderElection=false, Metrics.SecureServing=false")
@@ -520,7 +527,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 // bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
 // conversion webhook, patches the caBundle on CRDs, and registers conversion
 // webhooks with the manager. This should only be called when webhook is enabled.
-func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
+func bootstrapWebhookCerts(mgr ctrl.Manager, disableV1alpha1Compatibility bool) (*webhookBootstrapResult, error) {
 	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
 	if webhookServiceNamespace == "" {
 		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
@@ -558,10 +565,10 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 	}
 
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
-	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
+	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr, disableV1alpha1Compatibility); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroup: %w", err)
 	}
-	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr); err != nil {
+	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr, disableV1alpha1Compatibility); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroupSet: %w", err)
 	}
 
@@ -619,25 +626,25 @@ func startPprofServer(ctx context.Context, pprofAddr string) error {
 	return nil
 }
 
-func cacheOptions() cache.Options {
+func cacheOptions(disableV1alpha1Compatibility bool) cache.Options {
 	keyExistsRequirement, err := labels.NewRequirement(constants.GroupNameLabelKey, selection.Exists, nil)
 	if err != nil {
 		panic(err)
 	}
 	keyExistsSelector := labels.NewSelector().Add(*keyExistsRequirement)
 
-	return cache.Options{
-		Scheme: scheme,
-		ByObject: map[client.Object]cache.ByObject{
-			&appsv1.StatefulSet{}: {
-				Label: keyExistsSelector,
-			},
-			&appsv1.Deployment{}: {
-				Label: keyExistsSelector,
-			},
-			&corev1.Service{}: {
-				Label: keyExistsSelector,
-			},
+	byObject := map[client.Object]cache.ByObject{
+		&corev1.Service{}: {
+			Label: keyExistsSelector,
 		},
+	}
+	if !disableV1alpha1Compatibility {
+		byObject[&appsv1.StatefulSet{}] = cache.ByObject{Label: keyExistsSelector}
+		byObject[&appsv1.Deployment{}] = cache.ByObject{Label: keyExistsSelector}
+	}
+
+	return cache.Options{
+		Scheme:   scheme,
+		ByObject: byObject,
 	}
 }

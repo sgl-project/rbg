@@ -93,6 +93,9 @@ type RoleBasedGroupReconciler struct {
 	// the RoleInstance reconciler. Injected at wire-up time so both consumers
 	// operate on the same instance.
 	NodeBindings *instancesync.NodeBindingStore
+	// disableV1alpha1Compatibility, when true, skips Deployment/StatefulSet/LeaderWorkerSet
+	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is removed.
+	disableV1alpha1Compatibility bool
 }
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
@@ -673,19 +676,22 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	errs := make([]error, 0)
-	deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
-	if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-		errs = append(errs, err)
-	}
 
-	stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
-	if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-		errs = append(errs, err)
-	}
+	if !r.disableV1alpha1Compatibility {
+		deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
+		if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+			errs = append(errs, err)
+		}
 
-	lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
-	if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-		errs = append(errs, err)
+		stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
+		if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+			errs = append(errs, err)
+		}
+
+		lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
+		if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	roleInstanceSetRecon := reconciler.NewRoleInstanceSetReconciler(r.scheme, r.client)
@@ -1012,12 +1018,11 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
+func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options, disableV1alpha1Compatibility bool) error {
+	r.disableV1alpha1Compatibility = disableV1alpha1Compatibility
 	runtimeController = ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
-		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate())).
-		Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&workloadsv1alpha2.RoleInstanceSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&corev1.Service{}).
 		Owns(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.MatchEveryOwner, builder.WithPredicates(RBGScalingAdapterPredicate())).
@@ -1040,12 +1045,17 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		}).
 		Named("workloads-rolebasedgroup")
 
-	err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName)
-	if err == nil {
-		watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
-		runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
+	if !disableV1alpha1Compatibility {
+		runtimeController.Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate()))
+		runtimeController.Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate()))
+
+		err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName)
+		if err == nil {
+			watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
+			runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
+		}
 	}
-	err = utils.CheckCrdExists(r.apiReader, scheduler.KubePodGroupCrdName)
+	err := utils.CheckCrdExists(r.apiReader, scheduler.KubePodGroupCrdName)
 	if err == nil {
 		watchedWorkload.LoadOrStore(scheduler.KubePodGroupCrdName, struct{}{})
 		runtimeController.Owns(&schev1alpha1.PodGroup{})

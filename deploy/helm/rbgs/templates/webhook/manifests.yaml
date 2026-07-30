@@ -34,3 +34,23 @@ webhooks:
     - UPDATE
     resources:
     - rolebasedgroups
+- name: vrolebasedgroupset.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets

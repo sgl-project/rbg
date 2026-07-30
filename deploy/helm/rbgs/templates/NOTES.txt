@@ -12,6 +12,19 @@ Check the controller:
   kubectl -n {{ .Release.Namespace }} get deploy rbgs-controller-manager
   kubectl -n {{ .Release.Namespace }} get pods -l control-plane=rbgs-controller
 
+IMPORTANT: This chart version only supports fresh installation (helm install).
+Upgrade (helm upgrade) is not supported due to potential API compatibility issues.
+To update, uninstall and reinstall.
+
+{{- if not .Values.compatibility.v1alpha1.enabled }}
+NOTE: v1alpha1 API compatibility is DISABLED (compatibility.v1alpha1.enabled=false).
+Deployment, StatefulSet, and LeaderWorkerSet workload types are not supported.
+To enable v1alpha1 compatibility, set compatibility.v1alpha1.enabled=true.
+{{- else }}
+NOTE: v1alpha1 API compatibility is ENABLED (compatibility.v1alpha1.enabled=true).
+Deployment, StatefulSet, and LeaderWorkerSet workload types are supported.
+{{- end }}
+
 NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under
 `global`, `controller`, and `crdUpgrade`. Old top-level keys (e.g. `image.*`,
 `replicaCount`, `schedulerName`, `portAllocator.*`) are SILENTLY IGNORED by Helm.

@@ -57,6 +57,26 @@ rules:
   - apps
   resources:
   - controllerrevisions
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - controllerrevisions/status
+  verbs:
+  - get
+  - patch
+  - update
+{{- if .Values.compatibility.v1alpha1.enabled }}
+- apiGroups:
+  - apps
+  resources:
   - deployments
   - statefulsets
   verbs:
@@ -70,7 +90,6 @@ rules:
 - apiGroups:
   - apps
   resources:
-  - controllerrevisions/status
   - deployments/status
   - statefulsets/status
   verbs:
@@ -84,6 +103,7 @@ rules:
   - statefulsets/finalizers
   verbs:
   - update
+{{- end }}
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -96,6 +116,7 @@ rules:
   - patch
   - update
   - watch
+{{- if .Values.compatibility.v1alpha1.enabled }}
 - apiGroups:
   - leaderworkerset.x-k8s.io
   resources:
@@ -116,6 +137,7 @@ rules:
   - get
   - patch
   - update
+{{- end }}
 - apiGroups:
   - scheduling.volcano.sh
   - scheduling.x-k8s.io

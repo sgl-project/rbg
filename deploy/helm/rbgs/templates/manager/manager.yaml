@@ -48,6 +48,9 @@ spec:
             {{- end }}
             {{- $gangScheduling := $features.gangScheduling | default dict }}
             - --scheduler-name={{ $gangScheduling.schedulerName | default "scheduler-plugins" }}
+            {{- if not .Values.compatibility.v1alpha1.enabled }}
+            - --disable-v1alpha1-compatibility=true
+            {{- end }}
             {{- if $pprof.enabled }}
             - --enable-pprof=true
             - --pprof-bind-address={{ $pprof.bindAddress | default ":6060" }}

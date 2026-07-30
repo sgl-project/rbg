@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 func ValidateRoleBasedGroupName(rbg *RoleBasedGroup) error {
@@ -155,4 +157,23 @@ func scaledIntOrPercent(v *intstr.IntOrString, replicas int32, roundUp bool, def
 		return defaultVal, nil
 	}
 	return intstr.GetScaledValueFromIntOrPercent(v, int(replicas), roundUp)
+}
+
+// validateNoLegacyWorkloads checks that no role uses a v1alpha1-only workload type
+// (Deployment, StatefulSet, or LeaderWorkerSet). Returns an aggregated error listing
+// all offending roles.
+func validateNoLegacyWorkloads(roles []RoleSpec) error {
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		wt := role.GetWorkloadType()
+		switch wt {
+		case constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType, constants.LeaderWorkerSetWorkloadType:
+			allErrs = append(allErrs, fmt.Errorf(
+				"spec.roles[%d] (role %q): workload type %q is not supported when v1alpha1 compatibility is disabled",
+				i, role.Name, wt,
+			))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
 }

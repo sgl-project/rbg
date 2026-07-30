@@ -98828,3 +98828,23 @@ webhooks:
     resources:
     - rolebasedgroups
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
+  failurePolicy: Fail
+  name: vrolebasedgroupset.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets
+  sideEffects: None
