@@ -62,12 +62,7 @@ manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomReso
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
 	@echo ""
 	@echo "NOTE: config/rbac/role.yaml has been regenerated."
-	@echo "      If RBAC rules changed, manually sync them to deploy/helm/rbgs/templates/rbac/clusterrole.yaml"
-	@echo "      (rename 'controller-role' to 'rbgs-controller-role') and re-apply the"
-	@echo "      {{- if \$$deprecatedEnabled }} conditionals (derived from"
-	@echo "      controller.deprecatedWorkloadTypes.enabled) around"
-	@echo "      deployments/statefulsets and leaderworkersets rules."
-	@echo "      controllerrevisions rules must remain unconditional."
+	go run ./hack/gen-helm-rbac
 	@echo ""
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
