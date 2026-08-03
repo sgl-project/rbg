@@ -1171,15 +1171,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{
-							Name: "main",
-							Size: ptr.To(int32(1)),
-							Template: corev1.PodTemplateSpec{
-								Spec: corev1.PodSpec{
-									Containers: []corev1.Container{
-										{Name: "c", Image: "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"},
-									},
-								},
-							},
+							Name:     "main",
+							Size:     ptr.To(int32(1)),
+							Template: wrappersv2.BuildBasicPodTemplateSpec(),
 						},
 					},
 				},
