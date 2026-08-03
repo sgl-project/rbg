@@ -24,6 +24,10 @@ The `Deployment`, `StatefulSet`, and `LeaderWorkerSet` workload types are deprec
 `RoleInstanceSet`, which is the default in `v1alpha2`. They remain enabled by default and can be
 turned off to shrink the controller's RBAC surface.
 
+The deprecation is not yet declared on the API itself: `v1alpha1` is still served, the CRDs carry no
+deprecation warning, and no removal timeline has been published. Until that lands, this key is an
+opt-in escape hatch rather than a migration deadline.
+
 | Key | Description | Default |
 | --- | ----------- | ------- |
 | `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types (Deployment/StatefulSet/LeaderWorkerSet). When false, RBAC for these resources is removed, the validating webhook rejects roles that use them, and the controller stops watching them. | `true` |
