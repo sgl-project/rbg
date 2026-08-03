@@ -1,15 +1,5 @@
 # Default values for rbgs-controller.
 
-# compatibility controls v1alpha1 API compatibility.
-# When false, v1alpha1 API compatibility is disabled:
-#   - RBAC for Deployment/StatefulSet/LeaderWorkerSet is removed
-#   - Validating webhook rejects RBGs/RBGSets using these workload types
-#   - Controller stops watching these resources
-# Set to true to preserve v1alpha1 API compatibility.
-compatibility:
-  v1alpha1:
-    enabled: true
-
 global:
   # imagePullSecrets is shared by the controller Deployment and the crd-upgrade Job.
   imagePullSecrets: []
@@ -75,6 +65,16 @@ controller:
       startPort: 30000
       # The size of the allocatable port range.
       portRange: 5000
+  # deprecatedWorkloadTypes controls the deprecated workload types
+  # (Deployment, StatefulSet, LeaderWorkerSet), superseded by RoleInstanceSet.
+  # Defaults to true, which keeps them enabled.
+  # Set to false to turn them off:
+  #   - RBAC for Deployment/StatefulSet/LeaderWorkerSet is removed
+  #   - Validating webhook rejects roles that start using these workload types;
+  #     roles that already use one are exempt and stay updatable
+  #   - Controller stops watching these resources
+  deprecatedWorkloadTypes:
+    enabled: true
 
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)

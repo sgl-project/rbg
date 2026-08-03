@@ -16,13 +16,20 @@ IMPORTANT: This chart version only supports fresh installation (helm install).
 Upgrade (helm upgrade) is not supported due to potential API compatibility issues.
 To update, uninstall and reinstall.
 
-{{- if not .Values.compatibility.v1alpha1.enabled }}
-NOTE: v1alpha1 API compatibility is DISABLED (compatibility.v1alpha1.enabled=false).
-Deployment, StatefulSet, and LeaderWorkerSet workload types are not supported.
-To enable v1alpha1 compatibility, set compatibility.v1alpha1.enabled=true.
+{{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
+{{- if and (hasKey $deprecatedWorkloadTypes "enabled") (not $deprecatedWorkloadTypes.enabled) }}
+NOTE: the deprecated workload types are DISABLED (controller.deprecatedWorkloadTypes.enabled=false).
+Roles cannot start using Deployment, StatefulSet, or LeaderWorkerSet; roles that already
+use one keep working and stay updatable (only the change is validated, not the object).
+WARNING: the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet,
+so a new v1alpha1 object is rejected even if it never sets `workload`. To keep using
+v1alpha1, every role must set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and
+workload.kind=RoleInstanceSet; submitting the object as v1alpha2 does this by default.
+To re-enable them, set controller.deprecatedWorkloadTypes.enabled=true.
 {{- else }}
-NOTE: v1alpha1 API compatibility is ENABLED (compatibility.v1alpha1.enabled=true).
-Deployment, StatefulSet, and LeaderWorkerSet workload types are supported.
+NOTE: the deprecated workload types are ENABLED (controller.deprecatedWorkloadTypes.enabled=true).
+Deployment, StatefulSet, and LeaderWorkerSet workload types are supported, but
+deprecated: migrate roles to RoleInstanceSet (the v1alpha2 default).
 {{- end }}
 
 NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under

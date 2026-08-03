@@ -18,17 +18,37 @@ CRD upgrade Job into your Kubernetes cluster.
 - Kubernetes >= 1.28
 - Helm 3
 
-## Compatibility
+## Deprecated workload types
 
-### v1alpha1 API compatibility
+The `Deployment`, `StatefulSet`, and `LeaderWorkerSet` workload types are deprecated in favour of
+`RoleInstanceSet`, which is the default in `v1alpha2`. They remain enabled by default and can be
+turned off to shrink the controller's RBAC surface.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `compatibility.v1alpha1.enabled` | Enable v1alpha1 API compatibility (Deployment/StatefulSet/LeaderWorkerSet workload types). When false, RBAC for these resources is removed, the validating webhook rejects them, and the controller stops watching them. | `false` |
+| `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types (Deployment/StatefulSet/LeaderWorkerSet). When false, RBAC for these resources is removed, the validating webhook rejects roles that use them, and the controller stops watching them. | `true` |
 
-By default (`compatibility.v1alpha1.enabled=false`), the chart ships in restricted mode for security. Set `compatibility.v1alpha1.enabled=true` to preserve full v1alpha1 API compatibility if you have existing v1alpha1 RoleBasedGroup resources that use Deployment, StatefulSet, or LeaderWorkerSet workload types.
+With `controller.deprecatedWorkloadTypes.enabled=false`, a role is only accepted if its workload
+type is `RoleInstanceSet`. Roles that already use a deprecated type are exempt: the check
+validates the change, not the whole object, so an existing group stays writable (and scalable) and
+the controllers can keep reconciling it. Rejected on that setting are:
 
-### No upgrade support
+- creating a RoleBasedGroup/RoleBasedGroupSet whose roles use a deprecated workload type;
+- adding a role that uses one to an existing object;
+- changing a role's workload type to a deprecated one — including swapping one deprecated type for
+  another, and renaming a role, which counts as adding one.
+
+> **Warning**: a v1alpha1 role must name `RoleInstanceSet` **explicitly** to be accepted.
+>
+> The v1alpha1 schema defaults `spec.roles[].workload` to `apps/v1 StatefulSet`, so a role submitted through v1alpha1 carries a deprecated workload type even if it never mentions `workload`. The conversion webhook records that defaulted value and the validating webhook then rejects it. In practice:
+>
+> - Every **new** v1alpha1 RoleBasedGroup/RoleBasedGroupSet that relies on the default workload is rejected, including manifests that look workload-free.
+> - Re-applying such a manifest over an existing group whose role was `RoleInstanceSet` counts as changing the workload type, and is rejected too.
+> - To keep using v1alpha1, set `workload.apiVersion: workloads.x-k8s.io/v1alpha2` and `workload.kind: RoleInstanceSet` on every role. Prefer submitting the object as `v1alpha2`, where `RoleInstanceSet` is already the default.
+>
+> An automated migration path is still to be implemented.
+
+## No upgrade support
 
 **This chart version only supports fresh installation (`helm install`).**
 Upgrade (`helm upgrade`) is not supported due to potential API compatibility issues.
@@ -94,6 +114,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.features.portAllocator.strategy` | Port allocation strategy (`random`) | `random` |
 | `controller.features.portAllocator.startPort` | Starting port of the allocatable range | `30000` |
 | `controller.features.portAllocator.portRange` | Size of the allocatable port range | `5000` |
+| `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types — see [Deprecated workload types](#deprecated-workload-types) | `true` |
 
 ### CRD Upgrader
 

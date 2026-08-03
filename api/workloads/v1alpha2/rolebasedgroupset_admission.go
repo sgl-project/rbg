@@ -31,9 +31,10 @@ import (
 // +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=vrolebasedgroupset.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupSetValidator struct {
-	// DisableV1alpha1Compatibility, when true, rejects RBGSets whose template
-	// uses v1alpha1-only workload types (Deployment, StatefulSet, LeaderWorkerSet).
-	DisableV1alpha1Compatibility bool
+	// EnableDeprecatedWorkloadTypes reports whether the deprecated workload types
+	// (Deployment, StatefulSet, LeaderWorkerSet) are still accepted. When false,
+	// RBGSets whose template uses them are rejected.
+	EnableDeprecatedWorkloadTypes bool
 }
 
 var _ admission.CustomValidator = &RoleBasedGroupSetValidator{}
@@ -47,8 +48,8 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	klog.V(4).InfoS("validating RoleBasedGroupSet on create", "name", rbgs.Name, "namespace", rbgs.Namespace)
 
 	var allErrs []error
-	if v.DisableV1alpha1Compatibility {
-		if err := validateNoLegacyWorkloads(rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+	if !v.EnableDeprecatedWorkloadTypes {
+		if err := validateNoDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
@@ -57,7 +58,11 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 }
 
 // ValidateUpdate validates a RoleBasedGroupSet on update.
-func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
+func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
+	oldRBGS, ok := oldObj.(*RoleBasedGroupSet)
+	if !ok {
+		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", oldObj)
+	}
 	rbgs, ok := newObj.(*RoleBasedGroupSet)
 	if !ok {
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", newObj)
@@ -65,8 +70,12 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime
 	klog.V(4).InfoS("validating RoleBasedGroupSet on update", "name", rbgs.Name, "namespace", rbgs.Namespace)
 
 	var allErrs []error
-	if v.DisableV1alpha1Compatibility {
-		if err := validateNoLegacyWorkloads(rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+	if !v.EnableDeprecatedWorkloadTypes {
+		if err := validateNoNewDeprecatedWorkloadTypes(
+			"spec.groupTemplate.spec.roles",
+			oldRBGS.Spec.GroupTemplate.Spec.Roles,
+			rbgs.Spec.GroupTemplate.Spec.Roles,
+		); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}

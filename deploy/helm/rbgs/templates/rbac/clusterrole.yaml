@@ -1,4 +1,11 @@
 ---
+{{- /*
+  deprecatedWorkloadTypes.enabled gates the RBAC for the deprecated workload types.
+  Treat an unset value as enabled, matching values.yaml, so a partial controller
+  override cannot silently strip these permissions.
+*/}}
+{{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
+{{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -73,7 +80,7 @@ rules:
   - get
   - patch
   - update
-{{- if .Values.compatibility.v1alpha1.enabled }}
+{{- if $deprecatedEnabled }}
 - apiGroups:
   - apps
   resources:
@@ -116,7 +123,7 @@ rules:
   - patch
   - update
   - watch
-{{- if .Values.compatibility.v1alpha1.enabled }}
+{{- if $deprecatedEnabled }}
 - apiGroups:
   - leaderworkerset.x-k8s.io
   resources:

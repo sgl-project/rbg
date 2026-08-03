@@ -970,6 +970,36 @@ func TestRoleBasedGroup_ConvertTo_WorkloadAnnotationPreserved(t *testing.T) {
 		_, hasAnnotation := role.Annotations[constants.RoleWorkloadTypeAnnotationKey]
 		assert.False(t, hasAnnotation, "annotation should not be set for empty workload")
 	})
+
+	// A v1alpha1 role can opt out of the deprecated workload types by naming
+	// RoleInstanceSet explicitly. This is the only way to keep using the v1alpha1
+	// API when the deprecated workload types are disabled, so the resulting annotation
+	// must match the value the v1alpha2 validator treats as non-deprecated.
+	t.Run("explicit RoleInstanceSet workload sets non-deprecated annotation", func(t *testing.T) {
+		src := &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{
+				Roles: []RoleSpec{
+					{
+						Name:     "worker",
+						Replicas: ptr.To(int32(1)),
+						TemplateSource: TemplateSource{
+							Template: podTemplate("app"),
+						},
+						Workload: WorkloadSpec{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstanceSet"},
+					},
+				},
+			},
+		}
+
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, src.ConvertTo(dst))
+
+		require.Len(t, dst.Spec.Roles, 1)
+		role := dst.Spec.Roles[0]
+		assert.Equal(t, constants.RoleInstanceSetWorkloadType, role.Annotations[constants.RoleWorkloadTypeAnnotationKey])
+		assert.Equal(t, constants.RoleInstanceSetWorkloadType, role.GetWorkloadType())
+	})
 }
 
 // TestRoleBasedGroup_ConvertFrom_MalformedWorkloadAnnotation verifies that a

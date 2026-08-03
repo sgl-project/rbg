@@ -22,23 +22,23 @@ import (
 
 // SetupWebhookWithManager sets up the conversion and validating webhooks for
 // RoleBasedGroup with the Manager.
-func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager, disableV1alpha1Compatibility bool) error {
+func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&RoleBasedGroupValidator{
-			Client:                       mgr.GetClient(),
-			DisableV1alpha1Compatibility: disableV1alpha1Compatibility,
+			Client:                        mgr.GetClient(),
+			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
 		Complete()
 }
 
 // SetupWebhookWithManager sets up the conversion and validating webhooks for
 // RoleBasedGroupSet with the Manager.
-func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, disableV1alpha1Compatibility bool) error {
+func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&RoleBasedGroupSetValidator{
-			DisableV1alpha1Compatibility: disableV1alpha1Compatibility,
+			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
 		Complete()
 }

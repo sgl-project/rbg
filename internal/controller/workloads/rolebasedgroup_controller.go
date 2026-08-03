@@ -93,9 +93,10 @@ type RoleBasedGroupReconciler struct {
 	// the RoleInstance reconciler. Injected at wire-up time so both consumers
 	// operate on the same instance.
 	NodeBindings *instancesync.NodeBindingStore
-	// disableV1alpha1Compatibility, when true, skips Deployment/StatefulSet/LeaderWorkerSet
+	// enableDeprecatedWorkloadTypes reports whether the deprecated workload types are
+	// still enabled. When false, Deployment/StatefulSet/LeaderWorkerSet are skipped
 	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is removed.
-	disableV1alpha1Compatibility bool
+	enableDeprecatedWorkloadTypes bool
 }
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
@@ -677,7 +678,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	errs := make([]error, 0)
 
-	if !r.disableV1alpha1Compatibility {
+	if r.enableDeprecatedWorkloadTypes {
 		deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
 		if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
 			errs = append(errs, err)
@@ -1018,8 +1019,8 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options, disableV1alpha1Compatibility bool) error {
-	r.disableV1alpha1Compatibility = disableV1alpha1Compatibility
+func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options, enableDeprecatedWorkloadTypes bool) error {
+	r.enableDeprecatedWorkloadTypes = enableDeprecatedWorkloadTypes
 	runtimeController = ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
@@ -1045,7 +1046,7 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		}).
 		Named("workloads-rolebasedgroup")
 
-	if !disableV1alpha1Compatibility {
+	if enableDeprecatedWorkloadTypes {
 		runtimeController.Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate()))
 		runtimeController.Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate()))
 
