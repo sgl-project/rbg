@@ -330,7 +330,7 @@ func main() {
 	restConfig.Burst = kubeAPIBurst
 
 	mgr, err := ctrl.NewManager(
-		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection, enableDeprecatedWorkloadTypes),
+		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -509,7 +509,7 @@ func newWebhookServer(webhookMode string, tlsOpts []func(*tls.Config)) webhook.S
 // newManagerOptions builds the controller-runtime manager options.
 // When webhooks are disabled (enable-webhooks=none), webhook server and leader
 // election are disabled, and metrics are served insecurely.
-func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool, enableDeprecatedWorkloadTypes bool) ctrl.Options {
+func newManagerOptions(webhookMode string, webhookServer webhook.Server, metricsOpts metricsserver.Options, probeAddr string, enableLeaderElection bool) ctrl.Options {
 	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOpts,
@@ -517,7 +517,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       constants.ControllerName,
-		Cache:                  cacheOptions(enableDeprecatedWorkloadTypes),
+		Cache:                  cacheOptions(),
 	}
 	if !webhooksEnabled(webhookMode) {
 		setupLog.Info("Webhooks disabled: forcing LeaderElection=false, Metrics.SecureServing=false")
@@ -631,25 +631,28 @@ func startPprofServer(ctx context.Context, pprofAddr string) error {
 	return nil
 }
 
-func cacheOptions(enableDeprecatedWorkloadTypes bool) cache.Options {
+// cacheOptions restricts the cache to objects this controller owns, keyed by the
+// group-name label.
+//
+// The deprecated workload types are listed unconditionally, and deliberately so:
+// ByObject is per-type cache configuration, not an allowlist. It does not create an
+// informer — informers are built lazily on the first Get/List/Owns of a type — so an
+// entry here costs nothing when the type is never read, and gating it would only strip
+// the label bound from an informer that started anyway, leaving it to cache every
+// StatefulSet and Deployment in the cluster.
+func cacheOptions() cache.Options {
 	keyExistsRequirement, err := labels.NewRequirement(constants.GroupNameLabelKey, selection.Exists, nil)
 	if err != nil {
 		panic(err)
 	}
 	keyExistsSelector := labels.NewSelector().Add(*keyExistsRequirement)
 
-	byObject := map[client.Object]cache.ByObject{
-		&corev1.Service{}: {
-			Label: keyExistsSelector,
-		},
-	}
-	if enableDeprecatedWorkloadTypes {
-		byObject[&appsv1.StatefulSet{}] = cache.ByObject{Label: keyExistsSelector}
-		byObject[&appsv1.Deployment{}] = cache.ByObject{Label: keyExistsSelector}
-	}
-
 	return cache.Options{
-		Scheme:   scheme,
-		ByObject: byObject,
+		Scheme: scheme,
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Service{}:     {Label: keyExistsSelector},
+			&appsv1.StatefulSet{}: {Label: keyExistsSelector},
+			&appsv1.Deployment{}:  {Label: keyExistsSelector},
+		},
 	}
 }

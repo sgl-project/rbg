@@ -1606,6 +1606,18 @@ func hasValidOwnerRef(obj client.Object, targetGVK schema.GroupVersionKind) bool
 	return utils.CheckOwnerReference(refs, targetGVK)
 }
 
+// dynamicWatchCustomCRD registers an Owns() watch for a workload CRD the first time a
+// role actually uses it, since those CRDs may be installed after the manager starts.
+//
+// The LeaderWorkerSet branch carries no --enable-deprecated-workload-types check of its
+// own, and needs none: the only caller is getOrCreateWorkloadReconciler, which runs per
+// role, and with the flag off the validating webhook admits no object whose roles use a
+// deprecated workload type. So no role can reach this function with kind
+// LeaderWorkerSet, and SetupWithManager's gated Owns() stays the only place that could
+// start such a watch.
+//
+// TODO: remove the LeaderWorkerSet branch entirely once v1alpha1 is removed, along with
+// the rest of the deprecated workload type handling.
 func dynamicWatchCustomCRD(ctx context.Context, kind string) {
 	// Skip in unit tests when runtimeController is not initialized
 	if runtimeController == nil {
