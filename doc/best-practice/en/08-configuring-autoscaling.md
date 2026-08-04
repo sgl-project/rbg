@@ -315,7 +315,6 @@ apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
   name: pd-inference
-  namespace: inference
 spec:
   roles:
     - name: prefill
@@ -362,7 +361,6 @@ apiVersion: inference-extension.rolebasedgroup.io/v1alpha1
 kind: AutoScaler
 metadata:
   name: pd-inference          # Must match the RBG name
-  namespace: inference        # Must match the RBG namespace
 spec:
   scalingInterval: 180        # Scaling decision interval (seconds)
 

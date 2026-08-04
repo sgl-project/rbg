@@ -688,7 +688,6 @@ apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
   name: pd-autoscaler-demo
-  namespace: inference
 spec:
   roles:
     - name: prefill
@@ -770,7 +769,6 @@ apiVersion: inference-extension.rolebasedgroup.io/v1alpha1
 kind: AutoScaler
 metadata:
   name: pd-autoscaler-demo        # Must match the RBG name
-  namespace: inference
 spec:
   scalingInterval: 180
 
