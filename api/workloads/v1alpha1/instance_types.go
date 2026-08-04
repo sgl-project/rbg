@@ -190,6 +190,7 @@ type InstanceCondition struct {
 // +kubebuilder:resource:shortName=ins,path=instances,scope=Namespaced
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='InstanceReady')].status",description="Overall readiness status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
+// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 Instance is deprecated; use workloads.x-k8s.io/v1alpha2 RoleInstance"
 
 // Instance is the Schema for the instances API
 type Instance struct {
