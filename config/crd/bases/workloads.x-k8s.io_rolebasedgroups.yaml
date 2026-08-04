@@ -23,6 +23,9 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: AGE
       type: date
+    deprecated: true
+    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroup is deprecated;
+      use workloads.x-k8s.io/v1alpha2 RoleBasedGroup
     name: v1alpha1
     schema:
       openAPIV3Schema:

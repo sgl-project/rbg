@@ -473,6 +473,7 @@ type RoleStatus struct {
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbg}
+// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 RoleBasedGroup is deprecated; use workloads.x-k8s.io/v1alpha2 RoleBasedGroup"
 
 // RoleBasedGroup is the Schema for the rolebasedgroups API.
 type RoleBasedGroup struct {

@@ -48,13 +48,13 @@ spec:
             {{- end }}
             {{- $gangScheduling := $features.gangScheduling | default dict }}
             - --scheduler-name={{ $gangScheduling.schedulerName | default "scheduler-plugins" }}
-            {{- /*
-              Always render the flag, so its value can be read straight off a running pod.
-              hasKey rather than `default`: sprig treats false as empty, so
-              `.enabled | default true` would turn an explicit false back into true.
-            */}}
             {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
-            - --enable-deprecated-workload-types={{ if hasKey $deprecatedWorkloadTypes "enabled" }}{{ $deprecatedWorkloadTypes.enabled }}{{ else }}true{{ end }}
+            {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
+            {{- if $deprecatedEnabled }}
+            - --enable-deprecated-workload-types=true
+            {{- else }}
+            - --enable-deprecated-workload-types=false
+            {{- end }}
             {{- if $pprof.enabled }}
             - --enable-pprof=true
             - --pprof-bind-address={{ $pprof.bindAddress | default ":6060" }}

@@ -212,8 +212,10 @@ func main() {
 	flag.BoolVar(
 		&enableDeprecatedWorkloadTypes, "enable-deprecated-workload-types", true,
 		"Enable the deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet). Enabled by default. "+
-			"When false, the controller stops watching these resources and the validating webhook rejects roles that "+
-			"start using them; roles that already use one are exempt, so pre-existing objects stay reconcilable. "+
+			"When false, the controller stops watching these resources and the validating webhook rejects any "+
+			"create or update whose roles use one, with no exemption for objects that already do. Such a cluster "+
+			"grants no RBAC for these types, so this setting is only for a fresh installation; an installation that "+
+			"already has objects using them must keep it true. "+
 			"Note: because the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet, a v1alpha1 object is "+
 			"rejected unless every role names RoleInstanceSet explicitly; v1alpha2 objects use RoleInstanceSet by default.",
 	)

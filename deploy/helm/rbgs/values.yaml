@@ -70,9 +70,12 @@ controller:
   # Defaults to true, which keeps them enabled.
   # Set to false to turn them off:
   #   - RBAC for Deployment/StatefulSet/LeaderWorkerSet is removed
-  #   - Validating webhook rejects roles that start using these workload types;
-  #     roles that already use one are exempt and stay updatable
+  #   - Validating webhook rejects any create or update whose roles use these
+  #     workload types, with no exemption for objects that already do
   #   - Controller stops watching these resources
+  # Only set false on a FRESH installation. An installation that already has
+  # objects using these types must keep true: with RBAC and watches removed the
+  # controller cannot reconcile them. A migration path will be provided later.
   deprecatedWorkloadTypes:
     enabled: true
 

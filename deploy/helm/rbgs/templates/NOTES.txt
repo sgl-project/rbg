@@ -17,10 +17,13 @@ Upgrade (helm upgrade) is not supported due to potential API compatibility issue
 To update, uninstall and reinstall.
 
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
-{{- if and (hasKey $deprecatedWorkloadTypes "enabled") (not $deprecatedWorkloadTypes.enabled) }}
+{{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
+{{- if not $deprecatedEnabled }}
 NOTE: the deprecated workload types are DISABLED (controller.deprecatedWorkloadTypes.enabled=false).
-Roles cannot start using Deployment, StatefulSet, or LeaderWorkerSet; roles that already
-use one keep working and stay updatable (only the change is validated, not the object).
+Deployment, StatefulSet, and LeaderWorkerSet are rejected on every create and update,
+with no exemption for objects that already use one. This setting is only valid for a
+fresh installation: the controller holds no RBAC for these types and watches none of
+them, so it cannot reconcile such an object. A migration path will be provided later.
 WARNING: the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet,
 so a new v1alpha1 object is rejected even if it never sets `workload`. To keep using
 v1alpha1, every role must set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and

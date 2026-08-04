@@ -173,20 +173,6 @@ const deprecatedWorkloadTypeHint = "note: the v1alpha1 schema defaults spec.role
 	"workload types (Helm: controller.deprecatedWorkloadTypes.enabled=true, " +
 	"controller: --enable-deprecated-workload-types=true)"
 
-// deprecatedWorkloadTypeUpdateHint is the counterpart of deprecatedWorkloadTypeHint
-// for updates. A role keeps the deprecated workload type it already has, so the hint
-// has to explain what does count as introducing one — including the
-// v1alpha1 defaulting trap, since re-applying a v1alpha1 manifest that omits
-// spec.roles[].workload silently changes the role to apps/v1 StatefulSet.
-const deprecatedWorkloadTypeUpdateHint = "note: roles that already use a deprecated workload type keep working; " +
-	"only adding a role with one, or changing a role to a different one, is rejected. " +
-	"The v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet, so re-applying a v1alpha1 " +
-	"manifest that omits workload counts as such a change; " +
-	"fix: keep the role's workload type unchanged, set workload.kind=RoleInstanceSet " +
-	"(apiVersion workloads.x-k8s.io/v1alpha2), or re-enable the deprecated workload types " +
-	"(Helm: controller.deprecatedWorkloadTypes.enabled=true, " +
-	"controller: --enable-deprecated-workload-types=true)"
-
 // isDeprecatedWorkloadType reports whether wt is one of the workload types
 // superseded by RoleInstanceSet.
 func isDeprecatedWorkloadType(wt string) bool {
@@ -204,8 +190,10 @@ func isDeprecatedWorkloadType(wt string) bool {
 // RoleBasedGroup and a RoleBasedGroupSet. Returns an aggregated error listing all
 // offending roles, suffixed with deprecatedWorkloadTypeHint.
 //
-// This is the create-time check: updates go through
-// validateNoNewDeprecatedWorkloadTypes so that pre-existing roles stay writable.
+// The whole object is checked on both create and update. A cluster with the toggle
+// off never reconciles these workload types at all — it grants no RBAC for them and
+// watches none of them — so admitting a write that carries one would leave an object
+// nothing can act on.
 func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error {
 	var allErrs []error
 	for i := range roles {
@@ -224,51 +212,4 @@ func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error
 	// Wrap once instead of repeating the hint per role: with several offending
 	// roles the hint is identical and would otherwise dominate the message.
 	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), deprecatedWorkloadTypeHint)
-}
-
-// validateNoNewDeprecatedWorkloadTypes checks that an update does not introduce a
-// deprecated workload type, rather than rejecting every object that still carries
-// one. A role keeps its existing deprecated type; adding a role that uses one, or
-// switching a role to a different one, is rejected.
-//
-// Rejecting the whole object on update would also deny the controllers' own writes
-// to pre-existing groups — the discovery-mode annotation patch, the RoleBasedGroupSet
-// template sync, and the ScalingAdapter replica update all rewrite roles they do not
-// change — leaving those controllers retrying forever with no sign on the object.
-// Requiring the type to be unchanged (rather than merely "was deprecated before")
-// additionally prevents swapping one deprecated type for another.
-func validateNoNewDeprecatedWorkloadTypes(fieldPath string, oldRoles, newRoles []RoleSpec) error {
-	previousTypes := make(map[string]string, len(oldRoles))
-	for i := range oldRoles {
-		role := &oldRoles[i]
-		previousTypes[role.Name] = role.GetWorkloadType()
-	}
-
-	var allErrs []error
-	for i := range newRoles {
-		role := &newRoles[i]
-		wt := role.GetWorkloadType()
-		if !isDeprecatedWorkloadType(wt) {
-			continue
-		}
-		previousType, existed := previousTypes[role.Name]
-		switch {
-		case !existed:
-			allErrs = append(allErrs, fmt.Errorf(
-				"%s[%d] (role %q): workload type %q is deprecated and not enabled on this cluster, "+
-					"so it cannot be used by a newly added role",
-				fieldPath, i, role.Name, wt,
-			))
-		case previousType != wt:
-			allErrs = append(allErrs, fmt.Errorf(
-				"%s[%d] (role %q): workload type cannot be changed from %q to %q, "+
-					"because %q is deprecated and not enabled on this cluster",
-				fieldPath, i, role.Name, previousType, wt, wt,
-			))
-		}
-	}
-	if len(allErrs) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), deprecatedWorkloadTypeUpdateHint)
 }

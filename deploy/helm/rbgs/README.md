@@ -30,24 +30,30 @@ opt-in escape hatch rather than a migration deadline.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types (Deployment/StatefulSet/LeaderWorkerSet). When false, RBAC for these resources is removed, the validating webhook rejects roles that use them, and the controller stops watching them. | `true` |
+| `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types (Deployment/StatefulSet/LeaderWorkerSet). When false, RBAC for these resources is removed, the controller stops watching them, and the validating webhook rejects any create or update whose roles use them. | `true` |
+
+> **Only set `false` on a fresh installation.** With the toggle off the controller holds no RBAC for
+> Deployment/StatefulSet/LeaderWorkerSet and watches none of them, so it cannot reconcile an object
+> that uses one. An installation that already has such objects must keep `true`. A migration path
+> for moving existing objects to `RoleInstanceSet` will be published later; until then there is no
+> supported way to turn the toggle off on an existing installation.
 
 With `controller.deprecatedWorkloadTypes.enabled=false`, a role is only accepted if its workload
-type is `RoleInstanceSet`. Roles that already use a deprecated type are exempt: the check
-validates the change, not the whole object, so an existing group stays writable (and scalable) and
-the controllers can keep reconciling it. Rejected on that setting are:
+type is `RoleInstanceSet`. The whole object is validated on every write, not just the part the write
+changes, so all of the following are rejected:
 
 - creating a RoleBasedGroup/RoleBasedGroupSet whose roles use a deprecated workload type;
-- adding a role that uses one to an existing object;
-- changing a role's workload type to a deprecated one — including swapping one deprecated type for
-  another, and renaming a role, which counts as adding one.
+- updating one that already does — including an unchanged re-apply, a `kubectl scale`, and the
+  controllers' own writes, so such an object cannot be reconciled at all;
+- scaling a RoleBasedGroupSet whose `groupTemplate` uses one, since scale-up creates child
+  RoleBasedGroups that would be rejected in turn.
 
 > **Warning**: a v1alpha1 role must name `RoleInstanceSet` **explicitly** to be accepted.
 >
 > The v1alpha1 schema defaults `spec.roles[].workload` to `apps/v1 StatefulSet`, so a role submitted through v1alpha1 carries a deprecated workload type even if it never mentions `workload`. The conversion webhook records that defaulted value and the validating webhook then rejects it. In practice:
 >
 > - Every **new** v1alpha1 RoleBasedGroup/RoleBasedGroupSet that relies on the default workload is rejected, including manifests that look workload-free.
-> - Re-applying such a manifest over an existing group whose role was `RoleInstanceSet` counts as changing the workload type, and is rejected too.
+> - Updating an existing object through v1alpha1 without naming the workload is rejected the same way, whatever the object's roles used before.
 > - To keep using v1alpha1, set `workload.apiVersion: workloads.x-k8s.io/v1alpha2` and `workload.kind: RoleInstanceSet` on every role. Prefer submitting the object as `v1alpha2`, where `RoleInstanceSet` is already the default.
 >
 > An automated migration path is still to be implemented.

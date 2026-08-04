@@ -58,6 +58,7 @@ type AdapterScaleTargetRef struct {
 // +kubebuilder:printcolumn:name="PHASE",type="string",JSONPath=".status.phase",description="The current phase of the adapter"
 // +kubebuilder:printcolumn:name="REPLICAS",type="integer",JSONPath=".status.replicas",description="The current number of replicas"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="Time since creation."
+// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 RoleBasedGroupScalingAdapter is deprecated; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupScalingAdapter"
 
 // RoleBasedGroupScalingAdapter is the Schema for the rolebasedgroupscalingadapters API.
 type RoleBasedGroupScalingAdapter struct {

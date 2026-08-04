@@ -86,7 +86,7 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		allErrs = append(allErrs, err)
 	}
 	if !v.EnableDeprecatedWorkloadTypes {
-		if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", oldRBG.Spec.Roles, rbg.Spec.Roles); err != nil {
+		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
