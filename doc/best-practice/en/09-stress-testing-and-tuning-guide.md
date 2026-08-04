@@ -98,11 +98,14 @@ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
 helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
-    --set image.tag=${IMAGE_TAG} \
-    --set resources.limits.cpu=8 --set resources.limits.memory=16Gi \
-    --set controllerTuning.maxConcurrentReconciles=20 \
-    --set controllerTuning.kubeApiQPS=100 --set controllerTuning.kubeApiBurst=200 \
-    --set pprof.enabled=true --set pprof.port=6060 \
+    --set controller.image.tag=${IMAGE_TAG} \
+    --set controller.resources.limits.cpu=8 \
+    --set controller.resources.limits.memory=16Gi \
+    --set controller.tuning.maxConcurrentReconciles=20 \
+    --set controller.tuning.kubeApiQPS=100 \
+    --set controller.tuning.kubeApiBurst=200 \
+    --set controller.pprof.enabled=true \
+    --set controller.pprof.containerPort=6060 \
     --no-hooks --wait --timeout=120s
 
 # pprof port forwarding
@@ -398,11 +401,14 @@ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
 helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
-    --set image.tag=${IMAGE_TAG} \
-    --set resources.limits.cpu=16 --set resources.limits.memory=32Gi \
-    --set controllerTuning.maxConcurrentReconciles=50 \
-    --set controllerTuning.kubeApiQPS=200 --set controllerTuning.kubeApiBurst=400 \
-    --set pprof.enabled=true --set pprof.port=6060 \
+    --set controller.image.tag=${IMAGE_TAG} \
+    --set controller.resources.limits.cpu=16 \
+    --set controller.resources.limits.memory=32Gi \
+    --set controller.tuning.maxConcurrentReconciles=50 \
+    --set controller.tuning.kubeApiQPS=200 \
+    --set controller.tuning.kubeApiBurst=400 \
+    --set controller.pprof.enabled=true \
+    --set controller.pprof.containerPort=6060 \
     --no-hooks --wait --timeout=120s
 
 # pprof port forwarding
