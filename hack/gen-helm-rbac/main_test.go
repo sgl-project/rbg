@@ -125,6 +125,90 @@ func TestSplitRules(t *testing.T) {
 	}
 }
 
+// TestParseRole covers the inputs that used to be accepted and then silently lose
+// permissions: a misspelled key left its rule empty, a kind other than ClusterRole was
+// rendered as the chart ClusterRole anyway, and both exited 0.
+func TestParseRole(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		errContains string
+	}{
+		{
+			name: "well-formed ClusterRole",
+			raw: `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: controller-role
+rules:
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get"]
+`,
+		},
+		{
+			name: "misspelled key",
+			raw: `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: controller-role
+rules:
+- apiGroups: ["apps"]
+  resource: ["statefulsets"]
+  verbs: ["get"]
+`,
+			errContains: "parse",
+		},
+		{
+			name: "namespaced Role",
+			raw: `apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: controller-role
+rules:
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get"]
+`,
+			errContains: `want ClusterRole`,
+		},
+		{
+			name: "no rules",
+			raw: `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: controller-role
+`,
+			errContains: "declares no rules",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role, err := parseRole([]byte(tt.raw))
+			if tt.errContains == "" {
+				require.NoError(t, err)
+				assert.Len(t, role.Rules, 1)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}
+
+// TestSplitRulesDropsResourcelessRule documents why run compares block count against
+// rule count: splitRules partitions on .Resources, so a rule without any yields no
+// block and would vanish from the generated ClusterRole.
+func TestSplitRulesDropsResourcelessRule(t *testing.T) {
+	blocks, err := splitRules([]rbacv1.PolicyRule{{
+		NonResourceURLs: []string{"/metrics"},
+		Verbs:           []string{"get"},
+	}})
+	require.NoError(t, err)
+	assert.Empty(t, blocks)
+}
+
 // TestSplitRulesRejectsAmbiguousGroups covers a rule whose apiGroups disagree on
 // whether a resource is deprecated: it cannot be split by resource alone, so it must
 // error rather than land on one side of the conditional.

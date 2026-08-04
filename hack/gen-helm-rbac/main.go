@@ -25,6 +25,7 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -111,17 +112,24 @@ func run() error {
 		return fmt.Errorf("read %s: %w", sourcePath, err)
 	}
 
-	var role rbacv1.ClusterRole
-	if err := yaml.Unmarshal(raw, &role); err != nil {
-		return fmt.Errorf("parse %s: %w", sourcePath, err)
-	}
-	if len(role.Rules) == 0 {
-		return fmt.Errorf("%s declares no rules", sourcePath)
+	role, err := parseRole(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %w", sourcePath, err)
 	}
 
 	blocks, err := splitRules(role.Rules)
 	if err != nil {
 		return err
+	}
+	// splitRules partitions on .Resources, so a rule shaped differently — a
+	// nonResourceURLs-only rule from a kubebuilder urls= marker, say — yields no block
+	// at all. Without this check the generator would write a ClusterRole missing those
+	// permissions, or none, and still exit 0.
+	if len(blocks) < len(role.Rules) {
+		return fmt.Errorf(
+			"%s: %d rules produced only %d output blocks; a rule was dropped, likely one declaring no resources",
+			sourcePath, len(role.Rules), len(blocks),
+		)
 	}
 	out, err := render(blocks)
 	if err != nil {
@@ -132,6 +140,24 @@ func run() error {
 	}
 	fmt.Printf("gen-helm-rbac: wrote %s from %s\n", targetPath, sourcePath)
 	return nil
+}
+
+// parseRole decodes controller-gen's output. It is strict about both the schema and
+// the kind: a misspelled key such as "resource:" for "resources:" would otherwise
+// leave that rule empty and drop it from the output silently, and a "kind: Role"
+// document would be rendered as the chart's ClusterRole.
+func parseRole(raw []byte) (*rbacv1.ClusterRole, error) {
+	var role rbacv1.ClusterRole
+	if err := yaml.UnmarshalStrict(raw, &role); err != nil {
+		return nil, fmt.Errorf("parse: %w", err)
+	}
+	if role.Kind != "ClusterRole" {
+		return nil, fmt.Errorf("declares kind %q, want ClusterRole", role.Kind)
+	}
+	if len(role.Rules) == 0 {
+		return nil, errors.New("declares no rules")
+	}
+	return &role, nil
 }
 
 // ruleBlock is a policy rule plus whether it belongs inside the conditional.
