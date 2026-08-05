@@ -12,10 +12,6 @@ Check the controller:
   kubectl -n {{ .Release.Namespace }} get deploy rbgs-controller-manager
   kubectl -n {{ .Release.Namespace }} get pods -l control-plane=rbgs-controller
 
-IMPORTANT: This chart version only supports fresh installation (helm install).
-Upgrade (helm upgrade) is not supported due to potential API compatibility issues.
-To update, uninstall and reinstall.
-
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
 {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
 {{- if not $deprecatedEnabled }}

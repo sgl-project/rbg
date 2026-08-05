@@ -1,3 +1,0 @@
-{{- if .Release.IsUpgrade }}
-{{- fail "Upgrade is not supported for this chart version. Please uninstall and reinstall. See chart README for details." }}
-{{- end }}

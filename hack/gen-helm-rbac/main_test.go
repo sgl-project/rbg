@@ -197,16 +197,36 @@ metadata:
 	}
 }
 
-// TestSplitRulesDropsResourcelessRule documents why run compares block count against
-// rule count: splitRules partitions on .Resources, so a rule without any yields no
-// block and would vanish from the generated ClusterRole.
-func TestSplitRulesDropsResourcelessRule(t *testing.T) {
-	blocks, err := splitRules([]rbacv1.PolicyRule{{
+// TestSplitRulesRejectsResourcelessRule covers a rule that yields no block at all:
+// splitRules partitions on .Resources, so without this it would vanish from the
+// generated ClusterRole with no error and exit 0.
+func TestSplitRulesRejectsResourcelessRule(t *testing.T) {
+	_, err := splitRules([]rbacv1.PolicyRule{{
 		NonResourceURLs: []string{"/metrics"},
 		Verbs:           []string{"get"},
 	}})
-	require.NoError(t, err)
-	assert.Empty(t, blocks)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares no resources")
+}
+
+// TestSplitRulesRejectsDropMaskedByStraddlingRule pins why the check is per rule
+// rather than on the total. The first rule straddles the gate and emits two blocks,
+// so these two rules produce two blocks in total — enough for a "blocks >= rules"
+// comparison to pass while the second rule is dropped.
+func TestSplitRulesRejectsDropMaskedByStraddlingRule(t *testing.T) {
+	_, err := splitRules([]rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"apps"},
+			Resources: []string{"controllerrevisions", "statefulsets"},
+			Verbs:     []string{"get"},
+		},
+		{
+			NonResourceURLs: []string{"/metrics"},
+			Verbs:           []string{"get"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rules[1]")
 }
 
 // TestSplitRulesRejectsAmbiguousGroups covers a rule whose apiGroups disagree on

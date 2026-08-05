@@ -58,12 +58,6 @@ changes, so all of the following are rejected:
 >
 > An automated migration path is still to be implemented.
 
-## No upgrade support
-
-**This chart version only supports fresh installation (`helm install`).**
-Upgrade (`helm upgrade`) is not supported due to potential API compatibility issues.
-To update to a newer version, uninstall and reinstall.
-
 ## Installing
 
 ```bash
@@ -151,9 +145,10 @@ kubectl delete -f config/crd/bases/
 
 ## Upgrading
 
-> **Warning**: This chart version does **not** support `helm upgrade`.
-> Only fresh `helm install` is supported. To update, uninstall and reinstall.
-> See the [No upgrade support](#no-upgrade-support) section above.
+`helm upgrade` is supported. Nothing checks the cluster's existing objects against
+`controller.deprecatedWorkloadTypes.enabled`, so keeping it at its default `true` on an installation
+that already has objects using a deprecated workload type is the operator's responsibility — see
+[Deprecated workload types](#deprecated-workload-types).
 
 ### Breaking change: values regrouped in chart v0.8.0
 

@@ -121,16 +121,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// splitRules partitions on .Resources, so a rule shaped differently — a
-	// nonResourceURLs-only rule from a kubebuilder urls= marker, say — yields no block
-	// at all. Without this check the generator would write a ClusterRole missing those
-	// permissions, or none, and still exit 0.
-	if len(blocks) < len(role.Rules) {
-		return fmt.Errorf(
-			"%s: %d rules produced only %d output blocks; a rule was dropped, likely one declaring no resources",
-			sourcePath, len(role.Rules), len(blocks),
-		)
-	}
 	out, err := render(blocks)
 	if err != nil {
 		return err
@@ -168,6 +158,11 @@ type ruleBlock struct {
 
 // splitRules partitions each rule's resources into the always-granted ones and the
 // ones gated by the toggle, preserving the input order of both rules and resources.
+// Every input rule must yield at least one block: a rule shaped differently — a
+// nonResourceURLs-only rule from a kubebuilder urls= marker, say — would otherwise
+// vanish from the generated ClusterRole with no error. The check is per rule rather
+// than on the total, because a rule whose resources straddle the gate emits two
+// blocks and would pay for a drop elsewhere.
 func splitRules(rules []rbacv1.PolicyRule) ([]ruleBlock, error) {
 	var blocks []ruleBlock
 	for i, rule := range rules {
@@ -182,6 +177,13 @@ func splitRules(rules []rbacv1.PolicyRule) ([]ruleBlock, error) {
 			} else {
 				kept = append(kept, resource)
 			}
+		}
+		if len(kept) == 0 && len(gated) == 0 {
+			return nil, fmt.Errorf(
+				"%s rules[%d]: declares no resources, so it produced no output block and would be "+
+					"dropped; give it resources, or teach this generator to emit nonResourceURLs rules ungated",
+				sourcePath, i,
+			)
 		}
 		if len(kept) > 0 {
 			blocks = append(blocks, ruleBlock{rule: withResources(rule, kept)})
