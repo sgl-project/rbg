@@ -4,18 +4,18 @@
 
 | # | 文档 | 核心内容 |
 | --- | --- | --- |
-| 1 | 多角色配置&角色拓扑 | 4 种部署拓扑（聚合/PD分离 × 单机/多机） |
-| 2 | 使用 RoleTemplate 简化配置 | 通过 RoleTemplate 复用角色配置 |
-| 3 | 配置滚动更新策略 | 滚动更新的参数和策略选择 |
-| 4 | 原地升级与原地调度 | 容器级快速更新和节点亲和性调度 |
+| 1 | [多角色配置&角色拓扑](01-deploy-inference-service.md) | 4 种部署拓扑（聚合/PD分离 × 单机/多机） |
+| 2 | [使用 RoleTemplate 简化配置](02-using-role-templates.md) | 通过 RoleTemplate 复用角色配置 |
+| 3 | [配置滚动更新策略](03-configuring-rolling-updates.md) | 滚动更新的参数和策略选择 |
+| 4 | [原地升级与原地调度](04-configuring-inplace-update-and-scheduling-policies.md) | 容器级快速更新和节点亲和性调度 |
 | 5 | 服务发现与端口分配 | DNS、环境变量、ConfigMap、动态端口 |
 | 6 | 大模型预热（Warmup） | 预热镜像、模型、预编译文件 |
 | 7 | CoordinatedPolicy 协作管理 | 控制多角色的伸缩和升级同步 |
 | 8 | 为 RBG 服务配置弹性伸缩策略 | HPA/KEDA/RBG Planner 三种伸缩方案 |
 | 9 | 大规模集群资源评估、配置与压测 | Controller 资源评估和压测工具 |
-| 10 | 通过 RBG 部署 Mooncake Store | 分布式 KV Cache 存储的部署和管理 |
+| 10 | [通过 RBG 部署 Mooncake Store](10-deploy-mooncake-store-with-rbg.md) | 分布式 KV Cache 存储的部署和管理 |
 
-<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
+<!-- TODO: 文档 5-9 尚未创建，待文档完成后统一添加链接 -->
 
 ---
 

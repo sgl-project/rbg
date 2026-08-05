@@ -14,7 +14,7 @@ RoleBasedGroup（RBG）是 Kubernetes 上用于编排分布式、有状态 AI �
 ## 前提条件
 
 + Kubernetes 集群版本 >= 1.24
-+ 已安装 RBG Controller（参考 [安装指南](https://github.com/sgl-project/rbg)）
++ 已安装 RBG Controller（参考 [安装指南](../../install.md)）
 + 集群中包含 GPU 节点（`nvidia.com/gpu` 资源可用）
 + 已安装 NVIDIA Device Plugin
 
@@ -565,10 +565,11 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=<rbg-name>
 
 ## 相关文档
 
-<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
+<!-- TODO: 弹性伸缩、Gang 调度、CoordinatedPolicy 文档尚未创建，待文档完成后统一添加链接 -->
 
-+ 使用 RoleTemplates 减少配置重复
++ [使用 RoleTemplates 减少配置重复](02-using-role-templates.md)
++ [配置滚动更新策略](03-configuring-rolling-updates.md)
++ [配置原地升级与原地调度策略](04-configuring-inplace-update-and-scheduling-policies.md)
 + 配置 HPA 弹性伸缩
 + Gang 调度配置
-+ 滚动更新与金丝雀发布
 + PD 分离协调扩缩容（CoordinatedPolicy）

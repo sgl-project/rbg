@@ -14,7 +14,7 @@ This document uses the [SGLang](https://github.com/sgl-project/sglang) inference
 ## Prerequisites
 
 + Kubernetes cluster version >= 1.24
-+ RBG Controller installed (see [Installation Guide](https://github.com/sgl-project/rbg))
++ RBG Controller installed (see [Installation Guide](../../install.md))
 + GPU nodes in the cluster (`nvidia.com/gpu` resource available)
 + NVIDIA Device Plugin installed
 
@@ -565,10 +565,10 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=<rbg-name>
 
 ## Related Documents
 
-<!-- TODO: The following documents have not been created yet; links will be added once the documents are complete -->
+<!-- TODO: The autoscaling, Gang scheduling, and CoordinatedPolicy documents have not been created yet; links will be added once they are complete -->
 
-+ Using RoleTemplates to Reduce Configuration Duplication
++ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
++ [Configuring Rolling Update Strategies](03-configuring-rolling-updates.md)
 + Configuring HPA Autoscaling
 + Gang Scheduling Configuration
-+ Rolling Updates and Canary Releases
 + PD-Disaggregated Coordinated Scaling (CoordinatedPolicy)

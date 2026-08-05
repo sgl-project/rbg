@@ -12,7 +12,7 @@ RBG orchestrates Mooncake Store's Master and Store nodes as roles within the inf
 ## Prerequisites
 
 + Kubernetes cluster version >= 1.24
-+ RBG Controller installed (refer to the [Installation Guide](https://github.com/sgl-project/rbg))
++ RBG Controller installed (refer to the [Installation Guide](../../install.md))
 + Mooncake Store does not require GPUs; it only needs CPU nodes with sufficient memory
 
 > **Note**: The following examples use the SGLang engine (`lmsysorg/sglang:v0.5.9`) to demonstrate Mooncake Store integration. Mooncake Store also supports other inference engines (such as vLLM).
@@ -417,7 +417,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake | t
 
 ## Related Documentation
 
-+ Deploying Inference Services with RBG
-+ Using RoleTemplates to Reduce Configuration Duplication
++ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
++ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
++ [Configuring Rolling Update Strategies](03-configuring-rolling-updates.md)
 + In-Place Upgrade and In-Place Scheduling
-+ Configuring Rolling Update Strategies

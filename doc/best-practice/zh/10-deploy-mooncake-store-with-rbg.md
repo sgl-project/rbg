@@ -12,7 +12,7 @@ RBG 将 Mooncake Store 的 Master 和 Store 节点作为推理服务中的角色
 ## 前提条件
 
 + Kubernetes 集群版本 >= 1.24
-+ 已安装 RBG Controller（参考 [安装指南](https://github.com/sgl-project/rbg)）
++ 已安装 RBG Controller（参考 [安装指南](../../install.md)）
 + Mooncake Store 不需要 GPU，仅需 CPU 节点和充足内存
 
 > **说明**：以下示例使用 SGLang 引擎（`lmsysorg/sglang:v0.5.9`）演示 Mooncake Store 的集成。Mooncake Store 也支持其他推理引擎（如 vLLM）。
@@ -413,7 +413,7 @@ kubectl logs -l rbg.workloads.x-k8s.io/role-name=mooncake-master -c mooncake | t
 
 ## 相关文档
 
-+ 使用 RBG 部署推理服务
-+ 使用 RoleTemplates 减少配置重复
-+ 原地升级与原地调度
-+ 配置滚动更新策略
++ [使用 RBG 部署推理服务](01-deploy-inference-service.md)
++ [使用 RoleTemplates 减少配置重复](02-using-role-templates.md)
++ [配置原地升级与原地调度策略](04-configuring-inplace-update-and-scheduling-policies.md)
++ [配置滚动更新策略](03-configuring-rolling-updates.md)
