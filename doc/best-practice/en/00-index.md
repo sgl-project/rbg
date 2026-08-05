@@ -25,7 +25,7 @@ Model size determines deployment topology and resource requirements — this is 
 
 ### Small Models (<10B, Single GPU)
 
-**Typical models**: Qwen-1.8B, Llama-3-8B, GLM-4-9B
+**Typical models**: Qwen3-0.6B, Qwen3-8B, GLM-4-9B
 
 | Scenario | Recommended Document | Notes |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ Model size determines deployment topology and resource requirements — this is 
 
 ### Medium Models (10B-70B, Multi-GPU)
 
-**Typical models**: Qwen-72B, Llama-3-70B, DeepSeek-V2-Lite
+**Typical models**: Qwen3-32B, Llama-3.3-70B, Gemma-3-27B
 
 | Scenario | Recommended Document | Notes |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ Model size determines deployment topology and resource requirements — this is 
 
 ### Large Models (>70B, Multi-Node)
 
-**Typical models**: DeepSeek-R1-671B, Llama-3-405B, Qwen-110B
+**Typical models**: Qwen3-235B-A22B, DeepSeek-R1-671B, Llama-3.1-405B
 
 | Scenario | Recommended Document | Notes |
 | --- | --- | --- |
@@ -209,9 +209,9 @@ The following matrix quickly locates the documents you need to read based on **m
 
 ## Typical Scenario Recommended Paths
 
-### Scenario A: Quick Deployment of Qwen-72B Inference Service
+### Scenario A: Quick Deployment of Qwen3-32B Inference Service
 
-**Goal**: Deploy Qwen-72B in production to provide stable inference service.
+**Goal**: Deploy Qwen3-32B in production to provide stable inference service.
 
 **Recommended path**:
 
@@ -347,7 +347,7 @@ Document 10 (Mooncake Store) ──→ KV Cache optimization, independent
 
 | Question | Reference Document |
 | --- | --- |
-| How to deploy Qwen-72B? | Document 1 (Aggregated deployment + multi-node multi-GPU) |
+| How to deploy Qwen3-32B? | Document 1 (Aggregated deployment + multi-node multi-GPU) |
 | How to deploy DeepSeek-R1? | Document 1 (PD disaggregation + multi-node multi-GPU) + Document 6 + Document 7 + Document 10 |
 | KV Cache lost during rolling update? | Document 4 (in-place update) + Document 10 (Mooncake Store) |
 | How to configure autoscaling? | Document 8 |
