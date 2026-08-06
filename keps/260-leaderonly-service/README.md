@@ -116,22 +116,22 @@ This problem occurs with runtimes such as `sglang`. In a cross-node engine, work
 The problem here is different from the per-replica headless Service problem. This KEP aims to keep the role shared headless Service while controlling which Pods are targeted by it.
 
 
-- the shared Service name does not change, and the controller only needs to update Service selectors
-- Pod `ServiceName` and `subdomain` do not change and direct Pod DNS identity does not change
+- the shared Service name never changes, and the controller only needs to update the Service selector
+- the leader Pod's `ServiceName`, `subdomain`, and DNS identity never change
 
-This makes `LeaderOnly` a selector policy, not a service identity policy.
-
+The policy also decides which components of the role instance are bound to the shared Service, so
+worker Pods gain or lose their `hostname`/`subdomain` when it changes.
 
 ### Goals
 
-1. Introduce a clear API for controlling which Pods are selected by the shared headless Service of a role.
-2. Keep current behavior as the default and support a `LeaderOnly` mode for `RoleInstanceSet + leaderWorkerPattern`.
-3. Ensure that switching between `All` and `LeaderOnly` does not require Pod recreation or Service renaming.
+1. Introduce a clear API for controlling which Pods of a role participate in its shared headless Service.
+2. Default to `LeaderOnly`, which matches the common inference topology where only leader Pods serve requests, and support `All` for roles whose worker Pods must be reachable by DNS.
+3. Ensure that switching between `All` and `LeaderOnly` never renames or recreates the shared Service, and never changes the leader Pod's identity.
 
 ### Non-Goals
 
 1. Introducing per-replica headless Services or per-replica subdomain policy.
-2. Changing Pod network identity, `ServiceName`, or `subdomain`.
+2. Changing the shared Service name, or the leader Pod's `ServiceName`, `subdomain`, and FQDN.
 3. Supporting patterns that do not define a leader component.
 
 
@@ -139,16 +139,16 @@ This makes `LeaderOnly` a selector policy, not a service identity policy.
 
 Add an optional `SharedServiceSelection` field (of type `SharedServiceSelectionPolicy`) under `LeaderWorkerPattern`.
 
-- `All` keeps the current shared headless Service behavior. The Service continues to select every Pod in the role.
-- `LeaderOnly` keeps the same shared headless Service object and the same Service name, but narrows its selector so that only leader Pods are exposed
+- `All` keeps the shared headless Service targeting every Pod in the role, and binds every component of the role instance to it, so worker Pods are reachable at `<pod-name>.<service-name>.<namespace>.svc` as well.
+- `LeaderOnly` keeps the same shared headless Service object and the same Service name, but narrows its selector so that only leader Pods are exposed, and binds only the leader component to it.
 
 The feature is intended for `RoleInstanceSet + leaderWorkerPattern`, where the role has a clear leader component and 
 where only leader Pods should serve requests.
 
-Switching between `All` and `LeaderOnly` is an in-place Service update:
+Switching between `All` and `LeaderOnly` updates the shared Service in place:
 
-- no Pod restart nor `RoleInstanceSet` rollout
-- no Pod DNS identity change nor Service rename
+- no Service rename, no Service recreation, and no change to the leader Pod's DNS identity
+- worker Pods gain or lose their `hostname`/`subdomain`, which are immutable Pod fields, so the switch triggers a `RoleInstanceSet` rollout
 
 ### User Stories (Optional)
 
@@ -241,7 +241,7 @@ Discovery artifacts and environment variables remain stable because the shared S
 
 In particular:
 
-- `RBG_LEADER_ADDRESS` keeps the same address shape, and direct Pod DNS names remain unchanged
+- `RBG_LEADER_ADDRESS` keeps the same address shape, and the leader Pod's DNS name remains unchanged
 - config generation that derives addresses from the shared Service name does not need a new naming mode
 
 The only behavior changes are that worker Pods are not targeted by the shared Service endpoints under `LeaderOnly`, and that worker Pods are only addressable at `<pod-name>.<shared-service-name>` under `All`.
