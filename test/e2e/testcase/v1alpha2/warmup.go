@@ -101,8 +101,15 @@ func RunWarmupTestCases(f *framework.Framework) {
 		})
 
 		ginkgo.It("should complete warmup job with targetRoleBasedGroup mode and merge multi-role actions", func() {
-			ginkgo.By("Creating RBG with 2 roles")
+			ginkgo.By("Creating RBG with 2 roles pinned to the same node")
+			// This case verifies action merging: when several roles of the RBG sit on one node, the
+			// controller must create a single warmup Pod there holding every role's action. Both
+			// roles are therefore pinned to one node with a nodeSelector. Mutually required pod
+			// affinity cannot be used for this: neither pod could ever be scheduled, since each
+			// would wait for the other to already exist on the node.
+			nodeName := getFirstAvailableNodeName(f)
 			podTemplate := buildWarmupPodTemplate()
+			podTemplate.Spec.NodeSelector = map[string]string{corev1.LabelHostname: nodeName}
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("warmup-rbg-test", f.Namespace).
 				WithRoles([]workloadsv1alpha2.RoleSpec{
 					{
@@ -146,13 +153,18 @@ func RunWarmupTestCases(f *framework.Framework) {
 				return true
 			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(), "RBG pods should be scheduled")
 
-			// Get the node where both pods are running
-			ginkgo.By("Getting node name from RBG pods")
+			// Guard the premise of this case: both roles must have landed on the pinned node,
+			// otherwise the merge behaviour below is not what is being exercised.
+			ginkgo.By("Verifying both roles were scheduled on the same node")
 			podList := &corev1.PodList{}
 			gomega.Expect(f.Client.List(f.Ctx, podList,
 				client.InNamespace(f.Namespace),
 				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
-			nodeName := podList.Items[0].Spec.NodeName
+			gomega.Expect(podList.Items).To(gomega.HaveLen(2))
+			for _, pod := range podList.Items {
+				gomega.Expect(pod.Spec.NodeName).To(gomega.Equal(nodeName),
+					"pod %s should be pinned to node %s", pod.Name, nodeName)
+			}
 
 			ginkgo.By("Creating warmup CR with targetRoleBasedGroup mode")
 			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
