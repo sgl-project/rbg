@@ -520,6 +520,49 @@ func TestRoleSpec_GetWorkloadSpec(t *testing.T) {
 	}
 }
 
+// TestLeaderWorkerPattern_GetSharedServiceSelection tests the GetSharedServiceSelection
+// method, which resolves the effective policy and mirrors the CRD default (LeaderOnly).
+func TestLeaderWorkerPattern_GetSharedServiceSelection(t *testing.T) {
+	tests := []struct {
+		name     string
+		lwp      *LeaderWorkerPattern
+		expected SharedServiceSelectionPolicy
+	}{
+		{
+			name:     "nil pattern falls back to LeaderOnly",
+			lwp:      nil,
+			expected: SharedServiceSelectionLeaderOnly,
+		},
+		{
+			name:     "unset policy falls back to LeaderOnly",
+			lwp:      &LeaderWorkerPattern{Size: ptr.To(int32(2))},
+			expected: SharedServiceSelectionLeaderOnly,
+		},
+		{
+			name: "explicit All is honored",
+			lwp: &LeaderWorkerPattern{
+				Size:                   ptr.To(int32(2)),
+				SharedServiceSelection: ptr.To(SharedServiceSelectionAll),
+			},
+			expected: SharedServiceSelectionAll,
+		},
+		{
+			name: "explicit LeaderOnly is honored",
+			lwp: &LeaderWorkerPattern{
+				Size:                   ptr.To(int32(2)),
+				SharedServiceSelection: ptr.To(SharedServiceSelectionLeaderOnly),
+			},
+			expected: SharedServiceSelectionLeaderOnly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.lwp.GetSharedServiceSelection())
+		})
+	}
+}
+
 func TestValidateRollingUpdate_AllowsReplicasZero(t *testing.T) {
 	rbg := &RoleBasedGroup{
 		Spec: RoleBasedGroupSpec{

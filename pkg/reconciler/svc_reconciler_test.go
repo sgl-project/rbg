@@ -117,8 +117,7 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 				constants.RoleNameLabelKey:  rbg.Spec.Roles[i].Name,
 			}
 			if rbg.Spec.Roles[i].IsLeaderWorkerPattern() &&
-				rbg.Spec.Roles[i].LeaderWorkerPattern.SharedServiceSelection != nil &&
-				*rbg.Spec.Roles[i].LeaderWorkerPattern.SharedServiceSelection == workloadsv1alpha2.SharedServiceSelectionLeaderOnly {
+				rbg.Spec.Roles[i].LeaderWorkerPattern.GetSharedServiceSelection() == workloadsv1alpha2.SharedServiceSelectionLeaderOnly {
 				expectedSelector[constants.ComponentNameLabelKey] = "leader"
 			}
 			assert.Equal(t, expectedSelector, svc.Spec.Selector)
@@ -136,7 +135,9 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace(t *te
 	require.NoError(t, corev1.AddToScheme(s))
 
 	role := wrappersv2.BuildLeaderWorkerRole("test-role").Obj()
-	role.LeaderWorkerPattern.SharedServiceSelection = nil
+	role.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+		workloadsv1alpha2.SharedServiceSelectionAll,
+	)
 
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").WithRoles(
 		[]workloadsv1alpha2.RoleSpec{role},
@@ -217,8 +218,10 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace_Rever
 	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, svc))
 	assert.Equal(t, "leader", svc.Spec.Selector[constants.ComponentNameLabelKey])
 
-	// Switch to nil (All) — component label should be removed from selector
-	roleRef.LeaderWorkerPattern.SharedServiceSelection = nil
+	// Switch to All — component label should be removed from selector
+	roleRef.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+		workloadsv1alpha2.SharedServiceSelectionAll,
+	)
 	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
 
 	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, svc))

@@ -1,0 +1,206 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package rbg
+
+import (
+	"fmt"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/test/envtest/testutil"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
+)
+
+var _ = Describe("SharedServiceSelection", func() {
+	const (
+		sssTimeout  = time.Second * 60
+		sssInterval = time.Millisecond * 500
+	)
+
+	var testNs string
+
+	BeforeEach(func() {
+		testNs = fmt.Sprintf("test-sss-%d", time.Now().UnixNano())
+		testutil.CreateNamespace(testNs)
+	})
+
+	AfterEach(func() {
+		testutil.DeleteNamespace(testNs)
+	})
+
+	// createRbg creates an RBG holding a single leaderWorkerPattern role and returns the
+	// object as persisted by the API server, so that defaulted fields are visible.
+	createRbg := func(name string, role workloadsv1alpha2.RoleSpec) *workloadsv1alpha2.RoleBasedGroup {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup(name, testNs).
+			WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+			Obj()
+		ExpectWithOffset(1, testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+		created := &workloadsv1alpha2.RoleBasedGroup{}
+		ExpectWithOffset(1, testutil.K8sClient.Get(
+			testutil.Ctx, types.NamespacedName{Name: name, Namespace: testNs}, created,
+		)).Should(Succeed())
+		return created
+	}
+
+	// componentServiceNames waits for the RoleInstanceSet of the role and returns its
+	// component name -> serviceName mapping.
+	componentServiceNames := func(
+		rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	) map[string]string {
+		ris := &workloadsv1alpha2.RoleInstanceSet{}
+		EventuallyWithOffset(1, func() error {
+			return testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{
+				Name: rbg.GetWorkloadName(role), Namespace: testNs,
+			}, ris)
+		}, sssTimeout, sssInterval).Should(Succeed())
+
+		serviceNames := map[string]string{}
+		for _, component := range ris.Spec.RoleInstanceTemplate.Components {
+			serviceNames[component.Name] = component.ServiceName
+		}
+		return serviceNames
+	}
+
+	serviceSelector := func(
+		rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	) map[string]string {
+		svc := &corev1.Service{}
+		EventuallyWithOffset(1, func() error {
+			return testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{
+				Name: rbg.GetServiceName(role), Namespace: testNs,
+			}, svc)
+		}, sssTimeout, sssInterval).Should(Succeed())
+		return svc.Spec.Selector
+	}
+
+	// podsByComponent waits until every pod of the role is created and indexes them by
+	// component name.
+	podsByComponent := func(rbgName, roleName string, count int) map[string]corev1.Pod {
+		pods := map[string]corev1.Pod{}
+		EventuallyWithOffset(1, func() int {
+			podList := &corev1.PodList{}
+			if err := testutil.K8sClient.List(testutil.Ctx, podList,
+				client.InNamespace(testNs),
+				client.MatchingLabels{
+					constants.GroupNameLabelKey: rbgName,
+					constants.RoleNameLabelKey:  roleName,
+				},
+			); err != nil {
+				return 0
+			}
+			pods = map[string]corev1.Pod{}
+			for i := range podList.Items {
+				pod := podList.Items[i]
+				if pod.DeletionTimestamp != nil {
+					continue
+				}
+				pods[pod.Labels[constants.ComponentNameLabelKey]] = pod
+			}
+			return len(pods)
+		}, sssTimeout, sssInterval).Should(Equal(count))
+		return pods
+	}
+
+	Context("When the policy is not set", func() {
+		It("Should default to LeaderOnly and only give the leader component a serviceName", func() {
+			role := wrappersv2.BuildLeaderWorkerRole("role-1").Obj()
+			role.LeaderWorkerPattern.SharedServiceSelection = nil
+
+			rbg := createRbg("rbg-default", role)
+
+			By("verifying the API server defaulted the policy to LeaderOnly")
+			Expect(rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).ShouldNot(BeNil())
+			Expect(*rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).
+				Should(Equal(workloadsv1alpha2.SharedServiceSelectionLeaderOnly))
+
+			By("verifying only the leader component is bound to the shared service")
+			serviceNames := componentServiceNames(rbg, &rbg.Spec.Roles[0])
+			Expect(serviceNames[string(constants.LeaderComponentType)]).
+				Should(Equal(rbg.GetServiceName(&rbg.Spec.Roles[0])))
+			Expect(serviceNames[string(constants.WorkerComponentType)]).Should(BeEmpty())
+
+			By("verifying the shared service only selects leader pods")
+			Expect(serviceSelector(rbg, &rbg.Spec.Roles[0])).
+				Should(HaveKeyWithValue(constants.ComponentNameLabelKey, string(constants.LeaderComponentType)))
+
+			By("verifying only the leader pod has a network identity")
+			pods := podsByComponent(rbg.Name, rbg.Spec.Roles[0].Name, 2)
+			leader := pods[string(constants.LeaderComponentType)]
+			Expect(leader.Spec.Hostname).Should(Equal(leader.Name))
+			Expect(leader.Spec.Subdomain).Should(Equal(rbg.GetServiceName(&rbg.Spec.Roles[0])))
+			Expect(pods[string(constants.WorkerComponentType)].Spec.Subdomain).Should(BeEmpty())
+		})
+	})
+
+	Context("When the policy is All", func() {
+		It("Should give every component a serviceName and a pod network identity", func() {
+			role := wrappersv2.BuildLeaderWorkerRole("role-1").Obj()
+			role.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+				workloadsv1alpha2.SharedServiceSelectionAll,
+			)
+
+			rbg := createRbg("rbg-all", role)
+			svcName := rbg.GetServiceName(&rbg.Spec.Roles[0])
+
+			By("verifying both components are bound to the shared service")
+			serviceNames := componentServiceNames(rbg, &rbg.Spec.Roles[0])
+			Expect(serviceNames[string(constants.LeaderComponentType)]).Should(Equal(svcName))
+			Expect(serviceNames[string(constants.WorkerComponentType)]).Should(Equal(svcName))
+
+			By("verifying the shared service selects every pod of the role")
+			Expect(serviceSelector(rbg, &rbg.Spec.Roles[0])).
+				ShouldNot(HaveKey(constants.ComponentNameLabelKey))
+
+			By("verifying leader and worker pods both have a network identity")
+			pods := podsByComponent(rbg.Name, rbg.Spec.Roles[0].Name, 2)
+			for _, component := range []string{
+				string(constants.LeaderComponentType), string(constants.WorkerComponentType),
+			} {
+				pod := pods[component]
+				Expect(pod.Spec.Hostname).Should(Equal(pod.Name), "component %s", component)
+				Expect(pod.Spec.Subdomain).Should(Equal(svcName), "component %s", component)
+			}
+		})
+	})
+
+	Context("When the role runs on a LeaderWorkerSet workload", func() {
+		// The policy only drives the shared headless service that RBG manages itself, which
+		// LeaderWorkerSet roles do not have. Admission must therefore accept the defaulted
+		// LeaderOnly value on those roles instead of rejecting them.
+		It("Should accept the defaulted policy", func() {
+			role := wrappersv2.BuildLeaderWorkerRole("role-1").
+				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
+				Obj()
+			role.LeaderWorkerPattern.SharedServiceSelection = nil
+
+			rbg := createRbg("rbg-lws", role)
+
+			Expect(rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).ShouldNot(BeNil())
+			Expect(*rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).
+				Should(Equal(workloadsv1alpha2.SharedServiceSelectionLeaderOnly))
+		})
+	})
+})

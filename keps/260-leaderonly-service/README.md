@@ -99,10 +99,10 @@ This KEP proposes a new optional field `SharedServiceSelection` (of type `Shared
 
 The new field has two values:
 
-- `All` — keeps the current behavior (default)
-- `LeaderOnly` — narrows the Service selector to only target leader Pods
+- `All` — the Service selector targets every Pod of the role, and every component of the role instance is bound to the Service, so each Pod is addressable at `<pod-name>.<service-name>.<namespace>.svc`
+- `LeaderOnly` — the Service selector only targets leader Pods, and only the leader component is bound to the Service
 
-When unset or set to `All`, the shared headless Service continues to select all Pods. When set to `LeaderOnly`, the Service selector is updated in place so that only leader Pods are exposed through the shared Service.
+The field defaults to `LeaderOnly`, which matches the common inference topology where only leader Pods serve requests.
 
 
 ## Motivation
@@ -174,8 +174,9 @@ configure the service manually instead of automatically.
 
 ```go
 type LeaderWorkerPattern struct {
-    // SharedServiceSelection indicates the service policy of the role
+    // SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly.
     // +optional
+    // +kubebuilder:default=LeaderOnly
     // +kubebuilder:validation:Enum=All;LeaderOnly
     SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
@@ -193,40 +194,22 @@ const (
 
 Default:
 
-- If the field is unset (`nil`), the behavior defaults to `All`.
-
-### Validation
-
-A CEL validation rule on `RoleSpec` ensures that `LeaderOnly` is only valid for `RoleInstanceSet + leaderWorkerPattern`:
-
-```yaml
-x-kubernetes-validations:
-  - rule: >-
-      !has(self.leaderWorkerPattern) ||
-      !has(self.leaderWorkerPattern.sharedServiceSelection) ||
-      self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' ||
-      !has(self.annotations) ||
-      !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) ||
-      self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'
-    message: "leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
-```
-
-This rejects unsupported combinations at admission time rather than silently falling back to `All`.
+- If the field is unset (`nil`), the API server defaults it to `LeaderOnly`.
 
 ### Behavior
 
 #### `All`
 
-This is the current behavior and remains the default.
-
 - one shared headless Service is created for the role and the Service selector includes leader and worker Pods
+- every component of the role instance is bound to the shared Service, so each Pod gets `hostname` = Pod name and `subdomain` = shared Service name and is addressable at `<pod-name>.<service-name>.<namespace>.svc`
 
 #### `LeaderOnly`
 
-This policy keeps the shared Service model but narrows the endpoint set.
+This is the default. It keeps the shared Service model but narrows the endpoint set.
 
 - the shared Service selector includes only leader Pods, and worker Pods are no longer exposed through the shared Service
-- Pod `ServiceName`, `subdomain`, and FQDN remain unchanged
+- only the leader component is bound to the shared Service; worker Pods have no `hostname`/`subdomain` and are not addressable through it
+- the leader Pod's `ServiceName`, `subdomain`, and FQDN are the same under both policies
 
 ### Supported Pattern
 
@@ -234,16 +217,21 @@ The supported scope of this KEP is:
 
 - `RoleInstanceSet + leaderWorkerPattern`
 
-Unsupported combinations should reject `LeaderOnly` instead of silently falling back to `All`.
+The policy only drives the shared headless Service that RBG manages for the role. `LeaderWorkerSet` roles are governed by the Service that `LeaderWorkerSet` creates itself, so the policy has no effect on them.
 
 ### Rollout and Transition Behavior
 
-`All -> LeaderOnly` and `LeaderOnly -> All` should be handled by updating the shared Service selector in place.
+`All -> LeaderOnly` and `LeaderOnly -> All` update the shared Service selector in place.
 
 These transitions do not require:
 
-- Pod recreation or `RoleInstanceSet` rollout
-- Service renaming or DNS identity updates
+- Service renaming or recreation
+- any change to the leader Pod's DNS identity
+
+They do require a `RoleInstanceSet` rollout: the worker component gains or loses its
+`serviceName`, which changes the worker Pods' `hostname`/`subdomain`. Those Pod fields are
+immutable, so worker Pods cannot be updated in place and the role instances are replaced
+according to the role's rollout strategy (`maxUnavailable`/`maxSurge`).
 
 
 
@@ -256,26 +244,27 @@ In particular:
 - `RBG_LEADER_ADDRESS` keeps the same address shape, and direct Pod DNS names remain unchanged
 - config generation that derives addresses from the shared Service name does not need a new naming mode
 
-The only behavior change is that worker Pods are no longer targeted by the shared Service endpoints when `LeaderOnly` is enabled.
+The only behavior changes are that worker Pods are not targeted by the shared Service endpoints under `LeaderOnly`, and that worker Pods are only addressable at `<pod-name>.<shared-service-name>` under `All`.
 
 ### Test Plan
 
 ##### Unit tests
 
+- Effective policy resolution: an unset field falls back to `LeaderOnly`, explicit values are honored
 - Shared Service selector generation for `All` and `LeaderOnly`
-- In-place Service selector update: `nil` → `LeaderOnly` and `LeaderOnly` → `nil`
-- CRD enum validation rejects unsupported combinations via CEL rule
+- Component `serviceName` propagation: `All` binds leader and worker, `LeaderOnly` binds the leader only
+- In-place Service selector update: `All` → `LeaderOnly` and `LeaderOnly` → `All`
 
 ##### Integration tests
 
-- `All` creates one shared headless Service per role and includes leader and worker Pods
-- `LeaderOnly` creates one shared headless Service per role and includes only leader Pods
-- `All <-> LeaderOnly` updates the shared Service in place
+- An unset field is defaulted to `LeaderOnly` by the API server, including on `LeaderWorkerSet` roles, which must not be rejected
+- `All` binds every component and every Pod carries `hostname`/`subdomain` under the shared Service
+- `LeaderOnly` binds the leader only and worker Pods carry no `subdomain`
 
 ##### e2e tests
 
 - In leader-worker mode, `LeaderOnly` prevents worker Pods from appearing in the shared Service EndpointSlice
-- Switching between `LeaderOnly` and `All` preserves Service UID (in-place update) and does not recreate Pods
+- Switching from `LeaderOnly` to `All` preserves the Service UID (in-place update) and replaces worker Pods with Pods that carry `hostname`/`subdomain` under the shared Service
 
 
 ## Production Readiness Review Questionnaire
@@ -284,11 +273,15 @@ The only behavior change is that worker Pods are no longer targeted by the share
 
 ###### Does enabling the feature change any default behavior?
 
-No. The default remains `All`.
+Yes. The default is `LeaderOnly`, so the shared Service of a leader-worker role stops exposing
+worker Pods as endpoints. Pods are not affected: the leader keeps its identity and worker Pods
+never had one, so no rollout is triggered.
 
 ###### Can the feature be disabled once it has been enabled?
 
-Yes. Users can switch the policy back to `All`.
+Yes. Users can set the policy to `All`, which restores worker Pods as endpoints and additionally
+gives them a DNS identity. Because that changes worker Pod identity, it triggers a rollout of the
+role instances.
 
 ###### Are there any tests for feature enablement/disablement?
 

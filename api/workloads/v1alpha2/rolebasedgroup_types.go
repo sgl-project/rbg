@@ -187,16 +187,17 @@ type RestartPolicyConfig struct {
 type SharedServiceSelectionPolicy string
 
 const (
-	// SharedServiceSelectionAll - All pods would be routed to
+	// SharedServiceSelectionAll - All pods would be routed to, and every component of the role
+	// instance gets a serviceName, so each pod is addressable at <pod-name>.<service-name>
 	SharedServiceSelectionAll SharedServiceSelectionPolicy = "All"
 
-	// SharedServiceSelectionLeaderOnly - The headless service would only target at the leaders
+	// SharedServiceSelectionLeaderOnly - The headless service would only target at the leaders,
+	// and only the leader component gets a serviceName
 	SharedServiceSelectionLeaderOnly SharedServiceSelectionPolicy = "LeaderOnly"
 )
 
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!(has(self.standalonePattern) && has(self.leaderWorkerPattern))",message="standalonePattern and leaderWorkerPattern are mutually exclusive"
-// +kubebuilder:validation:XValidation:rule="!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection) || self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'",message="leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -352,8 +353,11 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
 
-	// SharedServiceSelection indicates the service policy of the role
+	// SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly.
+	// Switching the policy changes pod hostname/subdomain, which are immutable fields, so it
+	// triggers a rolling replacement of the role instances.
 	// +optional
+	// +kubebuilder:default=LeaderOnly
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 

@@ -274,6 +274,16 @@ func (r *RoleSpec) GetWorkerTemplatePatch() *runtime.RawExtension {
 	return r.LeaderWorkerPattern.WorkerTemplatePatch
 }
 
+// GetSharedServiceSelection returns the effective shared service selection policy. It mirrors
+// the CRD default (LeaderOnly), so patterns built in process resolve the same way as patterns
+// defaulted by the API server.
+func (lwp *LeaderWorkerPattern) GetSharedServiceSelection() SharedServiceSelectionPolicy {
+	if lwp == nil || lwp.SharedServiceSelection == nil {
+		return SharedServiceSelectionLeaderOnly
+	}
+	return *lwp.SharedServiceSelection
+}
+
 // GetRestartPolicyConfig returns the effective RestartPolicyConfig for this role based on its pattern.
 func (r *RoleSpec) GetRestartPolicyConfig() RestartPolicyConfig {
 	if r == nil {
