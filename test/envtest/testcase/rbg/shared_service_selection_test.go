@@ -125,16 +125,15 @@ var _ = Describe("SharedServiceSelection", func() {
 	}
 
 	Context("When the policy is not set", func() {
-		It("Should default to LeaderOnly and only give the leader component a serviceName", func() {
+		It("Should fall back to LeaderOnly and only give the leader component a serviceName", func() {
 			role := wrappersv2.BuildLeaderWorkerRole("role-1").Obj()
 			role.LeaderWorkerPattern.SharedServiceSelection = nil
 
 			rbg := createRbg("rbg-default", role)
 
-			By("verifying the API server defaulted the policy to LeaderOnly")
-			Expect(rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).ShouldNot(BeNil())
-			Expect(*rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).
-				Should(Equal(workloadsv1alpha2.SharedServiceSelectionLeaderOnly))
+			// The default lives in the controller, not in the CRD, so the stored field stays unset.
+			By("verifying the API server does not populate the field")
+			Expect(rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).Should(BeNil())
 
 			By("verifying only the leader component is bound to the shared service")
 			serviceNames := componentServiceNames(rbg, &rbg.Spec.Roles[0])
@@ -188,19 +187,31 @@ var _ = Describe("SharedServiceSelection", func() {
 
 	Context("When the role runs on a LeaderWorkerSet workload", func() {
 		// The policy only drives the shared headless service that RBG manages itself, which
-		// LeaderWorkerSet roles do not have. Admission must therefore accept the defaulted
-		// LeaderOnly value on those roles instead of rejecting them.
-		It("Should accept the defaulted policy", func() {
+		// LeaderWorkerSet roles do not have, so LeaderOnly is rejected at admission there. Leaving
+		// the field unset must stay valid: that is why the LeaderOnly default is applied by the
+		// controller instead of by a CRD default, which would populate the field on every role.
+		It("Should accept an unset policy and reject an explicit LeaderOnly", func() {
 			role := wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 				Obj()
 			role.LeaderWorkerPattern.SharedServiceSelection = nil
 
 			rbg := createRbg("rbg-lws", role)
+			Expect(rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).Should(BeNil())
 
-			Expect(rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).ShouldNot(BeNil())
-			Expect(*rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection).
-				Should(Equal(workloadsv1alpha2.SharedServiceSelectionLeaderOnly))
+			By("verifying an explicit LeaderOnly is rejected on this workload type")
+			rejected := wrappersv2.BuildLeaderWorkerRole("role-1").
+				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
+				Obj()
+			rejected.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+				workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
+			)
+			rejectedRbg := wrappersv2.BuildBasicRoleBasedGroup("rbg-lws-leaderonly", testNs).
+				WithRoles([]workloadsv1alpha2.RoleSpec{rejected}).
+				Obj()
+			err := testutil.K8sClient.Create(testutil.Ctx, rejectedRbg)
+			Expect(err).Should(HaveOccurred())
+			Expect(err.Error()).Should(ContainSubstring("only supported for RoleInstanceSet"))
 		})
 	})
 })

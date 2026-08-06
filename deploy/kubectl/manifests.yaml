@@ -34268,9 +34268,10 @@ spec:
                               type: string
                           type: object
                         sharedServiceSelection:
-                          default: LeaderOnly
-                          description: SharedServiceSelection indicates the service
-                            policy of the role. Defaults to LeaderOnly.
+                          description: |-
+                            SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly,
+                            which the controller applies when the field is unset (see
+                            LeaderWorkerPattern.GetSharedServiceSelection).
                           enum:
                           - All
                           - LeaderOnly
@@ -49330,6 +49331,13 @@ spec:
                   - message: standalonePattern and leaderWorkerPattern are mutually
                       exclusive
                     rule: '!(has(self.standalonePattern) && has(self.leaderWorkerPattern))'
+                  - message: leaderWorkerPattern.sharedServiceSelection=LeaderOnly
+                      is only supported for RoleInstanceSet + leaderWorkerPattern
+                    rule: '!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection)
+                      || self.leaderWorkerPattern.sharedServiceSelection != ''LeaderOnly''
+                      || !has(self.annotations) || !(''rbg.workloads.x-k8s.io/role-workload-type''
+                      in self.annotations) || self.annotations[''rbg.workloads.x-k8s.io/role-workload-type'']
+                      == ''workloads.x-k8s.io/v1alpha2/RoleInstanceSet'''
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
@@ -75593,9 +75601,10 @@ spec:
                                       type: string
                                   type: object
                                 sharedServiceSelection:
-                                  default: LeaderOnly
-                                  description: SharedServiceSelection indicates the
-                                    service policy of the role. Defaults to LeaderOnly.
+                                  description: |-
+                                    SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly,
+                                    which the controller applies when the field is unset (see
+                                    LeaderWorkerPattern.GetSharedServiceSelection).
                                   enum:
                                   - All
                                   - LeaderOnly
@@ -91226,6 +91235,13 @@ spec:
                           - message: standalonePattern and leaderWorkerPattern are
                               mutually exclusive
                             rule: '!(has(self.standalonePattern) && has(self.leaderWorkerPattern))'
+                          - message: leaderWorkerPattern.sharedServiceSelection=LeaderOnly
+                              is only supported for RoleInstanceSet + leaderWorkerPattern
+                            rule: '!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection)
+                              || self.leaderWorkerPattern.sharedServiceSelection !=
+                              ''LeaderOnly'' || !has(self.annotations) || !(''rbg.workloads.x-k8s.io/role-workload-type''
+                              in self.annotations) || self.annotations[''rbg.workloads.x-k8s.io/role-workload-type'']
+                              == ''workloads.x-k8s.io/v1alpha2/RoleInstanceSet'''
                         minItems: 1
                         type: array
                         x-kubernetes-list-map-keys:

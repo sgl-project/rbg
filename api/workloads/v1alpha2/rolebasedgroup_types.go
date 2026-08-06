@@ -198,6 +198,7 @@ const (
 
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!(has(self.standalonePattern) && has(self.leaderWorkerPattern))",message="standalonePattern and leaderWorkerPattern are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection) || self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'",message="leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -353,11 +354,14 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
 
-	// SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly.
+	// SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly,
+	// which the controller applies when the field is unset (see
+	// LeaderWorkerPattern.GetSharedServiceSelection). The default is deliberately not a CRD
+	// default: defaulting runs before validation, so a stored LeaderOnly would be rejected by
+	// the RoleSpec validation rule on every role that uses another workload type.
 	// Switching the policy changes pod hostname/subdomain, which are immutable fields, so it
 	// triggers a rolling replacement of the role instances.
 	// +optional
-	// +kubebuilder:default=LeaderOnly
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 
