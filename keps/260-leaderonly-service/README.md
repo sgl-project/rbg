@@ -119,8 +119,7 @@ The problem here is different from the per-replica headless Service problem. Thi
 - the shared Service name never changes, and the controller only needs to update the Service selector
 - the leader Pod's `ServiceName`, `subdomain`, and DNS identity never change
 
-The policy also decides which components of the role instance are bound to the shared Service, so
-worker Pods gain or lose their `hostname`/`subdomain` when it changes.
+The policy also decides which components of the role instance are bound to the shared Service, so worker Pods gain or lose their `hostname`/`subdomain` when it changes.
 
 ### Goals
 
@@ -142,8 +141,7 @@ Add an optional `SharedServiceSelection` field (of type `SharedServiceSelectionP
 - `All` keeps the shared headless Service targeting every Pod in the role, and binds every component of the role instance to it, so worker Pods are reachable at `<pod-name>.<service-name>.<namespace>.svc` as well.
 - `LeaderOnly` keeps the same shared headless Service object and the same Service name, but narrows its selector so that only leader Pods are exposed, and binds only the leader component to it.
 
-The feature is intended for `RoleInstanceSet + leaderWorkerPattern`, where the role has a clear leader component and 
-where only leader Pods should serve requests.
+The feature is intended for `RoleInstanceSet + leaderWorkerPattern`, where the role has a clear leader component and where only leader Pods should serve requests.
 
 Switching between `All` and `LeaderOnly` updates the shared Service in place:
 
@@ -154,19 +152,15 @@ Switching between `All` and `LeaderOnly` updates the shared Service in place:
 
 #### Story 1
 
-As an inference engineer using `sglang` in a multi-node pattern, I want the shared role Service to expose only leader Pods so that
-followers that do not run a fully functional serving endpoint do not receive external traffic.
+As an inference engineer using `sglang` in a multi-node pattern, I want the shared role Service to expose only leader Pods so that followers that do not run a fully functional serving endpoint do not receive external traffic.
 
 #### Story 2
 
-As an operator building a gateway, I want one stable shared Service per role, but I only want the real serving Pods to appear in that Service's endpoints. 
-This lets the gateway keep using Service-level discovery without routing requests to worker Pods that should only participate in internal execution.
+As an operator building a gateway, I want one stable shared Service per role, but I only want the real serving Pods to appear in that Service's endpoints. This lets the gateway keep using Service-level discovery without routing requests to worker Pods that should only participate in internal execution.
 
 
 #### Story 3
-As a platform engineer, although we do support a pod-level model gateway (e.g. `sglang` model gateway), we still need a fallback in case the gateway is absent.
-However, I cannot control user behavior, and once they use the `sglang` engine or `vllm` in headless mode to serve a model across nodes, I need to
-configure the service manually instead of automatically.
+As a platform engineer, although we do support a pod-level model gateway (e.g. `sglang` model gateway), we still need a fallback in case the gateway is absent. However, I cannot control user behavior, and once they use the `sglang` engine or `vllm` in headless mode to serve a model across nodes, I need to configure the service manually instead of automatically.
 
 ## Design Details
 
@@ -194,16 +188,9 @@ const (
 
 Default:
 
-- If the field is unset (`nil`) on a `RoleInstanceSet` role, the controller treats it as
-  `LeaderOnly` (`RoleSpec.GetSharedServiceSelection`).
-- On any other workload type the controller resolves to `All` regardless of the stored value. Those
-  roles have no component-name label on their Pods, so a narrowed selector would match no Pod at
-  all. The CEL rule below already rejects an explicit `LeaderOnly` there at admission, but the
-  controller does not depend on that: a cluster whose CRDs lag the controller is still safe.
-- The default is applied by the controller rather than by a CRD `default`, so that the stored
-  field stays unset. A CRD default would be written into every `leaderWorkerPattern` role before
-  validation runs, and the validation rule below would then reject every role that uses another
-  workload type, even one that never set the field.
+- If the field is unset (`nil`) on a `RoleInstanceSet` role, the controller treats it as `LeaderOnly` (`RoleSpec.GetSharedServiceSelection`).
+- On any other workload type the controller resolves to `All` regardless of the stored value. Those roles have no component-name label on their Pods, so a narrowed selector would match no Pod at all. The CEL rule below already rejects an explicit `LeaderOnly` there at admission, but the controller does not depend on that: a cluster whose CRDs lag the controller is still safe.
+- The default is applied by the controller rather than by a CRD `default`, so that the stored field stays unset. A CRD default would be written into every `leaderWorkerPattern` role before validation runs, and the validation rule below would then reject every role that uses another workload type, even one that never set the field.
 
 ### Validation
 
@@ -221,9 +208,7 @@ x-kubernetes-validations:
     message: "leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
 ```
 
-Unsupported combinations are therefore rejected at admission time instead of silently having no
-effect. An unset field stays valid on every workload type, which is what keeps the controller-side
-default compatible with this rule.
+Unsupported combinations are therefore rejected at admission time instead of silently having no effect. An unset field stays valid on every workload type, which is what keeps the controller-side default compatible with this rule.
 
 ### Behavior
 
@@ -257,42 +242,21 @@ These transitions do not require:
 - Service renaming or recreation
 - any change to the leader Pod's DNS identity
 
-They do require a `RoleInstanceSet` rollout: the worker component gains or loses its
-`serviceName`, which changes the worker Pods' `hostname`/`subdomain`. Those Pod fields are
-immutable, so worker Pods cannot be updated in place and the role instances are replaced
-according to the role's rollout strategy (`maxUnavailable`/`maxSurge`).
+They do require a `RoleInstanceSet` rollout: the worker component gains or loses its `serviceName`, which changes the worker Pods' `hostname`/`subdomain`. Those Pod fields are immutable, so worker Pods cannot be updated in place and the role instances are replaced according to the role's rollout strategy (`maxUnavailable`/`maxSurge`).
 
 ### Upgrade Considerations
 
-Upgrading the controller changes behavior for existing `RoleInstanceSet + leaderWorkerPattern`
-roles. The impact depends on what the role already stores, so the three cases differ:
+Upgrading the controller changes behavior for existing `RoleInstanceSet + leaderWorkerPattern` roles. The impact depends on what the role already stores, so the three cases differ:
 
-**Field unset** — this is the breaking case for endpoints. The field shipped in v0.7.0 with an
-unset field behaving as `All`, and every `leaderWorkerPattern` example in this repository leaves it
-unset. The controller now resolves these roles to `LeaderOnly` and patches the shared Service
-selector in place, so worker Pod IPs leave the Service's A record and its EndpointSlice. No Pod is
-recreated: worker Pods never had a `hostname`/`subdomain` under the old behavior either, because
-only the leader component carried a `serviceName`, so the worker component's `serviceName` stays
-absent and the component revision is unchanged.
+**Field unset** — this is the breaking case for endpoints. The field shipped in v0.7.0 with an unset field behaving as `All`, and every `leaderWorkerPattern` example in this repository leaves it unset. The controller now resolves these roles to `LeaderOnly` and patches the shared Service selector in place, so worker Pod IPs leave the Service's A record and its EndpointSlice. No Pod is recreated: worker Pods never had a `hostname`/`subdomain` under the old behavior either, because only the leader component carried a `serviceName`, so the worker component's `serviceName` stays absent and the component revision is unchanged.
 
-**Field explicitly `All`** — endpoints are unaffected, but **every worker Pod is replaced**. Under
-v0.7.0 an explicit `All` never reached the RoleInstance template; the worker component had no
-`serviceName`. It now gets one, which changes the component's extension spec revision, so the
-in-place update path refuses the change and the worker Pods are recreated according to the role's
-rollout strategy. This happens on the first reconcile after the controller image is rolled, with no
-spec change from the user. That rollout is also what delivers the fix — worker Pods come back with
-`hostname`/`subdomain` and become addressable at `<pod-name>.<shared-service-name>`, which is what
-`All` was always supposed to mean.
+**Field explicitly `All`** — endpoints are unaffected, but **every worker Pod is replaced**. Under v0.7.0 an explicit `All` never reached the RoleInstance template; the worker component had no `serviceName`. It now gets one, which changes the component's extension spec revision, so the in-place update path refuses the change and the worker Pods are recreated according to the role's rollout strategy. This happens on the first reconcile after the controller image is rolled, with no spec change from the user. That rollout is also what delivers the fix — worker Pods come back with `hostname`/`subdomain` and become addressable at `<pod-name>.<shared-service-name>`, which is what `All` was always supposed to mean.
 
 **Field explicitly `LeaderOnly`** — no change. Selector and Pods are already in the target state.
 
 In every case the shared Service keeps its name, its UID, and the leader Pod's DNS identity.
 
-Workloads that resolve worker Pod IPs through the role's shared Service must set
-`sharedServiceSelection: All` to keep working. Note that doing so — whether before or after the
-upgrade — triggers the worker Pod rollout described above, because it gives worker Pods a
-`subdomain` they did not have. Plan the upgrade during a window that tolerates a worker rollout for
-those roles.
+Workloads that resolve worker Pod IPs through the role's shared Service must set `sharedServiceSelection: All` to keep working. Note that doing so — whether before or after the upgrade — triggers the worker Pod rollout described above, because it gives worker Pods a `subdomain` they did not have. Plan the upgrade during a window that tolerates a worker rollout for those roles.
 
 
 
@@ -338,17 +302,11 @@ The only behavior changes are that worker Pods are not targeted by the shared Se
 
 ###### Does enabling the feature change any default behavior?
 
-Yes, and it is a breaking change for already-running roles. A `RoleInstanceSet` role that leaves
-the field unset resolves to `LeaderOnly`, so the shared Service of a leader-worker role stops
-exposing worker Pods as endpoints. Pods are not affected: the leader keeps its identity and worker
-Pods never had one, so no rollout is triggered. See [Upgrade Considerations](#upgrade-considerations)
-for what existing workloads need to do.
+Yes, and it is a breaking change for already-running roles. A `RoleInstanceSet` role that leaves the field unset resolves to `LeaderOnly`, so the shared Service of a leader-worker role stops exposing worker Pods as endpoints. Pods are not affected: the leader keeps its identity and worker Pods never had one, so no rollout is triggered. See [Upgrade Considerations](#upgrade-considerations) for what existing workloads need to do.
 
 ###### Can the feature be disabled once it has been enabled?
 
-Yes. Users can set the policy to `All`, which restores worker Pods as endpoints and additionally
-gives them a DNS identity. Because that changes worker Pod identity, it triggers a rollout of the
-role instances.
+Yes. Users can set the policy to `All`, which restores worker Pods as endpoints and additionally gives them a DNS identity. Because that changes worker Pod identity, it triggers a rollout of the role instances.
 
 ###### Are there any tests for feature enablement/disablement?
 
