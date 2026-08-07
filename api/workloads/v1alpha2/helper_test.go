@@ -520,45 +520,81 @@ func TestRoleSpec_GetWorkloadSpec(t *testing.T) {
 	}
 }
 
-// TestLeaderWorkerPattern_GetSharedServiceSelection tests the GetSharedServiceSelection
-// method, which resolves the effective policy and mirrors the CRD default (LeaderOnly).
-func TestLeaderWorkerPattern_GetSharedServiceSelection(t *testing.T) {
+// TestRoleSpec_GetSharedServiceSelection tests the GetSharedServiceSelection method, which
+// resolves the effective policy: LeaderOnly for an unset field on a RoleInstanceSet role, All
+// everywhere else, and the stored value whenever it is set.
+func TestRoleSpec_GetSharedServiceSelection(t *testing.T) {
+	lwpRole := func(policy *SharedServiceSelectionPolicy, workloadType string) *RoleSpec {
+		role := &RoleSpec{
+			Name: "role",
+			Pattern: Pattern{
+				LeaderWorkerPattern: &LeaderWorkerPattern{
+					Size:                   ptr.To(int32(2)),
+					SharedServiceSelection: policy,
+				},
+			},
+		}
+		if workloadType != "" {
+			role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: workloadType}
+		}
+		return role
+	}
+
 	tests := []struct {
 		name     string
-		lwp      *LeaderWorkerPattern
+		role     *RoleSpec
 		expected SharedServiceSelectionPolicy
 	}{
 		{
-			name:     "nil pattern falls back to LeaderOnly",
-			lwp:      nil,
-			expected: SharedServiceSelectionLeaderOnly,
-		},
-		{
-			name:     "unset policy falls back to LeaderOnly",
-			lwp:      &LeaderWorkerPattern{Size: ptr.To(int32(2))},
-			expected: SharedServiceSelectionLeaderOnly,
-		},
-		{
-			name: "explicit All is honored",
-			lwp: &LeaderWorkerPattern{
-				Size:                   ptr.To(int32(2)),
-				SharedServiceSelection: ptr.To(SharedServiceSelectionAll),
-			},
+			name:     "nil role falls back to All",
+			role:     nil,
 			expected: SharedServiceSelectionAll,
 		},
 		{
-			name: "explicit LeaderOnly is honored",
-			lwp: &LeaderWorkerPattern{
-				Size:                   ptr.To(int32(2)),
-				SharedServiceSelection: ptr.To(SharedServiceSelectionLeaderOnly),
-			},
+			name:     "role without leaderWorkerPattern falls back to All",
+			role:     &RoleSpec{Name: "role"},
+			expected: SharedServiceSelectionAll,
+		},
+		{
+			name:     "unset policy on an implicit RoleInstanceSet role falls back to LeaderOnly",
+			role:     lwpRole(nil, ""),
 			expected: SharedServiceSelectionLeaderOnly,
+		},
+		{
+			name:     "unset policy on an explicit RoleInstanceSet role falls back to LeaderOnly",
+			role:     lwpRole(nil, constants.RoleInstanceSetWorkloadType),
+			expected: SharedServiceSelectionLeaderOnly,
+		},
+		{
+			name:     "unset policy on a StatefulSet role keeps All",
+			role:     lwpRole(nil, "apps/v1/StatefulSet"),
+			expected: SharedServiceSelectionAll,
+		},
+		{
+			name:     "unset policy on a LeaderWorkerSet role keeps All",
+			role:     lwpRole(nil, "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"),
+			expected: SharedServiceSelectionAll,
+		},
+		{
+			name:     "explicit All is honored",
+			role:     lwpRole(ptr.To(SharedServiceSelectionAll), ""),
+			expected: SharedServiceSelectionAll,
+		},
+		{
+			name:     "explicit LeaderOnly is honored",
+			role:     lwpRole(ptr.To(SharedServiceSelectionLeaderOnly), ""),
+			expected: SharedServiceSelectionLeaderOnly,
+		},
+		{
+			name:     "explicit LeaderOnly is ignored on an unsupported workload type",
+			role:     lwpRole(ptr.To(SharedServiceSelectionLeaderOnly), "apps/v1/StatefulSet"),
+			expected: SharedServiceSelectionAll,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, tt.lwp.GetSharedServiceSelection())
+			assert.Equal(t, tt.expected, tt.role.GetSharedServiceSelection())
 		})
 	}
 }

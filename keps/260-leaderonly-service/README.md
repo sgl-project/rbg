@@ -102,7 +102,7 @@ The new field has two values:
 - `All` — the Service selector targets every Pod of the role, and every component of the role instance is bound to the Service, so each Pod is addressable at `<pod-name>.<service-name>.<namespace>.svc`
 - `LeaderOnly` — the Service selector only targets leader Pods, and only the leader component is bound to the Service
 
-The field defaults to `LeaderOnly`, which matches the common inference topology where only leader Pods serve requests.
+On a `RoleInstanceSet` role the field defaults to `LeaderOnly`, which matches the common inference topology where only leader Pods serve requests. This changes the previous behavior of an unset field, so see [Upgrade Considerations](#upgrade-considerations).
 
 
 ## Motivation
@@ -174,9 +174,9 @@ configure the service manually instead of automatically.
 
 ```go
 type LeaderWorkerPattern struct {
-    // SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly.
+    // SharedServiceSelection indicates the service policy of the role. When unset, the controller
+    // treats a RoleInstanceSet role as LeaderOnly and any other workload type as All.
     // +optional
-    // +kubebuilder:default=LeaderOnly
     // +kubebuilder:validation:Enum=All;LeaderOnly
     SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 }
@@ -194,7 +194,36 @@ const (
 
 Default:
 
-- If the field is unset (`nil`), the API server defaults it to `LeaderOnly`.
+- If the field is unset (`nil`) on a `RoleInstanceSet` role, the controller treats it as
+  `LeaderOnly` (`RoleSpec.GetSharedServiceSelection`).
+- On any other workload type the controller resolves to `All` regardless of the stored value. Those
+  roles have no component-name label on their Pods, so a narrowed selector would match no Pod at
+  all. The CEL rule below already rejects an explicit `LeaderOnly` there at admission, but the
+  controller does not depend on that: a cluster whose CRDs lag the controller is still safe.
+- The default is applied by the controller rather than by a CRD `default`, so that the stored
+  field stays unset. A CRD default would be written into every `leaderWorkerPattern` role before
+  validation runs, and the validation rule below would then reject every role that uses another
+  workload type, even one that never set the field.
+
+### Validation
+
+A CEL rule on `RoleSpec` keeps `LeaderOnly` restricted to the combination that supports it:
+
+```yaml
+x-kubernetes-validations:
+  - rule: >-
+      !has(self.leaderWorkerPattern) ||
+      !has(self.leaderWorkerPattern.sharedServiceSelection) ||
+      self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' ||
+      !has(self.annotations) ||
+      !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) ||
+      self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'
+    message: "leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
+```
+
+Unsupported combinations are therefore rejected at admission time instead of silently having no
+effect. An unset field stays valid on every workload type, which is what keeps the controller-side
+default compatible with this rule.
 
 ### Behavior
 
@@ -217,7 +246,7 @@ The supported scope of this KEP is:
 
 - `RoleInstanceSet + leaderWorkerPattern`
 
-The policy only drives the shared headless Service that RBG manages for the role. `LeaderWorkerSet` roles are governed by the Service that `LeaderWorkerSet` creates itself, so the policy has no effect on them.
+The policy only drives the shared headless Service that RBG manages for the role. `LeaderWorkerSet` roles are governed by the Service that `LeaderWorkerSet` creates itself, so `LeaderOnly` has no meaning there and is rejected at admission. Outside the supported scope the controller resolves the policy to `All` whatever the stored value is, which is the behavior those roles already had, so admission rejection is a second line of defence rather than the only one.
 
 ### Rollout and Transition Behavior
 
@@ -232,6 +261,38 @@ They do require a `RoleInstanceSet` rollout: the worker component gains or loses
 `serviceName`, which changes the worker Pods' `hostname`/`subdomain`. Those Pod fields are
 immutable, so worker Pods cannot be updated in place and the role instances are replaced
 according to the role's rollout strategy (`maxUnavailable`/`maxSurge`).
+
+### Upgrade Considerations
+
+Upgrading the controller changes behavior for existing `RoleInstanceSet + leaderWorkerPattern`
+roles. The impact depends on what the role already stores, so the three cases differ:
+
+**Field unset** — this is the breaking case for endpoints. The field shipped in v0.7.0 with an
+unset field behaving as `All`, and every `leaderWorkerPattern` example in this repository leaves it
+unset. The controller now resolves these roles to `LeaderOnly` and patches the shared Service
+selector in place, so worker Pod IPs leave the Service's A record and its EndpointSlice. No Pod is
+recreated: worker Pods never had a `hostname`/`subdomain` under the old behavior either, because
+only the leader component carried a `serviceName`, so the worker component's `serviceName` stays
+absent and the component revision is unchanged.
+
+**Field explicitly `All`** — endpoints are unaffected, but **every worker Pod is replaced**. Under
+v0.7.0 an explicit `All` never reached the RoleInstance template; the worker component had no
+`serviceName`. It now gets one, which changes the component's extension spec revision, so the
+in-place update path refuses the change and the worker Pods are recreated according to the role's
+rollout strategy. This happens on the first reconcile after the controller image is rolled, with no
+spec change from the user. That rollout is also what delivers the fix — worker Pods come back with
+`hostname`/`subdomain` and become addressable at `<pod-name>.<shared-service-name>`, which is what
+`All` was always supposed to mean.
+
+**Field explicitly `LeaderOnly`** — no change. Selector and Pods are already in the target state.
+
+In every case the shared Service keeps its name, its UID, and the leader Pod's DNS identity.
+
+Workloads that resolve worker Pod IPs through the role's shared Service must set
+`sharedServiceSelection: All` to keep working. Note that doing so — whether before or after the
+upgrade — triggers the worker Pod rollout described above, because it gives worker Pods a
+`subdomain` they did not have. Plan the upgrade during a window that tolerates a worker rollout for
+those roles.
 
 
 
@@ -250,21 +311,25 @@ The only behavior changes are that worker Pods are not targeted by the shared Se
 
 ##### Unit tests
 
-- Effective policy resolution: an unset field falls back to `LeaderOnly`, explicit values are honored
+- Effective policy resolution: on a `RoleInstanceSet` role an unset field falls back to `LeaderOnly` and explicit values are honored; on any other workload type the result is `All` whatever is stored
 - Shared Service selector generation for `All` and `LeaderOnly`
 - Component `serviceName` propagation: `All` binds leader and worker, `LeaderOnly` binds the leader only
 - In-place Service selector update: `All` → `LeaderOnly` and `LeaderOnly` → `All`
+- A `StatefulSet + leaderWorkerPattern` role keeps the unnarrowed selector
 
 ##### Integration tests
 
-- An unset field is defaulted to `LeaderOnly` by the API server, including on `LeaderWorkerSet` roles, which must not be rejected
+- An unset field is left `nil` in the stored object and resolved to `LeaderOnly` by the controller
+- An explicit `LeaderOnly` on a `LeaderWorkerSet` role is rejected by the CEL rule, while an unset field on such a role is accepted
 - `All` binds every component and every Pod carries `hostname`/`subdomain` under the shared Service
 - `LeaderOnly` binds the leader only and worker Pods carry no `subdomain`
+- `All` → `LeaderOnly` removes the worker component's `serviceName` from the `RoleInstanceSet` template and narrows the shared Service selector in place, keeping the same Service UID
 
 ##### e2e tests
 
 - In leader-worker mode, `LeaderOnly` prevents worker Pods from appearing in the shared Service EndpointSlice
 - Switching from `LeaderOnly` to `All` preserves the Service UID (in-place update) and replaces worker Pods with Pods that carry `hostname`/`subdomain` under the shared Service
+- Switching back from `All` to `LeaderOnly` again preserves the Service UID, drops worker Pods from the EndpointSlice, and replaces them with Pods that carry no `subdomain`
 
 
 ## Production Readiness Review Questionnaire
@@ -273,9 +338,11 @@ The only behavior changes are that worker Pods are not targeted by the shared Se
 
 ###### Does enabling the feature change any default behavior?
 
-Yes. The default is `LeaderOnly`, so the shared Service of a leader-worker role stops exposing
-worker Pods as endpoints. Pods are not affected: the leader keeps its identity and worker Pods
-never had one, so no rollout is triggered.
+Yes, and it is a breaking change for already-running roles. A `RoleInstanceSet` role that leaves
+the field unset resolves to `LeaderOnly`, so the shared Service of a leader-worker role stops
+exposing worker Pods as endpoints. Pods are not affected: the leader keeps its identity and worker
+Pods never had one, so no rollout is triggered. See [Upgrade Considerations](#upgrade-considerations)
+for what existing workloads need to do.
 
 ###### Can the feature be disabled once it has been enabled?
 

@@ -420,7 +420,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	// Under the All policy the shared headless service exposes every component, so the worker
 	// component also needs a serviceName: that is what gives its pods a network identity
 	// (hostname/subdomain) and makes them resolvable through the service.
-	if lwp.GetSharedServiceSelection() == workloadsv1alpha2.SharedServiceSelectionAll {
+	if role.GetSharedServiceSelection() == workloadsv1alpha2.SharedServiceSelectionAll {
 		workerComponentConfig = workerComponentConfig.WithServiceName(svcName)
 	}
 

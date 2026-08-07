@@ -25409,9 +25409,8 @@ spec:
                           type: object
                         sharedServiceSelection:
                           description: |-
-                            SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly,
-                            which the controller applies when the field is unset (see
-                            LeaderWorkerPattern.GetSharedServiceSelection).
+                            SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
+                            role resolves to LeaderOnly and any other workload type resolves to All.
                           enum:
                           - All
                           - LeaderOnly

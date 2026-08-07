@@ -354,13 +354,14 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
 
-	// SharedServiceSelection indicates the service policy of the role. Defaults to LeaderOnly,
-	// which the controller applies when the field is unset (see
-	// LeaderWorkerPattern.GetSharedServiceSelection). The default is deliberately not a CRD
-	// default: defaulting runs before validation, so a stored LeaderOnly would be rejected by
-	// the RoleSpec validation rule on every role that uses another workload type.
-	// Switching the policy changes pod hostname/subdomain, which are immutable fields, so it
-	// triggers a rolling replacement of the role instances.
+	// SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
+	// role resolves to LeaderOnly and any other workload type resolves to All. Switching the policy
+	// changes pod hostname/subdomain, which are immutable fields, so it triggers a rolling
+	// replacement of the role instances.
+	//
+	// The default is applied by the controller rather than by a CRD default: CRD defaulting runs
+	// before validation, so a stored LeaderOnly would be rejected by the RoleSpec validation rule on
+	// every role that uses another workload type. See RoleSpec GetSharedServiceSelection.
 	// +optional
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`

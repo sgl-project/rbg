@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -63,6 +64,21 @@ var _ = Describe("SharedServiceSelection", func() {
 			testutil.Ctx, types.NamespacedName{Name: name, Namespace: testNs}, created,
 		)).Should(Succeed())
 		return created
+	}
+
+	// updateRbg re-reads the RBG and applies mutate, retrying on conflict because the controller
+	// writes to the same object.
+	updateRbg := func(name string, mutate func(*workloadsv1alpha2.RoleBasedGroup)) {
+		ExpectWithOffset(1, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(
+				testutil.Ctx, types.NamespacedName{Name: name, Namespace: testNs}, latest,
+			); err != nil {
+				return err
+			}
+			mutate(latest)
+			return testutil.K8sClient.Update(testutil.Ctx, latest)
+		})).Should(Succeed())
 	}
 
 	// componentServiceNames waits for the RoleInstanceSet of the role and returns its
@@ -182,6 +198,63 @@ var _ = Describe("SharedServiceSelection", func() {
 				Expect(pod.Spec.Hostname).Should(Equal(pod.Name), "component %s", component)
 				Expect(pod.Spec.Subdomain).Should(Equal(svcName), "component %s", component)
 			}
+		})
+	})
+
+	// Switching All -> LeaderOnly drops WithServiceName from the worker apply configuration.
+	// ServiceName is a plain string with omitempty, so there is no explicit-empty value to send:
+	// the field only disappears because server-side apply retires a field the rbg field manager
+	// previously owned. That is worth pinning down rather than inferring from the code.
+	Context("When the policy changes from All to LeaderOnly", func() {
+		It("Should clear the worker component serviceName and narrow the shared service in place", func() {
+			role := wrappersv2.BuildLeaderWorkerRole("role-1").Obj()
+			role.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+				workloadsv1alpha2.SharedServiceSelectionAll,
+			)
+
+			rbg := createRbg("rbg-all-to-leaderonly", role)
+			roleRef := &rbg.Spec.Roles[0]
+			svcName := rbg.GetServiceName(roleRef)
+
+			By("verifying both components start out bound to the shared service")
+			Eventually(func() string {
+				return componentServiceNames(rbg, roleRef)[string(constants.WorkerComponentType)]
+			}, sssTimeout, sssInterval).Should(Equal(svcName))
+
+			svc := &corev1.Service{}
+			Expect(testutil.K8sClient.Get(
+				testutil.Ctx, types.NamespacedName{Name: svcName, Namespace: testNs}, svc,
+			)).Should(Succeed())
+			originalSvcUID := svc.UID
+
+			By("switching the policy to LeaderOnly")
+			updateRbg(rbg.Name, func(latest *workloadsv1alpha2.RoleBasedGroup) {
+				latest.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+					workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
+				)
+			})
+
+			By("verifying the worker component's serviceName is removed")
+			Eventually(func() string {
+				return componentServiceNames(rbg, roleRef)[string(constants.WorkerComponentType)]
+			}, sssTimeout, sssInterval).Should(BeEmpty())
+
+			By("verifying the leader component stays bound to the shared service")
+			Expect(componentServiceNames(rbg, roleRef)[string(constants.LeaderComponentType)]).
+				Should(Equal(svcName))
+
+			By("verifying the shared service selector narrows to leader pods")
+			Eventually(func() map[string]string {
+				return serviceSelector(rbg, roleRef)
+			}, sssTimeout, sssInterval).Should(
+				HaveKeyWithValue(constants.ComponentNameLabelKey, string(constants.LeaderComponentType)),
+			)
+
+			By("verifying the shared service was updated in place")
+			Expect(testutil.K8sClient.Get(
+				testutil.Ctx, types.NamespacedName{Name: svcName, Namespace: testNs}, svc,
+			)).Should(Succeed())
+			Expect(svc.UID).Should(Equal(originalSvcUID))
 		})
 	})
 

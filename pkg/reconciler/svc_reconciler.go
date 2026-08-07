@@ -107,8 +107,7 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 		constants.GroupNameLabelKey: rbg.Name,
 		constants.RoleNameLabelKey:  role.Name,
 	}
-	if role.IsLeaderWorkerPattern() &&
-		role.LeaderWorkerPattern.GetSharedServiceSelection() == workloadsv1alpha2.SharedServiceSelectionLeaderOnly {
+	if role.GetSharedServiceSelection() == workloadsv1alpha2.SharedServiceSelectionLeaderOnly {
 		selectMap[constants.ComponentNameLabelKey] = string(constants.LeaderComponentType)
 	}
 	svcName, err := utils.GetCompatibleHeadlessServiceName(ctx, r.client, rbg, role)

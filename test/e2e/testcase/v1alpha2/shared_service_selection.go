@@ -38,7 +38,7 @@ import (
 
 func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 	ginkgo.Describe("shared service selection", func() {
-		ginkgo.It("should expose only the leader pod under LeaderOnly and every pod under All", func() {
+		ginkgo.It("should follow the policy round trip between LeaderOnly and All", func() {
 			role := wrappersv2.BuildLeaderWorkerRole("decode").Obj()
 			role.LeaderWorkerPattern.TemplateSource.Template = &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -130,6 +130,41 @@ func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 					podsByComponent["worker"].Name,
 				},
 			)
+
+			ginkgo.By("Switching back to LeaderOnly and verifying the Service is updated in place")
+			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+					workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
+				)
+			})
+			f.ExpectRbgV2Equal(rbg)
+
+			revertedService := expectServiceSelector(
+				f,
+				rbg.Namespace,
+				svcName,
+				map[string]string{
+					constants.GroupNameLabelKey:     rbg.Name,
+					constants.RoleNameLabelKey:      role.Name,
+					constants.ComponentNameLabelKey: "leader",
+				},
+			)
+			gomega.Expect(revertedService.UID).Should(gomega.Equal(leaderOnlyService.UID))
+
+			// The worker component loses its serviceName, so its pods are replaced by a rollout
+			// and come back without a subdomain.
+			ginkgo.By("Verifying worker pods are recreated without a network identity")
+			podsByComponent = expectLeaderWorkerPodsLeaderIdentityOnly(
+				f, rbg.Namespace, rbg.Name, role.Name, svcName,
+			)
+
+			expectEndpointSliceTargets(
+				f,
+				rbg.Namespace,
+				svcName,
+				podIPsByName(podsByComponent),
+				[]string{podsByComponent["leader"].Name},
+			)
 		})
 	})
 }
@@ -174,6 +209,22 @@ func expectLeaderWorkerPodsSharingService(
 	return expectLeaderWorkerPodsMatching(
 		f, namespace, groupName, roleName, func(pod *corev1.Pod) bool {
 			return pod.Spec.Hostname == pod.Name && pod.Spec.Subdomain == svcName
+		},
+	)
+}
+
+// expectLeaderWorkerPodsLeaderIdentityOnly waits until the leader pod carries a network identity
+// under the shared headless service and the worker pod carries none, which is the LeaderOnly
+// steady state once the rollout replacing the worker pods has settled.
+func expectLeaderWorkerPodsLeaderIdentityOnly(
+	f *framework.Framework, namespace, groupName, roleName, svcName string,
+) map[string]corev1.Pod {
+	return expectLeaderWorkerPodsMatching(
+		f, namespace, groupName, roleName, func(pod *corev1.Pod) bool {
+			if pod.Labels[constants.ComponentNameLabelKey] == "leader" {
+				return pod.Spec.Hostname == pod.Name && pod.Spec.Subdomain == svcName
+			}
+			return pod.Spec.Subdomain == ""
 		},
 	)
 }
