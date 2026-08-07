@@ -135,33 +135,33 @@ func RunWarmupTestCases(f *framework.Framework) {
 				}).Obj()
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
-			// Wait for RBG pods to be scheduled
-			ginkgo.By("Waiting for RBG pods to be scheduled")
-			gomega.Eventually(func() bool {
+			// Wait until exactly the two role pods the controller will act on are scheduled.
+			// Terminating pods are filtered out to mirror getDesiredNodesToWarmup, so a pod being
+			// replaced cannot make the co-location check below fail on a count instead of on
+			// placement. The snapshot is reused so both are decided from the same observation.
+			ginkgo.By("Waiting for both role pods to be scheduled")
+			var scheduledPods []corev1.Pod
+			gomega.Eventually(func() []corev1.Pod {
+				scheduledPods = nil
 				podList := &corev1.PodList{}
-				err := f.Client.List(f.Ctx, podList,
+				if err := f.Client.List(f.Ctx, podList,
 					client.InNamespace(f.Namespace),
-					client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})
-				if err != nil || len(podList.Items) < 2 {
-					return false
+					client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name}); err != nil {
+					return nil
 				}
-				for _, p := range podList.Items {
-					if p.Spec.NodeName == "" {
-						return false
+				for _, pod := range podList.Items {
+					if pod.Spec.NodeName == "" || pod.DeletionTimestamp != nil {
+						continue
 					}
+					scheduledPods = append(scheduledPods, pod)
 				}
-				return true
-			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(), "RBG pods should be scheduled")
+				return scheduledPods
+			}, utils.Timeout, utils.Interval).Should(gomega.HaveLen(2), "both RBG role pods should be scheduled")
 
 			// Guard the premise of this case: both roles must have landed on the pinned node,
 			// otherwise the merge behaviour below is not what is being exercised.
 			ginkgo.By("Verifying both roles were scheduled on the same node")
-			podList := &corev1.PodList{}
-			gomega.Expect(f.Client.List(f.Ctx, podList,
-				client.InNamespace(f.Namespace),
-				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
-			gomega.Expect(podList.Items).To(gomega.HaveLen(2))
-			for _, pod := range podList.Items {
+			for _, pod := range scheduledPods {
 				gomega.Expect(pod.Spec.NodeName).To(gomega.Equal(nodeName),
 					"pod %s should be pinned to node %s", pod.Name, nodeName)
 			}
