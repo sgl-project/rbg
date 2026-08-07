@@ -11,6 +11,10 @@ env:
   VOLCANO_VERSION: v1.12.0
   LWS_VERSION: v0.7.0
   SCHEDULER_PLUGINS_VERSION: v0.32.7
+  # Commit status contexts mirrored onto the PR head commit. Shared by the pending step
+  # and the reporting job so the two cannot drift apart.
+  STATUS_CONTEXT_HELM: Release Test / e2e-test-helm
+  STATUS_CONTEXT_MANIFEST: Release Test / e2e-test-manifest
 
 # Declare default permissions as read only.
 permissions: read-all
@@ -23,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      statuses: write
     outputs:
       pr_head_sha: ${{ steps.get-pr.outputs.head_sha }}
       pr_ref: ${{ steps.get-pr.outputs.ref }}
@@ -50,6 +55,24 @@ jobs:
             });
             core.setOutput('head_sha', pr.data.head.sha);
             core.setOutput('ref', pr.data.head.ref);
+
+      - name: Report pending status on PR head
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ steps.get-pr.outputs.head_sha }}
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            for (const name of [process.env.STATUS_CONTEXT_HELM, process.env.STATUS_CONTEXT_MANIFEST]) {
+              await github.rest.repos.createCommitStatus({
+                ...context.repo,
+                sha: process.env.HEAD_SHA,
+                state: 'pending',
+                context: name,
+                target_url: runUrl,
+                description: 'Running',
+              });
+            }
 
   # E2E test using Helm installation with default chart images (no build)
   e2e-test-helm:
@@ -326,3 +349,37 @@ jobs:
         if: always()
         run: |
           kind delete cluster --name rbgs-manifest-e2e || true
+
+  # An issue_comment run is attached to the last commit on the default branch, so its own
+  # checks never surface in the PR merge box. Mirror the results onto the PR head commit.
+  report-status:
+    needs: [check-command, e2e-test-helm, e2e-test-manifest]
+    if: always() && needs.check-command.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Report job results on PR head
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ needs.check-command.outputs.pr_head_sha }}
+          HELM_RESULT: ${{ needs.e2e-test-helm.result }}
+          MANIFEST_RESULT: ${{ needs.e2e-test-manifest.result }}
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const states = { success: 'success', cancelled: 'error', skipped: 'error' };
+            const results = [
+              [process.env.STATUS_CONTEXT_HELM, process.env.HELM_RESULT],
+              [process.env.STATUS_CONTEXT_MANIFEST, process.env.MANIFEST_RESULT],
+            ];
+            for (const [name, result] of results) {
+              await github.rest.repos.createCommitStatus({
+                ...context.repo,
+                sha: process.env.HEAD_SHA,
+                state: states[result] ?? 'failure',
+                context: name,
+                target_url: runUrl,
+                description: result,
+              });
+            }
