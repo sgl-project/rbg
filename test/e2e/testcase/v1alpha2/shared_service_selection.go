@@ -38,7 +38,7 @@ import (
 
 func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 	ginkgo.Describe("shared service selection", func() {
-		ginkgo.It("should select only leader pod and update the selector in place when disabled", func() {
+		ginkgo.It("should follow the policy round trip between LeaderOnly and All", func() {
 			role := wrappersv2.BuildLeaderWorkerRole("decode").Obj()
 			role.LeaderWorkerPattern.TemplateSource.Template = &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -90,13 +90,21 @@ func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 				[]string{podsByComponent["leader"].Name},
 			)
 
-			ginkgo.By("Removing shared service selection and verifying the Service is updated in place")
+			ginkgo.By("Verifying only the leader pod has a network identity under the shared service")
+			leaderPod := podsByComponent["leader"]
+			gomega.Expect(leaderPod.Spec.Hostname).Should(gomega.Equal(leaderPod.Name))
+			gomega.Expect(leaderPod.Spec.Subdomain).Should(gomega.Equal(svcName))
+			gomega.Expect(podsByComponent["worker"].Spec.Subdomain).Should(gomega.BeEmpty())
+
+			ginkgo.By("Switching to All and verifying the Service is updated in place")
 			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
-				rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection = nil
+				rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+					workloadsv1alpha2.SharedServiceSelectionAll,
+				)
 			})
 			f.ExpectRbgV2Equal(rbg)
 
-			defaultService := expectServiceSelector(
+			allService := expectServiceSelector(
 				f,
 				rbg.Namespace,
 				svcName,
@@ -105,7 +113,12 @@ func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 					constants.RoleNameLabelKey:  role.Name,
 				},
 			)
-			gomega.Expect(defaultService.UID).Should(gomega.Equal(leaderOnlyService.UID))
+			gomega.Expect(allService.UID).Should(gomega.Equal(leaderOnlyService.UID))
+
+			// hostname and subdomain are immutable, so worker pods are replaced by a rollout
+			// before they can be addressed through the shared service.
+			ginkgo.By("Verifying every pod is recreated with a network identity under the shared service")
+			podsByComponent = expectLeaderWorkerPodsSharingService(f, rbg.Namespace, rbg.Name, role.Name, svcName)
 
 			expectEndpointSliceTargets(
 				f,
@@ -116,6 +129,41 @@ func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 					podsByComponent["leader"].Name,
 					podsByComponent["worker"].Name,
 				},
+			)
+
+			ginkgo.By("Switching back to LeaderOnly and verifying the Service is updated in place")
+			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Spec.Roles[0].LeaderWorkerPattern.SharedServiceSelection = ptr.To(
+					workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
+				)
+			})
+			f.ExpectRbgV2Equal(rbg)
+
+			revertedService := expectServiceSelector(
+				f,
+				rbg.Namespace,
+				svcName,
+				map[string]string{
+					constants.GroupNameLabelKey:     rbg.Name,
+					constants.RoleNameLabelKey:      role.Name,
+					constants.ComponentNameLabelKey: "leader",
+				},
+			)
+			gomega.Expect(revertedService.UID).Should(gomega.Equal(leaderOnlyService.UID))
+
+			// The worker component loses its serviceName, so its pods are replaced by a rollout
+			// and come back without a subdomain.
+			ginkgo.By("Verifying worker pods are recreated without a network identity")
+			podsByComponent = expectLeaderWorkerPodsLeaderIdentityOnly(
+				f, rbg.Namespace, rbg.Name, role.Name, svcName,
+			)
+
+			expectEndpointSliceTargets(
+				f,
+				rbg.Namespace,
+				svcName,
+				podIPsByName(podsByComponent),
+				[]string{podsByComponent["leader"].Name},
 			)
 		})
 	})
@@ -149,6 +197,43 @@ func expectServiceSelector(
 func expectLeaderWorkerPods(
 	f *framework.Framework, namespace, groupName, roleName string,
 ) map[string]corev1.Pod {
+	return expectLeaderWorkerPodsMatching(f, namespace, groupName, roleName, nil)
+}
+
+// expectLeaderWorkerPodsSharingService waits until every leader-worker pod of the role carries a
+// network identity under the shared headless service, so each pod is addressable at
+// <pod-name>.<svcName>.
+func expectLeaderWorkerPodsSharingService(
+	f *framework.Framework, namespace, groupName, roleName, svcName string,
+) map[string]corev1.Pod {
+	return expectLeaderWorkerPodsMatching(
+		f, namespace, groupName, roleName, func(pod *corev1.Pod) bool {
+			return pod.Spec.Hostname == pod.Name && pod.Spec.Subdomain == svcName
+		},
+	)
+}
+
+// expectLeaderWorkerPodsLeaderIdentityOnly waits until the leader pod carries a network identity
+// under the shared headless service and the worker pod carries none, which is the LeaderOnly
+// steady state once the rollout replacing the worker pods has settled.
+func expectLeaderWorkerPodsLeaderIdentityOnly(
+	f *framework.Framework, namespace, groupName, roleName, svcName string,
+) map[string]corev1.Pod {
+	return expectLeaderWorkerPodsMatching(
+		f, namespace, groupName, roleName, func(pod *corev1.Pod) bool {
+			if pod.Labels[constants.ComponentNameLabelKey] == "leader" {
+				return pod.Spec.Hostname == pod.Name && pod.Spec.Subdomain == svcName
+			}
+			return pod.Spec.Subdomain == ""
+		},
+	)
+}
+
+// expectLeaderWorkerPodsMatching waits for the leader and worker pod of the role to be running
+// with an assigned IP, and, when matches is set, to additionally satisfy that predicate.
+func expectLeaderWorkerPodsMatching(
+	f *framework.Framework, namespace, groupName, roleName string, matches func(pod *corev1.Pod) bool,
+) map[string]corev1.Pod {
 	logger := log.FromContext(f.Ctx).WithValues("groupName", groupName, "roleName", roleName)
 
 	podsByComponent := map[string]corev1.Pod{}
@@ -168,10 +253,22 @@ func expectLeaderWorkerPods(
 		}
 
 		next := map[string]corev1.Pod{}
-		for _, pod := range podList.Items {
+		for i := range podList.Items {
+			pod := podList.Items[i]
+			if pod.DeletionTimestamp != nil {
+				logger.V(1).Info("waiting for terminating pod to be replaced", "pod", pod.Name)
+				return false
+			}
 			component := pod.Labels[constants.ComponentNameLabelKey]
 			if component == "" || pod.Status.PodIP == "" {
 				logger.V(1).Info("waiting for labeled leader-worker pods", "pod", pod.Name, "component", component, "podIP", pod.Status.PodIP)
+				return false
+			}
+			if matches != nil && !matches(&pod) {
+				logger.V(1).Info(
+					"waiting for pod to match expectation",
+					"pod", pod.Name, "hostname", pod.Spec.Hostname, "subdomain", pod.Spec.Subdomain,
+				)
 				return false
 			}
 			next[component] = pod

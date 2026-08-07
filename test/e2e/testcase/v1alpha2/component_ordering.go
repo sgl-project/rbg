@@ -33,6 +33,10 @@ import (
 
 const (
 	componentDependsOnAnnotationKey = "rolebasedgroup.workloads.x-k8s.io/component-depends-on"
+
+	leaderComponentName = "leader"
+	workerComponentName = "worker"
+	routerComponentName = "router"
 )
 
 // RunComponentOrderingTestCases registers e2e tests for component-depends-on (startAfter/deleteAfter).
@@ -107,7 +111,7 @@ func buildOrderedRBG(namespace string) *workloadsv1alpha2.RoleBasedGroup {
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
-								Name: "leader",
+								Name: leaderComponentName,
 								Size: ptr.To(int32(1)),
 								Annotations: map[string]string{
 									componentDependsOnAnnotationKey: `{"deleteAfter": ["router"]}`,
@@ -115,7 +119,7 @@ func buildOrderedRBG(namespace string) *workloadsv1alpha2.RoleBasedGroup {
 								Template: leaderTemplate,
 							},
 							{
-								Name: "worker",
+								Name: workerComponentName,
 								Size: ptr.To(int32(2)),
 								Annotations: map[string]string{
 									componentDependsOnAnnotationKey: `{"deleteAfter": ["router"]}`,
@@ -123,7 +127,7 @@ func buildOrderedRBG(namespace string) *workloadsv1alpha2.RoleBasedGroup {
 								Template: workerTemplate,
 							},
 							{
-								Name: "router",
+								Name: routerComponentName,
 								Size: ptr.To(int32(1)),
 								Annotations: map[string]string{
 									componentDependsOnAnnotationKey: `{"startAfter": ["leader", "worker"]}`,
@@ -161,9 +165,9 @@ func verifyRouterCreatedAfterLeaderWorker(f *framework.Framework, rbg *workloads
 		componentName := pod.Labels[constants.ComponentNameLabelKey]
 		ts := pod.CreationTimestamp.UnixNano()
 		switch componentName {
-		case "router":
+		case routerComponentName:
 			routerCreation = ts
-		case "leader", "worker":
+		case leaderComponentName, workerComponentName:
 			if ts > maxLeaderWorkerCreation {
 				maxLeaderWorkerCreation = ts
 			}
@@ -198,7 +202,7 @@ func verifyComponentStatuses(f *framework.Framework, rbg *workloadsv1alpha2.Role
 			statusMap[cs.Name] = cs
 		}
 		// All three components must have readyReplicas == their expected size.
-		expectations := map[string]int32{"leader": 1, "worker": 2, "router": 1}
+		expectations := map[string]int32{leaderComponentName: 1, workerComponentName: 2, routerComponentName: 1}
 		for name, expectedSize := range expectations {
 			cs, ok := statusMap[name]
 			if !ok || cs.Size != expectedSize || cs.ReadyReplicas < cs.Size {

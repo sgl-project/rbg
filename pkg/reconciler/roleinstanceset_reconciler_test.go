@@ -217,6 +217,74 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_WithTemplateRef(t *testin
 	}
 }
 
+// TestRoleInstanceSetReconciler_LeaderWorkerPattern_ComponentServiceName verifies which
+// components of the role instance are bound to the role's shared headless service: All binds
+// every component, LeaderOnly (the default) binds the leader only.
+func TestRoleInstanceSetReconciler_LeaderWorkerPattern_ComponentServiceName(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	tests := []struct {
+		name               string
+		policy             *workloadsv1alpha2.SharedServiceSelectionPolicy
+		expectWorkerShared bool
+	}{
+		{
+			name:               "All binds leader and worker",
+			policy:             ptr.To(workloadsv1alpha2.SharedServiceSelectionAll),
+			expectWorkerShared: true,
+		},
+		{
+			name:               "LeaderOnly binds the leader only",
+			policy:             ptr.To(workloadsv1alpha2.SharedServiceSelectionLeaderOnly),
+			expectWorkerShared: false,
+		},
+		{
+			name:               "unset policy falls back to the LeaderOnly default",
+			policy:             nil,
+			expectWorkerShared: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := wrappersv2.BuildLeaderWorkerRole("test-role").Obj()
+			role.LeaderWorkerPattern.SharedServiceSelection = tt.policy
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+				Obj()
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+
+			ctx := context.Background()
+			assert.NoError(t, reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash))
+
+			ris := &workloadsv1alpha2.RoleInstanceSet{}
+			assert.NoError(
+				t, fakeClient.Get(
+					ctx, types.NamespacedName{Name: rbg.GetWorkloadName(&role), Namespace: rbg.Namespace}, ris,
+				),
+			)
+
+			svcName := rbg.GetServiceName(&role)
+			serviceNames := make(map[string]string, len(ris.Spec.RoleInstanceTemplate.Components))
+			for _, component := range ris.Spec.RoleInstanceTemplate.Components {
+				serviceNames[component.Name] = component.ServiceName
+			}
+
+			assert.Equal(t, svcName, serviceNames[string(constants.LeaderComponentType)])
+			if tt.expectWorkerShared {
+				assert.Equal(t, svcName, serviceNames[string(constants.WorkerComponentType)])
+			} else {
+				assert.Empty(t, serviceNames[string(constants.WorkerComponentType)])
+			}
+		})
+	}
+}
+
 // TestRoleInstanceSetReconciler_LeaderWorkerPattern_TemplateIsolation verifies
 // that mutations during leader reconciliation do not leak into worker template.
 func TestRoleInstanceSetReconciler_LeaderWorkerPattern_TemplateIsolation(t *testing.T) {

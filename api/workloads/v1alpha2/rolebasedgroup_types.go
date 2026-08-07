@@ -190,10 +190,12 @@ type RestartPolicyConfig struct {
 type SharedServiceSelectionPolicy string
 
 const (
-	// SharedServiceSelectionAll - All pods would be routed to
+	// SharedServiceSelectionAll - All pods would be routed to, and every component of the role
+	// instance gets a serviceName, so each pod is addressable at <pod-name>.<service-name>
 	SharedServiceSelectionAll SharedServiceSelectionPolicy = "All"
 
-	// SharedServiceSelectionLeaderOnly - The headless service would only target at the leaders
+	// SharedServiceSelectionLeaderOnly - The headless service would only target at the leaders,
+	// and only the leader component gets a serviceName
 	SharedServiceSelectionLeaderOnly SharedServiceSelectionPolicy = "LeaderOnly"
 )
 
@@ -355,7 +357,14 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Schemaless
 	WorkerTemplatePatch *runtime.RawExtension `json:"workerTemplatePatch,omitempty"`
 
-	// SharedServiceSelection indicates the service policy of the role
+	// SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
+	// role resolves to LeaderOnly and any other workload type resolves to All. Switching the policy
+	// changes pod hostname/subdomain, which are immutable fields, so it triggers a rolling
+	// replacement of the role instances.
+	//
+	// The default is applied by the controller rather than by a CRD default: CRD defaulting runs
+	// before validation, so a stored LeaderOnly would be rejected by the RoleSpec validation rule on
+	// every role that uses another workload type. See RoleSpec GetSharedServiceSelection.
 	// +optional
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`

@@ -25422,8 +25422,9 @@ spec:
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
                         sharedServiceSelection:
-                          description: SharedServiceSelection indicates the service
-                            policy of the role
+                          description: |-
+                            SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
+                            role resolves to LeaderOnly and any other workload type resolves to All.
                           enum:
                           - All
                           - LeaderOnly

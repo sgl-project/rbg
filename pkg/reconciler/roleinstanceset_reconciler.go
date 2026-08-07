@@ -410,6 +410,20 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	workerSize := utils.NonZeroValue(*lwp.Size - 1)
+	workerComponentConfig := workloadsv1alpha2client.RoleInstanceComponent().
+		WithName(string(constants.WorkerComponentType)).
+		WithSize(workerSize).
+		WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
+			constants.ComponentNameLabelKey: string(constants.WorkerComponentType),
+			constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
+		}))
+	// Under the All policy the shared headless service exposes every component, so the worker
+	// component also needs a serviceName: that is what gives its pods a network identity
+	// (hostname/subdomain) and makes them resolvable through the service.
+	if role.GetSharedServiceSelection() == workloadsv1alpha2.SharedServiceSelectionAll {
+		workerComponentConfig = workerComponentConfig.WithServiceName(svcName)
+	}
+
 	roleInstanceTemplateConfig.
 		WithComponents(
 			workloadsv1alpha2client.RoleInstanceComponent().
@@ -420,13 +434,8 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 					constants.ComponentNameLabelKey: string(constants.LeaderComponentType),
 					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
 				})),
-			workloadsv1alpha2client.RoleInstanceComponent().
-				WithName(string(constants.WorkerComponentType)).
-				WithSize(workerSize).
-				WithTemplate(workerTemplateApplyCfg.WithLabels(map[string]string{
-					constants.ComponentNameLabelKey: string(constants.WorkerComponentType),
-					constants.ComponentSizeLabelKey: fmt.Sprintf("%d", *lwp.Size),
-				})))
+			workerComponentConfig,
+		)
 	return nil
 }
 

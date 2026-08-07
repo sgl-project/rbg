@@ -274,6 +274,30 @@ func (r *RoleSpec) GetWorkerTemplatePatch() *runtime.RawExtension {
 	return r.LeaderWorkerPattern.WorkerTemplatePatch
 }
 
+// GetSharedServiceSelection returns the effective shared service selection policy of the role,
+// resolved in this order:
+//
+//   - a role without leaderWorkerPattern, or on any workload type other than RoleInstanceSet,
+//     resolves to All. The policy is only supported for RoleInstanceSet + leaderWorkerPattern, and
+//     the Pods of other workload types never carry the component-name label, so honouring a stored
+//     LeaderOnly would leave the shared Service matching no Pod at all. The CEL rule on RoleSpec
+//     already rejects that value at admission, but it cannot protect a cluster whose CRDs lag the
+//     controller.
+//   - otherwise the stored value, when set.
+//   - otherwise LeaderOnly.
+func (r *RoleSpec) GetSharedServiceSelection() SharedServiceSelectionPolicy {
+	if r == nil || r.LeaderWorkerPattern == nil {
+		return SharedServiceSelectionAll
+	}
+	if r.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+		return SharedServiceSelectionAll
+	}
+	if r.LeaderWorkerPattern.SharedServiceSelection != nil {
+		return *r.LeaderWorkerPattern.SharedServiceSelection
+	}
+	return SharedServiceSelectionLeaderOnly
+}
+
 // GetRestartPolicyConfig returns the effective RestartPolicyConfig for this role based on its pattern.
 func (r *RoleSpec) GetRestartPolicyConfig() RestartPolicyConfig {
 	if r == nil {
