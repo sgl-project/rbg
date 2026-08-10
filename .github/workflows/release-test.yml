@@ -4,6 +4,12 @@ on:
   issue_comment:
     types: [created]
 
+# A later /release-test on the same PR supersedes earlier ones; without this the older run
+# can finish last and overwrite the newer run's commit statuses.
+concurrency:
+  group: release-test-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 env:
   GO_VERSION: 1.24.1
   KIND_VERSION: v0.31.0
@@ -21,9 +27,12 @@ permissions: read-all
 
 jobs:
   check-command:
+    # statuses: write below lets this job write to the PR merge box, so only trusted
+    # commenters may run the command.
     if: |
       github.event.issue.pull_request &&
-      contains(github.event.comment.body, '/release-test')
+      contains(github.event.comment.body, '/release-test') &&
+      contains(fromJSON('["OWNER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
