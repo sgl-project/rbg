@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -514,6 +515,124 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				return pod.UID
 			}, 10*time.Second, interval).Should(Equal(survivorUID),
 				"with RestartPolicy=None, the surviving pod should NOT be deleted")
+		})
+	})
+
+	Context("restartPolicy / restartPolicyConfig resolution", func() {
+		// envtest does not install the mutating webhook, so these cases cover the
+		// getter fallback and the RBG -> RoleInstance propagation chain. The
+		// defaulting webhook write-back is covered by the e2e suite.
+		type resolutionCase struct {
+			name       string
+			legacy     workloadsv1alpha2.RestartPolicyType
+			configType workloadsv1alpha2.RestartPolicyType
+			expected   workloadsv1alpha2.RestartPolicyType
+		}
+
+		cases := []resolutionCase{
+			{
+				name:     "legacy-recreate",
+				legacy:   workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				expected: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			},
+			{
+				name:     "legacy-none",
+				legacy:   workloadsv1alpha2.RestartPolicyNone,
+				expected: workloadsv1alpha2.RestartPolicyNone,
+			},
+			{
+				name:       "config-none",
+				configType: workloadsv1alpha2.RestartPolicyNone,
+				expected:   workloadsv1alpha2.RestartPolicyNone,
+			},
+			{
+				name:       "conflict-config-none-wins",
+				legacy:     workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				configType: workloadsv1alpha2.RestartPolicyNone,
+				expected:   workloadsv1alpha2.RestartPolicyNone,
+			},
+			{
+				name:       "conflict-config-recreate-wins",
+				legacy:     workloadsv1alpha2.RestartPolicyNone,
+				configType: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				expected:   workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			},
+			{
+				name:     "both-unset-defaults-to-recreate",
+				expected: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			},
+		}
+
+		for _, tc := range cases {
+			tc := tc
+			It(fmt.Sprintf("should resolve %s on leaderWorkerPattern", tc.name), func() {
+				rbgName := "test-resolve-" + tc.name
+				roleName := defaultRoleName
+
+				rw := wrappersv2.BuildLeaderWorkerRole(roleName).WithReplicas(1).WithSize(1)
+				if tc.legacy != "" {
+					rw = rw.WithLegacyRestartPolicy(tc.legacy)
+				}
+				if tc.configType != "" {
+					rw = rw.WithRestartPolicy(tc.configType)
+				}
+
+				rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+					[]workloadsv1alpha2.RoleSpec{rw.Obj()}).Obj()
+
+				Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+				Eventually(func() workloadsv1alpha2.RestartPolicyType {
+					ri := getRoleInstance(rbgName, roleName)
+					if ri == nil {
+						return ""
+					}
+					return ri.Spec.GetRestartPolicy()
+				}, timeout, interval).Should(Equal(tc.expected),
+					"resolved restart policy should propagate to the RoleInstance")
+
+				// The deprecated field must survive untouched so that a rollback to
+				// v0.7.0 still finds the policy where it expects it.
+				stored := &workloadsv1alpha2.RoleBasedGroup{}
+				Expect(testutil.K8sClient.Get(testutil.Ctx,
+					client.ObjectKeyFromObject(rbg), stored)).Should(Succeed())
+				Expect(stored.Spec.Roles[0].LeaderWorkerPattern.RestartPolicy).Should(Equal(tc.legacy))
+			})
+		}
+
+		It("should resolve the deprecated field on customComponentsPattern", func() {
+			rbgName := "test-resolve-ccp"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					{
+						Name:     roleName,
+						Replicas: ptr.To(int32(1)),
+						Pattern: workloadsv1alpha2.Pattern{
+							CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+								RestartPolicy: workloadsv1alpha2.RestartPolicyNone,
+								Components: []workloadsv1alpha2.InstanceComponent{
+									{
+										Name:     "main",
+										Size:     ptr.To(int32(1)),
+										Template: wrappersv2.BuildBasicPodTemplateSpec(),
+									},
+								},
+							},
+						},
+					},
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			Eventually(func() workloadsv1alpha2.RestartPolicyType {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return ""
+				}
+				return ri.Spec.GetRestartPolicy()
+			}, timeout, interval).Should(Equal(workloadsv1alpha2.RestartPolicyNone))
 		})
 	})
 
