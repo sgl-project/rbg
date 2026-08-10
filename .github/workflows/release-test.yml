@@ -5,9 +5,11 @@ on:
     types: [created]
 
 # A later /release-test on the same PR supersedes earlier ones; without this the older run
-# can finish last and overwrite the newer run's commit statuses.
+# can finish last and overwrite the newer run's commit statuses. Concurrency is evaluated
+# before any job `if:`, so the key repeats the command gate — otherwise an unrelated comment
+# on the PR would open a run in this group and cancel an e2e run already in flight.
 concurrency:
-  group: release-test-${{ github.event.issue.number }}
+  group: release-test-${{ github.event.issue.number }}-${{ contains(github.event.comment.body, '/release-test') && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) }}
   cancel-in-progress: true
 
 env:
@@ -32,7 +34,7 @@ jobs:
     if: |
       github.event.issue.pull_request &&
       contains(github.event.comment.body, '/release-test') &&
-      contains(fromJSON('["OWNER", "COLLABORATOR"]'), github.event.comment.author_association)
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -82,6 +84,32 @@ jobs:
                 description: 'Running',
               });
             }
+
+  # A silently ignored command looks like broken CI, so tell the commenter it was dropped.
+  reject-command:
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/release-test') &&
+      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Signal the command was ignored
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              ...context.repo,
+              comment_id: context.payload.comment.id,
+              content: '-1'
+            });
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: '`/release-test` is restricted to repository collaborators and org members. Ask a maintainer to run it for you.'
+            });
 
   # E2E test using Helm installation with default chart images (no build)
   e2e-test-helm:
