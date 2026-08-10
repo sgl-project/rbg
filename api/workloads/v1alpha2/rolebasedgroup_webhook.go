@@ -20,11 +20,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// SetupWebhookWithManager sets up the conversion and validating webhooks for
-// RoleBasedGroup with the Manager.
+// SetupWebhookWithManager sets up the conversion, defaulting and validating webhooks
+// for RoleBasedGroup with the Manager.
 func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
+		WithDefaulter(&RoleBasedGroupDefaulter{}).
 		WithValidator(&RoleBasedGroupValidator{Client: mgr.GetClient()}).
 		Complete()
 }

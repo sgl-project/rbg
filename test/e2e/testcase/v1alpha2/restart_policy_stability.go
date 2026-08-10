@@ -36,6 +36,7 @@ func RunRestartPolicyStabilityTestCases(f *framework.Framework) {
 		runRestartBackoffDelayTest(f)
 		runRestartBackoffPropagationTest(f)
 		runRestartBackoffSpecChangeTest(f)
+		runLegacyRestartPolicyDefaultingTest(f)
 	})
 }
 
@@ -407,10 +408,69 @@ func runRestartBackoffPropagationTest(f *framework.Framework) {
 			}, ri); err != nil {
 				return false
 			}
-			return ri.Spec.RestartPolicy.BaseDelaySeconds != nil && *ri.Spec.RestartPolicy.BaseDelaySeconds == 10 &&
-				ri.Spec.RestartPolicy.MaxDelaySeconds != nil && *ri.Spec.RestartPolicy.MaxDelaySeconds == 120
+			cfg := ri.Spec.GetRestartPolicyConfig()
+			return cfg.BaseDelaySeconds != nil && *cfg.BaseDelaySeconds == 10 &&
+				cfg.MaxDelaySeconds != nil && *cfg.MaxDelaySeconds == 120
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 			"BaseDelaySeconds=10 and MaxDelaySeconds=120 should propagate from RBG to RoleInstance")
+	})
+}
+
+// runLegacyRestartPolicyDefaultingTest verifies that a RBG written in the v0.7.0
+// shape - restartPolicy as a bare string, no restartPolicyConfig - is accepted and
+// that the defaulting webhook materializes the resolved policy into
+// restartPolicyConfig without clearing the deprecated field.
+func runLegacyRestartPolicyDefaultingTest(f *framework.Framework) {
+	ginkgo.It("Deprecated restartPolicy string is defaulted into restartPolicyConfig", func() {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-legacy-restart-policy", f.Namespace).WithRoles(
+			[]workloadsv1alpha2.RoleSpec{
+				wrappersv2.BuildLeaderWorkerRole("role-1").
+					WithReplicas(1).
+					WithLegacyRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+					Obj(),
+			}).Obj()
+
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
+
+		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+
+		stored := &workloadsv1alpha2.RoleBasedGroup{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), stored)).Should(gomega.Succeed())
+
+		lwp := stored.Spec.Roles[0].LeaderWorkerPattern
+		gomega.Expect(lwp.RestartPolicyConfig).ShouldNot(gomega.BeNil(),
+			"defaulting webhook should materialize restartPolicyConfig")
+		gomega.Expect(lwp.RestartPolicyConfig.Type).Should(
+			gomega.Equal(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart))
+		gomega.Expect(lwp.RestartPolicy).Should(
+			gomega.Equal(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart),
+			"deprecated field must not be cleared")
+
+		f.ExpectRbgV2Equal(rbg)
+
+		podList := &corev1.PodList{}
+		gomega.Expect(f.Client.List(f.Ctx, podList,
+			client.InNamespace(f.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.RoleNameLabelKey:  "role-1",
+			})).Should(gomega.Succeed())
+		gomega.Expect(podList.Items).ShouldNot(gomega.BeEmpty())
+
+		targetInstanceName := podList.Items[0].Labels[constants.RoleInstanceNameLabelKey]
+
+		gomega.Eventually(func() workloadsv1alpha2.RestartPolicyType {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKey{
+				Namespace: f.Namespace,
+				Name:      targetInstanceName,
+			}, ri); err != nil {
+				return ""
+			}
+			return ri.Spec.GetRestartPolicy()
+		}, utils.Timeout, utils.Interval).Should(
+			gomega.Equal(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart),
+			"the legacy policy should propagate from RBG to RoleInstance")
 	})
 }
 

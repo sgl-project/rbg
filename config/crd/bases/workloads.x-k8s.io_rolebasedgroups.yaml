@@ -23952,8 +23952,19 @@ spec:
                             type: object
                           type: array
                         restartPolicy:
-                          description: RestartPolicy defines the restart policy and
-                            backoff configuration.
+                          description: |-
+                            RestartPolicy defines the restart policy when pod failures happen.
+
+                            Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                            compatibility with v0.7.
+                          enum:
+                          - None
+                          - RecreateRoleInstanceOnPodRestart
+                          type: string
+                        restartPolicyConfig:
+                          description: |-
+                            RestartPolicyConfig defines the restart policy and backoff configuration.
+                            Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
                             baseDelaySeconds:
                               default: 30
@@ -25388,8 +25399,19 @@ spec:
                             the leader template.
                           x-kubernetes-preserve-unknown-fields: true
                         restartPolicy:
-                          description: RestartPolicy defines the restart policy and
-                            backoff configuration.
+                          description: |-
+                            RestartPolicy defines the restart policy when pod failures happen.
+
+                            Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                            compatibility with v0.7.
+                          enum:
+                          - None
+                          - RecreateRoleInstanceOnPodRestart
+                          type: string
+                        restartPolicyConfig:
+                          description: |-
+                            RestartPolicyConfig defines the restart policy and backoff configuration.
+                            Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
                             baseDelaySeconds:
                               default: 30

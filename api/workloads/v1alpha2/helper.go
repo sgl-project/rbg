@@ -299,32 +299,27 @@ func (r *RoleSpec) GetSharedServiceSelection() SharedServiceSelectionPolicy {
 }
 
 // GetRestartPolicyConfig returns the effective RestartPolicyConfig for this role based on its pattern.
+// The deprecated RestartPolicy string is folded in when RestartPolicyConfig carries no type, and the
+// pattern-specific default type is applied when neither is set.
 func (r *RoleSpec) GetRestartPolicyConfig() RestartPolicyConfig {
 	if r == nil {
-		return RestartPolicyConfig{}
+		return RestartPolicyConfig{Type: RestartPolicyNone}
 	}
-	if r.LeaderWorkerPattern != nil {
-		return r.LeaderWorkerPattern.RestartPolicy
+	if lwp := r.LeaderWorkerPattern; lwp != nil {
+		return resolveRestartPolicyConfig(lwp.RestartPolicyConfig, lwp.RestartPolicy, RecreateRoleInstanceOnPodRestart)
 	}
-	if r.CustomComponentsPattern != nil {
-		return r.CustomComponentsPattern.RestartPolicy
+	if ccp := r.CustomComponentsPattern; ccp != nil {
+		return resolveRestartPolicyConfig(ccp.RestartPolicyConfig, ccp.RestartPolicy, RecreateRoleInstanceOnPodRestart)
 	}
-	return RestartPolicyConfig{}
+	// StandalonePattern or no pattern: single pod, no instance-level restart
+	return RestartPolicyConfig{Type: RestartPolicyNone}
 }
 
 // GetRestartPolicy returns the effective restart policy for this role based on its pattern.
 // StandalonePattern always returns None (single pod, no instance-level restart).
 // LeaderWorkerPattern and CustomComponentsPattern default to RecreateRoleInstanceOnPodRestart.
 func (r *RoleSpec) GetRestartPolicy() RestartPolicyType {
-	cfg := r.GetRestartPolicyConfig()
-	if cfg.Type != "" {
-		return cfg.Type
-	}
-	if r.LeaderWorkerPattern != nil || r.CustomComponentsPattern != nil {
-		return RecreateRoleInstanceOnPodRestart
-	}
-	// StandalonePattern or no pattern: single pod, no instance-level restart
-	return RestartPolicyNone
+	return r.GetRestartPolicyConfig().Type
 }
 
 // Default values for restart policy delay configuration.

@@ -31,9 +31,19 @@ type RoleInstanceSpec struct {
 	// +kubebuilder:default=AllPodReady
 	ReadyPolicy RoleInstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
-	// RestartPolicy defines the restart policy and backoff configuration for all pods within the RoleInstance.
+	// RestartPolicy defines the restart policy for all pods within the RoleInstance.
+	//
+	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// RestartPolicyConfig defines the restart policy and backoff configuration for
+	// all pods within the RoleInstance. Its type takes precedence over the
+	// deprecated RestartPolicy field.
+	// +optional
+	RestartPolicyConfig *RestartPolicyConfig `json:"restartPolicyConfig,omitempty"`
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
@@ -45,12 +55,21 @@ type RoleInstanceReadinessGate struct {
 	ConditionType RoleInstanceConditionType `json:"conditionType"`
 }
 
-// GetRestartPolicyConfig returns the restart policy configuration.
+// GetRestartPolicyConfig returns the restart policy configuration, folding the
+// deprecated RestartPolicy string in when RestartPolicyConfig carries no type.
+// No default type is applied: an empty type means no instance-level restart, and
+// synthesizing RecreateRoleInstanceOnPodRestart here would start recreating the
+// RoleInstances of patterns that never opted in.
 func (s *RoleInstanceSpec) GetRestartPolicyConfig() RestartPolicyConfig {
 	if s == nil {
 		return RestartPolicyConfig{}
 	}
-	return s.RestartPolicy
+	return resolveRestartPolicyConfig(s.RestartPolicyConfig, s.RestartPolicy, "")
+}
+
+// GetRestartPolicy returns the effective restart policy type.
+func (s *RoleInstanceSpec) GetRestartPolicy() RestartPolicyType {
+	return s.GetRestartPolicyConfig().Type
 }
 
 // GetBaseDelaySeconds returns the configured base delay or the default (30).
@@ -58,8 +77,8 @@ func (s *RoleInstanceSpec) GetBaseDelaySeconds() int32 {
 	if s == nil {
 		return DefaultBaseDelaySeconds
 	}
-	if s.RestartPolicy.BaseDelaySeconds != nil {
-		return *s.RestartPolicy.BaseDelaySeconds
+	if cfg := s.GetRestartPolicyConfig(); cfg.BaseDelaySeconds != nil {
+		return *cfg.BaseDelaySeconds
 	}
 	return DefaultBaseDelaySeconds
 }
@@ -69,8 +88,8 @@ func (s *RoleInstanceSpec) GetMaxDelaySeconds() int32 {
 	if s == nil {
 		return DefaultMaxDelaySeconds
 	}
-	if s.RestartPolicy.MaxDelaySeconds != nil {
-		return *s.RestartPolicy.MaxDelaySeconds
+	if cfg := s.GetRestartPolicyConfig(); cfg.MaxDelaySeconds != nil {
+		return *cfg.MaxDelaySeconds
 	}
 	return DefaultMaxDelaySeconds
 }

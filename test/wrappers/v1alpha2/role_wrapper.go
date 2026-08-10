@@ -169,18 +169,32 @@ func (rw *LeaderWorkerRoleWrapper) WithRollingUpdate(ru workloadsv1alpha2.Rollin
 	return rw
 }
 
+func (rw *LeaderWorkerRoleWrapper) restartPolicyConfig() *workloadsv1alpha2.RestartPolicyConfig {
+	if rw.LeaderWorkerPattern.RestartPolicyConfig == nil {
+		rw.LeaderWorkerPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{}
+	}
+	return rw.LeaderWorkerPattern.RestartPolicyConfig
+}
+
 func (rw *LeaderWorkerRoleWrapper) WithRestartPolicy(rp workloadsv1alpha2.RestartPolicyType) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.RestartPolicy.Type = rp
+	rw.restartPolicyConfig().Type = rp
+	return rw
+}
+
+// WithLegacyRestartPolicy sets the deprecated restartPolicy string field, which is
+// the shape v0.7.0 stored.
+func (rw *LeaderWorkerRoleWrapper) WithLegacyRestartPolicy(rp workloadsv1alpha2.RestartPolicyType) *LeaderWorkerRoleWrapper {
+	rw.LeaderWorkerPattern.RestartPolicy = rp
 	return rw
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithBaseDelaySeconds(seconds int32) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.RestartPolicy.BaseDelaySeconds = ptr.To(seconds)
+	rw.restartPolicyConfig().BaseDelaySeconds = ptr.To(seconds)
 	return rw
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithMaxDelaySeconds(seconds int32) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.RestartPolicy.MaxDelaySeconds = ptr.To(seconds)
+	rw.restartPolicyConfig().MaxDelaySeconds = ptr.To(seconds)
 	return rw
 }
 

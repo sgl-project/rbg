@@ -160,7 +160,7 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
-			RestartPolicy: v2.RestartPolicyConfig{
+			RestartPolicyConfig: &v2.RestartPolicyConfig{
 				Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
 			},
 		}
@@ -190,7 +190,7 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		dst.Pattern = v2.Pattern{
 			CustomComponentsPattern: &v2.CustomComponentsPattern{
 				Components: components,
-				RestartPolicy: v2.RestartPolicyConfig{
+				RestartPolicyConfig: &v2.RestartPolicyConfig{
 					Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
 				},
 			},

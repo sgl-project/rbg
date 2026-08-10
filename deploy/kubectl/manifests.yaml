@@ -32812,8 +32812,19 @@ spec:
                             type: object
                           type: array
                         restartPolicy:
-                          description: RestartPolicy defines the restart policy and
-                            backoff configuration.
+                          description: |-
+                            RestartPolicy defines the restart policy when pod failures happen.
+
+                            Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                            compatibility with v0.7.
+                          enum:
+                          - None
+                          - RecreateRoleInstanceOnPodRestart
+                          type: string
+                        restartPolicyConfig:
+                          description: |-
+                            RestartPolicyConfig defines the restart policy and backoff configuration.
+                            Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
                             baseDelaySeconds:
                               default: 30
@@ -34248,8 +34259,19 @@ spec:
                             the leader template.
                           x-kubernetes-preserve-unknown-fields: true
                         restartPolicy:
-                          description: RestartPolicy defines the restart policy and
-                            backoff configuration.
+                          description: |-
+                            RestartPolicy defines the restart policy when pod failures happen.
+
+                            Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                            compatibility with v0.7.
+                          enum:
+                          - None
+                          - RecreateRoleInstanceOnPodRestart
+                          type: string
+                        restartPolicyConfig:
+                          description: |-
+                            RestartPolicyConfig defines the restart policy and backoff configuration.
+                            Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
                             baseDelaySeconds:
                               default: 30
@@ -74123,8 +74145,19 @@ spec:
                                     type: object
                                   type: array
                                 restartPolicy:
-                                  description: RestartPolicy defines the restart policy
-                                    and backoff configuration.
+                                  description: |-
+                                    RestartPolicy defines the restart policy when pod failures happen.
+
+                                    Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                                    compatibility with v0.7.
+                                  enum:
+                                  - None
+                                  - RecreateRoleInstanceOnPodRestart
+                                  type: string
+                                restartPolicyConfig:
+                                  description: |-
+                                    RestartPolicyConfig defines the restart policy and backoff configuration.
+                                    Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
                                     baseDelaySeconds:
                                       default: 30
@@ -75594,8 +75627,19 @@ spec:
                                     for the leader template.
                                   x-kubernetes-preserve-unknown-fields: true
                                 restartPolicy:
-                                  description: RestartPolicy defines the restart policy
-                                    and backoff configuration.
+                                  description: |-
+                                    RestartPolicy defines the restart policy when pod failures happen.
+
+                                    Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                                    compatibility with v0.7.
+                                  enum:
+                                  - None
+                                  - RecreateRoleInstanceOnPodRestart
+                                  type: string
+                                restartPolicyConfig:
+                                  description: |-
+                                    RestartPolicyConfig defines the restart policy and backoff configuration.
+                                    Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
                                     baseDelaySeconds:
                                       default: 30
@@ -97865,8 +97909,20 @@ spec:
                   Defaults to `AllPodReady`
                 type: string
               restartPolicy:
-                description: RestartPolicy defines the restart policy and backoff
-                  configuration for all pods within the RoleInstance.
+                description: |-
+                  RestartPolicy defines the restart policy for all pods within the RoleInstance.
+
+                  Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+                  compatibility with v0.7.
+                enum:
+                - None
+                - RecreateRoleInstanceOnPodRestart
+                type: string
+              restartPolicyConfig:
+                description: |-
+                  RestartPolicyConfig defines the restart policy and backoff configuration for
+                  all pods within the RoleInstance. Its type takes precedence over the
+                  deprecated RestartPolicy field.
                 properties:
                   baseDelaySeconds:
                     default: 30
@@ -98501,6 +98557,7 @@ rules:
 - apiGroups:
   - admissionregistration.k8s.io
   resources:
+  - mutatingwebhookconfigurations
   - validatingwebhookconfigurations
   verbs:
   - get
@@ -98746,6 +98803,32 @@ spec:
             cpu: 100m
             memory: 256Mi
       serviceAccountName: rbgs-controller-sa
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: rbgs-mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
+  failurePolicy: Fail
+  name: mrolebasedgroup.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroups
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

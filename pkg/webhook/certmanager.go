@@ -257,3 +257,65 @@ func (m *CertManager) patchOneValidatingWebhook(ctx context.Context, name string
 	certLog.Info("patched caBundle on ValidatingWebhookConfiguration", "name", name)
 	return nil
 }
+
+// MutatingWebhookConfigurationName is the name of the MutatingWebhookConfiguration
+// deployed by the helm chart / kustomize manifests.
+const MutatingWebhookConfigurationName = "rbgs-mutating-webhook-configuration"
+
+// MutatingWebhookConfigurations returns the names of MutatingWebhookConfiguration
+// objects whose webhooks[*].clientConfig.caBundle should be kept in sync.
+func MutatingWebhookConfigurations() []string {
+	return []string{MutatingWebhookConfigurationName}
+}
+
+// PatchMutatingWebhookCABundle patches webhooks[*].clientConfig.caBundle on
+// each named MutatingWebhookConfiguration with the given CA certificate.
+// Idempotent and uses the same retry policy as PatchCRDCABundle.
+func (m *CertManager) PatchMutatingWebhookCABundle(ctx context.Context, names []string, caCert []byte) error {
+	var errs []error
+	for _, name := range names {
+		if err := m.patchMutatingWebhookWithRetry(ctx, name, caCert); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *CertManager) patchMutatingWebhookWithRetry(ctx context.Context, name string, caCert []byte) error {
+	return m.retry(ctx, "MutatingWebhookConfiguration", name, func() error {
+		return m.patchOneMutatingWebhook(ctx, name, caCert)
+	})
+}
+
+func (m *CertManager) patchOneMutatingWebhook(ctx context.Context, name string, caCert []byte) error {
+	mwc := &admissionregistrationv1.MutatingWebhookConfiguration{}
+	if err := m.client.Get(ctx, client.ObjectKey{Name: name}, mwc); err != nil {
+		return fmt.Errorf("getting MutatingWebhookConfiguration %s: %w", name, err)
+	}
+	if len(mwc.Webhooks) == 0 {
+		certLog.Info("MutatingWebhookConfiguration has no webhooks, skipping", "name", name)
+		return nil
+	}
+
+	upToDate := true
+	for i := range mwc.Webhooks {
+		if !reflect.DeepEqual(mwc.Webhooks[i].ClientConfig.CABundle, caCert) {
+			upToDate = false
+			break
+		}
+	}
+	if upToDate {
+		certLog.V(1).Info("MutatingWebhookConfiguration caBundle already up to date", "name", name)
+		return nil
+	}
+
+	patch := client.MergeFrom(mwc.DeepCopy())
+	for i := range mwc.Webhooks {
+		mwc.Webhooks[i].ClientConfig.CABundle = caCert
+	}
+	if err := m.client.Patch(ctx, mwc, patch); err != nil {
+		return fmt.Errorf("patching caBundle on MutatingWebhookConfiguration %s: %w", name, err)
+	}
+	certLog.Info("patched caBundle on MutatingWebhookConfiguration", "name", name)
+	return nil
+}
