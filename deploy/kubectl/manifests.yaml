@@ -98557,7 +98557,6 @@ rules:
 - apiGroups:
   - admissionregistration.k8s.io
   resources:
-  - mutatingwebhookconfigurations
   - validatingwebhookconfigurations
   verbs:
   - get
@@ -98803,32 +98802,6 @@ spec:
             cpu: 100m
             memory: 256Mi
       serviceAccountName: rbgs-controller-sa
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: rbgs-mutating-webhook-configuration
-webhooks:
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
-  failurePolicy: Fail
-  name: mrolebasedgroup.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroups
-  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

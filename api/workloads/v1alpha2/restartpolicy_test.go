@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -164,54 +163,4 @@ func TestRoleInstanceSpec_GetRestartPolicy_NoSyntheticDefault(t *testing.T) {
 
 	spec.RestartPolicyConfig = &RestartPolicyConfig{Type: RestartPolicyNone}
 	assert.Equal(t, RestartPolicyNone, spec.GetRestartPolicy())
-}
-
-func TestRoleBasedGroupDefaulter_Default(t *testing.T) {
-	rbg := &RoleBasedGroup{
-		Spec: RoleBasedGroupSpec{
-			Roles: []RoleSpec{
-				{
-					Name: "legacy-only",
-					Pattern: Pattern{
-						LeaderWorkerPattern: &LeaderWorkerPattern{RestartPolicy: RestartPolicyNone},
-					},
-				},
-				{
-					Name:    "unset",
-					Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{}},
-				},
-				{
-					Name: "explicit backoff",
-					Pattern: Pattern{
-						LeaderWorkerPattern: &LeaderWorkerPattern{
-							RestartPolicyConfig: &RestartPolicyConfig{
-								Type:             RecreateRoleInstanceOnPodRestart,
-								BaseDelaySeconds: ptr.To(int32(15)),
-							},
-						},
-					},
-				},
-				{
-					Name:    "standalone",
-					Pattern: Pattern{StandalonePattern: &StandalonePattern{}},
-				},
-			},
-		},
-	}
-
-	require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(context.Background(), rbg))
-
-	legacyOnly := rbg.Spec.Roles[0].LeaderWorkerPattern
-	assert.Equal(t, RestartPolicyNone, legacyOnly.RestartPolicyConfig.Type)
-	assert.Equal(t, RestartPolicyNone, legacyOnly.RestartPolicy, "deprecated field must not be cleared")
-
-	unset := rbg.Spec.Roles[1].CustomComponentsPattern
-	assert.Equal(t, RecreateRoleInstanceOnPodRestart, unset.RestartPolicyConfig.Type)
-
-	explicit := rbg.Spec.Roles[2].LeaderWorkerPattern
-	assert.Equal(t, RecreateRoleInstanceOnPodRestart, explicit.RestartPolicyConfig.Type)
-	assert.Equal(t, ptr.To(int32(15)), explicit.RestartPolicyConfig.BaseDelaySeconds)
-
-	assert.Equal(t, RestartPolicyNone, rbg.Spec.Roles[3].GetRestartPolicy(),
-		"standalone pattern carries no restart policy to default")
 }

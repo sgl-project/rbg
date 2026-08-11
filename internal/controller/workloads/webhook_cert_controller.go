@@ -46,14 +46,10 @@ type WebhookCertReconciler struct {
 	// ValidatingWebhookNames is the list of ValidatingWebhookConfiguration names
 	// whose webhooks[*].clientConfig.caBundle should be kept in sync.
 	ValidatingWebhookNames []string
-	// MutatingWebhookNames is the list of MutatingWebhookConfiguration names
-	// whose webhooks[*].clientConfig.caBundle should be kept in sync.
-	MutatingWebhookNames []string
 }
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch;patch
 // Secret access is intentionally namespace-scoped (Role, not ClusterRole) and is managed
 // manually in config/rbac/cert_role.yaml rather than generated from markers below,
 // because kubebuilder markers do not support resourceNames scoping.
@@ -70,10 +66,6 @@ func (r *WebhookCertReconciler) Reconcile(ctx context.Context, req reconcile.Req
 		log.Error(err, "failed to patch caBundle on ValidatingWebhookConfigurations")
 		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if err := r.CertManager.PatchMutatingWebhookCABundle(ctx, r.MutatingWebhookNames, r.CACert); err != nil {
-		log.Error(err, "failed to patch caBundle on MutatingWebhookConfigurations")
-		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
-	}
 
 	// Re-check periodically in case the resource is replaced or the caBundle is removed.
 	return reconcile.Result{RequeueAfter: 10 * time.Minute}, nil
@@ -84,11 +76,9 @@ func (r *WebhookCertReconciler) Reconcile(ctx context.Context, req reconcile.Req
 func (r *WebhookCertReconciler) SetupWithManager(mgr ctrl.Manager, opts controller.Options) error {
 	crdNameSet := stringSet(r.CRDNames)
 	validatingNameSet := stringSet(r.ValidatingWebhookNames)
-	mutatingNameSet := stringSet(r.MutatingWebhookNames)
 
 	crdFilter := nameFilterPredicate(crdNameSet)
 	validatingFilter := nameFilterPredicate(validatingNameSet)
-	mutatingFilter := nameFilterPredicate(mutatingNameSet)
 
 	// Any reconcile request is a synthetic trigger: the Reconcile loop unconditionally
 	// re-patches all watched objects, so we coalesce all events onto a single key.
@@ -101,7 +91,6 @@ func (r *WebhookCertReconciler) SetupWithManager(mgr ctrl.Manager, opts controll
 		WithOptions(opts).
 		For(&apiextv1.CustomResourceDefinition{}, builder.WithPredicates(crdFilter)).
 		Watches(&admissionregistrationv1.ValidatingWebhookConfiguration{}, enqueueAll, builder.WithPredicates(validatingFilter)).
-		Watches(&admissionregistrationv1.MutatingWebhookConfiguration{}, enqueueAll, builder.WithPredicates(mutatingFilter)).
 		Complete(r)
 }
 

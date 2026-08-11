@@ -34,18 +34,27 @@ written for v0.7.0 keep working:
 2. Otherwise, if `restartPolicy` is set, its value is used.
 3. Otherwise the pattern default (`RecreateRoleInstanceOnPodRestart`) applies.
 
-The admission webhook writes the resolved type back into `restartPolicyConfig.type` and leaves
-`restartPolicy` untouched. New workloads should only set `restartPolicyConfig`.
+The two fields are resolved at runtime — the controller and the conversion webhook always read them through the precedence above, and stored objects are not modified. New workloads should only set `restartPolicyConfig`.
 
 ### Upgrading
 
 - **From v0.7.0**: no action required. Objects storing `restartPolicy` as a string keep working.
-- **From v0.8.0-alpha.x**: those pre-releases briefly defined `restartPolicy` as an *object*.
-  That shape is no longer decodable. Before upgrading, migrate every affected object -
-  `RoleBasedGroup`, `RoleBasedGroupSet`, `RoleInstanceSet` and `RoleInstance` - by moving the
-  `restartPolicy` object to `restartPolicyConfig`, or delete and recreate the workloads.
-  Leaving an object in the old shape prevents the controller from listing that resource type
-  at all, not just the offending object.
+- **From v0.8.0-alpha.x**: those pre-releases briefly defined `restartPolicy` as an *object*. That shape is no longer decodable, and leaving even one object in the old shape prevents the new controller from listing that resource type at all. In-place migration is supported (CRD validation ratcheting skips unchanged fields, so the API server keeps accepting writes to un-migrated objects). **Order matters — upgrade the CRDs first, then migrate the objects, then roll the controller:**
+
+  1. Upgrade the CRDs to this release first (apply the CRD manifests, or run the chart's CRD upgrader Job on its own). If you run a full `helm upgrade` instead, the controller image is rolled before the CRD upgrader finishes, and the new controller fails to list objects still stored in the old shape.
+  2. Migrate every affected object — `RoleInstance`, `RoleInstanceSet`, `RoleBasedGroup` and `RoleBasedGroupSet` — by clearing the object-shaped `restartPolicy` and re-supplying the values under `restartPolicyConfig`:
+
+     ```bash
+     kubectl patch roleinstance <name> -n <namespace> --type=merge \
+       -p '{"spec":{"restartPolicy":null,"restartPolicyConfig":{"type":"<type>"}}}'
+     ```
+
+     `<type>` must be re-supplied explicitly: once the new CRDs are installed, the API server prunes the old object shape on read, so the object itself can no longer tell you its previous value. Take it from the parent `RoleBasedGroup` or the `RoleInstanceSet` template.
+
+     **Do not** use a JSON patch `move` operation (`{"op":"move","from":"/spec/restartPolicy",...}`): after the CRD upgrade it appears to unblock listing but moves nothing — the object comes back with schema defaults and no `type`, silently losing the configured policy.
+  3. Roll the controller (`helm upgrade ...`).
+
+  Deleting and recreating the workloads also works, but it takes the inference service down and is not necessary.
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2

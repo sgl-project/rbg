@@ -556,9 +556,6 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 	if err = certMgr.PatchValidatingWebhookCABundle(ctx, rbgwebhook.ValidatingWebhookConfigurations(), caCert); err != nil {
 		return nil, fmt.Errorf("unable to patch caBundle on validating webhook configurations: %w", err)
 	}
-	if err = certMgr.PatchMutatingWebhookCABundle(ctx, rbgwebhook.MutatingWebhookConfigurations(), caCert); err != nil {
-		return nil, fmt.Errorf("unable to patch caBundle on mutating webhook configurations: %w", err)
-	}
 
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
 	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
@@ -580,7 +577,6 @@ func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult
 		CACert:                 result.caCert,
 		CRDNames:               rbgwebhook.ConversionWebhookCRDs(),
 		ValidatingWebhookNames: rbgwebhook.ValidatingWebhookConfigurations(),
-		MutatingWebhookNames:   rbgwebhook.MutatingWebhookConfigurations(),
 	}
 	return webhookCertReconciler.SetupWithManager(mgr, options)
 }

@@ -56,9 +56,9 @@ type restartPolicyCase struct {
 }
 
 // runRestartPolicyResolutionMatrixTest drives every combination of the two fields
-// through a single RBG and asserts the resolved type both on the stored RBG (written
-// by the defaulting webhook) and on the generated RoleInstance (written by the
-// controller). Sharing one RBG keeps the matrix to a single readiness wait.
+// through a single RBG and asserts the resolved type both on the stored RBG (via the
+// resolution getters) and on the generated RoleInstance (written by the controller).
+// Sharing one RBG keeps the matrix to a single readiness wait.
 func runRestartPolicyResolutionMatrixTest(f *framework.Framework) {
 	ginkgo.It("restartPolicyConfig.type takes precedence over the deprecated restartPolicy", func() {
 		cases := []restartPolicyCase{
@@ -133,23 +133,20 @@ func runRestartPolicyResolutionMatrixTest(f *framework.Framework) {
 
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
-		ginkgo.By("checking the defaulting webhook resolved every combination on the stored RBG")
+		ginkgo.By("checking every combination resolves to the expected policy on the stored RBG")
 		stored := &workloadsv1alpha2.RoleBasedGroup{}
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), stored)).Should(gomega.Succeed())
 
 		for _, tc := range cases {
 			role := findRole(stored, tc.roleName)
-			gomega.Expect(role.LeaderWorkerPattern.RestartPolicyConfig).ShouldNot(gomega.BeNil(),
-				"role %s: defaulting webhook should materialize restartPolicyConfig", tc.roleName)
-			gomega.Expect(role.LeaderWorkerPattern.RestartPolicyConfig.Type).Should(gomega.Equal(tc.expected),
+			gomega.Expect(role.GetRestartPolicy()).Should(gomega.Equal(tc.expected),
 				"role %s: resolved type mismatch", tc.roleName)
 			gomega.Expect(role.LeaderWorkerPattern.RestartPolicy).Should(gomega.Equal(tc.legacy), //nolint:staticcheck // intentional use of deprecated field
 				"role %s: deprecated restartPolicy must be preserved verbatim", tc.roleName)
 		}
 
 		ccpRole := findRole(stored, "ccp-legacy-none")
-		gomega.Expect(ccpRole.CustomComponentsPattern.RestartPolicyConfig).ShouldNot(gomega.BeNil())
-		gomega.Expect(ccpRole.CustomComponentsPattern.RestartPolicyConfig.Type).
+		gomega.Expect(ccpRole.GetRestartPolicy()).
 			Should(gomega.Equal(workloadsv1alpha2.RestartPolicyNone),
 				"customComponentsPattern should resolve the legacy field the same way")
 

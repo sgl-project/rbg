@@ -519,9 +519,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 	})
 
 	Context("restartPolicy / restartPolicyConfig resolution", func() {
-		// envtest does not install the mutating webhook, so these cases cover the
-		// getter fallback and the RBG -> RoleInstance propagation chain. The
-		// defaulting webhook write-back is covered by the e2e suite.
+		// Resolution happens entirely in the getters (no defaulting webhook), so
+		// these cases cover the resolution logic and the RBG -> RoleInstance
+		// propagation chain.
 		type resolutionCase struct {
 			name       string
 			legacy     workloadsv1alpha2.RestartPolicyType
