@@ -1040,3 +1040,169 @@ func TestRoleBasedGroup_RoundTrip_RoleTemplates(t *testing.T) {
 	assert.Equal(t, "gpu-base", role.TemplateSource.TemplateRef.Name)
 	assert.JSONEq(t, string(patch.Raw), string(role.TemplatePatch.Raw))
 }
+
+// ── RestartPolicy conversion ─────────────────────────────────────────────────
+
+func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyMapsToNone(t *testing.T) {
+	// v1alpha1 empty RestartPolicy must convert to v1alpha2 RestartPolicyNone
+	// so that GetRestartPolicy() does not apply the pattern-specific default.
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					LeaderWorkerSet: &LeaderWorkerTemplate{
+						Size: ptr.To(int32(2)),
+					},
+					TemplateSource: TemplateSource{Template: podTemplate("app")},
+					// RestartPolicy left empty (zero value)
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	role := dst.Spec.Roles[0]
+	require.NotNil(t, role.Pattern.LeaderWorkerPattern)
+	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig,
+		"conversion must materialize RestartPolicyConfig even when v1alpha1 policy is empty")
+	assert.Equal(t, v2.RestartPolicyNone, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type,
+		"empty v1alpha1 RestartPolicy must map to RestartPolicyNone")
+}
+
+func TestRoleBasedGroup_ConvertTo_RestartPolicyNoneMapsToNone(t *testing.T) {
+	// Explicit None in v1alpha1 must also map to RestartPolicyNone.
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{
+					Name:          "worker",
+					Replicas:      ptr.To(int32(1)),
+					RestartPolicy: NoneRestartPolicy,
+					LeaderWorkerSet: &LeaderWorkerTemplate{
+						Size: ptr.To(int32(2)),
+					},
+					TemplateSource: TemplateSource{Template: podTemplate("app")},
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	role := dst.Spec.Roles[0]
+	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig)
+	assert.Equal(t, v2.RestartPolicyNone, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type)
+}
+
+func TestRoleBasedGroup_ConvertTo_RestartPolicyRecreateMapsToRecreate(t *testing.T) {
+	// RecreateRoleInstanceOnPodRestart must pass through unchanged.
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{
+					Name:          "worker",
+					Replicas:      ptr.To(int32(1)),
+					RestartPolicy: RecreateRoleInstanceOnPodRestart,
+					LeaderWorkerSet: &LeaderWorkerTemplate{
+						Size: ptr.To(int32(2)),
+					},
+					TemplateSource: TemplateSource{Template: podTemplate("app")},
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	role := dst.Spec.Roles[0]
+	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig)
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type)
+}
+
+func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
+	// Round-trip: v1alpha1 → v1alpha2 → v1alpha1 must preserve the resolved policy.
+	tests := []struct {
+		name     string
+		policy   RestartPolicyType
+		expected RestartPolicyType
+	}{
+		{"empty maps to None", "", NoneRestartPolicy},
+		{"None preserved", NoneRestartPolicy, NoneRestartPolicy},
+		{"Recreate preserved", RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestart},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{
+							Name:          "worker",
+							Replicas:      ptr.To(int32(1)),
+							RestartPolicy: tc.policy,
+							LeaderWorkerSet: &LeaderWorkerTemplate{
+								Size: ptr.To(int32(2)),
+							},
+							TemplateSource: TemplateSource{Template: podTemplate("app")},
+						},
+					},
+				},
+			}
+
+			hub := &v2.RoleBasedGroup{}
+			require.NoError(t, original.ConvertTo(hub))
+
+			// Verify the hub has the correct RestartPolicyConfig.Type
+			require.NotNil(t, hub.Spec.Roles[0].Pattern.LeaderWorkerPattern.RestartPolicyConfig)
+			assert.Equal(t, v2.RestartPolicyType(tc.expected),
+				hub.Spec.Roles[0].Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type,
+				"hub (v1alpha2) must have correct RestartPolicyConfig.Type")
+
+			restored := &RoleBasedGroup{}
+			require.NoError(t, restored.ConvertFrom(hub))
+
+			// The restored v1alpha1 role RestartPolicy must match the expected resolved value.
+			assert.Equal(t, tc.expected, restored.Spec.Roles[0].RestartPolicy,
+				"round-trip must preserve the resolved RestartPolicy")
+		})
+	}
+}
+
+func TestRoleBasedGroup_ConvertTo_CustomComponentsPattern_RestartPolicy(t *testing.T) {
+	// Verify RestartPolicy conversion also works for CustomComponentsPattern.
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{
+					Name:          "pd",
+					Replicas:      ptr.To(int32(1)),
+					RestartPolicy: RecreateRoleInstanceOnPodRestart,
+					Components: []InstanceComponent{
+						{Name: "prefill", Size: ptr.To(int32(2)), Template: *podTemplate("prefill")},
+					},
+				},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	role := dst.Spec.Roles[0]
+	require.NotNil(t, role.Pattern.CustomComponentsPattern)
+	require.NotNil(t, role.Pattern.CustomComponentsPattern.RestartPolicyConfig,
+		"conversion must materialize RestartPolicyConfig for CustomComponentsPattern")
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart,
+		role.Pattern.CustomComponentsPattern.RestartPolicyConfig.Type)
+}
