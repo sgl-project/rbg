@@ -184,7 +184,7 @@ func (rw *LeaderWorkerRoleWrapper) WithRestartPolicy(rp workloadsv1alpha2.Restar
 // WithLegacyRestartPolicy sets the deprecated restartPolicy string field, which is
 // the shape v0.7.0 stored.
 func (rw *LeaderWorkerRoleWrapper) WithLegacyRestartPolicy(rp workloadsv1alpha2.RestartPolicyType) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.RestartPolicy = rp
+	rw.LeaderWorkerPattern.RestartPolicy = rp //nolint:staticcheck // intentional use of deprecated field
 	return rw
 }
 

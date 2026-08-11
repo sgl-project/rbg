@@ -138,11 +138,11 @@ func TestRestartTrackingChanged(t *testing.T) {
 	later := metav1.NewTime(now.Add(1 * time.Minute))
 
 	tests := []struct {
-		name                  string
-		newLastRestartTime    *metav1.Time
-		instanceLastRestart   *metav1.Time
-		liveLastRestart       *metav1.Time
-		expectedChanged       bool
+		name                string
+		newLastRestartTime  *metav1.Time
+		instanceLastRestart *metav1.Time
+		liveLastRestart     *metav1.Time
+		expectedChanged     bool
 	}{
 		{
 			name:                "new is nil: not changed",

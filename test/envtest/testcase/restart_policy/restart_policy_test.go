@@ -564,7 +564,6 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		}
 
 		for _, tc := range cases {
-			tc := tc
 			It(fmt.Sprintf("should resolve %s on leaderWorkerPattern", tc.name), func() {
 				rbgName := "test-resolve-" + tc.name
 				roleName := defaultRoleName
@@ -596,7 +595,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				stored := &workloadsv1alpha2.RoleBasedGroup{}
 				Expect(testutil.K8sClient.Get(testutil.Ctx,
 					client.ObjectKeyFromObject(rbg), stored)).Should(Succeed())
-				Expect(stored.Spec.Roles[0].LeaderWorkerPattern.RestartPolicy).Should(Equal(tc.legacy))
+				Expect(stored.Spec.Roles[0].LeaderWorkerPattern.RestartPolicy).Should(Equal(tc.legacy)) //nolint:staticcheck // intentional use of deprecated field
 			})
 		}
 

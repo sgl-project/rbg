@@ -143,7 +143,7 @@ func runRestartPolicyResolutionMatrixTest(f *framework.Framework) {
 				"role %s: defaulting webhook should materialize restartPolicyConfig", tc.roleName)
 			gomega.Expect(role.LeaderWorkerPattern.RestartPolicyConfig.Type).Should(gomega.Equal(tc.expected),
 				"role %s: resolved type mismatch", tc.roleName)
-			gomega.Expect(role.LeaderWorkerPattern.RestartPolicy).Should(gomega.Equal(tc.legacy),
+			gomega.Expect(role.LeaderWorkerPattern.RestartPolicy).Should(gomega.Equal(tc.legacy), //nolint:staticcheck // intentional use of deprecated field
 				"role %s: deprecated restartPolicy must be preserved verbatim", tc.roleName)
 		}
 
