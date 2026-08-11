@@ -143,6 +143,10 @@ Once you've done your work on developing RGB, you are now ready to submit a PR t
    - Ensure all CI tests pass.
    - For PRs that add or modify Go files, ensure the changed files contain the standard Apache 2.0 copyright header. You can check this locally with `make copyright-check`, or automatically add missing headers with `make copyright-fix`.
 
+4. Some PRs — release manifests, Helm chart or image version bumps — benefit from the release e2e suite, which is too slow to run on every push. A maintainer can start it by commenting `/release-test` on the PR. The two results show up on the PR head commit as the `Release Test / e2e-test-helm` and `Release Test / e2e-test-manifest` statuses.
+
+   These statuses are informational, not required checks: they do not block merging, and pushing a new commit leaves that commit without them, so the command has to be re-run if you want fresh results. The command is restricted to repository collaborators and organization members; if anyone else uses it the bot reacts 👎 and does nothing.
+
 ---
 
 ### Tracking Your PR
