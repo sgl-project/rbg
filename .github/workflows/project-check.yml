@@ -61,6 +61,10 @@ jobs:
           make fmt vet lint
           find ./deploy/helm | grep Chart.yaml | xargs dirname | xargs helm lint
 
+      - name: Chart render test
+        run: |
+          make test-chart
+
   build:
     env:
       GOPATH: ${{ github.workspace }}
