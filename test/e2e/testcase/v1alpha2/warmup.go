@@ -24,6 +24,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1helper "k8s.io/component-helpers/scheduling/corev1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -472,23 +473,64 @@ func RunWarmupTestCases(f *framework.Framework) {
 	})
 }
 
-// getFirstAvailableNodeName returns the name of the first available node.
+// defaultPodTolerations mirrors the default NoExecute tolerations injected by
+// the DefaultTolerationSeconds admission plugin for pods without tolerations.
+var defaultPodTolerations = []corev1.Toleration{
+	{
+		Key:               corev1.TaintNodeNotReady,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: ptr.To[int64](300),
+	},
+	{
+		Key:               corev1.TaintNodeUnreachable,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: ptr.To[int64](300),
+	},
+}
+
+// isNodeAvailable reports whether the node is schedulable for a pod without
+// custom tolerations: it must be Ready, not cordoned, not being deleted, and
+// carry no taint that the default pod tolerations cannot tolerate.
+func isNodeAvailable(node *corev1.Node) bool {
+	if node.Spec.Unschedulable || !node.DeletionTimestamp.IsZero() {
+		return false
+	}
+	if _, untolerated := corev1helper.FindMatchingUntoleratedTaint(node.Spec.Taints, defaultPodTolerations, nil); untolerated {
+		return false
+	}
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// getFirstAvailableNodeName returns the name of the first available node,
+// which must be Ready and schedulable (not cordoned).
 func getFirstAvailableNodeName(f *framework.Framework) string {
 	nodeList := &corev1.NodeList{}
 	gomega.Expect(f.Client.List(f.Ctx, nodeList)).Should(gomega.Succeed())
 
-	// First try to find a worker node
-	for _, node := range nodeList.Items {
+	// First try to find a Ready and schedulable worker node
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
 		if _, isControlPlane := node.Labels["node-role.kubernetes.io/control-plane"]; isControlPlane {
 			continue
 		}
-		return node.Name
+		if isNodeAvailable(node) {
+			return node.Name
+		}
 	}
-	// Fallback: use any available node
-	if len(nodeList.Items) > 0 {
-		return nodeList.Items[0].Name
+	// Fallback: any Ready and schedulable node (e.g. control-plane)
+	for i := range nodeList.Items {
+		if isNodeAvailable(&nodeList.Items[i]) {
+			return nodeList.Items[i].Name
+		}
 	}
-	ginkgo.Fail("no nodes found in the cluster")
+	ginkgo.Fail("no Ready and schedulable nodes found in the cluster")
 	return ""
 }
 
