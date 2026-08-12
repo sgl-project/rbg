@@ -24,6 +24,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1helper "k8s.io/component-helpers/scheduling/corev1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -101,8 +102,15 @@ func RunWarmupTestCases(f *framework.Framework) {
 		})
 
 		ginkgo.It("should complete warmup job with targetRoleBasedGroup mode and merge multi-role actions", func() {
-			ginkgo.By("Creating RBG with 2 roles")
+			ginkgo.By("Creating RBG with 2 roles pinned to the same node")
+			// This case verifies action merging: when several roles of the RBG sit on one node, the
+			// controller must create a single warmup Pod there holding every role's action. Both
+			// roles are therefore pinned to one node with a nodeSelector. Mutually required pod
+			// affinity cannot be used for this: neither pod could ever be scheduled, since each
+			// would wait for the other to already exist on the node.
+			nodeName := getFirstAvailableNodeName(f)
 			podTemplate := buildWarmupPodTemplate()
+			podTemplate.Spec.NodeSelector = map[string]string{corev1.LabelHostname: nodeName}
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("warmup-rbg-test", f.Namespace).
 				WithRoles([]workloadsv1alpha2.RoleSpec{
 					{
@@ -128,31 +136,36 @@ func RunWarmupTestCases(f *framework.Framework) {
 				}).Obj()
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
-			// Wait for RBG pods to be scheduled
-			ginkgo.By("Waiting for RBG pods to be scheduled")
-			gomega.Eventually(func() bool {
+			// Wait until exactly the two role pods the controller will act on are scheduled.
+			// Terminating pods are filtered out to mirror getDesiredNodesToWarmup, so a pod being
+			// replaced cannot make the co-location check below fail on a count instead of on
+			// placement. The snapshot is reused so both are decided from the same observation.
+			ginkgo.By("Waiting for both role pods to be scheduled")
+			var scheduledPods []corev1.Pod
+			gomega.Eventually(func() []corev1.Pod {
+				scheduledPods = nil
 				podList := &corev1.PodList{}
-				err := f.Client.List(f.Ctx, podList,
+				if err := f.Client.List(f.Ctx, podList,
 					client.InNamespace(f.Namespace),
-					client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})
-				if err != nil || len(podList.Items) < 2 {
-					return false
+					client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name}); err != nil {
+					return nil
 				}
-				for _, p := range podList.Items {
-					if p.Spec.NodeName == "" {
-						return false
+				for _, pod := range podList.Items {
+					if pod.Spec.NodeName == "" || pod.DeletionTimestamp != nil {
+						continue
 					}
+					scheduledPods = append(scheduledPods, pod)
 				}
-				return true
-			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(), "RBG pods should be scheduled")
+				return scheduledPods
+			}, utils.Timeout, utils.Interval).Should(gomega.HaveLen(2), "both RBG role pods should be scheduled")
 
-			// Get the node where both pods are running
-			ginkgo.By("Getting node name from RBG pods")
-			podList := &corev1.PodList{}
-			gomega.Expect(f.Client.List(f.Ctx, podList,
-				client.InNamespace(f.Namespace),
-				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
-			nodeName := podList.Items[0].Spec.NodeName
+			// Guard the premise of this case: both roles must have landed on the pinned node,
+			// otherwise the merge behaviour below is not what is being exercised.
+			ginkgo.By("Verifying both roles were scheduled on the same node")
+			for _, pod := range scheduledPods {
+				gomega.Expect(pod.Spec.NodeName).To(gomega.Equal(nodeName),
+					"pod %s should be pinned to node %s", pod.Name, nodeName)
+			}
 
 			ginkgo.By("Creating warmup CR with targetRoleBasedGroup mode")
 			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
@@ -460,23 +473,64 @@ func RunWarmupTestCases(f *framework.Framework) {
 	})
 }
 
-// getFirstAvailableNodeName returns the name of the first available node.
+// defaultPodTolerations mirrors the default NoExecute tolerations injected by
+// the DefaultTolerationSeconds admission plugin for pods without tolerations.
+var defaultPodTolerations = []corev1.Toleration{
+	{
+		Key:               corev1.TaintNodeNotReady,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: ptr.To[int64](300),
+	},
+	{
+		Key:               corev1.TaintNodeUnreachable,
+		Operator:          corev1.TolerationOpExists,
+		Effect:            corev1.TaintEffectNoExecute,
+		TolerationSeconds: ptr.To[int64](300),
+	},
+}
+
+// isNodeAvailable reports whether the node is schedulable for a pod without
+// custom tolerations: it must be Ready, not cordoned, not being deleted, and
+// carry no taint that the default pod tolerations cannot tolerate.
+func isNodeAvailable(node *corev1.Node) bool {
+	if node.Spec.Unschedulable || !node.DeletionTimestamp.IsZero() {
+		return false
+	}
+	if _, untolerated := corev1helper.FindMatchingUntoleratedTaint(node.Spec.Taints, defaultPodTolerations, nil); untolerated {
+		return false
+	}
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// getFirstAvailableNodeName returns the name of the first available node,
+// which must be Ready and schedulable (not cordoned).
 func getFirstAvailableNodeName(f *framework.Framework) string {
 	nodeList := &corev1.NodeList{}
 	gomega.Expect(f.Client.List(f.Ctx, nodeList)).Should(gomega.Succeed())
 
-	// First try to find a worker node
-	for _, node := range nodeList.Items {
+	// First try to find a Ready and schedulable worker node
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
 		if _, isControlPlane := node.Labels["node-role.kubernetes.io/control-plane"]; isControlPlane {
 			continue
 		}
-		return node.Name
+		if isNodeAvailable(node) {
+			return node.Name
+		}
 	}
-	// Fallback: use any available node
-	if len(nodeList.Items) > 0 {
-		return nodeList.Items[0].Name
+	// Fallback: any Ready and schedulable node (e.g. control-plane)
+	for i := range nodeList.Items {
+		if isNodeAvailable(&nodeList.Items[i]) {
+			return nodeList.Items[i].Name
+		}
 	}
-	ginkgo.Fail("no nodes found in the cluster")
+	ginkgo.Fail("no Ready and schedulable nodes found in the cluster")
 	return ""
 }
 
