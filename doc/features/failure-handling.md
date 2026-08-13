@@ -39,7 +39,7 @@ The two fields are resolved at runtime — the controller and the conversion web
 ### Upgrading
 
 - **From v0.7.0**: no action required. The `restartPolicy` wire format is unchanged.
-- **From v0.8.0-alpha.3 / v0.8.0-alpha.4**: these pre-releases briefly defined `restartPolicy` as an *object* instead of a string. That shape is no longer decodable by v0.8.0+ controllers. These two versions are unsupported and should not be used. If you deployed them, delete all affected objects (`RoleBasedGroup`, `RoleBasedGroupSet`, `RoleInstance`, `RoleInstanceSet`) and recreate them with v0.8.0+.
+- **From v0.8.0-alpha.3 / v0.8.0-alpha.4**: the released images for these two pre-releases briefly defined `restartPolicy` as an *object* instead of a string. That shape is no longer decodable by v0.8.0+ controllers — leaving even one object in the old shape prevents the new controller from listing that resource type at all, not just the offending object. These two versions are unsupported and should not be used. If you deployed them, delete all affected objects (`RoleBasedGroup`, `RoleBasedGroupSet`, `RoleInstance`, `RoleInstanceSet`) and recreate them with v0.8.0+.
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2

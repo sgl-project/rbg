@@ -213,12 +213,8 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 }
 
 // convertRestartPolicyV1alpha1ToV2 converts a v1alpha1 RestartPolicyType to v1alpha2.
-// In v1alpha1, empty RestartPolicy means None. We must explicitly set this so
-// that GetRestartPolicy() does not apply the v1alpha2 pattern-specific default.
+// An empty value is preserved so that the v1alpha2 getter applies the pattern-specific default.
 func convertRestartPolicyV1alpha1ToV2(src RestartPolicyType) v2.RestartPolicyType {
-	if src == "" || src == NoneRestartPolicy {
-		return v2.RestartPolicyNone
-	}
 	return v2.RestartPolicyType(src)
 }
 
