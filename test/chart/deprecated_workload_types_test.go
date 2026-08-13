@@ -86,6 +86,9 @@ func chartDir(t *testing.T) string {
 func renderChart(t *testing.T, extraArgs ...string) string {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("helm is required in CI: %v", err)
+		}
 		t.Skip("helm not installed; skipping chart render test")
 	}
 	args := append([]string{"template", "rbgs", chartDir(t)}, extraArgs...)
