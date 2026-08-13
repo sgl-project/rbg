@@ -322,6 +322,23 @@ func (r *RoleSpec) GetRestartPolicy() RestartPolicyType {
 	return r.GetRestartPolicyConfig().Type
 }
 
+// GetRawRestartPolicyType returns the restart policy type without applying
+// pattern-specific defaults. Used by v1alpha1 conversion to preserve the
+// original (possibly empty) value so that a read-back → update round-trip
+// does not change the stored representation or revision hash.
+func (r *RoleSpec) GetRawRestartPolicyType() RestartPolicyType {
+	if r == nil {
+		return ""
+	}
+	if lwp := r.LeaderWorkerPattern; lwp != nil {
+		return resolveRestartPolicyConfig(lwp.RestartPolicyConfig, lwp.RestartPolicy, "").Type
+	}
+	if ccp := r.CustomComponentsPattern; ccp != nil {
+		return resolveRestartPolicyConfig(ccp.RestartPolicyConfig, ccp.RestartPolicy, "").Type
+	}
+	return ""
+}
+
 // Default values for restart policy delay configuration.
 const (
 	DefaultBaseDelaySeconds int32 = 30

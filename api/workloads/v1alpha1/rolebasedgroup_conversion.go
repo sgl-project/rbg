@@ -213,7 +213,9 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 }
 
 // convertRestartPolicyV1alpha1ToV2 converts a v1alpha1 RestartPolicyType to v1alpha2.
-// An empty value is preserved so that the v1alpha2 getter applies the pattern-specific default.
+// An empty value is preserved as-is so that the v1alpha2 getter applies the
+// pattern-aware default (Recreate for LeaderWorkerPattern/CustomComponentsPattern,
+// None for StandalonePattern) at runtime — matching v1alpha1's documented behavior.
 func convertRestartPolicyV1alpha1ToV2(src RestartPolicyType) v2.RestartPolicyType {
 	return v2.RestartPolicyType(src)
 }
@@ -325,7 +327,7 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.Labels = src.Labels
 	dst.Annotations = src.Annotations
 	dst.Replicas = src.Replicas
-	dst.RestartPolicy = RestartPolicyType(src.GetRestartPolicy())
+	dst.RestartPolicy = RestartPolicyType(src.GetRawRestartPolicyType())
 	dst.Dependencies = src.Dependencies
 	dst.ServicePorts = src.ServicePorts
 	dst.MinReadySeconds = src.MinReadySeconds

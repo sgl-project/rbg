@@ -1043,10 +1043,12 @@ func TestRoleBasedGroup_RoundTrip_RoleTemplates(t *testing.T) {
 
 // ── RestartPolicy conversion ─────────────────────────────────────────────────
 
-func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyStaysEmpty(t *testing.T) {
-	// v1alpha1 empty RestartPolicy must convert to an empty v1alpha2 Type,
-	// so that GetRestartPolicy() applies the pattern-specific default
-	// (Recreate for LWS, None for Standalone).
+func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyPreserved(t *testing.T) {
+	// v1alpha1 empty RestartPolicy must convert to an empty v1alpha2 Type (not None).
+	// The v1alpha2 getter resolves the empty Type to RecreateRoleInstanceOnPodRestart
+	// at runtime, matching v1alpha1's documented LWS default. Preserving the empty
+	// value ensures round-trip consistency: a read-back → update cycle does not
+	// change the stored representation or revision hash.
 	src := &RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
 		Spec: RoleBasedGroupSpec{
@@ -1071,11 +1073,11 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyStaysEmpty(t *testing.T) {
 	require.NotNil(t, role.Pattern.LeaderWorkerPattern)
 	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig,
 		"conversion must materialize RestartPolicyConfig even when v1alpha1 policy is empty")
-	assert.Equal(t, v2.RestartPolicyType(""), role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type,
-		"empty v1alpha1 RestartPolicy must map to empty Type so the getter default applies")
-	// Verify the getter resolves to the LWS default.
+	assert.Equal(t, v2.RestartPolicyType(""),
+		role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type,
+		"empty v1alpha1 RestartPolicy must preserve as empty Type, not None")
 	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.GetRestartPolicy(),
-		"getter must apply Recreate default for LeaderWorkerPattern with empty policy")
+		"getter must resolve empty Type to Recreate (pattern-aware default)")
 }
 
 func TestRoleBasedGroup_ConvertTo_RestartPolicyNoneMapsToNone(t *testing.T) {
@@ -1133,15 +1135,18 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyRecreateMapsToRecreate(t *testing
 }
 
 func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
-	// Round-trip: v1alpha1 → v1alpha2 → v1alpha1 must preserve the resolved policy.
+	// Round-trip: v1alpha1 → v1alpha2 → v1alpha1 must preserve the raw value
+	// (not the getter-resolved default) so that a read-back → update cycle
+	// does not change the stored representation or revision hash.
 	tests := []struct {
-		name     string
-		policy   RestartPolicyType
-		expected RestartPolicyType
+		name             string
+		policy           RestartPolicyType
+		expectedRaw      RestartPolicyType   // raw value preserved through round-trip
+		expectedResolved v2.RestartPolicyType // what the v1alpha2 getter resolves to
 	}{
-		{"empty resolves to Recreate default", "", RecreateRoleInstanceOnPodRestart},
-		{"None preserved", NoneRestartPolicy, NoneRestartPolicy},
-		{"Recreate preserved", RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestart},
+		{"empty preserved, getter resolves to Recreate", "", "", v2.RecreateRoleInstanceOnPodRestart},
+		{"None preserved", NoneRestartPolicy, NoneRestartPolicy, v2.RestartPolicyNone},
+		{"Recreate preserved", RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestart, v2.RecreateRoleInstanceOnPodRestart},
 	}
 
 	for _, tc := range tests {
@@ -1166,18 +1171,19 @@ func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
 			hub := &v2.RoleBasedGroup{}
 			require.NoError(t, original.ConvertTo(hub))
 
-			// Verify the hub resolves to the correct RestartPolicy via the getter.
+			// Verify the hub getter resolves to the correct RestartPolicy.
 			require.NotNil(t, hub.Spec.Roles[0].Pattern.LeaderWorkerPattern.RestartPolicyConfig)
-			assert.Equal(t, v2.RestartPolicyType(tc.expected),
+			assert.Equal(t, tc.expectedResolved,
 				hub.Spec.Roles[0].GetRestartPolicy(),
-				"hub (v1alpha2) must resolve to correct RestartPolicy")
+				"hub (v1alpha2) getter must resolve to correct RestartPolicy")
 
 			restored := &RoleBasedGroup{}
 			require.NoError(t, restored.ConvertFrom(hub))
 
-			// The restored v1alpha1 role RestartPolicy must match the expected resolved value.
-			assert.Equal(t, tc.expected, restored.Spec.Roles[0].RestartPolicy,
-				"round-trip must preserve the resolved RestartPolicy")
+			// The restored v1alpha1 role RestartPolicy must match the raw value
+			// (not the resolved default) for round-trip hash consistency.
+			assert.Equal(t, tc.expectedRaw, restored.Spec.Roles[0].RestartPolicy,
+				"round-trip must preserve the raw RestartPolicy value")
 		})
 	}
 }
