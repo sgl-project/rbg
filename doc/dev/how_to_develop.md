@@ -68,6 +68,13 @@ $ make manifests
 $ make generate
 ```
 
+`make manifests` also regenerates the Helm chart's ClusterRole
+(`deploy/helm/rbgs/templates/rbac/clusterrole.yaml`) from `config/rbac/role.yaml`, so a change to
+kubebuilder RBAC markers reaches the chart as well. Do not edit that template by hand: the generator
+(`hack/gen-helm-rbac`) is what wraps the rules for the deprecated workload types in the
+`controller.deprecatedWorkloadTypes.enabled` conditional. CI runs `make manifests` and fails when the
+result differs from what is committed.
+
 ### Build Binary
 
 You can simply get a binary by running:

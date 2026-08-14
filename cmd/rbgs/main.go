@@ -149,6 +149,8 @@ func main() {
 		// Pprof profiling
 		enablePprof bool
 		pprofAddr   string
+		// Deprecated workload types: when false, Deployment/StatefulSet/LeaderWorkerSet support is off
+		enableDeprecatedWorkloadTypes bool
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -207,6 +209,16 @@ func main() {
 	)
 	flag.BoolVar(&enablePprof, "enable-pprof", false, "Enable pprof profiling server for performance debugging.")
 	flag.StringVar(&pprofAddr, "pprof-bind-address", ":6060", "The address the pprof endpoint binds to.")
+	flag.BoolVar(
+		&enableDeprecatedWorkloadTypes, "enable-deprecated-workload-types", true,
+		"Enable the deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet). Enabled by default. "+
+			"When false, the controller stops watching these resources and the validating webhook rejects any "+
+			"create or update whose roles use one, with no exemption for objects that already do. Such a cluster "+
+			"grants no RBAC for these types, so this setting is only for a fresh installation; an installation that "+
+			"already has objects using them must keep it true. "+
+			"Note: because the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet, a v1alpha1 object is "+
+			"rejected unless every role names RoleInstanceSet explicitly; v1alpha2 objects use RoleInstanceSet by default.",
+	)
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
@@ -338,7 +350,7 @@ func main() {
 	// ---------------------------------------------------------------------------
 	var webhookResult *webhookBootstrapResult
 	if webhooksEnabled(webhookMode) {
-		webhookResult, err = bootstrapWebhookCerts(mgr)
+		webhookResult, err = bootstrapWebhookCerts(mgr, enableDeprecatedWorkloadTypes)
 		if err != nil {
 			setupLog.Error(err, "unable to bootstrap webhook certs")
 			os.Exit(1)
@@ -362,7 +374,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = rbgReconciler.SetupWithManager(mgr, options); err != nil {
+	if err = rbgReconciler.SetupWithManager(mgr, options, enableDeprecatedWorkloadTypes); err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)
 	}
@@ -520,7 +532,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 // bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
 // conversion webhook, patches the caBundle on CRDs, and registers conversion
 // webhooks with the manager. This should only be called when webhook is enabled.
-func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
+func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) (*webhookBootstrapResult, error) {
 	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
 	if webhookServiceNamespace == "" {
 		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
@@ -558,10 +570,10 @@ func bootstrapWebhookCerts(mgr ctrl.Manager) (*webhookBootstrapResult, error) {
 	}
 
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
-	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr); err != nil {
+	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroup: %w", err)
 	}
-	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr); err != nil {
+	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroupSet: %w", err)
 	}
 
@@ -619,6 +631,15 @@ func startPprofServer(ctx context.Context, pprofAddr string) error {
 	return nil
 }
 
+// cacheOptions restricts the cache to objects this controller owns, keyed by the
+// group-name label.
+//
+// The deprecated workload types are listed unconditionally, and deliberately so:
+// ByObject is per-type cache configuration, not an allowlist. It does not create an
+// informer — informers are built lazily on the first Get/List/Owns of a type — so an
+// entry here costs nothing when the type is never read, and gating it would only strip
+// the label bound from an informer that started anyway, leaving it to cache every
+// StatefulSet and Deployment in the cluster.
 func cacheOptions() cache.Options {
 	keyExistsRequirement, err := labels.NewRequirement(constants.GroupNameLabelKey, selection.Exists, nil)
 	if err != nil {
@@ -629,15 +650,9 @@ func cacheOptions() cache.Options {
 	return cache.Options{
 		Scheme: scheme,
 		ByObject: map[client.Object]cache.ByObject{
-			&appsv1.StatefulSet{}: {
-				Label: keyExistsSelector,
-			},
-			&appsv1.Deployment{}: {
-				Label: keyExistsSelector,
-			},
-			&corev1.Service{}: {
-				Label: keyExistsSelector,
-			},
+			&corev1.Service{}:     {Label: keyExistsSelector},
+			&appsv1.StatefulSet{}: {Label: keyExistsSelector},
+			&appsv1.Deployment{}:  {Label: keyExistsSelector},
 		},
 	}
 }

@@ -80,6 +80,24 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 详细安装说明请参考 [安装指南](doc/install.md)。
 
+#### 已弃用的 workload 类型
+
+`v1alpha1` API 以及 `Deployment` / `StatefulSet` / `LeaderWorkerSet` 三种 workload 类型正在被弃用，
+由 `v1alpha2` 和 `RoleInstanceSet` 取代。Chart 参数 `controller.deprecatedWorkloadTypes.enabled`
+（对应控制器参数 `--enable-deprecated-workload-types`）决定控制器服务哪一套逻辑：
+
+| 取值 | 行为 |
+|:-----|:-----|
+| `true`（默认） | 与此前完全一致：`v1alpha1` 与 `v1alpha2` 的控制逻辑同时生效，所有 workload 类型均受支持。 |
+| `false` | 控制器直接拒绝已弃用的 workload 类型：不授予相关 RBAC、不 watch 这些资源，校验 webhook 拒绝任何使用了它们的创建与更新请求。 |
+
+`false` 的目的是让**全新安装**的用户直接使用 `v1alpha2` 并保持在该版本上，且这一约束由控制器强制执行，
+而非依赖约定。由于该模式下控制器完全无法 reconcile 已弃用的 workload 类型，它仅适用于首次安装。
+
+> **如果你已经部署过 RBG 控制器，请保持 `true`。** 目前没有在已有安装上关闭该开关的支持路径——已经在使用
+> 已弃用 workload 类型的对象会变得无法被 reconcile。迁移指引以及迁移到 `RoleInstanceSet` 的更新方式将在
+> 后续版本提供。
+
 ### 🎮 快速示例
 
 部署一个基础 RoleBasedGroup，包含两个角色和启动依赖：

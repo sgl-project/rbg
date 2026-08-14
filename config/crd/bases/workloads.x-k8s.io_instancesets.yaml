@@ -49,6 +49,9 @@ spec:
       name: SELECTOR
       priority: 1
       type: string
+    deprecated: true
+    deprecationWarning: workloads.x-k8s.io/v1alpha1 InstanceSet is deprecated; use
+      workloads.x-k8s.io/v1alpha2 RoleInstanceSet
     name: v1alpha1
     schema:
       openAPIV3Schema:

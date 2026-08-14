@@ -34,6 +34,10 @@ import (
 // +kubebuilder:object:generate=false
 type RoleBasedGroupValidator struct {
 	Client client.Client
+	// EnableDeprecatedWorkloadTypes reports whether the deprecated workload types
+	// (Deployment, StatefulSet, LeaderWorkerSet) are still accepted. When false,
+	// RBGs whose roles use them are rejected.
+	EnableDeprecatedWorkloadTypes bool
 }
 
 var _ admission.CustomValidator = &RoleBasedGroupValidator{}
@@ -52,6 +56,11 @@ func (v *RoleBasedGroupValidator) ValidateCreate(_ context.Context, obj runtime.
 	}
 	if err := ValidateRollingUpdate(rbg); err != nil {
 		allErrs = append(allErrs, err)
+	}
+	if !v.EnableDeprecatedWorkloadTypes {
+		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
@@ -75,6 +84,11 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
+	}
+	if !v.EnableDeprecatedWorkloadTypes {
+		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)

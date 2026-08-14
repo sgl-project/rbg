@@ -250,6 +250,7 @@ type InstanceSetCondition struct {
 // +kubebuilder:printcolumn:name="TOTAL",type="integer",JSONPath=".status.replicas",description="The number of currently all Instances."
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
 // +kubebuilder:printcolumn:name="SELECTOR",type="string",priority=1,JSONPath=".status.labelSelector",description="The selector of currently InstanceSet."
+// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 InstanceSet is deprecated; use workloads.x-k8s.io/v1alpha2 RoleInstanceSet"
 
 // InstanceSet is the Schema for the InstanceSet API
 type InstanceSet struct {

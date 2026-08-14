@@ -93,6 +93,10 @@ type RoleBasedGroupReconciler struct {
 	// the RoleInstance reconciler. Injected at wire-up time so both consumers
 	// operate on the same instance.
 	NodeBindings *instancesync.NodeBindingStore
+	// enableDeprecatedWorkloadTypes reports whether the deprecated workload types are
+	// still enabled. When false, Deployment/StatefulSet/LeaderWorkerSet are skipped
+	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is removed.
+	enableDeprecatedWorkloadTypes bool
 }
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
@@ -673,19 +677,22 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	errs := make([]error, 0)
-	deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
-	if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-		errs = append(errs, err)
-	}
 
-	stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
-	if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-		errs = append(errs, err)
-	}
+	if r.enableDeprecatedWorkloadTypes {
+		deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
+		if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+			errs = append(errs, err)
+		}
 
-	lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
-	if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-		errs = append(errs, err)
+		stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
+		if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+			errs = append(errs, err)
+		}
+
+		lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
+		if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	roleInstanceSetRecon := reconciler.NewRoleInstanceSetReconciler(r.scheme, r.client)
@@ -1012,12 +1019,11 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
+func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options, enableDeprecatedWorkloadTypes bool) error {
+	r.enableDeprecatedWorkloadTypes = enableDeprecatedWorkloadTypes
 	runtimeController = ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
-		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate())).
-		Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&workloadsv1alpha2.RoleInstanceSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&corev1.Service{}).
 		Owns(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.MatchEveryOwner, builder.WithPredicates(RBGScalingAdapterPredicate())).
@@ -1040,12 +1046,17 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		}).
 		Named("workloads-rolebasedgroup")
 
-	err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName)
-	if err == nil {
-		watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
-		runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
+	if enableDeprecatedWorkloadTypes {
+		runtimeController.Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate()))
+		runtimeController.Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate()))
+
+		err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName)
+		if err == nil {
+			watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
+			runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
+		}
 	}
-	err = utils.CheckCrdExists(r.apiReader, scheduler.KubePodGroupCrdName)
+	err := utils.CheckCrdExists(r.apiReader, scheduler.KubePodGroupCrdName)
 	if err == nil {
 		watchedWorkload.LoadOrStore(scheduler.KubePodGroupCrdName, struct{}{})
 		runtimeController.Owns(&schev1alpha1.PodGroup{})
@@ -1595,6 +1606,18 @@ func hasValidOwnerRef(obj client.Object, targetGVK schema.GroupVersionKind) bool
 	return utils.CheckOwnerReference(refs, targetGVK)
 }
 
+// dynamicWatchCustomCRD registers an Owns() watch for a workload CRD the first time a
+// role actually uses it, since those CRDs may be installed after the manager starts.
+//
+// The LeaderWorkerSet branch carries no --enable-deprecated-workload-types check of its
+// own, and needs none: the only caller is getOrCreateWorkloadReconciler, which runs per
+// role, and with the flag off the validating webhook admits no object whose roles use a
+// deprecated workload type. So no role can reach this function with kind
+// LeaderWorkerSet, and SetupWithManager's gated Owns() stays the only place that could
+// start such a watch.
+//
+// TODO: remove the LeaderWorkerSet branch entirely once v1alpha1 is removed, along with
+// the rest of the deprecated workload type handling.
 func dynamicWatchCustomCRD(ctx context.Context, kind string) {
 	// Skip in unit tests when runtimeController is not initialized
 	if runtimeController == nil {

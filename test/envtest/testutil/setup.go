@@ -206,7 +206,7 @@ func SetupRBGController(mgr manager.Manager, bindings *instancesync.NodeBindingS
 	if err != nil {
 		return err
 	}
-	return rbgReconciler.SetupWithManager(mgr, controller.Options{})
+	return rbgReconciler.SetupWithManager(mgr, controller.Options{}, false)
 }
 
 // SetupRBGScalingAdapterController sets up the RoleBasedGroupScalingAdapter controller

@@ -65,6 +65,19 @@ controller:
       startPort: 30000
       # The size of the allocatable port range.
       portRange: 5000
+  # deprecatedWorkloadTypes controls the deprecated workload types
+  # (Deployment, StatefulSet, LeaderWorkerSet), superseded by RoleInstanceSet.
+  # Defaults to true, which keeps them enabled.
+  # Set to false to turn them off:
+  #   - RBAC for Deployment/StatefulSet/LeaderWorkerSet is removed
+  #   - Validating webhook rejects any create or update whose roles use these
+  #     workload types, with no exemption for objects that already do
+  #   - Controller stops watching these resources
+  # Only set false on a FRESH installation. An installation that already has
+  # objects using these types must keep true: with RBAC and watches removed the
+  # controller cannot reconcile them. A migration path will be provided later.
+  deprecatedWorkloadTypes:
+    enabled: true
 
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)

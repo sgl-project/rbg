@@ -60,8 +60,10 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
-	cp config/rbac/role.yaml deploy/helm/rbgs/templates/rbac/clusterrole.yaml
-	sed -i.bak 's/name: controller-role/name: rbgs-controller-role/' deploy/helm/rbgs/templates/rbac/clusterrole.yaml && rm -f deploy/helm/rbgs/templates/rbac/clusterrole.yaml.bak
+	@echo ""
+	@echo "NOTE: config/rbac/role.yaml has been regenerated."
+	go run ./hack/gen-helm-rbac
+	@echo ""
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
 .PHONY: generate
@@ -92,6 +94,10 @@ test-envtest: manifests generate setup-envtest ## Run envtest integration tests.
 test-coverage-html: test
 	go tool cover -html=cover.out -o cover.html
 
+.PHONY: test-chart
+test-chart: ## Render the Helm chart with helm template and assert the deprecated-workload-types toggle. Requires helm; needs no cluster.
+	go test ./test/chart/ -v
+
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
@@ -99,6 +105,14 @@ test-coverage-html: test
 .PHONY: test-e2e
 test-e2e:  ## Run the e2e tests.
 	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
+
+# Runs against a cluster where the chart was installed with
+# controller.deprecatedWorkloadTypes.enabled=false. A BeforeSuite preflight fails fast
+# with setup instructions if that precondition is not met, so do not point this at an
+# ordinary (enabled) release. See test/e2e/apicompat.
+.PHONY: test-e2e-deprecated-disabled
+test-e2e-deprecated-disabled: ## Run the deprecated-workload-types-disabled e2e suite.
+	go test ./test/e2e/apicompat/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
