@@ -17,10 +17,10 @@ limitations under the License.
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -147,7 +147,7 @@ func (m *CertManager) patchOneCRD(ctx context.Context, crdName string, caCert []
 		return nil
 	}
 
-	if reflect.DeepEqual(crd.Spec.Conversion.Webhook.ClientConfig.CABundle, caCert) {
+	if bytes.Equal(crd.Spec.Conversion.Webhook.ClientConfig.CABundle, caCert) {
 		certLog.V(1).Info("CRD caBundle already up to date", "crd", crdName)
 		return nil
 	}
@@ -226,32 +226,33 @@ func (m *CertManager) retry(ctx context.Context, kind, name string, op func() er
 }
 
 func (m *CertManager) patchOneValidatingWebhook(ctx context.Context, name string, caCert []byte) error {
-	vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{}
-	if err := m.client.Get(ctx, client.ObjectKey{Name: name}, vwc); err != nil {
+	config := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+	if err := m.client.Get(ctx, client.ObjectKey{Name: name}, config); err != nil {
 		return fmt.Errorf("getting ValidatingWebhookConfiguration %s: %w", name, err)
 	}
-	if len(vwc.Webhooks) == 0 {
+
+	if len(config.Webhooks) == 0 {
 		certLog.Info("ValidatingWebhookConfiguration has no webhooks, skipping", "name", name)
 		return nil
 	}
 
-	upToDate := true
-	for i := range vwc.Webhooks {
-		if !reflect.DeepEqual(vwc.Webhooks[i].ClientConfig.CABundle, caCert) {
-			upToDate = false
+	needsPatch := false
+	for i := range config.Webhooks {
+		if !bytes.Equal(config.Webhooks[i].ClientConfig.CABundle, caCert) {
+			needsPatch = true
 			break
 		}
 	}
-	if upToDate {
+	if !needsPatch {
 		certLog.V(1).Info("ValidatingWebhookConfiguration caBundle already up to date", "name", name)
 		return nil
 	}
 
-	patch := client.MergeFrom(vwc.DeepCopy())
-	for i := range vwc.Webhooks {
-		vwc.Webhooks[i].ClientConfig.CABundle = caCert
+	patch := client.MergeFrom(config.DeepCopy())
+	for i := range config.Webhooks {
+		config.Webhooks[i].ClientConfig.CABundle = caCert
 	}
-	if err := m.client.Patch(ctx, vwc, patch); err != nil {
+	if err := m.client.Patch(ctx, config, patch); err != nil {
 		return fmt.Errorf("patching caBundle on ValidatingWebhookConfiguration %s: %w", name, err)
 	}
 	certLog.Info("patched caBundle on ValidatingWebhookConfiguration", "name", name)

@@ -1,6 +1,6 @@
 # Example: RoleBasedGroup with restart policies (v1alpha2)
 # Demonstrates different restart policy configurations for roles.
-# restartPolicy is only available on leaderWorkerPattern and customComponentsPattern.
+# restartPolicyConfig is only available on leaderWorkerPattern and customComponentsPattern.
 # standalonePattern always uses None (single pod, no instance-level restart).
 # - RecreateRoleInstanceOnPodRestart: Recreate only the affected role instance (default for multi-pod patterns)
 # - None: No automatic restart action (follow default pod restart behavior)
@@ -16,7 +16,7 @@ spec:
       replicas: 3
       leaderWorkerPattern:
         size: 2
-        restartPolicy:
+        restartPolicyConfig:
           type: RecreateRoleInstanceOnPodRestart
         template:
           metadata:
@@ -34,7 +34,7 @@ spec:
       replicas: 1
       leaderWorkerPattern:
         size: 2
-        restartPolicy:
+        restartPolicyConfig:
           type: None
         template:
           metadata:
@@ -47,7 +47,7 @@ spec:
                 ports:
                   - containerPort: 9090
 
-    # StandalonePattern: no restartPolicy field (always None)
+    # StandalonePattern: no restartPolicyConfig field (always None)
     - name: monitor
       replicas: 1
       standalonePattern:

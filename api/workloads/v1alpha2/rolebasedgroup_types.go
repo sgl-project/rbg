@@ -186,6 +186,24 @@ type RestartPolicyConfig struct {
 	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
 }
 
+// resolveRestartPolicyConfig folds the deprecated restartPolicy string into cfg.
+// The resolved type is taken from cfg.Type, then legacy, then defaultType.
+func resolveRestartPolicyConfig(cfg *RestartPolicyConfig, legacy, defaultType RestartPolicyType) RestartPolicyConfig {
+	var resolved RestartPolicyConfig
+	if cfg != nil {
+		resolved = *cfg
+	}
+	if resolved.Type != "" {
+		return resolved
+	}
+	if legacy != "" {
+		resolved.Type = legacy
+		return resolved
+	}
+	resolved.Type = defaultType
+	return resolved
+}
+
 // SharedServiceSelectionPolicy defines the service policy of service per role
 type SharedServiceSelectionPolicy string
 
@@ -369,18 +387,36 @@ type LeaderWorkerPattern struct {
 	// +kubebuilder:validation:Enum=All;LeaderOnly
 	SharedServiceSelection *SharedServiceSelectionPolicy `json:"sharedServiceSelection,omitempty"`
 
-	// RestartPolicy defines the restart policy and backoff configuration.
+	// RestartPolicy defines the restart policy when pod failures happen.
+	//
+	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// RestartPolicyConfig defines the restart policy and backoff configuration.
+	// Its type takes precedence over the deprecated RestartPolicy field.
+	// +optional
+	RestartPolicyConfig *RestartPolicyConfig `json:"restartPolicyConfig,omitempty"`
 }
 
 type CustomComponentsPattern struct {
 	// +optional
 	Components []InstanceComponent `json:"components,omitempty"`
 
-	// RestartPolicy defines the restart policy and backoff configuration.
+	// RestartPolicy defines the restart policy when pod failures happen.
+	//
+	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
+	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	RestartPolicy RestartPolicyConfig `json:"restartPolicy,omitempty"`
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// RestartPolicyConfig defines the restart policy and backoff configuration.
+	// Its type takes precedence over the deprecated RestartPolicy field.
+	// +optional
+	RestartPolicyConfig *RestartPolicyConfig `json:"restartPolicyConfig,omitempty"`
 }
 
 type WorkloadSpec struct {

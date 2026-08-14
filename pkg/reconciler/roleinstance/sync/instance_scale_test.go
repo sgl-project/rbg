@@ -51,7 +51,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -85,7 +85,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -119,7 +119,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RestartPolicyNone},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RestartPolicyNone},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -153,7 +153,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -187,7 +187,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 2,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -221,7 +221,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -248,7 +248,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -282,7 +282,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -316,7 +316,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -350,7 +350,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -386,7 +386,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -427,7 +427,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -466,7 +466,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](3)},
 					},
@@ -508,7 +508,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -552,7 +552,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -590,7 +590,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -642,7 +642,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -702,7 +702,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -765,7 +765,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](2)},
 					},
@@ -839,7 +839,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -881,7 +881,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -923,7 +923,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -966,7 +966,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -1009,7 +1009,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -1052,7 +1052,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -1092,7 +1092,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -1135,7 +1135,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "inference", Size: ptr.To[int32](1)},
 						{Name: "router", Size: ptr.To[int32](1)},
@@ -1190,7 +1190,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "inference", Size: ptr.To[int32](1)},
 						{Name: "router", Size: ptr.To[int32](1)},
@@ -1253,7 +1253,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "leader", Size: ptr.To[int32](1)},
 						{Name: "worker", Size: ptr.To[int32](1)},
@@ -1305,7 +1305,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -1344,7 +1344,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Size: ptr.To[int32](1)},
 					},
@@ -1383,7 +1383,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "monitor", Size: ptr.To[int32](1)},
 						{Name: "inference", Size: ptr.To[int32](1)},
@@ -1441,7 +1441,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "monitor", Size: ptr.To[int32](1)},
 						{Name: "inference", Size: ptr.To[int32](1)},
@@ -1496,7 +1496,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "inference", Size: ptr.To[int32](2)},
 						{Name: "router", Size: ptr.To[int32](1)},
@@ -1556,7 +1556,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Generation: 1,
 				},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
 						{Name: "inference", Size: ptr.To[int32](2)},
 						{Name: "router", Size: ptr.To[int32](1)},
@@ -1627,7 +1627,7 @@ func TestRestartingCachePreventsRecreation(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: workloadsv1alpha2.RoleInstanceSpec{
-			RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 			Components: []workloadsv1alpha2.RoleInstanceComponent{
 				{Size: ptr.To[int32](2)},
 			},
@@ -1788,7 +1788,7 @@ func TestHasRecentRestart(t *testing.T) {
 			name: "nil LastRestartTime: false",
 			instance: &workloadsv1alpha2.RoleInstance{
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 				},
 			},
 			expected: false,
@@ -1797,7 +1797,7 @@ func TestHasRecentRestart(t *testing.T) {
 			name: "recent restart (within default threshold): true",
 			instance: &workloadsv1alpha2.RoleInstance{
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 				},
 				Status: workloadsv1alpha2.RoleInstanceStatus{
 					LastRestartTime: &recentRestartTime,
@@ -1809,7 +1809,7 @@ func TestHasRecentRestart(t *testing.T) {
 			name: "old restart (beyond default 20min threshold): false",
 			instance: &workloadsv1alpha2.RoleInstance{
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 				},
 				Status: workloadsv1alpha2.RoleInstanceStatus{
 					LastRestartTime: &oldRestartTime,
@@ -1821,7 +1821,7 @@ func TestHasRecentRestart(t *testing.T) {
 			name: "old restart with custom maxDelay=60 (threshold=10min): false",
 			instance: &workloadsv1alpha2.RoleInstance{
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
 						Type:            workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 						MaxDelaySeconds: ptr.To(int32(60)),
 					},
@@ -2439,7 +2439,7 @@ func TestCheckRestartBackoff(t *testing.T) {
 	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
 		Spec: workloadsv1alpha2.RoleInstanceSpec{
-			RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 			Components: []workloadsv1alpha2.RoleInstanceComponent{
 				{Name: "main", Size: ptr.To(int32(1))},
 			},
@@ -2463,7 +2463,7 @@ func TestCheckRestartBackoff(t *testing.T) {
 
 	t.Run("RestartPolicy=None: no backoff", func(t *testing.T) {
 		inst := instance.DeepCopy()
-		inst.Spec.RestartPolicy = workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RestartPolicyNone}
+		inst.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RestartPolicyNone}
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
 		assert.Equal(t, time.Duration(0), result)
 	})
@@ -2489,8 +2489,8 @@ func TestCheckRestartBackoff(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 1
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
 		assert.Greater(t, result, time.Duration(0))
 		assert.LessOrEqual(t, result, 30*time.Second)
@@ -2501,8 +2501,8 @@ func TestCheckRestartBackoff(t *testing.T) {
 		past := metav1.NewTime(metav1.Now().Add(-60 * time.Second))
 		inst.Status.LastRestartTime = &past
 		inst.Status.RestartCount = 1
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
 		assert.Equal(t, time.Duration(0), result)
 	})
@@ -2608,9 +2608,9 @@ func TestUpdateRestartTracking(t *testing.T) {
 			instance := &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{
-						Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
-						MaxDelaySeconds:  tt.maxDelaySeconds,
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+						Type:            workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+						MaxDelaySeconds: tt.maxDelaySeconds,
 					},
 				},
 				Status: workloadsv1alpha2.RoleInstanceStatus{
@@ -2903,7 +2903,7 @@ func TestShouldRecreateInstanceBypass(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: workloadsv1alpha2.RoleInstanceSpec{
-			RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 			Components: []workloadsv1alpha2.RoleInstanceComponent{
 				{Size: ptr.To[int32](1)},
 			},
@@ -3061,7 +3061,7 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 	baseInstance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default", Generation: 1},
 		Spec: workloadsv1alpha2.RoleInstanceSpec{
-			RestartPolicy: workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 			Components: []workloadsv1alpha2.RoleInstanceComponent{
 				{Name: "main", Size: ptr.To(int32(1))},
 			},
@@ -3086,8 +3086,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 1
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 
 		fresh := inst.DeepCopy()
 		fresh.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
@@ -3103,8 +3103,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 1
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 		inst.Status.Conditions = append(inst.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:   workloadsv1alpha2.RoleInstanceRestarting,
 			Status: corev1.ConditionTrue,
@@ -3119,8 +3119,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 1
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 		inst.Status.Conditions = append(inst.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:   workloadsv1alpha2.RoleInstanceRestarting,
 			Status: corev1.ConditionTrue,
@@ -3140,8 +3140,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 5
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(0))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(0))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(0))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(0))
 
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
 		assert.Equal(t, time.Duration(0), result, "backoff disabled when baseDelay=0 and maxDelay=0")
@@ -3152,8 +3152,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 5
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 
 		fresh := inst.DeepCopy()
 		fresh.Status.RestartCount = 1
@@ -3169,8 +3169,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 1
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 
 		fresh := inst.DeepCopy()
 		fresh.Status.LastRestartTime = nil
@@ -3184,8 +3184,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 3
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 		// Simulate spec change: Generation > ObservedGeneration
 		inst.Generation = 2
 		inst.Status.ObservedGeneration = 1
@@ -3202,8 +3202,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
 		inst.Status.RestartCount = 3
-		inst.Spec.RestartPolicy.BaseDelaySeconds = ptr.To(int32(30))
-		inst.Spec.RestartPolicy.MaxDelaySeconds = ptr.To(int32(600))
+		inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+		inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
 		// Simulate rolling update: revisions differ
 		inst.Status.CurrentRevision = "rev-1"
 		inst.Status.UpdateRevision = "rev-2"

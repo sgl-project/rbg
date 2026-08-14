@@ -25,7 +25,7 @@ spec:
           type: InPlaceIfPossible
       # customComponentsPattern: define heterogeneous components per instance
       customComponentsPattern:
-        restartPolicy:
+        restartPolicyConfig:
           type: RecreateRoleInstanceOnPodRestart
         components:
           - name: custom-component-1

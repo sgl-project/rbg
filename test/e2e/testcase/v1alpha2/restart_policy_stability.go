@@ -407,8 +407,9 @@ func runRestartBackoffPropagationTest(f *framework.Framework) {
 			}, ri); err != nil {
 				return false
 			}
-			return ri.Spec.RestartPolicy.BaseDelaySeconds != nil && *ri.Spec.RestartPolicy.BaseDelaySeconds == 10 &&
-				ri.Spec.RestartPolicy.MaxDelaySeconds != nil && *ri.Spec.RestartPolicy.MaxDelaySeconds == 120
+			cfg := ri.Spec.GetRestartPolicyConfig()
+			return cfg.BaseDelaySeconds != nil && *cfg.BaseDelaySeconds == 10 &&
+				cfg.MaxDelaySeconds != nil && *cfg.MaxDelaySeconds == 120
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 			"BaseDelaySeconds=10 and MaxDelaySeconds=120 should propagate from RBG to RoleInstance")
 	})
