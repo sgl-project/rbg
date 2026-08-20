@@ -7,7 +7,7 @@
 ## 前提条件
 
 + Kubernetes 集群版本 >= 1.24
-+ 已安装 RBG Controller（参考 [安装指南](https://github.com/sgl-project/rbg)）
++ 已安装 RBG Controller（参考 [安装指南](../../install.md)）
 
 > **说明**：以下示例使用 SGLang 引擎（`lmsysorg/sglang:v0.5.9`）进行演示。如使用其他推理引擎，请替换为对应镜像并调整启动参数。
 >
@@ -301,9 +301,9 @@ kubectl get rbg <rbg-name> -o yaml | grep templateRef
 
 ## 相关文档
 
-<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
+<!-- TODO: 弹性伸缩、Gang 调度文档尚未创建，待文档完成后统一添加链接 -->
 
-+ 使用 RBG 部署推理服务
++ [使用 RBG 部署推理服务](01-deploy-inference-service.md)
++ [配置滚动更新策略](03-configuring-rolling-updates.md)
 + 配置 HPA 弹性伸缩
 + Gang 调度配置
-+ 滚动更新与金丝雀发布

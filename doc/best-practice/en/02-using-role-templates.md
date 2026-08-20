@@ -7,7 +7,7 @@ In RBG, multiple roles often share the same Pod configuration (such as image, en
 ## Prerequisites
 
 + Kubernetes cluster version >= 1.24
-+ RBG Controller installed (see [Installation Guide](https://github.com/sgl-project/rbg))
++ RBG Controller installed (see [Installation Guide](../../install.md))
 
 > **Note**: The following examples use the SGLang engine (`lmsysorg/sglang:v0.5.9`) for demonstration. If using other inference engines, replace with the corresponding image and adjust startup parameters.
 >
@@ -301,9 +301,9 @@ kubectl get rbg <rbg-name> -o yaml | grep templateRef
 
 ## Related Documents
 
-<!-- TODO: The following documents have not been created yet; links will be added once they are complete -->
+<!-- TODO: The autoscaling and Gang scheduling documents have not been created yet; links will be added once they are complete -->
 
-+ Deploying Inference Services with RBG
++ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
++ [Configuring Rolling Update Strategies](03-configuring-rolling-updates.md)
 + Configuring HPA Autoscaling
 + Gang Scheduling Configuration
-+ Rolling Updates and Canary Releases

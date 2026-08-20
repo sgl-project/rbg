@@ -10,7 +10,7 @@ RBG supports configuring rolling update strategies via `rolloutStrategy` to cont
 ## Prerequisites
 
 + Kubernetes cluster version >= 1.24
-+ RBG Controller installed (see [Installation Guide](https://github.com/sgl-project/rbg))
++ RBG Controller installed (see [Installation Guide](../../install.md))
 
 ---
 
@@ -280,9 +280,9 @@ kubectl get coordinatedpolicy
 
 ## Related Documents
 
-<!-- TODO: The following documents have not been created yet; links will be added once they are complete -->
+<!-- TODO: The in-place update and autoscaling documents have not been created yet; links will be added once they are complete -->
 
-+ Deploying Inference Services with RBG
-+ Using RoleTemplates to Reduce Configuration Duplication
-+ In-Place Update (In-Place Update)
++ [Deploying Inference Services with RBG](01-deploy-inference-service.md)
++ [Using RoleTemplates to Reduce Configuration Duplication](02-using-role-templates.md)
++ In-Place Update
 + Configuring HPA Autoscaling

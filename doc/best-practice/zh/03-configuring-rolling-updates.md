@@ -10,7 +10,7 @@ RBG 支持通过 `rolloutStrategy` 配置滚动更新策略，控制角色实例
 ## 前提条件
 
 + Kubernetes 集群版本 >= 1.24
-+ 已安装 RBG Controller（参考 [安装指南](https://github.com/sgl-project/rbg)）
++ 已安装 RBG Controller（参考 [安装指南](../../install.md)）
 
 ---
 
@@ -280,9 +280,9 @@ kubectl get coordinatedpolicy
 
 ## 相关文档
 
-<!-- TODO: 以下文档尚未创建，待文档完成后统一添加链接 -->
+<!-- TODO: 弹性伸缩文档尚未创建，待文档完成后统一添加链接 -->
 
-+ 使用 RBG 部署推理服务
-+ 使用 RoleTemplates 减少配置重复
-+ 原地升级（In-Place Update）
++ [使用 RBG 部署推理服务](01-deploy-inference-service.md)
++ [使用 RoleTemplates 减少配置重复](02-using-role-templates.md)
++ [配置原地升级与原地调度策略](04-configuring-inplace-update-and-scheduling-policies.md)
 + 配置 HPA 弹性伸缩
