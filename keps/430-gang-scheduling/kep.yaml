@@ -1,5 +1,5 @@
 title: Gang Scheduling
-kep-number: 400
+kep-number: 430
 authors:
   - "@TBD"
 status: provisional
@@ -11,7 +11,7 @@ approvers:
 
 stage: alpha
 
-latest-milestone: "v0.9.0"
+latest-milestone: "v0.8.0"
 
 milestone:
-  alpha: "v0.9.0"
+  alpha: "v0.8.0"
