@@ -1,27 +1,27 @@
-# 操作文档：配置原地升级与原地调度策略
+# Operations Guide: Configuring In-Place Update and In-Place Scheduling Strategies
 
-> 对应概念文档：[4. 配置原地升级与原地调度策略](04-configuring-inplace-update-and-scheduling-policies.md)
+> Corresponding concept document: [4. Configuring In-Place Update and In-Place Scheduling Strategies](04-configuring-inplace-update-and-scheduling-policies.md)
 
-## 目标
+## Objectives
 
-验证 RBG 的原地升级（In-Place Update）和原地调度（In-Place Scheduling）策略，包括：
-1. 原地升级与 Grace Period 流量排空：仅变更镜像时 Pod 留在原节点，支持排空等待
-2. 原地调度（Preferred）：Pod 重建时优先调度回历史节点
-3. 原地调度（Required）：Pod 重建时必须调度回历史节点
+Validate RBG's In-Place Update and In-Place Scheduling strategies, including:
+1. In-Place Update with Grace Period traffic draining: Pod stays on the original node when only the image changes, with drain wait support
+2. In-Place Scheduling (Preferred): Pod is preferentially scheduled back to its historical node during recreation
+3. In-Place Scheduling (Required): Pod must be scheduled back to its historical node during recreation
 
-## 前提条件
+## Prerequisites
 
-- Kubernetes 集群版本 >= 1.24
-- 已安装 RBG Controller
-- 镜像可访问：`alpine:3.23.2`、`alpine:3.23.5`
+- Kubernetes cluster version >= 1.24
+- RBG Controller installed
+- Images accessible: `alpine:3.23.2`, `alpine:3.23.5`
 
-> **说明**：本文档使用 `sleep 3600` 作为占位命令，专注于验证 RBG 升级控制面行为，无需 GPU。如需测试真实推理功能，请替换为完整的推理引擎启动命令。
+> **Note**: This document uses `sleep 3600` as a placeholder command, focusing on validating RBG upgrade control plane behavior without requiring GPU. To test real inference functionality, replace with the full inference engine startup command.
 
 ---
 
-## 操作一：原地升级（In-Place Update）与 Grace Period 流量排空
+## Operation 1: In-Place Update with Grace Period Traffic Draining
 
-### 步骤 1：创建 2 副本 RBG，配置原地升级策略
+### Step 1: Create a 2-Replica RBG with In-Place Update Strategy
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -51,15 +51,15 @@ spec:
 EOF
 ```
 
-### 预期行为
+### Expected Behavior
 
-- 创建 2 个 Pod（`inplace-update-demo-backend-0` 到 `inplace-update-demo-backend-1`）
-- 全部就绪后，RBG 状态为 Ready
+- 2 Pods created (`inplace-update-demo-backend-0` through `inplace-update-demo-backend-1`)
+- After all are ready, RBG status is Ready
 
-### 步骤 2：记录更新前的 Pod 状态
+### Step 2: Record Pod State Before Update
 
 ```bash
-# 记录 Pod 的 RESTARTS，AGE 和 IP
+# Record Pod RESTARTS, AGE, and IP
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o wide
 
 > NAME                            READY   STATUS    RESTARTS   AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
@@ -67,32 +67,32 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o wid
 > inplace-update-demo-backend-1   1/1     Running   0          10s   10.xx.xx.12  e01-xxxxxxxxxxxxxx   <none>           2/2
 ```
 
-### 步骤 3：触发镜像更新
+### Step 3: Trigger Image Update
 
 ```bash
 kubectl patch rbg inplace-update-demo --type='json' \
   -p='[{"op": "replace", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/image", "value": "alpine:3.23.5"}]'
 ```
 
-### 预期行为（镜像更新）
+### Expected Behavior (Image Update)
 
-对于每个待更新的 Pod：
-1. Controller 将 Pod 的 `InPlaceUpdateReady` 条件设为 `False`，Pod 变为 NotReady
-2. Pod 从 Service 端点中摘除
-3. 等待 30 秒（`gracePeriodSeconds`），让已有连接处理完成
-4. Patch 容器镜像，kubelet 重启容器
-5. 容器就绪后，Pod 恢复 Ready 状态
+For each Pod being updated:
+1. Controller sets the Pod's `InPlaceUpdateReady` condition to `False`, Pod becomes NotReady
+2. Pod is removed from Service endpoints
+3. Wait 30 seconds (`gracePeriodSeconds`) for existing connections to finish processing
+4. Patch the container image, kubelet restarts the container
+5. After the container becomes ready, Pod restores Ready state
 
-同时满足以下原地升级行为：
-- 按序号从高到低逐个更新实例（1 → 0），当前实例完成 drain、容器重启并恢复 Ready 后才更新下一个
-- `type: InPlaceIfPossible`：仅变更镜像，触发原地升级
-- Pod 不离开当前节点，AGE 不会重置
-- 容器的 RESTARTS 计数增加
+The following in-place update behaviors are also satisfied:
+- Instances are updated one by one from high to low ordinal (1 → 0); the next instance starts only after the current one finishes draining, restarts, and becomes Ready again
+- `type: InPlaceIfPossible`: only image changed, triggering in-place update
+- Pod does not leave its current node, AGE does not reset
+- Container RESTARTS count increases
 
-### 验证
+### Verification
 
 ```bash
-# 观察更新过程
+# Observe the update process
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o wide -w
 
 > NAME                            READY   STATUS    RESTARTS      AGE   IP            NODE                 NOMINATED NODE   READINESS GATES
@@ -116,7 +116,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o wid
 ```
 
 ```bash
-# 确认所有 Pod 已更新到新镜像，且 Pod 未被重建（AGE 不重置）
+# Confirm all Pods have been updated to the new image and Pods were not recreated (AGE not reset)
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o wide
 
 > NAME                            READY   STATUS    RESTARTS   AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
@@ -125,21 +125,21 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o wid
 ```
 
 ```bash
-# 确认所有 Pod 使用新镜像
+# Confirm all Pods use the new image
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-update-demo -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].image}{"\n"}{end}'
 
 > inplace-update-demo-backend-0=alpine:3.23.5
 > inplace-update-demo-backend-1=alpine:3.23.5
 ```
 
-**预期输出：**
-- 每个 Pod 从 NotReady 到镜像更新之间有约 30 秒的等待时间
-- Pod AGE 未重置（Pod 未被删除重建）
-- 容器 RESTARTS 计数增加（容器被原地重启）
-- 所有 Pod 所在节点与更新前一致（Pod 未迁移）
-- 所有 Pod 使用新镜像 `alpine:3.23.5`
+**Expected output:**
+- Each Pod has approximately 30 seconds of wait time between becoming NotReady and the image update
+- Pod AGE not reset (Pod was not deleted and recreated)
+- Container RESTARTS count increased (container was restarted in place)
+- All Pods remain on the same nodes as before the update (Pod did not migrate)
+- All Pods use the new image `alpine:3.23.5`
 
-### 清理
+### Cleanup
 
 ```bash
 kubectl delete rbg inplace-update-demo
@@ -147,9 +147,9 @@ kubectl delete rbg inplace-update-demo
 
 ---
 
-## 操作二：原地调度 — Preferred 模式（软亲和）
+## Operation 2: In-Place Scheduling — Preferred Mode (Soft Affinity)
 
-### 步骤 1：创建 RBG 并配置 Preferred 原地调度
+### Step 1: Create an RBG with Preferred In-Place Scheduling
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -179,7 +179,7 @@ spec:
 EOF
 ```
 
-### 步骤 2：记录更新前的 Pod 所在节点
+### Step 2: Record Pod Nodes Before Update
 
 ```bash
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferred -o wide
@@ -191,38 +191,38 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferr
 > inplace-scheduling-preferred-backend-3   1/1     Running   0          60s   10.xx.xx.xx  node-D               <none>           2/2
 ```
 
-### 步骤 3：触发环境变量更新
+### Step 3: Trigger Environment Variable Update
 
-> **说明**：这里使用环境变量变更，因为 `env` 修改不属于原地更新的支持范围（参见概念文档），会强制触发 Pod 重建，从而验证原地调度是否生效。
+> **Note**: An environment variable change is intentionally used here because `env` modification is not within the supported scope of in-place update (see concept document), which forces Pod recreation and thus validates whether in-place scheduling takes effect.
 
 ```bash
 kubectl patch rbg inplace-scheduling-preferred --type='json' \
   -p='[{"op": "add", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/env", "value": [{"name": "new_env", "value": "test"}]}]'
 ```
 
-### 预期行为（Preferred 原地调度）
+### Expected Behavior (Preferred In-Place Scheduling)
 
-- `type: RecreatePod`：Pod 需要删除重建
-- `role-inplace-scheduling: Preferred`：注入 `preferredDuringScheduling`（weight=100），新 Pod 优先调度回历史节点
-- 如果历史节点资源充足，新 Pod 回到原节点
-- 如果历史节点资源不足，Pod 可调度到其他节点（不阻塞调度）
+- `type: RecreatePod`: Pod needs to be deleted and recreated
+- `role-inplace-scheduling: Preferred`: injects `preferredDuringScheduling` (weight=100), new Pod preferentially scheduled back to historical node
+- If the historical node has sufficient resources, the new Pod returns to the original node
+- If the historical node lacks resources, the Pod can be scheduled to another node (scheduling is not blocked)
 
-### 验证（Preferred 原地调度）
+### Verification (Preferred In-Place Scheduling)
 
 ```bash
-# 观察 Pod 重建过程和所在节点
+# Observe Pod recreation process and node placement
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferred -o wide -w
 ```
 
 ```bash
-# 查看新 Pod 的节点亲和性，确认 Preferred 亲和已注入
+# Check the new Pod's node affinity, confirm Preferred affinity is injected
 kubectl get pod inplace-scheduling-preferred-backend-3 -o jsonpath='{.spec.affinity}'
 
-# 预期输出包含 preferredDuringSchedulingIgnoredDuringExecution，weight=100
+# Expected output contains preferredDuringSchedulingIgnoredDuringExecution, weight=100
 ```
 
 ```bash
-# 更新完成后，确认 Pod 所在节点
+# After update completes, confirm Pod node placement
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferred -o wide
 
 > NAME                                  READY   STATUS    RESTARTS   AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
@@ -233,7 +233,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferr
 ```
 
 ```bash
-# 确认所有 Pod 已包含新增环境变量
+# Confirm all Pods contain the new environment variable
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferred -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].env[?(@.name=="new_env")].value}{"\n"}{end}'
 
 > inplace-scheduling-preferred-backend-0=test
@@ -242,12 +242,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-preferr
 > inplace-scheduling-preferred-backend-3=test
 ```
 
-**预期输出：**
-- Pod AGE 重置（Pod 被删除重建）
-- 新 Pod 的 affinity 中包含 `preferredDuringSchedulingIgnoredDuringExecution`
-- 在节点资源充足的情况下，新 Pod 回到原来的节点
+**Expected output:**
+- Pod AGE reset (Pod was deleted and recreated)
+- New Pod's affinity contains `preferredDuringSchedulingIgnoredDuringExecution`
+- With sufficient node resources, new Pods return to their original nodes
 
-### 清理（Preferred 原地调度）
+### Cleanup (Preferred In-Place Scheduling)
 
 ```bash
 kubectl delete rbg inplace-scheduling-preferred
@@ -255,9 +255,9 @@ kubectl delete rbg inplace-scheduling-preferred
 
 ---
 
-## 操作三：原地调度 — Required 模式（硬亲和）
+## Operation 3: In-Place Scheduling — Required Mode (Hard Affinity)
 
-### 步骤 1：创建 RBG 并配置 Required 原地调度
+### Step 1: Create an RBG with Required In-Place Scheduling
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -288,7 +288,7 @@ spec:
 EOF
 ```
 
-### 步骤 2：记录更新前的 Pod 所在节点（Required）
+### Step 2: Record Pod Nodes Before Update (Required)
 
 ```bash
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-required -o wide
@@ -300,37 +300,37 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-require
 > inplace-scheduling-required-backend-3   1/1     Running   0          60s   10.xx.xx.xx  node-D               <none>           2/2
 ```
 
-### 步骤 3：触发环境变量更新（Required）
+### Step 3: Trigger Environment Variable Update (Required)
 
-> **说明**：这里使用环境变量变更，因为 `env` 修改不属于原地更新的支持范围（参见概念文档），会强制触发 Pod 重建，从而验证原地调度是否生效。
+> **Note**: An environment variable change is intentionally used here because `env` modification is not within the supported scope of in-place update (see concept document), which forces Pod recreation and thus validates whether in-place scheduling takes effect.
 
 ```bash
 kubectl patch rbg inplace-scheduling-required --type='json' \
   -p='[{"op": "add", "path": "/spec/roles/0/standalonePattern/template/spec/containers/0/env", "value": [{"name": "new_env", "value": "test"}]}]'
 ```
 
-### 预期行为（Required 原地调度）
+### Expected Behavior (Required In-Place Scheduling)
 
-- `role-inplace-scheduling: Required`：注入 `requiredDuringScheduling`，新 Pod **必须**调度回历史节点
-- 如果历史节点不可用，Pod 将保持 Pending 状态
-- 更新完成后，新 Pod 精确回到原来的节点
+- `role-inplace-scheduling: Required`: injects `requiredDuringScheduling`, new Pod **must** be scheduled back to the historical node
+- If the historical node is unavailable, the Pod will remain in Pending state
+- After update completes, new Pods return precisely to their original nodes
 
-### 验证（Required 原地调度）
+### Verification (Required In-Place Scheduling)
 
 ```bash
-# 观察 Pod 重建过程和所在节点
+# Observe Pod recreation process and node placement
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-required -o wide -w
 ```
 
 ```bash
-# 查看新 Pod 的节点亲和性，确认 Required 亲和已注入
+# Check the new Pod's node affinity, confirm Required affinity is injected
 kubectl get pod inplace-scheduling-required-backend-3 -o jsonpath='{.spec.affinity}'
 
-# 预期输出包含 requiredDuringSchedulingIgnoredDuringExecution
+# Expected output contains requiredDuringSchedulingIgnoredDuringExecution
 ```
 
 ```bash
-# 更新完成后，确认 Pod 所在节点与更新前一致
+# After update completes, confirm Pod nodes match pre-update placement
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-required -o wide
 
 > NAME                                  READY   STATUS    RESTARTS   AGE   IP           NODE                 NOMINATED NODE   READINESS GATES
@@ -341,7 +341,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-require
 ```
 
 ```bash
-# 确认所有 Pod 已包含新增环境变量
+# Confirm all Pods contain the new environment variable
 kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-required -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.containers[0].env[?(@.name=="new_env")].value}{"\n"}{end}'
 
 > inplace-scheduling-required-backend-0=test
@@ -350,12 +350,12 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=inplace-scheduling-require
 > inplace-scheduling-required-backend-3=test
 ```
 
-**预期输出：**
-- Pod AGE 重置（Pod 被删除重建）
-- 新 Pod 的 affinity 中包含 `requiredDuringSchedulingIgnoredDuringExecution`
-- 新 Pod 精确回到原来的节点（NODE 列与更新前完全一致）
+**Expected output:**
+- Pod AGE reset (Pod was deleted and recreated)
+- New Pod's affinity contains `requiredDuringSchedulingIgnoredDuringExecution`
+- New Pods return precisely to their original nodes (NODE column exactly matches pre-update placement)
 
-### 清理（Required 原地调度）
+### Cleanup (Required In-Place Scheduling)
 
 ```bash
 kubectl delete rbg inplace-scheduling-required
@@ -363,10 +363,10 @@ kubectl delete rbg inplace-scheduling-required
 
 ---
 
-## 总结
+## Summary
 
-| 操作 | 验证点 | 关键预期 |
+| Operation | Verification Point | Key Expectation |
 | --- | --- | --- |
-| 原地升级与 Grace Period | Pod AGE 不重置、RESTARTS 增加、NotReady 后等待约 30 秒 | 仅变更镜像时，Pod 留在原节点，原地升级前等待 gracePeriodSeconds |
-| 原地调度（Preferred） | 注入 preferredDuringScheduling | Pod 重建时优先回到历史节点，但不阻塞调度 |
-| 原地调度（Required） | 注入 requiredDuringScheduling | Pod 重建时必须回到历史节点，否则 Pending |
+| In-Place Update with Grace Period | Pod AGE not reset, RESTARTS increased, ~30s wait after NotReady | With image-only change, Pod stays on original node, waits gracePeriodSeconds before in-place update |
+| In-Place Scheduling (Preferred) | preferredDuringScheduling injected | Pod preferentially returns to historical node during recreation, but scheduling is not blocked |
+| In-Place Scheduling (Required) | requiredDuringScheduling injected | Pod must return to historical node during recreation, otherwise Pending |
