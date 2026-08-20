@@ -1,0 +1,18 @@
+title: RBG Role Deploy Coordination
+kep-number: 75
+authors:
+  - "@bcfre"
+status: provisional
+creation-date: 2025-12-10
+reviewers:
+  - "@cheyang"
+  - "@Syspretor"
+
+stage: alpha
+
+latest-milestone: "v0.6.0"
+
+milestone:
+  alpha: "v0.6.0"
+  beta: "v0.6.0"
+  stable: "v0.6.0"
