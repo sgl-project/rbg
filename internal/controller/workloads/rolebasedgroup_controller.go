@@ -88,7 +88,7 @@ type RoleBasedGroupReconciler struct {
 	recorder           record.EventRecorder
 	workloadReconciler map[string]reconciler.WorkloadReconciler
 	reconcilerMu       sync.RWMutex
-	podGroupManager    scheduler.PodGroupManager
+	gangScheduler      scheduler.GangScheduler
 	// NodeBindings is the in-place scheduling binding store, shared with
 	// the RoleInstance reconciler. Injected at wire-up time so both consumers
 	// operate on the same instance.
@@ -101,7 +101,7 @@ type RoleBasedGroupReconciler struct {
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
 	c := utilclient.NewClientWithUserAgent(mgr, "rolebasedgroup")
-	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, c)
+	gangScheduler, err := scheduler.NewGangScheduler(schedulerName, c)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 		scheme:             mgr.GetScheme(),
 		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
 		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
-		podGroupManager:    podGroupManager,
+		gangScheduler:      gangScheduler,
 		NodeBindings:       bindings,
 	}, nil
 }
@@ -449,10 +449,26 @@ func (r *RoleBasedGroupReconciler) reconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
-	if r.podGroupManager == nil {
+	if r.gangScheduler == nil {
 		return nil
 	}
-	return r.podGroupManager.ReconcilePodGroup(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader)
+
+	// Fetch CoordinatedPolicy to extract gang scheduling strategy (if any).
+	// The gang strategy is per-policy-rule; we look for the first policy
+	// that has Scheduling.Gang configured.
+	var gangStrategy *workloadsv1alpha2.GangSchedulingStrategy
+	coordinatedPolicy := &workloadsv1alpha2.CoordinatedPolicy{}
+	if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, coordinatedPolicy); err == nil {
+		for i := range coordinatedPolicy.Spec.Policies {
+			policy := &coordinatedPolicy.Spec.Policies[i]
+			if policy.Strategy.Scheduling != nil && policy.Strategy.Scheduling.Gang != nil {
+				gangStrategy = policy.Strategy.Scheduling.Gang
+				break
+			}
+		}
+	}
+
+	return r.gangScheduler.ReconcilePodGroup(ctx, rbg, gangStrategy, runtimeController, &watchedWorkload, r.apiReader)
 }
 
 func (r *RoleBasedGroupReconciler) reconcileRoles(
@@ -620,9 +636,9 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 		return nil, err
 	}
 
-	// Inject PodGroupManager if the reconciler supports it (PodGroupManagerSetter).
-	if setter, ok := rec.(reconciler.PodGroupManagerSetter); ok {
-		setter.SetPodGroupManager(r.podGroupManager)
+	// Inject GangScheduler if the reconciler supports it (GangSchedulerSetter).
+	if setter, ok := rec.(reconciler.GangSchedulerSetter); ok {
+		setter.SetGangScheduler(r.gangScheduler)
 	}
 
 	// Cache the reconciler

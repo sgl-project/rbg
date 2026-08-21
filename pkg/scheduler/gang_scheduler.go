@@ -59,27 +59,41 @@ const (
 	VolcanoSchedulerPlugin SchedulerPluginType = "volcano"
 )
 
-// PodGroupManager is the interface for managing PodGroups in gang scheduling scenarios.
+// GangScheduler encapsulates gang scheduling for a specific scheduler implementation.
+// It manages both PodGroup lifecycle and pod-template field injection.
 // Implementations are selected at controller startup based on the --scheduler-name flag.
-type PodGroupManager interface {
-	// ReconcilePodGroup creates, updates, or deletes the PodGroup for the given RBG
-	// based on the gang-scheduling annotation.
+type GangScheduler interface {
+	// ReconcilePodGroup creates/updates/deletes the PodGroup for the given RBG.
+	// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy
+	// gang (MinReplicas may be empty for basic gang, non-empty for per-role minimums).
+	//
+	// The implementation decides internally:
+	// - gangStrategy == nil -> minMember = GetGroupSize() (annotation compat)
+	// - gangStrategy != nil && MinReplicas empty -> minMember = GetGroupSize() (basic gang)
+	// - gangStrategy != nil && MinReplicas non-empty -> subGroupPolicy (if supported)
 	ReconcilePodGroup(
 		ctx context.Context,
 		rbg *workloadsv1alpha2.RoleBasedGroup,
+		gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
 		runtimeController *builder.TypedBuilder[reconcile.Request],
 		watchedWorkload *sync.Map,
 		apiReader client.Reader,
 	) error
 
-	// InjectPodGroupLabels injects the scheduler-specific pod labels/annotations
-	// required for the pod to join the PodGroup.
-	InjectPodGroupLabels(rbg *workloadsv1alpha2.RoleBasedGroup, pts *coreapplyv1.PodTemplateSpecApplyConfiguration)
+	// InjectPodSchedulingFields injects scheduler-specific fields:
+	// - pod.spec.schedulerName (all pods, from the scheduler name known at construction time)
+	// - PodGroup annotation/label (all pods for basic gang; only gang-participating
+	//   roles when minReplicas is configured)
+	InjectPodSchedulingFields(
+		rbg *workloadsv1alpha2.RoleBasedGroup,
+		role *workloadsv1alpha2.RoleSpec,
+		pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
+	)
 }
 
-// NewPodGroupManager returns a PodGroupManager for the given plugin type.
+// NewGangScheduler returns a GangScheduler for the given plugin type.
 // Returns an error if the plugin type is not supported.
-func NewPodGroupManager(schedulerName SchedulerPluginType, c client.Client) (PodGroupManager, error) {
+func NewGangScheduler(schedulerName SchedulerPluginType, c client.Client) (GangScheduler, error) {
 	switch schedulerName {
 	case KubeSchedulerPlugin:
 		return kubeschedulerplugin.New(c), nil

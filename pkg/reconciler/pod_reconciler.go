@@ -41,7 +41,7 @@ type PodReconciler struct {
 	scheme          *runtime.Scheme
 	client          client.Client
 	injectObjects   []string
-	podGroupManager scheduler.PodGroupManager
+	gangScheduler scheduler.GangScheduler
 }
 
 func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconciler {
@@ -55,10 +55,10 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 	r.injectObjects = injectObjects
 }
 
-// SetPodGroupManager configures the PodGroupManager used to inject gang-scheduling
+// SetGangScheduler configures the GangScheduler used to inject gang-scheduling
 // labels/annotations into pod templates.
-func (r *PodReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+func (r *PodReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
@@ -135,9 +135,9 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	// Inject gang-scheduling labels/annotations if a PodGroupManager is configured.
-	if r.podGroupManager != nil {
-		r.podGroupManager.InjectPodGroupLabels(rbg, podTemplateApplyConfiguration)
+	// Inject gang-scheduling labels/annotations if a GangScheduler is configured.
+	if r.gangScheduler != nil {
+		r.gangScheduler.InjectPodSchedulingFields(rbg, role, podTemplateApplyConfiguration)
 	}
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)

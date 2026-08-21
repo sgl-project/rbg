@@ -208,17 +208,17 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				mgr, err := NewPodGroupManager(tt.pluginType, tt.client)
+				mgr, err := NewGangScheduler(tt.pluginType, tt.client)
 				require.NoError(t, err)
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				if tt.preFunc != nil {
 					tt.preFunc()
 				}
-				err = mgr.ReconcilePodGroup(ctx, tt.rbg, &runtimeController, &watchedWorkload, tt.apiReader)
+				err = mgr.ReconcilePodGroup(ctx, tt.rbg, nil, &runtimeController, &watchedWorkload, tt.apiReader)
 
 				// Verify
 				if (err != nil) != tt.expectError {
-					t.Errorf("PodGroupManager.ReconcilePodGroup() error = %v, expectError %v", err, tt.expectError)
+					t.Errorf("GangScheduler.ReconcilePodGroup() error = %v, expectError %v", err, tt.expectError)
 				}
 
 				// Check if pod group exists or not
@@ -307,14 +307,14 @@ func TestVolcanoPodGroupScheduler_ReconcileCopiesVolcanoAnnotationsOnCreate(t *t
 		},
 	).Build()
 
-	mgr, err := NewPodGroupManager(VolcanoSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client)
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
 	runtimeController := builder.TypedBuilder[reconcile.Request]{}
 	watchedWorkload := sync.Map{}
 
-	err = mgr.ReconcilePodGroup(ctx, rbg, &runtimeController, &watchedWorkload, apiReader)
+	err = mgr.ReconcilePodGroup(ctx, rbg, nil, &runtimeController, &watchedWorkload, apiReader)
 	require.NoError(t, err)
 
 	pg := &volcanoschedulingv1beta1.PodGroup{}
@@ -363,14 +363,14 @@ func TestKubePodGroupScheduler_ReconcileCopiesSchedulerPluginAnnotationsOnCreate
 		},
 	).Build()
 
-	mgr, err := NewPodGroupManager(KubeSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(KubeSchedulerPlugin, client)
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
 	runtimeController := builder.TypedBuilder[reconcile.Request]{}
 	watchedWorkload := sync.Map{}
 
-	err = mgr.ReconcilePodGroup(ctx, rbg, &runtimeController, &watchedWorkload, apiReader)
+	err = mgr.ReconcilePodGroup(ctx, rbg, nil, &runtimeController, &watchedWorkload, apiReader)
 	require.NoError(t, err)
 
 	pg := &schedv1alpha1.PodGroup{}
@@ -453,14 +453,14 @@ func TestVolcanoPodGroupScheduler_ReconcileKeepsAnnotationsOnUpdate(t *testing.T
 		},
 	).Build()
 
-	mgr, err := NewPodGroupManager(VolcanoSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client)
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
 	runtimeController := builder.TypedBuilder[reconcile.Request]{}
 	watchedWorkload := sync.Map{}
 
-	err = mgr.ReconcilePodGroup(ctx, rbg, &runtimeController, &watchedWorkload, apiReader)
+	err = mgr.ReconcilePodGroup(ctx, rbg, nil, &runtimeController, &watchedWorkload, apiReader)
 	require.NoError(t, err)
 
 	pg := &volcanoschedulingv1beta1.PodGroup{}

@@ -43,7 +43,7 @@ import (
 type DeploymentReconciler struct {
 	scheme          *runtime.Scheme
 	client          client.Client
-	podGroupManager scheduler.PodGroupManager
+	gangScheduler   scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &DeploymentReconciler{}
@@ -52,9 +52,9 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 	return &DeploymentReconciler{scheme: scheme, client: client}
 }
 
-// SetPodGroupManager implements PodGroupManagerSetter.
-func (r *DeploymentReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+// SetGangScheduler implements GangSchedulerSetter.
+func (r *DeploymentReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *DeploymentReconciler) Validate(
@@ -133,7 +133,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)
