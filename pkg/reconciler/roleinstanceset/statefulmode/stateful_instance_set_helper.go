@@ -65,11 +65,11 @@ func newRevision(set *workloadsv1alpha2.RoleInstanceSet, revision int64, collisi
 	if err != nil {
 		return nil, err
 	}
-	if cr.ObjectMeta.Annotations == nil {
-		cr.ObjectMeta.Annotations = make(map[string]string)
+	if cr.Annotations == nil {
+		cr.Annotations = make(map[string]string)
 	}
 	for key, value := range set.Annotations {
-		cr.ObjectMeta.Annotations[key] = value
+		cr.Annotations[key] = value
 	}
 	return cr, nil
 }

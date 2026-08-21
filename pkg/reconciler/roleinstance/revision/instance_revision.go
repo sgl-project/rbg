@@ -63,11 +63,11 @@ func (c *realControl) NewRevision(instance *workloadsv1alpha2.RoleInstance, revi
 	if err != nil {
 		return nil, err
 	}
-	if cr.ObjectMeta.Annotations == nil {
-		cr.ObjectMeta.Annotations = make(map[string]string)
+	if cr.Annotations == nil {
+		cr.Annotations = make(map[string]string)
 	}
 	for k, v := range instance.Annotations {
-		cr.ObjectMeta.Annotations[k] = v
+		cr.Annotations[k] = v
 	}
 	return cr, nil
 }

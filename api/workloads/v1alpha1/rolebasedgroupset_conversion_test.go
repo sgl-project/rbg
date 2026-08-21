@@ -62,9 +62,9 @@ func TestRoleBasedGroupSet_ConvertTo(t *testing.T) {
 	require.Len(t, dst.Spec.GroupTemplate.Spec.Roles, 1)
 	role := dst.Spec.GroupTemplate.Spec.Roles[0]
 	assert.Equal(t, "worker", role.Name)
-	require.NotNil(t, role.Pattern.StandalonePattern)
-	require.NotNil(t, role.Pattern.StandalonePattern.Template)
-	assert.Equal(t, "worker", role.Pattern.StandalonePattern.Template.Spec.Containers[0].Name)
+	require.NotNil(t, role.StandalonePattern)
+	require.NotNil(t, role.StandalonePattern.Template)
+	assert.Equal(t, "worker", role.StandalonePattern.Template.Spec.Containers[0].Name)
 	assert.Equal(t, int64(5), dst.Status.ObservedGeneration)
 	assert.Equal(t, int32(3), dst.Status.Replicas)
 	assert.Equal(t, int32(2), dst.Status.ReadyReplicas)
@@ -173,8 +173,8 @@ func TestRoleBasedGroupSet_ConvertFrom(t *testing.T) {
 	require.Len(t, dst.Spec.Template.Roles, 1)
 	role := dst.Spec.Template.Roles[0]
 	assert.Equal(t, "decode", role.Name)
-	require.NotNil(t, role.TemplateSource.Template)
-	assert.Equal(t, "decode", role.TemplateSource.Template.Spec.Containers[0].Name)
+	require.NotNil(t, role.Template)
+	assert.Equal(t, "decode", role.Template.Spec.Containers[0].Name)
 	assert.Equal(t, int64(7), dst.Status.ObservedGeneration)
 	assert.Equal(t, int32(5), dst.Status.Replicas)
 	assert.Equal(t, int32(4), dst.Status.ReadyReplicas)

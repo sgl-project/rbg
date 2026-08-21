@@ -153,7 +153,7 @@ type ReconcileStatefulInstanceSet struct {
 // Reconcile reads that state of the cluster for a InstanceSet object and makes changes based on the state read
 // and what is in the InstanceSet.Spec
 func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request reconcile.Request) (res reconcile.Result, retErr error) {
-	key := request.NamespacedName.String()
+	key := request.String()
 	namespace := request.Namespace
 	name := request.Name
 

@@ -40,7 +40,7 @@ func RunSharedServiceSelectionTestCases(f *framework.Framework) {
 	ginkgo.Describe("shared service selection", func() {
 		ginkgo.It("should follow the policy round trip between LeaderOnly and All", func() {
 			role := wrappersv2.BuildLeaderWorkerRole("decode").Obj()
-			role.LeaderWorkerPattern.TemplateSource.Template = &corev1.PodTemplateSpec{
+			role.LeaderWorkerPattern.Template = &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{

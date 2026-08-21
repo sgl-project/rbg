@@ -194,7 +194,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// this is a new RBG. If roleStatuses is populated first, it will incorrectly
 	// use legacy mode for new RBGs.
 	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil || needRequeue {
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{RequeueAfter: time.Second}, err
 	}
 
 	// Step 3: Reconcile refined discovery ConfigMap.

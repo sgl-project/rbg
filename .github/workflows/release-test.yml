@@ -13,7 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: 1.24.1
+  GO_VERSION: 1.25.0
+  GOTOOLCHAIN: local
   KIND_VERSION: v0.31.0
   KUBERNETES_VERSION: v1.31.12
   VOLCANO_VERSION: v1.12.0

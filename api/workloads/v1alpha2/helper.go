@@ -212,10 +212,10 @@ func (r *RoleSpec) GetCustomComponentsPattern() *CustomComponentsPattern {
 // It checks both StandalonePattern and LeaderWorkerPattern.
 func (r *RoleSpec) GetTemplate() *corev1.PodTemplateSpec {
 	if r.StandalonePattern != nil {
-		return r.StandalonePattern.TemplateSource.Template
+		return r.StandalonePattern.Template
 	}
 	if r.LeaderWorkerPattern != nil {
-		return r.LeaderWorkerPattern.TemplateSource.Template
+		return r.LeaderWorkerPattern.Template
 	}
 	return nil
 }
@@ -224,10 +224,10 @@ func (r *RoleSpec) GetTemplate() *corev1.PodTemplateSpec {
 // It checks both StandalonePattern and LeaderWorkerPattern.
 func (r *RoleSpec) GetTemplateRef() *TemplateRef {
 	if r.StandalonePattern != nil {
-		return r.StandalonePattern.TemplateSource.TemplateRef
+		return r.StandalonePattern.TemplateRef
 	}
 	if r.LeaderWorkerPattern != nil {
-		return r.LeaderWorkerPattern.TemplateSource.TemplateRef
+		return r.LeaderWorkerPattern.TemplateRef
 	}
 	return nil
 }
@@ -249,11 +249,11 @@ func (r *RoleSpec) GetEffectiveTemplateName() string {
 // GetTemplatePatch returns the template patch for this role.
 // It checks TemplateRef.Patch in both StandalonePattern and LeaderWorkerPattern.
 func (r *RoleSpec) GetTemplatePatch() *runtime.RawExtension {
-	if r.StandalonePattern != nil && r.StandalonePattern.TemplateSource.TemplateRef != nil {
-		return r.StandalonePattern.TemplateSource.TemplateRef.Patch
+	if r.StandalonePattern != nil && r.StandalonePattern.TemplateRef != nil {
+		return r.StandalonePattern.TemplateRef.Patch
 	}
-	if r.LeaderWorkerPattern != nil && r.LeaderWorkerPattern.TemplateSource.TemplateRef != nil {
-		return r.LeaderWorkerPattern.TemplateSource.TemplateRef.Patch
+	if r.LeaderWorkerPattern != nil && r.LeaderWorkerPattern.TemplateRef != nil {
+		return r.LeaderWorkerPattern.TemplateRef.Patch
 	}
 	return nil
 }

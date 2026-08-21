@@ -91,7 +91,7 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 		},
 	}
 
-	rbg.ObjectMeta.Labels = map[string]string{"app": "test"}
+	rbg.Labels = map[string]string{"app": "test"}
 
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(
 		rbg, statefulset, roleInstanceSet, leaderOnlyRoleInstanceSet,

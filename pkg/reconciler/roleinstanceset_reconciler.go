@@ -371,7 +371,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 
 	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
 	leaderPodReconciler.SetPodGroupManager(r.podGroupManager)
-	leaderPodReconciler.SetInjectors([]string{"config", "sidecar", "common_env", "lwp_env"})
+	leaderPodReconciler.SetInjectors([]string{configInjector, sidecarInjector, commonEnvInjector, lwpEnvInjector})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, leaderTemp,
 	)
@@ -390,7 +390,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
 	workerPodReconciler.SetPodGroupManager(r.podGroupManager)
 	// workerTemplate do not need to inject sidecar
-	workerPodReconciler.SetInjectors([]string{"config", "common_env", "lwp_env"})
+	workerPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector, lwpEnvInjector})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, workerTemp,
 	)
