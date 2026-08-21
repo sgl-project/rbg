@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package volcano implements the PodGroupManager interface for
+// Package volcano implements the GangScheduler interface for
 // the Volcano PodGroup (scheduling.volcano.sh).
 //
 // To enable Volcano gang scheduling, the controller must be started with
@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +43,8 @@ import (
 	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 const (
@@ -50,28 +53,37 @@ const (
 
 	// AnnotationKey is the pod annotation key used to associate a pod with a Volcano PodGroup.
 	AnnotationKey = "scheduling.k8s.io/group-name"
+
+	// SchedulerName is the scheduler name set on pod.spec.schedulerName.
+	SchedulerName = "volcano"
 )
 
-// PodGroupManager manages Volcano PodGroups for gang scheduling.
-type PodGroupManager struct {
-	client client.Client
+// GangScheduler manages Volcano PodGroups for gang scheduling.
+type GangScheduler struct {
+	client            client.Client
+	hasSubGroupPolicy atomic.Bool
 }
 
-// New returns a new PodGroupManager for Volcano.
-func New(c client.Client) *PodGroupManager {
-	return &PodGroupManager{client: c}
+// New returns a new GangScheduler for Volcano.
+func New(c client.Client) *GangScheduler {
+	return &GangScheduler{client: c}
 }
 
 // ReconcilePodGroup creates, updates, or deletes the Volcano PodGroup
-// based on the gang-scheduling annotation on the RBG.
-func (m *PodGroupManager) ReconcilePodGroup(
+// based on the gang scheduling configuration.
+// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy gang.
+func (m *GangScheduler) ReconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
 	runtimeController *builder.TypedBuilder[reconcile.Request],
 	watchedWorkload *sync.Map,
 	apiReader client.Reader,
 ) error {
-	if !isGangSchedulingEnabled(rbg) {
+	// Determine if gang scheduling is enabled
+	gangEnabled := isGangSchedulingEnabled(rbg, gangStrategy)
+
+	if !gangEnabled {
 		return m.deletePodGroup(ctx, rbg, watchedWorkload)
 	}
 
@@ -81,30 +93,66 @@ func (m *PodGroupManager) ReconcilePodGroup(
 		}
 		watchedWorkload.LoadOrStore(CrdName, struct{}{})
 		runtimeController.Owns(&volcanoschedulingv1beta1.PodGroup{})
+
+		// Check if the PodGroup CRD has subGroupPolicy field
+		hasSubGroup := checkPodGroupCRDHasSubGroup(apiReader)
+		m.hasSubGroupPolicy.Store(hasSubGroup)
 	}
 
-	return m.createOrUpdate(ctx, rbg)
+	return m.createOrUpdate(ctx, rbg, gangStrategy)
 }
 
-// InjectPodGroupLabels injects the Volcano PodGroup annotation into the pod template spec.
-func (m *PodGroupManager) InjectPodGroupLabels(
+// InjectPodSchedulingFields injects the Volcano PodGroup annotation and schedulerName
+// into the pod template spec.
+func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
-	if isGangSchedulingEnabled(rbg) {
-		pts.WithAnnotations(map[string]string{AnnotationKey: rbg.Name})
+	if !isGangSchedulingEnabled(rbg, nil) {
+		return
 	}
+
+	// Inject schedulerName into pod spec
+	if pts.Spec == nil {
+		pts.Spec = &coreapplyv1.PodSpecApplyConfiguration{}
+	}
+	pts.Spec.WithSchedulerName(SchedulerName)
+
+	// Inject PodGroup annotation
+	pts.WithAnnotations(map[string]string{AnnotationKey: rbg.Name})
 }
 
-func isGangSchedulingEnabled(rbg *workloadsv1alpha2.RoleBasedGroup) bool {
+func isGangSchedulingEnabled(rbg *workloadsv1alpha2.RoleBasedGroup, gangStrategy *workloadsv1alpha2.GangSchedulingStrategy) bool {
+	// CoordinatedPolicy gang strategy takes priority
+	if gangStrategy != nil {
+		return true
+	}
+	// Fall back to annotation compatibility
 	return rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true"
 }
 
-func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
+func (m *GangScheduler) createOrUpdate(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+) error {
 	logger := log.FromContext(ctx)
 	queue := rbg.Annotations[constants.GangSchedulingVolcanoQueueKey]
 	priorityClassName := rbg.Annotations[constants.GangSchedulingVolcanoPriorityClassKey]
 	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, volcanoschedulingv1beta1.AnnotationPrefix)
+
+	// Calculate minMember
+	minMember := int32(rbg.GetGroupSize())
+
+	// If gangStrategy has minReplicas, check subGroupPolicy support
+	if gangStrategy != nil && len(gangStrategy.MinReplicas) > 0 {
+		if !m.hasSubGroupPolicy.Load() {
+			return fmt.Errorf("gang scheduling with per-role minimums (minReplicas) requires Volcano PodGroup CRD with subGroupPolicy field; the installed Volcano version does not support this feature")
+		}
+		// Calculate minMember as sum of (minReplicas × subGroupSize) for each role
+		minMember = int32(calculateGangMinimum(rbg, gangStrategy))
+	}
 
 	podGroup := &volcanoschedulingv1beta1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -116,7 +164,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 			Annotations: desiredAnnotations,
 		},
 		Spec: volcanoschedulingv1beta1.PodGroupSpec{
-			MinMember:         int32(rbg.GetGroupSize()),
+			MinMember:         minMember,
 			Queue:             queue,
 			PriorityClassName: priorityClassName,
 		},
@@ -136,7 +184,9 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 		return nil
 	}
 
-	if podGroup.Spec.MinMember != int32(rbg.GetGroupSize()) ||
+	// Update if needed
+	desiredMinMember := minMember
+	if podGroup.Spec.MinMember != desiredMinMember ||
 		podGroup.Spec.Queue != queue ||
 		podGroup.Spec.PriorityClassName != priorityClassName {
 		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -145,7 +195,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 			); fetchErr != nil {
 				return fetchErr
 			}
-			podGroup.Spec.MinMember = int32(rbg.GetGroupSize())
+			podGroup.Spec.MinMember = desiredMinMember
 			podGroup.Spec.Queue = queue
 			podGroup.Spec.PriorityClassName = priorityClassName
 			return m.client.Update(ctx, podGroup)
@@ -159,7 +209,19 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 	return nil
 }
 
-func (m *PodGroupManager) deletePodGroup(
+// calculateGangMinimum computes the gang minimum as Σ(minReplicas × subGroupSize) for each role.
+func calculateGangMinimum(rbg *workloadsv1alpha2.RoleBasedGroup, gangStrategy *workloadsv1alpha2.GangSchedulingStrategy) int {
+	total := 0
+	for _, role := range rbg.Spec.Roles {
+		if minReplicas, exists := gangStrategy.MinReplicas[role.Name]; exists {
+			subGroupSize := int(workloadsv1alpha2.ComputeSubGroupSize(&role))
+			total += subGroupSize * int(minReplicas)
+		}
+	}
+	return total
+}
+
+func (m *GangScheduler) deletePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	watchedWorkload *sync.Map,
@@ -184,4 +246,31 @@ func (m *PodGroupManager) deletePodGroup(
 	}
 
 	return nil
+}
+
+// checkPodGroupCRDHasSubGroup inspects the PodGroup CRD schema to determine
+// whether the subGroupPolicy field is available. This follows the pattern
+// from kthena's podgroupmanager.
+func checkPodGroupCRDHasSubGroup(reader client.Reader) bool {
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := reader.Get(context.Background(), client.ObjectKey{Name: CrdName}, crd); err != nil {
+		return false
+	}
+
+	for _, version := range crd.Spec.Versions {
+		schema := version.Schema
+		if schema == nil || schema.OpenAPIV3Schema == nil {
+			continue
+		}
+
+		specProps, ok := schema.OpenAPIV3Schema.Properties["spec"]
+		if !ok {
+			continue
+		}
+
+		if _, ok := specProps.Properties["subGroupPolicy"]; ok {
+			return true
+		}
+	}
+	return false
 }

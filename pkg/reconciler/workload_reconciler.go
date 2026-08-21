@@ -45,10 +45,10 @@ type WorkloadReconciler interface {
 	CleanupOrphanedWorkloads(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error
 }
 
-// PodGroupManagerSetter is an optional interface implemented by WorkloadReconcilers
-// that support injecting a PodGroupManager for gang-scheduling label injection.
-type PodGroupManagerSetter interface {
-	SetPodGroupManager(m scheduler.PodGroupManager)
+// GangSchedulerSetter is an optional interface implemented by WorkloadReconcilers
+// that support injecting a GangScheduler for gang-scheduling label injection.
+type GangSchedulerSetter interface {
+	SetGangScheduler(m scheduler.GangScheduler)
 }
 
 func NewWorkloadReconciler(

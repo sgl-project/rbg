@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package kubeschedulerplugin implements the PodGroupManager interface for
+// Package kubeschedulerplugin implements the GangScheduler interface for
 // the Kubernetes scheduler-plugins PodGroup (scheduling.x-k8s.io).
 //
 // This is the default gang scheduling implementation. The controller uses
@@ -55,29 +55,43 @@ const (
 	// LabelKey is the pod label key used to associate a pod with a PodGroup.
 	LabelKey = "pod-group.scheduling.sigs.k8s.io/name"
 
+	// SchedulerName is the scheduler name set on pod.spec.schedulerName.
+	SchedulerName = "scheduler-plugins"
+
 	defaultScheduleTimeoutSeconds = int32(60)
 )
 
-// PodGroupManager manages kube scheduler-plugins PodGroups for gang scheduling.
-type PodGroupManager struct {
+// GangScheduler manages kube scheduler-plugins PodGroups for gang scheduling.
+type GangScheduler struct {
 	client client.Client
 }
 
-// New returns a new PodGroupManager for the kube scheduler plugin.
-func New(c client.Client) *PodGroupManager {
-	return &PodGroupManager{client: c}
+// New returns a new GangScheduler for the kube scheduler plugin.
+func New(c client.Client) *GangScheduler {
+	return &GangScheduler{client: c}
 }
 
 // ReconcilePodGroup creates, updates, or deletes the kube PodGroup
-// based on the gang-scheduling annotation on the RBG.
-func (m *PodGroupManager) ReconcilePodGroup(
+// based on the gang scheduling configuration.
+// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy gang.
+// Note: scheduler-plugins does not support subGroupPolicy; if gangStrategy.MinReplicas
+// is non-empty, an error is returned (runtime safety net).
+func (m *GangScheduler) ReconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
 	runtimeController *builder.TypedBuilder[reconcile.Request],
 	watchedWorkload *sync.Map,
 	apiReader client.Reader,
 ) error {
-	if !isGangSchedulingEnabled(rbg) {
+	// Runtime safety net: scheduler-plugins does not support per-role minimums
+	if gangStrategy != nil && len(gangStrategy.MinReplicas) > 0 {
+		return fmt.Errorf("scheduler-plugins does not support per-role minimum gang scheduling (minReplicas); use --scheduler-name=volcano with Volcano >= 1.14")
+	}
+
+	gangEnabled := isGangSchedulingEnabled(rbg, gangStrategy)
+
+	if !gangEnabled {
 		return m.deletePodGroup(ctx, rbg, watchedWorkload)
 	}
 
@@ -92,17 +106,33 @@ func (m *PodGroupManager) ReconcilePodGroup(
 	return m.createOrUpdate(ctx, rbg)
 }
 
-// InjectPodGroupLabels injects the kube PodGroup label into the pod template spec.
-func (m *PodGroupManager) InjectPodGroupLabels(
+// InjectPodSchedulingFields injects the kube PodGroup label and schedulerName
+// into the pod template spec.
+func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
-	if isGangSchedulingEnabled(rbg) {
-		pts.WithLabels(map[string]string{LabelKey: rbg.Name})
+	if !isGangSchedulingEnabled(rbg, nil) {
+		return
 	}
+
+	// Inject schedulerName into pod spec
+	if pts.Spec == nil {
+		pts.Spec = &coreapplyv1.PodSpecApplyConfiguration{}
+	}
+	pts.Spec.WithSchedulerName(SchedulerName)
+
+	// Inject PodGroup label
+	pts.WithLabels(map[string]string{LabelKey: rbg.Name})
 }
 
-func isGangSchedulingEnabled(rbg *workloadsv1alpha2.RoleBasedGroup) bool {
+func isGangSchedulingEnabled(rbg *workloadsv1alpha2.RoleBasedGroup, gangStrategy *workloadsv1alpha2.GangSchedulingStrategy) bool {
+	// CoordinatedPolicy gang strategy takes priority
+	if gangStrategy != nil {
+		return true
+	}
+	// Fall back to annotation compatibility
 	return rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true"
 }
 
@@ -119,7 +149,7 @@ func getScheduleTimeoutSeconds(rbg *workloadsv1alpha2.RoleBasedGroup) *int32 {
 	return &t
 }
 
-func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
+func (m *GangScheduler) createOrUpdate(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
 	gvk := utils.GetRbgGVK()
 	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, inheritSchedulingPolicyAnnotations)
@@ -178,7 +208,7 @@ func (m *PodGroupManager) createOrUpdate(ctx context.Context, rbg *workloadsv1al
 	return nil
 }
 
-func (m *PodGroupManager) deletePodGroup(
+func (m *GangScheduler) deletePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	watchedWorkload *sync.Map,
