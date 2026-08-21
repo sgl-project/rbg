@@ -165,12 +165,12 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			},
 		}
 		// Template source
-		if src.TemplateSource.Template != nil || src.TemplateSource.TemplateRef != nil {
-			if src.TemplateSource.Template != nil {
-				tmp := src.TemplateSource.Template.DeepCopy()
+		if src.Template != nil || src.TemplateRef != nil {
+			if src.Template != nil {
+				tmp := src.Template.DeepCopy()
 				lwp.TemplateSource = v2.TemplateSource{Template: tmp}
-			} else if src.TemplateSource.TemplateRef != nil {
-				tref := convertTemplateRefV1alpha1ToV2(src.TemplateSource.TemplateRef, &src.TemplatePatch)
+			} else if src.TemplateRef != nil {
+				tref := convertTemplateRefV1alpha1ToV2(src.TemplateRef, &src.TemplatePatch)
 				lwp.TemplateSource = v2.TemplateSource{TemplateRef: tref}
 			}
 		}
@@ -199,11 +199,11 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	default:
 		// StandalonePattern (InstanceSet / StatefulSet / Deployment)
 		sp := &v2.StandalonePattern{}
-		if src.TemplateSource.Template != nil {
-			tmp := src.TemplateSource.Template.DeepCopy()
+		if src.Template != nil {
+			tmp := src.Template.DeepCopy()
 			sp.TemplateSource = v2.TemplateSource{Template: tmp}
-		} else if src.TemplateSource.TemplateRef != nil {
-			tref := convertTemplateRefV1alpha1ToV2(src.TemplateSource.TemplateRef, &src.TemplatePatch)
+		} else if src.TemplateRef != nil {
+			tref := convertTemplateRefV1alpha1ToV2(src.TemplateRef, &src.TemplatePatch)
 			sp.TemplateSource = v2.TemplateSource{TemplateRef: tref}
 		}
 		dst.Pattern = v2.Pattern{StandalonePattern: sp}
@@ -363,8 +363,8 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 
 	// Pattern → v1alpha1 fields
 	switch {
-	case src.Pattern.LeaderWorkerPattern != nil:
-		lwp := src.Pattern.LeaderWorkerPattern
+	case src.LeaderWorkerPattern != nil:
+		lwp := src.LeaderWorkerPattern
 		dst.LeaderWorkerSet = &LeaderWorkerTemplate{
 			Size:                lwp.Size,
 			PatchLeaderTemplate: lwp.LeaderTemplatePatch,
@@ -372,8 +372,8 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 		}
 		dst.TemplateSource, dst.TemplatePatch = convertTemplateSrcV2ToV1alpha1(&lwp.TemplateSource)
 
-	case src.Pattern.CustomComponentsPattern != nil:
-		ccp := src.Pattern.CustomComponentsPattern
+	case src.CustomComponentsPattern != nil:
+		ccp := src.CustomComponentsPattern
 		dst.Components = make([]InstanceComponent, len(ccp.Components))
 		for i, c := range ccp.Components {
 			dst.Components[i] = InstanceComponent{
@@ -384,8 +384,8 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 			}
 		}
 
-	case src.Pattern.StandalonePattern != nil:
-		dst.TemplateSource, dst.TemplatePatch = convertTemplateSrcV2ToV1alpha1(&src.Pattern.StandalonePattern.TemplateSource)
+	case src.StandalonePattern != nil:
+		dst.TemplateSource, dst.TemplatePatch = convertTemplateSrcV2ToV1alpha1(&src.StandalonePattern.TemplateSource)
 
 	default:
 		// No pattern set – nothing to populate.

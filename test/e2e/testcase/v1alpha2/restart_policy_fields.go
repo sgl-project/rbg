@@ -117,7 +117,7 @@ func runRestartPolicyResolutionMatrixTest(f *framework.Framework) {
 			Replicas: ptr.To(int32(1)),
 			Pattern: workloadsv1alpha2.Pattern{
 				CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
-					RestartPolicy: workloadsv1alpha2.RestartPolicyNone,
+					RestartPolicy: workloadsv1alpha2.RestartPolicyNone, //nolint:staticcheck // intentional use of deprecated field
 					Components: []workloadsv1alpha2.InstanceComponent{
 						{Name: "main", Size: ptr.To(int32(1)), Template: ccpTemplate},
 					},

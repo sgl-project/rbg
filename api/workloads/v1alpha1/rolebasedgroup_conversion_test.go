@@ -75,11 +75,11 @@ func TestRoleBasedGroup_ConvertTo_StandalonePattern(t *testing.T) {
 	role := dst.Spec.Roles[0]
 	assert.Equal(t, "worker", role.Name)
 	assert.Equal(t, ptr.To(int32(3)), role.Replicas)
-	require.NotNil(t, role.Pattern.StandalonePattern)
-	require.NotNil(t, role.Pattern.StandalonePattern.Template)
-	assert.Equal(t, "app", role.Pattern.StandalonePattern.Template.Spec.Containers[0].Name)
-	assert.Nil(t, role.Pattern.LeaderWorkerPattern)
-	assert.Nil(t, role.Pattern.CustomComponentsPattern)
+	require.NotNil(t, role.StandalonePattern)
+	require.NotNil(t, role.StandalonePattern.Template)
+	assert.Equal(t, "app", role.StandalonePattern.Template.Spec.Containers[0].Name)
+	assert.Nil(t, role.LeaderWorkerPattern)
+	assert.Nil(t, role.CustomComponentsPattern)
 }
 
 func TestRoleBasedGroup_ConvertTo_TemplateRef(t *testing.T) {
@@ -107,8 +107,8 @@ func TestRoleBasedGroup_ConvertTo_TemplateRef(t *testing.T) {
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.StandalonePattern)
-	ref := role.Pattern.StandalonePattern.TemplateRef
+	require.NotNil(t, role.StandalonePattern)
+	ref := role.StandalonePattern.TemplateRef
 	require.NotNil(t, ref)
 	assert.Equal(t, "base", ref.Name)
 	require.NotNil(t, ref.Patch, "patch should be folded into TemplateRef.Patch")
@@ -140,8 +140,8 @@ func TestRoleBasedGroup_ConvertTo_LeaderWorkerPattern(t *testing.T) {
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.LeaderWorkerPattern)
-	lwp := role.Pattern.LeaderWorkerPattern
+	require.NotNil(t, role.LeaderWorkerPattern)
+	lwp := role.LeaderWorkerPattern
 	assert.Equal(t, ptr.To(int32(4)), lwp.Size)
 	require.NotNil(t, lwp.LeaderTemplatePatch)
 	assert.JSONEq(t, string(leaderPatch.Raw), string(lwp.LeaderTemplatePatch.Raw))
@@ -170,8 +170,8 @@ func TestRoleBasedGroup_ConvertTo_CustomComponentsPattern(t *testing.T) {
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.CustomComponentsPattern)
-	comps := role.Pattern.CustomComponentsPattern.Components
+	require.NotNil(t, role.CustomComponentsPattern)
+	comps := role.CustomComponentsPattern.Components
 	require.Len(t, comps, 2)
 	assert.Equal(t, "prefill", comps[0].Name)
 	assert.Equal(t, "decode", comps[1].Name)
@@ -479,8 +479,8 @@ func TestRoleBasedGroup_ConvertFrom_StandalonePattern(t *testing.T) {
 	require.Len(t, dst.Spec.Roles, 1)
 	role := dst.Spec.Roles[0]
 	assert.Equal(t, "worker", role.Name)
-	require.NotNil(t, role.TemplateSource.Template)
-	assert.Equal(t, "app", role.TemplateSource.Template.Spec.Containers[0].Name)
+	require.NotNil(t, role.Template)
+	assert.Equal(t, "app", role.Template.Spec.Containers[0].Name)
 	assert.Nil(t, role.LeaderWorkerSet)
 	assert.Empty(t, role.Components)
 }
@@ -510,8 +510,8 @@ func TestRoleBasedGroup_ConvertFrom_TemplateRef_PatchUnfolded(t *testing.T) {
 	require.NoError(t, dst.ConvertFrom(src))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.TemplateSource.TemplateRef)
-	assert.Equal(t, "base", role.TemplateSource.TemplateRef.Name)
+	require.NotNil(t, role.TemplateRef)
+	assert.Equal(t, "base", role.TemplateRef.Name)
 	assert.JSONEq(t, string(patch.Raw), string(role.TemplatePatch.Raw), "patch should be unfolded back into TemplatePatch")
 }
 
@@ -638,8 +638,8 @@ func TestRoleBasedGroup_RoundTrip_Standalone(t *testing.T) {
 	r := restored.Spec.Roles[0]
 	assert.Equal(t, "prefill", r.Name)
 	assert.Equal(t, ptr.To(int32(4)), r.Replicas)
-	require.NotNil(t, r.TemplateSource.Template)
-	assert.Equal(t, "prefill", r.TemplateSource.Template.Spec.Containers[0].Name)
+	require.NotNil(t, r.Template)
+	assert.Equal(t, "prefill", r.Template.Spec.Containers[0].Name)
 	assert.Equal(t, "apps/v1", r.Workload.APIVersion)
 	assert.Equal(t, "StatefulSet", r.Workload.Kind)
 }
@@ -1066,8 +1066,8 @@ func TestRoleBasedGroup_RoundTrip_RoleTemplates(t *testing.T) {
 	require.Len(t, restored.Spec.RoleTemplates, 1)
 	assert.Equal(t, "gpu-base", restored.Spec.RoleTemplates[0].Name)
 	role := restored.Spec.Roles[0]
-	require.NotNil(t, role.TemplateSource.TemplateRef)
-	assert.Equal(t, "gpu-base", role.TemplateSource.TemplateRef.Name)
+	require.NotNil(t, role.TemplateRef)
+	assert.Equal(t, "gpu-base", role.TemplateRef.Name)
 	assert.JSONEq(t, string(patch.Raw), string(role.TemplatePatch.Raw))
 }
 
@@ -1100,11 +1100,11 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyPreserved(t *testing.T) {
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.LeaderWorkerPattern)
-	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig,
+	require.NotNil(t, role.LeaderWorkerPattern)
+	require.NotNil(t, role.LeaderWorkerPattern.RestartPolicyConfig,
 		"conversion must materialize RestartPolicyConfig even when v1alpha1 policy is empty")
 	assert.Equal(t, v2.RestartPolicyType(""),
-		role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type,
+		role.LeaderWorkerPattern.RestartPolicyConfig.Type,
 		"empty v1alpha1 RestartPolicy must preserve as empty Type, not None")
 	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.GetRestartPolicy(),
 		"getter must resolve empty Type to Recreate (pattern-aware default)")
@@ -1133,8 +1133,8 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyNoneMapsToNone(t *testing.T) {
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig)
-	assert.Equal(t, v2.RestartPolicyNone, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type)
+	require.NotNil(t, role.LeaderWorkerPattern.RestartPolicyConfig)
+	assert.Equal(t, v2.RestartPolicyNone, role.LeaderWorkerPattern.RestartPolicyConfig.Type)
 }
 
 func TestRoleBasedGroup_ConvertTo_RestartPolicyRecreateMapsToRecreate(t *testing.T) {
@@ -1160,8 +1160,8 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyRecreateMapsToRecreate(t *testing
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig)
-	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.Pattern.LeaderWorkerPattern.RestartPolicyConfig.Type)
+	require.NotNil(t, role.LeaderWorkerPattern.RestartPolicyConfig)
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.LeaderWorkerPattern.RestartPolicyConfig.Type)
 }
 
 func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
@@ -1171,7 +1171,7 @@ func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
 	tests := []struct {
 		name             string
 		policy           RestartPolicyType
-		expectedRaw      RestartPolicyType   // raw value preserved through round-trip
+		expectedRaw      RestartPolicyType    // raw value preserved through round-trip
 		expectedResolved v2.RestartPolicyType // what the v1alpha2 getter resolves to
 	}{
 		{"empty preserved, getter resolves to Recreate", "", "", v2.RecreateRoleInstanceOnPodRestart},
@@ -1202,7 +1202,7 @@ func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
 			require.NoError(t, original.ConvertTo(hub))
 
 			// Verify the hub getter resolves to the correct RestartPolicy.
-			require.NotNil(t, hub.Spec.Roles[0].Pattern.LeaderWorkerPattern.RestartPolicyConfig)
+			require.NotNil(t, hub.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig)
 			assert.Equal(t, tc.expectedResolved,
 				hub.Spec.Roles[0].GetRestartPolicy(),
 				"hub (v1alpha2) getter must resolve to correct RestartPolicy")
@@ -1240,9 +1240,9 @@ func TestRoleBasedGroup_ConvertTo_CustomComponentsPattern_RestartPolicy(t *testi
 	require.NoError(t, src.ConvertTo(dst))
 
 	role := dst.Spec.Roles[0]
-	require.NotNil(t, role.Pattern.CustomComponentsPattern)
-	require.NotNil(t, role.Pattern.CustomComponentsPattern.RestartPolicyConfig,
+	require.NotNil(t, role.CustomComponentsPattern)
+	require.NotNil(t, role.CustomComponentsPattern.RestartPolicyConfig,
 		"conversion must materialize RestartPolicyConfig for CustomComponentsPattern")
 	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart,
-		role.Pattern.CustomComponentsPattern.RestartPolicyConfig.Type)
+		role.CustomComponentsPattern.RestartPolicyConfig.Type)
 }

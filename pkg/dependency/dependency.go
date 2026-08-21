@@ -136,7 +136,7 @@ func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([][
 	}
 	sort.Strings(keys)
 
-	roleWithOrderList := make([]*roleWithOrder, 0)
+	roleWithOrderList := make([]*roleWithOrder, 0, len(keys))
 	for _, k := range keys {
 		roleWithOrderList = append(roleWithOrderList, &roleWithOrder{name: k, order: -2})
 	}

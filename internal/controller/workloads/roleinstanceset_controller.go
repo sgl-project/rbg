@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -80,7 +81,7 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 	// This handles the case where the pattern annotation is changed (stateful ↔ stateless),
 	// leaving behind instances from the old pattern that the new reconciler won't manage.
 	if requeue, err := r.cleanupStaleInstances(ctx, set); err != nil || requeue {
-		return reconcile.Result{Requeue: requeue}, err
+		return reconcile.Result{RequeueAfter: time.Second}, err
 	}
 
 	// Dispatch based on the role instance pattern annotation

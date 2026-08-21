@@ -418,7 +418,7 @@ func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Con
 	if warmup.Spec.TargetNodes != nil {
 		if warmup.Spec.TargetNodes.NodeSelector != nil {
 			nodeList := &corev1.NodeList{}
-			if err := r.Client.List(ctx, nodeList, client.MatchingLabels(warmup.Spec.TargetNodes.NodeSelector)); err != nil {
+			if err := r.List(ctx, nodeList, client.MatchingLabels(warmup.Spec.TargetNodes.NodeSelector)); err != nil {
 				return nil, err
 			}
 

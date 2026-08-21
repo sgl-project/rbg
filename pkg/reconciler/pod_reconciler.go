@@ -37,6 +37,13 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
+const (
+	configInjector    = "config"
+	sidecarInjector   = "sidecar"
+	commonEnvInjector = "common_env"
+	lwpEnvInjector    = "lwp_env"
+)
+
 type PodReconciler struct {
 	scheme          *runtime.Scheme
 	client          client.Client
@@ -86,25 +93,25 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	// inject objects
 	injector := discovery.NewDefaultInjector(r.scheme, r.client)
 	if r.injectObjects == nil {
-		r.injectObjects = []string{"config", "sidecar", "common_env"}
+		r.injectObjects = []string{configInjector, sidecarInjector, commonEnvInjector}
 	}
-	if utils.ContainsString(r.injectObjects, "config") {
+	if utils.ContainsString(r.injectObjects, configInjector) {
 		if err := injector.InjectConfig(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject config: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "sidecar") {
+	if utils.ContainsString(r.injectObjects, sidecarInjector) {
 		// The sidecar containers also need rbg-related envs, so inject them first
 		if err := injector.InjectSidecar(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject sidecar: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "common_env") {
+	if utils.ContainsString(r.injectObjects, commonEnvInjector) {
 		if err := injector.InjectEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "lwp_env") {
+	if utils.ContainsString(r.injectObjects, lwpEnvInjector) {
 		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}

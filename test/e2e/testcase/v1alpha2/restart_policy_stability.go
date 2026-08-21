@@ -518,7 +518,7 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 
 		// --- Update spec during backoff: add env var to trigger rolling update ---
 		updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
-			rbg.Spec.Roles[0].Pattern.LeaderWorkerPattern.TemplateSource.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+			rbg.Spec.Roles[0].LeaderWorkerPattern.Template.Spec.Containers[0].Env = []corev1.EnvVar{
 				{Name: "BACKOFF_E2E", Value: "v2"},
 			}
 		})

@@ -63,7 +63,7 @@ func (roleWrapper *RoleWrapper) WithMaxSurge(value int32) *RoleWrapper {
 }
 
 func (roleWrapper *RoleWrapper) WithTemplate(template corev1.PodTemplateSpec) *RoleWrapper {
-	roleWrapper.TemplateSource.Template = &template
+	roleWrapper.Template = &template
 	return roleWrapper
 }
 
@@ -142,11 +142,11 @@ func (roleWrapper *RoleWrapper) WithScalingAdapter(enable bool) *RoleWrapper {
 // This method automatically clears the Template field to satisfy mutual exclusivity requirements
 // (templateRef and template cannot both be set).
 func (roleWrapper *RoleWrapper) WithTemplateRef(name string) *RoleWrapper {
-	roleWrapper.TemplateSource.TemplateRef = &workloadsv1alpha.TemplateRef{
+	roleWrapper.TemplateRef = &workloadsv1alpha.TemplateRef{
 		Name: name,
 	}
 	// Clear Template to satisfy mutual exclusivity (templateRef and template cannot both be set)
-	roleWrapper.TemplateSource.Template = nil
+	roleWrapper.Template = nil
 	return roleWrapper
 }
 

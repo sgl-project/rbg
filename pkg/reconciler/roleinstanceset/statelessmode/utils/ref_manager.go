@@ -48,7 +48,7 @@ type RefManager struct {
 // methods to manage the controllerRef of pods.
 func NewRefManager(client client.Client, selector labels.Selector, owner metav1.Object, schema *runtime.Scheme) (*RefManager, error) {
 	ownerType := reflect.TypeOf(owner)
-	if ownerType.Kind() == reflect.Ptr {
+	if ownerType.Kind() == reflect.Pointer {
 		ownerType = ownerType.Elem()
 	}
 	return &RefManager{

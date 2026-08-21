@@ -101,8 +101,8 @@ func (c *commonControl) GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopolo
 		Components: sets.New[string](),
 	}
 	componentGroup := instanceutil.GroupPodsByComponentName(pods)
-	for i := range c.RoleInstance.Spec.Components {
-		component := c.RoleInstance.Spec.Components[i]
+	for i := range c.Spec.Components {
+		component := c.Spec.Components[i]
 		if component.Size == nil {
 			return nil, fmt.Errorf("component %s'size is empty", component.Name)
 		}
@@ -117,7 +117,7 @@ func (c *commonControl) GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopolo
 
 func (c *commonControl) NewUpdatePods(updateVersion string, componentName string, availableIDs []int32) ([]*v1.Pod, error) {
 	var component *workloadsv1alpha2.RoleInstanceComponent
-	for i := range c.RoleInstance.Spec.Components {
+	for i := range c.Spec.Components {
 		if c.Spec.Components[i].Name == componentName {
 			component = &c.Spec.Components[i]
 			break

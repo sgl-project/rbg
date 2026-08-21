@@ -97,7 +97,7 @@ func removeNotReadyKey(adp clientdapter.Adapter, instance *workloadsv1alpha2.Rol
 }
 
 func addMessage(base string, msg Message) (bool, messageList) {
-	messages := messageList{}
+	messages := make(messageList, 0, 1)
 	if base != "" {
 		_ = json.Unmarshal([]byte(base), &messages)
 	}
