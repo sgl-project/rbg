@@ -19,6 +19,7 @@ limitations under the License.
 package statefulmode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -26,10 +27,12 @@ import (
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/kubernetes/pkg/controller/history"
+	"k8s.io/utils/lru"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -128,6 +131,54 @@ func ApplyRevision(set *workloadsv1alpha2.RoleInstanceSet, revision *apps.Contro
 		return nil, err
 	}
 	return restoredSet, nil
+}
+
+// revisionEqualityCacheKey uniquely identifies a semantic equality result by
+// combining the RoleInstanceSet UID, its generation, and the ResourceVersion
+// of the existing ControllerRevision being compared.
+type revisionEqualityCacheKey struct {
+	setUID                  types.UID
+	setGeneration           int64
+	revisionResourceVersion string
+}
+
+// SetMatchesRevision returns true if the proposedRevision (generated from the
+// current set spec) semantically matches the existingRevision, even when their
+// raw bytes differ due to serialization changes across client-go versions.
+// It works by applying the existing revision back to the set, re-generating a
+// patch with the current serialization format, and comparing the raw bytes.
+// Results are cached in the provided LRU cache to avoid expensive
+// reconstruction on every reconcile.
+func SetMatchesRevision(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	proposedRevision *apps.ControllerRevision,
+	existingRevision *apps.ControllerRevision,
+	cache *lru.Cache,
+) bool {
+	if existingRevision == nil || proposedRevision == nil {
+		return false
+	}
+	cacheKey := revisionEqualityCacheKey{
+		setUID:                  set.UID,
+		setGeneration:           set.Generation,
+		revisionResourceVersion: existingRevision.ResourceVersion,
+	}
+	if _, ok := cache.Get(cacheKey); ok {
+		return true
+	}
+	restoredSet, err := ApplyRevision(set, existingRevision)
+	if err != nil {
+		return false
+	}
+	reconstructedPatch, err := getPatch(restoredSet)
+	if err != nil {
+		return false
+	}
+	if bytes.Equal(proposedRevision.Data.Raw, reconstructedPatch) {
+		cache.Add(cacheKey, struct{}{})
+		return true
+	}
+	return false
 }
 
 // updateStatus updates the status fields of set based on the current and update revisions and instances

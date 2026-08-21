@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/history"
+	"k8s.io/utils/lru"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -41,6 +42,7 @@ import (
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/sync"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
+	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 )
 
@@ -48,13 +50,14 @@ func NewReconciler(mgr ctrl.Manager) reconcile.Reconciler {
 	recorder := mgr.GetEventRecorderFor("instanceset-controller")
 	c := utilclient.NewClientWithUserAgent(mgr, "roleinstanceset")
 	return &ReconcileInstanceSet{
-		Client:            c,
-		scheme:            mgr.GetScheme(),
-		recorder:          recorder,
-		controllerHistory: historyutil.NewHistory(c),
-		statusUpdater:     newStatusUpdater(c),
-		revisionControl:   revisioncontrol.NewRevisionControl(),
-		syncControl:       synccontrol.New(c, recorder),
+		Client:                c,
+		scheme:                mgr.GetScheme(),
+		recorder:              recorder,
+		controllerHistory:     historyutil.NewHistory(c),
+		statusUpdater:         newStatusUpdater(c),
+		revisionControl:       revisioncontrol.NewRevisionControl(),
+		syncControl:           synccontrol.New(c, recorder),
+		revisionEqualityCache: lru.New(pkgutils.MaxRevisionEqualityCacheEntries),
 	}
 }
 
@@ -68,6 +71,9 @@ type ReconcileInstanceSet struct {
 	statusUpdater     StatusUpdater
 	revisionControl   revisioncontrol.Interface
 	syncControl       synccontrol.Interface
+	// revisionEqualityCache caches semantic revision equality results to avoid
+	// expensive ApplyRevision + getPatch reconstruction on every reconcile.
+	revisionEqualityCache *lru.Cache
 }
 
 // Reconcile reads that state of the cluster for a InstanceSet object and makes changes based on the state read
@@ -288,6 +294,12 @@ func (r *ReconcileInstanceSet) getActiveRevisions(set *workloadsv1alpha2.RoleIns
 		if err != nil {
 			return nil, nil, collisionCount, err
 		}
+	} else if revisionCount > 0 && r.revisionControl.SetMatchesRevision(set, updateRevision, revisions[revisionCount-1], r.revisionEqualityCache) {
+		// if there is no equivalent revision we check semantic equality before creating a new one.
+		// This handles serialization drift across client-go versions (e.g.,
+		// "creationTimestamp": null vs omitted) that causes EqualRevision to
+		// wrongly return false.
+		updateRevision = revisions[revisionCount-1]
 	} else {
 		// if there is no equivalent revision we create a new one
 		updateRevision, err = r.controllerHistory.CreateControllerRevision(set, updateRevision, &collisionCount)

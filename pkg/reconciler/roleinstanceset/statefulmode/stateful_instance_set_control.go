@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/history"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
@@ -143,12 +144,13 @@ func NewDefaultStatefulInstanceSetControl(
 	controllerHistory history.Interface,
 	recorder record.EventRecorder) StatefulInstanceSetControlInterface {
 	return &defaultStatefulInstanceSetControl{
-		instanceControl,
-		statusUpdater,
-		controllerHistory,
-		recorder,
-		inplaceControl,
-		lifecycleControl,
+		instanceControl:       instanceControl,
+		statusUpdater:         statusUpdater,
+		controllerHistory:     controllerHistory,
+		recorder:              recorder,
+		inplaceControl:        inplaceControl,
+		lifecycleControl:      lifecycleControl,
+		revisionEqualityCache: lru.New(utils.MaxRevisionEqualityCacheEntries),
 	}
 }
 
@@ -162,6 +164,9 @@ type defaultStatefulInstanceSetControl struct {
 	recorder          record.EventRecorder
 	inplaceControl    instanceinplace.Interface
 	lifecycleControl  instancelifecycle.Interface
+	// revisionEqualityCache caches semantic revision equality results to avoid
+	// expensive ApplyRevision + getPatch reconstruction on every reconcile.
+	revisionEqualityCache *lru.Cache
 }
 
 // UpdateStatefulInstanceSet executes the core logic loop for a stateful set managing instances
@@ -320,10 +325,17 @@ func (ssc *defaultStatefulInstanceSetControl) getInstanceSetRevisions(
 			}
 		}
 	} else {
-		// if there is no equivalent revision we create a new one
-		updateRevision, err = ssc.controllerHistory.CreateControllerRevision(set, updateRevision, &collisionCount)
-		if err != nil {
-			return nil, nil, collisionCount, err
+		// if there is no equivalent revision we check semantic equality before creating a new one.
+		// This handles serialization drift across client-go versions (e.g.,
+		// "creationTimestamp": null vs omitted) that causes EqualRevision to
+		// wrongly return false.
+		if revisionCount > 0 && SetMatchesRevision(set, updateRevision, revisions[revisionCount-1], ssc.revisionEqualityCache) {
+			updateRevision = revisions[revisionCount-1]
+		} else {
+			updateRevision, err = ssc.controllerHistory.CreateControllerRevision(set, updateRevision, &collisionCount)
+			if err != nil {
+				return nil, nil, collisionCount, err
+			}
 		}
 	}
 

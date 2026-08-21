@@ -32,8 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -93,6 +95,64 @@ func EqualRevision(lhs, rhs *appsv1.ControllerRevision) bool {
 	}
 
 	return bytes.Equal(lhs.Data.Raw, rhs.Data.Raw) && apiequality.Semantic.DeepEqual(lhs.Data.Object, rhs.Data.Object)
+}
+
+// MaxRevisionEqualityCacheEntries is the LRU cache size for semantic revision equality results.
+const MaxRevisionEqualityCacheEntries = 10000
+
+// revisionEqualityCacheKey uniquely identifies a semantic equality result by
+// combining the RBG UID, the RBG generation (spec revision), and the
+// ResourceVersion of the existing ControllerRevision being compared.
+type revisionEqualityCacheKey struct {
+	rbgUID                  types.UID
+	rbgGeneration           int64
+	revisionResourceVersion string
+}
+
+// SetMatchesRevision returns true if the proposedRevision (generated from the
+// current RBG spec) semantically matches the existingRevision, even when their
+// raw bytes differ due to serialization changes across client-go versions
+// (e.g., "creationTimestamp": null vs omitted).
+//
+// It works by applying the existing revision back to the RBG, re-generating a
+// patch with the current serialization format, and comparing the raw bytes.
+// Results are cached in the provided LRU cache to avoid expensive
+// reconstruction on every reconcile.
+// This function adapts the approach in https://github.com/kubernetes/kubernetes/pull/135017.
+func SetMatchesRevision(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	proposedRevision *appsv1.ControllerRevision,
+	existingRevision *appsv1.ControllerRevision,
+	cache *lru.Cache,
+) bool {
+	if existingRevision == nil || proposedRevision == nil {
+		return false
+	}
+
+	cacheKey := revisionEqualityCacheKey{
+		rbgUID:                  rbg.UID,
+		rbgGeneration:           rbg.Generation,
+		revisionResourceVersion: existingRevision.ResourceVersion,
+	}
+	if _, ok := cache.Get(cacheKey); ok {
+		return true
+	}
+
+	latestRbg, err := ApplyRevision(rbg, existingRevision)
+	if err != nil {
+		return false
+	}
+
+	reconstructedPatch, err := getRBGPatch(latestRbg)
+	if err != nil {
+		return false
+	}
+
+	if bytes.Equal(proposedRevision.Data.Raw, reconstructedPatch) {
+		cache.Add(cacheKey, struct{}{})
+		return true
+	}
+	return false
 }
 
 // ApplyRevision deserializes the historical RBG Roles data stored in a ControllerRevision and applies it to the current RBG.
