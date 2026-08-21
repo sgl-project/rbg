@@ -38,6 +38,48 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
+func TestValidateRolloutStrategyAllowsZeroReplicas(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxUnavailable intstr.IntOrString
+	}{
+		{name: "percentage", maxUnavailable: intstr.FromString("30%")},
+		{name: "integer", maxUnavailable: intstr.FromInt32(0)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			strategy := &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+					MaxUnavailable: ptr.To(tt.maxUnavailable),
+					MaxSurge:       ptr.To(intstr.FromInt32(0)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
+				},
+			}
+
+			_, err := validateRolloutStrategy(strategy, 0)
+
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateRolloutStrategyRejectsZeroBudgetWhenReplicasGreaterThanZero(t *testing.T) {
+	strategy := &workloadsv1alpha2.RolloutStrategy{
+		Type: workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+			MaxUnavailable: ptr.To(intstr.FromInt32(0)),
+			MaxSurge:       ptr.To(intstr.FromInt32(0)),
+			Partition:      ptr.To(intstr.FromInt32(0)),
+		},
+	}
+
+	_, err := validateRolloutStrategy(strategy, 1)
+
+	assert.ErrorContains(t, err, "maxUnavailable may not be 0 when maxSurge is 0")
+}
+
 func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)

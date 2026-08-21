@@ -640,7 +640,7 @@ func validateRolloutStrategy(
 	if err != nil {
 		return nil, err
 	}
-	if maxUnavailable == 0 && maxSurge == 0 {
+	if replicas > 0 && maxUnavailable == 0 && maxSurge == 0 {
 		return nil, fmt.Errorf(
 			"RollingUpdate is invalid: " +
 				"rolloutStrategy.rollingUpdate.maxUnavailable may not be 0 when maxSurge is 0",
