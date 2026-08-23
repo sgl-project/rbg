@@ -42,13 +42,23 @@ import (
 // because the pod template did not change and the workload has no reason to restart.
 // These specs pin that boundary.
 var _ = Describe("RoleInstanceSet revision stability", func() {
-	const ns = "default"
+	var testNs string
+
+	BeforeEach(func() {
+		testNs = fmt.Sprintf("test-revision-%d", time.Now().UnixNano())
+		testutil.CreateNamespace(testNs)
+	})
+
+	AfterEach(func() {
+		// Unconditional, so a failed assertion cannot leak the set into later specs.
+		testutil.DeleteNamespace(testNs)
+	})
 
 	// legacyShapedSet stores the policy through the deprecated string field, which
 	// is the shape a pre-restartPolicyConfig release wrote.
 	legacyShapedSet := func(name string) *workloadsv1alpha2.RoleInstanceSet {
 		return &workloadsv1alpha2.RoleInstanceSet{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNs},
 			Spec: workloadsv1alpha2.RoleInstanceSetSpec{
 				Replicas: ptr.To(int32(1)),
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
@@ -73,7 +83,7 @@ var _ = Describe("RoleInstanceSet revision stability", func() {
 
 	instanceUIDs := func(setName string) map[string]types.UID {
 		list := &workloadsv1alpha2.RoleInstanceList{}
-		Expect(testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(ns))).To(Succeed())
+		Expect(testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(testNs))).To(Succeed())
 		out := map[string]types.UID{}
 		for i := range list.Items {
 			ri := &list.Items[i]
@@ -88,7 +98,7 @@ var _ = Describe("RoleInstanceSet revision stability", func() {
 
 	revisionsFor := func(setName string) []string {
 		crList := &apps.ControllerRevisionList{}
-		Expect(testutil.K8sClient.List(testutil.Ctx, crList, client.InNamespace(ns))).To(Succeed())
+		Expect(testutil.K8sClient.List(testutil.Ctx, crList, client.InNamespace(testNs))).To(Succeed())
 		var names []string
 		for i := range crList.Items {
 			cr := &crList.Items[i]
@@ -112,10 +122,23 @@ var _ = Describe("RoleInstanceSet revision stability", func() {
 			return len(before)
 		}, 60*time.Second, time.Second).Should(BeNumerically(">", 0))
 
-		stored := &workloadsv1alpha2.RoleInstanceSet{}
-		key := client.ObjectKey{Namespace: ns, Name: name}
-		Expect(testutil.K8sClient.Get(testutil.Ctx, key, stored)).To(Succeed())
-		beforeRevision := stored.Status.CurrentRevision
+		key := client.ObjectKey{Namespace: testNs, Name: name}
+
+		// Wait for the revision to be published before capturing it. If it were
+		// still empty here, the closing assertion would be satisfied by
+		// UpdateRevision merely becoming non-empty and would not show a
+		// re-revision at all.
+		By("waiting for status.currentRevision to be published")
+		var beforeRevision string
+		Eventually(func() string {
+			stored := &workloadsv1alpha2.RoleInstanceSet{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, stored); err != nil {
+				return ""
+			}
+			beforeRevision = stored.Status.CurrentRevision
+			return beforeRevision
+		}, 60*time.Second, time.Second).ShouldNot(BeEmpty(),
+			"status.currentRevision must be populated before it can be compared")
 		GinkgoWriter.Printf("before: instances=%v currentRevision=%q revisions=%v\n",
 			before, beforeRevision, revisionsFor(name))
 
@@ -148,10 +171,13 @@ var _ = Describe("RoleInstanceSet revision stability", func() {
 
 		// The revision does move, which is what makes the check above meaningful:
 		// the set really was re-revisioned and still did not roll.
+		Expect(after.Status.UpdateRevision).NotTo(BeEmpty(),
+			"status.updateRevision should be published after the template changed")
 		Expect(after.Status.UpdateRevision).NotTo(Equal(beforeRevision),
 			"the reserialized template should produce a new revision")
 
-		Expect(testutil.K8sClient.Delete(testutil.Ctx, after)).To(Succeed())
+		// No explicit Delete: AfterEach removes the namespace, so cleanup does not
+		// depend on reaching the end of the spec.
 	})
 
 	It("resolves the same effective policy from either field shape", func() {
