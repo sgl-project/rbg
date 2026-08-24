@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -125,7 +126,7 @@ func SetMatchesRevision(
 	existingRevision *appsv1.ControllerRevision,
 	cache *lru.Cache,
 ) bool {
-	if existingRevision == nil || proposedRevision == nil {
+	if existingRevision == nil || proposedRevision == nil || cache == nil {
 		return false
 	}
 
@@ -140,11 +141,15 @@ func SetMatchesRevision(
 
 	latestRbg, err := ApplyRevision(rbg, existingRevision)
 	if err != nil {
+		klog.V(4).InfoS("SetMatchesRevision: ApplyRevision failed, falling back to new revision creation",
+			"rbg", klog.KRef(rbg.Namespace, rbg.Name), "err", err)
 		return false
 	}
 
 	reconstructedPatch, err := getRBGPatch(latestRbg)
 	if err != nil {
+		klog.V(4).InfoS("SetMatchesRevision: getRBGPatch failed, falling back to new revision creation",
+			"rbg", klog.KRef(rbg.Namespace, rbg.Name), "err", err)
 		return false
 	}
 

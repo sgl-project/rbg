@@ -31,6 +31,7 @@ import (
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/history"
 	"k8s.io/utils/lru"
 
@@ -155,7 +156,7 @@ func SetMatchesRevision(
 	existingRevision *apps.ControllerRevision,
 	cache *lru.Cache,
 ) bool {
-	if existingRevision == nil || proposedRevision == nil {
+	if existingRevision == nil || proposedRevision == nil || cache == nil {
 		return false
 	}
 	cacheKey := revisionEqualityCacheKey{
@@ -168,10 +169,14 @@ func SetMatchesRevision(
 	}
 	restoredSet, err := ApplyRevision(set, existingRevision)
 	if err != nil {
+		klog.V(4).InfoS("SetMatchesRevision: ApplyRevision failed, falling back to new revision creation",
+			"set", klog.KRef(set.Namespace, set.Name), "err", err)
 		return false
 	}
 	reconstructedPatch, err := getPatch(restoredSet)
 	if err != nil {
+		klog.V(4).InfoS("SetMatchesRevision: getPatch failed, falling back to new revision creation",
+			"set", klog.KRef(set.Namespace, set.Name), "err", err)
 		return false
 	}
 	if bytes.Equal(proposedRevision.Data.Raw, reconstructedPatch) {
