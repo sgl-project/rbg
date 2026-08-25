@@ -1,0 +1,17 @@
+title: Gang Scheduling
+kep-number: 430
+authors:
+  - "@TBD"
+status: provisional
+creation-date: 2026-08-20
+reviewers:
+  - "@TBD"
+approvers:
+  - "@TBD"
+
+stage: alpha
+
+latest-milestone: "v0.8.0"
+
+milestone:
+  alpha: "v0.8.0"
