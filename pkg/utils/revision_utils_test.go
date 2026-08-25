@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -913,6 +914,38 @@ func getRBG() *workloadsv1alpha2.RoleBasedGroup {
 	}
 }
 
+// withLegacyCreationTimestamp rewrites every "metadata" object in the patch to
+// carry an explicit "creationTimestamp": null, reproducing how older client-go
+// versions serialized revisions. It edits the parsed tree rather than the raw
+// text, so the result stays valid JSON regardless of the fixture's shape.
+func withLegacyCreationTimestamp(t *testing.T, patch []byte) []byte {
+	t.Helper()
+	var tree interface{}
+	require.NoError(t, json.Unmarshal(patch, &tree))
+
+	var inject func(node interface{})
+	inject = func(node interface{}) {
+		switch n := node.(type) {
+		case map[string]interface{}:
+			for key, child := range n {
+				if meta, ok := child.(map[string]interface{}); ok && key == "metadata" {
+					meta["creationTimestamp"] = nil
+				}
+				inject(child)
+			}
+		case []interface{}:
+			for _, child := range n {
+				inject(child)
+			}
+		}
+	}
+	inject(tree)
+
+	legacy, err := json.Marshal(tree)
+	require.NoError(t, err)
+	return legacy
+}
+
 func TestSetMatchesRevision(t *testing.T) {
 	rbg := getRBG()
 	rbg.UID = "test-rbg-uid"
@@ -936,20 +969,17 @@ func TestSetMatchesRevision(t *testing.T) {
 		assert.True(t, result, "identical patch bytes should be semantically equal")
 	})
 
-	t.Run("DifferentBytes_SemanticallyEqual", func(t *testing.T) {
+	t.Run("LegacyCreationTimestamp_SemanticallyEqual", func(t *testing.T) {
 		cache := lru.New(MaxRevisionEqualityCacheEntries)
-		// Re-marshal the patch through map to normalize it (simulates serialization drift)
-		var raw map[string]interface{}
-		err := json.Unmarshal(proposedPatch, &raw)
-		assert.NoError(t, err)
-		reMarshalled, err := json.MarshalIndent(raw, "", "  ")
-		assert.NoError(t, err)
+		legacyPatch := withLegacyCreationTimestamp(t, proposedPatch)
+		assert.NotEqual(t, proposedPatch, legacyPatch, "drift injection must actually change the bytes")
+
 		existingRevision := &appsv1.ControllerRevision{
 			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
-			Data:       runtime.RawExtension{Raw: reMarshalled},
+			Data:       runtime.RawExtension{Raw: legacyPatch},
 		}
 		result := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
-		assert.True(t, result, "semantically equal patches with different byte representations should match")
+		assert.True(t, result, "legacy creationTimestamp serialization should still match semantically")
 	})
 
 	t.Run("TrulyDifferentSpec_ReturnsFalse", func(t *testing.T) {
