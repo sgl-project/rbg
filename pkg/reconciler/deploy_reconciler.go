@@ -41,9 +41,9 @@ import (
 )
 
 type DeploymentReconciler struct {
-	scheme          *runtime.Scheme
-	client          client.Client
-	gangScheduler   scheduler.GangScheduler
+	scheme        *runtime.Scheme
+	client        client.Client
+	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &DeploymentReconciler{}

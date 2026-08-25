@@ -547,15 +547,3 @@ func getVolcanoPodGroup(f *framework.Framework, name, namespace string) (*unstru
 	err := f.Client.Get(f.Ctx, client.ObjectKey{Name: name, Namespace: namespace}, pg)
 	return pg, err
 }
-
-// getKubePodGroup fetches the scheduler-plugins PodGroup CR using unstructured client.
-func getKubePodGroup(f *framework.Framework, name, namespace string) (*unstructured.Unstructured, error) {
-	pg := &unstructured.Unstructured{}
-	pg.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "scheduling.x-k8s.io",
-		Version: "v1alpha1",
-		Kind:    "PodGroup",
-	})
-	err := f.Client.Get(f.Ctx, client.ObjectKey{Name: name, Namespace: namespace}, pg)
-	return pg, err
-}
