@@ -47,6 +47,12 @@ linters:
       - linters:
           - dupl
         path: ^cmd/cli/cmd/llm/config/
+      # Table-driven cases and inline fixtures are legitimately repetitive, and
+      # keeping each case readable standalone beats extracting shared helpers.
+      # Same rationale as goconst.ignore-tests above.
+      - linters:
+          - dupl
+        path: _test\.go$
       # Test helper files under test/ that are not *_test.go (fixtures,
       # wrappers) also repeat literals; ignore-tests above only covers
       # *_test.go files.
