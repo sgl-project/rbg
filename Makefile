@@ -321,6 +321,7 @@ ENVTEST_K8S_VERSION ?= 1.31.0
 KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.17.2
 GOLANGCI_LINT_VERSION ?= v2.13.1
+SETUP_ENVTEST_VERSION ?= v0.24.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -341,7 +342,7 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 setup-envtest: $(SETUP_ENVTEST) ## Download setup-envtest locally if necessary.
 $(SETUP_ENVTEST): $(LOCALBIN)
 	@echo "Installing setup-envtest..."
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

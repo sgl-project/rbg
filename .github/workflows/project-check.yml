@@ -7,7 +7,9 @@ on:
     branches: [ "main" ]
 
 env:
-  GO_VERSION: 1.25.0
+  # Match the golang builder image in the Dockerfiles; golangci-lint v2 and
+  # setup-envtest both require Go >= 1.26. GOTOOLCHAIN=local pins to this version.
+  GO_VERSION: 1.26.6
   GOTOOLCHAIN: local
 
 # Declare default permissions as read only.

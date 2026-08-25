@@ -1,29 +1,32 @@
 # CRD Upgrader image for rbgs
+# This image contains all CRD files and kubectl to upgrade CRDs during Helm upgrade
+FROM alpine:3.20
+
+# Copy CRD files and upgrade script
+COPY ./config/crd/bases /rbgs/crds
+COPY ./tools/crd-upgrade/ensure-crds-up-to-date.sh /rbgs/ensure-crds-up-to-date.sh
+
+# Install necessary tools
 #
-# This image contains all CRD files and a Go binary (compiled from the same
-# toolchain and dependency tree as the manager) that applies CRDs during
-# Helm upgrade. This replaces the previous kubectl-based approach, eliminating
-# the pre-built kubectl binary and its pinned internal dependencies (the
-# source of the residual CVEs in the crd-upgrade image).
+# Use chinese mirror:
+# RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
+#     apk add --update --no-cache bash curl && \
+#     chmod +x /rbgs/ensure-crds-up-to-date.sh
+RUN apk add --update --no-cache bash curl && \
+    chmod +x /rbgs/ensure-crds-up-to-date.sh
 
-FROM --platform=$BUILDPLATFORM registry-cn-hangzhou.ack.aliyuncs.com/dev/golang:1.26.6 AS builder
-ARG TARGETOS
+# Install kubectl (use Aliyun mirror for CN network environment)
+#
+# Install via chinese mirror:
+# RUN apk add --no-cache kubectl --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community
+ARG KUBECTL_VERSION=v1.36.4
 ARG TARGETARCH
+RUN ARCH="${TARGETARCH:-amd64}" && \
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" && \
+    echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c && \
+    mv kubectl /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl && \
+    rm kubectl.sha256
 
-WORKDIR /workspace
-ADD . /workspace
-
-# Build a static binary (CGO disabled for musl/alpine compatibility).
-# -mod vendor uses the same vendored dependency tree as the manager binary.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -mod vendor -o crd-upgrader ./tools/crd-upgrade/
-
-# ---
-# Final image: Alpine with the compiled binary and CRD files.
-FROM registry.cn-hangzhou.aliyuncs.com/acs/alpine:3.18-update
-WORKDIR /
-COPY --from=builder /workspace/crd-upgrader /usr/local/bin/crd-upgrader
-COPY config/crd/bases /rbgs/crds
-USER 65532:65532
-
-ENTRYPOINT ["/usr/local/bin/crd-upgrader"]
+ENTRYPOINT ["bash", "/rbgs/ensure-crds-up-to-date.sh"]

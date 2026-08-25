@@ -24,32 +24,35 @@ linters:
     revive:
       rules:
         - name: comment-spacings
+    goconst:
+      # Repeated literals in tests (fixtures, expected values) are acceptable.
+      ignore-tests: true
+    staticcheck:
+      # Ginkgo/Gomega are idiomatically dot-imported in the test suites.
+      dot-import-whitelist:
+        - github.com/onsi/ginkgo/v2
+        - github.com/onsi/gomega
   exclusions:
+    # Intentionally no `presets:` here - keep golangci's default exclusion set
+    # off so the project continues to see all findings (matching the old
+    # `exclude-use-default: false`).
     generated: lax
     rules:
       - linters:
           - dupl
-        path: internal/*
+        path: ^internal/
       - linters:
           - dupl
-        path: test/*
+        path: ^test/
       - linters:
           - dupl
-        path: cmd/cli/cmd/llm/config/*
+        path: ^cmd/cli/cmd/llm/config/
+      # Test helper files under test/ that are not *_test.go (fixtures,
+      # wrappers) also repeat literals; ignore-tests above only covers
+      # *_test.go files.
       - linters:
           - goconst
-        path: _test\.go
-      - linters:
-          - goconst
-        path: test/*
-      - linters:
-          - staticcheck
-        path: _test\.go
-        text: ST1001
-      - linters:
-          - staticcheck
-        path: test/*
-        text: ST1001
+        path: ^test/
     paths:
       - third_party$
       - builtin$
