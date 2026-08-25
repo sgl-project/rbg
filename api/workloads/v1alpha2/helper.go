@@ -68,19 +68,39 @@ func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[stri
 // GetGroupSize returns the total number of pods in the group.
 func (rbg *RoleBasedGroup) GetGroupSize() int {
 	ret := 0
-	for _, role := range rbg.Spec.Roles {
-		if role.IsLeaderWorkerPattern() {
-			lwp := role.GetLeaderWorkerPattern()
-			if lwp == nil || lwp.Size == nil {
-				ret += 1 * int(*role.Replicas)
-				continue
-			}
-			ret += int(*lwp.Size) * int(*role.Replicas)
-		} else {
-			ret += int(*role.Replicas)
-		}
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		ret += int(ComputeSubGroupSize(role)) * int(*role.Replicas)
 	}
 	return ret
+}
+
+// ComputeSubGroupSize returns the number of pods that a single replica of the
+// given role produces. This is used for gang scheduling subGroupSize calculation
+// and for GetGroupSize().
+func ComputeSubGroupSize(role *RoleSpec) int32 {
+	if role == nil {
+		return 1
+	}
+	if role.IsLeaderWorkerPattern() {
+		lwp := role.GetLeaderWorkerPattern()
+		if lwp != nil && lwp.Size != nil {
+			return *lwp.Size
+		}
+		return 1
+	}
+	if role.GetCustomComponentsPattern() != nil {
+		ccp := role.GetCustomComponentsPattern()
+		var total int32
+		for _, c := range ccp.Components {
+			if c.Size != nil {
+				total += *c.Size
+			}
+		}
+		return max(total, 1)
+	}
+	// StandalonePattern or unspecified
+	return 1
 }
 
 // GetWorkloadName returns the workload name for a role.

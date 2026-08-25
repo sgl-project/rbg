@@ -47,7 +47,7 @@ import (
 type StatefulSetReconciler struct {
 	scheme          *runtime.Scheme
 	client          client.Client
-	podGroupManager scheduler.PodGroupManager
+	gangScheduler   scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &StatefulSetReconciler{}
@@ -59,9 +59,9 @@ func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *Sta
 	}
 }
 
-// SetPodGroupManager implements PodGroupManagerSetter.
-func (r *StatefulSetReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+// SetGangScheduler implements GangSchedulerSetter.
+func (r *StatefulSetReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *StatefulSetReconciler) Validate(
@@ -462,7 +462,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)

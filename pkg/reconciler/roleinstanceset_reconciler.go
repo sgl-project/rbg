@@ -39,9 +39,9 @@ import (
 )
 
 type RoleInstanceSetReconciler struct {
-	scheme          *runtime.Scheme
-	client          client.Client
-	podGroupManager scheduler.PodGroupManager
+	scheme        *runtime.Scheme
+	client        client.Client
+	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
@@ -53,9 +53,9 @@ func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) 
 	}
 }
 
-// SetPodGroupManager implements PodGroupManagerSetter.
-func (r *RoleInstanceSetReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+// SetGangScheduler implements GangSchedulerSetter.
+func (r *RoleInstanceSetReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *RoleInstanceSetReconciler) Validate(
@@ -295,7 +295,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 	roleInstanceTemplateConfig *workloadsv1alpha2client.RoleInstanceTemplateApplyConfiguration,
 ) error {
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	for _, component := range role.GetCustomComponentsPattern().Components {
 		// Deep-copy the pod template and merge component-level labels/annotations into it.
 		// This allows users to set controller-directive annotations (e.g. component-depends-on,
@@ -400,7 +400,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
-	workerPodReconciler.SetPodGroupManager(r.podGroupManager)
+	workerPodReconciler.SetGangScheduler(r.gangScheduler)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector, lwpEnvInjector})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
@@ -459,7 +459,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandaloneP
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)

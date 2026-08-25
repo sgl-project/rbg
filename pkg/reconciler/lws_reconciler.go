@@ -44,9 +44,9 @@ import (
 )
 
 type LeaderWorkerSetReconciler struct {
-	scheme          *runtime.Scheme
-	client          client.Client
-	podGroupManager scheduler.PodGroupManager
+	scheme        *runtime.Scheme
+	client        client.Client
+	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &LeaderWorkerSetReconciler{}
@@ -55,9 +55,9 @@ func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) 
 	return &LeaderWorkerSetReconciler{scheme: scheme, client: client}
 }
 
-// SetPodGroupManager implements PodGroupManagerSetter.
-func (r *LeaderWorkerSetReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+// SetGangScheduler implements GangSchedulerSetter.
+func (r *LeaderWorkerSetReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *LeaderWorkerSetReconciler) Validate(
@@ -243,7 +243,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 
 	// leaderTemplate
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	// KEP-8: use applyStrategicMergePatch
 	leaderTemp, err := applyStrategicMergePatch(baseTemplate, leaderPatch)
 	if err != nil {
@@ -265,7 +265,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		return nil, err
 	}
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
-	workerPodReconciler.SetPodGroupManager(r.podGroupManager)
+	workerPodReconciler.SetGangScheduler(r.gangScheduler)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(

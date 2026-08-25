@@ -66,6 +66,7 @@ import (
 	instancesync "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
+	gangcommon "sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
@@ -89,7 +90,7 @@ type RoleBasedGroupReconciler struct {
 	recorder           record.EventRecorder
 	workloadReconciler map[string]reconciler.WorkloadReconciler
 	reconcilerMu       sync.RWMutex
-	podGroupManager    scheduler.PodGroupManager
+	gangScheduler      scheduler.GangScheduler
 	// NodeBindings is the in-place scheduling binding store, shared with
 	// the RoleInstance reconciler. Injected at wire-up time so both consumers
 	// operate on the same instance.
@@ -105,7 +106,7 @@ type RoleBasedGroupReconciler struct {
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
 	c := utilclient.NewClientWithUserAgent(mgr, "rolebasedgroup")
-	podGroupManager, err := scheduler.NewPodGroupManager(schedulerName, c)
+	gangScheduler, err := scheduler.NewGangScheduler(schedulerName, c)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +119,7 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 		podGroupManager:       podGroupManager,
 		NodeBindings:          bindings,
 		revisionEqualityCache: lru.New(utils.MaxRevisionEqualityCacheEntries),
+		gangScheduler:         gangScheduler,
 	}, nil
 }
 
@@ -466,10 +468,17 @@ func (r *RoleBasedGroupReconciler) reconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
-	if r.podGroupManager == nil {
+	if r.gangScheduler == nil {
 		return nil
 	}
-	return r.podGroupManager.ReconcilePodGroup(ctx, rbg, runtimeController, &watchedWorkload, r.apiReader)
+
+	// Fetch the gang scheduling strategy from the CoordinatedPolicy (if any).
+	// This is shared with PodReconciler via common.GetGangStrategy so that
+	// InjectPodSchedulingFields receives the gangStrategy directly, without
+	// relying on annotations as a compatibility flag.
+	gangStrategy := gangcommon.GetGangStrategy(ctx, r.client, rbg)
+
+	return r.gangScheduler.ReconcilePodGroup(ctx, rbg, gangStrategy, runtimeController, &watchedWorkload, r.apiReader)
 }
 
 func (r *RoleBasedGroupReconciler) reconcileRoles(
@@ -637,9 +646,9 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 		return nil, err
 	}
 
-	// Inject PodGroupManager if the reconciler supports it (PodGroupManagerSetter).
-	if setter, ok := rec.(reconciler.PodGroupManagerSetter); ok {
-		setter.SetPodGroupManager(r.podGroupManager)
+	// Inject GangScheduler if the reconciler supports it (GangSchedulerSetter).
+	if setter, ok := rec.(reconciler.GangSchedulerSetter); ok {
+		setter.SetGangScheduler(r.gangScheduler)
 	}
 
 	// Cache the reconciler

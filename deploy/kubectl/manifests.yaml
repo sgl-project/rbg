@@ -8768,6 +8768,29 @@ spec:
                               - OrderReady
                               type: string
                           type: object
+                        scheduling:
+                          description: |-
+                            Scheduling defines the coordinated strategy for scheduling.
+                            Currently supports gang scheduling via the `gang` sub-field.
+                            Future scheduling coordination strategies may be added.
+                          properties:
+                            gang:
+                              description: |-
+                                Gang defines the gang scheduling coordination for roles.
+                                When present, gang scheduling is enabled for the roles in this policy rule.
+
+                                When scheduling.
+                              properties:
+                                minReplicas:
+                                  additionalProperties:
+                                    format: int32
+                                    type: integer
+                                  description: |-
+                                    MinReplicas defines the minimum number of replicas per role
+                                    that must be scheduled together as part of the gang.
+                                  type: object
+                              type: object
+                          type: object
                       type: object
                   required:
                   - name

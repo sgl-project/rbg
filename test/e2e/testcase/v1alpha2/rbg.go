@@ -237,8 +237,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 				},
 			)
 
-			ginkgo.PIt(
-				"rbg with volcano gang scheduling", func() {
+			ginkgo.It(
+				"rbg with volcano gang scheduling", ginkgo.Label("volcano"), func() {
 					template := wrappersv2.BuildBasicPodTemplateSpec()
 					template.Spec.SchedulerName = "volcano"
 					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).

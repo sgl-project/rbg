@@ -59,27 +59,48 @@ const (
 	VolcanoSchedulerPlugin SchedulerPluginType = "volcano"
 )
 
-// PodGroupManager is the interface for managing PodGroups in gang scheduling scenarios.
+// GangScheduler encapsulates gang scheduling for a specific scheduler implementation.
+// It manages both PodGroup lifecycle and pod-template field injection.
 // Implementations are selected at controller startup based on the --scheduler-name flag.
-type PodGroupManager interface {
-	// ReconcilePodGroup creates, updates, or deletes the PodGroup for the given RBG
-	// based on the gang-scheduling annotation.
+type GangScheduler interface {
+	// ReconcilePodGroup creates/updates/deletes the PodGroup for the given RBG.
+	// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy
+	// gang (MinReplicas may be empty for basic gang, non-empty for per-role minimums).
+	//
+	// The implementation decides internally:
+	// - gangStrategy == nil -> minMember = GetGroupSize() (annotation compat)
+	// - gangStrategy != nil && MinReplicas empty -> minMember = GetGroupSize() (basic gang)
+	// - gangStrategy != nil && MinReplicas non-empty -> subGroupPolicy (if supported)
 	ReconcilePodGroup(
 		ctx context.Context,
 		rbg *workloadsv1alpha2.RoleBasedGroup,
+		gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
 		runtimeController *builder.TypedBuilder[reconcile.Request],
 		watchedWorkload *sync.Map,
 		apiReader client.Reader,
 	) error
 
-	// InjectPodGroupLabels injects the scheduler-specific pod labels/annotations
-	// required for the pod to join the PodGroup.
-	InjectPodGroupLabels(rbg *workloadsv1alpha2.RoleBasedGroup, pts *coreapplyv1.PodTemplateSpecApplyConfiguration)
+	// InjectPodSchedulingFields injects scheduler-specific fields into the pod template:
+	// - the PodGroup annotation (Volcano) or label (scheduler-plugins) that ties the pod
+	//   to its PodGroup
+	// - pod.spec.schedulerName, only where the scheduler name is a fixed contract.
+	//   Volcano sets it ("volcano"); scheduler-plugins does not, because its profile name
+	//   is chosen at deploy time and cannot be known here.
+	//
+	// gangStrategy is the gang scheduling strategy for the RBG, as returned by
+	// common.GetGangStrategy. It is nil when gang scheduling is not enabled, in which
+	// case implementations must inject nothing.
+	InjectPodSchedulingFields(
+		rbg *workloadsv1alpha2.RoleBasedGroup,
+		role *workloadsv1alpha2.RoleSpec,
+		gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+		pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
+	)
 }
 
-// NewPodGroupManager returns a PodGroupManager for the given plugin type.
+// NewGangScheduler returns a GangScheduler for the given plugin type.
 // Returns an error if the plugin type is not supported.
-func NewPodGroupManager(schedulerName SchedulerPluginType, c client.Client) (PodGroupManager, error) {
+func NewGangScheduler(schedulerName SchedulerPluginType, c client.Client) (GangScheduler, error) {
 	switch schedulerName {
 	case KubeSchedulerPlugin:
 		return kubeschedulerplugin.New(c), nil
