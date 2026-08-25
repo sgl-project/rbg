@@ -332,6 +332,9 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 	// 6. Load binding
 	nodes := store.Load(key)
 	if len(nodes) == 0 {
+		klog.InfoS("in-place scheduling: no node binding found, skip hostname affinity injection",
+			"pod", klog.KObj(pod), "instance", klog.KObj(instance),
+			"mode", mode, "granularity", granularity, "key", key)
 		// No binding — if avoid is configured, fold it into every existing
 		// required term (AND semantics). If no required terms exist, add it
 		// as a standalone term.
@@ -362,6 +365,9 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		}
 		nodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
 			nodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution, term)
+		klog.V(4).InfoS("in-place scheduling: injected preferred node affinity",
+			"pod", klog.KObj(pod), "instance", klog.KObj(instance),
+			"granularity", granularity, "key", key, "nodes", values)
 
 		// Fold avoid into every required term (AND semantics). If no
 		// required terms exist, a standalone avoid term is created.
@@ -387,6 +393,9 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		}
 		inPlaceExprs = append(inPlaceExprs, avoidExprs...)
 		foldIntoRequired(nodeAffinity, inPlaceExprs)
+		klog.V(4).InfoS("in-place scheduling: injected required node affinity",
+			"pod", klog.KObj(pod), "instance", klog.KObj(instance),
+			"granularity", granularity, "key", key, "nodes", values)
 	}
 }
 
