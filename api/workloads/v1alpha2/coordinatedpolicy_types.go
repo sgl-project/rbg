@@ -70,7 +70,14 @@ type CoordinatedPolicyStrategy struct {
 // This is a domain that can hold multiple scheduling coordination strategies.
 type SchedulingCoordinationStrategy struct {
 	// Gang defines the gang scheduling coordination for roles.
-	// When present, gang scheduling is enabled for the roles in this policy rule.
+	// When present, gang scheduling is enabled for the RoleBasedGroup. Which roles
+	// are constrained depends on minReplicas: an empty map covers every role in the
+	// group, a non-empty one covers only the roles it names.
+	//
+	// Several policy rules may each declare a gang strategy. Their minReplicas
+	// maps are merged across all rules, taking the maximum when the same role
+	// appears more than once. A rule may only name roles listed in its own
+	// spec.policies[].roles.
 	//
 	// When scheduling.gang is not configured (or CoordinatedPolicy does not
 	// exist), the controller falls back to checking the legacy annotation
@@ -86,9 +93,22 @@ type GangSchedulingStrategy struct {
 	// MinReplicas defines the minimum number of replicas per role
 	// that must be scheduled together as part of the gang.
 	//
+	// Keys must name roles that are listed in the enclosing policy rule's
+	// `roles` field, and each value must fall within [1, role.replicas].
+	// Both are enforced by the CoordinatedPolicy validating webhook rather than by
+	// the CRD schema: this field sits inside the unbounded spec.policies array, where
+	// a CEL rule's estimated cost exceeds the apiserver budget and would make the
+	// entire CRD unloadable.
+	//
 	// When non-empty, only the roles listed in this map participate in
 	// the gang with their respective minimums. Roles absent from this
-	// map are excluded from gang constraints and scheduled normally.
+	// map are excluded from the gang constraint, but their pods still get
+	// the gang scheduler's schedulerName so the whole group is placed by
+	// one scheduler.
+	//
+	// Per-role minimums are implemented with the Volcano PodGroup
+	// `subGroupPolicy` field and therefore require --scheduler-name=volcano
+	// with Volcano >= 1.14. scheduler-plugins supports basic gang only.
 	//
 	// When the gang field is present but minReplicas is empty (nil),
 	// ALL roles participate and minMember equals GetGroupSize()

@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -648,4 +649,102 @@ func buildRawExtension(t *testing.T, data map[string]interface{}) *runtime.RawEx
 		t.Fatalf("Failed to marshal patch: %v", err)
 	}
 	return &runtime.RawExtension{Raw: bytes}
+}
+
+// TestRoleInstanceSetReconciler_DerivesRoleInstanceGangAnnotation pins that a gang-covered
+// role gets the RoleInstance-level gang flag without the user setting it. A Volcano subGroup
+// is exactly one RoleInstance, so an instance whose pods are recreated non-atomically drops
+// the subGroup below subGroupSize and breaks the guarantee subGroupPolicy depends on.
+func TestRoleInstanceSetReconciler_DerivesRoleInstanceGangAnnotation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	gangPolicy := func(minReplicas map[string]int32) *workloadsv1alpha2.CoordinatedPolicy {
+		return &workloadsv1alpha2.CoordinatedPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
+			Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+				Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+					Roles: []string{"prefill", "decode"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scheduling: &workloadsv1alpha2.SchedulingCoordinationStrategy{
+							Gang: &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: minReplicas},
+						},
+					},
+				}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name           string
+		policy         *workloadsv1alpha2.CoordinatedPolicy
+		roleName       string
+		roleAnnotation string
+		want           string
+	}{
+		{
+			name:     "no gang strategy leaves the annotation unset",
+			roleName: "prefill",
+		},
+		{
+			name:     "whole-group gang covers every role",
+			policy:   gangPolicy(nil),
+			roleName: "prefill",
+			want:     "true",
+		},
+		{
+			name:     "per-role minimums cover the named role",
+			policy:   gangPolicy(map[string]int32{"prefill": 1}),
+			roleName: "prefill",
+			want:     "true",
+		},
+		{
+			name:     "per-role minimums leave an excluded role alone",
+			policy:   gangPolicy(map[string]int32{"prefill": 1}),
+			roleName: "decode",
+		},
+		{
+			name:           "an explicit value on the role wins",
+			policy:         gangPolicy(nil),
+			roleName:       "prefill",
+			roleAnnotation: "false",
+			want:           "false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roleWrapper := wrappersv2.BuildStandaloneRole(tt.roleName).
+				WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet")
+			if tt.roleAnnotation != "" {
+				roleWrapper = roleWrapper.WithAnnotations(
+					map[string]string{constants.RoleInstanceGangSchedulingAnnotationKey: tt.roleAnnotation})
+			}
+			role := roleWrapper.Obj()
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+				Obj()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.policy != nil {
+				builder = builder.WithObjects(tt.policy)
+			}
+			fakeClient := builder.Build()
+
+			ctx := context.Background()
+			err := NewRoleInstanceSetReconciler(scheme, fakeClient).
+				Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
+			assert.NoError(t, err)
+
+			ris := &workloadsv1alpha2.RoleInstanceSet{}
+			err = fakeClient.Get(
+				ctx,
+				types.NamespacedName{Name: rbg.GetWorkloadName(&role), Namespace: rbg.Namespace},
+				ris,
+			)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, ris.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey])
+		})
+	}
 }

@@ -26,8 +26,9 @@ package volcano
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
-	"sync/atomic"
+	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,13 +59,20 @@ const (
 
 	// SchedulerName is the scheduler name set on pod.spec.schedulerName.
 	SchedulerName = "volcano"
+
+	// subGroupProbeTTL bounds how long the PodGroup CRD capability probe is reused.
+	// Volcano is upgraded rarely, so a few minutes of staleness is acceptable in
+	// exchange for keeping an uncached CRD read off every reconcile.
+	subGroupProbeTTL = 5 * time.Minute
 )
 
 // GangScheduler manages Volcano PodGroups for gang scheduling.
 type GangScheduler struct {
-	client            client.Client
-	hasSubGroupPolicy atomic.Bool
-	subGroupOnce      sync.Once
+	client client.Client
+
+	subGroupMu        sync.Mutex
+	subGroupSupported bool
+	subGroupProbedAt  time.Time
 }
 
 // New returns a new GangScheduler for Volcano.
@@ -74,7 +82,9 @@ func New(c client.Client) *GangScheduler {
 
 // ReconcilePodGroup creates, updates, or deletes the Volcano PodGroup
 // based on the gang scheduling configuration.
-// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy gang.
+// gangStrategy is nil when gang scheduling is disabled, in which case any existing
+// PodGroup is deleted. A non-nil strategy with an empty MinReplicas map is a
+// whole-group gang; a non-empty map builds a subGroupPolicy.
 func (m *GangScheduler) ReconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -98,20 +108,20 @@ func (m *GangScheduler) ReconcilePodGroup(
 		runtimeController.Owns(&volcanoschedulingv1beta1.PodGroup{})
 	}
 
-	// Check if the PodGroup CRD has subGroupPolicy field.
-	// This is done via sync.Once because SetupWithManager may have already
-	// loaded the CRD into watchedWorkload, causing the !loaded block above
-	// to be skipped entirely on every reconcile.
-	m.subGroupOnce.Do(func() {
-		hasSubGroup := checkPodGroupCRDHasSubGroup(apiReader)
-		m.hasSubGroupPolicy.Store(hasSubGroup)
-	})
-
-	return m.createOrUpdate(ctx, rbg, gangStrategy)
+	return m.createOrUpdate(ctx, rbg, gangStrategy, apiReader)
 }
 
 // InjectPodSchedulingFields injects the Volcano PodGroup annotation and schedulerName
 // into the pod template spec.
+//
+// schedulerName is injected for every role: Volcano must own the scheduling decision
+// for the whole group, otherwise excluded roles would be placed by a different
+// scheduler and could starve the gang of resources.
+//
+// The PodGroup annotation is what actually enrolls a pod in the gang, so it is only
+// injected for roles that participate. With a non-empty minReplicas map the roles
+// absent from it are excluded by definition, and annotating them would make Volcano
+// count their pods against a minMember that never budgeted for them.
 func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -128,6 +138,10 @@ func (m *GangScheduler) InjectPodSchedulingFields(
 	}
 	pts.Spec.WithSchedulerName(SchedulerName)
 
+	if !common.RoleInGang(role, gangStrategy) {
+		return
+	}
+
 	// Inject PodGroup annotation
 	pts.WithAnnotations(map[string]string{AnnotationKey: rbg.Name})
 }
@@ -136,6 +150,7 @@ func (m *GangScheduler) createOrUpdate(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	apiReader client.Reader,
 ) error {
 	logger := log.FromContext(ctx)
 	queue := rbg.Annotations[constants.GangSchedulingVolcanoQueueKey]
@@ -148,12 +163,17 @@ func (m *GangScheduler) createOrUpdate(
 
 	// If gangStrategy has minReplicas, check subGroupPolicy support
 	if gangStrategy != nil && len(gangStrategy.MinReplicas) > 0 {
-		if !m.hasSubGroupPolicy.Load() {
+		supported, err := m.supportsSubGroupPolicy(ctx, apiReader)
+		if err != nil {
+			return fmt.Errorf("check Volcano PodGroup CRD for subGroupPolicy support: %w", err)
+		}
+		if !supported {
 			return fmt.Errorf("gang scheduling with per-role minimums (minReplicas) requires Volcano PodGroup CRD with subGroupPolicy field; the installed Volcano version does not support this feature")
 		}
-		// Calculate minMember as sum of (minReplicas × subGroupSize) for each role
-		minMember = int32(calculateGangMinimum(rbg, gangStrategy))
-		subGroupPolicy = buildSubGroupPolicy(rbg, gangStrategy)
+		minMember, subGroupPolicy, err = buildGangSpec(rbg, gangStrategy)
+		if err != nil {
+			return err
+		}
 	}
 
 	podGroup := &volcanoschedulingv1beta1.PodGroup{
@@ -214,34 +234,59 @@ func (m *GangScheduler) createOrUpdate(
 	return nil
 }
 
-// buildSubGroupPolicy builds one Volcano SubGroupPolicy entry per role that has a
-// per-role minimum configured in the gang strategy.
+// buildGangSpec computes the PodGroup minMember and one Volcano SubGroupPolicy entry
+// per role that has a per-role minimum configured in the gang strategy.
 //
 // A Volcano subGroup maps to one RBG RoleInstance, which is the atomic scheduling
 // unit: subGroupSize is the number of pods a single instance produces, and
 // minSubGroups is the minimum number of instances that must be schedulable before
-// the gang is dispatched.
+// the gang is dispatched. minMember is therefore Σ(minReplicas × subGroupSize).
 //
 // MatchLabelKeys is what partitions the role's pods into per-instance subGroups.
 // Without it every pod of the role collapses into a single subGroup, which
 // contradicts subGroupSize and leaves the pods permanently unschedulable.
-// RoleInstanceNameLabelKey is used because it is written by the shared
-// RoleInstance-to-Pod label path (so it exists in both stateful and stateless
-// modes), is identical for all pods of one instance, and differs across instances.
-func buildSubGroupPolicy(
+//
+// Every input is rechecked here even though the CoordinatedPolicy webhook already
+// validates it, because a role can be renamed or scaled down while the policy stays
+// unchanged, and an unvalidated minReplicas silently turns the gang guarantee off
+// (minMember 0) or makes it permanently unsatisfiable.
+func buildGangSpec(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
-) []volcanoschedulingv1beta1.SubGroupPolicySpec {
+) (int32, []volcanoschedulingv1beta1.SubGroupPolicySpec, error) {
 	policies := make([]volcanoschedulingv1beta1.SubGroupPolicySpec, 0, len(gangStrategy.MinReplicas))
+	matched := 0
+	var minMember int32
+
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		minReplicas, exists := gangStrategy.MinReplicas[role.Name]
 		if !exists {
 			continue
 		}
+		matched++
+
+		if minReplicas < 1 {
+			return 0, nil, fmt.Errorf(
+				"gang scheduling minReplicas for role %q must be at least 1, got %d", role.Name, minReplicas)
+		}
+		if replicas := ptr.Deref(role.Replicas, 1); minReplicas > replicas {
+			return 0, nil, fmt.Errorf(
+				"gang scheduling minReplicas for role %q is %d but the role only has %d replicas, so the gang can never be satisfied",
+				role.Name, minReplicas, replicas)
+		}
+		if !emitsRoleInstanceLabel(role) {
+			return 0, nil, fmt.Errorf(
+				"gang scheduling minReplicas is not supported for role %q backed by workload type %q: "+
+					"per-role minimums need the %s pod label to partition the role into subGroups",
+				role.Name, role.GetWorkloadType(), constants.RoleInstanceNameLabelKey)
+		}
+
+		subGroupSize := workloadsv1alpha2.ComputeSubGroupSize(role)
+		minMember += subGroupSize * minReplicas
 		policies = append(policies, volcanoschedulingv1beta1.SubGroupPolicySpec{
 			Name:         role.Name,
-			SubGroupSize: ptr.To(workloadsv1alpha2.ComputeSubGroupSize(role)),
+			SubGroupSize: ptr.To(subGroupSize),
 			MinSubGroups: ptr.To(minReplicas),
 			LabelSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -252,19 +297,44 @@ func buildSubGroupPolicy(
 			MatchLabelKeys: []string{constants.RoleInstanceNameLabelKey},
 		})
 	}
-	return policies
+
+	if matched != len(gangStrategy.MinReplicas) {
+		return 0, nil, fmt.Errorf(
+			"gang scheduling minReplicas references roles that do not exist in the RoleBasedGroup: %v",
+			unknownRoles(rbg, gangStrategy))
+	}
+	if minMember == 0 {
+		return 0, nil, fmt.Errorf("gang scheduling resolved to minMember 0, which would provide no gang guarantee")
+	}
+
+	return minMember, policies, nil
 }
 
-// calculateGangMinimum computes the gang minimum as Σ(minReplicas × subGroupSize) for each role.
-func calculateGangMinimum(rbg *workloadsv1alpha2.RoleBasedGroup, gangStrategy *workloadsv1alpha2.GangSchedulingStrategy) int {
-	total := 0
-	for _, role := range rbg.Spec.Roles {
-		if minReplicas, exists := gangStrategy.MinReplicas[role.Name]; exists {
-			subGroupSize := int(workloadsv1alpha2.ComputeSubGroupSize(&role))
-			total += subGroupSize * int(minReplicas)
+// unknownRoles returns the minReplicas keys that name no role in the RBG.
+func unknownRoles(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+) []string {
+	known := make(map[string]struct{}, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		known[rbg.Spec.Roles[i].Name] = struct{}{}
+	}
+	unknown := make([]string, 0, len(gangStrategy.MinReplicas))
+	for roleName := range gangStrategy.MinReplicas {
+		if _, ok := known[roleName]; !ok {
+			unknown = append(unknown, roleName)
 		}
 	}
-	return total
+	sort.Strings(unknown)
+	return unknown
+}
+
+// emitsRoleInstanceLabel reports whether the role's workload backing writes the
+// per-instance pod label that MatchLabelKeys relies on. Only RoleInstanceSet does;
+// the deprecated Deployment/StatefulSet/LeaderWorkerSet backings do not, and
+// declaring subGroups over pods that cannot be partitioned leaves them Pending.
+func emitsRoleInstanceLabel(role *workloadsv1alpha2.RoleSpec) bool {
+	return role.GetWorkloadType() == constants.RoleInstanceSetWorkloadType
 }
 
 func (m *GangScheduler) deletePodGroup(
@@ -294,13 +364,42 @@ func (m *GangScheduler) deletePodGroup(
 	return nil
 }
 
+// supportsSubGroupPolicy reports whether the installed Volcano PodGroup CRD carries
+// the subGroupPolicy field, reusing the answer for subGroupProbeTTL.
+//
+// The probe reads the CRD through the uncached reader, so running it on every
+// reconcile would put a direct apiserver call on the hot path. Caching it forever is
+// wrong in the other direction: the answer flips when Volcano is upgraded or
+// downgraded, and a stale positive would keep emitting a subGroupPolicy that the
+// installed scheduler drops on the floor.
+//
+// A failed probe is not cached, so a transient read error is retried on the next
+// reconcile instead of being remembered as an unsupported Volcano version.
+func (m *GangScheduler) supportsSubGroupPolicy(ctx context.Context, reader client.Reader) (bool, error) {
+	m.subGroupMu.Lock()
+	defer m.subGroupMu.Unlock()
+
+	if !m.subGroupProbedAt.IsZero() && time.Since(m.subGroupProbedAt) < subGroupProbeTTL {
+		return m.subGroupSupported, nil
+	}
+
+	supported, err := checkPodGroupCRDHasSubGroup(ctx, reader)
+	if err != nil {
+		return false, err
+	}
+	m.subGroupSupported = supported
+	m.subGroupProbedAt = time.Now()
+	return supported, nil
+}
+
 // checkPodGroupCRDHasSubGroup inspects the PodGroup CRD schema to determine
-// whether the subGroupPolicy field is available. This follows the pattern
-// from kthena's podgroupmanager.
-func checkPodGroupCRDHasSubGroup(reader client.Reader) bool {
+// whether the subGroupPolicy field is available. A read failure is returned
+// separately from a schema that simply lacks the field, so the caller does not
+// report a transient error as an unsupported Volcano version.
+func checkPodGroupCRDHasSubGroup(ctx context.Context, reader client.Reader) (bool, error) {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
-	if err := reader.Get(context.Background(), client.ObjectKey{Name: CrdName}, crd); err != nil {
-		return false
+	if err := reader.Get(ctx, client.ObjectKey{Name: CrdName}, crd); err != nil {
+		return false, fmt.Errorf("get CRD %s: %w", CrdName, err)
 	}
 
 	for _, version := range crd.Spec.Versions {
@@ -315,8 +414,8 @@ func checkPodGroupCRDHasSubGroup(reader client.Reader) bool {
 		}
 
 		if _, ok := specProps.Properties["subGroupPolicy"]; ok {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

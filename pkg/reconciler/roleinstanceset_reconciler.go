@@ -35,6 +35,7 @@ import (
 	workloadsv1alpha2client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -157,6 +158,20 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	roleInstanceSetAnnotation := maps.Clone(rbg.GetCommonAnnotationsFromRole(role))
 	if role.Annotations[constants.RoleInstancePatternKey] == "" {
 		roleInstanceSetAnnotation[constants.RoleInstancePatternKey] = string(constants.StatefulPattern)
+	}
+
+	// Derive the RoleInstance-level gang flag for every role the gang covers.
+	// A Volcano subGroup is exactly one RoleInstance, so without this the instance's
+	// pods can be recreated non-atomically and drop the subGroup below subGroupSize —
+	// the guarantee that subGroupPolicy depends on. An explicit value on the role wins.
+	if role.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "" {
+		gangStrategy, err := common.GetGangStrategy(ctx, r.client, rbg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve gang scheduling strategy: %w", err)
+		}
+		if common.RoleInGang(role, gangStrategy) {
+			roleInstanceSetAnnotation[constants.RoleInstanceGangSchedulingAnnotationKey] = "true"
+		}
 	}
 
 	// 1. construct role instance configuration

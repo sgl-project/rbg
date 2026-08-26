@@ -145,7 +145,10 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 
 	// Inject gang-scheduling labels/annotations if a GangScheduler is configured.
 	if r.gangScheduler != nil {
-		gangStrategy := common.GetGangStrategy(ctx, r.client, rbg)
+		gangStrategy, err := common.GetGangStrategy(ctx, r.client, rbg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve gang scheduling strategy: %w", err)
+		}
 		r.gangScheduler.InjectPodSchedulingFields(rbg, role, gangStrategy, podTemplateApplyConfiguration)
 	}
 

@@ -22,6 +22,7 @@ package v1alpha2
 type CoordinatedPolicyStrategyApplyConfiguration struct {
 	RollingUpdate *RollingUpdateCoordinationStrategyApplyConfiguration `json:"rollingUpdate,omitempty"`
 	Scaling       *ScalingCoordinationStrategyApplyConfiguration       `json:"scaling,omitempty"`
+	Scheduling    *SchedulingCoordinationStrategyApplyConfiguration    `json:"scheduling,omitempty"`
 }
 
 // CoordinatedPolicyStrategyApplyConfiguration constructs a declarative configuration of the CoordinatedPolicyStrategy type for use with
@@ -43,5 +44,13 @@ func (b *CoordinatedPolicyStrategyApplyConfiguration) WithRollingUpdate(value *R
 // If called multiple times, the Scaling field is set to the value of the last call.
 func (b *CoordinatedPolicyStrategyApplyConfiguration) WithScaling(value *ScalingCoordinationStrategyApplyConfiguration) *CoordinatedPolicyStrategyApplyConfiguration {
 	b.Scaling = value
+	return b
+}
+
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *CoordinatedPolicyStrategyApplyConfiguration) WithScheduling(value *SchedulingCoordinationStrategyApplyConfiguration) *CoordinatedPolicyStrategyApplyConfiguration {
+	b.Scheduling = value
 	return b
 }

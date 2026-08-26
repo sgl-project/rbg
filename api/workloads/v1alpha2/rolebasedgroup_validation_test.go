@@ -18,15 +18,28 @@ package v1alpha2
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
+
+// newFakeValidatorClient returns a client that knows the v1alpha2 types, which the
+// validator needs in order to look up the RoleBasedGroup's CoordinatedPolicy.
+func newFakeValidatorClient(t *testing.T) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+	return fake.NewClientBuilder().WithScheme(scheme).Build()
+}
 
 func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 	tests := []struct {
@@ -217,6 +230,7 @@ func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			v := &RoleBasedGroupValidator{
+				Client:                        newFakeValidatorClient(t),
 				EnableDeprecatedWorkloadTypes: tt.enableDeprecatedWorkloadTypes,
 			}
 			_, err := v.ValidateCreate(context.Background(), tt.rbg)
@@ -253,7 +267,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			},
 		}
 		v := &RoleBasedGroupValidator{
-			Client:                        fake.NewClientBuilder().Build(),
+			Client:                        newFakeValidatorClient(t),
 			EnableDeprecatedWorkloadTypes: false,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
@@ -270,7 +284,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			},
 		}
 		v := &RoleBasedGroupValidator{
-			Client:                        fake.NewClientBuilder().Build(),
+			Client:                        newFakeValidatorClient(t),
 			EnableDeprecatedWorkloadTypes: false,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
@@ -291,7 +305,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			},
 		}
 		v := &RoleBasedGroupValidator{
-			Client:                        fake.NewClientBuilder().Build(),
+			Client:                        newFakeValidatorClient(t),
 			EnableDeprecatedWorkloadTypes: true,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
@@ -319,7 +333,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing
 		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{statefulSetRole(1)}},
 	}
 	v := &RoleBasedGroupValidator{
-		Client:                        fake.NewClientBuilder().Build(),
+		Client:                        newFakeValidatorClient(t),
 		EnableDeprecatedWorkloadTypes: false,
 	}
 
@@ -341,6 +355,64 @@ func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing
 		newRBG := oldRBG.DeepCopy()
 		newRBG.Spec.Roles = []RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+		assert.NoError(t, err)
+	})
+}
+
+// TestRoleBasedGroupValidator_AgainstCoordinatedPolicy covers the recheck the
+// CoordinatedPolicy webhook cannot do alone: the policy may be admitted before the RBG
+// exists, so scaling a role below an already-admitted minReplicas has to be caught here.
+func TestRoleBasedGroupValidator_AgainstCoordinatedPolicy(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+
+	policy := namedGangPolicy(map[string]int32{"decode": 2})
+	readerWithPolicy := func() client.Reader {
+		return fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build()
+	}
+	validator := func(reader client.Reader) *RoleBasedGroupValidator {
+		return &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			Reader:                        reader,
+			EnableDeprecatedWorkloadTypes: true,
+			PerRoleGangMinimumsSupported:  true,
+		}
+	}
+	scaledDown := func() *RoleBasedGroup {
+		rbg := namedGangRBG()
+		rbg.Spec.Roles[1].Replicas = ptr.To(int32(1))
+		return rbg
+	}
+
+	t.Run("scaling a role below its gang minimum - error", func(t *testing.T) {
+		v := validator(readerWithPolicy())
+
+		_, err := v.ValidateCreate(context.Background(), scaledDown())
+		assert.ErrorContains(t, err, "must not exceed the role's 1 replicas")
+
+		_, err = v.ValidateUpdate(context.Background(), namedGangRBG(), scaledDown())
+		assert.ErrorContains(t, err, "must not exceed the role's 1 replicas")
+	})
+
+	t.Run("satisfiable minimum - no error", func(t *testing.T) {
+		_, err := validator(readerWithPolicy()).ValidateCreate(context.Background(), namedGangRBG())
+		assert.NoError(t, err)
+	})
+
+	// The reconcile path revalidates before building the PodGroup, so a read failure
+	// must not block every RBG write.
+	t.Run("read failure fails open", func(t *testing.T) {
+		reader := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return errors.New("boom")
+			},
+		}).Build()
+		_, err := validator(reader).ValidateCreate(context.Background(), scaledDown())
+		assert.NoError(t, err)
+	})
+
+	t.Run("no reader configured fails open", func(t *testing.T) {
+		_, err := validator(nil).ValidateCreate(context.Background(), scaledDown())
 		assert.NoError(t, err)
 	})
 }

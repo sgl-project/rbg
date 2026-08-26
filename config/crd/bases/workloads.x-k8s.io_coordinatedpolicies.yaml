@@ -124,9 +124,7 @@ spec:
                             gang:
                               description: |-
                                 Gang defines the gang scheduling coordination for roles.
-                                When present, gang scheduling is enabled for the roles in this policy rule.
-
-                                When scheduling.
+                                When present, gang scheduling is enabled for the RoleBasedGroup.
                               properties:
                                 minReplicas:
                                   additionalProperties:

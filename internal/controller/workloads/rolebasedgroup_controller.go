@@ -104,9 +104,9 @@ type RoleBasedGroupReconciler struct {
 	revisionEqualityCache *lru.Cache
 }
 
-func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
+func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, schedulerProfileName string, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
 	c := utilclient.NewClientWithUserAgent(mgr, "rolebasedgroup")
-	gangScheduler, err := scheduler.NewGangScheduler(schedulerName, c)
+	gangScheduler, err := scheduler.NewGangScheduler(schedulerName, c, schedulerProfileName)
 	if err != nil {
 		return nil, err
 	}
@@ -232,8 +232,15 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Reconcile PodGroup for gang scheduling (annotation-driven).
-	if err := r.reconcilePodGroup(ctx, rbg); err != nil {
+	// Step 7: Reconcile PodGroup for gang scheduling.
+	// The strategy is resolved once here and carried on ctx so that the PodGroup
+	// spec and every role's pod template built in Step 8 agree on one value.
+	ctx, gangStrategy, err := gangcommon.ResolveGangStrategy(ctx, r.client, rbg)
+	if err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
+		return ctrl.Result{}, err
+	}
+	if err := r.reconcilePodGroup(ctx, rbg, gangStrategy); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
 		return ctrl.Result{}, err
 	}
@@ -467,16 +474,11 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 func (r *RoleBasedGroupReconciler) reconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
 ) error {
 	if r.gangScheduler == nil {
 		return nil
 	}
-
-	// Fetch the gang scheduling strategy from the CoordinatedPolicy (if any).
-	// This is shared with PodReconciler via common.GetGangStrategy so that
-	// InjectPodSchedulingFields receives the gangStrategy directly, without
-	// relying on annotations as a compatibility flag.
-	gangStrategy := gangcommon.GetGangStrategy(ctx, r.client, rbg)
 
 	return r.gangScheduler.ReconcilePodGroup(ctx, rbg, gangStrategy, runtimeController, &watchedWorkload, r.apiReader)
 }
@@ -1070,6 +1072,16 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 				}
 			},
 		}).
+		Watches(&workloadsv1alpha2.CoordinatedPolicy{}, handler.EnqueueRequestsFromMapFunc(
+			// A CoordinatedPolicy is matched to its RBG by identical namespace/name, so
+			// changing or deleting one must reconcile that RBG. Without this the PodGroup
+			// keeps a stale minMember/subGroupPolicy until an unrelated RBG event fires.
+			func(_ context.Context, obj client.Object) []reconcile.Request {
+				return []reconcile.Request{
+					{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}},
+				}
+			},
+		), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("workloads-rolebasedgroup")
 
 	if enableDeprecatedWorkloadTypes {
@@ -1101,6 +1113,9 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 	crds := []string{
 		"rolebasedgroups.workloads.x-k8s.io",
 		"clusterengineruntimeprofiles.workloads.x-k8s.io",
+		// Read on every reconcile and watched in SetupWithManager, so its absence
+		// would fail the watch registration rather than degrade gracefully.
+		"coordinatedpolicies.workloads.x-k8s.io",
 	}
 
 	for _, crd := range crds {

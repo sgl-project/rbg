@@ -209,13 +209,14 @@ func TestPodGroupScheduler_Reconcile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				mgr, err := NewGangScheduler(tt.pluginType, tt.client)
+				mgr, err := NewGangScheduler(tt.pluginType, tt.client, "")
 				require.NoError(t, err)
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				if tt.preFunc != nil {
 					tt.preFunc()
 				}
-				gangStrategy := common.GetGangStrategy(ctx, tt.client, tt.rbg)
+				gangStrategy, err := common.GetGangStrategy(ctx, tt.client, tt.rbg)
+				require.NoError(t, err)
 				err = mgr.ReconcilePodGroup(ctx, tt.rbg, gangStrategy, &runtimeController, &watchedWorkload, tt.apiReader)
 
 				// Verify
@@ -309,14 +310,15 @@ func TestVolcanoPodGroupScheduler_ReconcileCopiesVolcanoAnnotationsOnCreate(t *t
 		},
 	).Build()
 
-	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client, "")
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
 	runtimeController := builder.TypedBuilder[reconcile.Request]{}
 	watchedWorkload := sync.Map{}
 
-	gangStrategy := common.GetGangStrategy(ctx, client, rbg)
+	gangStrategy, err := common.GetGangStrategy(ctx, client, rbg)
+	require.NoError(t, err)
 	err = mgr.ReconcilePodGroup(ctx, rbg, gangStrategy, &runtimeController, &watchedWorkload, apiReader)
 	require.NoError(t, err)
 
@@ -366,14 +368,15 @@ func TestKubePodGroupScheduler_ReconcileCopiesSchedulerPluginAnnotationsOnCreate
 		},
 	).Build()
 
-	mgr, err := NewGangScheduler(KubeSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(KubeSchedulerPlugin, client, "")
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
 	runtimeController := builder.TypedBuilder[reconcile.Request]{}
 	watchedWorkload := sync.Map{}
 
-	gangStrategy := common.GetGangStrategy(ctx, client, rbg)
+	gangStrategy, err := common.GetGangStrategy(ctx, client, rbg)
+	require.NoError(t, err)
 	err = mgr.ReconcilePodGroup(ctx, rbg, gangStrategy, &runtimeController, &watchedWorkload, apiReader)
 	require.NoError(t, err)
 
@@ -457,14 +460,15 @@ func TestVolcanoPodGroupScheduler_ReconcileKeepsAnnotationsOnUpdate(t *testing.T
 		},
 	).Build()
 
-	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client, "")
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
 	runtimeController := builder.TypedBuilder[reconcile.Request]{}
 	watchedWorkload := sync.Map{}
 
-	gangStrategy := common.GetGangStrategy(ctx, client, rbg)
+	gangStrategy, err := common.GetGangStrategy(ctx, client, rbg)
+	require.NoError(t, err)
 	err = mgr.ReconcilePodGroup(ctx, rbg, gangStrategy, &runtimeController, &watchedWorkload, apiReader)
 	require.NoError(t, err)
 
@@ -544,7 +548,7 @@ func TestVolcanoPodGroupScheduler_ReconcileSetsSubGroupPolicyForMinReplicas(t *t
 	apiReader := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(volcanoCrdWithSubGroupPolicy()).Build()
 
-	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client, "")
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
@@ -621,7 +625,7 @@ func TestVolcanoPodGroupScheduler_ReconcileRejectsMinReplicasWithoutCrdSupport(t
 	).Build()
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client)
+	mgr, err := NewGangScheduler(VolcanoSchedulerPlugin, client, "")
 	require.NoError(t, err)
 
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))

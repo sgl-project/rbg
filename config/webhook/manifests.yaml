@@ -56,3 +56,23 @@ webhooks:
     - UPDATE
     resources:
     - rolebasedgroupsets
+- name: vcoordinatedpolicy.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - coordinatedpolicies

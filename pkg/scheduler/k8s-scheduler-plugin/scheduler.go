@@ -61,16 +61,21 @@ const (
 // GangScheduler manages kube scheduler-plugins PodGroups for gang scheduling.
 type GangScheduler struct {
 	client client.Client
+	// schedulerProfileName is the kube-scheduler profile name that runs the
+	// coscheduling plugin, configured via --scheduler-profile-name. Empty means
+	// the pod template's schedulerName is left untouched.
+	schedulerProfileName string
 }
 
 // New returns a new GangScheduler for the kube scheduler plugin.
-func New(c client.Client) *GangScheduler {
-	return &GangScheduler{client: c}
+func New(c client.Client, schedulerProfileName string) *GangScheduler {
+	return &GangScheduler{client: c, schedulerProfileName: schedulerProfileName}
 }
 
 // ReconcilePodGroup creates, updates, or deletes the kube PodGroup
 // based on the gang scheduling configuration.
-// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy gang.
+// gangStrategy is nil when gang scheduling is disabled, in which case any existing
+// PodGroup is deleted.
 // Note: scheduler-plugins does not support subGroupPolicy; if gangStrategy.MinReplicas
 // is non-empty, an error is returned (runtime safety net).
 func (m *GangScheduler) ReconcilePodGroup(
@@ -103,14 +108,15 @@ func (m *GangScheduler) ReconcilePodGroup(
 	return m.createOrUpdate(ctx, rbg)
 }
 
-// InjectPodSchedulingFields injects the kube PodGroup label into the pod template spec.
+// InjectPodSchedulingFields injects the kube PodGroup label into the pod template spec,
+// and pod.spec.schedulerName when a scheduler profile name is configured.
 //
-// pod.spec.schedulerName is deliberately left untouched. scheduler-plugins runs as a
-// separate scheduler binary whose profile name is chosen by whoever deploys it (the
-// upstream chart defaults to "scheduler-plugins-scheduler" but it is configurable), so
-// the controller cannot know it. Coscheduling associates a pod with its PodGroup through
-// LabelKey, which is the actual contract; selecting the scheduler stays a deployment
-// decision (make it the default scheduler, or set schedulerName in the role template).
+// scheduler-plugins runs as a separate scheduler binary whose profile name is chosen by
+// whoever deploys it (the upstream chart defaults to "scheduler-plugins-scheduler" but it
+// is configurable), so the controller cannot infer it; it is supplied via
+// --scheduler-profile-name. When that flag is empty, schedulerName is left untouched and
+// gang scheduling only works if scheduler-plugins is the cluster's default scheduler or
+// the role template sets schedulerName itself.
 func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -119,6 +125,13 @@ func (m *GangScheduler) InjectPodSchedulingFields(
 ) {
 	if gangStrategy == nil {
 		return
+	}
+
+	if m.schedulerProfileName != "" {
+		if pts.Spec == nil {
+			pts.Spec = &coreapplyv1.PodSpecApplyConfiguration{}
+		}
+		pts.Spec.WithSchedulerName(m.schedulerProfileName)
 	}
 
 	// Inject PodGroup label

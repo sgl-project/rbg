@@ -22,12 +22,34 @@ import (
 
 // SetupWebhookWithManager sets up the conversion and validating webhooks for
 // RoleBasedGroup with the Manager.
-func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
+//
+// The validator cross-reads CoordinatedPolicy, so it gets the uncached API reader:
+// the manager starts webhooks before the informer cache, and a cached read at that
+// point fails with ErrCacheNotStarted.
+func (r *RoleBasedGroup) SetupWebhookWithManager(
+	mgr ctrl.Manager,
+	enableDeprecatedWorkloadTypes bool,
+	perRoleGangMinimumsSupported bool,
+) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&RoleBasedGroupValidator{
 			Client:                        mgr.GetClient(),
+			Reader:                        mgr.GetAPIReader(),
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
+			PerRoleGangMinimumsSupported:  perRoleGangMinimumsSupported,
+		}).
+		Complete()
+}
+
+// SetupWebhookWithManager sets up the validating webhook for CoordinatedPolicy
+// with the Manager.
+func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGangMinimumsSupported bool) error {
+	return ctrl.NewWebhookManagedBy(mgr).
+		For(r).
+		WithValidator(&CoordinatedPolicyValidator{
+			Reader:                       mgr.GetAPIReader(),
+			PerRoleGangMinimumsSupported: perRoleGangMinimumsSupported,
 		}).
 		Complete()
 }

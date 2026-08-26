@@ -64,12 +64,12 @@ const (
 // Implementations are selected at controller startup based on the --scheduler-name flag.
 type GangScheduler interface {
 	// ReconcilePodGroup creates/updates/deletes the PodGroup for the given RBG.
-	// gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy
-	// gang (MinReplicas may be empty for basic gang, non-empty for per-role minimums).
+	// gangStrategy is the strategy returned by common.GetGangStrategy.
 	//
 	// The implementation decides internally:
-	// - gangStrategy == nil -> minMember = GetGroupSize() (annotation compat)
-	// - gangStrategy != nil && MinReplicas empty -> minMember = GetGroupSize() (basic gang)
+	// - gangStrategy == nil -> gang disabled, delete any existing PodGroup
+	// - gangStrategy != nil && MinReplicas empty -> minMember = GetGroupSize()
+	//   (whole-group gang; also what the legacy annotation resolves to)
 	// - gangStrategy != nil && MinReplicas non-empty -> subGroupPolicy (if supported)
 	ReconcilePodGroup(
 		ctx context.Context,
@@ -83,9 +83,9 @@ type GangScheduler interface {
 	// InjectPodSchedulingFields injects scheduler-specific fields into the pod template:
 	// - the PodGroup annotation (Volcano) or label (scheduler-plugins) that ties the pod
 	//   to its PodGroup
-	// - pod.spec.schedulerName, only where the scheduler name is a fixed contract.
-	//   Volcano sets it ("volcano"); scheduler-plugins does not, because its profile name
-	//   is chosen at deploy time and cannot be known here.
+	// - pod.spec.schedulerName. Volcano sets it unconditionally ("volcano");
+	//   scheduler-plugins sets it only when a profile name was configured via
+	//   --scheduler-profile-name, since its profile name is chosen at deploy time.
 	//
 	// gangStrategy is the gang scheduling strategy for the RBG, as returned by
 	// common.GetGangStrategy. It is nil when gang scheduling is not enabled, in which
@@ -99,11 +99,15 @@ type GangScheduler interface {
 }
 
 // NewGangScheduler returns a GangScheduler for the given plugin type.
+// schedulerProfileName is the kube-scheduler profile name running the coscheduling
+// plugin; it only applies to KubeSchedulerPlugin and may be empty, in which case
+// pod.spec.schedulerName is left untouched. Volcano ignores it because its scheduler
+// name is a fixed contract.
 // Returns an error if the plugin type is not supported.
-func NewGangScheduler(schedulerName SchedulerPluginType, c client.Client) (GangScheduler, error) {
+func NewGangScheduler(schedulerName SchedulerPluginType, c client.Client, schedulerProfileName string) (GangScheduler, error) {
 	switch schedulerName {
 	case KubeSchedulerPlugin:
-		return kubeschedulerplugin.New(c), nil
+		return kubeschedulerplugin.New(c, schedulerProfileName), nil
 	case VolcanoSchedulerPlugin:
 		return volcanoplugin.New(c), nil
 	default:

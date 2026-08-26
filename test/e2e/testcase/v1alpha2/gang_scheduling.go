@@ -389,11 +389,8 @@ func RunGangSchedulingTestCases(f *framework.Framework) {
 				return f.Client.Update(f.Ctx, cp)
 			}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
 
-			// Touch RBG Spec to trigger reconciliation (controller doesn't watch CoordinatedPolicy)
-			updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
-				rbg.Spec.Roles[0].Replicas = ptr.To(int32(1))
-			})
-
+			// No RBG update here on purpose: the controller watches CoordinatedPolicy,
+			// so editing the policy alone must trigger the reconcile.
 			// Verify PodGroup is deleted (no annotation to fall back to)
 			gomega.Eventually(func() bool {
 				_, err := getVolcanoPodGroup(f, rbg.Name, rbg.Namespace)
