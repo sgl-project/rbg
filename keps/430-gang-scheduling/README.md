@@ -143,7 +143,7 @@ graph TD
 |---|---|
 | Scheduler does not support subGroupPolicy (e.g., scheduler-plugins) | Webhook rejects creation/update of CoordinatedPolicy with minReplicas |
 | GetGroupSize inaccurate for CustomComponentsPattern | This KEP also fixes GetGroupSize to sum over components |
-| minReplicas greater than role.replicas | Not validated; gang can never be satisfied, pods remain Pending, user discovers the error |
+| minReplicas greater than role.replicas | Validated at reconcile: the PodGroup is not created/updated, `status.conditions` records `GangConfigured=False`, one `IncompatibleGangConfig` warning event is emitted on the transition, and the object is re-examined every 5 minutes; fixing either the policy or the replicas recovers immediately through the watches |
 | No CoordinatedPolicy and no annotation | Gang scheduling not enabled |
 | CoordinatedPolicy without scheduling.gang but with annotation | Annotation enables minMember-only gang (backward compatible) |
 
@@ -294,7 +294,23 @@ Implementation: the Webhook checks the `--scheduler-name` flag (shared in the sa
 | `minReplicas` value range | Each value must be `> 0` | Reject creation/update |
 | Scheduler capability | When `minReplicas` is non-empty and the scheduler does not support per-role minimums | Reject creation/update |
 
-All validations above are self-contained (do not depend on other CRs). `minReplicas <= role.replicas` is not validated: if minReplicas exceeds replicas, the gang can never be satisfied, pods remain Pending, and the user discovers the configuration error.
+All validations above are self-contained: they depend only on the CoordinatedPolicy itself and on the process-wide `--scheduler-name`, so the Webhook reads no other resource.
+
+#### Why Cross-CR Rules Are Validated at Reconcile, Not at Admission
+
+Two rules span both CRs: a `minReplicas` key must name a role that exists in the RoleBasedGroup, and its value must not exceed that role's `replicas`. Neither is checked at admission.
+
+1. **A policy states intent; the workload follows it.** Policy authoring should not be gated on the current shape of the workload, and a policy can be edited or removed at any time. A momentarily unsatisfiable `minReplicas` is therefore not an invalid write — it is a state in which the RoleBasedGroup is not yet schedulable, and either side may be the one that gets corrected.
+2. **Cross-resource reads are expensive in a Webhook.** Each read costs an extra *uncached* apiserver request on every write (the Webhook serves before the informer cache is started, so a cached read fails with `ErrCacheNotStarted`). Worse, such a read has to fail open on a missing CRD, an RBAC gap or an apiserver hiccup, so it never provided a real guarantee in the first place.
+
+Enforcement therefore lives in one place: `buildGangSpec` returns an `IncompatibleGangConfigError`, and the controller
+
+- does not create or update the PodGroup;
+- records a `GangConfigured=False` condition with `reason=IncompatibleGangConfig` on the RoleBasedGroup;
+- emits one `IncompatibleGangConfig` warning event, **only when the condition changes**;
+- returns `RequeueAfter: 5m` instead of the error, keeping the object off the workqueue's 5ms-and-doubling error backoff.
+
+The backoff and the edge triggering are deliberate. Only a user edit can resolve the condition, and edits already re-enqueue through the CoordinatedPolicy and RoleBasedGroup watches, so a fast retry buys nothing. Reconciles are also driven by churn on owned resources (RoleInstanceSet, Service, RoleBasedGroupScalingAdapter), so a level-triggered event would fire at the churn rate regardless of the requeue interval. That would hit the client-go event spam filter, which is keyed on object plus event type and *not* on reason, silencing every other warning on the same RoleBasedGroup. Making the condition the durable surface and the event the edge decouples the event count from the reconcile rate.
 
 #### Why Not Degrade
 
@@ -313,12 +329,16 @@ Degrading to the gang minimum (6) lowers minMember from the full count (20 = 4×
 
 #### Runtime Safety Net
 
-Under normal circumstances, the Webhook has already intercepted at creation time. However, if the user switches `--scheduler-name` after creating the CoordinatedPolicy (e.g., from volcano to scheduler-plugins), or if the Volcano CRD is downgraded (losing `subGroupPolicy`), the controller detects during reconcile that `gangStrategy.MinReplicas` is non-empty but the current scheduler cannot support per-role minimums:
+For **scheduler capability**, the Webhook has normally already intercepted at creation time. But if the user switches `--scheduler-name` after creating the CoordinatedPolicy (e.g., from volcano to scheduler-plugins), or if the Volcano CRD is downgraded (losing `subGroupPolicy`), the controller detects during reconcile that `gangStrategy.MinReplicas` is non-empty while the current scheduler cannot support per-role minimums.
 
-- Returns an error, does not create/update PodGroup
-- Records a `GangSchedulingUnsupported` condition in RBG status conditions
-- Once the user fixes the configuration (switches scheduler back or removes minReplicas), the error resolves on next reconcile
-- User must switch back to a supported scheduler or remove minReplicas
+For the **cross-CR rules** (role existence, `minReplicas <= role.replicas`), reconcile is not a backstop but the only enforcement point.
+
+Both cases take the same path:
+
+- Does not create/update the PodGroup
+- Records a `GangConfigured=False` condition with `reason=IncompatibleGangConfig` in RBG status conditions, and emits one warning event of the same reason when the condition changes
+- Requeues after a fixed 5 minutes rather than returning an error
+- Once the user fixes the configuration (switches the scheduler back, corrects the role name, adjusts replicas, or removes minReplicas), the watches re-enqueue immediately and the condition flips back to `True`
 
 ### Volcano Implementation (Reference)
 

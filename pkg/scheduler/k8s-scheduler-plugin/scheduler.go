@@ -94,7 +94,7 @@ func (m *GangScheduler) ReconcilePodGroup(
 ) error {
 	// Runtime safety net: scheduler-plugins does not support per-role minimums
 	if gangStrategy != nil && len(gangStrategy.MinReplicas) > 0 {
-		return fmt.Errorf("scheduler-plugins does not support per-role minimum gang scheduling (minReplicas); use --scheduler-name=volcano with Volcano >= 1.14")
+		return common.NewIncompatibleGangConfigError("scheduler-plugins does not support per-role minimum gang scheduling (minReplicas); use --scheduler-name=volcano with Volcano >= 1.14")
 	}
 
 	gangEnabled := gangStrategy != nil

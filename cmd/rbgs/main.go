@@ -584,7 +584,7 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	}
 
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
-	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes, perRoleGangMinimumsSupported); err != nil {
+	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroup: %w", err)
 	}
 	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {

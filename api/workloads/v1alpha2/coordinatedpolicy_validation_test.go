@@ -18,16 +18,9 @@ package v1alpha2
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func gangPolicy(roles []string, minReplicas map[string]int32) *CoordinatedPolicy {
@@ -47,89 +40,58 @@ func gangPolicy(roles []string, minReplicas map[string]int32) *CoordinatedPolicy
 	}
 }
 
-func gangRBG() *RoleBasedGroup {
-	return &RoleBasedGroup{
-		Spec: RoleBasedGroupSpec{
-			Roles: []RoleSpec{
-				{Name: "prefill", Replicas: ptr.To[int32](4)},
-				{Name: "decode", Replicas: ptr.To[int32](2)},
-			},
-		},
-	}
-}
-
 func TestValidateCoordinatedPolicyGang(t *testing.T) {
 	tests := []struct {
 		name                     string
 		policy                   *CoordinatedPolicy
-		rbg                      *RoleBasedGroup
 		perRoleMinimumsSupported bool
 		errContains              string
 	}{
 		{
 			name:                     "no scheduling strategy",
 			policy:                   &CoordinatedPolicy{Spec: CoordinatedPolicySpec{Policies: []CoordinatedPolicyRule{{Roles: []string{"prefill"}}}}},
-			rbg:                      gangRBG(),
 			perRoleMinimumsSupported: true,
 		},
 		{
 			name:                     "basic gang without minReplicas is allowed on scheduler-plugins",
 			policy:                   gangPolicy([]string{"prefill"}, nil),
-			rbg:                      gangRBG(),
 			perRoleMinimumsSupported: false,
 		},
 		{
 			name:                     "valid per-role minimums",
 			policy:                   gangPolicy([]string{"prefill", "decode"}, map[string]int32{"prefill": 4, "decode": 1}),
-			rbg:                      gangRBG(),
 			perRoleMinimumsSupported: true,
 		},
 		{
 			name:                     "minReplicas rejected when the scheduler cannot honor them",
 			policy:                   gangPolicy([]string{"prefill"}, map[string]int32{"prefill": 2}),
-			rbg:                      gangRBG(),
 			perRoleMinimumsSupported: false,
 			errContains:              "require --scheduler-name=volcano",
 		},
 		{
 			name:                     "role outside the rule scope",
 			policy:                   gangPolicy([]string{"prefill"}, map[string]int32{"decode": 1}),
-			rbg:                      gangRBG(),
 			perRoleMinimumsSupported: true,
 			errContains:              "is not listed in spec.policies[0].roles",
 		},
 		{
 			name:                     "minReplicas below one",
 			policy:                   gangPolicy([]string{"prefill"}, map[string]int32{"prefill": 0}),
-			rbg:                      gangRBG(),
 			perRoleMinimumsSupported: true,
 			errContains:              "must be at least 1",
 		},
 		{
-			name:                     "unknown role",
-			policy:                   gangPolicy([]string{"router"}, map[string]int32{"router": 1}),
-			rbg:                      gangRBG(),
-			perRoleMinimumsSupported: true,
-			errContains:              "no such role in RoleBasedGroup",
-		},
-		{
-			name:                     "minReplicas above the role replicas",
-			policy:                   gangPolicy([]string{"decode"}, map[string]int32{"decode": 3}),
-			rbg:                      gangRBG(),
-			perRoleMinimumsSupported: true,
-			errContains:              "must not exceed the role's 2 replicas",
-		},
-		{
-			name:                     "replica bounds are skipped when the RBG does not exist yet",
-			policy:                   gangPolicy([]string{"decode"}, map[string]int32{"decode": 3}),
-			rbg:                      nil,
+			// Whether the role exists and whether it has enough replicas depends on the
+			// RoleBasedGroup, so both are enforced when the PodGroup is built instead.
+			name:                     "role existence and replica bounds are left to the reconciler",
+			policy:                   gangPolicy([]string{"router", "decode"}, map[string]int32{"router": 1, "decode": 99}),
 			perRoleMinimumsSupported: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateCoordinatedPolicyGang(tt.policy, tt.rbg, tt.perRoleMinimumsSupported)
+			err := ValidateCoordinatedPolicyGang(tt.policy, tt.perRoleMinimumsSupported)
 			if tt.errContains == "" {
 				assert.NoError(t, err)
 				return
@@ -146,59 +108,22 @@ func namedGangPolicy(minReplicas map[string]int32) *CoordinatedPolicy {
 	return policy
 }
 
-func namedGangRBG() *RoleBasedGroup {
-	rbg := gangRBG()
-	rbg.Name = "rbg"
-	rbg.Namespace = "default"
-	return rbg
-}
-
 func TestCoordinatedPolicyValidator(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, AddToScheme(scheme))
-
-	t.Run("replica bounds are checked against the cross-read RBG", func(t *testing.T) {
-		v := &CoordinatedPolicyValidator{
-			Reader:                       fake.NewClientBuilder().WithScheme(scheme).WithObjects(namedGangRBG()).Build(),
-			PerRoleGangMinimumsSupported: true,
-		}
-		policy := namedGangPolicy(map[string]int32{"decode": 3})
+	// The validator reads nothing: a policy that no RoleBasedGroup can satisfy yet is
+	// admitted, and the reconciler reports it as GangConfigured=False.
+	t.Run("replica bounds are not enforced at admission", func(t *testing.T) {
+		v := &CoordinatedPolicyValidator{PerRoleGangMinimumsSupported: true}
+		policy := namedGangPolicy(map[string]int32{"decode": 99})
 
 		_, err := v.ValidateCreate(context.Background(), policy)
-		assert.ErrorContains(t, err, "must not exceed the role's 2 replicas")
+		assert.NoError(t, err)
 
 		_, err = v.ValidateUpdate(context.Background(), policy, policy)
-		assert.ErrorContains(t, err, "must not exceed the role's 2 replicas")
-	})
-
-	t.Run("missing RBG defers the replica bounds", func(t *testing.T) {
-		v := &CoordinatedPolicyValidator{
-			Reader:                       fake.NewClientBuilder().WithScheme(scheme).Build(),
-			PerRoleGangMinimumsSupported: true,
-		}
-		_, err := v.ValidateCreate(context.Background(), namedGangPolicy(map[string]int32{"decode": 3}))
 		assert.NoError(t, err)
 	})
 
-	// A read failure must not reject every policy write: the RoleBasedGroup validator
-	// repeats the same check, and the reconcile path repeats it again.
-	t.Run("read failure fails open", func(t *testing.T) {
-		reader := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
-			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
-				return errors.New("boom")
-			},
-		}).Build()
-		v := &CoordinatedPolicyValidator{Reader: reader, PerRoleGangMinimumsSupported: true}
-		_, err := v.ValidateCreate(context.Background(), namedGangPolicy(map[string]int32{"decode": 3}))
-		assert.NoError(t, err)
-	})
-
-	// The scheduler capability check needs no cross-read, so it still applies.
-	t.Run("scheduler capability is enforced without the RBG", func(t *testing.T) {
-		v := &CoordinatedPolicyValidator{
-			Reader:                       fake.NewClientBuilder().WithScheme(scheme).Build(),
-			PerRoleGangMinimumsSupported: false,
-		}
+	t.Run("scheduler capability is enforced", func(t *testing.T) {
+		v := &CoordinatedPolicyValidator{PerRoleGangMinimumsSupported: false}
 		_, err := v.ValidateCreate(context.Background(), namedGangPolicy(map[string]int32{"decode": 1}))
 		assert.ErrorContains(t, err, "require --scheduler-name=volcano")
 	})

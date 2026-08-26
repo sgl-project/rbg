@@ -21,15 +21,15 @@ import (
 	"sort"
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/utils/ptr"
 )
 
 // ValidateCoordinatedPolicyGang validates every scheduling.gang strategy in the policy.
 //
-// rbg is the RoleBasedGroup the policy applies to, or nil when it does not exist yet
-// (a CoordinatedPolicy may legitimately be created first). Checks that need role
-// replica counts are skipped in that case; the RoleBasedGroup validator repeats them
-// when the RBG appears, so neither creation order can slip an invalid pair through.
+// Only self-contained rules are checked here. Whether a role exists and whether its
+// replica count can satisfy the minimum depend on the RoleBasedGroup, and a policy is
+// allowed to describe a workload that does not exist yet or that is temporarily too
+// small; those rules are enforced when the PodGroup is built, and surface as a
+// GangConfigured=False condition on the RoleBasedGroup.
 //
 // perRoleMinimumsSupported reports whether the configured scheduler can honor
 // minReplicas at all. Only Volcano implements it, via the PodGroup subGroupPolicy
@@ -39,7 +39,6 @@ import (
 // the PodGroup is built.
 func ValidateCoordinatedPolicyGang(
 	policy *CoordinatedPolicy,
-	rbg *RoleBasedGroup,
 	perRoleMinimumsSupported bool,
 ) error {
 	var allErrs []error
@@ -78,21 +77,6 @@ func ValidateCoordinatedPolicyGang(
 			if minReplicas < 1 {
 				allErrs = append(allErrs, fmt.Errorf(
 					"%s[%s]: must be at least 1, got %d", path, roleName, minReplicas))
-				continue
-			}
-			if rbg == nil {
-				continue
-			}
-			role, err := rbg.GetRole(roleName)
-			if err != nil {
-				allErrs = append(allErrs, fmt.Errorf(
-					"%s[%s]: no such role in RoleBasedGroup %s/%s", path, roleName, rbg.Namespace, rbg.Name))
-				continue
-			}
-			if replicas := ptr.Deref(role.Replicas, 1); minReplicas > replicas {
-				allErrs = append(allErrs, fmt.Errorf(
-					"%s[%s]: must not exceed the role's %d replicas, got %d; the gang could never be satisfied",
-					path, roleName, replicas, minReplicas))
 			}
 		}
 	}

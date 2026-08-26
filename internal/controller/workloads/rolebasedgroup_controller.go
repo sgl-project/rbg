@@ -73,6 +73,12 @@ import (
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
+// incompatibleGangConfigRequeue is how often a RoleBasedGroup whose gang
+// configuration cannot be satisfied is re-examined. Only a user edit resolves it,
+// and edits already re-enqueue through the watches, so this is a slow backstop
+// rather than a retry loop.
+const incompatibleGangConfigRequeue = 5 * time.Minute
+
 var (
 	runtimeController *builder.TypedBuilder[reconcile.Request]
 	watchedWorkload   sync.Map
@@ -241,7 +247,21 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if err := r.reconcilePodGroup(ctx, rbg, gangStrategy); err != nil {
+		// A gang configuration the current RBG cannot satisfy is not a transient failure:
+		// only a user edit to the CoordinatedPolicy or the RoleBasedGroup fixes it, and both
+		// already re-enqueue through the watches set up in SetupWithManager. Returning the
+		// error instead would put the object on the workqueue's 5ms-and-doubling error
+		// backoff, which buys nothing.
+		if gangcommon.IsIncompatibleGangConfig(err) {
+			if condErr := r.setGangConfiguredCondition(ctx, rbg, gangStrategy, err); condErr != nil {
+				return ctrl.Result{}, condErr
+			}
+			return ctrl.Result{RequeueAfter: incompatibleGangConfigRequeue}, nil
+		}
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
+		return ctrl.Result{}, err
+	}
+	if err := r.setGangConfiguredCondition(ctx, rbg, gangStrategy, nil); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -809,6 +829,55 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	rbgApplyConfig := toRBGApplyConfigurationForStatus(rbg)
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
 
+}
+
+// setGangConfiguredCondition records the outcome of the gang configuration on the RBG
+// and emits the warning event only on a transition. Reconciles are driven by workload
+// churn as well as by RequeueAfter, so a level-triggered event here would fire at the
+// churn rate and drain the object's event budget: the client-go spam filter is keyed on
+// object plus event type rather than reason, so it would silence every other warning on
+// the same RoleBasedGroup. The condition is the durable surface; the event is the edge.
+func (r *RoleBasedGroupReconciler) setGangConfiguredCondition(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	cause error,
+) error {
+	conditionType := string(workloadsv1alpha2.RoleBasedGroupGangConfigured)
+
+	var changed bool
+	switch {
+	case cause != nil:
+		changed = apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             IncompatibleGangConfig,
+			Message:            cause.Error(),
+			ObservedGeneration: rbg.Generation,
+		})
+	case gangStrategy == nil:
+		// Gang scheduling is off for this RBG; a stale condition would be misleading.
+		changed = apimeta.RemoveStatusCondition(&rbg.Status.Conditions, conditionType)
+	default:
+		changed = apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "GangConfigured",
+			Message:            "Gang scheduling configuration is satisfiable",
+			ObservedGeneration: rbg.Generation,
+		})
+	}
+	if !changed {
+		return nil
+	}
+
+	if cause != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, IncompatibleGangConfig, cause.Error())
+	}
+	return utils.PatchObjectApplyConfiguration(
+		ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
 }
 
 func toRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {

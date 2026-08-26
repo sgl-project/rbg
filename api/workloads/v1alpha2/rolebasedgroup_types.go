@@ -553,6 +553,11 @@ const (
 
 	// RoleBasedGroupRollingUpdateInProgress means rbg is performing a rolling update.
 	RoleBasedGroupRollingUpdateInProgress RoleBasedGroupConditionType = "RollingUpdateInProgress"
+
+	// RoleBasedGroupGangConfigured means the gang scheduling configuration resolved
+	// for this rbg can be satisfied by the current roles and scheduler. The condition
+	// is absent when gang scheduling is disabled.
+	RoleBasedGroupGangConfigured RoleBasedGroupConditionType = "GangConfigured"
 )
 
 // +kubebuilder:object:root=true

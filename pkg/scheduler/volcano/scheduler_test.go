@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
@@ -127,6 +128,9 @@ func TestBuildGangSpec(t *testing.T) {
 			if tt.wantErrContain != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErrContain)
+				// The reconciler requeues on a fixed interval instead of the error
+				// backoff only for this classification.
+				assert.True(t, common.IsIncompatibleGangConfig(err))
 				return
 			}
 			require.NoError(t, err)
@@ -322,6 +326,7 @@ func TestSupportsSubGroupPolicyCaching(t *testing.T) {
 
 		_, err := m.supportsSubGroupPolicy(context.Background(), reader)
 		require.Error(t, err)
+		assert.False(t, common.IsIncompatibleGangConfig(err))
 		_, err = m.supportsSubGroupPolicy(context.Background(), reader)
 		require.Error(t, err)
 		assert.Equal(t, 2, *calls)

@@ -167,8 +167,11 @@ spec:
 ```
 
 - Omitting `minReplicas` requests basic whole-group gang, the same as the annotation.
-- Each `minReplicas` key must be listed in that rule's `roles`, must be at least 1, and
-  must not exceed the role's `replicas`. The validating webhook rejects violations.
+- Each `minReplicas` key must be listed in that rule's `roles` and must be at least 1. The
+  validating webhook rejects violations of these two rules.
+- Each `minReplicas` must also name an existing role and must not exceed that role's
+  `replicas`. Both depend on the RoleBasedGroup, so they are enforced when the PodGroup is
+  built rather than at admission time (see [Interaction with scaling](#interaction-with-scaling)).
 - When several rules declare a gang strategy, the per-role minimums are merged and the
   largest value wins for a role appearing in more than one rule. A rule with an empty
   `minReplicas` subsumes the others and degrades the whole group to basic gang.
@@ -178,8 +181,8 @@ spec:
 PodGroup `spec.subGroupPolicy` field, where one subGroup is one RoleInstance. Only the
 scheduler choice is checked at admission time: with any other `--scheduler-name`, the
 webhook rejects `minReplicas` outright. The remaining requirements are enforced when the
-PodGroup is built, and surface as a reconcile error plus a warning event on the
-RoleBasedGroup:
+PodGroup is built, and surface as a `GangConfigured=False` condition on the RoleBasedGroup
+plus one `IncompatibleGangConfig` warning event:
 
 - The installed Volcano PodGroup CRD must actually carry `subGroupPolicy` (Volcano >= 1.14).
 - Roles whose `spec.roles[].annotations` select a workload type other than
@@ -188,12 +191,24 @@ RoleBasedGroup:
 
 ### Interaction with scaling
 
-An admitted `minReplicas` is a hard floor on the role's `replicas`. Scaling a role below
-its minimum is rejected by the RoleBasedGroup webhook, because such a gang could never be
-satisfied and every pod of the group would stay Pending. This applies to writes coming from
-a `RoleBasedGroupScalingAdapter`/HPA as well, so keep the minimum at or below the autoscaler's
-`minReplicas`. To scale further down, lower or remove the minimum in the CoordinatedPolicy
-first.
+An admitted `minReplicas` is a hard floor on the role's `replicas`, but scaling below it is
+not blocked at admission: a policy states intent, and the workload is expected to follow it,
+so a temporarily unsatisfiable minimum is a state to wait out rather than a write to reject.
+Instead, the PodGroup is left untouched and the RoleBasedGroup reports:
+
+```console
+kubectl get rbg <name> -o jsonpath='{.status.conditions}'
+```
+
+a `GangConfigured=False` condition with `reason=IncompatibleGangConfig`, together with one
+warning event of the same reason. The event fires on the transition only, so unrelated
+workload churn does not repeat it. While the condition is false the RoleBasedGroup is
+re-examined every 5 minutes; editing either the CoordinatedPolicy or the RoleBasedGroup
+resolves it within seconds, because both are watched.
+
+This applies to writes coming from a `RoleBasedGroupScalingAdapter`/HPA as well, so keep the
+minimum at or below the autoscaler's `minReplicas`. To scale further down, lower or remove
+the minimum in the CoordinatedPolicy first.
 
 Enabling gang scheduling — via either the annotation or a CoordinatedPolicy — also turns on
 RoleInstance-level gang scheduling for every covered role, unless the role sets

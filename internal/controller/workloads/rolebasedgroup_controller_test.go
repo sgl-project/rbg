@@ -19,33 +19,41 @@ package workloads
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -2177,4 +2185,108 @@ func Test_HandleRevisions_SemanticallyEqualRevisionKeepsPersistedRoleHash(t *tes
 	if len(revisionList.Items) != 1 {
 		t.Errorf("expected no new ControllerRevision, got %d revisions", len(revisionList.Items))
 	}
+// stubGangScheduler lets a test drive Step 7 of Reconcile without a real PodGroup CRD.
+type stubGangScheduler struct {
+	err error
+}
+
+func (s *stubGangScheduler) ReconcilePodGroup(
+	context.Context,
+	*workloadsv1alpha2.RoleBasedGroup,
+	*workloadsv1alpha2.GangSchedulingStrategy,
+	*builder.TypedBuilder[reconcile.Request],
+	*sync.Map,
+	client.Reader,
+) error {
+	return s.err
+}
+
+func (s *stubGangScheduler) InjectPodSchedulingFields(
+	*workloadsv1alpha2.RoleBasedGroup,
+	*workloadsv1alpha2.RoleSpec,
+	*workloadsv1alpha2.GangSchedulingStrategy,
+	*coreapplyv1.PodTemplateSpecApplyConfiguration,
+) {
+}
+
+// TestReconcileIncompatibleGangConfig pins the retry and notification policy for a gang
+// configuration the RBG cannot satisfy: a fixed requeue instead of the workqueue's error
+// backoff, and one event per transition rather than one per reconcile.
+func TestReconcileIncompatibleGangConfig(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(testScheme))
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Annotations = map[string]string{constants.GangSchedulingAnnotationKey: "true"}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(rbg).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroup{}).
+		Build()
+	recorder := record.NewFakeRecorder(50)
+	stub := &stubGangScheduler{}
+
+	r := &RoleBasedGroupReconciler{
+		client:             fakeClient,
+		apiReader:          fakeClient,
+		scheme:             testScheme,
+		recorder:           recorder,
+		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+		gangScheduler:      stub,
+	}
+	ctx := ctrl.LoggerInto(context.TODO(), zap.New().WithValues("env", "unit-test"))
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-rbg", Namespace: "default"}}
+
+	gangConfigured := func() *metav1.Condition {
+		got := &workloadsv1alpha2.RoleBasedGroup{}
+		require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, got))
+		return apimeta.FindStatusCondition(
+			got.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupGangConfigured))
+	}
+	drainEvents := func() []string {
+		var events []string
+		for {
+			select {
+			case e := <-recorder.Events:
+				events = append(events, e)
+			default:
+				return events
+			}
+		}
+	}
+
+	stub.err = common.NewIncompatibleGangConfigError("minReplicas for role %q is unsatisfiable", "test-role")
+	result, err := r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.Equal(t, incompatibleGangConfigRequeue, result.RequeueAfter)
+	condition := gangConfigured()
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, IncompatibleGangConfig, condition.Reason)
+	assert.Contains(t, drainEvents(), "Warning IncompatibleGangConfig minReplicas for role \"test-role\" is unsatisfiable")
+
+	// The condition has not moved, so a reconcile triggered by unrelated workload churn
+	// must stay silent instead of spending the object's event budget.
+	result, err = r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.Equal(t, incompatibleGangConfigRequeue, result.RequeueAfter)
+	for _, event := range drainEvents() {
+		assert.NotContains(t, event, IncompatibleGangConfig)
+	}
+
+	stub.err = nil
+	result, err = r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+	condition = gangConfigured()
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionTrue, condition.Status)
+
+	stub.err = errors.New("podgroup apiserver hiccup")
+	result, err = r.Reconcile(ctx, request)
+	require.Error(t, err)
+	assert.Zero(t, result.RequeueAfter)
+	assert.Contains(t, drainEvents(), "Warning FailedReconcilePodGroup podgroup apiserver hiccup")
 }
