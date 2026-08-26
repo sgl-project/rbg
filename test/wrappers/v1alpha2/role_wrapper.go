@@ -85,28 +85,28 @@ func (rw *StandaloneRoleWrapper) WithWorkload(apiVersion, kind string) *Standalo
 }
 
 func (rw *StandaloneRoleWrapper) WithTemplate(template *corev1.PodTemplateSpec) *StandaloneRoleWrapper {
-	rw.StandalonePattern.TemplateSource.Template = template
-	rw.StandalonePattern.TemplateSource.TemplateRef = nil
+	rw.StandalonePattern.Template = template
+	rw.StandalonePattern.TemplateRef = nil
 	return rw
 }
 
 func (rw *StandaloneRoleWrapper) WithTemplateRef(name string) *StandaloneRoleWrapper {
-	rw.StandalonePattern.TemplateSource.TemplateRef = &workloadsv1alpha2.TemplateRef{Name: name}
-	rw.StandalonePattern.TemplateSource.Template = nil
+	rw.StandalonePattern.TemplateRef = &workloadsv1alpha2.TemplateRef{Name: name}
+	rw.StandalonePattern.Template = nil
 	return rw
 }
 
 func (rw *StandaloneRoleWrapper) WithTemplatePatch(patch *workloadsv1alpha2.TemplateRef) *StandaloneRoleWrapper {
-	rw.StandalonePattern.TemplateSource.TemplateRef = patch
+	rw.StandalonePattern.TemplateRef = patch
 	return rw
 }
 
 func (rw *StandaloneRoleWrapper) WithPatchRef(name string, patch *runtime.RawExtension) *StandaloneRoleWrapper {
-	rw.StandalonePattern.TemplateSource.TemplateRef = &workloadsv1alpha2.TemplateRef{
+	rw.StandalonePattern.TemplateRef = &workloadsv1alpha2.TemplateRef{
 		Name:  name,
 		Patch: patch,
 	}
-	rw.StandalonePattern.TemplateSource.Template = nil
+	rw.StandalonePattern.Template = nil
 	return rw
 }
 
@@ -204,8 +204,8 @@ func (rw *LeaderWorkerRoleWrapper) WithSize(size int32) *LeaderWorkerRoleWrapper
 }
 
 func (rw *LeaderWorkerRoleWrapper) WithTemplateRef(name string) *LeaderWorkerRoleWrapper {
-	rw.LeaderWorkerPattern.TemplateSource.TemplateRef = &workloadsv1alpha2.TemplateRef{Name: name}
-	rw.LeaderWorkerPattern.TemplateSource.Template = nil
+	rw.LeaderWorkerPattern.TemplateRef = &workloadsv1alpha2.TemplateRef{Name: name}
+	rw.LeaderWorkerPattern.Template = nil
 	return rw
 }
 

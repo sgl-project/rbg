@@ -34,8 +34,9 @@ var (
 )
 
 var ownerIndexFunc = func(obj client.Object) []string {
-	var owners []string
-	for _, ref := range obj.GetOwnerReferences() {
+	refs := obj.GetOwnerReferences()
+	owners := make([]string, 0, len(refs))
+	for _, ref := range refs {
 		owners = append(owners, string(ref.UID))
 	}
 	return owners

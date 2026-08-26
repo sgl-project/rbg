@@ -108,7 +108,7 @@ func removeNotReadyKey(adp podadapter.Adapter, pod *v1.Pod, msg Message, condTyp
 }
 
 func addMessage(base string, msg Message) (bool, messageList) {
-	messages := messageList{}
+	messages := make(messageList, 0, 1)
 	if base != "" {
 		_ = json.Unmarshal([]byte(base), &messages)
 	}

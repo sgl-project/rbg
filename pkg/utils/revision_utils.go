@@ -42,6 +42,7 @@ import (
 
 const (
 	DefaultRevisionHistoryLimit = 5
+	replacePatchDirective       = "replace"
 )
 
 // ListRevisions lists all ControllerRevisions matching selector and owned by parent or no other
@@ -258,7 +259,7 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 			if !ok {
 				return nil, fmt.Errorf("invalid roleTemplate structure")
 			}
-			if patch, ok := templateMap["$patch"].(string); ok && patch == "replace" {
+			if patch, ok := templateMap["$patch"].(string); ok && patch == replacePatchDirective {
 				continue
 			}
 
@@ -277,7 +278,7 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 		}
 		nameVal, ok := roleMap["name"].(string)
 		if !ok || nameVal == "" {
-			if roleMap["$patch"] == "replace" {
+			if roleMap["$patch"] == replacePatchDirective {
 				continue
 			}
 			return nil, fmt.Errorf("role missing name field")
@@ -354,15 +355,14 @@ func getRBGPatch(rbg *workloadsv1alpha2.RoleBasedGroup) ([]byte, error) {
 	specCopy := make(map[string]interface{})
 	spec := raw["spec"].(map[string]interface{})
 	roles := spec["roles"].([]interface{})
-	rolesPatch := []interface{}{
-		map[string]interface{}{"$patch": "replace"},
-	}
+	rolesPatch := make([]interface{}, 0, 1+len(roles))
+	rolesPatch = append(rolesPatch, map[string]interface{}{"$patch": replacePatchDirective})
 	rolesPatch = append(rolesPatch, roles...)
 
 	specCopy["roles"] = rolesPatch
 
 	roleTemplatesPatch := []interface{}{
-		map[string]interface{}{"$patch": "replace"},
+		map[string]interface{}{"$patch": replacePatchDirective},
 	}
 	if roleTemplates, ok := spec["roleTemplates"].([]interface{}); ok {
 		roleTemplatesPatch = append(roleTemplatesPatch, roleTemplates...)

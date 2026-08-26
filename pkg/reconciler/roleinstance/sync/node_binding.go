@@ -378,13 +378,12 @@ func InjectInPlaceScheduling(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstan
 		// separate term would create OR semantics, allowing the scheduler to
 		// bypass both the hostname constraint (Required mode degraded) and
 		// the avoid constraint (avoid weakened).
-		inPlaceExprs := []v1.NodeSelectorRequirement{
-			{
-				Key:      hostnameLabelKey,
-				Operator: v1.NodeSelectorOpIn,
-				Values:   values,
-			},
-		}
+		inPlaceExprs := make([]v1.NodeSelectorRequirement, 0, 1+len(avoidExprs))
+		inPlaceExprs = append(inPlaceExprs, v1.NodeSelectorRequirement{
+			Key:      hostnameLabelKey,
+			Operator: v1.NodeSelectorOpIn,
+			Values:   values,
+		})
 		inPlaceExprs = append(inPlaceExprs, avoidExprs...)
 		foldIntoRequired(nodeAffinity, inPlaceExprs)
 	}

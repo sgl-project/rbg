@@ -92,9 +92,9 @@ func validateRoleTemplateFields(
 	role *RoleSpec,
 	validTemplateNames map[string]bool,
 ) error {
-	hasTemplateRef := role.TemplateSource.TemplateRef != nil
+	hasTemplateRef := role.TemplateRef != nil
 	hasTemplatePatch := len(role.TemplatePatch.Raw) > 0
-	hasTemplate := role.TemplateSource.Template != nil
+	hasTemplate := role.Template != nil
 
 	if hasTemplateRef {
 		// Defense-in-depth: CRD validates this, but controller validates as well.
@@ -123,10 +123,10 @@ func validateRoleTemplateFields(
 		}
 
 		// Cross-resource check: referenced template must exist.
-		if !validTemplateNames[role.TemplateSource.TemplateRef.Name] {
+		if !validTemplateNames[role.TemplateRef.Name] {
 			return fmt.Errorf(
 				"spec.roles[%d].templateRef.name: template %q not found in spec.roleTemplates",
-				index, role.TemplateSource.TemplateRef.Name,
+				index, role.TemplateRef.Name,
 			)
 		}
 

@@ -1,36 +1,16 @@
+version: "2"
 run:
   timeout: 5m
   allow-parallel-runners: true
-
-issues:
-  # don't skip warning about doc comments
-  # don't exclude the default set of lint
-  exclude-use-default: false
-  # restore some of the defaults
-  # (fill in the rest as needed)
-  exclude-rules:
-    - path: "internal/*"
-      linters:
-        - dupl
-    - path: "test/*"
-      linters:
-        - dupl
-    - path: "cmd/cli/cmd/llm/config/*"
-      linters:
-        - dupl
-
 linters:
-  disable-all: true
+  default: none
   enable:
+    - copyloopvar
     - dupl
     - errcheck
-    - copyloopvar
     - ginkgolinter
     - goconst
     - gocyclo
-    - gofmt
-    - goimports
-    - gosimple
     - govet
     - ineffassign
     - misspell
@@ -38,11 +18,58 @@ linters:
     - prealloc
     - revive
     - staticcheck
-    - typecheck
     - unconvert
     - unused
-
-linters-settings:
-  revive:
+  settings:
+    revive:
+      rules:
+        - name: comment-spacings
+    goconst:
+      # Repeated literals in tests (fixtures, expected values) are acceptable.
+      ignore-tests: true
+    staticcheck:
+      # Ginkgo/Gomega are idiomatically dot-imported in the test suites.
+      dot-import-whitelist:
+        - github.com/onsi/ginkgo/v2
+        - github.com/onsi/gomega
+  exclusions:
+    # Intentionally no `presets:` here - keep golangci's default exclusion set
+    # off so the project continues to see all findings (matching the old
+    # `exclude-use-default: false`).
+    generated: lax
     rules:
-      - name: comment-spacings
+      - linters:
+          - dupl
+        path: ^internal/
+      - linters:
+          - dupl
+        path: ^test/
+      - linters:
+          - dupl
+        path: ^cmd/cli/cmd/llm/config/
+      # Table-driven cases and inline fixtures are legitimately repetitive, and
+      # keeping each case readable standalone beats extracting shared helpers.
+      # Same rationale as goconst.ignore-tests above.
+      - linters:
+          - dupl
+        path: _test\.go$
+      # Test helper files under test/ that are not *_test.go (fixtures,
+      # wrappers) also repeat literals; ignore-tests above only covers
+      # *_test.go files.
+      - linters:
+          - goconst
+        path: ^test/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

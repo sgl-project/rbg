@@ -151,7 +151,7 @@ func (r *noDeepCopyLister) objectTypeForListObject(list client.ObjectList) (*sch
 		}
 		// http://knowyourmeme.com/memes/this-is-fine
 		elemType := reflect.Indirect(reflect.ValueOf(itemsPtr)).Type().Elem()
-		if elemType.Kind() != reflect.Ptr {
+		if elemType.Kind() != reflect.Pointer {
 			elemType = reflect.PointerTo(elemType)
 		}
 

@@ -7,7 +7,10 @@ on:
   workflow_dispatch: # Allow manual trigger
 
 env:
-  GO_VERSION: 1.24.1
+  # Match the golang builder image in the Dockerfiles; golangci-lint v2 and
+  # setup-envtest both require Go >= 1.26. GOTOOLCHAIN=local pins to this version.
+  GO_VERSION: 1.26.6
+  GOTOOLCHAIN: local
   MULTIARCH_PLATFORMS: linux/amd64,linux/arm64
 
 permissions:

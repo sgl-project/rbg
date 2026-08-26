@@ -143,14 +143,14 @@ func (rbg *RoleBasedGroup) EnableGangScheduling() bool {
 }
 
 func (rbg *RoleBasedGroup) IsVolcanoGangScheduling() bool {
-	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.VolcanoScheduling != nil {
+	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.VolcanoScheduling != nil {
 		return true
 	}
 	return false
 }
 
 func (rbg *RoleBasedGroup) IsKubeGangScheduling() bool {
-	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.PodGroupPolicySource.KubeScheduling != nil {
+	if rbg.Spec.PodGroupPolicy != nil && rbg.Spec.PodGroupPolicy.KubeScheduling != nil {
 		return true
 	}
 	return false
@@ -170,11 +170,11 @@ func (p *PodGroupPolicy) EnableGangScheduling() bool {
 }
 
 func (p *PodGroupPolicy) IsVolcanoGangScheduling() bool {
-	return p != nil && p.PodGroupPolicySource.VolcanoScheduling != nil
+	return p != nil && p.VolcanoScheduling != nil
 }
 
 func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
-	return p != nil && p.PodGroupPolicySource.KubeScheduling != nil
+	return p != nil && p.KubeScheduling != nil
 }
 
 func (instance *Instance) GetInstancePattern() InstancePatternType {
@@ -253,14 +253,14 @@ func IsStatefulRole(role *RoleSpec) bool {
 
 // UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
 func (r *RoleSpec) UsesRoleTemplate() bool {
-	return r.TemplateSource.TemplateRef != nil
+	return r.TemplateRef != nil
 }
 
 // GetEffectiveTemplateName returns the name of the template this role uses.
 // Returns empty string if the role doesn't use a template.
 func (r *RoleSpec) GetEffectiveTemplateName() string {
-	if r.TemplateSource.TemplateRef != nil {
-		return r.TemplateSource.TemplateRef.Name
+	if r.TemplateRef != nil {
+		return r.TemplateRef.Name
 	}
 	return ""
 }

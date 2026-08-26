@@ -87,7 +87,7 @@ func TestSortRevisionsStable(t *testing.T) {
 }
 
 func getFakeRgbClient(rbgs []*workloadsv1alpha2.RoleBasedGroup) rbgclient.Interface {
-	objs := []runtime.Object{}
+	objs := make([]runtime.Object, 0, len(rbgs))
 	for _, rbg := range rbgs {
 		objs = append(objs, rbg)
 	}
@@ -95,7 +95,7 @@ func getFakeRgbClient(rbgs []*workloadsv1alpha2.RoleBasedGroup) rbgclient.Interf
 }
 
 func getFakeK8sClient(revisions []*appsv1.ControllerRevision) kubernetes.Interface {
-	objs := []runtime.Object{}
+	objs := make([]runtime.Object, 0, len(revisions))
 	for _, revision := range revisions {
 		objs = append(objs, revision)
 	}
