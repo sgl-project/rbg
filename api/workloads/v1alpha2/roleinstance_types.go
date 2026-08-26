@@ -24,6 +24,8 @@ import (
 // RoleInstanceSpec defines the desired state of RoleInstance
 type RoleInstanceSpec struct {
 	// Components is a list of components, each of which specifies a component and the number of replicas and template for RoleInstance that match the component.
+	// +listType=map
+	// +listMapKey=name
 	Components []RoleInstanceComponent `json:"components" patchStrategy:"merge" patchMergeKey:"name"`
 
 	// RoleInstanceReadyPolicy specifies the policy for determining if the RoleInstance is ready.

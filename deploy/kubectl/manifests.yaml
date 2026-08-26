@@ -97899,6 +97899,9 @@ spec:
                   - template
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               readinessGates:
                 description: ReadinessGates is an optional list of PodReadinessGates
                   for the whole RoleInstance.
