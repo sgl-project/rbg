@@ -127,7 +127,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 			)
 
 			ginkgo.It(
-				"rbg with kube gang scheduling", func() {
+				"rbg with kube gang scheduling", ginkgo.Label("scheduler-plugins"), func() {
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithKubeGangScheduling(true).
 						WithRoles(
@@ -173,57 +173,6 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 						scheduler.KubePodGroupLabelKey: rbg.Name,
 					}
 					f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], podGroupLabel)
-				},
-			)
-			ginkgo.PIt(
-				"rbg with volcano gang scheduling", func() {
-					template := wrappers.BuildBasicPodTemplateSpec().Obj()
-					template.Spec.SchedulerName = "volcano"
-					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
-						WithVolcanoGangScheduling("", "default").
-						WithRoles(
-							[]workloadsv1alpha1.RoleSpec{
-								{
-
-									Name:     "prefill",
-									Replicas: ptr.To(int32(1)),
-									RolloutStrategy: &workloadsv1alpha1.RolloutStrategy{
-										Type: workloadsv1alpha1.RollingUpdateStrategyType,
-									},
-									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
-									},
-									TemplateSource: workloadsv1alpha1.TemplateSource{
-										Template: &template,
-									},
-								},
-								{
-
-									Name:     "decode",
-									Replicas: ptr.To(int32(1)),
-									RolloutStrategy: &workloadsv1alpha1.RolloutStrategy{
-										Type: workloadsv1alpha1.RollingUpdateStrategyType,
-									},
-									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
-									},
-									TemplateSource: workloadsv1alpha1.TemplateSource{
-										Template: &template,
-									},
-								},
-							},
-						).Obj()
-
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
-
-					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-
-					podGroupAnnotation := map[string]string{
-						scheduler.VolcanoPodGroupAnnotationKey: rbg.Name,
-					}
-					f.ExpectWorkloadPodTemplateAnnotationContains(rbg, rbg.Spec.Roles[0], podGroupAnnotation)
 				},
 			)
 

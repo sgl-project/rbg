@@ -71,6 +71,17 @@ func TestInjectPodSchedulingFields(t *testing.T) {
 		assert.Equal(t, "rbg", ptsLabels(pts)[LabelKey])
 	})
 
+	// Upstream coscheduling resolves the PodGroup only from UpstreamLabelKey, while
+	// Koordinator/ACK reads LabelKey. Dropping either one turns gang scheduling into a
+	// silent no-op on that half of the ecosystem.
+	t.Run("both PodGroup label conventions are injected", func(t *testing.T) {
+		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
+		New(nil, "").InjectPodSchedulingFields(rbg, role, &workloadsv1alpha2.GangSchedulingStrategy{}, pts)
+		assert.Equal(t, "rbg", ptsLabels(pts)[LabelKey])
+		assert.Equal(t, "rbg", ptsLabels(pts)[UpstreamLabelKey])
+		assert.Equal(t, "scheduling.x-k8s.io/pod-group", UpstreamLabelKey)
+	})
+
 	// The profile name is chosen when scheduler-plugins is deployed, so an empty flag
 	// must leave schedulerName alone rather than blanking whatever the role template set.
 	t.Run("profile name empty leaves schedulerName untouched", func(t *testing.T) {

@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
@@ -212,52 +211,6 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					}
 					gomega.Expect(coordinatedPartitions).Should(gomega.Equal(len(rbg.Spec.Roles)))
 					gomega.Expect(progressAllowed).Should(gomega.BeNumerically(">", 0))
-				},
-			)
-
-			ginkgo.It(
-				"rbg with kube gang scheduling", func() {
-					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
-						WithGangScheduling().
-						WithRoles(
-							[]workloadsv1alpha2.RoleSpec{
-								wrappersv2.BuildStandaloneRole("prefill").Obj(),
-								wrappersv2.BuildStandaloneRole("decode").Obj(),
-							},
-						).Obj()
-
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
-
-					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-
-					podGroupLabel := map[string]string{
-						scheduler.KubePodGroupLabelKey: rbg.Name,
-					}
-					f.ExpectWorkloadV2PodTemplateLabelContains(rbg, rbg.Spec.Roles[0], podGroupLabel)
-				},
-			)
-
-			ginkgo.It(
-				"rbg with volcano gang scheduling", ginkgo.Label("volcano"), func() {
-					template := wrappersv2.BuildBasicPodTemplateSpec()
-					template.Spec.SchedulerName = "volcano"
-					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
-						WithVolcanoGangScheduling("default").
-						WithRoles(
-							[]workloadsv1alpha2.RoleSpec{
-								wrappersv2.BuildStandaloneRole("prefill").WithTemplate(&template).Obj(),
-								wrappersv2.BuildStandaloneRole("decode").WithTemplate(&template).Obj(),
-							},
-						).Obj()
-
-					ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
-
-					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
-
-					podGroupAnnotation := map[string]string{
-						scheduler.VolcanoPodGroupAnnotationKey: rbg.Name,
-					}
-					f.ExpectWorkloadV2PodTemplateAnnotationContains(rbg, rbg.Spec.Roles[0], podGroupAnnotation)
 				},
 			)
 

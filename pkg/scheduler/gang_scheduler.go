@@ -35,6 +35,10 @@ const (
 	// Kept here for external consumers (e.g. e2e tests).
 	KubePodGroupLabelKey = kubeschedulerplugin.LabelKey
 
+	// KubePodGroupUpstreamLabelKey is the pod label key upstream scheduler-plugins
+	// coscheduling reads. Kept here for external consumers (e.g. e2e tests).
+	KubePodGroupUpstreamLabelKey = kubeschedulerplugin.UpstreamLabelKey
+
 	// VolcanoPodGroupAnnotationKey is the pod annotation key used by Volcano PodGroup.
 	// Kept here for external consumers (e.g. e2e tests).
 	VolcanoPodGroupAnnotationKey = volcanoplugin.AnnotationKey

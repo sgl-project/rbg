@@ -220,6 +220,12 @@ scheduling unit, so its pods are placed and recreated atomically rather than one
 | Per-Role `minReplicas` | No | Yes (Volcano >= 1.14) |
 | Controller Config | `--scheduler-profile-name` (unless it is the default scheduler) | `--scheduler-name=volcano` |
 
+Running scheduler-plugins as a second scheduler alongside the default one is convenient for
+trying gang scheduling out, but the two schedulers make placement decisions from independent
+views of the cluster and can conflict when resources are tight. Upstream does not recommend it
+for production; deploy scheduler-plugins as the cluster's default scheduler instead, and leave
+`--scheduler-profile-name` empty.
+
 ## Use Cases
 
 - **Distributed Training**: All workers must be scheduled together

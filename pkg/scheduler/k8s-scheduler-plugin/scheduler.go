@@ -53,7 +53,13 @@ const (
 	inheritSchedulingPolicyAnnotations = "scheduling.x-k8s.io/"
 
 	// LabelKey is the pod label key used to associate a pod with a PodGroup.
+	// This is the Koordinator/ACK convention; upstream scheduler-plugins does not
+	// recognise it and reads UpstreamLabelKey instead, so both are set on pods.
 	LabelKey = "pod-group.scheduling.sigs.k8s.io/name"
+
+	// UpstreamLabelKey is the pod label key upstream coscheduling resolves the
+	// PodGroup from (see util.GetPodGroupLabel in scheduler-plugins).
+	UpstreamLabelKey = schedv1alpha1.PodGroupLabel
 
 	defaultScheduleTimeoutSeconds = int32(60)
 )
@@ -134,8 +140,12 @@ func (m *GangScheduler) InjectPodSchedulingFields(
 		pts.Spec.WithSchedulerName(m.schedulerProfileName)
 	}
 
-	// Inject PodGroup label
-	pts.WithLabels(map[string]string{LabelKey: rbg.Name})
+	// Inject PodGroup labels for both the Koordinator/ACK and the upstream
+	// scheduler-plugins conventions.
+	pts.WithLabels(map[string]string{
+		LabelKey:         rbg.Name,
+		UpstreamLabelKey: rbg.Name,
+	})
 }
 
 func getScheduleTimeoutSeconds(rbg *workloadsv1alpha2.RoleBasedGroup) *int32 {
