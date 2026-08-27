@@ -356,3 +356,179 @@ func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing
 		assert.NoError(t, err)
 	})
 }
+
+func TestRoleBasedGroupSetValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(t *testing.T) {
+	tests := []struct {
+		name                          string
+		enableDeprecatedWorkloadTypes bool
+		rbgs                          *RoleBasedGroupSet
+		expectError                   bool
+	}{
+		{
+			name:                          "deprecated workload types disabled, RoleInstanceSet - no error",
+			enableDeprecatedWorkloadTypes: false,
+			rbgs: &RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+				Spec: RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(1)),
+					GroupTemplate: RoleBasedGroupTemplateSpec{
+						Spec: RoleBasedGroupSpec{
+							Roles: []RoleSpec{
+								{Name: "worker", Replicas: ptr.To(int32(1))},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:                          "deprecated workload types disabled, Deployment - error",
+			enableDeprecatedWorkloadTypes: false,
+			rbgs: &RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+				Spec: RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(1)),
+					GroupTemplate: RoleBasedGroupTemplateSpec{
+						Spec: RoleBasedGroupSpec{
+							Roles: []RoleSpec{
+								{
+									Name:        "worker",
+									Replicas:    ptr.To(int32(1)),
+									Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.DeploymentWorkloadType},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name:                          "deprecated workload types enabled, Deployment - no error",
+			enableDeprecatedWorkloadTypes: true,
+			rbgs: &RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+				Spec: RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(1)),
+					GroupTemplate: RoleBasedGroupTemplateSpec{
+						Spec: RoleBasedGroupSpec{
+							Roles: []RoleSpec{
+								{
+									Name:        "worker",
+									Replicas:    ptr.To(int32(1)),
+									Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.DeploymentWorkloadType},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := &RoleBasedGroupSetValidator{
+				EnableDeprecatedWorkloadTypes: tt.enableDeprecatedWorkloadTypes,
+			}
+			_, err := v.ValidateCreate(context.Background(), tt.rbgs)
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(t *testing.T) {
+	oldRBGS := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{Name: "worker", Replicas: ptr.To(int32(1))},
+					},
+				},
+			},
+		},
+	}
+
+	t.Run("deprecated workload types disabled, update to deprecated workload - error", func(t *testing.T) {
+		newRBGS := &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{
+							{
+								Name:        "worker",
+								Replicas:    ptr.To(int32(1)),
+								Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType},
+							},
+						},
+					},
+				},
+			},
+		}
+		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: false}
+		_, err := v.ValidateUpdate(context.Background(), oldRBGS, newRBGS)
+		assert.Error(t, err)
+	})
+
+	t.Run("deprecated workload types enabled, update to deprecated workload - no error", func(t *testing.T) {
+		newRBGS := &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{
+							{
+								Name:        "worker",
+								Replicas:    ptr.To(int32(1)),
+								Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType},
+							},
+						},
+					},
+				},
+			},
+		}
+		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+		_, err := v.ValidateUpdate(context.Background(), oldRBGS, newRBGS)
+		assert.NoError(t, err)
+	})
+
+	t.Run("deprecated workload types disabled, pre-existing deprecated template - error", func(t *testing.T) {
+		deprecatedRBGS := &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{
+							{
+								Name:        "worker",
+								Replicas:    ptr.To(int32(1)),
+								Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType},
+							},
+						},
+					},
+				},
+			},
+		}
+		// Scaling is rejected at the parent rather than silently failing on the
+		// child creates it would trigger, which the cluster has no RBAC to reconcile.
+		newRBGS := deprecatedRBGS.DeepCopy()
+		newRBGS.Spec.Replicas = ptr.To(int32(3))
+
+		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: false}
+		_, err := v.ValidateUpdate(context.Background(), deprecatedRBGS, newRBGS)
+		assert.Error(t, err)
+	})
+}

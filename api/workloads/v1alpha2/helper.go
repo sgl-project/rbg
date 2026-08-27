@@ -85,7 +85,7 @@ func ComputeSubGroupSize(role *RoleSpec) int32 {
 	if role.IsLeaderWorkerPattern() {
 		lwp := role.GetLeaderWorkerPattern()
 		if lwp != nil && lwp.Size != nil {
-			return *lwp.Size
+			return max(*lwp.Size, 1)
 		}
 		return 1
 	}

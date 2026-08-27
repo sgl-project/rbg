@@ -2284,6 +2284,21 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionTrue, condition.Status)
 
+	// Turning gang scheduling off must drop the condition: a leftover True would keep
+	// claiming the group is gang scheduled.
+	current := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
+	gangAnnotation := current.Annotations[constants.GangSchedulingAnnotationKey]
+	delete(current.Annotations, constants.GangSchedulingAnnotationKey)
+	require.NoError(t, fakeClient.Update(ctx, current))
+	_, err = r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.Nil(t, gangConfigured())
+
+	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
+	current.Annotations[constants.GangSchedulingAnnotationKey] = gangAnnotation
+	require.NoError(t, fakeClient.Update(ctx, current))
+
 	stub.err = errors.New("podgroup apiserver hiccup")
 	result, err = r.Reconcile(ctx, request)
 	require.Error(t, err)

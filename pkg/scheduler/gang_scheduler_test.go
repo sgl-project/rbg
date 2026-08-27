@@ -499,7 +499,8 @@ func volcanoCrdWithSubGroupPolicy() *apiextensionsv1.CustomResourceDefinition {
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
 			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
 				{
-					Name: "v1beta1",
+					Name:   "v1beta1",
+					Served: true,
 					Schema: &apiextensionsv1.CustomResourceValidation{
 						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
 							Properties: map[string]apiextensionsv1.JSONSchemaProps{
@@ -635,4 +636,6 @@ func TestVolcanoPodGroupScheduler_ReconcileRejectsMinReplicasWithoutCrdSupport(t
 	err = mgr.ReconcilePodGroup(ctx, rbg, gangStrategy, &runtimeController, &watchedWorkload, apiReader)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "subGroupPolicy")
+	// The controller keys its permanent-failure handling off this classification.
+	assert.True(t, common.IsIncompatibleGangConfig(err))
 }

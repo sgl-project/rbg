@@ -157,7 +157,8 @@ metadata:
   namespace: default
 spec:
   policies:
-    - roles: [prefill, decode]
+    - name: gang-scheduling
+      roles: [prefill, decode]
       strategy:
         scheduling:
           gang:
@@ -194,7 +195,8 @@ plus one `IncompatibleGangConfig` warning event:
 An admitted `minReplicas` is a hard floor on the role's `replicas`, but scaling below it is
 not blocked at admission: a policy states intent, and the workload is expected to follow it,
 so a temporarily unsatisfiable minimum is a state to wait out rather than a write to reject.
-Instead, the PodGroup is left untouched and the RoleBasedGroup reports:
+Instead, the PodGroup is left untouched, role creates and updates are paused, and the
+RoleBasedGroup reports:
 
 ```console
 kubectl get rbg <name> -o jsonpath='{.status.conditions}'
@@ -205,6 +207,13 @@ warning event of the same reason. The event fires on the transition only, so unr
 workload churn does not repeat it. While the condition is false the RoleBasedGroup is
 re-examined every 5 minutes; editing either the CoordinatedPolicy or the RoleBasedGroup
 resolves it within seconds, because both are watched.
+
+Pausing role reconcile is deliberate. Without a PodGroup, any pod created in the meantime
+would carry the gang scheduler's `schedulerName` but no gang membership, so it would be
+placed on its own and hold its accelerators while the rest of the group waits — the outcome
+gang scheduling exists to prevent. Already-running pods keep running, and roles removed from
+the spec are still cleaned up, so a broken policy does not pin resources the user has
+released.
 
 This applies to writes coming from a `RoleBasedGroupScalingAdapter`/HPA as well, so keep the
 minimum at or below the autoscaler's `minReplicas`. To scale further down, lower or remove

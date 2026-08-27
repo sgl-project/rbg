@@ -94,11 +94,15 @@ type GangSchedulingStrategy struct {
 	// that must be scheduled together as part of the gang.
 	//
 	// Keys must name roles that are listed in the enclosing policy rule's
-	// `roles` field, and each value must fall within [1, role.replicas].
-	// Both are enforced by the CoordinatedPolicy validating webhook rather than by
-	// the CRD schema: this field sits inside the unbounded spec.policies array, where
-	// a CEL rule's estimated cost exceeds the apiserver budget and would make the
-	// entire CRD unloadable.
+	// `roles` field, and each value must be at least 1. Both are enforced by the
+	// CoordinatedPolicy validating webhook rather than by the CRD schema: this field
+	// sits inside the unbounded spec.policies array, where a CEL rule's estimated cost
+	// exceeds the apiserver budget and would make the entire CRD unloadable.
+	//
+	// Whether a minimum actually fits the role's replicas is not an admission check,
+	// because a policy may be written before the RoleBasedGroup exists and the replicas
+	// may later be moved by an autoscaler. It is checked when the PodGroup is built and
+	// reported on the RoleBasedGroup as GangConfigured=False.
 	//
 	// When non-empty, only the roles listed in this map participate in
 	// the gang with their respective minimums. Roles absent from this

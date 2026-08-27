@@ -183,6 +183,11 @@ Chart values were restructured from a flat layout into three top-level groups: `
 After upgrading, verify that your overrides took effect:
 
 ```bash
-helm -n rbgs-system get values rbgs
+helm -n rbgs-system get values rbgs --set controller.image.tag=v0.8.0 \
+--set controller.image.repository=registry-cn-hangzhou.ack.aliyuncs.com/dev \
+--set crdUpgrade.image.tag=v0.8.0 \
+--set crdUpgrade.image.repository=registry-cn-hangzhou.ack.aliyuncs.com/dev
 kubectl -n rbgs-system get deploy rbgs-controller-manager -o yaml | grep -A20 'args:'
 ```
+
+

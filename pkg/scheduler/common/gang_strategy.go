@@ -93,7 +93,11 @@ func getGangStrategy(
 	err := c.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, coordinatedPolicy)
 	switch {
 	case err == nil:
-		if strategy := MergeGangStrategies(coordinatedPolicy); strategy != nil {
+		strategy, mergeErr := MergeGangStrategies(coordinatedPolicy)
+		if mergeErr != nil {
+			return nil, mergeErr
+		}
+		if strategy != nil {
 			return strategy, nil
 		}
 	case !apierrors.IsNotFound(err):
@@ -136,9 +140,13 @@ func RoleInGang(
 // A gang rule with an empty minReplicas map requests basic all-or-nothing gang
 // over the whole group, which subsumes any per-role minimum, so it short
 // circuits to the empty strategy.
+//
+// It returns an IncompatibleGangConfigError when per-role minimums were declared
+// but every one of them was scoped away, since neither the empty strategy nor nil
+// would describe what the policy asked for.
 func MergeGangStrategies(
 	coordinatedPolicy *workloadsv1alpha2.CoordinatedPolicy,
-) *workloadsv1alpha2.GangSchedulingStrategy {
+) (*workloadsv1alpha2.GangSchedulingStrategy, error) {
 	merged := map[string]int32{}
 	found := false
 
@@ -151,7 +159,7 @@ func MergeGangStrategies(
 
 		gang := policy.Strategy.Scheduling.Gang
 		if len(gang.MinReplicas) == 0 {
-			return &workloadsv1alpha2.GangSchedulingStrategy{}
+			return &workloadsv1alpha2.GangSchedulingStrategy{}, nil
 		}
 
 		scope := make(map[string]struct{}, len(policy.Roles))
@@ -169,10 +177,20 @@ func MergeGangStrategies(
 	}
 
 	if !found {
-		return nil
+		return nil, nil
 	}
 	if len(merged) == 0 {
-		return &workloadsv1alpha2.GangSchedulingStrategy{}
+		// Every gang rule declared per-role minimums (an empty map short circuits above)
+		// yet none survived scoping, so every key named a role outside its own rule. The
+		// admission webhook rejects that, so reaching here means the policy predates the
+		// webhook or was written with admission disabled. Falling back to the empty
+		// strategy would gang the whole group, a stricter constraint than was asked for,
+		// so report the configuration instead of silently widening it.
+		return nil, NewIncompatibleGangConfigError(
+			"gang scheduling minReplicas in CoordinatedPolicy %s/%s names only roles outside "+
+				"their own policy rule's roles list, so no per-role minimum applies; "+
+				"list those roles in the rule or remove the minimums",
+			coordinatedPolicy.Namespace, coordinatedPolicy.Name)
 	}
-	return &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: merged}
+	return &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: merged}, nil
 }

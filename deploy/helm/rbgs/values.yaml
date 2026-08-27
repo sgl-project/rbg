@@ -2,7 +2,7 @@
 
 global:
   # imagePullSecrets is shared by the controller Deployment and the crd-upgrade Job.
-  imagePullSecrets: []
+  imagePullSecrets: [] 
 
 controller:
   replicaCount: 2

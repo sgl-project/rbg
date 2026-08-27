@@ -27,6 +27,7 @@ import (
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/utils/ptr"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 )
 
 func testRBG() *workloadsv1alpha2.RoleBasedGroup {
@@ -102,4 +103,6 @@ func TestReconcilePodGroupRejectsPerRoleMinimums(t *testing.T) {
 		context.Background(), testRBG(), strategy, nil, &sync.Map{}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support per-role minimum gang scheduling")
+	// The controller keys its permanent-failure handling off this classification.
+	assert.True(t, common.IsIncompatibleGangConfig(err))
 }

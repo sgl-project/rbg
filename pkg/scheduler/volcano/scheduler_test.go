@@ -199,7 +199,7 @@ func podGroupCRD(withSubGroupPolicy bool) *apiextensionsv1.CustomResourceDefinit
 		ObjectMeta: metav1.ObjectMeta{Name: CrdName},
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
 			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1beta1", Schema: &apiextensionsv1.CustomResourceValidation{
+				{Name: "v1beta1", Served: true, Schema: &apiextensionsv1.CustomResourceValidation{
 					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
 						Type:       "object",
 						Properties: map[string]apiextensionsv1.JSONSchemaProps{"spec": specProps},
@@ -267,6 +267,16 @@ func TestCheckPodGroupCRDHasSubGroup(t *testing.T) {
 
 	t.Run("subGroupPolicy absent", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(podGroupCRD(false)).Build()
+		supported, err := checkPodGroupCRDHasSubGroup(context.Background(), c)
+		require.NoError(t, err)
+		assert.False(t, supported)
+	})
+
+	t.Run("subGroupPolicy only on another version is not support", func(t *testing.T) {
+		crd := podGroupCRD(true)
+		crd.Spec.Versions[0].Name = "v1beta2"
+		crd.Spec.Versions[0].Served = false
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(crd).Build()
 		supported, err := checkPodGroupCRDHasSubGroup(context.Background(), c)
 		require.NoError(t, err)
 		assert.False(t, supported)

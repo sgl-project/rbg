@@ -275,7 +275,8 @@ func buildGangSpec(
 		if replicas := ptr.Deref(role.Replicas, 1); minReplicas > replicas {
 			return 0, nil, common.NewIncompatibleGangConfigError(
 				"gang scheduling minReplicas for role %q is %d but the role only has %d replicas, so the gang can never be satisfied; "+
-					"raise the role's replicas or lower the minimum in CoordinatedPolicy %s/%s",
+					"lower the minimum in CoordinatedPolicy %s/%s, or raise the role's replicas at whichever "+
+					"owns them (spec.replicas, or the autoscaler behind its RoleBasedGroupScalingAdapter)",
 				role.Name, minReplicas, replicas, rbg.Namespace, rbg.Name)
 		}
 		if !emitsRoleInstanceLabel(role) {
@@ -397,10 +398,10 @@ func (m *GangScheduler) supportsSubGroupPolicy(ctx context.Context, reader clien
 	return supported, nil
 }
 
-// checkPodGroupCRDHasSubGroup inspects the PodGroup CRD schema to determine
-// whether the subGroupPolicy field is available. A read failure is returned
-// separately from a schema that simply lacks the field, so the caller does not
-// report a transient error as an unsupported Volcano version.
+// checkPodGroupCRDHasSubGroup inspects the served v1beta1 PodGroup schema to
+// determine whether the subGroupPolicy field is available. A read failure is
+// returned separately from a schema that simply lacks the field, so the caller does
+// not report a transient error as an unsupported Volcano version.
 func checkPodGroupCRDHasSubGroup(ctx context.Context, reader client.Reader) (bool, error) {
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	if err := reader.Get(ctx, client.ObjectKey{Name: CrdName}, crd); err != nil {
@@ -408,6 +409,12 @@ func checkPodGroupCRDHasSubGroup(ctx context.Context, reader client.Reader) (boo
 	}
 
 	for _, version := range crd.Spec.Versions {
+		// Only the version this code writes decides support: another version's schema
+		// says nothing about whether a v1beta1 PodGroup will keep the field.
+		if version.Name != volcanoschedulingv1beta1.SchemeGroupVersion.Version || !version.Served {
+			continue
+		}
+
 		schema := version.Schema
 		if schema == nil || schema.OpenAPIV3Schema == nil {
 			continue

@@ -22,8 +22,9 @@ import (
 )
 
 // IncompatibleGangConfigError marks a gang configuration that the current
-// RoleBasedGroup and scheduler cannot satisfy. Only a user edit to the
-// CoordinatedPolicy or the RoleBasedGroup can resolve it, so the reconciler
+// RoleBasedGroup and scheduler cannot satisfy. Resolving it takes a deliberate
+// change: editing the CoordinatedPolicy or the RoleBasedGroup, upgrading Volcano, or
+// switching --scheduler-name. None of those happen on their own, so the reconciler
 // must not retry it on the workqueue's error backoff.
 type IncompatibleGangConfigError struct {
 	msg string

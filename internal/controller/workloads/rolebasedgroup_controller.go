@@ -74,9 +74,9 @@ import (
 )
 
 // incompatibleGangConfigRequeue is how often a RoleBasedGroup whose gang
-// configuration cannot be satisfied is re-examined. Only a user edit resolves it,
-// and edits already re-enqueue through the watches, so this is a slow backstop
-// rather than a retry loop.
+// configuration cannot be satisfied is re-examined. CR edits already re-enqueue
+// through the watches, so this exists for the changes that do not: a Volcano upgrade
+// or a --scheduler-name switch. It is a slow backstop rather than a retry loop.
 const incompatibleGangConfigRequeue = 5 * time.Minute
 
 var (
@@ -241,28 +241,33 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Step 7: Reconcile PodGroup for gang scheduling.
 	// The strategy is resolved once here and carried on ctx so that the PodGroup
 	// spec and every role's pod template built in Step 8 agree on one value.
-	ctx, gangStrategy, err := gangcommon.ResolveGangStrategy(ctx, r.client, rbg)
-	if err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
+	ctx, gangStrategy, gangErr := gangcommon.ResolveGangStrategy(ctx, r.client, rbg)
+	if gangErr == nil {
+		gangErr = r.reconcilePodGroup(ctx, rbg, gangStrategy)
+	}
+	if gangErr != nil && !gangcommon.IsIncompatibleGangConfig(gangErr) {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, gangErr.Error())
+		return ctrl.Result{}, gangErr
+	}
+	if err := r.setGangConfiguredCondition(ctx, rbg, gangStrategy, gangErr); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcilePodGroup(ctx, rbg, gangStrategy); err != nil {
-		// A gang configuration the current RBG cannot satisfy is not a transient failure:
-		// only a user edit to the CoordinatedPolicy or the RoleBasedGroup fixes it, and both
-		// already re-enqueue through the watches set up in SetupWithManager. Returning the
-		// error instead would put the object on the workqueue's 5ms-and-doubling error
-		// backoff, which buys nothing.
-		if gangcommon.IsIncompatibleGangConfig(err) {
-			if condErr := r.setGangConfiguredCondition(ctx, rbg, gangStrategy, err); condErr != nil {
-				return ctrl.Result{}, condErr
-			}
-			return ctrl.Result{RequeueAfter: incompatibleGangConfigRequeue}, nil
+	if gangErr != nil {
+		// A gang configuration the current RBG cannot satisfy is not transient: only a
+		// user or operator change resolves it, and CR edits already re-enqueue through
+		// the watches in SetupWithManager, so the workqueue's 5ms-and-doubling error
+		// backoff would only burn reconciles.
+		//
+		// Roles are deliberately left untouched: the PodGroup was not written, so
+		// creating their pods now would place them with no gang protection at all,
+		// which is the outcome gang scheduling exists to prevent. Cleanup still runs,
+		// because it only deletes workloads the user already removed from the spec and
+		// leaving them running would leak their accelerators for as long as the
+		// configuration stays broken.
+		if err := r.cleanup(ctx, rbg); err != nil {
+			return ctrl.Result{}, err
 		}
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, err.Error())
-		return ctrl.Result{}, err
-	}
-	if err := r.setGangConfiguredCondition(ctx, rbg, gangStrategy, nil); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: incompatibleGangConfigRequeue}, nil
 	}
 
 	// Step 8: Reconcile roles, do create/update actions for roles.
@@ -873,11 +878,16 @@ func (r *RoleBasedGroupReconciler) setGangConfiguredCondition(
 		return nil
 	}
 
+	if err := utils.PatchObjectApplyConfiguration(
+		ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus); err != nil {
+		return err
+	}
+	// Emitted only after the condition is durably recorded, so a failed patch retries
+	// both together rather than leaving a warning whose condition never landed.
 	if cause != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, IncompatibleGangConfig, cause.Error())
 	}
-	return utils.PatchObjectApplyConfiguration(
-		ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
+	return nil
 }
 
 func toRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *applyconfiguration.RoleBasedGroupApplyConfiguration {

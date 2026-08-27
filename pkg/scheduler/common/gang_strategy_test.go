@@ -47,9 +47,10 @@ func gangRule(roles []string, minReplicas map[string]int32) workloadsv1alpha2.Co
 
 func TestMergeGangStrategies(t *testing.T) {
 	tests := []struct {
-		name  string
-		rules []workloadsv1alpha2.CoordinatedPolicyRule
-		want  *workloadsv1alpha2.GangSchedulingStrategy
+		name             string
+		rules            []workloadsv1alpha2.CoordinatedPolicyRule
+		want             *workloadsv1alpha2.GangSchedulingStrategy
+		wantIncompatible bool
 	}{
 		{
 			name:  "no rules",
@@ -91,11 +92,13 @@ func TestMergeGangStrategies(t *testing.T) {
 			want: &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2}},
 		},
 		{
-			name: "all minimums out of scope degrades to whole-group gang",
+			// Widening to a whole-group gang would be stricter than the policy asked for,
+			// so the configuration is reported instead of reinterpreted.
+			name: "all minimums out of scope is an incompatible configuration",
 			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				gangRule([]string{"prefill"}, map[string]int32{"decode": 9}),
 			},
-			want: &workloadsv1alpha2.GangSchedulingStrategy{},
+			wantIncompatible: true,
 		},
 		{
 			name: "whole-group gang subsumes per-role minimums",
@@ -112,7 +115,14 @@ func TestMergeGangStrategies(t *testing.T) {
 			policy := &workloadsv1alpha2.CoordinatedPolicy{
 				Spec: workloadsv1alpha2.CoordinatedPolicySpec{Policies: tt.rules},
 			}
-			assert.Equal(t, tt.want, MergeGangStrategies(policy))
+			got, err := MergeGangStrategies(policy)
+			if tt.wantIncompatible {
+				assert.True(t, IsIncompatibleGangConfig(err))
+				assert.Nil(t, got)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

@@ -231,12 +231,13 @@ Renamed to `GangScheduler` (file `podgroup_manager.go` → `gang_scheduler.go`).
 // Implementations are selected at controller startup based on the --scheduler-name flag.
 type GangScheduler interface {
     // ReconcilePodGroup creates/updates/deletes the PodGroup for the given RBG.
-    // gangStrategy is nil for annotation-compat basic gang; non-nil for CoordinatedPolicy
-    // gang (MinReplicas may be empty for basic gang, non-empty for per-role minimums).
+    // gangStrategy is the strategy returned by common.GetGangStrategy. The legacy
+    // annotation resolves to a non-nil empty strategy, so nil means gang is off.
     //
     // The implementation decides internally:
-    // - gangStrategy == nil → minMember = GetGroupSize() (annotation compat)
-    // - gangStrategy != nil && MinReplicas empty → minMember = GetGroupSize() (basic gang)
+    // - gangStrategy == nil → gang disabled, delete any existing PodGroup
+    // - gangStrategy != nil && MinReplicas empty → minMember = GetGroupSize()
+    //   (whole-group gang; also what the legacy annotation resolves to)
     // - gangStrategy != nil && MinReplicas non-empty → subGroupPolicy (if supported)
     ReconcilePodGroup(
         ctx context.Context,
@@ -248,12 +249,19 @@ type GangScheduler interface {
     ) error
 
     // InjectPodSchedulingFields injects scheduler-specific fields:
-    // - pod.spec.schedulerName (all pods, from the scheduler name known at construction time)
-    // - PodGroup annotation/label (all pods for basic gang; only gang-participating
-    //   roles when minReplicas is configured)
+    // - the PodGroup annotation (Volcano) or label (scheduler-plugins) that ties the
+    //   pod to its PodGroup: all pods for basic gang, only gang-participating roles
+    //   when minReplicas is configured
+    // - pod.spec.schedulerName. Volcano sets it unconditionally ("volcano");
+    //   scheduler-plugins sets it only when --scheduler-profile-name was given, since
+    //   its profile name is chosen at deploy time.
+    //
+    // gangStrategy is nil when gang scheduling is not enabled, in which case
+    // implementations must inject nothing.
     InjectPodSchedulingFields(
         rbg *workloadsv1alpha2.RoleBasedGroup,
         role *workloadsv1alpha2.RoleSpec,
+        gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
         pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
     )
 }
@@ -267,7 +275,7 @@ No interface split or type assertion is needed. The controller calls `ReconcileP
 
 #### Interface Migration Impact
 
-The interface is renamed from `PodGroupManager` to `GangScheduler` (file `podgroup_manager.go` → `gang_scheduler.go`), and `InjectPodGroupLabels(rbg, pts)` is renamed to `InjectPodSchedulingFields(rbg, role, pts)` with an added `role *RoleSpec` parameter. Existing callers must be updated:
+The interface is renamed from `PodGroupManager` to `GangScheduler` (file `podgroup_manager.go` → `gang_scheduler.go`), and `InjectPodGroupLabels(rbg, pts)` is renamed to `InjectPodSchedulingFields(rbg, role, gangStrategy, pts)` with added `role *RoleSpec` and `gangStrategy *GangSchedulingStrategy` parameters. Existing callers must be updated:
 
 - `pkg/reconciler/pod_reconciler.go` — currently calls `r.podGroupManager.InjectPodGroupLabels(rbg, podTemplateApplyConfiguration)` in `buildPodTemplateSpec`. Update field name to `gangScheduler` and pass `role` as the second argument. The `role` variable is already in scope.
 - `pkg/reconciler/roleinstanceset_reconciler.go` — holds a `podGroupManager` field via `SetPodGroupManager`. Rename to `gangScheduler` / `SetGangScheduler`. Verify whether its internal pod-template construction path also calls `InjectPodGroupLabels` and update accordingly.
@@ -306,11 +314,12 @@ Two rules span both CRs: a `minReplicas` key must name a role that exists in the
 Enforcement therefore lives in one place: `buildGangSpec` returns an `IncompatibleGangConfigError`, and the controller
 
 - does not create or update the PodGroup;
+- pauses role create/update. Without a PodGroup, a pod created now would carry the gang scheduler's `schedulerName` but no gang membership, so it would be placed on its own and hold its accelerators while the rest of the group waits — the outcome gang scheduling exists to prevent. Already-running pods are left alone, and cleanup of roles the user removed from the spec still runs, so a broken policy does not pin resources the user has released;
 - records a `GangConfigured=False` condition with `reason=IncompatibleGangConfig` on the RoleBasedGroup;
 - emits one `IncompatibleGangConfig` warning event, **only when the condition changes**;
 - returns `RequeueAfter: 5m` instead of the error, keeping the object off the workqueue's 5ms-and-doubling error backoff.
 
-The backoff and the edge triggering are deliberate. Only a user edit can resolve the condition, and edits already re-enqueue through the CoordinatedPolicy and RoleBasedGroup watches, so a fast retry buys nothing. Reconciles are also driven by churn on owned resources (RoleInstanceSet, Service, RoleBasedGroupScalingAdapter), so a level-triggered event would fire at the churn rate regardless of the requeue interval. That would hit the client-go event spam filter, which is keyed on object plus event type and *not* on reason, silencing every other warning on the same RoleBasedGroup. Making the condition the durable surface and the event the edge decouples the event count from the reconcile rate.
+The backoff and the edge triggering are deliberate. CR edits already re-enqueue through the CoordinatedPolicy and RoleBasedGroup watches, so a fast retry buys nothing there; the 5m requeue exists for the changes that do not re-enqueue, such as a Volcano upgrade or a `--scheduler-name` switch. Reconciles are also driven by churn on owned resources (RoleInstanceSet, Service, RoleBasedGroupScalingAdapter), so a level-triggered event would fire at the churn rate regardless of the requeue interval. That would hit the client-go event spam filter, which is keyed on object plus event type and *not* on reason, silencing every other warning on the same RoleBasedGroup. Making the condition the durable surface and the event the edge decouples the event count from the reconcile rate.
 
 #### Why Not Degrade
 
@@ -367,7 +376,7 @@ spec:
         rbg.workloads.x-k8s.io/group-name: inference-demo
         rbg.workloads.x-k8s.io/role-name: prefill
     matchLabelKeys:
-    - rbg.workloads.x-k8s.io/role-instance-index
+    - rbg.workloads.x-k8s.io/role-instance-name
     minSubGroups: 2
     subGroupSize: 2
   - name: decode
@@ -376,7 +385,7 @@ spec:
         rbg.workloads.x-k8s.io/group-name: inference-demo
         rbg.workloads.x-k8s.io/role-name: decode
     matchLabelKeys:
-    - rbg.workloads.x-k8s.io/role-instance-index
+    - rbg.workloads.x-k8s.io/role-instance-name
     minSubGroups: 1
     subGroupSize: 2
 ```
@@ -399,7 +408,7 @@ scheduling.k8s.io/group-name: inference-demo
 | `spec.subGroupPolicy[].minSubGroups` | `GangSchedulingStrategy.MinReplicas` value | From CoordinatedPolicy |
 | `spec.subGroupPolicy[].subGroupSize` | `computeSubGroupSize(role)` | Computed from pattern |
 | `spec.subGroupPolicy[].labelSelector` | Fixed convention | group-name + role-name |
-| `spec.subGroupPolicy[].matchLabelKeys` | Fixed constant | role-instance-index |
+| `spec.subGroupPolicy[].matchLabelKeys` | Fixed constant | role-instance-name |
 
 ### Controller Flow
 
@@ -425,7 +434,9 @@ RBG Reconcile
   ├── 4. Call scheduler interface
   │     gs.ReconcilePodGroup(ctx, rbg, gangStrategy, ...)
   │     // Implementation decides internally:
-  │     //   - gangStrategy == nil or MinReplicas empty → minMember = GetGroupSize()
+  │     //   - gangStrategy == nil → gang disabled, delete any existing PodGroup
+  │     //   - MinReplicas empty → minMember = GetGroupSize() (whole-group gang;
+  │     //     also what the legacy annotation resolves to)
   │     //   - MinReplicas non-empty + subGroupPolicy supported → PodGroup with subGroupPolicy
   │     //   - MinReplicas non-empty + subGroupPolicy NOT supported → return error + status condition
   │     //     (runtime safety net: Webhook should have intercepted earlier)
@@ -440,7 +451,7 @@ func computeSubGroupSize(role *RoleSpec) int32 {
     if role.IsLeaderWorkerPattern() {
         lwp := role.GetLeaderWorkerPattern()
         if lwp != nil && lwp.Size != nil {
-            return *lwp.Size
+            return max(*lwp.Size, 1)
         }
         return 1
     }
@@ -502,13 +513,13 @@ Existing RBGs with `CustomComponentsPattern` that enable gang scheduling via the
 |---|---|
 | `rbg.workloads.x-k8s.io/group-name` | Identifies which RBG the pod belongs to |
 | `rbg.workloads.x-k8s.io/role-name` | Identifies which role the pod belongs to |
-| `rbg.workloads.x-k8s.io/role-instance-index` | Identifies which role replica the pod belongs to (used for subgroup partitioning) |
+| `rbg.workloads.x-k8s.io/role-instance-name` | Identifies which role replica the pod belongs to (used for subgroup partitioning) |
 
 **Pod Spec fields** (controller-injected, new):
 
 | Field | Description |
 |---|---|
-| `spec.schedulerName` | When gang scheduling is enabled, the controller automatically sets this via `InjectPodSchedulingFields` using the scheduler name from the `--scheduler-name` flag (e.g., `"volcano"`). Users do not need to manually set it in the pod template. All pods get schedulerName; only gang-participating roles' pods additionally get PodGroup annotation/label |
+| `spec.schedulerName` | When gang scheduling is enabled, the controller sets this via `InjectPodSchedulingFields`. Volcano sets it unconditionally to `"volcano"`. scheduler-plugins sets it only when `--scheduler-profile-name` is given, because its kube-scheduler profile name is chosen at deploy time and defaults to the cluster default scheduler; with the flag empty, no `schedulerName` is injected. Users do not need to set it in the pod template. All pods of gang-covered roles get `schedulerName`; only gang-participating roles' pods additionally get the PodGroup annotation/label |
 
 > **Rollout note**: `pod.spec.schedulerName` is set in the pod template by `InjectPodSchedulingFields` at the `PodReconciler` level. When gang scheduling is newly enabled on an existing RBG, only **newly created** pods pick up the correct `schedulerName`. Existing pods retain the default scheduler. To enforce gang scheduling on existing pods, the user must trigger a pod recreation (e.g., scale down and up, or restart the workload). Conversely, when gang scheduling is disabled, existing pods with `schedulerName` set will continue to use the gang scheduler until recreated.
 
@@ -517,7 +528,8 @@ Existing RBGs with `CustomComponentsPattern` that enable gang scheduling via the
 | Key | Description |
 |---|---|
 | `scheduling.k8s.io/group-name` | Volcano scheduler's fixed Pod→PodGroup association annotation |
-| `pod-group.scheduling.sigs.k8s.io/name` | scheduler-plugins' Pod→PodGroup association label |
+| `pod-group.scheduling.sigs.k8s.io/name` | Koordinator/ACK Pod→PodGroup association label |
+| `scheduling.x-k8s.io/pod-group` | Upstream scheduler-plugins coscheduling label. Upstream does not recognise the key above, so both are set |
 
 ### Backward Compatibility
 
