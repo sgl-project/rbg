@@ -54,7 +54,7 @@ spec:
               components:
                 description: Components is a list of components, each of which specifies
                   a component and the number of replicas and template for RoleInstance
-                  that match the component.
+                  that match the component. Component names must be unique.
                 items:
                   properties:
                     annotations:
@@ -93,6 +93,9 @@ spec:
                   - template
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               readinessGates:
                 description: ReadinessGates is an optional list of PodReadinessGates
                   for the whole RoleInstance.

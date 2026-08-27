@@ -402,7 +402,10 @@ type LeaderWorkerPattern struct {
 }
 
 type CustomComponentsPattern struct {
+	// Components describe the components that will be created. Component names must be unique.
 	// +optional
+	// +listType=map
+	// +listMapKey=name
 	Components []InstanceComponent `json:"components,omitempty"`
 
 	// RestartPolicy defines the restart policy when pod failures happen.

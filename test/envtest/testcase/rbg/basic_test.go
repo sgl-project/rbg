@@ -23,10 +23,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 )
 
@@ -98,5 +101,109 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 			Expect(createdRBG.Spec.Roles).To(HaveLen(1))
 			Expect(createdRBG.Spec.Roles[0].Name).To(Equal("worker"))
 		})
+
+		It("Should reject v1alpha2 custom components with duplicate names", func() {
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "duplicate-v1alpha2-components",
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							Pattern: workloadsv1alpha2.Pattern{
+								CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+									Components: []workloadsv1alpha2.InstanceComponent{
+										{
+											Name:     "worker",
+											Template: nginxPodTemplate(),
+										},
+										{
+											Name:     "worker",
+											Template: nginxPodTemplate(),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			expectInvalidCreate(rbg)
+		})
+
+		It("Should reject v1alpha1 components with duplicate names", func() {
+			rbg := &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "duplicate-v1alpha1-components",
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha1.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							Components: []workloadsv1alpha1.InstanceComponent{
+								{
+									Name:     "worker",
+									Template: nginxPodTemplate(),
+								},
+								{
+									Name:     "worker",
+									Template: nginxPodTemplate(),
+								},
+							},
+						},
+					},
+				},
+			}
+
+			expectInvalidCreate(rbg)
+		})
+
+		It("Should reject RoleInstance components with duplicate names", func() {
+			instance := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "duplicate-roleinstance-components",
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{
+							Name:     "worker",
+							Template: nginxPodTemplate(),
+						},
+						{
+							Name:     "worker",
+							Template: nginxPodTemplate(),
+						},
+					},
+				},
+			}
+
+			expectInvalidCreate(instance)
+		})
 	})
 })
+
+func nginxPodTemplate() corev1.PodTemplateSpec {
+	return corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "nginx",
+					Image: "nginx:latest",
+				},
+			},
+		},
+	}
+}
+
+func expectInvalidCreate(obj client.Object) {
+	err := testutil.K8sClient.Create(testutil.Ctx, obj)
+	Expect(err).To(HaveOccurred())
+	Expect(apierrors.IsInvalid(err)).To(BeTrue(), "got %v", err)
+}
