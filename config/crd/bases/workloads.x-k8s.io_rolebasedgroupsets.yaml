@@ -7622,7 +7622,7 @@ spec:
                           type: object
                         components:
                           description: Components describe the components that will
-                            be created.
+                            be created. Component names must be unique.
                           items:
                             properties:
                               name:
@@ -7648,6 +7648,9 @@ spec:
                             - template
                             type: object
                           type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
                         dependencies:
                           description: Dependencies of the role
                           items:
@@ -24408,6 +24411,9 @@ spec:
                                 with custom components.
                               properties:
                                 components:
+                                  description: Components describe the components
+                                    that will be created. Component names must be
+                                    unique.
                                   items:
                                     properties:
                                       annotations:
@@ -24448,6 +24454,9 @@ spec:
                                     - template
                                     type: object
                                   type: array
+                                  x-kubernetes-list-map-keys:
+                                  - name
+                                  x-kubernetes-list-type: map
                                 restartPolicy:
                                   description: |-
                                     RestartPolicy defines the restart policy when pod failures happen.

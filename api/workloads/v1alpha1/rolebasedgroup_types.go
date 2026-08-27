@@ -358,8 +358,10 @@ type RoleSpec struct {
 	// +optional
 	LeaderWorkerSet *LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
 
-	// Components describe the components that will be created.
+	// Components describe the components that will be created. Component names must be unique.
 	// +optional
+	// +listType=map
+	// +listMapKey=name
 	Components []InstanceComponent `json:"components,omitempty"`
 
 	// +optional
