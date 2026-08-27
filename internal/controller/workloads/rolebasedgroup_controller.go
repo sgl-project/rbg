@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -97,6 +98,9 @@ type RoleBasedGroupReconciler struct {
 	// still enabled. When false, Deployment/StatefulSet/LeaderWorkerSet are skipped
 	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is removed.
 	enableDeprecatedWorkloadTypes bool
+	// revisionEqualityCache caches semantic revision equality results to avoid
+	// expensive ApplyRevision + getRBGPatch reconstruction on every reconcile.
+	revisionEqualityCache *lru.Cache
 }
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
@@ -106,13 +110,14 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 		return nil, err
 	}
 	return &RoleBasedGroupReconciler{
-		client:             c,
-		apiReader:          mgr.GetAPIReader(),
-		scheme:             mgr.GetScheme(),
-		recorder:           mgr.GetEventRecorderFor("RoleBasedGroup"),
-		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
-		podGroupManager:    podGroupManager,
-		NodeBindings:       bindings,
+		client:                c,
+		apiReader:             mgr.GetAPIReader(),
+		scheme:                mgr.GetScheme(),
+		recorder:              mgr.GetEventRecorderFor("RoleBasedGroup"),
+		workloadReconciler:    make(map[string]reconciler.WorkloadReconciler),
+		podGroupManager:       podGroupManager,
+		NodeBindings:          bindings,
+		revisionEqualityCache: lru.New(utils.MaxRevisionEqualityCacheEntries),
 	}, nil
 }
 
@@ -260,14 +265,24 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 	}
 
 	if !utils.EqualRevision(currentRevision, expectedRevision) {
-		logger.Info("Current revision need to be updated")
-		if err := r.client.Create(ctx, expectedRevision); err != nil {
-			logger.Error(err, fmt.Sprintf("Failed to create revision %v", expectedRevision))
-			r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
-			return nil, err
+		// If raw bytes differ but the revision is semantically equivalent, avoid
+		// triggering a spurious revision creation. This handles serialization drift
+		// across client-go versions (e.g., "creationTimestamp": null vs omitted).
+		if utils.SetMatchesRevision(rbg, expectedRevision, currentRevision, r.revisionEqualityCache) {
+			logger.V(4).Info("Revision bytes differ but are semantically equal, skipping creation")
+			// Keep using the persisted revision so downstream role hashes stay
+			// stable across serializer-only changes.
+			expectedRevision = currentRevision
 		} else {
-			logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
-			r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
+			logger.Info("Current revision need to be updated")
+			if err := r.client.Create(ctx, expectedRevision); err != nil {
+				logger.Error(err, fmt.Sprintf("Failed to create revision %v", expectedRevision))
+				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCreateRevision, "Failed create revision for RoleBasedGroup")
+				return nil, err
+			} else {
+				logger.Info(fmt.Sprintf("Create revision [%s] successfully", expectedRevision.Name))
+				r.recorder.Event(rbg, corev1.EventTypeNormal, SucceedCreateRevision, "Successful create revision for RoleBasedGroup")
+			}
 		}
 	}
 

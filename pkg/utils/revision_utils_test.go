@@ -24,16 +24,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	testutils "sigs.k8s.io/rbgs/test/utils"
 )
 
 func TestListRevisions(t *testing.T) {
@@ -910,6 +913,109 @@ func getRBG() *workloadsv1alpha2.RoleBasedGroup {
 			},
 		},
 	}
+}
+
+func TestSetMatchesRevision(t *testing.T) {
+	rbg := getRBG()
+	rbg.UID = "test-rbg-uid"
+	rbg.Generation = 1
+
+	// Generate the proposed revision patch from the current RBG spec
+	proposedPatch, err := getRBGPatch(rbg)
+	assert.NoError(t, err)
+	proposedRevision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "proposed-rev", ResourceVersion: "100"},
+		Data:       runtime.RawExtension{Raw: proposedPatch},
+	}
+
+	t.Run("IdenticalBytes_SemanticallyEqual", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: proposedPatch},
+		}
+		result := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
+		assert.True(t, result, "identical patch bytes should be semantically equal")
+	})
+
+	t.Run("LegacyCreationTimestamp_SemanticallyEqual", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		legacyPatch, err := testutils.WithLegacyCreationTimestamp(proposedPatch)
+		require.NoError(t, err)
+		assert.NotEqual(t, proposedPatch, legacyPatch, "drift injection must actually change the bytes")
+
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: legacyPatch},
+		}
+		result := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
+		assert.True(t, result, "legacy creationTimestamp serialization should still match semantically")
+	})
+
+	t.Run("TrulyDifferentSpec_ReturnsFalse", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		differentRbg := getRBG()
+		differentRbg.UID = "test-rbg-uid"
+		differentRbg.Generation = 1
+		differentRbg.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Image = "nginx:999"
+		differentPatch, err := getRBGPatch(differentRbg)
+		assert.NoError(t, err)
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: differentPatch},
+		}
+		result := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
+		assert.False(t, result, "revisions with truly different specs should not match")
+	})
+
+	t.Run("CacheHit_SecondCallReturnsTrue", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: proposedPatch},
+		}
+		result1 := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
+		assert.True(t, result1)
+		result2 := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
+		assert.True(t, result2)
+		assert.Equal(t, 1, cache.Len())
+	})
+
+	t.Run("NilExistingRevision_ReturnsFalse", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		result := SetMatchesRevision(rbg, proposedRevision, nil, cache)
+		assert.False(t, result)
+	})
+
+	t.Run("NilProposedRevision_ReturnsFalse", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: proposedPatch},
+		}
+		result := SetMatchesRevision(rbg, nil, existingRevision, cache)
+		assert.False(t, result)
+	})
+
+	t.Run("NilCache_ReturnsFalseNoPanic", func(t *testing.T) {
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: proposedPatch},
+		}
+		result := SetMatchesRevision(rbg, proposedRevision, existingRevision, nil)
+		assert.False(t, result)
+	})
+
+	t.Run("CorruptedExistingRevision_ReturnsFalse", func(t *testing.T) {
+		cache := lru.New(MaxRevisionEqualityCacheEntries)
+		existingRevision := &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing-rev", ResourceVersion: "200"},
+			Data:       runtime.RawExtension{Raw: []byte("invalid-json")},
+		}
+		result := SetMatchesRevision(rbg, proposedRevision, existingRevision, cache)
+		assert.False(t, result, "corrupted revision data should return false, not panic")
+		assert.Equal(t, 0, cache.Len())
+	})
 }
 
 func getRBGWithRoleTemplates() *workloadsv1alpha2.RoleBasedGroup {

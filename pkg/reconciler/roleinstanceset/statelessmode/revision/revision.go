@@ -17,13 +17,17 @@ limitations under the License.
 package revision
 
 import (
+	"bytes"
 	"encoding/json"
 
 	apps "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller/history"
+	"k8s.io/utils/lru"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
@@ -38,6 +42,7 @@ var (
 type Interface interface {
 	NewRevision(set *workloadsv1alpha2.RoleInstanceSet, revision int64, collisionCount *int32) (*apps.ControllerRevision, error)
 	ApplyRevision(set *workloadsv1alpha2.RoleInstanceSet, revision *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstanceSet, error)
+	SetMatchesRevision(set *workloadsv1alpha2.RoleInstanceSet, proposedRevision *apps.ControllerRevision, existingRevision *apps.ControllerRevision, cache *lru.Cache) bool
 }
 
 // NewRevisionControl create a normal revision control.
@@ -106,4 +111,57 @@ func (c *realControl) ApplyRevision(set *workloadsv1alpha2.RoleInstanceSet, revi
 	}
 	coreControl := core.New(clone)
 	return coreControl.ApplyRevisionPatch(patched)
+}
+
+// revisionEqualityCacheKey uniquely identifies a semantic equality result by
+// combining the RoleInstanceSet UID, its generation, and the ResourceVersion
+// of the existing ControllerRevision being compared.
+type revisionEqualityCacheKey struct {
+	setUID                  types.UID
+	setGeneration           int64
+	revisionResourceVersion string
+}
+
+// SetMatchesRevision returns true if the proposedRevision (generated from the
+// current set spec) semantically matches the existingRevision, even when their
+// raw bytes differ due to serialization changes across client-go versions.
+// It works by applying the existing revision back to the set, re-generating a
+// patch with the current serialization format, and comparing the raw bytes.
+// Results are cached in the provided LRU cache to avoid expensive
+// reconstruction on every reconcile.
+func (c *realControl) SetMatchesRevision(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	proposedRevision *apps.ControllerRevision,
+	existingRevision *apps.ControllerRevision,
+	cache *lru.Cache,
+) bool {
+	if existingRevision == nil || proposedRevision == nil || cache == nil {
+		return false
+	}
+	cacheKey := revisionEqualityCacheKey{
+		setUID:                  set.UID,
+		setGeneration:           set.Generation,
+		revisionResourceVersion: existingRevision.ResourceVersion,
+	}
+	if _, ok := cache.Get(cacheKey); ok {
+		return true
+	}
+	restoredSet, err := c.ApplyRevision(set, existingRevision)
+	if err != nil {
+		klog.V(4).InfoS("SetMatchesRevision: ApplyRevision failed, falling back to new revision creation",
+			"set", klog.KRef(set.Namespace, set.Name), "err", err)
+		return false
+	}
+	coreControl := core.New(restoredSet)
+	reconstructedPatch, err := c.getPatch(restoredSet, coreControl)
+	if err != nil {
+		klog.V(4).InfoS("SetMatchesRevision: getPatch failed, falling back to new revision creation",
+			"set", klog.KRef(set.Namespace, set.Name), "err", err)
+		return false
+	}
+	if bytes.Equal(proposedRevision.Data.Raw, reconstructedPatch) {
+		cache.Add(cacheKey, struct{}{})
+		return true
+	}
+	return false
 }
