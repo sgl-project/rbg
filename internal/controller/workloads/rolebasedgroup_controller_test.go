@@ -17,9 +17,11 @@ limitations under the License.
 package workloads
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +51,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
+	testutils "sigs.k8s.io/rbgs/test/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
@@ -2101,5 +2105,76 @@ func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func Test_HandleRevisions_SemanticallyEqualRevisionKeepsPersistedRoleHash(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Generation = 1
+
+	ctx := ctrl.LoggerInto(context.TODO(), zap.New().WithValues("env", "unit-test"))
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(rbg).Build()
+
+	// A revision persisted by an older client-go: same spec, but its patch spells
+	// out "creationTimestamp": null instead of omitting it.
+	persistedRevision, err := utils.NewRevision(ctx, fakeClient, rbg, nil)
+	if err != nil {
+		t.Fatalf("NewRevision() error = %v", err)
+	}
+	legacyPatch, err := testutils.WithLegacyCreationTimestamp(persistedRevision.Data.Raw)
+	if err != nil {
+		t.Fatalf("WithLegacyCreationTimestamp() error = %v", err)
+	}
+	if bytes.Equal(legacyPatch, persistedRevision.Data.Raw) {
+		t.Fatalf("drift injection must actually change the patch bytes")
+	}
+	persistedRevision.Data.Raw = legacyPatch
+	if err := fakeClient.Create(ctx, persistedRevision); err != nil {
+		t.Fatalf("failed to seed persisted revision: %v", err)
+	}
+
+	freshRevision, err := utils.NewRevision(ctx, fakeClient, rbg, persistedRevision)
+	if err != nil {
+		t.Fatalf("NewRevision() error = %v", err)
+	}
+	persistedHash, err := utils.GetRolesRevisionHash(persistedRevision)
+	if err != nil {
+		t.Fatalf("GetRolesRevisionHash(persisted) error = %v", err)
+	}
+	freshHash, err := utils.GetRolesRevisionHash(freshRevision)
+	if err != nil {
+		t.Fatalf("GetRolesRevisionHash(fresh) error = %v", err)
+	}
+	if reflect.DeepEqual(persistedHash, freshHash) {
+		t.Fatalf("fixture is not exercising the regression: legacy and fresh role hashes are identical")
+	}
+
+	r := &RoleBasedGroupReconciler{
+		client:                fakeClient,
+		apiReader:             fakeClient,
+		scheme:                testScheme,
+		recorder:              record.NewFakeRecorder(10),
+		revisionEqualityCache: lru.New(utils.MaxRevisionEqualityCacheEntries),
+	}
+
+	gotHash, err := r.handleRevisions(ctx, rbg)
+	if err != nil {
+		t.Fatalf("handleRevisions() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(gotHash, persistedHash) {
+		t.Errorf("handleRevisions() hash = %v, want persisted revision hash %v", gotHash, persistedHash)
+	}
+
+	revisionList := &appsv1.ControllerRevisionList{}
+	if err := fakeClient.List(ctx, revisionList, client.InNamespace(rbg.Namespace)); err != nil {
+		t.Fatalf("failed to list revisions: %v", err)
+	}
+	if len(revisionList.Items) != 1 {
+		t.Errorf("expected no new ControllerRevision, got %d revisions", len(revisionList.Items))
 	}
 }

@@ -17,7 +17,6 @@ limitations under the License.
 package revision
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	testutils "sigs.k8s.io/rbgs/test/utils"
 )
 
 const maxRevisionEqualityCacheEntries = 10000
@@ -68,38 +68,6 @@ func newRevisionTestSet(image string) *workloadsv1alpha2.RoleInstanceSet {
 	}
 }
 
-// withLegacyCreationTimestamp rewrites every "metadata" object in the patch to
-// carry an explicit "creationTimestamp": null, reproducing how older client-go
-// versions serialized revisions. It edits the parsed tree rather than the raw
-// text, so the result stays valid JSON regardless of the fixture's shape.
-func withLegacyCreationTimestamp(t *testing.T, patch []byte) []byte {
-	t.Helper()
-	var tree interface{}
-	require.NoError(t, json.Unmarshal(patch, &tree))
-
-	var inject func(node interface{})
-	inject = func(node interface{}) {
-		switch n := node.(type) {
-		case map[string]interface{}:
-			for key, child := range n {
-				if meta, ok := child.(map[string]interface{}); ok && key == "metadata" {
-					meta["creationTimestamp"] = nil
-				}
-				inject(child)
-			}
-		case []interface{}:
-			for _, child := range n {
-				inject(child)
-			}
-		}
-	}
-	inject(tree)
-
-	legacy, err := json.Marshal(tree)
-	require.NoError(t, err)
-	return legacy
-}
-
 func TestSetMatchesRevision(t *testing.T) {
 	control := NewRevisionControl()
 	set := newRevisionTestSet("nginx:1.0")
@@ -119,7 +87,8 @@ func TestSetMatchesRevision(t *testing.T) {
 
 	t.Run("LegacyCreationTimestamp_SemanticallyEqual", func(t *testing.T) {
 		cache := lru.New(maxRevisionEqualityCacheEntries)
-		legacyPatch := withLegacyCreationTimestamp(t, proposedRevision.Data.Raw)
+		legacyPatch, err := testutils.WithLegacyCreationTimestamp(proposedRevision.Data.Raw)
+		require.NoError(t, err)
 		assert.NotEqual(t, proposedRevision.Data.Raw, legacyPatch, "drift injection must actually change the bytes")
 
 		existingRevision := &apps.ControllerRevision{

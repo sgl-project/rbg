@@ -268,6 +268,9 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 		// across client-go versions (e.g., "creationTimestamp": null vs omitted).
 		if utils.SetMatchesRevision(rbg, expectedRevision, currentRevision, r.revisionEqualityCache) {
 			logger.V(4).Info("Revision bytes differ but are semantically equal, skipping creation")
+			// Keep using the persisted revision so downstream role hashes stay
+			// stable across serializer-only changes.
+			expectedRevision = currentRevision
 		} else {
 			logger.Info("Current revision need to be updated")
 			if err := r.client.Create(ctx, expectedRevision); err != nil {

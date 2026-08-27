@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	testutils "sigs.k8s.io/rbgs/test/utils"
 )
 
 func TestListRevisions(t *testing.T) {
@@ -914,38 +915,6 @@ func getRBG() *workloadsv1alpha2.RoleBasedGroup {
 	}
 }
 
-// withLegacyCreationTimestamp rewrites every "metadata" object in the patch to
-// carry an explicit "creationTimestamp": null, reproducing how older client-go
-// versions serialized revisions. It edits the parsed tree rather than the raw
-// text, so the result stays valid JSON regardless of the fixture's shape.
-func withLegacyCreationTimestamp(t *testing.T, patch []byte) []byte {
-	t.Helper()
-	var tree interface{}
-	require.NoError(t, json.Unmarshal(patch, &tree))
-
-	var inject func(node interface{})
-	inject = func(node interface{}) {
-		switch n := node.(type) {
-		case map[string]interface{}:
-			for key, child := range n {
-				if meta, ok := child.(map[string]interface{}); ok && key == "metadata" {
-					meta["creationTimestamp"] = nil
-				}
-				inject(child)
-			}
-		case []interface{}:
-			for _, child := range n {
-				inject(child)
-			}
-		}
-	}
-	inject(tree)
-
-	legacy, err := json.Marshal(tree)
-	require.NoError(t, err)
-	return legacy
-}
-
 func TestSetMatchesRevision(t *testing.T) {
 	rbg := getRBG()
 	rbg.UID = "test-rbg-uid"
@@ -971,7 +940,8 @@ func TestSetMatchesRevision(t *testing.T) {
 
 	t.Run("LegacyCreationTimestamp_SemanticallyEqual", func(t *testing.T) {
 		cache := lru.New(MaxRevisionEqualityCacheEntries)
-		legacyPatch := withLegacyCreationTimestamp(t, proposedPatch)
+		legacyPatch, err := testutils.WithLegacyCreationTimestamp(proposedPatch)
+		require.NoError(t, err)
 		assert.NotEqual(t, proposedPatch, legacyPatch, "drift injection must actually change the bytes")
 
 		existingRevision := &appsv1.ControllerRevision{
