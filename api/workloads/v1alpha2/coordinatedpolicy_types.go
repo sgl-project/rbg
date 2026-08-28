@@ -96,8 +96,10 @@ type GangSchedulingStrategy struct {
 	// Keys must name roles that are listed in the enclosing policy rule's
 	// `roles` field, and each value must be at least 1. Both are enforced by the
 	// CoordinatedPolicy validating webhook rather than by the CRD schema: this field
-	// sits inside the unbounded spec.policies array, where a CEL rule's estimated cost
-	// exceeds the apiserver budget and would make the entire CRD unloadable.
+	// sits inside the unbounded spec.policies array, where the apiserver's cost
+	// estimator rejects a CEL rule at over 100x the per-rule budget and the whole CRD
+	// then fails to load. Bounding the map alone is not enough; it would also need a
+	// maxItems on spec.policies, which would tighten an already released schema.
 	//
 	// Whether a minimum actually fits the role's replicas is not an admission check,
 	// because a policy may be written before the RoleBasedGroup exists and the replicas
@@ -114,9 +116,9 @@ type GangSchedulingStrategy struct {
 	// `subGroupPolicy` field and therefore require --scheduler-name=volcano
 	// with Volcano >= 1.14. scheduler-plugins supports basic gang only.
 	//
-	// When the gang field is present but minReplicas is empty (nil),
-	// ALL roles participate and minMember equals GetGroupSize()
-	// (basic all-or-nothing gang).
+	// When the gang field is present but minReplicas is empty (nil), the gang is
+	// all-or-nothing over the roles the enclosing policy rule lists, and minMember is
+	// their combined pod count.
 	//
 	// +optional
 	// +kubebuilder:validation:Type=object

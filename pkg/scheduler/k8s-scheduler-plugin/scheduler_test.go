@@ -24,10 +24,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scheduler/common"
+	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
 
 func testRBG() *workloadsv1alpha2.RoleBasedGroup {
@@ -43,6 +48,18 @@ func testRBG() *workloadsv1alpha2.RoleBasedGroup {
 			}},
 		},
 	}
+}
+
+func twoRoleRBG() *workloadsv1alpha2.RoleBasedGroup {
+	rbg := testRBG()
+	rbg.Spec.Roles = append(rbg.Spec.Roles, workloadsv1alpha2.RoleSpec{
+		Name:     "decode",
+		Replicas: ptr.To(int32(3)),
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{},
+		},
+	})
+	return rbg
 }
 
 func ptsLabels(pts *coreapplyv1.PodTemplateSpecApplyConfiguration) map[string]string {
@@ -66,7 +83,7 @@ func TestInjectPodSchedulingFields(t *testing.T) {
 	t.Run("profile name configured", func(t *testing.T) {
 		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
 		New(nil, "custom-scheduler").InjectPodSchedulingFields(
-			rbg, role, &workloadsv1alpha2.GangSchedulingStrategy{}, pts)
+			rbg, role, &common.GangStrategy{}, pts)
 		require.NotNil(t, pts.Spec)
 		assert.Equal(t, "custom-scheduler", ptr.Deref(pts.Spec.SchedulerName, ""))
 		assert.Equal(t, "rbg", ptsLabels(pts)[LabelKey])
@@ -77,7 +94,7 @@ func TestInjectPodSchedulingFields(t *testing.T) {
 	// silent no-op on that half of the ecosystem.
 	t.Run("both PodGroup label conventions are injected", func(t *testing.T) {
 		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
-		New(nil, "").InjectPodSchedulingFields(rbg, role, &workloadsv1alpha2.GangSchedulingStrategy{}, pts)
+		New(nil, "").InjectPodSchedulingFields(rbg, role, &common.GangStrategy{}, pts)
 		assert.Equal(t, "rbg", ptsLabels(pts)[LabelKey])
 		assert.Equal(t, "rbg", ptsLabels(pts)[UpstreamLabelKey])
 		assert.Equal(t, "scheduling.x-k8s.io/pod-group", UpstreamLabelKey)
@@ -87,10 +104,43 @@ func TestInjectPodSchedulingFields(t *testing.T) {
 	// must leave schedulerName alone rather than blanking whatever the role template set.
 	t.Run("profile name empty leaves schedulerName untouched", func(t *testing.T) {
 		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
-		New(nil, "").InjectPodSchedulingFields(rbg, role, &workloadsv1alpha2.GangSchedulingStrategy{}, pts)
+		New(nil, "").InjectPodSchedulingFields(rbg, role, &common.GangStrategy{}, pts)
 		assert.Nil(t, pts.Spec)
 		assert.Equal(t, "rbg", ptsLabels(pts)[LabelKey])
 	})
+}
+
+// A role outside spec.policies[].roles must not carry the PodGroup labels: coscheduling
+// counts every labelled pod against minMember, which was sized for the covered roles only.
+func TestInjectPodSchedulingFieldsRoleOutsideGang(t *testing.T) {
+	rbg := twoRoleRBG()
+	decode := &rbg.Spec.Roles[1]
+	strategy := &common.GangStrategy{Roles: sets.New("prefill")}
+
+	pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
+	New(nil, "custom-scheduler").InjectPodSchedulingFields(rbg, decode, strategy, pts)
+
+	require.NotNil(t, pts.Spec)
+	assert.Equal(t, "custom-scheduler", ptr.Deref(pts.Spec.SchedulerName, ""))
+	assert.NotContains(t, ptsLabels(pts), LabelKey)
+	assert.NotContains(t, ptsLabels(pts), UpstreamLabelKey)
+}
+
+func TestCreateOrUpdateMinMemberCoversScopedRolesOnly(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, schedv1alpha1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	rbg := twoRoleRBG()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	require.NoError(t, New(c, "").createOrUpdate(
+		context.Background(), rbg, &common.GangStrategy{Roles: sets.New("prefill")}))
+
+	podGroup := &schedv1alpha1.PodGroup{}
+	require.NoError(t, c.Get(
+		context.Background(), client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup))
+	assert.Equal(t, int32(2), podGroup.Spec.MinMember)
 }
 
 // TestReconcilePodGroupRejectsPerRoleMinimums pins the runtime safety net: the webhook
@@ -98,7 +148,10 @@ func TestInjectPodSchedulingFields(t *testing.T) {
 // controller ran with --scheduler-name=volcano must not silently degrade to a
 // whole-group gang after a restart.
 func TestReconcilePodGroupRejectsPerRoleMinimums(t *testing.T) {
-	strategy := &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 1}}
+	strategy := &common.GangStrategy{
+		Roles:       sets.New("prefill"),
+		MinReplicas: map[string]int32{"prefill": 1},
+	}
 	err := New(nil, "").ReconcilePodGroup(
 		context.Background(), testRBG(), strategy, nil, &sync.Map{}, nil)
 	require.Error(t, err)

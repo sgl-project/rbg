@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -538,7 +539,8 @@ func TestVolcanoPodGroupScheduler_ReconcileSetsSubGroupPolicyForMinReplicas(t *t
 			wrappersv2.BuildStandaloneRole("decode").WithReplicas(3).Obj(),
 		}).Obj()
 
-	gangStrategy := &workloadsv1alpha2.GangSchedulingStrategy{
+	gangStrategy := &common.GangStrategy{
+		Roles: sets.New("prefill", "decode"),
 		MinReplicas: map[string]int32{
 			"prefill": 2,
 			"decode":  1,
@@ -606,7 +608,8 @@ func TestVolcanoPodGroupScheduler_ReconcileRejectsMinReplicasWithoutCrdSupport(t
 			wrappersv2.BuildStandaloneRole("prefill").WithReplicas(3).Obj(),
 		}).Obj()
 
-	gangStrategy := &workloadsv1alpha2.GangSchedulingStrategy{
+	gangStrategy := &common.GangStrategy{
+		Roles:       sets.New("prefill"),
 		MinReplicas: map[string]int32{"prefill": 2},
 	}
 

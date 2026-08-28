@@ -27,6 +27,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,8 +124,10 @@ func TestBuildGangSpec(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			minMember, policies, err := buildGangSpec(
-				tt.rbg, &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: tt.minReplicas})
+			minMember, policies, err := buildGangSpec(tt.rbg, &common.GangStrategy{
+				Roles:       sets.KeySet(tt.minReplicas),
+				MinReplicas: tt.minReplicas,
+			})
 			if tt.wantErrContain != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErrContain)
@@ -169,16 +172,30 @@ func TestInjectPodSchedulingFields(t *testing.T) {
 		assert.Empty(t, ptsAnnotations(pts))
 	})
 
-	t.Run("whole-group gang enrolls every role", func(t *testing.T) {
+	t.Run("gang covering every role enrolls every role", func(t *testing.T) {
 		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
-		m.InjectPodSchedulingFields(rbg, prefill, &workloadsv1alpha2.GangSchedulingStrategy{}, pts)
+		m.InjectPodSchedulingFields(rbg, prefill, &common.GangStrategy{}, pts)
 		require.NotNil(t, pts.Spec)
 		assert.Equal(t, SchedulerName, ptr.Deref(pts.Spec.SchedulerName, ""))
 		assert.Equal(t, "rbg", ptsAnnotations(pts)[AnnotationKey])
 	})
 
-	t.Run("excluded role gets schedulerName but not the PodGroup annotation", func(t *testing.T) {
-		strategy := &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 1}}
+	t.Run("role outside a per-role gang gets schedulerName but not the PodGroup annotation", func(t *testing.T) {
+		strategy := &common.GangStrategy{
+			Roles:       sets.New("prefill"),
+			MinReplicas: map[string]int32{"prefill": 1},
+		}
+		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
+		m.InjectPodSchedulingFields(rbg, decode, strategy, pts)
+		require.NotNil(t, pts.Spec)
+		assert.Equal(t, SchedulerName, ptr.Deref(pts.Spec.SchedulerName, ""))
+		assert.NotContains(t, ptsAnnotations(pts), AnnotationKey)
+	})
+
+	// An all-or-nothing rule still scopes itself with spec.policies[].roles, so a role
+	// the rule leaves out must not be enrolled either.
+	t.Run("role outside an all-or-nothing gang is not enrolled", func(t *testing.T) {
+		strategy := &common.GangStrategy{Roles: sets.New("prefill")}
 		pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
 		m.InjectPodSchedulingFields(rbg, decode, strategy, pts)
 		require.NotNil(t, pts.Spec)
@@ -219,8 +236,14 @@ func TestCreateOrUpdateSubGroupPolicyDrift(t *testing.T) {
 	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
 
 	rbg := rbgWithRoles(standaloneRole("prefill", 4, ""), standaloneRole("decode", 6, ""))
-	before := &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 1, "decode": 2}}
-	after := &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2, "decode": 1}}
+	before := &common.GangStrategy{
+		Roles:       sets.New("prefill", "decode"),
+		MinReplicas: map[string]int32{"prefill": 1, "decode": 2},
+	}
+	after := &common.GangStrategy{
+		Roles:       sets.New("prefill", "decode"),
+		MinReplicas: map[string]int32{"prefill": 2, "decode": 1},
+	}
 
 	minMemberBefore, policiesBefore, err := buildGangSpec(rbg, before)
 	require.NoError(t, err)

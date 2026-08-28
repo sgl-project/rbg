@@ -2185,6 +2185,89 @@ func Test_HandleRevisions_SemanticallyEqualRevisionKeepsPersistedRoleHash(t *tes
 	if len(revisionList.Items) != 1 {
 		t.Errorf("expected no new ControllerRevision, got %d revisions", len(revisionList.Items))
 	}
+// TestRaiseScalingTargetsToGangMinimum pins the resolution of the deadlock between
+// coordination scaling and gang scheduling: maxSkew pacing must not park a gang-covered
+// role below the minimum its PodGroup waits for, because nothing would ever schedule and
+// the pacing itself waits on scheduling.
+func TestRaiseScalingTargetsToGangMinimum(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("prefill").WithReplicas(4).Obj(),
+			wrappersv2.BuildStandaloneRole("decode").WithReplicas(2).Obj(),
+		}).Obj()
+
+	tests := []struct {
+		name        string
+		targets     map[string]int32
+		strategy    *common.GangStrategy
+		wantTargets map[string]int32
+		wantRaised  []string
+	}{
+		{
+			name:     "gang disabled leaves the pacing alone",
+			targets:  map[string]int32{"prefill": 2},
+			strategy: nil,
+			// maxSkew is the only constraint, so the half-scaled batch stands.
+			wantTargets: map[string]int32{"prefill": 2},
+		},
+		{
+			name:        "no coordinated roles is a no-op",
+			targets:     map[string]int32{},
+			strategy:    &common.GangStrategy{},
+			wantTargets: map[string]int32{},
+		},
+		{
+			name:        "an all-or-nothing gang needs every replica",
+			targets:     map[string]int32{"prefill": 2, "decode": 1},
+			strategy:    &common.GangStrategy{},
+			wantTargets: map[string]int32{"prefill": 4, "decode": 2},
+			wantRaised:  []string{"decode", "prefill"},
+		},
+		{
+			name:        "a per-role gang needs only its minimum",
+			targets:     map[string]int32{"prefill": 1},
+			strategy:    &common.GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 3}},
+			wantTargets: map[string]int32{"prefill": 3},
+			wantRaised:  []string{"prefill"},
+		},
+		{
+			name:     "a role outside the gang keeps its paced target",
+			targets:  map[string]int32{"prefill": 2, "decode": 1},
+			strategy: &common.GangStrategy{Roles: sets.New("prefill")},
+			// decode is not in the gang, so its pods are never counted in minMember.
+			wantTargets: map[string]int32{"prefill": 4, "decode": 1},
+			wantRaised:  []string{"prefill"},
+		},
+		{
+			name:        "a target already above the minimum is untouched",
+			targets:     map[string]int32{"prefill": 4},
+			strategy:    &common.GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 3}},
+			wantTargets: map[string]int32{"prefill": 4},
+		},
+		{
+			// Only paced roles are in the map; an absent role already runs at its desired
+			// replicas, so inserting it here would create a target nothing asked for.
+			name:        "an uncoordinated role is not added to the map",
+			targets:     map[string]int32{"prefill": 1},
+			strategy:    &common.GangStrategy{},
+			wantTargets: map[string]int32{"prefill": 4},
+			wantRaised:  []string{"prefill"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raised := raiseScalingTargetsToGangMinimum(tt.targets, rbg, tt.strategy)
+			if len(tt.wantRaised) == 0 {
+				assert.Empty(t, raised)
+			} else {
+				assert.Equal(t, tt.wantRaised, raised)
+			}
+			assert.Equal(t, tt.wantTargets, tt.targets)
+		})
+	}
+}
+
 // stubGangScheduler lets a test drive Step 7 of Reconcile without a real PodGroup CRD.
 type stubGangScheduler struct {
 	err error
@@ -2193,7 +2276,7 @@ type stubGangScheduler struct {
 func (s *stubGangScheduler) ReconcilePodGroup(
 	context.Context,
 	*workloadsv1alpha2.RoleBasedGroup,
-	*workloadsv1alpha2.GangSchedulingStrategy,
+	*common.GangStrategy,
 	*builder.TypedBuilder[reconcile.Request],
 	*sync.Map,
 	client.Reader,
@@ -2204,7 +2287,7 @@ func (s *stubGangScheduler) ReconcilePodGroup(
 func (s *stubGangScheduler) InjectPodSchedulingFields(
 	*workloadsv1alpha2.RoleBasedGroup,
 	*workloadsv1alpha2.RoleSpec,
-	*workloadsv1alpha2.GangSchedulingStrategy,
+	*common.GangStrategy,
 	*coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
 }

@@ -270,6 +270,10 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: incompatibleGangConfigRequeue}, nil
 	}
 
+	if raised := raiseScalingTargetsToGangMinimum(scalingTargets, rbg, gangStrategy); len(raised) > 0 {
+		logger.V(1).Info("Raised coordinated scaling targets to the gang minimum", "roles", raised)
+	}
+
 	// Step 8: Reconcile roles, do create/update actions for roles.
 	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
 		return ctrl.Result{}, err
@@ -499,7 +503,7 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 func (r *RoleBasedGroupReconciler) reconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *gangcommon.GangStrategy,
 ) error {
 	if r.gangScheduler == nil {
 		return nil
@@ -845,7 +849,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 func (r *RoleBasedGroupReconciler) setGangConfiguredCondition(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *gangcommon.GangStrategy,
 	cause error,
 ) error {
 	conditionType := string(workloadsv1alpha2.RoleBasedGroupGangConfigured)
@@ -1203,6 +1207,43 @@ func (r *RoleBasedGroupReconciler) CheckCrdExists() error {
 		}
 	}
 	return nil
+}
+
+// raiseScalingTargetsToGangMinimum lifts every coordinated scaling target that sits
+// below the replica count its gang needs, and returns the role names it changed, sorted.
+//
+// Coordination scaling paces a role up in batches bounded by maxSkew and will not start
+// the next batch until the current replicas are Scheduled or Ready. A gang-covered role
+// held below its gang minimum reaches neither: the PodGroup withholds scheduling until
+// the whole gang can be placed at once. So scaling waits for a readiness that gang
+// scheduling is withholding, and gang scheduling waits for replicas that scaling will
+// not create — the group stays Pending forever with no error to point at.
+//
+// The gang minimum wins because it is the harder constraint. Exceeding maxSkew only
+// loosens how gradually a role ramps, while starving the gang blocks the group outright.
+//
+// Only roles already present in targets are touched: it holds exactly the roles a
+// CoordinatedPolicy paces, and every other role runs at its desired replicas, which is
+// never below its gang minimum.
+func raiseScalingTargetsToGangMinimum(
+	targets map[string]int32,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *gangcommon.GangStrategy,
+) []string {
+	if len(targets) == 0 || gangStrategy == nil {
+		return nil
+	}
+
+	raised := make([]string, 0, len(targets))
+	for roleName, minimum := range gangcommon.GangMinimumReplicas(rbg, gangStrategy) {
+		if target, paced := targets[roleName]; !paced || target >= minimum {
+			continue
+		}
+		targets[roleName] = minimum
+		raised = append(raised, roleName)
+	}
+	sort.Strings(raised)
+	return raised
 }
 
 // handleCoordinationStrategies calculates coordination scaling targets and rolling update strategies.

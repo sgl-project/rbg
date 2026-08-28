@@ -19,13 +19,34 @@ package common
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+// GangStrategy is the gang configuration resolved for one RoleBasedGroup.
+//
+// It is not the API type: a CoordinatedPolicy scopes each rule with
+// spec.policies[].roles, and an all-or-nothing rule has no minReplicas map to record
+// that scope in, so the resolved form carries the covered roles explicitly.
+type GangStrategy struct {
+	// Roles are the names of the roles the gang covers. Empty means every role in the
+	// group, which is what the legacy annotation resolves to since it has no way to
+	// name roles.
+	Roles sets.Set[string]
+
+	// MinReplicas is the minimum number of replicas of a covered role that must be
+	// schedulable before the gang is dispatched. Empty means every covered role
+	// participates in full, an all-or-nothing gang over Roles. When set, its keys are
+	// exactly Roles.
+	MinReplicas map[string]int32
+}
 
 // gangStrategyContextKey keys the gang strategy resolved for the reconcile that
 // the context belongs to.
@@ -36,7 +57,7 @@ type gangStrategyContextKey struct{}
 // another object's strategy.
 type resolvedGangStrategy struct {
 	key      client.ObjectKey
-	strategy *workloadsv1alpha2.GangSchedulingStrategy
+	strategy *GangStrategy
 }
 
 // ResolveGangStrategy resolves the strategy for rbg once and returns a context
@@ -48,7 +69,7 @@ func ResolveGangStrategy(
 	ctx context.Context,
 	c client.Reader,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (context.Context, *workloadsv1alpha2.GangSchedulingStrategy, error) {
+) (context.Context, *GangStrategy, error) {
 	strategy, err := getGangStrategy(ctx, c, rbg)
 	if err != nil {
 		return ctx, nil, err
@@ -64,8 +85,8 @@ func ResolveGangStrategy(
 // It first checks the CoordinatedPolicy (same name/namespace as the RBG) for
 // Scheduling.Gang strategies. If none is found, it falls back to the legacy
 // annotation compat path: when the rbg has the gang-scheduling annotation set
-// to "true", a default (empty) GangSchedulingStrategy is returned so that
-// callers can treat all gang-enabling paths uniformly via a non-nil pointer.
+// to "true", a whole-group GangStrategy is returned so that callers can treat all
+// gang-enabling paths uniformly via a non-nil pointer.
 //
 // Returns (nil, nil) when gang scheduling is not enabled. A read error on the
 // CoordinatedPolicy is returned rather than treated as absence, so that a
@@ -75,7 +96,7 @@ func GetGangStrategy(
 	ctx context.Context,
 	c client.Reader,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (*workloadsv1alpha2.GangSchedulingStrategy, error) {
+) (*GangStrategy, error) {
 	resolved, ok := ctx.Value(gangStrategyContextKey{}).(resolvedGangStrategy)
 	if ok && resolved.key == client.ObjectKeyFromObject(rbg) {
 		return resolved.strategy, nil
@@ -87,7 +108,7 @@ func getGangStrategy(
 	ctx context.Context,
 	c client.Reader,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (*workloadsv1alpha2.GangSchedulingStrategy, error) {
+) (*GangStrategy, error) {
 	// 1. Check CoordinatedPolicy for explicit gang strategies.
 	coordinatedPolicy := &workloadsv1alpha2.CoordinatedPolicy{}
 	err := c.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, coordinatedPolicy)
@@ -106,48 +127,130 @@ func getGangStrategy(
 
 	// 2. Fall back to the legacy annotation compat path.
 	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" {
-		return &workloadsv1alpha2.GangSchedulingStrategy{}, nil
+		return &GangStrategy{}, nil
 	}
 
 	return nil, nil
 }
 
 // RoleInGang reports whether the role participates in the gang described by strategy.
-// An empty minReplicas map means basic all-or-nothing gang over every role.
 func RoleInGang(
 	role *workloadsv1alpha2.RoleSpec,
-	strategy *workloadsv1alpha2.GangSchedulingStrategy,
+	strategy *GangStrategy,
 ) bool {
 	if strategy == nil || role == nil {
 		return false
 	}
-	if len(strategy.MinReplicas) == 0 {
+	if len(strategy.Roles) == 0 {
 		return true
 	}
-	_, ok := strategy.MinReplicas[role.Name]
-	return ok
+	return strategy.Roles.Has(role.Name)
+}
+
+// GangSize returns the number of pods an all-or-nothing gang covers, which is the
+// PodGroup minMember when no per-role minimum is configured.
+//
+// Only the roles the gang covers are counted. A CoordinatedPolicy rule scopes itself
+// with spec.policies[].roles, so a group may legitimately run roles the gang leaves
+// out; counting those would demand pods the gang never enrolls and leave the whole
+// group Pending.
+func GangSize(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	strategy *GangStrategy,
+) (int32, error) {
+	if unknown := UnknownGangRoles(rbg, strategy); len(unknown) > 0 {
+		return 0, NewIncompatibleGangConfigError(
+			"gang scheduling covers roles that do not exist in the RoleBasedGroup: %v; "+
+				"fix the role names in CoordinatedPolicy %s/%s",
+			unknown, rbg.Namespace, rbg.Name)
+	}
+
+	var size int32
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		if !RoleInGang(role, strategy) {
+			continue
+		}
+		size += workloadsv1alpha2.ComputeSubGroupSize(role) * ptr.Deref(role.Replicas, 1)
+	}
+
+	if size == 0 {
+		return 0, NewIncompatibleGangConfigError(
+			"gang scheduling resolved to minMember 0, which would provide no gang guarantee; "+
+				"the roles it covers in CoordinatedPolicy %s/%s are all scaled to zero",
+			rbg.Namespace, rbg.Name)
+	}
+	return size, nil
+}
+
+// GangMinimumReplicas returns, per covered role, the replica count the gang needs
+// before it can be dispatched. An all-or-nothing gang needs every replica of the
+// roles it covers; a per-role gang needs exactly its minReplicas.
+//
+// This is what other controllers must not hold a role below: the PodGroup counts the
+// pods of those replicas in minMember, so a role parked underneath its gang minimum
+// keeps the whole gang unschedulable.
+func GangMinimumReplicas(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	strategy *GangStrategy,
+) map[string]int32 {
+	if strategy == nil {
+		return nil
+	}
+	if len(strategy.MinReplicas) > 0 {
+		return strategy.MinReplicas
+	}
+
+	minimums := make(map[string]int32, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		if !RoleInGang(role, strategy) {
+			continue
+		}
+		minimums[role.Name] = ptr.Deref(role.Replicas, 1)
+	}
+	return minimums
+}
+
+// UnknownGangRoles returns the covered role names that name no role in the RBG, sorted.
+func UnknownGangRoles(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	strategy *GangStrategy,
+) []string {
+	if strategy == nil || len(strategy.Roles) == 0 {
+		return nil
+	}
+
+	known := make(sets.Set[string], len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		known.Insert(rbg.Spec.Roles[i].Name)
+	}
+	return sets.List(strategy.Roles.Difference(known))
 }
 
 // MergeGangStrategies collapses every Scheduling.Gang across all policy rules
 // into a single strategy, or returns nil when no rule declares one.
 //
-// Per-role minimums are scoped by the declaring rule: a key is only honored
-// when the rule that declares it also lists that role in its Roles field, which
-// is what makes Roles a meaningful scoping field rather than decoration. When
-// the same role carries a minimum in more than one rule, the largest wins,
-// because that is the only merge that satisfies every rule simultaneously.
+// The gang covers the union of the roles named by every rule that declares one, which
+// is what makes spec.policies[].roles a meaningful scoping field rather than
+// decoration. Per-role minimums are scoped by the declaring rule too: a key is only
+// honored when the rule that declares it also lists that role. When the same role
+// carries a minimum in more than one rule, the largest wins, because that is the only
+// merge that satisfies every rule simultaneously.
 //
-// A gang rule with an empty minReplicas map requests basic all-or-nothing gang
-// over the whole group, which subsumes any per-role minimum, so it short
-// circuits to the empty strategy.
+// A gang rule with an empty minReplicas map requests all-or-nothing gang over the
+// roles it names, which subsumes any per-role minimum, so the minimums are dropped
+// while the roles they named stay covered.
 //
 // It returns an IncompatibleGangConfigError when per-role minimums were declared
-// but every one of them was scoped away, since neither the empty strategy nor nil
+// but every one of them was scoped away, since neither an all-or-nothing gang nor nil
 // would describe what the policy asked for.
 func MergeGangStrategies(
 	coordinatedPolicy *workloadsv1alpha2.CoordinatedPolicy,
-) (*workloadsv1alpha2.GangSchedulingStrategy, error) {
+) (*GangStrategy, error) {
+	covered := sets.New[string]()
 	merged := map[string]int32{}
+	allOrNothing := false
 	found := false
 
 	for i := range coordinatedPolicy.Spec.Policies {
@@ -156,18 +259,16 @@ func MergeGangStrategies(
 			continue
 		}
 		found = true
+		covered.Insert(policy.Roles...)
 
 		gang := policy.Strategy.Scheduling.Gang
 		if len(gang.MinReplicas) == 0 {
-			return &workloadsv1alpha2.GangSchedulingStrategy{}, nil
+			allOrNothing = true
+			continue
 		}
 
-		scope := make(map[string]struct{}, len(policy.Roles))
-		for _, roleName := range policy.Roles {
-			scope[roleName] = struct{}{}
-		}
 		for roleName, minReplicas := range gang.MinReplicas {
-			if _, inScope := scope[roleName]; !inScope {
+			if !slices.Contains(policy.Roles, roleName) {
 				continue
 			}
 			if existing, ok := merged[roleName]; !ok || minReplicas > existing {
@@ -179,18 +280,21 @@ func MergeGangStrategies(
 	if !found {
 		return nil, nil
 	}
+	if allOrNothing {
+		return &GangStrategy{Roles: covered}, nil
+	}
 	if len(merged) == 0 {
-		// Every gang rule declared per-role minimums (an empty map short circuits above)
-		// yet none survived scoping, so every key named a role outside its own rule. The
-		// admission webhook rejects that, so reaching here means the policy predates the
-		// webhook or was written with admission disabled. Falling back to the empty
-		// strategy would gang the whole group, a stricter constraint than was asked for,
-		// so report the configuration instead of silently widening it.
+		// Every gang rule declared per-role minimums (an all-or-nothing rule is handled
+		// above) yet none survived scoping, so every key named a role outside its own
+		// rule. The admission webhook rejects that, so reaching here means the policy
+		// predates the webhook or was written with admission disabled. Falling back to an
+		// all-or-nothing gang would be a stricter constraint than was asked for, so
+		// report the configuration instead of silently widening it.
 		return nil, NewIncompatibleGangConfigError(
 			"gang scheduling minReplicas in CoordinatedPolicy %s/%s names only roles outside "+
 				"their own policy rule's roles list, so no per-role minimum applies; "+
 				"list those roles in the rule or remove the minimums",
 			coordinatedPolicy.Namespace, coordinatedPolicy.Name)
 	}
-	return &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: merged}, nil
+	return &GangStrategy{Roles: sets.KeySet(merged), MinReplicas: merged}, nil
 }

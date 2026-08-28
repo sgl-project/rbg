@@ -87,7 +87,7 @@ func New(c client.Client, schedulerProfileName string) *GangScheduler {
 func (m *GangScheduler) ReconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *common.GangStrategy,
 	runtimeController *builder.TypedBuilder[reconcile.Request],
 	watchedWorkload *sync.Map,
 	apiReader client.Reader,
@@ -111,7 +111,7 @@ func (m *GangScheduler) ReconcilePodGroup(
 		runtimeController.Owns(&schedv1alpha1.PodGroup{})
 	}
 
-	return m.createOrUpdate(ctx, rbg)
+	return m.createOrUpdate(ctx, rbg, gangStrategy)
 }
 
 // InjectPodSchedulingFields injects the kube PodGroup label into the pod template spec,
@@ -123,10 +123,14 @@ func (m *GangScheduler) ReconcilePodGroup(
 // --scheduler-profile-name. When that flag is empty, schedulerName is left untouched and
 // gang scheduling only works if scheduler-plugins is the cluster's default scheduler or
 // the role template sets schedulerName itself.
+//
+// schedulerName is injected for every role so one scheduler owns the whole group;
+// the PodGroup label, which is what actually enrols a pod in the gang, is injected
+// only for the roles the gang covers.
 func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *common.GangStrategy,
 	pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
 	if gangStrategy == nil {
@@ -138,6 +142,10 @@ func (m *GangScheduler) InjectPodSchedulingFields(
 			pts.Spec = &coreapplyv1.PodSpecApplyConfiguration{}
 		}
 		pts.Spec.WithSchedulerName(m.schedulerProfileName)
+	}
+
+	if !common.RoleInGang(role, gangStrategy) {
+		return
 	}
 
 	// Inject PodGroup labels for both the Koordinator/ACK and the upstream
@@ -161,10 +169,21 @@ func getScheduleTimeoutSeconds(rbg *workloadsv1alpha2.RoleBasedGroup) *int32 {
 	return &t
 }
 
-func (m *GangScheduler) createOrUpdate(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
+func (m *GangScheduler) createOrUpdate(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *common.GangStrategy,
+) error {
 	logger := log.FromContext(ctx)
 	gvk := utils.GetRbgGVK()
 	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, inheritSchedulingPolicyAnnotations)
+
+	desiredMinMember, err := common.GangSize(rbg, gangStrategy)
+	if err != nil {
+		return err
+	}
+	desiredTimeout := getScheduleTimeoutSeconds(rbg)
+
 	podGroup := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbg.Name,
@@ -175,12 +194,12 @@ func (m *GangScheduler) createOrUpdate(ctx context.Context, rbg *workloadsv1alph
 			Annotations: desiredAnnotations,
 		},
 		Spec: schedv1alpha1.PodGroupSpec{
-			MinMember:              int32(rbg.GetGroupSize()),
-			ScheduleTimeoutSeconds: getScheduleTimeoutSeconds(rbg),
+			MinMember:              desiredMinMember,
+			ScheduleTimeoutSeconds: desiredTimeout,
 		},
 	}
 
-	err := m.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup)
+	err = m.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "get pod group error")
 		return err
@@ -194,8 +213,6 @@ func (m *GangScheduler) createOrUpdate(ctx context.Context, rbg *workloadsv1alph
 		return nil
 	}
 
-	desiredMinMember := int32(rbg.GetGroupSize())
-	desiredTimeout := getScheduleTimeoutSeconds(rbg)
 	if podGroup.Spec.MinMember != desiredMinMember ||
 		(podGroup.Spec.ScheduleTimeoutSeconds == nil || *podGroup.Spec.ScheduleTimeoutSeconds != *desiredTimeout) {
 		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {

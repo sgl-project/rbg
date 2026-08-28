@@ -26,7 +26,6 @@ package volcano
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -83,12 +82,13 @@ func New(c client.Client) *GangScheduler {
 // ReconcilePodGroup creates, updates, or deletes the Volcano PodGroup
 // based on the gang scheduling configuration.
 // gangStrategy is nil when gang scheduling is disabled, in which case any existing
-// PodGroup is deleted. A non-nil strategy with an empty MinReplicas map is a
-// whole-group gang; a non-empty map builds a subGroupPolicy.
+// PodGroup is deleted. A non-nil strategy with an empty MinReplicas map is an
+// all-or-nothing gang over the roles it covers; a non-empty map builds a
+// subGroupPolicy.
 func (m *GangScheduler) ReconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *common.GangStrategy,
 	runtimeController *builder.TypedBuilder[reconcile.Request],
 	watchedWorkload *sync.Map,
 	apiReader client.Reader,
@@ -119,13 +119,14 @@ func (m *GangScheduler) ReconcilePodGroup(
 // scheduler and could starve the gang of resources.
 //
 // The PodGroup annotation is what actually enrolls a pod in the gang, so it is only
-// injected for roles that participate. With a non-empty minReplicas map the roles
-// absent from it are excluded by definition, and annotating them would make Volcano
-// count their pods against a minMember that never budgeted for them.
+// injected for roles that participate. A CoordinatedPolicy rule scopes its gang with
+// spec.policies[].roles, and a non-empty minReplicas map narrows it further; roles
+// outside that scope are excluded by definition, and annotating them would make
+// Volcano count their pods against a minMember that never budgeted for them.
 func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *common.GangStrategy,
 	pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
 	if gangStrategy == nil {
@@ -149,7 +150,7 @@ func (m *GangScheduler) InjectPodSchedulingFields(
 func (m *GangScheduler) createOrUpdate(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *common.GangStrategy,
 	apiReader client.Reader,
 ) error {
 	logger := log.FromContext(ctx)
@@ -157,15 +158,18 @@ func (m *GangScheduler) createOrUpdate(
 	priorityClassName := rbg.Annotations[constants.GangSchedulingVolcanoPriorityClassKey]
 	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, volcanoschedulingv1beta1.AnnotationPrefix)
 
-	// Calculate minMember
-	minMember := int32(rbg.GetGroupSize())
+	// Calculate minMember over the roles the gang covers
+	minMember, err := common.GangSize(rbg, gangStrategy)
+	if err != nil {
+		return err
+	}
 	var subGroupPolicy []volcanoschedulingv1beta1.SubGroupPolicySpec
 
 	// If gangStrategy has minReplicas, check subGroupPolicy support
-	if gangStrategy != nil && len(gangStrategy.MinReplicas) > 0 {
-		supported, err := m.supportsSubGroupPolicy(ctx, apiReader)
-		if err != nil {
-			return fmt.Errorf("check Volcano PodGroup CRD for subGroupPolicy support: %w", err)
+	if len(gangStrategy.MinReplicas) > 0 {
+		supported, supportErr := m.supportsSubGroupPolicy(ctx, apiReader)
+		if supportErr != nil {
+			return fmt.Errorf("check Volcano PodGroup CRD for subGroupPolicy support: %w", supportErr)
 		}
 		if !supported {
 			return common.NewIncompatibleGangConfigError("gang scheduling with per-role minimums (minReplicas) requires Volcano PodGroup CRD with subGroupPolicy field; the installed Volcano version does not support this feature")
@@ -193,7 +197,7 @@ func (m *GangScheduler) createOrUpdate(
 		},
 	}
 
-	err := m.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup)
+	err = m.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "get pod group error")
 		return err
@@ -254,10 +258,16 @@ func (m *GangScheduler) createOrUpdate(
 // reported as an IncompatibleGangConfigError.
 func buildGangSpec(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+	gangStrategy *common.GangStrategy,
 ) (int32, []volcanoschedulingv1beta1.SubGroupPolicySpec, error) {
+	if unknown := common.UnknownGangRoles(rbg, gangStrategy); len(unknown) > 0 {
+		return 0, nil, common.NewIncompatibleGangConfigError(
+			"gang scheduling minReplicas references roles that do not exist in the RoleBasedGroup: %v; "+
+				"fix the role names in CoordinatedPolicy %s/%s",
+			unknown, rbg.Namespace, rbg.Name)
+	}
+
 	policies := make([]volcanoschedulingv1beta1.SubGroupPolicySpec, 0, len(gangStrategy.MinReplicas))
-	matched := 0
 	var minMember int32
 
 	for i := range rbg.Spec.Roles {
@@ -266,7 +276,6 @@ func buildGangSpec(
 		if !exists {
 			continue
 		}
-		matched++
 
 		if minReplicas < 1 {
 			return 0, nil, common.NewIncompatibleGangConfigError(
@@ -302,37 +311,7 @@ func buildGangSpec(
 		})
 	}
 
-	if matched != len(gangStrategy.MinReplicas) {
-		return 0, nil, common.NewIncompatibleGangConfigError(
-			"gang scheduling minReplicas references roles that do not exist in the RoleBasedGroup: %v; "+
-				"fix the role names in CoordinatedPolicy %s/%s",
-			unknownRoles(rbg, gangStrategy), rbg.Namespace, rbg.Name)
-	}
-	if minMember == 0 {
-		return 0, nil, common.NewIncompatibleGangConfigError(
-			"gang scheduling resolved to minMember 0, which would provide no gang guarantee")
-	}
-
 	return minMember, policies, nil
-}
-
-// unknownRoles returns the minReplicas keys that name no role in the RBG.
-func unknownRoles(
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-	gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
-) []string {
-	known := make(map[string]struct{}, len(rbg.Spec.Roles))
-	for i := range rbg.Spec.Roles {
-		known[rbg.Spec.Roles[i].Name] = struct{}{}
-	}
-	unknown := make([]string, 0, len(gangStrategy.MinReplicas))
-	for roleName := range gangStrategy.MinReplicas {
-		if _, ok := known[roleName]; !ok {
-			unknown = append(unknown, roleName)
-		}
-	}
-	sort.Strings(unknown)
-	return unknown
 }
 
 // emitsRoleInstanceLabel reports whether the role's workload backing writes the

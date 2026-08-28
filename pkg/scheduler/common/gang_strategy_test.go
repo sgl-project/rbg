@@ -27,6 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -49,7 +51,7 @@ func TestMergeGangStrategies(t *testing.T) {
 	tests := []struct {
 		name             string
 		rules            []workloadsv1alpha2.CoordinatedPolicyRule
-		want             *workloadsv1alpha2.GangSchedulingStrategy
+		want             *GangStrategy
 		wantIncompatible bool
 	}{
 		{
@@ -63,9 +65,9 @@ func TestMergeGangStrategies(t *testing.T) {
 			want:  nil,
 		},
 		{
-			name:  "gang without minReplicas means whole-group gang",
+			name:  "gang without minReplicas covers only the roles the rule names",
 			rules: []workloadsv1alpha2.CoordinatedPolicyRule{gangRule([]string{"prefill"}, nil)},
-			want:  &workloadsv1alpha2.GangSchedulingStrategy{},
+			want:  &GangStrategy{Roles: sets.New("prefill")},
 		},
 		{
 			name: "per-role minimums are merged across rules",
@@ -73,7 +75,10 @@ func TestMergeGangStrategies(t *testing.T) {
 				gangRule([]string{"prefill"}, map[string]int32{"prefill": 2}),
 				gangRule([]string{"decode"}, map[string]int32{"decode": 3}),
 			},
-			want: &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2, "decode": 3}},
+			want: &GangStrategy{
+				Roles:       sets.New("prefill", "decode"),
+				MinReplicas: map[string]int32{"prefill": 2, "decode": 3},
+			},
 		},
 		{
 			name: "largest minimum wins for a duplicated role",
@@ -82,18 +87,18 @@ func TestMergeGangStrategies(t *testing.T) {
 				gangRule([]string{"prefill"}, map[string]int32{"prefill": 5}),
 				gangRule([]string{"prefill"}, map[string]int32{"prefill": 3}),
 			},
-			want: &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 5}},
+			want: &GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 5}},
 		},
 		{
 			name: "minimums for roles outside the declaring rule scope are dropped",
 			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				gangRule([]string{"prefill"}, map[string]int32{"prefill": 2, "decode": 9}),
 			},
-			want: &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2}},
+			want: &GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 2}},
 		},
 		{
-			// Widening to a whole-group gang would be stricter than the policy asked for,
-			// so the configuration is reported instead of reinterpreted.
+			// Widening to an all-or-nothing gang would be stricter than the policy asked
+			// for, so the configuration is reported instead of reinterpreted.
 			name: "all minimums out of scope is an incompatible configuration",
 			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				gangRule([]string{"prefill"}, map[string]int32{"decode": 9}),
@@ -101,12 +106,14 @@ func TestMergeGangStrategies(t *testing.T) {
 			wantIncompatible: true,
 		},
 		{
-			name: "whole-group gang subsumes per-role minimums",
+			// The minimums are subsumed, but the role that carried them stays covered:
+			// dropping it would shrink the gang below what either rule asked for.
+			name: "all-or-nothing gang subsumes per-role minimums and keeps their roles",
 			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				gangRule([]string{"prefill"}, map[string]int32{"prefill": 2}),
 				gangRule([]string{"decode"}, nil),
 			},
-			want: &workloadsv1alpha2.GangSchedulingStrategy{},
+			want: &GangStrategy{Roles: sets.New("prefill", "decode")},
 		},
 	}
 
@@ -131,13 +138,104 @@ func TestRoleInGang(t *testing.T) {
 	role := &workloadsv1alpha2.RoleSpec{Name: "prefill"}
 
 	assert.False(t, RoleInGang(role, nil))
-	assert.False(t, RoleInGang(nil, &workloadsv1alpha2.GangSchedulingStrategy{}))
-	assert.True(t, RoleInGang(role, &workloadsv1alpha2.GangSchedulingStrategy{}))
-	assert.True(
-		t, RoleInGang(role, &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 1}}),
+	assert.False(t, RoleInGang(nil, &GangStrategy{}))
+	// An empty role set is the legacy annotation's gang: it names no roles, so it covers all.
+	assert.True(t, RoleInGang(role, &GangStrategy{}))
+	assert.True(t, RoleInGang(role, &GangStrategy{Roles: sets.New("prefill", "decode")}))
+	assert.False(t, RoleInGang(role, &GangStrategy{Roles: sets.New("decode")}))
+}
+
+func TestGangSize(t *testing.T) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To[int32](2)},
+				{Name: "decode", Replicas: ptr.To[int32](3)},
+				{Name: "router", Replicas: ptr.To[int32](1)},
+			},
+		},
+	}
+
+	t.Run("empty role set covers the whole group", func(t *testing.T) {
+		size, err := GangSize(rbg, &GangStrategy{})
+		require.NoError(t, err)
+		assert.Equal(t, int32(6), size)
+	})
+
+	// The point of scoping: a role the policy leaves out must not be demanded by
+	// minMember, or the gang waits for pods it never enrolls.
+	t.Run("only covered roles are counted", func(t *testing.T) {
+		size, err := GangSize(rbg, &GangStrategy{Roles: sets.New("prefill", "decode")})
+		require.NoError(t, err)
+		assert.Equal(t, int32(5), size)
+	})
+
+	t.Run("unknown role is an incompatible configuration", func(t *testing.T) {
+		_, err := GangSize(rbg, &GangStrategy{Roles: sets.New("prefill", "typo")})
+		assert.True(t, IsIncompatibleGangConfig(err))
+		assert.ErrorContains(t, err, "typo")
+	})
+
+	t.Run("covered roles all scaled to zero is an incompatible configuration", func(t *testing.T) {
+		scaledDown := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{
+					{Name: "prefill", Replicas: ptr.To[int32](0)},
+					{Name: "decode", Replicas: ptr.To[int32](3)},
+				},
+			},
+		}
+		_, err := GangSize(scaledDown, &GangStrategy{Roles: sets.New("prefill")})
+		assert.True(t, IsIncompatibleGangConfig(err))
+	})
+}
+
+func TestGangMinimumReplicas(t *testing.T) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To[int32](4)},
+				{Name: "decode", Replicas: ptr.To[int32](2)},
+			},
+		},
+	}
+
+	assert.Nil(t, GangMinimumReplicas(rbg, nil))
+
+	// An all-or-nothing gang needs every replica of the roles it covers.
+	assert.Equal(
+		t, map[string]int32{"prefill": 4},
+		GangMinimumReplicas(rbg, &GangStrategy{Roles: sets.New("prefill")}),
 	)
-	assert.False(
-		t, RoleInGang(role, &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"decode": 1}}),
+	assert.Equal(
+		t, map[string]int32{"prefill": 4, "decode": 2},
+		GangMinimumReplicas(rbg, &GangStrategy{}),
+	)
+	// A per-role gang needs exactly its minimums, not the full replica count.
+	assert.Equal(
+		t, map[string]int32{"prefill": 2},
+		GangMinimumReplicas(rbg, &GangStrategy{
+			Roles:       sets.New("prefill"),
+			MinReplicas: map[string]int32{"prefill": 2},
+		}),
+	)
+}
+
+func TestUnknownGangRoles(t *testing.T) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{{Name: "prefill"}, {Name: "decode"}},
+		},
+	}
+
+	assert.Nil(t, UnknownGangRoles(rbg, nil))
+	assert.Nil(t, UnknownGangRoles(rbg, &GangStrategy{}))
+	assert.Empty(t, UnknownGangRoles(rbg, &GangStrategy{Roles: sets.New("prefill")}))
+	assert.Equal(
+		t, []string{"proxy", "typo"},
+		UnknownGangRoles(rbg, &GangStrategy{Roles: sets.New("prefill", "typo", "proxy")}),
 	)
 }
 
@@ -164,7 +262,7 @@ func TestGetGangStrategy(t *testing.T) {
 			context.Background(), c, rbg(map[string]string{constants.GangSchedulingAnnotationKey: "true"}),
 		)
 		require.NoError(t, err)
-		assert.Equal(t, &workloadsv1alpha2.GangSchedulingStrategy{}, strategy)
+		assert.Equal(t, &GangStrategy{}, strategy)
 	})
 
 	t.Run("CoordinatedPolicy takes precedence over the annotation", func(t *testing.T) {
@@ -182,7 +280,7 @@ func TestGetGangStrategy(t *testing.T) {
 		)
 		require.NoError(t, err)
 		assert.Equal(
-			t, &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2}}, strategy,
+			t, &GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 2}}, strategy,
 		)
 	})
 
@@ -198,7 +296,7 @@ func TestGetGangStrategy(t *testing.T) {
 			context.Background(), c, rbg(map[string]string{constants.GangSchedulingAnnotationKey: "true"}),
 		)
 		require.NoError(t, err)
-		assert.Equal(t, &workloadsv1alpha2.GangSchedulingStrategy{}, strategy)
+		assert.Equal(t, &GangStrategy{}, strategy)
 	})
 
 	// A read failure must not be mistaken for "no policy": that would silently
@@ -276,7 +374,7 @@ func TestResolveGangStrategy(t *testing.T) {
 		ctx, strategy, err := ResolveGangStrategy(context.Background(), c, newRBG("rbg"))
 		require.NoError(t, err)
 		assert.Equal(
-			t, &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2}}, strategy,
+			t, &GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 2}}, strategy,
 		)
 
 		stored := &workloadsv1alpha2.CoordinatedPolicy{}
@@ -287,7 +385,7 @@ func TestResolveGangStrategy(t *testing.T) {
 		cached, err := GetGangStrategy(ctx, c, newRBG("rbg"))
 		require.NoError(t, err)
 		assert.Equal(
-			t, &workloadsv1alpha2.GangSchedulingStrategy{MinReplicas: map[string]int32{"prefill": 2}}, cached,
+			t, &GangStrategy{Roles: sets.New("prefill"), MinReplicas: map[string]int32{"prefill": 2}}, cached,
 		)
 	})
 

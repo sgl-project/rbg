@@ -118,10 +118,10 @@ spec:
       roles: ["prefill", "decode"]
       strategy:
         scheduling:
-          gang: {}  # gang sub-field presence enables gang scheduling, minMember = GetGroupSize()
+          gang: {}  # gang sub-field presence enables gang scheduling, minMember = pods of the listed roles
 ```
 
-The presence of the `scheduling.gang` sub-field enables gang scheduling. When `minReplicas` is empty, minMember equals the total number of pods in the RBG (`GetGroupSize()`), and all pods must be scheduled simultaneously.
+The presence of the `scheduling.gang` sub-field enables gang scheduling. The rule's `roles` field scopes the gang: only those roles are enrolled in it. When `minReplicas` is empty, minMember equals the total number of pods across the covered roles, and all of them must be scheduled simultaneously. Roles left out of `roles` still receive the gang scheduler's `schedulerName`, so a single scheduler places the whole group, but they carry no PodGroup membership and do not contribute to minMember.
 
 > **Backward compatibility**: RBGs without a CoordinatedPolicy, or with a CoordinatedPolicy that does not configure `scheduling.gang`, can still use the annotation `rbg.workloads.x-k8s.io/group-gang-scheduling: "true"` to enable basic gang scheduling. See [Backward Compatibility](#backward-compatibility).
 
@@ -197,11 +197,12 @@ type GangSchedulingStrategy struct {
     //
     // When non-empty, only the roles listed in this map participate in
     // the gang with their respective minimums. Roles absent from this
-    // map are excluded from gang constraints and scheduled normally.
+    // map are excluded from gang constraints and scheduled normally,
+    // though their pods still get the gang scheduler's schedulerName.
     //
-    // When the gang field is present but minReplicas is empty (nil),
-    // ALL roles participate and minMember equals GetGroupSize()
-    // (basic all-or-nothing gang).
+    // When the gang field is present but minReplicas is empty (nil), the
+    // gang is all-or-nothing over the roles the enclosing policy rule
+    // lists, and minMember is their combined pod count.
     //
     // +optional
     MinReplicas map[string]int32 `json:"minReplicas,omitempty"`
@@ -231,18 +232,20 @@ Renamed to `GangScheduler` (file `podgroup_manager.go` → `gang_scheduler.go`).
 // Implementations are selected at controller startup based on the --scheduler-name flag.
 type GangScheduler interface {
     // ReconcilePodGroup creates/updates/deletes the PodGroup for the given RBG.
-    // gangStrategy is the strategy returned by common.GetGangStrategy. The legacy
-    // annotation resolves to a non-nil empty strategy, so nil means gang is off.
+    // gangStrategy is the strategy returned by common.GetGangStrategy, which resolves
+    // the CoordinatedPolicy rules into the set of roles the gang covers plus their
+    // per-role minimums. The legacy annotation resolves to a strategy covering every
+    // role, so nil means gang is off.
     //
     // The implementation decides internally:
     // - gangStrategy == nil → gang disabled, delete any existing PodGroup
-    // - gangStrategy != nil && MinReplicas empty → minMember = GetGroupSize()
-    //   (whole-group gang; also what the legacy annotation resolves to)
+    // - gangStrategy != nil && MinReplicas empty → minMember = common.GangSize, the
+    //   pod count of the covered roles (all-or-nothing over them)
     // - gangStrategy != nil && MinReplicas non-empty → subGroupPolicy (if supported)
     ReconcilePodGroup(
         ctx context.Context,
         rbg *workloadsv1alpha2.RoleBasedGroup,
-        gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+        gangStrategy *common.GangStrategy,
         runtimeController *builder.TypedBuilder[reconcile.Request],
         watchedWorkload *sync.Map,
         apiReader client.Reader,
@@ -250,18 +253,18 @@ type GangScheduler interface {
 
     // InjectPodSchedulingFields injects scheduler-specific fields:
     // - the PodGroup annotation (Volcano) or label (scheduler-plugins) that ties the
-    //   pod to its PodGroup: all pods for basic gang, only gang-participating roles
-    //   when minReplicas is configured
-    // - pod.spec.schedulerName. Volcano sets it unconditionally ("volcano");
-    //   scheduler-plugins sets it only when --scheduler-profile-name was given, since
-    //   its profile name is chosen at deploy time.
+    //   pod to its PodGroup, only for the roles the gang covers
+    // - pod.spec.schedulerName, for every role, so a single scheduler owns the whole
+    //   group. Volcano sets it unconditionally ("volcano"); scheduler-plugins sets it
+    //   only when --scheduler-profile-name was given, since its profile name is chosen
+    //   at deploy time.
     //
     // gangStrategy is nil when gang scheduling is not enabled, in which case
     // implementations must inject nothing.
     InjectPodSchedulingFields(
         rbg *workloadsv1alpha2.RoleBasedGroup,
         role *workloadsv1alpha2.RoleSpec,
-        gangStrategy *workloadsv1alpha2.GangSchedulingStrategy,
+        gangStrategy *common.GangStrategy,
         pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
     )
 }
@@ -275,14 +278,14 @@ No interface split or type assertion is needed. The controller calls `ReconcileP
 
 #### Interface Migration Impact
 
-The interface is renamed from `PodGroupManager` to `GangScheduler` (file `podgroup_manager.go` → `gang_scheduler.go`), and `InjectPodGroupLabels(rbg, pts)` is renamed to `InjectPodSchedulingFields(rbg, role, gangStrategy, pts)` with added `role *RoleSpec` and `gangStrategy *GangSchedulingStrategy` parameters. Existing callers must be updated:
+The interface is renamed from `PodGroupManager` to `GangScheduler` (file `podgroup_manager.go` → `gang_scheduler.go`), and `InjectPodGroupLabels(rbg, pts)` is renamed to `InjectPodSchedulingFields(rbg, role, gangStrategy, pts)` with added `role *RoleSpec` and `gangStrategy *common.GangStrategy` parameters. Existing callers must be updated:
 
 - `pkg/reconciler/pod_reconciler.go` — currently calls `r.podGroupManager.InjectPodGroupLabels(rbg, podTemplateApplyConfiguration)` in `buildPodTemplateSpec`. Update field name to `gangScheduler` and pass `role` as the second argument. The `role` variable is already in scope.
 - `pkg/reconciler/roleinstanceset_reconciler.go` — holds a `podGroupManager` field via `SetPodGroupManager`. Rename to `gangScheduler` / `SetGangScheduler`. Verify whether its internal pod-template construction path also calls `InjectPodGroupLabels` and update accordingly.
 - All scheduler implementations (`pkg/scheduler/volcano/`, `pkg/scheduler/k8s-scheduler-plugin/`) must implement the new method signature.
 - Factory function `NewPodGroupManager(schedulerName, client)` → `NewGangScheduler(schedulerName, client)`.
 
-The `role` parameter is needed because, with `minReplicas` configured, only roles listed in `minReplicas` should receive the PodGroup annotation. In basic gang mode (no `minReplicas`), all roles participate and the `role` parameter can be ignored by implementations.
+The `role` parameter is needed because the gang covers only the roles its CoordinatedPolicy rules list, so only those roles should receive the PodGroup annotation or label. It matters even without `minReplicas`: an empty `minReplicas` is all-or-nothing over the covered roles, not over the whole group. Implementations still inject `schedulerName` for every role so a single scheduler owns the group. The legacy annotation is the case where every role is covered.
 
 ### Webhook and Capability Validation
 
@@ -427,7 +430,8 @@ RBG Reconcile
   │
   ├── 3. Extract gang strategy
   │     gangStrategy := scheduling.gang strategy extracted from policy
-  │     (merge minReplicas across multiple rules, take maximum for overlapping roles
+  │     (union the `roles` of every gang rule into the set the gang covers; merge
+  │      minReplicas across multiple rules, take maximum for overlapping roles
   │      — maximum is more conservative and aligns with the safety-first principle;
   │      taking the minimum would silently weaken gang constraints)
   │
@@ -435,8 +439,8 @@ RBG Reconcile
   │     gs.ReconcilePodGroup(ctx, rbg, gangStrategy, ...)
   │     // Implementation decides internally:
   │     //   - gangStrategy == nil → gang disabled, delete any existing PodGroup
-  │     //   - MinReplicas empty → minMember = GetGroupSize() (whole-group gang;
-  │     //     also what the legacy annotation resolves to)
+  │     //   - MinReplicas empty → minMember = pod count of the covered roles
+  │     //     (all-or-nothing over them; the legacy annotation covers every role)
   │     //   - MinReplicas non-empty + subGroupPolicy supported → PodGroup with subGroupPolicy
   │     //   - MinReplicas non-empty + subGroupPolicy NOT supported → return error + status condition
   │     //     (runtime safety net: Webhook should have intercepted earlier)
@@ -538,7 +542,7 @@ Existing RBGs with `CustomComponentsPattern` that enable gang scheduling via the
 | No CoordinatedPolicy, no annotation | Gang scheduling not enabled |
 | No CoordinatedPolicy, with annotation `group-gang-scheduling=true` | minMember = GetGroupSize(), full gang (backward compatible, existing behavior) |
 | CoordinatedPolicy without scheduling.gang, with annotation | Same as above, annotation takes effect (backward compatible) |
-| CoordinatedPolicy with scheduling.gang (`gang: {}`, no minReplicas) | minMember = GetGroupSize(), full gang (CoordinatedPolicy takes priority over annotation) |
+| CoordinatedPolicy with scheduling.gang (`gang: {}`, no minReplicas) | minMember = pod count of the roles the rule lists, all-or-nothing over them (CoordinatedPolicy takes priority over annotation) |
 | CoordinatedPolicy with scheduling.gang (with minReplicas) + scheduler supports per-role minimums | Pass GangSchedulingStrategy, enable gang with per-role minimums |
 | CoordinatedPolicy with scheduling.gang (with minReplicas) + scheduler does not support per-role minimums | Webhook rejects creation/update |
 | CoordinatedPolicy with existing rollingUpdate/scaling strategies | Coexists with scheduling.gang strategy, no interference |
@@ -554,10 +558,12 @@ Existing RBGs with `CustomComponentsPattern` that enable gang scheduling via the
    - Single policy rule
    - Multiple policy rules with overlapping roles (take maximum)
    - Roles not in minReplicas do not participate in gang
-4. Volcano GangScheduler correctness in translating `GangSchedulingStrategy` to PodGroup subGroupPolicy.
-5. Degrade to minMember-only when `minReplicas` is empty.
-6. CRD schema inspection: `podGroupCRDHasSubGroup()` correctly detects `subGroupPolicy` field presence in the PodGroup CRD OpenAPI schema.
-7. Webhook scheduler capability validation: CoordinatedPolicy with minReplicas rejected when `--scheduler-name` is `scheduler-plugins` (always rejected) or `volcano` without `subGroupPolicy` in CRD.
+   - Roles outside the rule's `roles` are not enrolled and do not count toward minMember
+4. Coordinated scaling targets are raised to the gang minimum, so a role paced by `maxSkew` is never held below the replica count its gang waits for.
+5. Volcano GangScheduler correctness in translating `GangSchedulingStrategy` to PodGroup subGroupPolicy.
+6. Degrade to minMember-only when `minReplicas` is empty.
+7. CRD schema inspection: `podGroupCRDHasSubGroup()` correctly detects `subGroupPolicy` field presence in the PodGroup CRD OpenAPI schema.
+8. Webhook scheduler capability validation: CoordinatedPolicy with minReplicas rejected when `--scheduler-name` is `scheduler-plugins` (always rejected) or `volcano` without `subGroupPolicy` in CRD.
 
 #### Integration tests
 

@@ -167,15 +167,21 @@ spec:
               decode: 2
 ```
 
-- Omitting `minReplicas` requests basic whole-group gang, the same as the annotation.
+- The rule's `roles` field scopes the gang: only those roles are enrolled in it. Every other
+  role of the RoleBasedGroup still gets the gang scheduler's `schedulerName`, so one scheduler
+  places the whole group, but it carries no PodGroup membership and is not counted in
+  `minMember`. Its pods are therefore scheduled independently.
+- Omitting `minReplicas` requests all-or-nothing gang over the roles the rule lists, so
+  `minMember` is the sum of their pods. The `group-gang-scheduling` annotation is the special
+  case of that where every role is covered.
 - Each `minReplicas` key must be listed in that rule's `roles` and must be at least 1. The
   validating webhook rejects violations of these two rules.
 - Each `minReplicas` must also name an existing role and must not exceed that role's
   `replicas`. Both depend on the RoleBasedGroup, so they are enforced when the PodGroup is
   built rather than at admission time (see [Interaction with scaling](#interaction-with-scaling)).
-- When several rules declare a gang strategy, the per-role minimums are merged and the
-  largest value wins for a role appearing in more than one rule. A rule with an empty
-  `minReplicas` subsumes the others and degrades the whole group to basic gang.
+- When several rules declare a gang strategy, their `roles` are unioned and the per-role
+  minimums are merged with the largest value winning for a role appearing in more than one
+  rule. A rule with an empty `minReplicas` makes that union all-or-nothing.
 - The CoordinatedPolicy takes precedence over the `group-gang-scheduling` annotation.
 
 **`minReplicas` requires `--scheduler-name=volcano` with Volcano >= 1.14.** It maps to the
@@ -218,6 +224,15 @@ released.
 This applies to writes coming from a `RoleBasedGroupScalingAdapter`/HPA as well, so keep the
 minimum at or below the autoscaler's `minReplicas`. To scale further down, lower or remove
 the minimum in the CoordinatedPolicy first.
+
+Coordinated scaling (`strategy.scaling.maxSkew`) paces a role up in batches and holds the
+next batch until the current replicas are Scheduled or Ready. That would deadlock a
+gang-covered role paced below its gang minimum: the PodGroup withholds scheduling until the
+whole gang can be placed at once, so the replicas never become Ready, and scaling never
+creates the ones the gang is waiting for. The controller therefore raises any coordinated
+scaling target that sits below its gang minimum up to that minimum, letting the role exceed
+`maxSkew` for one step. The gang minimum wins because it is the harder constraint: a larger
+skew only loosens how gradually a role ramps, while starving the gang blocks the whole group.
 
 Enabling gang scheduling — via either the annotation or a CoordinatedPolicy — also turns on
 RoleInstance-level gang scheduling for every covered role, unless the role sets

@@ -231,6 +231,11 @@ With `OrderReady`:
 - Safer for critical workloads but slower scale-out
 - `maxSkew: "5%"` ensures minimal divergence
 
+When the same policy also configures `scheduling.gang`, a paced role is never held below its
+gang minimum: the batch would wait for readiness that the gang is withholding, while the gang
+waits for replicas the batch will not create. The gang minimum therefore overrides `maxSkew`
+for one step. See [Gang Scheduling](gang-scheduling.md#interaction-with-scaling).
+
 ## Use Cases
 
 CoordinatedPolicy is essential for:
