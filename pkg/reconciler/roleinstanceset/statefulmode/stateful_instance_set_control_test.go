@@ -59,6 +59,21 @@ func TestInstanceSpecIsolated(t *testing.T) {
 	}
 }
 
+func TestPodLabelsOmitRINSName(t *testing.T) {
+	set := buildSet("trainer", 1, nil, nil)
+	set.Spec.RoleInstanceTemplate.RoleInstanceSpec.Components = []workloadsv1alpha2.RoleInstanceComponent{
+		{Name: "worker"},
+	}
+
+	instance := newVersionedInstance(set, set, testUpdateRev, testUpdateRev, 0, nil)
+	if got := instance.Labels[apps.StatefulSetPodNameLabel]; got != instance.Name {
+		t.Fatalf("instance identity = %q, want %q", got, instance.Name)
+	}
+	if _, ok := instance.Spec.Components[0].Template.Labels[apps.StatefulSetPodNameLabel]; ok {
+		t.Fatal("component pod template contains the RoleInstance name label")
+	}
+}
+
 func TestTruncateHistoryKeepsLiveInstanceRevision(t *testing.T) {
 	limit := int32(0)
 	set := &workloadsv1alpha2.RoleInstanceSet{

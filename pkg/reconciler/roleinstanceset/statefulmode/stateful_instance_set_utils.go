@@ -105,20 +105,19 @@ func updateIdentity(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv
 	for k, v := range identityLabels {
 		instance.Labels[k] = v
 	}
-	injectIdentityLabelsIntoComponents(instance, identityLabels)
+	injectInstanceIndex(instance, ordinal)
 }
 
-// injectIdentityLabelsIntoComponents writes the given identity labels into each
-// component's pod template metadata, so that pods created from the template
-// also carry the instance's ordinal identity labels.
-func injectIdentityLabelsIntoComponents(instance *workloadsv1alpha2.RoleInstance, identityLabels map[string]string) {
+// Component Pods inherit the RINS ordinal, but keep their own Pod name identity.
+func injectInstanceIndex(instance *workloadsv1alpha2.RoleInstance, ordinal int) {
+	index := strconv.Itoa(ordinal)
+
 	for i := range instance.Spec.Components {
 		if instance.Spec.Components[i].Template.Labels == nil {
 			instance.Spec.Components[i].Template.Labels = make(map[string]string)
 		}
-		for k, v := range identityLabels {
-			instance.Spec.Components[i].Template.Labels[k] = v
-		}
+
+		instance.Spec.Components[i].Template.Labels[constants.RoleInstanceIndexLabelKey] = index
 	}
 }
 
@@ -202,7 +201,7 @@ func newVersionedInstance(
 	for k, v := range identityLabels {
 		instance.Labels[k] = v
 	}
-	injectIdentityLabelsIntoComponents(instance, identityLabels)
+	injectInstanceIndex(instance, ordinal)
 
 	// Set owner reference
 	instance.OwnerReferences = []metav1.OwnerReference{
