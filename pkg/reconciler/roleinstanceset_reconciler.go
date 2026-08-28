@@ -397,7 +397,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
-	leaderPodReconciler.SetPodGroupManager(r.podGroupManager)
+	leaderPodReconciler.SetGangScheduler(r.gangScheduler)
 	leaderPodReconciler.SetInjectors([]string{configInjector, sidecarInjector, commonEnvInjector, lwpEnvInjector})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, leaderTemp,

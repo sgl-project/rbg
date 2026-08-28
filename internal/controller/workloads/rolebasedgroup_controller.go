@@ -122,7 +122,6 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 		scheme:                mgr.GetScheme(),
 		recorder:              mgr.GetEventRecorderFor("RoleBasedGroup"),
 		workloadReconciler:    make(map[string]reconciler.WorkloadReconciler),
-		podGroupManager:       podGroupManager,
 		NodeBindings:          bindings,
 		revisionEqualityCache: lru.New(utils.MaxRevisionEqualityCacheEntries),
 		gangScheduler:         gangScheduler,
