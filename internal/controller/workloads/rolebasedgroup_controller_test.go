@@ -2185,6 +2185,8 @@ func Test_HandleRevisions_SemanticallyEqualRevisionKeepsPersistedRoleHash(t *tes
 	if len(revisionList.Items) != 1 {
 		t.Errorf("expected no new ControllerRevision, got %d revisions", len(revisionList.Items))
 	}
+}
+
 // TestRaiseScalingTargetsToGangMinimum pins the resolution of the deadlock between
 // coordination scaling and gang scheduling: maxSkew pacing must not park a gang-covered
 // role below the minimum its PodGroup waits for, because nothing would ever schedule and

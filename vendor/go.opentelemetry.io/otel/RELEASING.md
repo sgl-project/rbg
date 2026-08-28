@@ -206,8 +206,6 @@ Importantly, bump any package versions referenced to be the latest one you just 
 [content/en/docs/languages/go]: https://github.com/open-telemetry/opentelemetry.io/tree/main/content/en/docs/languages/go
 
 ### Close the milestone
-<<<<<<< HEAD
-=======
 
 Once a release is made, ensure all issues that were fixed and PRs that were merged as part of this release are added to the corresponding milestone.
 This helps track what changes were included in each release.
@@ -216,23 +214,6 @@ This helps track what changes were included in each release.
 - To find merged PRs that haven't been included in a milestone, use this [GitHub search query](https://github.com/open-telemetry/opentelemetry-go/pulls?q=is%3Apr+no%3Amilestone+is%3Amerged).
 
 Once all related issues and PRs have been added to the milestone, close the milestone.
-
-### Demo Repository
->>>>>>> da8edeb9 (Implement kep-430)
-
-Once a release is made, ensure all issues that were fixed and PRs that were merged as part of this release are added to the corresponding milestone.
-This helps track what changes were included in each release.
-
-<<<<<<< HEAD
-- To find issues that haven't been included in a milestone, use this [GitHub search query](https://github.com/open-telemetry/opentelemetry-go/issues?q=is%3Aissue%20no%3Amilestone%20is%3Aclosed%20sort%3Aupdated-desc%20reason%3Acompleted%20-label%3AStale%20linked%3Apr)
-- To find merged PRs that haven't been included in a milestone, use this [GitHub search query](https://github.com/open-telemetry/opentelemetry-go/pulls?q=is%3Apr+no%3Amilestone+is%3Amerged).
-
-Once all related issues and PRs have been added to the milestone, close the milestone.
-=======
-- [`accounting`](https://github.com/open-telemetry/opentelemetry-demo/tree/main/src/accounting)
-- [`checkoutservice`](https://github.com/open-telemetry/opentelemetry-demo/tree/main/src/checkout)
-- [`productcatalogservice`](https://github.com/open-telemetry/opentelemetry-demo/tree/main/src/product-catalog)
->>>>>>> da8edeb9 (Implement kep-430)
 
 ### Close the `Version Release` issue
 

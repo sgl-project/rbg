@@ -47,9 +47,6 @@ VERIFYREADMES_FILES := $(sort $(shell find $(TOOLS_MOD_DIR)/verifyreadmes -type 
 $(TOOLS)/verifyreadmes: PACKAGE=go.opentelemetry.io/otel/$(TOOLS_MOD_DIR)/verifyreadmes
 $(TOOLS)/verifyreadmes: $(VERIFYREADMES_FILES)
 
-VERIFYREADMES = $(TOOLS)/verifyreadmes
-$(TOOLS)/verifyreadmes: PACKAGE=go.opentelemetry.io/otel/$(TOOLS_MOD_DIR)/verifyreadmes
-
 GOLANGCI_LINT = $(TOOLS)/golangci-lint
 $(TOOLS)/golangci-lint: PACKAGE=github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
