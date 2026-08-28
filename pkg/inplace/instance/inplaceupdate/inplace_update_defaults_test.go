@@ -701,3 +701,62 @@ func TestHasEqualCondition(t *testing.T) {
 		})
 	}
 }
+
+// TestPatchUpdateSpecKeepsIdentity covers the in-place update path replacing the whole
+// instance spec with the RoleInstanceSet template. The template is shared by every
+// ordinal and so carries no identity; the instance's own must survive the replacement,
+// or its pods lose the labels saying which ordinal they are.
+func TestPatchUpdateSpecKeepsIdentity(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "set-0",
+			Annotations: map[string]string{},
+			Labels: map[string]string{
+				apps.StatefulSetPodNameLabel:        "set-0",
+				constants.RoleInstanceIndexLabelKey: "0",
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "worker", Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+						apps.StatefulSetPodNameLabel:        "set-0",
+						constants.RoleInstanceIndexLabelKey: "0",
+					}},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.0"}}},
+				}},
+			},
+		},
+	}
+
+	spec := &UpdateSpec{
+		Revision: "update-rev",
+		NewTemplate: &workloadsv1alpha2.RoleInstanceTemplate{
+			RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{
+					{Name: "worker", Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:2.0"}}},
+					}},
+				},
+			},
+		},
+	}
+
+	patched, err := defaultPatchUpdateSpecToRoleInstance(instance, spec, &inplaceapi.InPlaceUpdateState{Revision: spec.Revision})
+	if err != nil {
+		t.Fatalf("patching the instance failed: %v", err)
+	}
+
+	labels := patched.Spec.Components[0].Template.Labels
+	if got := labels[apps.StatefulSetPodNameLabel]; got != "set-0" {
+		t.Errorf("pod template %s is %q after the update, expected %q",
+			apps.StatefulSetPodNameLabel, got, "set-0")
+	}
+	if got := labels[constants.RoleInstanceIndexLabelKey]; got != "0" {
+		t.Errorf("pod template %s is %q after the update, expected %q",
+			constants.RoleInstanceIndexLabelKey, got, "0")
+	}
+	if got := patched.Spec.Components[0].Template.Spec.Containers[0].Image; got != "nginx:2.0" {
+		t.Errorf("the update did not take: image is %q, expected %q", got, "nginx:2.0")
+	}
+}

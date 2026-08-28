@@ -209,6 +209,11 @@ func GetTemplateFromRevision(revision *apps.ControllerRevision) (*workloadsv1alp
 // InjectVersionedRoleInstanceSpec injects RoleInstanceSpec for the newly-create or inplace-update RoleInstance.
 func InjectVersionedRoleInstanceSpec(instance *workloadsv1alpha2.RoleInstance) {
 	InjectRoleInstanceReadinessGate(instance)
+	// Callers reach here having replaced the whole spec with the RoleInstanceSet
+	// template, which holds no ordinal identity. Without this the instance's pod
+	// template loses the labels saying which ordinal it is, and the running pods lose
+	// them with it on the next metadata patch.
+	inplaceutil.InjectIdentityLabelsIntoComponents(instance)
 }
 
 // InjectRoleInstanceReadinessGate injects InPlaceUpdateReady into instance.spec.readinessGates

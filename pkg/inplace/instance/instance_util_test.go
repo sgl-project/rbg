@@ -150,3 +150,73 @@ func TestGetComponentSize(t *testing.T) {
 		})
 	}
 }
+
+func TestInjectIdentityLabelsIntoComponents(t *testing.T) {
+	instanceWith := func(instanceLabels, templateLabels map[string]string) *workloadsv1alpha2.RoleInstance {
+		return &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "set-0", Labels: instanceLabels},
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{
+					{Name: "worker", Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: templateLabels},
+					}},
+				},
+			},
+		}
+	}
+
+	testCases := []struct {
+		name     string
+		instance *workloadsv1alpha2.RoleInstance
+		expected map[string]string
+	}{
+		{
+			name: "identity is copied onto a template that has none",
+			instance: instanceWith(map[string]string{
+				"statefulset.kubernetes.io/pod-name": "set-0",
+				constants.RoleInstanceIndexLabelKey:  "0",
+				constants.RoleNameLabelKey:           "worker",
+			}, nil),
+			expected: map[string]string{
+				"statefulset.kubernetes.io/pod-name": "set-0",
+				constants.RoleInstanceIndexLabelKey:  "0",
+			},
+		},
+		{
+			name: "another ordinal's identity is overwritten, not merged",
+			instance: instanceWith(map[string]string{
+				"statefulset.kubernetes.io/pod-name": "set-0",
+				constants.RoleInstanceIndexLabelKey:  "0",
+			}, map[string]string{
+				"statefulset.kubernetes.io/pod-name": "set-1",
+				constants.RoleInstanceIndexLabelKey:  "1",
+				constants.RoleNameLabelKey:           "worker",
+			}),
+			expected: map[string]string{
+				"statefulset.kubernetes.io/pod-name": "set-0",
+				constants.RoleInstanceIndexLabelKey:  "0",
+				constants.RoleNameLabelKey:           "worker",
+			},
+		},
+		{
+			name:     "a stateless instance has no identity to copy",
+			instance: instanceWith(map[string]string{constants.RoleNameLabelKey: "worker"}, nil),
+			expected: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			InjectIdentityLabelsIntoComponents(tc.instance)
+			got := tc.instance.Spec.Components[0].Template.Labels
+			if len(got) != len(tc.expected) {
+				t.Fatalf("expected %v, got %v", tc.expected, got)
+			}
+			for key, want := range tc.expected {
+				if got[key] != want {
+					t.Errorf("label %s: expected %q, got %q", key, want, got[key])
+				}
+			}
+		})
+	}
+}

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 )
 
@@ -105,21 +106,7 @@ func updateIdentity(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv
 	for k, v := range identityLabels {
 		instance.Labels[k] = v
 	}
-	injectIdentityLabelsIntoComponents(instance, identityLabels)
-}
-
-// injectIdentityLabelsIntoComponents writes the given identity labels into each
-// component's pod template metadata, so that pods created from the template
-// also carry the instance's ordinal identity labels.
-func injectIdentityLabelsIntoComponents(instance *workloadsv1alpha2.RoleInstance, identityLabels map[string]string) {
-	for i := range instance.Spec.Components {
-		if instance.Spec.Components[i].Template.Labels == nil {
-			instance.Spec.Components[i].Template.Labels = make(map[string]string)
-		}
-		for k, v := range identityLabels {
-			instance.Spec.Components[i].Template.Labels[k] = v
-		}
-	}
+	inplaceutil.InjectIdentityLabelsIntoComponents(instance)
 }
 
 // getInstanceSetKey returns the key for a InstanceSet
@@ -169,8 +156,11 @@ func newVersionedInstance(
 			Labels:      make(map[string]string),
 			Annotations: make(map[string]string),
 		},
-		// Copy the RoleInstanceSpec from RoleInstanceTemplate
-		Spec: setToUse.Spec.RoleInstanceTemplate.RoleInstanceSpec,
+		// Deep copied, not assigned: a struct assignment shares the Components slice
+		// with the set's template, so the identity labels written into one instance's
+		// pod template below would land in every other instance built from the same
+		// template in this reconcile, and the highest ordinal would win.
+		Spec: *setToUse.Spec.RoleInstanceTemplate.RoleInstanceSpec.DeepCopy(),
 	}
 
 	// Set basic identity
@@ -202,7 +192,7 @@ func newVersionedInstance(
 	for k, v := range identityLabels {
 		instance.Labels[k] = v
 	}
-	injectIdentityLabelsIntoComponents(instance, identityLabels)
+	inplaceutil.InjectIdentityLabelsIntoComponents(instance)
 
 	// Set owner reference
 	instance.OwnerReferences = []metav1.OwnerReference{
