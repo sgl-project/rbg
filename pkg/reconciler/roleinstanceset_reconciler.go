@@ -160,12 +160,24 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	}
 
 	// 1. construct role instance configuration
-	restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
-		WithType(role.GetRestartPolicy()).
-		WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
-		WithMaxDelaySeconds(role.GetMaxDelaySeconds())
-	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate().
-		WithRestartPolicyConfig(restartPolicyApplyConfig)
+	//
+	// The template keeps carrying the deprecated restartPolicy string unless the role
+	// configures backoff delays, which that string cannot express. Writing
+	// restartPolicyConfig unconditionally instead would rewrite the stored template of
+	// every role a v0.7.0 install created, moving the RoleInstanceSet revision hash and
+	// rolling the role on upgrade with nothing to roll to: RoleInstanceSpec's getters
+	// fold the string in and default the delays to these very values.
+	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate()
+	if backoff := role.GetRawRestartBackoff(); backoff != nil &&
+		(backoff.BaseDelaySeconds != nil || backoff.MaxDelaySeconds != nil) {
+		restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
+			WithType(role.GetRestartPolicy()).
+			WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
+			WithMaxDelaySeconds(role.GetMaxDelaySeconds())
+		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
+	} else {
+		roleInstanceTemplateConfig.WithRestartPolicy(role.GetRestartPolicy())
+	}
 	var constructErr error
 	switch {
 	case role.GetStandalonePattern() != nil:
