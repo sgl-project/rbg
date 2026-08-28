@@ -24,6 +24,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -553,6 +554,12 @@ func gangPolicy(
 // placed no matter how much spare CPU the cluster has.
 func oneReplicaPerNodeTemplate(groupName string) corev1.PodTemplateSpec {
 	template := wrappersv2.BuildBasicPodTemplateSpec()
+	// Volcano's backfill action allocates BestEffort tasks directly, without any gang
+	// readiness check, so a pod with no requests escapes the gang. Any non-zero request
+	// keeps the task on the allocate path where the gang plugin governs placement.
+	template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m")},
+	}
 	template.Spec.Affinity = &corev1.Affinity{
 		PodAntiAffinity: &corev1.PodAntiAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{

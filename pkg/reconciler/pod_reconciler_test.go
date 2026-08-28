@@ -129,6 +129,34 @@ func Test_podSpecEqual(t *testing.T) {
 			want:    false,
 			wantErr: true,
 		},
+		{
+			name: "empty schedulerName equals the apiserver default",
+			args: args{
+				spec1: corev1.PodSpec{
+					SchedulerName: corev1.DefaultSchedulerName,
+					Containers:    []corev1.Container{{Name: "container1", Image: "nginx:1.20"}},
+				},
+				spec2: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "container1", Image: "nginx:1.20"}},
+				},
+			},
+			want:    true,
+			wantErr: false,
+		},
+		{
+			name: "unequal schedulerName",
+			args: args{
+				spec1: corev1.PodSpec{
+					SchedulerName: "volcano",
+					Containers:    []corev1.Container{{Name: "container1", Image: "nginx:1.20"}},
+				},
+				spec2: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "container1", Image: "nginx:1.20"}},
+				},
+			},
+			want:    false,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(

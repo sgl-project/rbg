@@ -275,7 +275,9 @@ func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
 func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 	// Compared explicitly because gang scheduling rewrites it: a role leaving the gang
 	// must fall back to the default scheduler, and nothing else here would notice.
-	if spec1.SchedulerName != spec2.SchedulerName {
+	// The desired spec leaves it empty when gang is off, while the live one has been
+	// defaulted by the apiserver, so both sides need the default filled in.
+	if defaultedSchedulerName(spec1.SchedulerName) != defaultedSchedulerName(spec2.SchedulerName) {
 		return false, fmt.Errorf("podTemplate schedulerName not equal: %q vs %q",
 			spec1.SchedulerName, spec2.SchedulerName)
 	}
@@ -293,6 +295,13 @@ func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func defaultedSchedulerName(name string) string {
+	if name == "" {
+		return corev1.DefaultSchedulerName
+	}
+	return name
 }
 
 func containersEqual(containers1, containers2 []corev1.Container) (bool, error) {
