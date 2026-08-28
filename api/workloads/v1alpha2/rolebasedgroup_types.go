@@ -118,6 +118,7 @@ const (
 type RollingUpdate struct {
 	// Type indicates the type of the InstanceSetUpdateStrategy.
 	// Default is InPlaceIfPossible.
+	// +kubebuilder:validation:Enum={RecreatePod,InPlaceIfPossible,InPlaceOnly}
 	Type UpdateStrategyType `json:"type,omitempty"`
 
 	// Partition indicates the ordinal at which the role should be partitioned for updates.

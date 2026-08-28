@@ -119,6 +119,7 @@ type RoleInstanceSetScaleStrategy struct {
 type RoleInstanceSetUpdateStrategy struct {
 	// Type indicates the type of the RoleInstanceSetUpdateStrategy.
 	// Default is InPlaceIfPossible.
+	// +kubebuilder:validation:Enum={RecreatePod,InPlaceIfPossible,InPlaceOnly}
 	Type UpdateStrategyType `json:"type,omitempty"`
 
 	// Partition is the desired number of RoleInstances in old revisions.

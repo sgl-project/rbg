@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -185,6 +186,111 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 			}
 
 			expectInvalidCreate(instance)
+		})
+
+		It("Should allow v1alpha2 templateRef without patch", func() {
+			rbgName := "template-ref-without-patch"
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rbgName,
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					RoleTemplates: []workloadsv1alpha2.RoleTemplate{
+						{
+							Name:     "base",
+							Template: nginxPodTemplate(),
+						},
+					},
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(0)),
+							Pattern: workloadsv1alpha2.Pattern{
+								LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+									Size: ptr.To(int32(1)),
+									TemplateSource: workloadsv1alpha2.TemplateSource{
+										TemplateRef: &workloadsv1alpha2.TemplateRef{Name: "base"},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			created := &workloadsv1alpha2.RoleBasedGroup{}
+			Eventually(func() error {
+				if err := testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{Name: rbgName, Namespace: testNs}, created); err != nil {
+					return err
+				}
+				if !apimeta.IsStatusConditionTrue(created.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)) {
+					return fmt.Errorf("RoleBasedGroup %s/%s Ready condition is not true: %v", testNs, rbgName, created.Status.Conditions)
+				}
+				return nil
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("Should reject v1alpha2 role rolloutStrategy with invalid update type", func() {
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-rbg-update-type",
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								Type: workloadsv1alpha2.RollingUpdateStrategyType,
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.UpdateStrategyType("DefinitelyNotARealStrategy"),
+								},
+							},
+							Pattern: workloadsv1alpha2.Pattern{
+								StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+									TemplateSource: workloadsv1alpha2.TemplateSource{
+										Template: ptr.To(nginxPodTemplate()),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			expectInvalidCreate(rbg)
+		})
+
+		It("Should reject RoleInstanceSet with invalid update strategy type", func() {
+			ris := &workloadsv1alpha2.RoleInstanceSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-ris-update-type",
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+					Replicas: ptr.To(int32(0)),
+					RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+						RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+							Components: []workloadsv1alpha2.RoleInstanceComponent{
+								{
+									Name:     "worker",
+									Size:     ptr.To(int32(1)),
+									Template: nginxPodTemplate(),
+								},
+							},
+						},
+					},
+					UpdateStrategy: workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+						Type: workloadsv1alpha2.UpdateStrategyType("DefinitelyNotARealStrategy"),
+					},
+				},
+			}
+
+			expectInvalidCreate(ris)
 		})
 	})
 })
