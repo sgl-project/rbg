@@ -33,9 +33,31 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 )
+
+func TestInstanceSpecIsolated(t *testing.T) {
+	set := buildSet("trainer", 2, nil, nil)
+	set.Spec.RoleInstanceTemplate.RoleInstanceSpec.Components = []workloadsv1alpha2.RoleInstanceComponent{
+		{Name: "worker"},
+	}
+
+	first := newVersionedInstance(set, set, testUpdateRev, testUpdateRev, 0, nil)
+	second := newVersionedInstance(set, set, testUpdateRev, testUpdateRev, 1, nil)
+	indexKey := constants.RoleInstanceIndexLabelKey
+
+	if got := first.Spec.Components[0].Template.Labels[indexKey]; got != "0" {
+		t.Fatalf("first component index = %q, want 0", got)
+	}
+	if got := second.Spec.Components[0].Template.Labels[indexKey]; got != "1" {
+		t.Fatalf("second component index = %q, want 1", got)
+	}
+	if _, ok := set.Spec.RoleInstanceTemplate.RoleInstanceSpec.Components[0].Template.Labels[indexKey]; ok {
+		t.Fatal("RoleInstance template was mutated")
+	}
+}
 
 func TestTruncateHistoryKeepsLiveInstanceRevision(t *testing.T) {
 	limit := int32(0)

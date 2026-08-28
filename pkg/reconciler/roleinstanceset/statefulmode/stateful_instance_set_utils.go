@@ -169,8 +169,8 @@ func newVersionedInstance(
 			Labels:      make(map[string]string),
 			Annotations: make(map[string]string),
 		},
-		// Copy the RoleInstanceSpec from RoleInstanceTemplate
-		Spec: setToUse.Spec.RoleInstanceTemplate.RoleInstanceSpec,
+		// Isolate each instance before injecting its ordinal into component templates.
+		Spec: *setToUse.Spec.RoleInstanceTemplate.RoleInstanceSpec.DeepCopy(),
 	}
 
 	// Set basic identity
