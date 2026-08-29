@@ -740,9 +740,10 @@ type recordedRewrites struct {
 	generationBumps map[string]int64
 
 	// leaderOnlyServices are the shared Services whose selector the upgrade narrows to
-	// the leader component. Only the exact narrowing is folded: the added selector key
-	// must be component-name=leader and nothing else, no endpoint may be added, and
-	// every endpoint that left must belong to a pod that is not a leader.
+	// the leader component. Only the exact narrowing is folded: it must be visible in
+	// this Service's selector diff, the added selector key must be
+	// component-name=leader and nothing else, no endpoint may be added, and every
+	// endpoint that left must belong to a pod that is not a leader.
 	leaderOnlyServices map[string]bool
 }
 
@@ -865,9 +866,10 @@ func checkOwnersStable(fs *findings, before, after map[string]RBGSnapshot, bumps
 // any pod-level check, because the pods are fine -- it is the path to them that broke.
 //
 // leaderOnly names the Services whose narrowing to the leader component is recorded in
-// recordedRewrites. For those, and only for those, that one selector key and the loss of
-// the non-leader endpoints it removes are folded away; every other difference on the same
-// Service is still reported.
+// recordedRewrites. Being listed is a permission, not the fold itself: the narrowing has
+// to show up in this Service's selector diff before the non-leader endpoints it removes
+// are folded away, so a lost endpoint on a selector that never moved is still reported.
+// Every other difference on the same Service is reported either way.
 func checkServicesStable(
 	fs *findings,
 	before, after map[string]RBGSnapshot,
@@ -902,9 +904,15 @@ func checkServicesStable(
 					"%s ports changed (%v -> %v)", where, beforeSvc.Ports, afterSvc.Ports))
 			}
 
-			narrowed := leaderOnly[name]
+			// narrowed is whether the recorded narrowing is what this Service's selector
+			// actually did, which is not the same as the Service being on the list. Only
+			// the former may fold endpoints: a Service whose selector never moved has
+			// nothing recorded to explain a lost endpoint, and folding one anyway would
+			// hide it on the very Service where no other detector would report it.
+			narrowed := false
 			for _, diff := range stringMapDiff(beforeSvc.Selector, afterSvc.Selector) {
-				if narrowed && diff == leaderComponentSelectorAdded {
+				if leaderOnly[name] && diff == leaderComponentSelectorAdded {
+					narrowed = true
 					continue
 				}
 				problems = append(problems, where+" selector "+diff)

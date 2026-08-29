@@ -73,11 +73,16 @@ limitations under the License.
 // against a cluster already running the version under test every assertion here would
 // pass vacuously.
 //
-// The version upgraded TO is whatever the chart in the working tree ships by default,
-// so the upgrade this suite runs is the `helm upgrade` a user runs, with no overrides
-// at all. That is why it belongs to the release gate rather than the per-PR e2e
-// workflow: the chart carries the published images only once a release bumps it.
-// RBGS_TO_* overrides the target for a local build.
+// The version upgraded TO is whatever the chart in the working tree ships by default, so
+// the images this suite upgrades to are the ones a user gets. That is why it belongs to
+// the release gate rather than the per-PR e2e workflow: the chart carries the published
+// images only once a release bumps it. RBGS_TO_* overrides the target for a local build.
+//
+// One value is deliberately not a chart default: portAllocator is enabled, on the v0.7.0
+// install and on the upgrade alike, which is how the other e2e workflows install rbgs. So
+// this is a feature-enabled upgrade rather than a stock one. What it is not is a feature
+// being toggled by the hop, which would put a configuration change inside the interval
+// every assertion here attributes to the upgrade.
 //
 // What this suite does NOT prove:
 //   - Only the v0.7.0 -> current single hop. Nothing about v0.6.x -> current.

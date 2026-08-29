@@ -90,6 +90,10 @@ func runHelmUpgrade(f *framework.Framework) {
 		"--set", "crdUpgrade.image.repository=" + crdUpgradeRepo(),
 		"--set", "crdUpgrade.image.tag=" + crdUpgradeTag(),
 		"--set", "crdUpgrade.image.pullPolicy=IfNotPresent",
+		// Not a chart default. It is set because the v0.7.0 install sets it, as the
+		// other e2e workflows do: omitting it here would make the hop turn a feature
+		// off, and every assertion in this suite reads what the interval changed as
+		// something the upgrade did.
 		"--set", "controller.features.portAllocator.enabled=true",
 		"--wait", "--timeout", helmTimeout(),
 	}
