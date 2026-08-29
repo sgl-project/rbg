@@ -339,6 +339,23 @@ func (r *RoleSpec) GetRawRestartPolicyType() RestartPolicyType {
 	return ""
 }
 
+// GetRawRestartBackoff returns the restart backoff delays the role's pattern set, or
+// nil when it set none. Unlike GetBaseDelaySeconds / GetMaxDelaySeconds it applies no
+// defaults, so a caller can tell a role that configured backoff from one that merely
+// inherits the defaults.
+func (r *RoleSpec) GetRawRestartBackoff() *RestartPolicyConfig {
+	if r == nil {
+		return nil
+	}
+	if lwp := r.LeaderWorkerPattern; lwp != nil {
+		return lwp.RestartPolicyConfig
+	}
+	if ccp := r.CustomComponentsPattern; ccp != nil {
+		return ccp.RestartPolicyConfig
+	}
+	return nil
+}
+
 // Default values for restart policy delay configuration.
 const (
 	DefaultBaseDelaySeconds int32 = 30

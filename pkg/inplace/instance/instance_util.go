@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -43,6 +44,44 @@ func MatchComponent(pod *corev1.Pod, componentName string) bool {
 		return false
 	}
 	return pod.Labels[constants.ComponentNameLabelKey] == componentName
+}
+
+// identityLabelKeys are the labels that say which ordinal a RoleInstance, and every
+// pod built from it, belongs to.
+var identityLabelKeys = []string{
+	apps.StatefulSetPodNameLabel,
+	constants.RoleInstanceIndexLabelKey,
+}
+
+// InjectIdentityLabelsIntoComponents copies the instance's ordinal identity labels
+// into every component's pod template, so pods built from that template carry the
+// ordinal they belong to.
+//
+// The instance's own labels are the only source: they are written per instance, while
+// the RoleInstanceSet template the components come from is shared by every ordinal and
+// therefore cannot hold an identity. Taking the labels as an argument instead is how
+// one ordinal's identity ends up on another's pods.
+//
+// A stateless instance has no ordinal and so no identity labels to copy; it is left
+// alone.
+func InjectIdentityLabelsIntoComponents(instance *workloadsv1alpha2.RoleInstance) {
+	identity := make(map[string]string, len(identityLabelKeys))
+	for _, key := range identityLabelKeys {
+		if value, ok := instance.Labels[key]; ok {
+			identity[key] = value
+		}
+	}
+	if len(identity) == 0 {
+		return
+	}
+	for i := range instance.Spec.Components {
+		if instance.Spec.Components[i].Template.Labels == nil {
+			instance.Spec.Components[i].Template.Labels = make(map[string]string, len(identity))
+		}
+		for key, value := range identity {
+			instance.Spec.Components[i].Template.Labels[key] = value
+		}
+	}
 }
 
 // IsRoleInstanceReady checks whether the role instance is ready
