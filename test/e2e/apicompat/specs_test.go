@@ -17,6 +17,7 @@ limitations under the License.
 package apicompat
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/onsi/gomega"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -198,9 +200,9 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 			"a RoleInstanceSet RBG must be admitted")
 
 		fetched := &workloadsv1alpha2.RoleBasedGroup{}
-		gomega.Expect(f.Client.Get(ctx(), client.ObjectKeyFromObject(rbg), fetched)).Should(gomega.Succeed())
-		setRoleWorkload(&fetched.Spec.Roles[0], constants.DeploymentWorkloadType)
-		err := f.Client.Update(ctx(), fetched)
+		err := updateWithConflictRetry(ctx(), f.Client, client.ObjectKeyFromObject(rbg), fetched, func() {
+			setRoleWorkload(&fetched.Spec.Roles[0], constants.DeploymentWorkloadType)
+		})
 		gomega.Expect(containsRejection(err)).Should(gomega.BeTrue(),
 			"update introducing a Deployment workload should be rejected, got: %v", err)
 	})
@@ -225,9 +227,9 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 			"a RoleInstanceSet RBGSet must be admitted")
 
 		fetched := &workloadsv1alpha2.RoleBasedGroupSet{}
-		gomega.Expect(f.Client.Get(ctx(), client.ObjectKeyFromObject(rbgset), fetched)).Should(gomega.Succeed())
-		setRoleWorkload(&fetched.Spec.GroupTemplate.Spec.Roles[0], constants.StatefulSetWorkloadType)
-		err := f.Client.Update(ctx(), fetched)
+		err := updateWithConflictRetry(ctx(), f.Client, client.ObjectKeyFromObject(rbgset), fetched, func() {
+			setRoleWorkload(&fetched.Spec.GroupTemplate.Spec.Roles[0], constants.StatefulSetWorkloadType)
+		})
 		gomega.Expect(containsRejection(err)).Should(gomega.BeTrue(),
 			"update introducing a StatefulSet workload should be rejected, got: %v", err)
 	})
@@ -261,4 +263,34 @@ func setRoleWorkload(role *workloadsv1alpha2.RoleSpec, workloadType string) {
 		role.Annotations = map[string]string{}
 	}
 	role.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+}
+
+// updateWithConflictRetry re-Gets obj, applies mutate, and Updates it, retrying on
+// optimistic-concurrency (409 conflict) errors. The controller writes status on
+// freshly created RBG/RBGSet objects, so a plain Get->Update races it and surfaces a
+// conflict instead of reaching the validating webhook. A conflict is transient and
+// unrelated to whether the update is admissible, so we re-Get and retry; the final
+// non-conflict Update error (typically the validator's rejection, or nil on success)
+// is returned for the caller to assert on.
+func updateWithConflictRetry(
+	ctx context.Context,
+	c client.Client,
+	key client.ObjectKey,
+	obj client.Object,
+	mutate func(),
+) error {
+	const maxAttempts = 10
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		if err := c.Get(ctx, key, obj); err != nil {
+			return err
+		}
+		mutate()
+		lastErr = c.Update(ctx, obj)
+		if lastErr == nil || !apierrors.IsConflict(lastErr) {
+			return lastErr
+		}
+	}
+	return fmt.Errorf("update %s kept hitting optimistic-concurrency conflicts after %d attempts: %w",
+		key, maxAttempts, lastErr)
 }

@@ -211,12 +211,25 @@ jobs:
           done
 
           echo "== caBundle injected into every webhook of the validating webhook config =="
-          if ! kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o json \
-              | jq -e '(.webhooks | length > 0) and all(.webhooks[]; (.clientConfig.caBundle // "") != "")' >/dev/null; then
-            echo "::error::caBundle not injected into every webhook of rbgs-validating-webhook-configuration"
-            kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o yaml || true
-            exit 1
-          fi
+          # The controller patches caBundle onto the ValidatingWebhookConfiguration
+          # asynchronously, after it has created/renewed the TLS secret above. The
+          # secret becoming present therefore does not guarantee caBundle is injected
+          # yet, so retry until the controller finishes patching (see issue #442).
+          for i in $(seq 1 24); do
+            if kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o json \
+                | jq -e '(.webhooks | length > 0) and all(.webhooks[]; (.clientConfig.caBundle // "") != "")' >/dev/null; then
+              echo "caBundle injected into every webhook of rbgs-validating-webhook-configuration"
+              break
+            fi
+            if [ "$i" -eq 24 ]; then
+              echo "::error::caBundle not injected into every webhook of rbgs-validating-webhook-configuration"
+              kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o yaml || true
+              kubectl -n "$NS" logs -l control-plane=rbgs-controller --tail=100 || true
+              exit 1
+            fi
+            echo "waiting for caBundle injection... ($i/24)"
+            sleep 5
+          done
           echo "RBAC and webhook-cert bootstrap verified"
 
       - name: Pre-load e2e test images
