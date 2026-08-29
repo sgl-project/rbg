@@ -19,7 +19,7 @@ RUN apk add --update --no-cache bash curl && \
 #
 # Install via chinese mirror:
 # RUN apk add --no-cache kubectl --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community
-ARG KUBECTL_VERSION=v1.36.4
+ARG KUBECTL_VERSION=v1.37.0
 ARG TARGETARCH
 RUN ARCH="${TARGETARCH:-amd64}" && \
     curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
