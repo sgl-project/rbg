@@ -57,8 +57,9 @@ limitations under the License.
 // the upgrade instead of being serialized somewhere.
 //
 // The world the upgrade lands on is deliberately not fully converged: one fixture is
-// stuck Pending and another is mid-rollout, because every other fixture is quiet by
-// then and a quiet cluster is the one state an upgrade is least likely to arrive in.
+// stuck Pending and another is halted half-way through a rollout, because every other
+// fixture is quiet by then and a quiet cluster is the one state an upgrade is least
+// likely to arrive in.
 // Phase 3 then re-runs the same detectors twice more, once after restarting the
 // upgraded controller and once after a second identical `helm upgrade`, so that a
 // controller which is only quiet because it has not yet reconciled from cold, or one

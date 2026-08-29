@@ -25,6 +25,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -72,9 +73,16 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		// untouched" checks can exclude them.
 		mutated []string
 		// midRollPodsBefore are the mid-rollout fixture's pods as they were before phase 2
-		// started rolling it. Every one of them must be gone by the time the rollout
-		// converges, which is the only way to tell a finished rollout from a stalled one.
+		// started rolling it. Every one of them must be gone once the partition is lifted
+		// and the rollout converges, which is the only way to tell a finished rollout from
+		// a stalled one.
 		midRollPodsBefore map[string]PodFacts
+		// midRollPodsAtPartition are the same pods once the rollout has halted at the
+		// partition, immediately before helm runs: the instances still at the old revision
+		// plus the ones already replaced. The upgrade must leave all of them alone, which
+		// is a claim midRollPodsBefore cannot express because part of that set is meant to
+		// have been replaced by then.
+		midRollPodsAtPartition map[string]PodFacts
 	)
 
 	ginkgo.BeforeAll(
@@ -225,40 +233,59 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		"[phase 2] upgrades the release to the version under test", func() {
 			// The upgrade deliberately lands on a cluster that is not at rest. Every other
 			// fixture is converged and quiet by now, which is the one state a real upgrade
-			// is least likely to arrive in, and a controller that mishandles an in-flight
-			// rollout would leave it stuck rather than churn anything else.
+			// is least likely to arrive in, and a controller that mishandles a half-rolled
+			// workload would leave it stuck rather than churn anything else.
 			//
-			// This fixture's pods are supposed to move, so it is recorded as mutated and
-			// the phase 3 comparisons exclude it. That its rollout finishes is asserted
-			// separately.
+			// The rollout is started and then allowed to halt at its partition before helm
+			// runs, so the upgrade is guaranteed to land on mixed revisions. Racing a
+			// deliberately slow rollout against helm was the earlier approach and it could
+			// only report the overlap afterwards, because how long helm takes is not
+			// something this suite controls.
 			target := findFixture(rbgs, fxMidRoll)
 			mutated = append(mutated, target.Name)
 			midRollPodsBefore = listPodFactsForRole(gomega.Default, f, target, midRollRole)
 			gomega.Expect(midRollPodsBefore).To(gomega.HaveLen(midRollReplicas))
 
-			ginkgo.By("starting a rollout of " + target.Name + " so it is in flight during the upgrade")
+			ginkgo.By("starting a rollout of " + target.Name)
 			startMidRollout(f, target)
+
+			ginkgo.By(fmt.Sprintf("waiting for the rollout to halt with %d instances still at the old revision", midRollPartition))
+			gomega.Eventually(
+				func(g gomega.Gomega) {
+					pods := listPodFactsForRole(g, f, target, midRollRole)
+					g.Expect(pods).To(gomega.HaveLen(midRollReplicas))
+					// Counted by UID, not by name: a RoleInstanceSet gives its pods stable
+					// names, so a replaced pod comes back under the name it had and
+					// counting names would report a rollout that never started.
+					g.Expect(countSurvivors(midRollPodsBefore, pods)).To(
+						gomega.Equal(midRollPartition),
+						"the rollout did not halt at the partition",
+					)
+					for name, facts := range pods {
+						g.Expect(facts.Phase).To(gomega.Equal(corev1.PodRunning), "pod %s is %s", name, facts.Phase)
+					}
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.Succeed())
+			midRollPodsAtPartition = listPodFactsForRole(gomega.Default, f, target, midRollRole)
 
 			runHelmUpgrade(f)
 
-			// Reported rather than asserted: how long helm takes is not something this
-			// suite controls, so requiring the overlap would make it flake. Saying it out
-			// loud is what stops a run from silently proving less than it looks like.
+			// Asserted rather than reported: the partition holds the fixture here for as
+			// long as it takes, so the upgrade cannot have missed the half-rolled state.
 			//
-			// Counted by UID, not by name: a RoleInstanceSet gives its pods stable names,
-			// so a replaced pod comes back under the name it had.
-			switch survivors := countSurvivors(
-				midRollPodsBefore, listPodFactsForRole(gomega.Default, f, target, midRollRole),
-			); survivors {
-			case 0:
-				ginkgo.GinkgoWriter.Printf(
-					"[mid-rollout] the rollout of %s had already finished when helm returned, so this run "+
-						"did not exercise an upgrade landing mid-rollout\n", target.Name)
-			default:
-				ginkgo.GinkgoWriter.Printf(
-					"[mid-rollout] %d of %d original pods of %s were still there when helm returned, so "+
-						"the upgrade did land mid-rollout\n", survivors, midRollReplicas, target.Name)
-			}
+			// This also doubles as the check that the halt was real. The wait above can be
+			// satisfied by a rollout that is merely between two instances at the moment it
+			// samples, whereas this spans the whole helm upgrade, which is far longer than
+			// replacing one nginx pod. So a count that has moved means one of two things,
+			// and the failure cannot say which: the upgrade rolled instances the partition
+			// had pinned, or the partition never pinned them.
+			gomega.Expect(
+				countSurvivors(midRollPodsBefore, listPodFactsForRole(gomega.Default, f, target, midRollRole)),
+			).To(
+				gomega.Equal(midRollPartition),
+				"instances that partition %d should have pinned at the old revision were rolled, either by "+
+					"the upgrade or because the partition never held", midRollPartition,
+			)
 
 			// The conversion round-trip gate needs an object that already exists and
 			// is reachable through both API versions; the v1alpha1 fixture is it.
@@ -338,15 +365,35 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
-		"[phase 3] finishes the rollout that was in flight when the upgrade landed", func() {
-			// This fixture's pods are supposed to have moved. What must not happen is the
-			// rollout stalling half-done, and no other spec can see that: the fixture is
-			// excluded from all of them precisely because it churns.
+		"[phase 3] leaves a half-rolled workload alone and still finishes its rollout", func() {
+			// Two separate claims about the fixture the upgrade caught at mixed revisions.
 			//
-			// Replacement is checked by UID under the same name, because a RoleInstanceSet
-			// brings a replaced pod back under the name it had.
+			// First, that the upgrade did not touch it. The partition had it stopped, so
+			// "stopped" is the state that has to survive: neither the instances pinned at
+			// the old revision nor the ones already replaced may move. This is the same
+			// standard every quiet fixture is held to, and it is only reachable because the
+			// rollout is halted rather than racing helm. It cannot be folded into the
+			// comparisons against `before`, which predates the deliberate churn.
+			//
+			// Second, that lifting the partition still converges. A controller that dropped
+			// the rollout on the floor -- or advanced currentRevision while the partition
+			// was still in force, so the remaining instances no longer look out of date --
+			// passes the first claim and fails this one.
 			target := findFixture(rbgs, fxMidRoll)
 
+			ginkgo.By("checking the upgrade left the half-rolled pods untouched")
+			gomega.Expect(
+				countSurvivors(midRollPodsAtPartition, listPodFactsForRole(gomega.Default, f, target, midRollRole)),
+			).To(
+				gomega.Equal(midRollReplicas),
+				"the upgrade churned pods of a workload whose rollout was halted at a partition",
+			)
+
+			ginkgo.By("lifting the partition so the rollout can finish")
+			releaseMidRollout(f, target)
+
+			// Replacement is checked by UID under the same name, because a RoleInstanceSet
+			// brings a replaced pod back under the name it had.
 			gomega.Eventually(
 				func(g gomega.Gomega) {
 					pods := listPodFactsForRole(g, f, target, midRollRole)
@@ -900,11 +947,17 @@ func childRBGNames(f *framework.Framework, setName string) []string {
 	return names
 }
 
-// startMidRollout changes the mid-rollout fixture's pod template, which is what starts a
-// rollout, and mirrors the change onto the local fixture so ExpectRbgV2Equal keeps
-// comparing against the intended spec.
+// startMidRollout changes the mid-rollout fixture's pod template and pins its lower
+// ordinals with a partition, which together start a rollout that halts part-way, and
+// mirrors both onto the local fixture so ExpectRbgV2Equal keeps comparing against the
+// intended spec.
+//
+// Both go in one update on purpose. Written separately, the controller could observe the
+// new template while the partition was still zero and roll all of the instances before the
+// partition arrived, which is the state this fixture exists to avoid.
 func startMidRollout(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
 	env := corev1.EnvVar{Name: "UPGRADE_E2E_MIDROLL", Value: "1"}
+	partition := ptr.To(intstr.FromInt32(midRollPartition))
 
 	gomega.Expect(
 		retry.RetryOnConflict(
@@ -915,6 +968,7 @@ func startMidRollout(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGro
 				}
 				containers := midRollTemplate(live).Spec.Containers
 				containers[0].Env = append(containers[0].Env, env)
+				midRollRollingUpdate(live).Partition = partition
 				return f.Client.Update(f.Ctx, live)
 			},
 		),
@@ -922,6 +976,29 @@ func startMidRollout(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGro
 
 	containers := midRollTemplate(rbg).Spec.Containers
 	containers[0].Env = append(containers[0].Env, env)
+	midRollRollingUpdate(rbg).Partition = partition
+}
+
+// releaseMidRollout lowers the mid-rollout fixture's partition to zero, which is what lets
+// the halted rollout converge, and mirrors the change onto the local fixture so
+// ExpectRbgV2Equal keeps comparing against the intended spec.
+func releaseMidRollout(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
+	released := ptr.To(intstr.FromInt32(0))
+
+	gomega.Expect(
+		retry.RetryOnConflict(
+			retry.DefaultRetry, func() error {
+				live := &workloadsv1alpha2.RoleBasedGroup{}
+				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbg), live); err != nil {
+					return err
+				}
+				midRollRollingUpdate(live).Partition = released
+				return f.Client.Update(f.Ctx, live)
+			},
+		),
+	).To(gomega.Succeed())
+
+	midRollRollingUpdate(rbg).Partition = released
 }
 
 // midRollTemplate returns the pod template of the mid-rollout fixture's only role.
@@ -932,6 +1009,16 @@ func midRollTemplate(rbg *workloadsv1alpha2.RoleBasedGroup) *corev1.PodTemplateS
 	gomega.Expect(pattern.Template).ToNot(gomega.BeNil())
 	gomega.Expect(pattern.Template.Spec.Containers).ToNot(gomega.BeEmpty())
 	return pattern.Template
+}
+
+// midRollRollingUpdate returns the rolling update strategy of the mid-rollout fixture's
+// only role, which is where its partition lives.
+func midRollRollingUpdate(rbg *workloadsv1alpha2.RoleBasedGroup) *workloadsv1alpha2.RollingUpdate {
+	gomega.Expect(rbg.Spec.Roles).To(gomega.HaveLen(1))
+	strategy := rbg.Spec.Roles[0].RolloutStrategy
+	gomega.Expect(strategy).ToNot(gomega.BeNil())
+	gomega.Expect(strategy.RollingUpdate).ToNot(gomega.BeNil())
+	return strategy.RollingUpdate
 }
 
 // countSurvivors returns how many of the pods in before are still the same pod in after.

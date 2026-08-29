@@ -20,7 +20,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
@@ -43,7 +42,7 @@ const (
 	fxCustom     = "up-cc"
 	fxSet        = "up-set"
 	fxV1alpha1   = "up-v1a1"
-	// fxPending never becomes ready, and fxMidRoll is rolling while the upgrade
+	// fxPending never becomes ready, and fxMidRoll is half-rolled when the upgrade
 	// lands. Both exist because every other fixture is converged and quiet by the
 	// time the upgrade starts, which is the one cluster state an upgrade is least
 	// likely to arrive in.
@@ -61,15 +60,13 @@ const (
 	// but only until someone runs this on a bigger cluster.
 	unschedulableNodeLabel = "upgrade-e2e.rbgs.x-k8s.io/no-such-node"
 
-	// midRollReadinessDelaySeconds is how long each replacement pod of fxMidRoll
-	// takes to report ready. With replicas rolled one at a time, this is what keeps
-	// the rollout in flight long enough to still be running when the upgrade lands.
-	midRollReadinessDelaySeconds = 15
-	midRollReplicas              = 3
-	midRollRole                  = "roller"
-	// nginxPort is the port the fixture image listens on, which the readiness probe
-	// targets. Nothing declares it as a containerPort; a TCP probe does not need it to.
-	nginxPort = 80
+	midRollReplicas = 3
+	midRollRole     = "roller"
+	// midRollPartition is how many of fxMidRoll's instances phase 2 pins at the old
+	// revision when it changes the template. Rolling the remaining
+	// midRollReplicas-midRollPartition and then halting is what holds the fixture
+	// half-rolled across the upgrade, however long helm takes.
+	midRollPartition = 2
 
 	// roleA and roleB are the two roles of the fxDeps fixture. Phase 4 mutates roleB
 	// and requires that only roleB's pods move.
@@ -273,35 +270,35 @@ func buildCustomComponentsFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
 		}).Obj()
 }
 
-// buildMidRolloutFixture is the fixture whose rollout is still in flight when the
-// upgrade lands. Phase 2 changes its template immediately before running helm upgrade.
+// buildMidRolloutFixture is the fixture that is half-rolled when the upgrade lands.
+// Phase 2 changes its template and introduces a partition in the same update.
 //
-// The readiness probe is what makes that reliable. Without it three nginx pods are
-// replaced in a couple of seconds and the rollout would almost always be finished before
-// helm had done anything, leaving the scenario untested while the spec still passed.
-// Delaying readiness makes each replacement take a known amount of time, and rolling one
-// replica at a time multiplies it out to comfortably longer than a helm upgrade.
+// The partition is what makes that state hold. It pins the ordinals below it at the old
+// revision, so the ordinals above it roll and the rollout then stops, leaving the fixture
+// at mixed revisions until phase 3 lifts it. Stretching a readiness probe until the
+// rollout outlasted helm was the earlier approach, and it was a race the suite could not
+// win: how long a helm upgrade takes is not something a test controls, so the overlap
+// could only be reported afterwards, never relied on.
 //
-// Its pods legitimately churn, so phase 2 records it as mutated and the phase 3 churn
-// comparisons exclude it. What is asserted instead is that the rollout finishes.
+// It is not set here, only in phase 2. newVersionedInstance builds every ordinal below the
+// partition from the *current* revision, which during initial creation is not yet the
+// revision this fixture is being created at, so a partition present from the start would
+// put phase 1's readiness wait at the mercy of that path.
+//
+// The halt is also what lets this fixture be held to the same standard as the quiet ones.
+// A rollout that is genuinely moving has to be excluded from every churn comparison; one
+// that is stopped must not move either, so phase 3 can require that the upgrade left even
+// this non-converged workload's pods alone, and then that lifting the partition still
+// finishes the rollout the old controller started.
 func buildMidRolloutFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
 	template := wrappersv2.BuildBasicPodTemplateSpec()
-	// A TCP probe against the port nginx already listens on, rather than an exec probe:
-	// the delay is the point, and it should not depend on which binaries the image ships.
-	template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(nginxPort)},
-		},
-		InitialDelaySeconds: midRollReadinessDelaySeconds,
-		PeriodSeconds:       2,
-	}
 
 	return wrappersv2.BuildBasicRoleBasedGroup(fxMidRoll, ns).
 		WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole(midRollRole).
 				WithReplicas(midRollReplicas).
-				// One at a time and no surge, so the rollout is a sequence of
-				// readiness delays rather than all of them at once.
+				// One at a time and no surge, so the instances above the partition roll
+				// in sequence rather than all at once.
 				WithRollingUpdate(wrappersv2.BuildRollingUpdate(1, 0)).
 				WithTemplate(&template).
 				Obj(),
