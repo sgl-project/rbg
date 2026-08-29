@@ -507,6 +507,137 @@ func TestRoleInstanceSetReconciler_ValidateRoleTemplateReferences(t *testing.T) 
 	}
 }
 
+// TestRoleInstanceSetReconciler_RestartPolicySerializedShape pins which of the two
+// mutually exclusive restart-policy fields the RoleInstance template carries.
+//
+// The choice is not cosmetic: the serialized template is what the RoleInstanceSet
+// revision hash is computed over, so emitting restartPolicyConfig for a role that only
+// ever stored the deprecated restartPolicy string moves the hash and rolls the role with
+// nothing to roll to. The discriminator is the backoff delays -- the only thing the
+// string cannot express -- not the presence of a restartPolicyConfig block, which is why
+// a role that sets nothing but its type still takes the string path.
+func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	tests := []struct {
+		name string
+		role func() workloadsv1alpha2.RoleSpec
+		// wantRestartPolicy is the expected restartPolicy string, empty when the field
+		// must be absent.
+		wantRestartPolicy workloadsv1alpha2.RestartPolicyType
+		// wantConfig is the expected restartPolicyConfig, nil when the field must be
+		// absent.
+		wantConfig *workloadsv1alpha2.RestartPolicyConfig
+	}{
+		{
+			name: "v0.7-style role storing only the deprecated string",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("legacy-role").
+					WithLegacyRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
+					Obj()
+			},
+			wantRestartPolicy: workloadsv1alpha2.RestartPolicyNone,
+		},
+		{
+			name: "role configuring no restart policy at all",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("default-role").Obj()
+			},
+			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+		},
+		{
+			name: "role configuring a type but no delays",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("type-only-role").
+					WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
+					Obj()
+			},
+			wantRestartPolicy: workloadsv1alpha2.RestartPolicyNone,
+		},
+		{
+			name: "role configuring both delays",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("backoff-role").
+					WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+					WithBaseDelaySeconds(5).
+					WithMaxDelaySeconds(50).
+					Obj()
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				BaseDelaySeconds: ptr.To(int32(5)),
+				MaxDelaySeconds:  ptr.To(int32(50)),
+			},
+		},
+		{
+			name: "role configuring only the base delay defaults the max",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("base-only-role").
+					WithBaseDelaySeconds(5).
+					Obj()
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				BaseDelaySeconds: ptr.To(int32(5)),
+				MaxDelaySeconds:  ptr.To(workloadsv1alpha2.DefaultMaxDelaySeconds),
+			},
+		},
+		{
+			name: "role configuring only the max delay defaults the base",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("max-only-role").
+					WithMaxDelaySeconds(50).
+					Obj()
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				BaseDelaySeconds: ptr.To(workloadsv1alpha2.DefaultBaseDelaySeconds),
+				MaxDelaySeconds:  ptr.To(int32(50)),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := tt.role()
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("restart-policy-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+				Obj()
+
+			reconciler := NewRoleInstanceSetReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+			applyConfig, err := reconciler.constructRoleInstanceSetApplyConfiguration(
+				context.Background(), rbg, &role, nil, expectedRevisionHash, nil,
+			)
+			assert.NoError(t, err)
+
+			template := applyConfig.Spec.RoleInstanceTemplate
+			if tt.wantConfig == nil {
+				assert.Nil(t, template.RestartPolicyConfig)
+				assert.Equal(t, ptr.To(tt.wantRestartPolicy), template.RestartPolicy)
+			} else {
+				assert.Nil(t, template.RestartPolicy)
+				assert.Equal(t, ptr.To(tt.wantConfig.Type), template.RestartPolicyConfig.Type)
+				assert.Equal(t, tt.wantConfig.BaseDelaySeconds, template.RestartPolicyConfig.BaseDelaySeconds)
+				assert.Equal(t, tt.wantConfig.MaxDelaySeconds, template.RestartPolicyConfig.MaxDelaySeconds)
+			}
+
+			// The typed assertions above can both hold while the field the apiserver
+			// actually stores differs, so the keys are checked on the serialized form
+			// the revision hash is taken over.
+			raw, err := json.Marshal(template)
+			assert.NoError(t, err)
+			var keys map[string]json.RawMessage
+			assert.NoError(t, json.Unmarshal(raw, &keys))
+			_, hasString := keys["restartPolicy"]
+			_, hasConfig := keys["restartPolicyConfig"]
+			assert.Equal(t, tt.wantConfig == nil, hasString)
+			assert.Equal(t, tt.wantConfig != nil, hasConfig)
+		})
+	}
+}
+
 // buildRawExtension creates a runtime.RawExtension from a map
 func buildRawExtension(t *testing.T, data map[string]interface{}) *runtime.RawExtension {
 	if data == nil {
