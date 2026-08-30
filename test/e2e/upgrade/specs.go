@@ -38,8 +38,8 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
-// settleDuration is how long the new controller is given to act after it reports
-// ready, before the second post-upgrade sample is taken.
+// settleDuration is how far apart the two samples that have to agree are taken, and how
+// long the controller is given to act after a write elsewhere in the suite.
 //
 // This is the single most important detail in the suite. Without it, a regression
 // that rolls pods would still pass whenever the sample happened to land in the gap
@@ -299,26 +299,17 @@ func RunUpgradeSpecs(f *framework.Framework) {
 
 	ginkgo.It(
 		"[phase 3] leaves every pod that was already running untouched", func() {
-			first := captureAll(gomega.Default, f)
-
-			ginkgo.By(fmt.Sprintf("letting the new controller settle for %s", settleDuration))
-			time.Sleep(settleDuration)
-
-			after := captureAll(gomega.Default, f)
-
-			// Compare the two post-upgrade samples first. If they disagree, the
-			// controller is still moving things and any comparison against `before`
-			// would be a race, so say that rather than blaming the upgrade.
+			// The comparison below is only meaningful once the controller has stopped
+			// changing things: until then a difference against `before` could just as
+			// well be the sampling moment as the upgrade. waitQuiesced establishes that
+			// and hands back the sample it established it with.
 			//
-			// The mid-rollout fixture is excluded here too: it is legitimately moving
-			// between the two samples, so leaving it in would make this comparison
-			// report a race on every run.
-			fs := &findings{}
-			quietFirst, quietAfter := exclude(first, mutated...), exclude(after, mutated...)
-			checkSameRBGSet(fs, quietFirst, quietAfter)
-			checkNoPodChurn(fs, quietFirst, quietAfter)
-			checkNoRestarts(fs, quietFirst, quietAfter)
+			// The mid-rollout fixture is excluded from the quiescence check: it is
+			// legitimately moving, so leaving it in would never let the wait succeed.
+			ginkgo.By(fmt.Sprintf("waiting for two samples %s apart to agree", settleDuration))
+			after := waitQuiesced(f, mutated...)
 
+			fs := &findings{}
 			runDetectors(fs, f, before, after, preUpgradeMark, upgradeRewrites.acrossStarts(controllerStarts), mutated)
 			fs.report()
 		},
@@ -370,10 +361,15 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			//
 			// First, that the upgrade did not touch it. The partition had it stopped, so
 			// "stopped" is the state that has to survive: neither the instances pinned at
-			// the old revision nor the ones already replaced may move. This is the same
-			// standard every quiet fixture is held to, and it is only reachable because the
-			// rollout is halted rather than racing helm. It cannot be folded into the
-			// comparisons against `before`, which predates the deliberate churn.
+			// the old revision nor the ones already replaced may move. That is the same
+			// pod-level standard every quiet fixture is held to -- churn, restarts and
+			// metadata, not merely a count of survivors -- and it is only reachable
+			// because the rollout is halted rather than racing helm. It cannot be folded
+			// into the comparisons against `before`, which predates the deliberate churn.
+			//
+			// The object-level detectors are deliberately not run here: setting the
+			// partition rewrote the RoleInstanceSet spec on purpose, so its generation and
+			// revisions moved for a reason that has nothing to do with the upgrade.
 			//
 			// Second, that lifting the partition still converges. A controller that dropped
 			// the rollout on the floor -- or advanced currentRevision while the partition
@@ -382,12 +378,15 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			target := findFixture(rbgs, fxMidRoll)
 
 			ginkgo.By("checking the upgrade left the half-rolled pods untouched")
-			gomega.Expect(
-				countSurvivors(midRollPodsAtPartition, listPodFactsForRole(gomega.Default, f, target, midRollRole)),
-			).To(
-				gomega.Equal(midRollReplicas),
-				"the upgrade churned pods of a workload whose rollout was halted at a partition",
+			fs := &findings{}
+			atPartition := roleSnapshot(target.Name, midRollRole, midRollPodsAtPartition)
+			nowSnap := roleSnapshot(
+				target.Name, midRollRole, listPodFactsForRole(gomega.Default, f, target, midRollRole),
 			)
+			checkNoPodChurn(fs, atPartition, nowSnap)
+			checkNoRestarts(fs, atPartition, nowSnap)
+			checkPodMetadataStable(fs, atPartition, nowSnap)
+			fs.report()
 
 			ginkgo.By("lifting the partition so the rollout can finish")
 			releaseMidRollout(f, target)
@@ -427,7 +426,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			mark := metav1.Now()
 			baseline := captureAll(gomega.Default, f)
 
-			restartController(f)
+			restartController(f, fxV1alpha1)
 
 			ginkgo.By(fmt.Sprintf("letting the restarted controller settle for %s", settleDuration))
 			time.Sleep(settleDuration)
@@ -635,8 +634,14 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			storedBefore := &workloadsv1alpha2.RoleBasedGroup{}
 			gomega.Expect(f.Client.Get(f.Ctx, key, storedBefore)).To(gomega.Succeed())
 
-			podsBefore := listPodFactsForRole(gomega.Default, f, storedBefore, v1alpha1LwsRole)
-			gomega.Expect(podsBefore).ToNot(gomega.BeEmpty())
+			// The baseline is taken here rather than reused from `before`: the interval
+			// since the pre-upgrade snapshot has already been attributed by phase 3, and
+			// comparing across it again would report anything it found as something this
+			// round-trip did.
+			baseline := only(captureAll(gomega.Default, f), fxV1alpha1)
+			gomega.Expect(baseline[fxV1alpha1].Roles[v1alpha1LwsRole]).ToNot(
+				gomega.BeEmpty(), "role %s of %s has no pods to watch", v1alpha1LwsRole, fxV1alpha1,
+			)
 
 			ginkgo.By("annotating " + fxV1alpha1 + " through the v1alpha1 API")
 			gomega.Expect(
@@ -677,9 +682,9 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			time.Sleep(settleDuration)
 
 			settled := only(captureAll(gomega.Default, f), fxV1alpha1)
-			checkNoPodChurn(fs, only(before, fxV1alpha1), settled)
-			checkNoRestarts(fs, only(before, fxV1alpha1), settled)
-			checkPodMetadataStable(fs, only(before, fxV1alpha1), settled)
+			checkNoPodChurn(fs, baseline, settled)
+			checkNoRestarts(fs, baseline, settled)
+			checkPodMetadataStable(fs, baseline, settled)
 			fs.report()
 			f.ExpectRbgEqual(legacy)
 		},
@@ -702,6 +707,11 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			key := client.ObjectKey{Namespace: f.Namespace, Name: fxV1alpha1Set}
 			storedBefore := &workloadsv1alpha2.RoleBasedGroupSet{}
 			gomega.Expect(f.Client.Get(f.Ctx, key, storedBefore)).To(gomega.Succeed())
+
+			// Taken here rather than reused from `before`, for the same reason as the
+			// RoleBasedGroup spec above: phase 3 already accounted for the upgrade, and
+			// this spec is only allowed to speak about the write it performs.
+			baseline := only(captureAll(gomega.Default, f), children...)
 
 			ginkgo.By("annotating " + fxV1alpha1Set + " through the v1alpha1 API")
 			gomega.Expect(
@@ -740,7 +750,6 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			time.Sleep(settleDuration)
 
 			settled := only(captureAll(gomega.Default, f), children...)
-			baseline := only(before, children...)
 			checkNoPodChurn(fs, baseline, settled)
 			checkNoRestarts(fs, baseline, settled)
 			checkPodMetadataStable(fs, baseline, settled)

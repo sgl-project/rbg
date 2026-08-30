@@ -352,11 +352,18 @@ func buildSetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
 // later read of it goes through the conversion webhook. It is stored as v1alpha2
 // either way, so its pods are labelled like any other RBG's and captureAll sees it.
 //
-// The second role exists because every v1alpha1 conversion change in this release is
-// on the LeaderWorkerPattern and CustomComponents branches of convertRoleV1alpha1ToV2;
-// a standalone role never reaches them. Its restartPolicy is deliberately left unset:
-// the two releases disagree only about the empty value, so an unset field is the one
-// input that can convert to a different v1alpha2 shape than v0.7.0 stored.
+// The second role exists because the v1alpha1 conversion changes in this release are on
+// the LeaderWorkerPattern and CustomComponents branches of convertRoleV1alpha1ToV2; a
+// standalone role reaches neither. Its restartPolicy is deliberately left unset: the two
+// releases disagree only about the empty value, so an unset field is the one input that
+// can convert to a different v1alpha2 shape than v0.7.0 stored.
+//
+// The CustomComponents branch is left to the conversion unit tests, because no v1alpha1
+// role that reaches it can run on either version. v1alpha1's workload field defaults to
+// apps/v1 StatefulSet at the apiserver, the conversion turns that default into the
+// role-workload-type annotation, and a role the StatefulSet reconciler is handed with a
+// components pattern has no role-level template to build a pod from. So there are no
+// pods of such a role for this suite to watch across the upgrade.
 func buildV1alpha1Fixture(ns string) *workloadsv1alpha1.RoleBasedGroup {
 	return wrappersv1.BuildBasicRoleBasedGroup(fxV1alpha1, ns).
 		WithRoles([]workloadsv1alpha1.RoleSpec{

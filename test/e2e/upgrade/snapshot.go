@@ -19,6 +19,7 @@ package upgrade
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -53,8 +54,12 @@ type PodFacts struct {
 	// container restarted in place keeps the pod identity, so this is the only
 	// signal that catches it.
 	RestartCounts map[string]int32
-	OwnerUIDs     []types.UID
-	Phase         corev1.PodPhase
+	// OwnerUIDs is the sorted ownerReferences of the pod. A pod re-parented onto
+	// another owner keeps every field above, so this is the only place it shows.
+	OwnerUIDs []types.UID
+	// Phase is compared, not required to be Running: one fixture is deliberately
+	// Pending, and the question is whether the upgrade moved a pod out of its phase.
+	Phase corev1.PodPhase
 	// Labels and Annotations are compared in full because the drifts this suite has
 	// actually found did not move any of the fields above. An instance whose pod
 	// template carried another ordinal's identity labels kept its pod UID, its node
@@ -98,8 +103,23 @@ type serviceFacts struct {
 	Endpoints []string
 }
 
-// RBGSnapshot is one RoleBasedGroup's observable state at a point in time.
+// The two kinds a snapshot can describe. Spelled out because controller-runtime
+// clears TypeMeta on typed results, so the kind cannot be read off the object.
+const (
+	kindRBG    = "RoleBasedGroup"
+	kindRBGSet = "RoleBasedGroupSet"
+)
+
+// RBGSnapshot is one RoleBasedGroup's observable state at a point in time, or -- with
+// only Kind, Name, RBGUID and Generation set -- one RoleBasedGroupSet root's.
+//
+// The set root shares this type rather than getting its own so that every detector
+// covers it for free. The ones that need pods, owners or Services find empty maps and
+// say nothing, while identity and generation are compared exactly as for an RBG.
 type RBGSnapshot struct {
+	// Kind is "RoleBasedGroup" or "RoleBasedGroupSet". It is what the generation-bump
+	// lookup and the failure messages are keyed off, so the two are never conflated.
+	Kind       string
 	Name       string
 	RBGUID     types.UID
 	Generation int64
@@ -125,9 +145,12 @@ type ownerSource struct {
 	list func() client.ObjectList
 }
 
-// ownerSources are the workload kinds an RBG can own. All of them label their
-// objects with GroupNameLabelKey, so one label query per kind covers every pattern
-// the fixtures use.
+// ownerSources are the kinds an RBG owns. Mostly the workload objects behind its
+// roles, plus the scaling adapter: that one is not a workload, but it is created,
+// relabelled and spec-patched by the same controller, and it is the object an
+// autoscaler holds on to. All of them label their objects with GroupNameLabelKey, on
+// v0.7.0 as well as now, so one label query per kind covers every pattern the fixtures
+// use.
 func ownerSources() []ownerSource {
 	return []ownerSource{
 		{"RoleInstanceSet", func() client.ObjectList { return &workloadsv1alpha2.RoleInstanceSetList{} }},
@@ -135,15 +158,24 @@ func ownerSources() []ownerSource {
 		{"Deployment", func() client.ObjectList { return &appsv1.DeploymentList{} }},
 		{"StatefulSet", func() client.ObjectList { return &appsv1.StatefulSetList{} }},
 		{"LeaderWorkerSet", func() client.ObjectList { return &lwsv1.LeaderWorkerSetList{} }},
+		{"RoleBasedGroupScalingAdapter", func() client.ObjectList {
+			return &workloadsv1alpha2.RoleBasedGroupScalingAdapterList{}
+		}},
 	}
 }
 
-// captureAll snapshots every RoleBasedGroup in the test namespace, keyed by name.
+// captureAll snapshots every RoleBasedGroup and every RoleBasedGroupSet in the test
+// namespace, keyed by object name.
 //
 // It lists rather than taking a fixture list so that RBGs created indirectly are
 // covered too: the children of the RoleBasedGroupSet fixture, and the RBG created
 // through v1alpha1. Anything appearing or disappearing across the upgrade is itself
 // churn, and comparing the key sets catches it.
+//
+// The set roots are captured because a child RBG can be intact while the object that
+// owns it was recreated or had its spec rewritten -- and the set is what would then
+// restamp the children. Names cannot collide: a set stamps its children out as
+// <set>-<ordinal>, so "up-set" and "up-set-0" are distinct keys.
 //
 // g carries the assertion target. Callers inside an Eventually body must pass the
 // injected gomega.Gomega so a transient List error is retried rather than failing
@@ -151,17 +183,29 @@ func ownerSources() []ownerSource {
 func captureAll(g gomega.Gomega, f *framework.Framework) map[string]RBGSnapshot {
 	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
 	g.Expect(f.Client.List(f.Ctx, rbgList, client.InNamespace(f.Namespace))).To(gomega.Succeed())
+	setList := &workloadsv1alpha2.RoleBasedGroupSetList{}
+	g.Expect(f.Client.List(f.Ctx, setList, client.InNamespace(f.Namespace))).To(gomega.Succeed())
 
-	out := make(map[string]RBGSnapshot, len(rbgList.Items))
+	out := make(map[string]RBGSnapshot, len(rbgList.Items)+len(setList.Items))
 	for i := range rbgList.Items {
 		rbg := &rbgList.Items[i]
 		out[rbg.Name] = captureRBG(g, f, rbg)
+	}
+	for i := range setList.Items {
+		set := &setList.Items[i]
+		out[set.Name] = RBGSnapshot{
+			Kind:       kindRBGSet,
+			Name:       set.Name,
+			RBGUID:     set.UID,
+			Generation: set.Generation,
+		}
 	}
 	return out
 }
 
 func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) RBGSnapshot {
 	snap := RBGSnapshot{
+		Kind:          kindRBG,
 		Name:          rbg.Name,
 		RBGUID:        rbg.UID,
 		Generation:    rbg.Generation,
@@ -399,6 +443,7 @@ func listRevisionsForRBG(
 func roleSnapshot(rbgName, roleName string, pods map[string]PodFacts) map[string]RBGSnapshot {
 	return map[string]RBGSnapshot{
 		rbgName: {
+			Kind:  kindRBG,
 			Name:  rbgName,
 			Roles: map[string]map[string]PodFacts{roleName: pods},
 		},
@@ -441,6 +486,58 @@ func runDetectors(
 ) {
 	before, after = exclude(before, skip...), exclude(after, skip...)
 
+	checkSnapshotDiff(fs, before, after, rec)
+	checkNoKillingEvents(fs, f, since, skip)
+}
+
+// quiesceTimeout bounds the wait below. It is generous on purpose: `helm upgrade --wait`
+// returns once the new controller pod is available, which is before it takes over the
+// leader-election lease and before its first reconcile of every fixture has landed.
+const quiesceTimeout = 5 * time.Minute
+
+// waitQuiesced samples the namespace twice, settleDuration apart, until the two samples
+// agree, and returns the later one. skip names the fixtures a spec is deliberately
+// keeping in motion: they are left out of the comparison but kept in the returned
+// sample, which the caller still needs whole.
+//
+// Two agreeing samples is the precondition of every before/after comparison here. While
+// the controller is still converging, a difference against the pre-upgrade snapshot
+// cannot be attributed to the upgrade rather than to the moment the sample was taken --
+// so this says "the controller is still moving" instead of blaming the hop.
+//
+// It waits rather than measuring one window after helm returns, because that boundary is
+// a claim about `helm --wait`, not about the upgrade: the run this replaced reported the
+// new controller's very first reconcile as churn.
+//
+// Nothing is folded. The interval between the two samples contains no action of this
+// suite's and no controller start, and everything the controller did before the samples
+// agreed still has to be accounted for by the caller's comparison against the
+// pre-upgrade snapshot, where only the recorded rewrites are allowed.
+func waitQuiesced(f *framework.Framework, skip ...string) map[string]RBGSnapshot {
+	var latest map[string]RBGSnapshot
+	gomega.Eventually(
+		func(g gomega.Gomega) {
+			first := captureAll(g, f)
+			time.Sleep(settleDuration)
+			latest = captureAll(g, f)
+
+			fs := &findings{}
+			checkSnapshotDiff(fs, exclude(first, skip...), exclude(latest, skip...), recordedRewrites{})
+			g.Expect(fs.sections).To(gomega.BeEmpty(), strings.Join(fs.sections, "\n\n"))
+		}, quiesceTimeout, time.Second,
+	).Should(
+		gomega.Succeed(),
+		"the controller was still changing things %s after the upgrade, so nothing can be attributed to "+
+			"the upgrade itself", quiesceTimeout,
+	)
+	return latest
+}
+
+// checkSnapshotDiff runs every check that needs nothing but the two snapshots. It is
+// separate from runDetectors so that a caller with two snapshots and no event mark --
+// waitQuiesced, comparing two post-upgrade samples -- runs the same set rather than
+// picking a few detectors by hand and quietly falling behind as more are added.
+func checkSnapshotDiff(fs *findings, before, after map[string]RBGSnapshot, rec recordedRewrites) {
 	checkSameRBGSet(fs, before, after)
 	checkNoPodChurn(fs, before, after)
 	checkNoRestarts(fs, before, after)
@@ -449,20 +546,20 @@ func runDetectors(
 	checkOwnersStable(fs, before, after, rec.generationBumps)
 	checkNoRevisionExplosion(fs, before, after)
 	checkStillReady(fs, before, after)
-	checkNoKillingEvents(fs, f, since, skip)
 }
 
-// checkSameRBGSet fails when an RBG appeared or disappeared across the upgrade.
+// checkSameRBGSet fails when an RBG or a RoleBasedGroupSet appeared or disappeared
+// across the upgrade.
 func checkSameRBGSet(fs *findings, before, after map[string]RBGSnapshot) {
 	var problems []string
-	for name := range before {
+	for name, snap := range before {
 		if _, ok := after[name]; !ok {
-			problems = append(problems, fmt.Sprintf("RoleBasedGroup %q disappeared", name))
+			problems = append(problems, fmt.Sprintf("%s %q disappeared", snap.Kind, name))
 		}
 	}
-	for name := range after {
+	for name, snap := range after {
 		if _, ok := before[name]; !ok {
-			problems = append(problems, fmt.Sprintf("RoleBasedGroup %q appeared", name))
+			problems = append(problems, fmt.Sprintf("%s %q appeared", snap.Kind, name))
 		}
 	}
 	fs.add("the set of RoleBasedGroups changed across the upgrade", problems)
@@ -471,6 +568,11 @@ func checkSameRBGSet(fs *findings, before, after map[string]RBGSnapshot) {
 // checkNoPodChurn is the primary assertion of this suite. It compares pod name ->
 // UID per role, which catches both ways a pod can be replaced: a new generated name,
 // and a reused stable name (StatefulSet style) carrying a new UID.
+//
+// It also compares ownerReferences. A pod adopted by a different owner object keeps
+// its own UID, node and creation timestamp, so re-parenting is invisible to every
+// other comparison here -- and it means the object that will next roll this pod is not
+// the one that created it.
 func checkNoPodChurn(fs *findings, before, after map[string]RBGSnapshot) {
 	var problems []string
 	for rbgName, beforeSnap := range before {
@@ -505,6 +607,11 @@ func checkNoPodChurn(fs *findings, before, after map[string]RBGSnapshot) {
 						"%s/%s: pod %s moved node (%s -> %s)",
 						rbgName, role, podName, beforeFacts.NodeName, afterFacts.NodeName))
 				}
+				if !slices.Equal(beforeFacts.OwnerUIDs, afterFacts.OwnerUIDs) {
+					problems = append(problems, fmt.Sprintf(
+						"%s/%s: pod %s is owned by different objects (%v -> %v)",
+						rbgName, role, podName, beforeFacts.OwnerUIDs, afterFacts.OwnerUIDs))
+				}
 			}
 
 			for podName, afterFacts := range afterPods {
@@ -522,6 +629,10 @@ func checkNoPodChurn(fs *findings, before, after map[string]RBGSnapshot) {
 // checkNoRestarts requires restart counts to be exactly equal. A >= check would
 // pass a pod whose container the upgrade killed and the kubelet restarted in place,
 // which keeps the pod UID and is therefore invisible to checkNoPodChurn.
+//
+// Both directions are walked. A container that only the after snapshot reports is a
+// container the upgrade added to a pod that survived, which no comparison over the
+// before-side container names can reach.
 func checkNoRestarts(fs *findings, before, after map[string]RBGSnapshot) {
 	var problems []string
 	for rbgName, beforeSnap := range before {
@@ -547,6 +658,13 @@ func checkNoRestarts(fs *findings, before, after map[string]RBGSnapshot) {
 						problems = append(problems, fmt.Sprintf(
 							"%s/%s: pod %s container %s restartCount changed (%d -> %d)",
 							rbgName, role, podName, container, beforeCount, afterCount))
+					}
+				}
+				for container := range afterFacts.RestartCounts {
+					if _, hadBefore := beforeFacts.RestartCounts[container]; !hadBefore {
+						problems = append(problems, fmt.Sprintf(
+							"%s/%s: pod %s reports a container %s it did not have before",
+							rbgName, role, podName, container))
 					}
 				}
 			}
@@ -665,10 +783,18 @@ const (
 // The v1alpha1 write path materializes restartPolicyConfig where v0.7.0 stored the
 // string, and the apiserver then fills in the two delay fields inside it. The pair says
 // the same thing, since the v1alpha2 getters fold the string in and default the delays
-// to these very values. It is recorded rather than reported because a restart policy is
-// not a pod field: it reaches the RoleInstance spec and stops there, so it cannot
-// restart a container. The pod checks in the spec that calls this stay strict, and they
-// are what holds that reasoning to account.
+// to these very values.
+//
+// It is recorded rather than reported because on the roles that reach this fold the
+// rewrite stops at the stored RBG spec. Only a LeaderWorkerPattern or a CustomComponents
+// role carries a restart policy at all, and every such role written through v1alpha1
+// here is reconciled into a LeaderWorkerSet, a workload with no restart policy the RBG
+// could move. That is narrower than it looks: on the RoleInstanceSet path the controller
+// writes the same shape into the RoleInstance template, so the identical flip would move
+// the revision hash and roll the role -- which is why the reconciler keeps writing the
+// deprecated string unless the role configures delays. No role that round-trips through
+// v1alpha1 here is on that path. The pod checks in the spec that calls this stay strict,
+// and they are what holds this reasoning to account.
 //
 // Only a config carrying the default delays is folded. Different delays would be a real
 // semantic change, and leaving such a config in place is what makes it show up as a
@@ -708,12 +834,17 @@ func foldRestartPolicyShape(spec map[string]any) {
 	}
 }
 
+// hasDefaultRestartDelays is whether a restartPolicyConfig carries exactly the delays
+// the v1alpha2 getters default the deprecated string to. A key that is absent does not
+// count as matching: the fold is only sound because the pair says the same thing, and a
+// config that is not the defaulted shape is a difference worth reporting.
 func hasDefaultRestartDelays(config map[string]any) bool {
 	for key, want := range map[string]float64{
 		"baseDelaySeconds": defaultRestartBaseDelaySeconds,
 		"maxDelaySeconds":  defaultRestartMaxDelaySeconds,
 	} {
-		if value, present := config[key]; present && value != want {
+		value, present := config[key]
+		if !present || value != want {
 			return false
 		}
 	}
@@ -813,6 +944,11 @@ var upgradeRewrites = recordedRewrites{
 // checkOwnersStable checks the workload objects behind each role. A generation bump
 // means the new controller rewrote the spec, which is the earliest signal of a
 // revision hash change and shows up before any pod is actually replaced.
+//
+// The root object itself is held to the same standard, under its own kind's bumps key:
+// what the controller hashes is the RBG spec, so a rewrite there reaches every role at
+// once. A RoleBasedGroupSet root has no recorded bump at all, so any rewrite of the
+// object that would restamp its children is reported.
 func checkOwnersStable(fs *findings, before, after map[string]RBGSnapshot, bumps map[string]int64) {
 	var problems []string
 	for rbgName, beforeSnap := range before {
@@ -823,8 +959,14 @@ func checkOwnersStable(fs *findings, before, after map[string]RBGSnapshot, bumps
 
 		if afterSnap.RBGUID != beforeSnap.RBGUID {
 			problems = append(problems, fmt.Sprintf(
-				"%s: RoleBasedGroup was recreated (UID %s -> %s)",
-				rbgName, beforeSnap.RBGUID, afterSnap.RBGUID))
+				"%s: %s was recreated (UID %s -> %s)",
+				rbgName, beforeSnap.Kind, beforeSnap.RBGUID, afterSnap.RBGUID))
+		}
+		if got, want := afterSnap.Generation-beforeSnap.Generation, bumps[beforeSnap.Kind]; got != want {
+			problems = append(problems, fmt.Sprintf(
+				"%s: %s spec was rewritten %d time(s) (generation %d -> %d), not the %d this "+
+					"comparison expects",
+				rbgName, beforeSnap.Kind, got, beforeSnap.Generation, afterSnap.Generation, want))
 		}
 
 		for key, beforeOwner := range beforeSnap.Owners {
@@ -1005,11 +1147,16 @@ func checkNoRevisionExplosion(fs *findings, before, after map[string]RBGSnapshot
 	fs.add("ControllerRevisions changed across the upgrade", problems)
 }
 
-// checkStillReady requires every role to be as ready as it was, and the RBG's Ready
-// condition to still hold. lastTransitionTime is deliberately not compared: the new
-// controller may legitimately rewrite conditions without changing their meaning.
+// checkStillReady requires every role to be as ready as it was, the RBG's Ready
+// condition to still hold, and every surviving pod to be in the phase it was in.
+// lastTransitionTime is deliberately not compared: the new controller may legitimately
+// rewrite conditions without changing their meaning.
+//
+// Phase is compared rather than required to be Running, because one fixture is
+// deliberately Pending: the question is whether the upgrade moved a pod out of the
+// phase it was in, not whether that phase was a healthy one.
 func checkStillReady(fs *findings, before, after map[string]RBGSnapshot) {
-	var problems []string
+	var problems, phaseProblems []string
 	for rbgName, beforeSnap := range before {
 		afterSnap, ok := after[rbgName]
 		if !ok {
@@ -1029,8 +1176,31 @@ func checkStillReady(fs *findings, before, after map[string]RBGSnapshot) {
 					"%s: role %s readyReplicas changed (%d -> %d)", rbgName, role, beforeReady, afterReady))
 			}
 		}
+		for role := range afterSnap.ReadyByRole {
+			if _, found := beforeSnap.ReadyByRole[role]; !found {
+				problems = append(problems, fmt.Sprintf(
+					"%s: role %s has a status it did not have before", rbgName, role))
+			}
+		}
+
+		for role, beforePods := range beforeSnap.Roles {
+			for podName, beforeFacts := range beforePods {
+				afterFacts, found := afterSnap.Roles[role][podName]
+				if !found {
+					continue // reported by checkNoPodChurn
+				}
+				if afterFacts.Phase != beforeFacts.Phase {
+					phaseProblems = append(phaseProblems, fmt.Sprintf(
+						"%s/%s: pod %s went from %s to %s",
+						rbgName, role, podName, beforeFacts.Phase, afterFacts.Phase))
+				}
+			}
+		}
 	}
 	fs.add("roles are no longer as ready as they were before the upgrade", problems)
+	// Separate from the role counts above: a pod that left Running is a pod that stopped
+	// serving, which readyReplicas can hide when the controller has already replaced it.
+	fs.add("pods are no longer in the phase they were in before the upgrade", phaseProblems)
 }
 
 // churnEventReasons are the event reasons that mean a pod appeared or went away.
@@ -1193,8 +1363,8 @@ func printSnapshots(snaps map[string]RBGSnapshot) {
 
 	for _, name := range names {
 		snap := snaps[name]
-		w.Printf("  RBG %s uid=%s generation=%d ready=%v revisions=%v\n",
-			snap.Name, snap.RBGUID, snap.Generation, snap.RBGReady, snap.RevisionNames)
+		w.Printf("  %s %s uid=%s generation=%d ready=%v revisions=%v\n",
+			snap.Kind, snap.Name, snap.RBGUID, snap.Generation, snap.RBGReady, snap.RevisionNames)
 
 		ownerKeys := make([]string, 0, len(snap.Owners))
 		for key := range snap.Owners {

@@ -404,8 +404,12 @@ jobs:
   #
   # This belongs to the release gate rather than the per-PR e2e workflow because the
   # upgrade target is the chart's own default images. Those point at a real published
-  # release only once a release PR bumps them, and testing the upgrade with exactly the
-  # values being shipped is the point: no --set overrides, no locally built image.
+  # release only once a release PR bumps them, and testing the upgrade with the images
+  # actually being shipped is the point: no locally built image.
+  #
+  # One value is not a chart default: the suite enables portAllocator, on the v0.7.0
+  # install and on the upgrade alike, which is how the other e2e workflows install rbgs.
+  # Setting it on both sides is what keeps the hop from toggling a feature.
   #
   # The upgrade itself is driven from inside the suite (it exec's helm), so the
   # pre-upgrade snapshot stays in memory across the upgrade. CI only has to hand the

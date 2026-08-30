@@ -242,7 +242,13 @@ func waitConversionActuallyWorks(f *framework.Framework, name string) {
 // The Deployment's own status still counts a pod that is being deleted as ready for a
 // moment, so waiting on the Deployment alone can be satisfied by the very process this is
 // replacing.
-func restartController(f *framework.Framework) {
+//
+// The certificate gates are the same ones the upgrade waits on, and for the same reason:
+// the new process mints its own certificate, so until it has patched both the validating
+// webhook configuration and the conversion CRDs, the caBundle out there belongs to a key
+// nobody holds any more. conversionProbeName is the object the round-trip is read through,
+// which is what separates a caBundle that is present from one that works.
+func restartController(f *framework.Framework, conversionProbeName string) {
 	ns := controllerNamespace()
 	old, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -273,6 +279,8 @@ func restartController(f *framework.Framework) {
 	// The new process mints its certificate and patches the webhook config again on
 	// startup, and until it has, every RBG write is rejected.
 	waitValidatingWebhookCABundle(f)
+	waitCRDConversionCABundle(f)
+	waitConversionActuallyWorks(f, conversionProbeName)
 }
 
 // managerPodNames returns the sorted names of the live controller pods, selected through

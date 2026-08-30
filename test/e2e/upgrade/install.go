@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -293,6 +294,28 @@ func teardownFromRelease(f *framework.Framework) {
 		if err := f.Client.Delete(f.Ctx, crd); err != nil && !apierrors.IsNotFound(err) {
 			ginkgo.GinkgoWriter.Printf("[teardown] could not delete CRD %s: %v\n", name, err)
 		}
+	}
+
+	// A CRD delete is accepted long before it is finished: the apiserver has to reap
+	// every object of that kind first. Returning here would let the next run's
+	// precondition check see CRDs that are on their way out and report a leak that is
+	// not one -- or, worse, let the next install race the reaping.
+	deadline := time.Now().Add(gateTimeout)
+	for {
+		left, err := listOwnedCRDs(f)
+		if err != nil {
+			ginkgo.GinkgoWriter.Printf("[teardown] could not re-list CRDs while waiting: %v\n", err)
+			return
+		}
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			ginkgo.GinkgoWriter.Printf(
+				"[teardown] CRDs of %s are still registered after %s: %v\n", crdGroupSuffix, gateTimeout, left)
+			return
+		}
+		time.Sleep(gateInterval)
 	}
 }
 

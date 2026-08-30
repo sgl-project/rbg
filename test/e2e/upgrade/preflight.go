@@ -88,12 +88,17 @@ limitations under the License.
 //   - Only the v0.7.0 -> current single hop. Nothing about v0.6.x -> current.
 //   - Nothing about storage version migration: both versions store v1alpha2. If a
 //     future release changes the storage version, this suite will not cover it.
-//   - Single-node, single-replica controller: nothing about leader election
-//     handover, multi-node scheduling, or rollout behavior under real load.
+//   - Single node, and nothing about leader election. The chart ships
+//     controller.replicaCount 2 with --leader-elect on both versions, so the upgrade
+//     does replace a two-replica Deployment -- but nothing here observes which replica
+//     holds the lease, and the per-start rewrite accounting in recordedRewrites assumes
+//     one leader start per rollout. Nothing about multi-node scheduling either, or
+//     rollout behavior under real load.
 //   - Only the field combinations in fixtures.go. Gang scheduling, GPU/model
 //     workloads, PVC-backed roles and large LeaderWorkerSet sizes are excluded.
-//   - The settle window in phase 3 bounds the observation. A regression that only
-//     rolls pods on a later periodic resync would not be seen here.
+//   - The observation ends when two samples taken settleDuration apart agree, so it
+//     bounds what is seen: a regression that only rolls pods on a later periodic resync
+//     would not be caught here.
 //   - Nothing about downgrade, and nothing about a v0.7.0 controller reading
 //     objects after the new CRDs land.
 package upgrade
