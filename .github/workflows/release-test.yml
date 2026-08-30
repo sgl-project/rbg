@@ -22,10 +22,16 @@ env:
   VOLCANO_VERSION: v1.12.0
   LWS_VERSION: v0.7.0
   SCHEDULER_PLUGINS_VERSION: v0.32.7
+  # The published release the upgrade-compatibility job upgrades FROM. Both the git tag
+  # (for the chart) and the image tag (for the published images) are pinned here so a
+  # future bump is a one-place edit.
+  UPGRADE_FROM_GIT_TAG: v0.7.0
+  UPGRADE_FROM_IMAGE_TAG: v0.7.0-888ade7
   # Commit status contexts mirrored onto the PR head commit. Shared by the pending step
   # and the reporting job so the two cannot drift apart.
   STATUS_CONTEXT_HELM: Release Test / e2e-test-helm
   STATUS_CONTEXT_MANIFEST: Release Test / e2e-test-manifest
+  STATUS_CONTEXT_UPGRADE: Release Test / e2e-test-upgrade
 
 # Declare default permissions as read only.
 permissions: read-all
@@ -77,7 +83,7 @@ jobs:
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            for (const name of [process.env.STATUS_CONTEXT_HELM, process.env.STATUS_CONTEXT_MANIFEST]) {
+            for (const name of [process.env.STATUS_CONTEXT_HELM, process.env.STATUS_CONTEXT_MANIFEST, process.env.STATUS_CONTEXT_UPGRADE]) {
               await github.rest.repos.createCommitStatus({
                 ...context.repo,
                 sha: process.env.HEAD_SHA,
@@ -390,10 +396,198 @@ jobs:
         run: |
           kind delete cluster --name rbgs-manifest-e2e || true
 
+  # Upgrade-compatibility test. Installs the published release named in
+  # UPGRADE_FROM_GIT_TAG / UPGRADE_FROM_IMAGE_TAG, creates RBGs on it, then lets the
+  # suite upgrade that release in place to the chart in this PR and assert that no
+  # already-running pod was recreated or restarted. The other two jobs install one
+  # version from scratch, so neither can see an upgrade-only regression.
+  #
+  # This belongs to the release gate rather than the per-PR e2e workflow because the
+  # upgrade target is the chart's own default images. Those point at a real published
+  # release only once a release PR bumps them, and testing the upgrade with the images
+  # actually being shipped is the point: no locally built image.
+  #
+  # One value is not a chart default: the suite enables portAllocator, on the v0.7.0
+  # install and on the upgrade alike, which is how the other e2e workflows install rbgs.
+  # Setting it on both sides is what keeps the hop from toggling a feature.
+  #
+  # The upgrade itself is driven from inside the suite (it exec's helm), so the
+  # pre-upgrade snapshot stays in memory across the upgrade. CI only has to hand the
+  # suite a cluster with no rbgs install and the four images reachable.
+  e2e-test-upgrade:
+    needs: check-command
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          ref: ${{ needs.check-command.outputs.pr_head_sha }}
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+          # Full history and tags: the old chart is taken from a worktree of the tag.
+          fetch-depth: 0
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name rbgs-upgrade-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install LeaderWorkerSet CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
+          kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+      - name: Install Scheduler Plugins
+        run: |
+          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
+            --create-namespace \
+            --namespace scheduler-plugins \
+            --wait \
+            --timeout 300s
+          kubectl get pods -n scheduler-plugins
+
+      - name: Install Volcano Scheduler
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
+          kubectl get pods -n volcano-system
+
+      - name: Pre-load e2e test images
+        run: |
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-upgrade-e2e
+          done
+          echo "All e2e test images loaded successfully"
+
+      - name: Load the published images of the release being upgraded from
+        run: |
+          set -euo pipefail
+          for repo in rolebasedgroup/rbgs-controller rolebasedgroup/rbgs-upgrade-crd; do
+            image="${repo}:${UPGRADE_FROM_IMAGE_TAG}"
+            echo "Pulling ${image}"
+            if ! docker pull "${image}"; then
+              echo "::error::${image} could not be pulled. This job upgrades FROM that published"
+              echo "::error::release; if the tag no longer exists, update UPGRADE_FROM_IMAGE_TAG."
+              exit 1
+            fi
+            kind load docker-image "${image}" --name rbgs-upgrade-e2e
+          done
+
+      - name: Load the images the chart ships
+        run: |
+          set -euo pipefail
+          # The suite upgrades to whatever the chart's default values point at, with no
+          # overrides. Pulling those images here turns "this release was never published"
+          # into an immediate, named failure instead of an ImagePullBackOff discovered
+          # only when the suite's helm --wait times out ten minutes later.
+          helm template rbgs deploy/helm/rbgs \
+            | awk '$1 == "image:" { gsub(/"/, "", $2); print $2 }' | sort -u > /tmp/chart-images.txt
+          if [ ! -s /tmp/chart-images.txt ]; then
+            echo "::error::no images found in the rendered chart; the extraction below is stale"
+            exit 1
+          fi
+          cat /tmp/chart-images.txt
+          while read -r image; do
+            echo "Pulling ${image}"
+            if ! docker pull "${image}"; then
+              echo "::error::${image} is what deploy/helm/rbgs installs by default, but it could"
+              echo "::error::not be pulled. The images have to be published before this job can"
+              echo "::error::test the upgrade onto them."
+              exit 1
+            fi
+            kind load docker-image "${image}" --name rbgs-upgrade-e2e
+          done < /tmp/chart-images.txt
+
+      - name: Run upgrade-compatibility E2E tests
+        env:
+          CI: "true"
+          RBGS_FROM_GIT_TAG: ${{ env.UPGRADE_FROM_GIT_TAG }}
+          RBGS_FROM_TAG: ${{ env.UPGRADE_FROM_IMAGE_TAG }}
+        run: |
+          make test-e2e-upgrade
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Helm history ==="
+          helm history rbgs -n rbgs-system || true
+          echo "=== Controller image ==="
+          kubectl get deploy rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[*].image}' || true
+          echo ""
+          echo "=== Controller logs ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
+          echo "=== Controller previous logs (if restarted) ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 --previous 2>/dev/null || true
+          echo "=== crd-upgrade hook jobs and their pod logs ==="
+          kubectl get jobs -n rbgs-system || true
+          for pod in $(kubectl get pods -n rbgs-system -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n rbgs-system "$pod" --tail=200 || true
+          done
+          echo "=== RBG state in test namespaces ==="
+          kubectl get rolebasedgroups,rolebasedgroupsets,roleinstancesets,roleinstances -A -o wide || true
+          echo "=== Pods in test namespaces ==="
+          kubectl get pods -A -o wide | grep test-ns || true
+          echo "=== ControllerRevisions ==="
+          kubectl get controllerrevisions -A || true
+          echo "=== Webhook caBundles (empty caBundle rejects every RBG write) ==="
+          kubectl get crd rolebasedgroups.workloads.x-k8s.io -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}' | head -c 40 || true
+          echo ""
+          kubectl get crd rolebasedgroupsets.workloads.x-k8s.io -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}' | head -c 40 || true
+          echo ""
+          kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o jsonpath='{range .webhooks[*]}{.name}{"="}{.clientConfig.caBundle}{"\n"}{end}' | cut -c1-60 || true
+          echo "=== Events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' | tail -80 || true
+          kind export logs /tmp/kind-upgrade-logs --name rbgs-upgrade-e2e || true
+
+      - name: Upload Kind logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-upgrade-release-logs
+          path: /tmp/kind-upgrade-logs
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name rbgs-upgrade-e2e || true
+
   # An issue_comment run is attached to the last commit on the default branch, so its own
   # checks never surface in the PR merge box. Mirror the results onto the PR head commit.
   report-status:
-    needs: [check-command, e2e-test-helm, e2e-test-manifest]
+    needs: [check-command, e2e-test-helm, e2e-test-manifest, e2e-test-upgrade]
     if: always() && needs.check-command.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -405,6 +599,7 @@ jobs:
           HEAD_SHA: ${{ needs.check-command.outputs.pr_head_sha }}
           HELM_RESULT: ${{ needs.e2e-test-helm.result }}
           MANIFEST_RESULT: ${{ needs.e2e-test-manifest.result }}
+          UPGRADE_RESULT: ${{ needs.e2e-test-upgrade.result }}
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
@@ -412,6 +607,7 @@ jobs:
             const results = [
               [process.env.STATUS_CONTEXT_HELM, process.env.HELM_RESULT],
               [process.env.STATUS_CONTEXT_MANIFEST, process.env.MANIFEST_RESULT],
+              [process.env.STATUS_CONTEXT_UPGRADE, process.env.UPGRADE_RESULT],
             ];
             for (const [name, result] of results) {
               await github.rest.repos.createCommitStatus({

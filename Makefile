@@ -114,6 +114,22 @@ test-e2e:  ## Run the e2e tests.
 test-e2e-deprecated-disabled: ## Run the deprecated-workload-types-disabled e2e suite.
 	go test ./test/e2e/apicompat/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
 
+# Runs against a throwaway cluster with NO rbgs install: the suite installs v0.7.0
+# itself from a git worktree of the tag, upgrades it in place to the chart in this tree,
+# then removes it again. Teardown deletes the workloads.x-k8s.io CRDs, which cascades to
+# every object of those kinds. The upgrade target defaults to the chart's own image
+# values, so no variables are needed to test a release; set RBGS_TO_TAG to point at a
+# local build instead. A BeforeSuite check fails fast with cleanup instructions if the
+# cluster is not clean. See test/e2e/upgrade.
+# The timeout is larger than the other suites because one run installs v0.7.0, creates the
+# fixtures, waits out a full helm upgrade, then settles before asserting.
+.PHONY: test-e2e-upgrade
+test-e2e-upgrade: ## Run the v0.7.0 -> current upgrade-compatibility e2e suite.
+	# 60m, not 40m: the five readiness gates can spend 5m each on top of the v0.7.0
+	# install, fixture startup, the helm upgrade, the settle window and phase 4. A go
+	# test timeout that fires first reports a panic instead of the gate's own message.
+	go test ./test/e2e/upgrade/ -v -ginkgo.v --ginkgo.fail-fast -timeout 60m
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
