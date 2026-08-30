@@ -923,23 +923,28 @@ func waitAllRBGsReady(f *framework.Framework, except ...string) {
 }
 
 // waitAllPodsRunning waits until every role of every RoleBasedGroup in the namespace has
-// its full complement of pods and every one of them is Running, except for the named
-// RBGs.
+// its full expected pod count and every one of those pods is Running, except for the
+// named RBGs.
 //
-// The Ready gate above cannot establish either half. An RBG's Ready condition is only as
-// good as the workload status it is derived from, and for a LeaderWorkerSet role that is
-// LWS's own group accounting: LeaderWorkerSetReconciler.CheckWorkloadReady is
-// `ReadyReplicas == Replicas`, which is also true before LWS has populated its status at
-// all, and both the role status and the condition have been observed reporting the single
-// group ready while one of its worker pods was still Pending.
+// The Ready gate above cannot establish this, because an RBG's Ready condition inherits
+// whatever the workload underneath it calls ready. For a LeaderWorkerSet role that is
+// LWS's group accounting, and LWS v0.7.0 counts a group ready when the leader pod is
+// Running and Ready and the worker StatefulSet merely has its pods *created*: its
+// StatefulsetReady compares Spec.Replicas against Status.Replicas, not against
+// Status.ReadyReplicas. A Pending worker beside a Running leader therefore makes the
+// whole RBG report Ready, which is how up-v1a1-lw-0-1 reached the baseline still Pending
+// and started a minute later.
 //
-// So without this, two things can reach the baseline on a slow cluster: a pod that is
-// still Pending, and a role whose pods have not all been created yet. `before` is what
-// every later phase compares against, so the first becomes a Pending -> Running
-// difference in phase 3 and the second becomes a pod that appears out of nowhere -- both
-// attributed to an upgrade that had nothing to do with either. Waiting here is what makes
-// the baseline mean "a converged world"; teaching the detectors to tolerate those two
-// instead would give up seeing an upgrade that really did restart or add a pod.
+// That matters because `before` is what every later phase compares against: a Pending pod
+// captured into it becomes a Pending -> Running difference in phase 3, attributed to an
+// upgrade that had nothing to do with it. Teaching checkStillReady to tolerate that would
+// instead give up seeing an upgrade that really did restart a pod.
+//
+// The pod count is the same guard one level lower, and no workload has been observed
+// opening the Ready gate with pods missing outright -- the condition also requires
+// `*role.Replicas == status.Replicas`. It is here because it does not depend on any
+// workload's definition of ready, so it still holds whatever a later version decides that
+// word means.
 //
 // Terminating objects are skipped for the same reason waitAllRBGsReady skips them: the
 // prune probe of the first phase 1 spec can still be here, and it will never have pods
