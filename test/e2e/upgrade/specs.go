@@ -19,6 +19,7 @@ package upgrade
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -173,6 +174,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// starting -- and a baseline of a half-started world proves nothing.
 			ginkgo.By("waiting for every RoleBasedGroup in the namespace to be ready")
 			waitAllRBGsReady(f, fxPending)
+
+			// And the gate above is not enough on its own, because an RBG's Ready
+			// condition is only as good as the workload status it is derived from. This
+			// waits on the pods themselves: all of them present, all of them Running.
+			ginkgo.By("waiting for every pod the snapshot will record to be Running")
+			waitAllPodsRunning(f, fxPending)
 
 			// The never-ready fixture is still required to have got as far as a Pending
 			// pod. Without that it would contribute nothing to compare, and "the upgrade
@@ -913,6 +920,104 @@ func waitAllRBGsReady(f *framework.Framework, except ...string) {
 			}
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.Succeed())
+}
+
+// waitAllPodsRunning waits until every role of every RoleBasedGroup in the namespace has
+// its full complement of pods and every one of them is Running, except for the named
+// RBGs.
+//
+// The Ready gate above cannot establish either half. An RBG's Ready condition is only as
+// good as the workload status it is derived from, and for a LeaderWorkerSet role that is
+// LWS's own group accounting: LeaderWorkerSetReconciler.CheckWorkloadReady is
+// `ReadyReplicas == Replicas`, which is also true before LWS has populated its status at
+// all, and both the role status and the condition have been observed reporting the single
+// group ready while one of its worker pods was still Pending.
+//
+// So without this, two things can reach the baseline on a slow cluster: a pod that is
+// still Pending, and a role whose pods have not all been created yet. `before` is what
+// every later phase compares against, so the first becomes a Pending -> Running
+// difference in phase 3 and the second becomes a pod that appears out of nowhere -- both
+// attributed to an upgrade that had nothing to do with either. Waiting here is what makes
+// the baseline mean "a converged world"; teaching the detectors to tolerate those two
+// instead would give up seeing an upgrade that really did restart or add a pod.
+//
+// Terminating objects are skipped for the same reason waitAllRBGsReady skips them: the
+// prune probe of the first phase 1 spec can still be here, and it will never have pods
+// again.
+func waitAllPodsRunning(f *framework.Framework, except ...string) {
+	skip := make(map[string]bool, len(except))
+	for _, name := range except {
+		skip[name] = true
+	}
+
+	gomega.Eventually(
+		func(g gomega.Gomega) {
+			list := &workloadsv1alpha2.RoleBasedGroupList{}
+			g.Expect(f.Client.List(f.Ctx, list, client.InNamespace(f.Namespace))).To(gomega.Succeed())
+			g.Expect(list.Items).ToNot(gomega.BeEmpty())
+
+			var problems []string
+			for i := range list.Items {
+				rbg := &list.Items[i]
+				if skip[rbg.Name] || rbg.DeletionTimestamp != nil {
+					continue
+				}
+				for j := range rbg.Spec.Roles {
+					role := &rbg.Spec.Roles[j]
+					// The same helper captureRBG uses, so this waits on exactly the pods
+					// the snapshot will record.
+					pods := listPodFactsForRole(g, f, rbg, role.Name)
+					if want, err := expectedPodsForRole(role); err != nil {
+						problems = append(problems, fmt.Sprintf("%s/%s: %s", rbg.Name, role.Name, err))
+					} else if len(pods) != want {
+						problems = append(
+							problems,
+							fmt.Sprintf("%s/%s: has %d of %d pods", rbg.Name, role.Name, len(pods), want),
+						)
+					}
+					for pod, facts := range pods {
+						if facts.Phase != corev1.PodRunning {
+							problems = append(
+								problems,
+								fmt.Sprintf("%s/%s: pod %s is %s", rbg.Name, role.Name, pod, facts.Phase),
+							)
+						}
+					}
+				}
+			}
+			sort.Strings(problems)
+			g.Expect(problems).To(
+				gomega.BeEmpty(),
+				"the namespace has not converged, so the baseline would be a half-started world:\n  - %s",
+				strings.Join(problems, "\n  - "),
+			)
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.Succeed())
+}
+
+// expectedPodsForRole is how many pods a converged role has: one per replica, times the
+// pods each replica is made of.
+//
+// An unrecognised pattern is an error rather than a guess of one pod per replica, because
+// a guess would silently under-count a role a later version adds and quietly weaken the
+// gate above -- the failure mode this whole suite exists to avoid.
+func expectedPodsForRole(role *workloadsv1alpha2.RoleSpec) (int, error) {
+	replicas := ptr.Deref(role.Replicas, 1)
+
+	switch {
+	case role.IsStandalonePattern():
+		return int(replicas), nil
+	case role.IsLeaderWorkerPattern():
+		// Size counts the leader, so it is the number of pods per replica outright.
+		return int(replicas * ptr.Deref(role.GetLeaderWorkerSize(), 1)), nil
+	case role.GetCustomComponentsPattern() != nil:
+		perReplica := int32(0)
+		for _, component := range role.GetCustomComponentsPattern().Components {
+			perReplica += ptr.Deref(component.Size, 1)
+		}
+		return int(replicas * perReplica), nil
+	}
+	return 0, fmt.Errorf("no pattern this gate can count pods for")
 }
 
 // waitForPendingPod waits until the given RBG's only role has a pod that exists and is
