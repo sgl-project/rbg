@@ -158,6 +158,105 @@ func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 	}
 }
 
+func TestValidateRoleDependencies(t *testing.T) {
+	tests := []struct {
+		name        string
+		roles       []RoleSpec
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid dependency",
+			roles: []RoleSpec{
+				{Name: "head"},
+				{Name: "worker", Dependencies: []string{"head"}},
+			},
+		},
+		{
+			name: "dependency references unknown role",
+			roles: []RoleSpec{
+				{Name: "worker", Dependencies: []string{"ghost"}},
+			},
+			wantErr:     true,
+			errContains: `role "worker" depends on unknown role "ghost"`,
+		},
+		{
+			name: "self dependency",
+			roles: []RoleSpec{
+				{Name: "worker", Dependencies: []string{"worker"}},
+			},
+			wantErr:     true,
+			errContains: `role "worker" cannot depend on itself`,
+		},
+		{
+			name: "cyclic dependency",
+			roles: []RoleSpec{
+				{Name: "head", Dependencies: []string{"worker"}},
+				{Name: "worker", Dependencies: []string{"head"}},
+			},
+			wantErr:     true,
+			errContains: "dependency cycle detected: head -> worker -> head",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rbg := &RoleBasedGroup{
+				Spec: RoleBasedGroupSpec{
+					Roles: tt.roles,
+				},
+			}
+
+			err := ValidateRoleDependencies(rbg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestRoleBasedGroupValidator_ValidateCreateRoleDependencies(t *testing.T) {
+	rbg := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{Name: "worker", Replicas: ptr.To(int32(1)), Dependencies: []string{"ghost"}},
+			},
+		},
+	}
+	v := &RoleBasedGroupValidator{EnableDeprecatedWorkloadTypes: true}
+
+	_, err := v.ValidateCreate(context.Background(), rbg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `role "worker" depends on unknown role "ghost"`)
+}
+
+func TestRoleBasedGroupValidator_ValidateUpdateRoleDependencies(t *testing.T) {
+	oldRBG := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{Name: "head", Replicas: ptr.To(int32(1))},
+				{Name: "worker", Replicas: ptr.To(int32(1))},
+			},
+		},
+	}
+	newRBG := oldRBG.DeepCopy()
+	newRBG.Spec.Roles[0].Dependencies = []string{"worker"}
+	newRBG.Spec.Roles[1].Dependencies = []string{"head"}
+	v := &RoleBasedGroupValidator{
+		Client:                        fake.NewClientBuilder().Build(),
+		EnableDeprecatedWorkloadTypes: true,
+	}
+
+	_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dependency cycle detected: head -> worker -> head")
+}
+
 func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(t *testing.T) {
 	tests := []struct {
 		name                          string

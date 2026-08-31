@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -53,6 +54,95 @@ func ValidateRollingUpdate(rbg *RoleBasedGroup) error {
 		}
 	}
 	return utilerrors.NewAggregate(allErrs)
+}
+
+// ValidateRoleDependencies validates that every role dependency references an
+// existing role and that the role dependency graph is acyclic.
+func ValidateRoleDependencies(rbg *RoleBasedGroup) error {
+	roleNames := make(map[string]struct{}, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		roleNames[rbg.Spec.Roles[i].Name] = struct{}{}
+	}
+
+	var allErrs []error
+	graph := make(map[string][]string, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		for j, dependency := range role.Dependencies {
+			if dependency == role.Name {
+				allErrs = append(allErrs, fmt.Errorf(
+					"spec.roles[%d].dependencies[%d]: role %q cannot depend on itself",
+					i, j, role.Name,
+				))
+				continue
+			}
+			if _, ok := roleNames[dependency]; !ok {
+				allErrs = append(allErrs, fmt.Errorf(
+					"spec.roles[%d].dependencies[%d]: role %q depends on unknown role %q",
+					i, j, role.Name, dependency,
+				))
+				continue
+			}
+			graph[role.Name] = append(graph[role.Name], dependency)
+		}
+		if _, ok := graph[role.Name]; !ok {
+			graph[role.Name] = nil
+		}
+	}
+	if err := validateNoRoleDependencyCycle(rbg.Spec.Roles, graph); err != nil {
+		allErrs = append(allErrs, err)
+	}
+
+	return utilerrors.NewAggregate(allErrs)
+}
+
+func validateNoRoleDependencyCycle(roles []RoleSpec, graph map[string][]string) error {
+	const (
+		unvisited = iota
+		visiting
+		visited
+	)
+
+	state := make(map[string]int, len(roles))
+	var visit func(roleName string, path []string) error
+	visit = func(roleName string, path []string) error {
+		switch state[roleName] {
+		case visiting:
+			cycle := appendCycle(path, roleName)
+			return fmt.Errorf("spec.roles: dependency cycle detected: %s", strings.Join(cycle, " -> "))
+		case visited:
+			return nil
+		}
+
+		state[roleName] = visiting
+		path = append(path, roleName)
+		for _, dependency := range graph[roleName] {
+			if err := visit(dependency, path); err != nil {
+				return err
+			}
+		}
+		state[roleName] = visited
+		return nil
+	}
+
+	for i := range roles {
+		if state[roles[i].Name] == unvisited {
+			if err := visit(roles[i].Name, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func appendCycle(path []string, roleName string) []string {
+	for i := range path {
+		if path[i] == roleName {
+			cycle := append([]string{}, path[i:]...)
+			return append(cycle, roleName)
+		}
+	}
+	return append(append([]string{}, path...), roleName)
 }
 
 func validateRoleRollingUpdate(index int, ru *RollingUpdate, replicas int32) []error {
