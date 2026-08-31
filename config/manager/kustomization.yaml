@@ -5,4 +5,4 @@ resources:
 images:
 - name: controller
   newName: rolebasedgroup/rbgs-controller
-  newTag: v0.8.0-ba7b952e
+  newTag: v0.8.0-16705159
