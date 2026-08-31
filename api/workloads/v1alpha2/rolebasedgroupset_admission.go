@@ -48,6 +48,9 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	klog.V(4).InfoS("validating RoleBasedGroupSet on create", "name", rbgs.Name, "namespace", rbgs.Namespace)
 
 	var allErrs []error
+	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
@@ -66,6 +69,9 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime
 	klog.V(4).InfoS("validating RoleBasedGroupSet on update", "name", rbgs.Name, "namespace", rbgs.Namespace)
 
 	var allErrs []error
+	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes(
 			"spec.groupTemplate.spec.roles",

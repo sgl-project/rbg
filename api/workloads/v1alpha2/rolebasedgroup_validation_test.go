@@ -197,6 +197,16 @@ func TestValidateRoleDependencies(t *testing.T) {
 			wantErr:     true,
 			errContains: "dependency cycle detected: head -> worker -> head",
 		},
+		{
+			name: "cyclic dependency starting mid path",
+			roles: []RoleSpec{
+				{Name: "head", Dependencies: []string{"worker"}},
+				{Name: "worker", Dependencies: []string{"sidecar"}},
+				{Name: "sidecar", Dependencies: []string{"worker"}},
+			},
+			wantErr:     true,
+			errContains: "dependency cycle detected: worker -> sidecar -> worker",
+		},
 	}
 
 	for _, tt := range tests {
@@ -255,6 +265,53 @@ func TestRoleBasedGroupValidator_ValidateUpdateRoleDependencies(t *testing.T) {
 	_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dependency cycle detected: head -> worker -> head")
+}
+
+func TestRoleBasedGroupSetValidator_ValidateCreateRoleDependencies(t *testing.T) {
+	rbgs := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{Name: "worker", Replicas: ptr.To(int32(1)), Dependencies: []string{"ghost"}},
+					},
+				},
+			},
+		},
+	}
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	_, err := v.ValidateCreate(context.Background(), rbgs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `spec.groupTemplate.spec.roles[0].dependencies[0]`)
+	assert.Contains(t, err.Error(), `role "worker" depends on unknown role "ghost"`)
+}
+
+func TestRoleBasedGroupSetValidator_ValidateUpdateRoleDependencies(t *testing.T) {
+	oldRBGS := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{Name: "head", Replicas: ptr.To(int32(1))},
+						{Name: "worker", Replicas: ptr.To(int32(1))},
+					},
+				},
+			},
+		},
+	}
+	newRBGS := oldRBGS.DeepCopy()
+	newRBGS.Spec.GroupTemplate.Spec.Roles[0].Dependencies = []string{"worker"}
+	newRBGS.Spec.GroupTemplate.Spec.Roles[1].Dependencies = []string{"head"}
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	_, err := v.ValidateUpdate(context.Background(), oldRBGS, newRBGS)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.groupTemplate.spec.roles: dependency cycle detected: head -> worker -> head")
 }
 
 func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(t *testing.T) {

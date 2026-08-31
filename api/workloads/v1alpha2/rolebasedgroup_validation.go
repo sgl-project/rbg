@@ -57,46 +57,47 @@ func ValidateRollingUpdate(rbg *RoleBasedGroup) error {
 }
 
 // ValidateRoleDependencies validates that every role dependency references an
-// existing role and that the role dependency graph is acyclic.
+// existing role, no role depends on itself, and the role dependency graph is acyclic.
 func ValidateRoleDependencies(rbg *RoleBasedGroup) error {
-	roleNames := make(map[string]struct{}, len(rbg.Spec.Roles))
-	for i := range rbg.Spec.Roles {
-		roleNames[rbg.Spec.Roles[i].Name] = struct{}{}
+	return validateRoleDependencies("spec.roles", rbg.Spec.Roles)
+}
+
+func validateRoleDependencies(fieldPath string, roles []RoleSpec) error {
+	roleNames := make(map[string]struct{}, len(roles))
+	for i := range roles {
+		roleNames[roles[i].Name] = struct{}{}
 	}
 
 	var allErrs []error
-	graph := make(map[string][]string, len(rbg.Spec.Roles))
-	for i := range rbg.Spec.Roles {
-		role := &rbg.Spec.Roles[i]
+	graph := make(map[string][]string, len(roles))
+	for i := range roles {
+		role := &roles[i]
 		for j, dependency := range role.Dependencies {
 			if dependency == role.Name {
 				allErrs = append(allErrs, fmt.Errorf(
-					"spec.roles[%d].dependencies[%d]: role %q cannot depend on itself",
-					i, j, role.Name,
+					"%s[%d].dependencies[%d]: role %q cannot depend on itself",
+					fieldPath, i, j, role.Name,
 				))
 				continue
 			}
 			if _, ok := roleNames[dependency]; !ok {
 				allErrs = append(allErrs, fmt.Errorf(
-					"spec.roles[%d].dependencies[%d]: role %q depends on unknown role %q",
-					i, j, role.Name, dependency,
+					"%s[%d].dependencies[%d]: role %q depends on unknown role %q",
+					fieldPath, i, j, role.Name, dependency,
 				))
 				continue
 			}
 			graph[role.Name] = append(graph[role.Name], dependency)
 		}
-		if _, ok := graph[role.Name]; !ok {
-			graph[role.Name] = nil
-		}
 	}
-	if err := validateNoRoleDependencyCycle(rbg.Spec.Roles, graph); err != nil {
+	if err := validateNoRoleDependencyCycle(fieldPath, roles, graph); err != nil {
 		allErrs = append(allErrs, err)
 	}
 
 	return utilerrors.NewAggregate(allErrs)
 }
 
-func validateNoRoleDependencyCycle(roles []RoleSpec, graph map[string][]string) error {
+func validateNoRoleDependencyCycle(fieldPath string, roles []RoleSpec, graph map[string][]string) error {
 	const (
 		unvisited = iota
 		visiting
@@ -108,8 +109,10 @@ func validateNoRoleDependencyCycle(roles []RoleSpec, graph map[string][]string) 
 	visit = func(roleName string, path []string) error {
 		switch state[roleName] {
 		case visiting:
+			// Keep the reported cycle minimal when a later edge points back into
+			// the active DFS path, e.g. a -> b -> c -> b reports b -> c -> b.
 			cycle := appendCycle(path, roleName)
-			return fmt.Errorf("spec.roles: dependency cycle detected: %s", strings.Join(cycle, " -> "))
+			return fmt.Errorf("%s: dependency cycle detected: %s", fieldPath, strings.Join(cycle, " -> "))
 		case visited:
 			return nil
 		}
