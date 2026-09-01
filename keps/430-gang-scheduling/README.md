@@ -204,6 +204,13 @@ type GangSchedulingStrategy struct {
     // gang is all-or-nothing over the roles the enclosing policy rule
     // lists, and minMember is their combined pod count.
     //
+    // Several policy rules may each declare a gang strategy. The covered roles
+    // are the union of every declaring rule's roles, and minReplicas maps are
+    // merged across rules, taking the maximum when the same role appears more
+    // than once. Roles covered only by an all-or-nothing rule participate in
+    // full; the per-role minimums other rules declare still apply to the roles
+    // those rules name.
+    //
     // +optional
     MinReplicas map[string]int32 `json:"minReplicas,omitempty"`
 }
@@ -404,11 +411,11 @@ scheduling.k8s.io/group-name: inference-demo
 
 | PodGroup field | Source | Notes |
 |---|---|---|
-| `spec.minMember` | Computed: Σ(minReplicas × subGroupSize) | Only roles listed in minReplicas |
+| `spec.minMember` | Computed: Σ(minSubGroups × subGroupSize) | All covered roles: named roles at their minimums, all-or-nothing roles in full |
 | `spec.queue` | RBG annotation `gang-scheduling-volcano-queue` | Inherits existing behavior |
 | `spec.priorityClassName` | RBG annotation `gang-scheduling-volcano-priority` | Inherits existing behavior |
-| `spec.subGroupPolicy[].name` | `GangSchedulingStrategy.MinReplicas` key | Role name |
-| `spec.subGroupPolicy[].minSubGroups` | `GangSchedulingStrategy.MinReplicas` value | From CoordinatedPolicy |
+| `spec.subGroupPolicy[].name` | Covered role name | One entry per role the gang covers |
+| `spec.subGroupPolicy[].minSubGroups` | `GangSchedulingStrategy.MinReplicas` value, or the role's replicas | All-or-nothing roles are held to their full replica count |
 | `spec.subGroupPolicy[].subGroupSize` | `computeSubGroupSize(role)` | Computed from pattern |
 | `spec.subGroupPolicy[].labelSelector` | Fixed convention | group-name + role-name |
 | `spec.subGroupPolicy[].matchLabelKeys` | Fixed constant | role-instance-name |
@@ -433,7 +440,10 @@ RBG Reconcile
   │     (union the `roles` of every gang rule into the set the gang covers; merge
   │      minReplicas across multiple rules, take maximum for overlapping roles
   │      — maximum is more conservative and aligns with the safety-first principle;
-  │      taking the minimum would silently weaken gang constraints)
+  │      taking the minimum would silently weaken gang constraints. A rule with an
+  │      empty minReplicas is all-or-nothing over its roles: those roles participate
+  │      in full, and any per-role minimum declared for them is subsumed. The
+  │      resulting MinReplicas map is therefore a subset of the covered roles.)
   │
   ├── 4. Call scheduler interface
   │     gs.ReconcilePodGroup(ctx, rbg, gangStrategy, ...)
@@ -441,7 +451,9 @@ RBG Reconcile
   │     //   - gangStrategy == nil → gang disabled, delete any existing PodGroup
   │     //   - MinReplicas empty → minMember = pod count of the covered roles
   │     //     (all-or-nothing over them; the legacy annotation covers every role)
-  │     //   - MinReplicas non-empty + subGroupPolicy supported → PodGroup with subGroupPolicy
+  │     //   - MinReplicas non-empty + subGroupPolicy supported → PodGroup with subGroupPolicy:
+  │     //     each named role is held to its minimum, covered roles absent from the map
+  │     //     participate in full
   │     //   - MinReplicas non-empty + subGroupPolicy NOT supported → return error + status condition
   │     //     (runtime safety net: Webhook should have intercepted earlier)
   │

@@ -62,12 +62,14 @@ func rbgWithRoles(roles ...workloadsv1alpha2.RoleSpec) *workloadsv1alpha2.RoleBa
 
 func TestBuildGangSpec(t *testing.T) {
 	tests := []struct {
-		name           string
-		rbg            *workloadsv1alpha2.RoleBasedGroup
-		minReplicas    map[string]int32
-		wantMinMember  int32
-		wantSubGroups  []string
-		wantErrContain string
+		name             string
+		rbg              *workloadsv1alpha2.RoleBasedGroup
+		minReplicas      map[string]int32
+		extraRoles       []string
+		wantMinMember    int32
+		wantSubGroups    []string
+		wantMinSubGroups map[string]int32
+		wantErrContain   string
 	}{
 		{
 			name:          "per-role minimums over standalone roles",
@@ -90,11 +92,22 @@ func TestBuildGangSpec(t *testing.T) {
 			wantSubGroups: []string{"worker"},
 		},
 		{
-			name:          "roles absent from minReplicas do not contribute",
+			name:          "roles absent from the strategy do not contribute",
 			rbg:           rbgWithRoles(standaloneRole("prefill", 4, ""), standaloneRole("decode", 6, "")),
 			minReplicas:   map[string]int32{"prefill": 1},
 			wantMinMember: 1,
 			wantSubGroups: []string{"prefill"},
+		},
+		{
+			// A role covered by an all-or-nothing rule has no minimum of its own and
+			// participates in full: its subGroup needs every replica.
+			name:             "all-or-nothing roles contribute their full replicas",
+			rbg:              rbgWithRoles(standaloneRole("prefill", 4, ""), standaloneRole("decode", 6, "")),
+			minReplicas:      map[string]int32{"decode": 2},
+			extraRoles:       []string{"prefill"},
+			wantMinMember:    6,
+			wantSubGroups:    []string{"prefill", "decode"},
+			wantMinSubGroups: map[string]int32{"prefill": 4, "decode": 2},
 		},
 		{
 			name:           "minReplicas below one",
@@ -112,7 +125,19 @@ func TestBuildGangSpec(t *testing.T) {
 			name:           "workload backing does not label pods per instance",
 			rbg:            rbgWithRoles(standaloneRole("prefill", 4, constants.StatefulSetWorkloadType)),
 			minReplicas:    map[string]int32{"prefill": 2},
-			wantErrContain: "per-role minimums need the",
+			wantErrContain: "pod label is needed to partition",
+		},
+		{
+			// The label requirement also applies to all-or-nothing roles in a gang
+			// that uses subGroupPolicy: their full-replica subGroups need it too.
+			name: "all-or-nothing role without the instance label is unsupported",
+			rbg: rbgWithRoles(
+				standaloneRole("prefill", 4, constants.StatefulSetWorkloadType),
+				standaloneRole("decode", 6, ""),
+			),
+			minReplicas:    map[string]int32{"decode": 2},
+			extraRoles:     []string{"prefill"},
+			wantErrContain: "pod label is needed to partition",
 		},
 		{
 			name:           "minReplicas names an unknown role",
@@ -120,12 +145,20 @@ func TestBuildGangSpec(t *testing.T) {
 			minReplicas:    map[string]int32{"prefill": 1, "ghost": 1, "phantom": 1},
 			wantErrContain: "[ghost phantom]",
 		},
+		{
+			name:           "gang covering only zero-replica roles",
+			rbg:            rbgWithRoles(standaloneRole("prefill", 0, "")),
+			minReplicas:    map[string]int32{},
+			wantErrContain: "all scaled to zero",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			roles := sets.KeySet(tt.minReplicas)
+			roles.Insert(tt.extraRoles...)
 			minMember, policies, err := buildGangSpec(tt.rbg, &common.GangStrategy{
-				Roles:       sets.KeySet(tt.minReplicas),
+				Roles:       roles,
 				MinReplicas: tt.minReplicas,
 			})
 			if tt.wantErrContain != "" {
@@ -146,6 +179,10 @@ func TestBuildGangSpec(t *testing.T) {
 				require.NotNil(t, p.LabelSelector)
 				assert.Equal(t, "rbg", p.LabelSelector.MatchLabels[constants.GroupNameLabelKey])
 				assert.Equal(t, p.Name, p.LabelSelector.MatchLabels[constants.RoleNameLabelKey])
+				if tt.wantMinSubGroups != nil {
+					require.NotNil(t, p.MinSubGroups)
+					assert.Equal(t, tt.wantMinSubGroups[p.Name], ptr.Deref(p.MinSubGroups, 0))
+				}
 			}
 			assert.Equal(t, tt.wantSubGroups, names)
 		})

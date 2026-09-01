@@ -805,12 +805,24 @@ func TestComputeSubGroupSize(t *testing.T) {
 			want: 5,
 		},
 		{
-			name: "customComponents pattern skips components without size",
+			name: "customComponents pattern counts components without size as one",
 			role: &RoleSpec{
 				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
 					Components: []InstanceComponent{
 						{Name: "prefill", Size: ptr.To[int32](2)},
 						{Name: "decode"},
+					},
+				}},
+			},
+			want: 3,
+		},
+		{
+			name: "customComponents pattern keeps an explicit zero size",
+			role: &RoleSpec{
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{
+						{Name: "prefill", Size: ptr.To[int32](2)},
+						{Name: "decode", Size: ptr.To[int32](0)},
 					},
 				}},
 			},

@@ -84,7 +84,8 @@ func New(c client.Client) *GangScheduler {
 // gangStrategy is nil when gang scheduling is disabled, in which case any existing
 // PodGroup is deleted. A non-nil strategy with an empty MinReplicas map is an
 // all-or-nothing gang over the roles it covers; a non-empty map builds a
-// subGroupPolicy.
+// subGroupPolicy holding each named role to its minimum, with covered roles
+// absent from the map participating in full.
 func (m *GangScheduler) ReconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -120,9 +121,9 @@ func (m *GangScheduler) ReconcilePodGroup(
 //
 // The PodGroup annotation is what actually enrolls a pod in the gang, so it is only
 // injected for roles that participate. A CoordinatedPolicy rule scopes its gang with
-// spec.policies[].roles, and a non-empty minReplicas map narrows it further; roles
-// outside that scope are excluded by definition, and annotating them would make
-// Volcano count their pods against a minMember that never budgeted for them.
+// spec.policies[].roles; roles outside that scope are excluded by definition, and
+// annotating them would make Volcano count their pods against a minMember that never
+// budgeted for them.
 func (m *GangScheduler) InjectPodSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -159,11 +160,11 @@ func (m *GangScheduler) createOrUpdate(
 	desiredAnnotations := common.InheritPodGroupAnnotations(rbg.Annotations, volcanoschedulingv1beta1.AnnotationPrefix)
 
 	// Calculate minMember over the roles the gang covers
-	minMember, err := common.GangSize(rbg, gangStrategy)
-	if err != nil {
-		return err
-	}
-	var subGroupPolicy []volcanoschedulingv1beta1.SubGroupPolicySpec
+	var (
+		minMember      int32
+		subGroupPolicy []volcanoschedulingv1beta1.SubGroupPolicySpec
+		err            error
+	)
 
 	// If gangStrategy has minReplicas, check subGroupPolicy support
 	if len(gangStrategy.MinReplicas) > 0 {
@@ -175,6 +176,11 @@ func (m *GangScheduler) createOrUpdate(
 			return common.NewIncompatibleGangConfigError("gang scheduling with per-role minimums (minReplicas) requires Volcano PodGroup CRD with subGroupPolicy field; the installed Volcano version does not support this feature")
 		}
 		minMember, subGroupPolicy, err = buildGangSpec(rbg, gangStrategy)
+		if err != nil {
+			return err
+		}
+	} else {
+		minMember, err = common.GangSize(rbg, gangStrategy)
 		if err != nil {
 			return err
 		}
@@ -239,12 +245,19 @@ func (m *GangScheduler) createOrUpdate(
 }
 
 // buildGangSpec computes the PodGroup minMember and one Volcano SubGroupPolicy entry
-// per role that has a per-role minimum configured in the gang strategy.
+// per role the gang covers.
 //
 // A Volcano subGroup maps to one RBG RoleInstance, which is the atomic scheduling
 // unit: subGroupSize is the number of pods a single instance produces, and
 // minSubGroups is the minimum number of instances that must be schedulable before
-// the gang is dispatched. minMember is therefore Σ(minReplicas × subGroupSize).
+// the gang is dispatched. minMember is therefore Σ(minSubGroups × subGroupSize).
+//
+// A role with a configured minimum is held to that minimum. A covered role without
+// one is an all-or-nothing role and participates in full, so it is held to its full
+// replica count. Its entry is what keeps that guarantee meaningful: Volcano counts
+// every scheduled pod of the PodGroup toward minMember, so without the entry, pods of
+// a minimum role beyond its minimum could stand in for the all-or-nothing role's
+// missing replicas and dispatch the gang early.
 //
 // MatchLabelKeys is what partitions the role's pods into per-instance subGroups.
 // Without it every pod of the role collapses into a single subGroup, which
@@ -262,36 +275,48 @@ func buildGangSpec(
 ) (int32, []volcanoschedulingv1beta1.SubGroupPolicySpec, error) {
 	if unknown := common.UnknownGangRoles(rbg, gangStrategy); len(unknown) > 0 {
 		return 0, nil, common.NewIncompatibleGangConfigError(
-			"gang scheduling minReplicas references roles that do not exist in the RoleBasedGroup: %v; "+
+			"gang scheduling references roles that do not exist in the RoleBasedGroup: %v; "+
 				"fix the role names in CoordinatedPolicy %s/%s",
 			unknown, rbg.Namespace, rbg.Name)
 	}
 
-	policies := make([]volcanoschedulingv1beta1.SubGroupPolicySpec, 0, len(gangStrategy.MinReplicas))
+	policies := make([]volcanoschedulingv1beta1.SubGroupPolicySpec, 0, len(gangStrategy.Roles))
 	var minMember int32
 
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
-		minReplicas, exists := gangStrategy.MinReplicas[role.Name]
-		if !exists {
+		if !common.RoleInGang(role, gangStrategy) {
 			continue
 		}
 
-		if minReplicas < 1 {
-			return 0, nil, common.NewIncompatibleGangConfigError(
-				"gang scheduling minReplicas for role %q must be at least 1, got %d", role.Name, minReplicas)
+		replicas := ptr.Deref(role.Replicas, 1)
+		minReplicas, hasMinimum := gangStrategy.MinReplicas[role.Name]
+		if hasMinimum {
+			if minReplicas < 1 {
+				return 0, nil, common.NewIncompatibleGangConfigError(
+					"gang scheduling minReplicas for role %q must be at least 1, got %d", role.Name, minReplicas)
+			}
+			if minReplicas > replicas {
+				return 0, nil, common.NewIncompatibleGangConfigError(
+					"gang scheduling minReplicas for role %q is %d but the role only has %d replicas, so the gang can never be satisfied; "+
+						"lower the minimum in CoordinatedPolicy %s/%s, or raise the role's replicas at whichever "+
+						"owns them (spec.replicas, or the autoscaler behind its RoleBasedGroupScalingAdapter)",
+					role.Name, minReplicas, replicas, rbg.Namespace, rbg.Name)
+			}
+		} else {
+			// All-or-nothing role: the gang needs every replica.
+			minReplicas = replicas
 		}
-		if replicas := ptr.Deref(role.Replicas, 1); minReplicas > replicas {
-			return 0, nil, common.NewIncompatibleGangConfigError(
-				"gang scheduling minReplicas for role %q is %d but the role only has %d replicas, so the gang can never be satisfied; "+
-					"lower the minimum in CoordinatedPolicy %s/%s, or raise the role's replicas at whichever "+
-					"owns them (spec.replicas, or the autoscaler behind its RoleBasedGroupScalingAdapter)",
-				role.Name, minReplicas, replicas, rbg.Namespace, rbg.Name)
+
+		// A covered role scaled to zero contributes nothing to the gang.
+		if minReplicas == 0 {
+			continue
 		}
+
 		if !emitsRoleInstanceLabel(role) {
 			return 0, nil, common.NewIncompatibleGangConfigError(
-				"gang scheduling minReplicas is not supported for role %q backed by workload type %q: "+
-					"per-role minimums need the %s pod label to partition the role into subGroups",
+				"gang scheduling with subGroupPolicy is not supported for role %q backed by workload type %q: "+
+					"the %s pod label is needed to partition the role into per-instance subGroups",
 				role.Name, role.GetWorkloadType(), constants.RoleInstanceNameLabelKey)
 		}
 
@@ -309,6 +334,13 @@ func buildGangSpec(
 			},
 			MatchLabelKeys: []string{constants.RoleInstanceNameLabelKey},
 		})
+	}
+
+	if minMember == 0 {
+		return 0, nil, common.NewIncompatibleGangConfigError(
+			"gang scheduling resolved to minMember 0, which would provide no gang guarantee; "+
+				"the roles it covers in CoordinatedPolicy %s/%s are all scaled to zero",
+			rbg.Namespace, rbg.Name)
 	}
 
 	return minMember, policies, nil

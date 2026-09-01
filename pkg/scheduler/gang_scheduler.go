@@ -76,7 +76,9 @@ type GangScheduler interface {
 	// - gangStrategy.MinReplicas empty -> all-or-nothing gang over the roles the
 	//   strategy covers, i.e. minMember = common.GangSize (the legacy annotation
 	//   resolves to a strategy covering every role)
-	// - gangStrategy.MinReplicas non-empty -> subGroupPolicy (if supported)
+	// - gangStrategy.MinReplicas non-empty -> subGroupPolicy (if supported): each
+	//   named role is held to its minimum, and covered roles absent from the map
+	//   participate in full
 	ReconcilePodGroup(
 		ctx context.Context,
 		rbg *workloadsv1alpha2.RoleBasedGroup,

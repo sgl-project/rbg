@@ -19,6 +19,7 @@ package common
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,7 +45,9 @@ type GangStrategy struct {
 	// MinReplicas is the minimum number of replicas of a covered role that must be
 	// schedulable before the gang is dispatched. Empty means every covered role
 	// participates in full, an all-or-nothing gang over Roles. When set, its keys are
-	// exactly Roles.
+	// a subset of Roles: a covered role absent from the map came from an
+	// all-or-nothing rule and participates in full, while the per-role minimums the
+	// other rules declared still apply to the roles they name.
 	MinReplicas map[string]int32
 }
 
@@ -184,8 +187,9 @@ func GangSize(
 }
 
 // GangMinimumReplicas returns, per covered role, the replica count the gang needs
-// before it can be dispatched. An all-or-nothing gang needs every replica of the
-// roles it covers; a per-role gang needs exactly its minReplicas.
+// before it can be dispatched. A covered role with a configured minimum needs exactly
+// that many replicas; a covered role without one (an all-or-nothing role) needs every
+// replica.
 //
 // This is what other controllers must not hold a role below: the PodGroup counts the
 // pods of those replicas in minMember, so a role parked underneath its gang minimum
@@ -197,14 +201,15 @@ func GangMinimumReplicas(
 	if strategy == nil {
 		return nil
 	}
-	if len(strategy.MinReplicas) > 0 {
-		return strategy.MinReplicas
-	}
 
 	minimums := make(map[string]int32, len(rbg.Spec.Roles))
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		if !RoleInGang(role, strategy) {
+			continue
+		}
+		if minReplicas, ok := strategy.MinReplicas[role.Name]; ok {
+			minimums[role.Name] = minReplicas
 			continue
 		}
 		minimums[role.Name] = ptr.Deref(role.Replicas, 1)
@@ -239,8 +244,12 @@ func UnknownGangRoles(
 // merge that satisfies every rule simultaneously.
 //
 // A gang rule with an empty minReplicas map requests all-or-nothing gang over the
-// roles it names, which subsumes any per-role minimum, so the minimums are dropped
-// while the roles they named stay covered.
+// roles it names. Such a role participates in full regardless of what other rules
+// declare for it: holding it to a per-role minimum would be weaker than the
+// all-or-nothing rule asked for, so the minimum is dropped and the role stays
+// covered. The resulting MinReplicas map is therefore a subset of Roles: keys are
+// roles that only per-role rules cover, and covered roles absent from the map
+// participate in full.
 //
 // It returns an IncompatibleGangConfigError when per-role minimums were declared
 // but every one of them was scoped away, since neither an all-or-nothing gang nor nil
@@ -248,9 +257,8 @@ func UnknownGangRoles(
 func MergeGangStrategies(
 	coordinatedPolicy *workloadsv1alpha2.CoordinatedPolicy,
 ) (*GangStrategy, error) {
-	covered := sets.New[string]()
+	allOrNothingRoles := sets.New[string]()
 	merged := map[string]int32{}
-	allOrNothing := false
 	found := false
 
 	for i := range coordinatedPolicy.Spec.Policies {
@@ -259,11 +267,10 @@ func MergeGangStrategies(
 			continue
 		}
 		found = true
-		covered.Insert(policy.Roles...)
 
 		gang := policy.Strategy.Scheduling.Gang
 		if len(gang.MinReplicas) == 0 {
-			allOrNothing = true
+			allOrNothingRoles.Insert(policy.Roles...)
 			continue
 		}
 
@@ -280,21 +287,29 @@ func MergeGangStrategies(
 	if !found {
 		return nil, nil
 	}
-	if allOrNothing {
-		return &GangStrategy{Roles: covered}, nil
-	}
+	// An all-or-nothing rule covers its roles in full, so any per-role minimum for
+	// the same role is subsumed.
+	maps.DeleteFunc(merged, func(roleName string, _ int32) bool {
+		return allOrNothingRoles.Has(roleName)
+	})
 	if len(merged) == 0 {
-		// Every gang rule declared per-role minimums (an all-or-nothing rule is handled
-		// above) yet none survived scoping, so every key named a role outside its own
-		// rule. The admission webhook rejects that, so reaching here means the policy
-		// predates the webhook or was written with admission disabled. Falling back to an
-		// all-or-nothing gang would be a stricter constraint than was asked for, so
-		// report the configuration instead of silently widening it.
+		if allOrNothingRoles.Len() > 0 {
+			return &GangStrategy{Roles: allOrNothingRoles}, nil
+		}
+		// Every gang rule declared per-role minimums yet none survived scoping, so
+		// every key named a role outside its own rule. The admission webhook rejects
+		// that, so reaching here means the policy predates the webhook or was written
+		// with admission disabled. Falling back to an all-or-nothing gang would be a
+		// stricter constraint than was asked for, so report the configuration instead
+		// of silently widening it.
 		return nil, NewIncompatibleGangConfigError(
 			"gang scheduling minReplicas in CoordinatedPolicy %s/%s names only roles outside "+
 				"their own policy rule's roles list, so no per-role minimum applies; "+
 				"list those roles in the rule or remove the minimums",
 			coordinatedPolicy.Namespace, coordinatedPolicy.Name)
 	}
-	return &GangStrategy{Roles: sets.KeySet(merged), MinReplicas: merged}, nil
+	return &GangStrategy{
+		Roles:       allOrNothingRoles.Union(sets.KeySet(merged)),
+		MinReplicas: merged,
+	}, nil
 }

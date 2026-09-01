@@ -106,14 +106,41 @@ func TestMergeGangStrategies(t *testing.T) {
 			wantIncompatible: true,
 		},
 		{
-			// The minimums are subsumed, but the role that carried them stays covered:
-			// dropping it would shrink the gang below what either rule asked for.
-			name: "all-or-nothing gang subsumes per-role minimums and keeps their roles",
+			// The all-or-nothing rule only subsumes minimums for its own roles:
+			// prefill's minimum survives, decode participates in full.
+			name: "all-or-nothing gang keeps minimums for roles it does not cover",
 			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
 				gangRule([]string{"prefill"}, map[string]int32{"prefill": 2}),
 				gangRule([]string{"decode"}, nil),
 			},
-			want: &GangStrategy{Roles: sets.New("prefill", "decode")},
+			want: &GangStrategy{
+				Roles:       sets.New("prefill", "decode"),
+				MinReplicas: map[string]int32{"prefill": 2},
+			},
+		},
+		{
+			// One rule declares an all-or-nothing gang over prefill, another a
+			// per-role minimum over decode. Both constraints must hold: prefill
+			// participates in full, decode is held to its minimum.
+			name: "all-or-nothing role and per-role minimum coexist",
+			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
+				gangRule([]string{"prefill"}, nil),
+				gangRule([]string{"decode"}, map[string]int32{"decode": 2}),
+			},
+			want: &GangStrategy{
+				Roles:       sets.New("prefill", "decode"),
+				MinReplicas: map[string]int32{"decode": 2},
+			},
+		},
+		{
+			// An all-or-nothing rule over a role subsumes that role's own minimum:
+			// holding it to a lower count would weaken the all-or-nothing rule.
+			name: "all-or-nothing gang subsumes the same role's minimum",
+			rules: []workloadsv1alpha2.CoordinatedPolicyRule{
+				gangRule([]string{"prefill"}, map[string]int32{"prefill": 2}),
+				gangRule([]string{"prefill"}, nil),
+			},
+			want: &GangStrategy{Roles: sets.New("prefill")},
 		},
 	}
 
@@ -219,6 +246,24 @@ func TestGangMinimumReplicas(t *testing.T) {
 		GangMinimumReplicas(rbg, &GangStrategy{
 			Roles:       sets.New("prefill"),
 			MinReplicas: map[string]int32{"prefill": 2},
+		}),
+	)
+
+	// A covered role without a configured minimum participates in full, while
+	// configured minimums still apply to the roles they name.
+	mixed := &workloadsv1alpha2.RoleBasedGroup{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To[int32](4)},
+				{Name: "decode", Replicas: ptr.To[int32](6)},
+			},
+		},
+	}
+	assert.Equal(
+		t, map[string]int32{"prefill": 4, "decode": 2},
+		GangMinimumReplicas(mixed, &GangStrategy{
+			Roles:       sets.New("prefill", "decode"),
+			MinReplicas: map[string]int32{"decode": 2},
 		}),
 	)
 }

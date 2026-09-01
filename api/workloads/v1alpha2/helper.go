@@ -93,9 +93,13 @@ func ComputeSubGroupSize(role *RoleSpec) int32 {
 		ccp := role.GetCustomComponentsPattern()
 		var total int32
 		for _, c := range ccp.Components {
-			if c.Size != nil {
-				total += *c.Size
+			// An omitted size means one pod, matching the GetComponentSize contract
+			// the RoleInstanceSet controller uses to build the pods.
+			if c.Size == nil {
+				total++
+				continue
 			}
+			total += *c.Size
 		}
 		return max(total, 1)
 	}
