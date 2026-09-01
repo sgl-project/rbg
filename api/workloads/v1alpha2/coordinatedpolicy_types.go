@@ -70,18 +70,20 @@ type CoordinatedPolicyStrategy struct {
 // This is a domain that can hold multiple scheduling coordination strategies.
 type SchedulingCoordinationStrategy struct {
 	// Gang defines the gang scheduling coordination for roles.
-	// When present, gang scheduling is enabled for the RoleBasedGroup. A rule
-	// constrains the roles its own spec.policies[].roles lists: with a non-empty
-	// minReplicas map each named role is held to its minimum, and with an empty
-	// map the rule is all-or-nothing over its roles.
+	// When present, gang scheduling is enabled for the RoleBasedGroup.
 	//
-	// Several policy rules may each declare a gang strategy. The covered roles
+	// A rule constrains its listed roles via per-role minimums or all-or-nothing.
+	//
+	// With a non-empty minReplicas map each named role is held to its minimum,
+	// and with an empty map the rule is all-or-nothing over its roles. A rule
+	// may only name roles listed in its own spec.policies[].roles. Roles covered
+	// only by an all-or-nothing rule participate in full; the per-role minimums
+	// other rules declare still apply to the roles those rules name.
+	//
+	// Several policy rules may each declare a gang strategy: the covered roles
 	// are the union of every declaring rule's roles, and minReplicas maps are
 	// merged across rules, taking the maximum when the same role appears more
-	// than once. A rule may only name roles listed in its own
-	// spec.policies[].roles. Roles covered only by an all-or-nothing rule
-	// participate in full; the per-role minimums other rules declare still
-	// apply to the roles those rules name.
+	// than once.
 	//
 	// When scheduling.gang is not configured (or CoordinatedPolicy does not
 	// exist), the controller falls back to checking the legacy annotation

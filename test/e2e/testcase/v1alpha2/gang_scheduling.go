@@ -365,7 +365,7 @@ func runGangSchedulingBackend(f *framework.Framework, b gangBackend) {
 				MaxSkew: ptr.To(intstr.FromInt32(1)),
 			}
 			cpolicy.Spec.Policies[0].Strategy.Scaling = &workloadsv1alpha2.ScalingCoordinationStrategy{
-				MaxSkew: ptr.To(intstr.FromInt32(1)),
+				MaxSkew: ptr.To(intstr.FromString("50%")),
 			}
 
 			ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })

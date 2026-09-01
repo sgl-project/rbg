@@ -125,6 +125,8 @@ spec:
                               description: |-
                                 Gang defines the gang scheduling coordination for roles.
                                 When present, gang scheduling is enabled for the RoleBasedGroup.
+
+                                A rule constrains its listed roles via per-role minimums or all-or-nothing.
                               properties:
                                 minReplicas:
                                   additionalProperties:
