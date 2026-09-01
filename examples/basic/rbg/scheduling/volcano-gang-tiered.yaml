@@ -1,0 +1,120 @@
+# Example: Tiered gang scheduling with Volcano subGroupPolicy (v1alpha2)
+# Tiered gang scheduling gives each role its own minimum replica count.
+# The PodGroup becomes schedulable once every tier reaches its minimum,
+# and the remaining replicas are filled in by the scheduler afterwards.
+# This is a middle ground between all-or-nothing gang scheduling (see
+# volcano-gang.yaml) and no coordination at all.
+#
+# In this example the group has three tiers:
+#   - coordinator: at least 1 of 2 replicas must be schedulable
+#   - prefill:     at least 2 of 4 replicas must be schedulable
+#   - decode:      at least 2 of 6 replicas must be schedulable
+# So the whole group can start with 5 pods instead of waiting for all 12.
+#
+# REQUIREMENTS:
+#   1. The controller must run with --scheduler-name=volcano
+#      (Helm: controller.features.gangScheduling.schedulerName).
+#   2. Volcano >= 1.14, because per-role minimums are implemented with the
+#      PodGroup subGroupPolicy field. scheduler-plugins supports basic gang only.
+#   3. The CoordinatedPolicy must have the same name and namespace as the
+#      RoleBasedGroup; the controller matches them by identity.
+#   4. Roles covered by minReplicas must be backed by RoleInstanceSet
+#      (the standalone pattern). Deployment/StatefulSet/LeaderWorkerSet
+#      backings do not emit the per-instance pod label that partitions a
+#      role into subGroups.
+#
+# NOTES:
+#   - Each key of minReplicas must be a role listed in the enclosing policy
+#     rule's `roles` field, and each value must be at least 1 and no greater
+#     than the role's replicas. Violations are reported on the RoleBasedGroup
+#     as GangConfigured=False instead of failing admission.
+#   - Roles absent from minReplicas are excluded from the gang constraint,
+#     but their pods still get the volcano schedulerName so the whole group
+#     is placed by one scheduler.
+#   - The legacy annotation rbg.workloads.x-k8s.io/group-gang-scheduling is
+#     not needed when a CoordinatedPolicy with scheduling.gang exists; it is
+#     only a fallback.
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: volcano-gang-tiered
+  namespace: default
+  # Optional: Volcano queue and priority class for the whole group.
+  # annotations:
+  #   rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-queue: "default"
+  #   rbg.workloads.x-k8s.io/group-gang-scheduling-volcano-priority: "high-priority"
+spec:
+  roles:
+    - name: router
+      replicas: 2
+      standalonePattern:
+        template:
+          spec:
+            schedulerName: volcano
+            containers:
+              - name: router
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8080
+                resources:
+                  requests:
+                    cpu: "100m"
+
+    - name: prefill
+      replicas: 4
+      standalonePattern:
+        template:
+          spec:
+            schedulerName: volcano
+            containers:
+              - name: prefill
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8081
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+
+    - name: decode
+      replicas: 6
+      standalonePattern:
+        template:
+          spec:
+            schedulerName: volcano
+            containers:
+              - name: decode
+                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                ports:
+                  - containerPort: 8082
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: CoordinatedPolicy
+metadata:
+  name: volcano-gang-tiered
+  namespace: default
+spec:
+  policies:
+    - name: tiered-gang
+      roles:
+        - router
+        - prefill
+        - decode
+      strategy:
+        scheduling:
+          gang:
+            # Per-role minimum replicas. Each entry becomes a Volcano
+            # subGroup with minSubGroups set to the value below, so the
+            # gang is satisfied tier by tier.
+            minReplicas:
+              router: 1
+              prefill: 2
+              decode: 2
