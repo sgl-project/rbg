@@ -42,13 +42,23 @@ make helm-deploy
 #### CRD Upgrader Configuration
 
 | Parameter | Description | Default |
-|-----------|-------------|------|
+| --------- | ----------- | ------- |
 | `crdUpgrade.enabled` | Enable CRD Upgrader Job | `true` |
 | `crdUpgrade.image.repository` | CRD Upgrader image repository | `rolebasedgroup/rbgs-upgrade-crd` |
 | `crdUpgrade.image.tag` | CRD Upgrader image tag | Same as `controller.image.tag` |
 | `crdUpgrade.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
 | `crdUpgrade.tolerations` | Pod tolerations | `[{operator: Exists}]` |
 | `crdUpgrade.nodeSelector` | Pod node selector | `{}` |
+
+#### Chart Version Marker
+
+Each chart declares a minimum compatible source version in its `Chart.yaml` annotation. Before every
+`helm upgrade`, it reads `<release>-chart-version` with Helm's `lookup` function and compares the
+recorded `data.chartVersion` with that minimum before applying any resources or upgrading CRDs. A
+successful install or upgrade writes the target chart version with a `post-install,post-upgrade`
+ConfigMap hook. A missing marker, missing version, or source below the declared minimum fails the
+upgrade during rendering. The Helm identity needs `get` on ConfigMaps in the release namespace;
+offline `helm template --is-upgrade` cannot perform this check. See [Minimum upgrade source version](../deploy/helm/rbgs/README.md#minimum-upgrade-source-version).
 
 #### Manual CRD Installation (Alternative)
 

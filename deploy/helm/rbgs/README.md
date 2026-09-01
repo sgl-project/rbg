@@ -12,6 +12,8 @@ CRD upgrade Job into your Kubernetes cluster.
   (certificates are bootstrapped by the controller itself, no cert-manager required).
 - **CRD Upgrader Job** (optional, enabled by default): a `pre-install,pre-upgrade` Helm hook Job
   (with its own ServiceAccount and RBAC) that applies/upgrades the RBG CRDs before the controller starts.
+- **Chart version marker**: a persistent post-install/post-upgrade ConfigMap that records the latest
+  successfully installed chart version for a later upgrade compatibility check.
 
 ## Prerequisites
 
@@ -145,10 +147,43 @@ kubectl delete -f config/crd/bases/
 
 ## Upgrading
 
-`helm upgrade` is supported. Nothing checks the cluster's existing objects against
-`controller.deprecatedWorkloadTypes.enabled`, so keeping it at its default `true` on an installation
-that already has objects using a deprecated workload type is the operator's responsibility — see
-[Deprecated workload types](#deprecated-workload-types).
+Every chart declares its minimum supported source chart version in the
+`workloads.x-k8s.io/minimum-upgrade-source-version` Chart annotation. Before **every**
+`helm upgrade`, the chart reads the prior release's `<release>-chart-version` ConfigMap and rejects a
+source below that minimum; see [Minimum upgrade source version](#minimum-upgrade-source-version). Nothing checks the cluster's
+existing objects against `controller.deprecatedWorkloadTypes.enabled`, so keeping it at its default
+`true` on an installation that already has objects using a deprecated workload type is the
+operator's responsibility — see [Deprecated workload types](#deprecated-workload-types).
+
+### Minimum upgrade source version
+
+Every chart declares its minimum compatible source version through this `Chart.yaml` annotation:
+
+```yaml
+annotations:
+  workloads.x-k8s.io/minimum-upgrade-source-version: "0.8.0"
+```
+
+On a successful install or upgrade, a `post-install,post-upgrade` ConfigMap hook persists the target
+chart version as `<release>-chart-version`:
+
+```yaml
+data:
+  chartVersion: "0.8.0"
+```
+
+Before **every** upgrade, Helm renders the chart, uses `lookup` to read that ConfigMap, and compares
+`data.chartVersion` with the chart's declared minimum as SemVer. A missing marker, a missing version,
+or a source below the minimum calls `fail`. This happens before Helm applies any resource or invokes
+the CRD upgrade hook, so a refusal changes neither the controller nor the CRDs.
+
+A release installed before this version-marker mechanism has no ConfigMap and is intentionally
+rejected. For the current chart, that includes every source older than v0.8.0, whose flat values are
+not compatible with the regrouped layout described below.
+
+The Helm identity that performs an upgrade needs `get` on ConfigMaps in the release namespace.
+Offline `helm template --is-upgrade` cannot read the marker and therefore cannot validate an upgrade;
+use `helm upgrade`, server-side dry-run, or a Helm-based GitOps controller with cluster API access.
 
 ### Breaking change: values regrouped in chart v0.8.0
 

@@ -1,0 +1,36 @@
+{{- /*
+  Every upgrade first compares the latest successfully recorded chart version with this
+  chart's minimum supported source version. The marker is updated only by the post hook,
+  so a failed upgrade retains the last known-good source version.
+*/ -}}
+{{- $minimumSourceVersion := index .Chart.Annotations "workloads.x-k8s.io/minimum-upgrade-source-version" }}
+{{- $markerName := printf "%s-chart-version" .Release.Name }}
+{{- if .Release.IsUpgrade }}
+{{- $marker := lookup "v1" "ConfigMap" .Release.Namespace $markerName }}
+{{- if not $marker }}
+{{- fail (printf "cannot verify the version this release is upgrading from: ConfigMap %s/%s is missing. This chart requires a recorded source version of at least v%s." .Release.Namespace $markerName $minimumSourceVersion) }}
+{{- end }}
+{{- $markerData := $marker.data | default dict }}
+{{- $sourceVersion := get $markerData "chartVersion" | default "" }}
+{{- if not $sourceVersion }}
+{{- fail (printf "cannot verify the version this release is upgrading from: ConfigMap %s/%s has no data.chartVersion. This chart requires a recorded source version of at least v%s." .Release.Namespace $markerName $minimumSourceVersion) }}
+{{- end }}
+{{- if not (semverCompare (printf ">=%s" $minimumSourceVersion) $sourceVersion) }}
+{{- fail (printf "upgrading directly from chart v%s is not supported; this chart requires v%s or later." $sourceVersion $minimumSourceVersion) }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $markerName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    # A fixed-name hook must remove the previous marker before it can write the new one.
+    # It is otherwise retained as the source-version record for the next upgrade.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  chartVersion: {{ .Chart.Version | quote }}

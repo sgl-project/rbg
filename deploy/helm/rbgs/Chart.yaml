@@ -1,6 +1,8 @@
 apiVersion: v2
 name: rbgs
 description: A Helm chart for RoleBasedGroupSet and RoleBasedGroup Controller
+annotations:
+  workloads.x-k8s.io/minimum-upgrade-source-version: "0.8.0"
 
 # A chart can be either an 'application' or a 'library' chart.
 #
