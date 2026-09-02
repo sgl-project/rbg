@@ -24,12 +24,14 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
 	"sigs.k8s.io/yaml"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -107,7 +109,7 @@ func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 			return nil, err
 		}
 		roles[role.Name] = RoleInstances{
-			Size:      int(*role.Replicas),
+			Size:      len(instances),
 			Instances: instances,
 		}
 	}
@@ -115,24 +117,70 @@ func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 }
 
 func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
-	instances := make([]Instance, 0, *role.Replicas)
 	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
 	if err != nil {
 		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 
+	ccp := role.GetCustomComponentsPattern()
+	lwp := role.GetLeaderWorkerPattern()
+	workloadName := b.rbg.GetWorkloadName(role)
+
+	portMap := make(map[string]int32, len(role.ServicePorts))
+	for _, port := range role.ServicePorts {
+		portMap[generatePortKey(port)] = port.Port
+	}
+
+	var instances []Instance
 	for i := 0; i < int(*role.Replicas); i++ {
-		instance := Instance{
-			Address: fmt.Sprintf("%s-%d.%s", b.rbg.GetWorkloadName(role), i, serviceName),
-			Ports:   make(map[string]int32),
+		var addresses []string
+
+		switch {
+		case ccp != nil:
+			for _, comp := range ccp.Components {
+				// an explicit component ServiceName overrides the shared headless service as the pod subdomain.
+				svcName := comp.ServiceName
+				if svcName == "" {
+					svcName = serviceName
+				}
+				for j := int32(0); j < ptr.Deref(comp.Size, 1); j++ {
+					addresses = append(addresses, fmt.Sprintf(
+						"%s-%d-%s-%d.%s",
+						workloadName, i, comp.Name, j, svcName,
+					))
+				}
+			}
+		case lwp != nil:
+			size := int32(1)
+			if lwp.Size != nil {
+				size = *lwp.Size
+			}
+			if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
+				groupStart := int32(i) * size
+				addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart, serviceName))
+				for j := int32(0); j < size-1; j++ {
+					addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart+j+1, serviceName))
+				}
+			} else {
+				addresses = append(addresses, fmt.Sprintf("%s-%d-0.%s", workloadName, i, serviceName))
+				for j := int32(0); j < size-1; j++ {
+					addresses = append(addresses, fmt.Sprintf("%s-%d-%d.%s", workloadName, i, j+1, serviceName))
+				}
+			}
+		default:
+			addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, i, serviceName))
 		}
 
-		for _, port := range role.ServicePorts {
-			portName := generatePortKey(port)
-			instance.Ports[portName] = port.Port
+		for _, addr := range addresses {
+			inst := Instance{Address: addr}
+			if len(portMap) > 0 {
+				inst.Ports = make(map[string]int32, len(portMap))
+				for k, v := range portMap {
+					inst.Ports[k] = v
+				}
+			}
+			instances = append(instances, inst)
 		}
-
-		instances = append(instances, instance)
 	}
 	return instances, nil
 }
