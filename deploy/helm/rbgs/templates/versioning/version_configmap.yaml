@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: rbgs-controller-chart-version
+  name: rbgs-controller-version-info
   namespace: {{ .Release.Namespace }}
   labels:
     control-plane: rbgs-controller
