@@ -1,0 +1,52 @@
+# Example: RoleBasedGroupSet recreate rolling update (v1alpha2)
+# Two identical RoleBasedGroups are rolled one at a time: the highest ordinal is deleted,
+# rebuilt from groupTemplate under the same name, and only once it is Ready again does the
+# next one start.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroupSet
+metadata:
+  name: rbgs-rolling
+  namespace: default
+spec:
+  replicas: 2
+
+  rolloutStrategy:
+    # Type selects how ONE child RoleBasedGroup is moved onto the new template.
+    #   Recreate        - delete the RoleBasedGroup and rebuild it, so every downstream
+    #                     workload and Pod is replaced and the group restarts as a whole.
+    #                     This is the only value the controller implements today.
+    #   InPlaceUpdate   - reserved; the CRD enum rejects it for now.
+    type: Recreate
+
+    # At most one group may be unavailable at a time. With replicas: 2 that means one
+    # group keeps serving throughout the rollout.
+    maxUnavailable: 1
+
+    # No extra group is created above spec.replicas. Set to 1 to pre-build a replacement
+    # before deleting anything.
+    maxSurge: 0
+
+    # Ordinals below partition stay on the previous template. 0 rolls everything.
+    partition: 0
+
+    # Freezes the rollout.
+    paused: false
+
+  groupTemplate:
+    labels:
+      app: rbgs-rolling-demo
+    spec:
+      roles:
+        - name: server
+          replicas: 1
+          rolloutStrategy:
+            type: RollingUpdate
+          standalonePattern:
+            template:
+              spec:
+                containers:
+                  - name: nginx
+                    image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 80

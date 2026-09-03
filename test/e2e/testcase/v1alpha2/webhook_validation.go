@@ -22,10 +22,12 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
+	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -113,6 +115,82 @@ func RunWebhookValidationTestCases(f *framework.Framework) {
 					for _, role := range rbg.Spec.Roles {
 						f.ExpectScalingAdapterV2NotExist(rbg, role)
 					}
+				},
+			)
+		},
+	)
+
+	ginkgo.Describe(
+		"rbgset validating webhook", func() {
+
+			// The test case checks whether ValidateCreate() rejects a ScalingAdapter that is
+			// enabled from a group template.
+			ginkgo.It(
+				"should reject RoleBasedGroupSet creation when a group template role enables scalingAdapter",
+				func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("e2e-test", f.Namespace).
+						WithReplicas(1).Obj()
+					rbgset.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{
+						wrappersv2.BuildStandaloneRole("role-1").WithScalingAdapter(true).Obj(),
+					}
+
+					err := f.Client.Create(f.Ctx, rbgset)
+					gomega.Expect(err).Should(gomega.HaveOccurred())
+					gomega.Expect(strings.ToLower(err.Error())).Should(gomega.ContainSubstring("scalingadapter"))
+				},
+			)
+
+			// The test case checks whether ValidateUpdate() enforces the same rule, and that an
+			// unrelated update on the set is still allowed.
+			ginkgo.It(
+				"should reject enabling scalingAdapter on update but allow an unrelated change", func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("e2e-test", f.Namespace).
+						WithReplicas(1).Obj()
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+					f.ExpectRbgSetV2Equal(rbgset)
+
+					// Enabling the adapter on the already accepted set is rejected. The controller
+					// writes status concurrently, so retry past resourceVersion conflicts to make
+					// sure the error surfaced is the admission one.
+					var rejectedErr error
+					gomega.Eventually(
+						func() bool {
+							rejected := &workloadsv1alpha2.RoleBasedGroupSet{}
+							if err := f.Client.Get(
+								f.Ctx, client.ObjectKeyFromObject(rbgset), rejected,
+							); err != nil {
+								return false
+							}
+							rejected.Spec.GroupTemplate.Spec.Roles[0].ScalingAdapter = &workloadsv1alpha2.ScalingAdapter{
+								Enable: true,
+							}
+							rejectedErr = f.Client.Update(f.Ctx, rejected)
+							return rejectedErr != nil && !apierrors.IsConflict(rejectedErr)
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+					gomega.Expect(strings.ToLower(rejectedErr.Error())).Should(
+						gomega.ContainSubstring("scalingadapter"),
+					)
+
+					// Scaling the set itself does not touch the group template and stays allowed.
+					gomega.Eventually(
+						func() error {
+							allowed := &workloadsv1alpha2.RoleBasedGroupSet{}
+							if err := f.Client.Get(
+								f.Ctx, client.ObjectKeyFromObject(rbgset), allowed,
+							); err != nil {
+								return err
+							}
+							allowed.Spec.Replicas = ptr.To(int32(2))
+							return f.Client.Update(f.Ctx, allowed)
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.Succeed())
+					scaled := &workloadsv1alpha2.RoleBasedGroupSet{}
+					gomega.Expect(
+						f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), scaled),
+					).Should(gomega.Succeed())
+					f.ExpectRbgSetV2Equal(scaled)
 				},
 			)
 		},
