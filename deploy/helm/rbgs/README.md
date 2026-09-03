@@ -12,8 +12,8 @@ CRD upgrade Job into your Kubernetes cluster.
   (certificates are bootstrapped by the controller itself, no cert-manager required).
 - **CRD Upgrader Job** (optional, enabled by default): a `pre-install,pre-upgrade` Helm hook Job
   (with its own ServiceAccount and RBAC) that applies/upgrades the RBG CRDs before the controller starts.
-- **Chart version marker**: a persistent post-install/post-upgrade ConfigMap that records the latest
-  successfully installed chart version.
+- **Chart version marker**: a ConfigMap deployed with the release that records the chart version and
+  application version.
 
 ## Prerequisites
 
