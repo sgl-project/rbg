@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rbgs-controller-chart-version
+  namespace: {{ .Release.Namespace }}
+  labels:
+    control-plane: rbgs-controller
+data:
+  chartVersion: {{ .Chart.Version | quote }}
+  appVersion: {{ .Chart.AppVersion | quote }}
