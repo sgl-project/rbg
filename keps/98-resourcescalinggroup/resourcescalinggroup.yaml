@@ -1,0 +1,55 @@
+apiVersion: resourcescalinggroup.com/v1
+kind: ResourceScalingGroup
+metadata:
+  name: pd-cluster
+spec:
+  targetResources:
+    - name: prefill
+      namespace: ai
+      apiVersion: apps/v1
+      kind: Deployment
+    - name: decode
+      namespace: ai
+      apiVersion: apps/v1
+      kind: Deployment
+
+  # 2. two different strategies of scaling: GroupReplication and InplaceScaling
+  scalingStrategy:
+    type: GroupReplication
+    groupConfig:
+      groupName: "inference-unit"
+      replicas: 1 #
+      scaleDown:
+        policy: Ordered  # Ordered/Oldest/Newest
+        candidates:
+          - "inference-unit-02"
+---
+apiVersion: resourcescalinggroup.com/v1
+kind: ResourceScalingGroup
+metadata:
+  name: pd-pool
+spec:
+  targetResources:
+    - name: rolebasedgroup1
+      namespace: ai
+      apiVersion: workloads.x-k8s.io/v1alpha1
+      kind: RoleBasedGroup
+      subResources:
+        - roleName: "prefill"
+        - roleName: "Decode"
+    - name: router
+      namespace: ai
+      apiVersion: apps/v1
+      kind: Deployment
+  scalingStrategy:
+    type: InplaceScaling
+    inplaceConfig:
+      bindings:
+        - name: router
+          role: Source
+        - name: prefill
+          role: Target
+          ratio: 1.0
+        - name: decode
+          role: Target
+          ratio: 2.0
