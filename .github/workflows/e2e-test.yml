@@ -13,7 +13,7 @@ env:
   GOTOOLCHAIN: local
   KIND_VERSION: v0.31.0
   KUBERNETES_VERSION: v1.31.12
-  VOLCANO_VERSION: v1.12.0
+  VOLCANO_VERSION: v1.15.1
   LWS_VERSION: v0.7.0
   SCHEDULER_PLUGINS_VERSION: v0.32.7
 
@@ -120,23 +120,6 @@ jobs:
         run: |
           kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
           kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
-
-      - name: Install Scheduler Plugins
-        run: |
-          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
-            --create-namespace \
-            --namespace scheduler-plugins \
-            --wait \
-            --timeout 300s
-          kubectl get pods -n scheduler-plugins
-
-      - name: Install Volcano Scheduler
-        run: |
-          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
-          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
-          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
-          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
-          kubectl get pods -n volcano-system
 
       - name: Install Helm
         run: |
@@ -318,23 +301,6 @@ jobs:
         run: |
           kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
           kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
-
-      - name: Install Scheduler Plugins
-        run: |
-          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
-            --create-namespace \
-            --namespace scheduler-plugins \
-            --wait \
-            --timeout 300s
-          kubectl get pods -n scheduler-plugins
-
-      - name: Install Volcano Scheduler
-        run: |
-          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
-          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
-          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
-          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
-          kubectl get pods -n volcano-system
 
       - name: Validate and deploy manifests
         run: |
@@ -541,3 +507,300 @@ jobs:
         if: always()
         run: |
           kind delete cluster --name rbgs-deprecated-e2e || true
+
+  # E2E test for the Volcano gang scheduling specs (Label("volcano")). These need the
+  # controller deployed with --scheduler-name=volcano and a cluster Volcano >= v1.14
+  # (PodGroup subGroupPolicy). They cannot share the main suite, which runs against the
+  # cluster's default scheduler. Runs on its own Kind cluster.
+  e2e-test-volcano-gang:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name rbgs-volcano-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install LeaderWorkerSet CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
+          kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+      - name: Install Volcano Scheduler
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
+          kubectl get pods -n volcano-system
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Build and load controller image
+        run: |
+          make manifests
+          make docker-build-controller TAG=e2e-test
+          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-volcano-e2e
+
+      - name: Build and load CRD Upgrader image
+        run: |
+          make docker-build-crd-upgrader TAG=e2e-test
+          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-test --name rbgs-volcano-e2e
+
+      - name: Deploy controller with Volcano gang scheduling
+        run: |
+          helm upgrade --install rbgs deploy/helm/rbgs \
+            --create-namespace \
+            --namespace rbgs-system \
+            --set controller.image.tag=e2e-test \
+            --set crdUpgrade.image.tag=e2e-test \
+            --set controller.features.gangScheduling.schedulerName=volcano \
+            --wait
+          kubectl get deploy -n rbgs-system
+
+      - name: Wait for controller to be ready
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+
+      - name: Verify controller uses the volcano scheduler
+        run: |
+          ARGS=$(kubectl get deploy rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[0].args}')
+          echo "controller args: $ARGS"
+          echo "$ARGS" | grep -q -- '--scheduler-name=volcano' || {
+            echo "::error::controller is not running with --scheduler-name=volcano"
+            exit 1
+          }
+
+      - name: Pre-load e2e test images
+        run: |
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-volcano-e2e
+          done
+          echo "All e2e test images loaded successfully"
+
+      - name: Run Volcano gang scheduling E2E tests
+        run: |
+          make test-e2e-volcano
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Manager args ==="
+          kubectl get deploy rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[*].args}' || true
+          echo ""
+          echo "=== Controller logs ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 || true
+          echo "=== Controller previous logs (if restarted) ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 --previous 2>/dev/null || true
+          echo "=== Volcano PodGroups ==="
+          kubectl get podgroups.scheduling.volcano.sh -A -o yaml || true
+          echo "=== All pods in test namespaces ==="
+          kubectl get pods -A | grep test-ns || true
+          echo "=== Events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
+          kind export logs /tmp/kind-volcano-logs --name rbgs-volcano-e2e || true
+
+      - name: Upload Kind logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-volcano-logs
+          path: /tmp/kind-volcano-logs
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name rbgs-volcano-e2e || true
+
+  # E2E test for the scheduler-plugins gang scheduling specs (Label("scheduler-plugins")).
+  # These need scheduler-plugins installed and the controller deployed with
+  # --scheduler-name=scheduler-plugins plus the profile name the upstream
+  # as-a-second-scheduler chart uses, so they cannot share the main suite, which runs
+  # against the cluster's default scheduler. Runs on its own Kind cluster.
+  e2e-test-scheduler-plugins-gang:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+      SCHEDULER_PLUGINS_PROFILE: scheduler-plugins-scheduler
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name rbgs-sp-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install LeaderWorkerSet CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
+          kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Install Scheduler Plugins
+        run: |
+          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
+            --create-namespace \
+            --namespace scheduler-plugins \
+            --wait \
+            --timeout 300s
+          kubectl get pods -n scheduler-plugins
+
+      - name: Build and load controller image
+        run: |
+          make manifests
+          make docker-build-controller TAG=e2e-test
+          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-sp-e2e
+
+      - name: Build and load CRD Upgrader image
+        run: |
+          make docker-build-crd-upgrader TAG=e2e-test
+          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-test --name rbgs-sp-e2e
+
+      - name: Deploy controller with scheduler-plugins gang scheduling
+        run: |
+          helm upgrade --install rbgs deploy/helm/rbgs \
+            --create-namespace \
+            --namespace rbgs-system \
+            --set controller.image.tag=e2e-test \
+            --set crdUpgrade.image.tag=e2e-test \
+            --set controller.features.gangScheduling.schedulerName=scheduler-plugins \
+            --set controller.features.gangScheduling.schedulerProfileName=${SCHEDULER_PLUGINS_PROFILE} \
+            --wait
+          kubectl get deploy -n rbgs-system
+
+      - name: Wait for controller to be ready
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+
+      - name: Verify controller and scheduler-plugins agree on the profile name
+        run: |
+          set -euo pipefail
+          ARGS=$(kubectl get deploy rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[0].args}')
+          echo "controller args: $ARGS"
+          echo "$ARGS" | grep -q -- '--scheduler-name=scheduler-plugins' || {
+            echo "::error::controller is not running with --scheduler-name=scheduler-plugins"
+            exit 1
+          }
+          echo "$ARGS" | grep -q -- "--scheduler-profile-name=${SCHEDULER_PLUGINS_PROFILE}" || {
+            echo "::error::controller is not running with --scheduler-profile-name=${SCHEDULER_PLUGINS_PROFILE}"
+            exit 1
+          }
+          # Gang scheduling silently degrades to the default scheduler if the injected
+          # pod.spec.schedulerName does not name a profile that actually runs coscheduling,
+          # so fail loudly if the upstream chart renames its profile.
+          kubectl -n scheduler-plugins get cm -o yaml | grep -q "schedulerName: ${SCHEDULER_PLUGINS_PROFILE}" || {
+            echo "::error::no scheduler-plugins profile named ${SCHEDULER_PLUGINS_PROFILE}"
+            kubectl -n scheduler-plugins get cm -o yaml || true
+            exit 1
+          }
+
+      - name: Pre-load e2e test images
+        run: |
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-sp-e2e
+          done
+          echo "All e2e test images loaded successfully"
+
+      - name: Run scheduler-plugins gang scheduling E2E tests
+        run: |
+          make test-e2e-scheduler-plugins
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Manager args ==="
+          kubectl get deploy rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[*].args}' || true
+          echo ""
+          echo "=== Controller logs ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 || true
+          echo "=== Controller previous logs (if restarted) ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 --previous 2>/dev/null || true
+          echo "=== scheduler-plugins PodGroups ==="
+          kubectl get podgroups.scheduling.x-k8s.io -A -o yaml || true
+          echo "=== scheduler-plugins logs ==="
+          kubectl logs -n scheduler-plugins -l app=scheduler-plugins-scheduler --tail=200 || true
+          echo "=== All pods in test namespaces ==="
+          kubectl get pods -A | grep test-ns || true
+          echo "=== Events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
+          kind export logs /tmp/kind-sp-logs --name rbgs-sp-e2e || true
+
+      - name: Upload Kind logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-scheduler-plugins-logs
+          path: /tmp/kind-sp-logs
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name rbgs-sp-e2e || true

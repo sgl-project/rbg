@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 )
@@ -999,5 +1000,47 @@ func TestComputeMaxUnavailable_RoundsUpWhenMaxSurgeIsZero(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("computeMaxUnavailable() = %d, want 1", got)
+	}
+}
+
+// TestNewVersionedInstanceDoesNotShareComponentTemplateLabels guards against a
+// regression where newVersionedInstance shallow-copied RoleInstanceSpec from the
+// template. Because Components is a slice, every instance shared the same
+// Template.Labels map, so injectIdentityLabelsIntoComponents overwrote the
+// identity labels of previously built instances: all pods ended up carrying the
+// last instance's ordinal and pod-name.
+func TestNewVersionedInstanceDoesNotShareComponentTemplateLabels(t *testing.T) {
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "role-a", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Replicas: ptr.To(int32(3)),
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Components: []workloadsv1alpha2.RoleInstanceComponent{
+						{Name: "c", Size: ptr.To(int32(1))},
+					},
+				},
+			},
+		},
+	}
+
+	// Build every instance first, then assert: the bug only shows up once a
+	// later instance has overwritten the shared map of an earlier one.
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 3)
+	for ord := 0; ord < 3; ord++ {
+		instances = append(instances, newVersionedInstance(set, set, "rev-1", "rev-1", ord, nil))
+	}
+
+	for ord, inst := range instances {
+		gotIdx := inst.Spec.Components[0].Template.Labels[constants.RoleInstanceIndexLabelKey]
+		if gotIdx != fmt.Sprintf("%d", ord) {
+			t.Errorf("instance %d: component template %s = %q, want %q",
+				ord, constants.RoleInstanceIndexLabelKey, gotIdx, fmt.Sprintf("%d", ord))
+		}
+		gotName := inst.Spec.Components[0].Template.Labels[apps.StatefulSetPodNameLabel]
+		if gotName != inst.Name {
+			t.Errorf("instance %d: component template %s = %q, want %q",
+				ord, apps.StatefulSetPodNameLabel, gotName, inst.Name)
+		}
 	}
 }

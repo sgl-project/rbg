@@ -23,10 +23,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
+
+// newFakeValidatorClient returns a client that knows the v1alpha2 types, which the
+// validator needs in order to look up a role's RoleBasedGroupScalingAdapter.
+func newFakeValidatorClient(t *testing.T) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+	return fake.NewClientBuilder().WithScheme(scheme).Build()
+}
 
 func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 	tests := []struct {
@@ -217,6 +228,7 @@ func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			v := &RoleBasedGroupValidator{
+				Client:                        newFakeValidatorClient(t),
 				EnableDeprecatedWorkloadTypes: tt.enableDeprecatedWorkloadTypes,
 			}
 			_, err := v.ValidateCreate(context.Background(), tt.rbg)
@@ -253,7 +265,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			},
 		}
 		v := &RoleBasedGroupValidator{
-			Client:                        fake.NewClientBuilder().Build(),
+			Client:                        newFakeValidatorClient(t),
 			EnableDeprecatedWorkloadTypes: false,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
@@ -270,7 +282,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			},
 		}
 		v := &RoleBasedGroupValidator{
-			Client:                        fake.NewClientBuilder().Build(),
+			Client:                        newFakeValidatorClient(t),
 			EnableDeprecatedWorkloadTypes: false,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
@@ -291,7 +303,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			},
 		}
 		v := &RoleBasedGroupValidator{
-			Client:                        fake.NewClientBuilder().Build(),
+			Client:                        newFakeValidatorClient(t),
 			EnableDeprecatedWorkloadTypes: true,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
@@ -319,7 +331,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing
 		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{statefulSetRole(1)}},
 	}
 	v := &RoleBasedGroupValidator{
-		Client:                        fake.NewClientBuilder().Build(),
+		Client:                        newFakeValidatorClient(t),
 		EnableDeprecatedWorkloadTypes: false,
 	}
 

@@ -153,6 +153,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.CustomComponentsPatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha2.EngineRuntimeApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("GangSchedulingStrategy"):
+		return &workloadsv1alpha2.GangSchedulingStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
 		return &workloadsv1alpha2.InPlaceUpdateStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InstanceComponent"):
@@ -233,6 +235,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.ScalingAdapterApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("ScalingCoordinationStrategy"):
 		return &workloadsv1alpha2.ScalingCoordinationStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("SchedulingCoordinationStrategy"):
+		return &workloadsv1alpha2.SchedulingCoordinationStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("StandalonePattern"):
 		return &workloadsv1alpha2.StandalonePatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("TemplateRef"):

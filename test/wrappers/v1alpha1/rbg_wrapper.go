@@ -68,19 +68,6 @@ func (rbgWrapper *RoleBasedGroupWrapper) WithKubeGangScheduling(kubeGangScheduli
 	return rbgWrapper
 }
 
-func (rbgWrapper *RoleBasedGroupWrapper) WithVolcanoGangScheduling(priorityClassName, queue string) *RoleBasedGroupWrapper {
-	rbgWrapper.Spec.PodGroupPolicy = &workloadsv1alpha.PodGroupPolicy{
-		PodGroupPolicySource: workloadsv1alpha.PodGroupPolicySource{
-			VolcanoScheduling: &workloadsv1alpha.VolcanoSchedulingPodGroupPolicySource{
-				PriorityClassName: priorityClassName,
-				Queue:             queue,
-			},
-		},
-	}
-
-	return rbgWrapper
-}
-
 func (rbgWrapper *RoleBasedGroupWrapper) WithDeletionTimestamp() *RoleBasedGroupWrapper {
 	rbgWrapper.DeletionTimestamp = &v1.Time{Time: time.Now()}
 	return rbgWrapper

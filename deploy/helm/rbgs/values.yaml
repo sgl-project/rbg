@@ -55,6 +55,12 @@ controller:
     gangScheduling:
       # schedulerName selects the gang scheduling scheduler: scheduler-plugins | volcano.
       schedulerName: scheduler-plugins
+      # schedulerProfileName is the kube-scheduler profile running the coscheduling
+      # plugin, injected as pod.spec.schedulerName for gang-scheduled pods. Only used
+      # with schedulerName=scheduler-plugins; the upstream chart uses
+      # scheduler-plugins-scheduler. Leave empty when scheduler-plugins is the
+      # cluster's default scheduler or the role template sets schedulerName itself.
+      schedulerProfileName: ""
     # portAllocator configures dynamic port allocation to pods.
     portAllocator:
       # Whether to enable the port allocator feature.

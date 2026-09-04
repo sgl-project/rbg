@@ -202,7 +202,7 @@ func SetupManager(ctx context.Context) (manager.Manager, error) {
 
 // SetupRBGController sets up the RoleBasedGroup controller
 func SetupRBGController(mgr manager.Manager, bindings *instancesync.NodeBindingStore) error {
-	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin, bindings)
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.KubeSchedulerPlugin, "", bindings)
 	if err != nil {
 		return err
 	}

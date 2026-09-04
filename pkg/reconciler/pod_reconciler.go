@@ -34,6 +34,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -45,10 +46,10 @@ const (
 )
 
 type PodReconciler struct {
-	scheme          *runtime.Scheme
-	client          client.Client
-	injectObjects   []string
-	podGroupManager scheduler.PodGroupManager
+	scheme        *runtime.Scheme
+	client        client.Client
+	injectObjects []string
+	gangScheduler scheduler.GangScheduler
 }
 
 func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconciler {
@@ -62,10 +63,10 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 	r.injectObjects = injectObjects
 }
 
-// SetPodGroupManager configures the PodGroupManager used to inject gang-scheduling
+// SetGangScheduler configures the GangScheduler used to inject gang-scheduling
 // labels/annotations into pod templates.
-func (r *PodReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+func (r *PodReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
@@ -142,9 +143,13 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	// Inject gang-scheduling labels/annotations if a PodGroupManager is configured.
-	if r.podGroupManager != nil {
-		r.podGroupManager.InjectPodGroupLabels(rbg, podTemplateApplyConfiguration)
+	// Inject gang-scheduling labels/annotations if a GangScheduler is configured.
+	if r.gangScheduler != nil {
+		gangStrategy, err := common.GetGangStrategy(ctx, r.client, rbg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve gang scheduling strategy: %w", err)
+		}
+		r.gangScheduler.InjectPodSchedulingFields(rbg, role, gangStrategy, podTemplateApplyConfiguration)
 	}
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
@@ -268,6 +273,15 @@ func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
 }
 
 func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
+	// Compared explicitly because gang scheduling rewrites it: a role leaving the gang
+	// must fall back to the default scheduler, and nothing else here would notice.
+	// The desired spec leaves it empty when gang is off, while the live one has been
+	// defaulted by the apiserver, so both sides need the default filled in.
+	if defaultedSchedulerName(spec1.SchedulerName) != defaultedSchedulerName(spec2.SchedulerName) {
+		return false, fmt.Errorf("podTemplate schedulerName not equal: %q vs %q",
+			spec1.SchedulerName, spec2.SchedulerName)
+	}
+
 	if equal, err := containersEqual(spec1.InitContainers, spec2.InitContainers); !equal {
 		return false, fmt.Errorf("podTemplate initContainers not equal: %s", err.Error())
 	}
@@ -281,6 +295,13 @@ func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func defaultedSchedulerName(name string) string {
+	if name == "" {
+		return corev1.DefaultSchedulerName
+	}
+	return name
 }
 
 func containersEqual(containers1, containers2 []corev1.Container) (bool, error) {

@@ -33,6 +33,12 @@ const (
 	// configured via --scheduler-name flag (scheduler-plugins or volcano).
 	// Setting this annotation automatically derives RoleInstanceGangSchedulingAnnotationKey
 	// for each role's RoleInstanceSet, so they must NOT be set simultaneously.
+	//
+	// This is the legacy whole-group path, kept for backward compatibility. Prefer
+	// CoordinatedPolicy spec.policies[].strategy.scheduling.gang, which is also the
+	// only way to express per-role minimums. The annotation is consulted only when no
+	// CoordinatedPolicy declares a gang strategy.
+	//
 	// Example: rbg.workloads.x-k8s.io/group-gang-scheduling: "true"
 	GangSchedulingAnnotationKey = RBGPrefix + "group-gang-scheduling"
 
@@ -93,9 +99,11 @@ const (
 	RoleInstancePatternKey = RBGPrefix + "role-instance-pattern"
 
 	// RoleInstanceGangSchedulingAnnotationKey enables gang-scheduling aware behavior at the
-	// RoleInstance level when set to "true". It is derived automatically from the RBG-level
-	// GangSchedulingAnnotationKey annotation during RoleInstanceSet reconciliation, but users
-	// can also set it explicitly in role.Annotations within the RBG spec.
+	// RoleInstance level when set to "true". The RoleInstanceSet reconciler derives it for
+	// every role covered by the active gang source — either CoordinatedPolicy
+	// spec.policies[].strategy.scheduling.gang or the legacy RBG-level
+	// GangSchedulingAnnotationKey — and users can also set it explicitly in
+	// role.Annotations within the RBG spec, in which case the explicit value wins.
 	//
 	// NOTE: This annotation must NOT be set on the RBG object (metadata.annotations) directly
 	// when GangSchedulingAnnotationKey is already set, as they are mutually exclusive at the

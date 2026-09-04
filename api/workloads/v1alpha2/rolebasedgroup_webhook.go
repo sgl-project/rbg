@@ -22,12 +22,26 @@ import (
 
 // SetupWebhookWithManager sets up the conversion and validating webhooks for
 // RoleBasedGroup with the Manager.
-func (r *RoleBasedGroup) SetupWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
+func (r *RoleBasedGroup) SetupWebhookWithManager(
+	mgr ctrl.Manager,
+	enableDeprecatedWorkloadTypes bool,
+) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&RoleBasedGroupValidator{
 			Client:                        mgr.GetClient(),
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
+		}).
+		Complete()
+}
+
+// SetupWebhookWithManager sets up the validating webhook for CoordinatedPolicy
+// with the Manager.
+func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGangMinimumsSupported bool) error {
+	return ctrl.NewWebhookManagedBy(mgr).
+		For(r).
+		WithValidator(&CoordinatedPolicyValidator{
+			PerRoleGangMinimumsSupported: perRoleGangMinimumsSupported,
 		}).
 		Complete()
 }

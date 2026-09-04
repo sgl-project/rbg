@@ -58,6 +58,77 @@ type CoordinatedPolicyStrategy struct {
 	// Scaling defines the coordinated strategy for scaling operations.
 	// +optional
 	Scaling *ScalingCoordinationStrategy `json:"scaling,omitempty"`
+
+	// Scheduling defines the coordinated strategy for scheduling.
+	// Currently supports gang scheduling via the `gang` sub-field.
+	// Future scheduling coordination strategies may be added.
+	// +optional
+	Scheduling *SchedulingCoordinationStrategy `json:"scheduling,omitempty"`
+}
+
+// SchedulingCoordinationStrategy defines scheduling coordination for roles.
+// This is a domain that can hold multiple scheduling coordination strategies.
+type SchedulingCoordinationStrategy struct {
+	// Gang defines the gang scheduling coordination for roles.
+	// When present, gang scheduling is enabled for the RoleBasedGroup.
+	//
+	// A rule constrains its listed roles via per-role minimums or all-or-nothing.
+	//
+	// With a non-empty minReplicas map each named role is held to its minimum,
+	// and with an empty map the rule is all-or-nothing over its roles. A rule
+	// may only name roles listed in its own spec.policies[].roles. Roles covered
+	// only by an all-or-nothing rule participate in full; the per-role minimums
+	// other rules declare still apply to the roles those rules name.
+	//
+	// Several policy rules may each declare a gang strategy: the covered roles
+	// are the union of every declaring rule's roles, and minReplicas maps are
+	// merged across rules, taking the maximum when the same role appears more
+	// than once.
+	//
+	// When scheduling.gang is not configured (or CoordinatedPolicy does not
+	// exist), the controller falls back to checking the legacy annotation
+	// rbg.workloads.x-k8s.io/group-gang-scheduling=true for backward compatibility.
+	// When neither is set, gang scheduling is disabled.
+	//
+	// +optional
+	Gang *GangSchedulingStrategy `json:"gang,omitempty"`
+}
+
+// GangSchedulingStrategy defines gang scheduling parameters per role.
+type GangSchedulingStrategy struct {
+	// MinReplicas defines the minimum number of replicas per role
+	// that must be scheduled together as part of the gang.
+	//
+	// Keys must name roles that are listed in the enclosing policy rule's
+	// `roles` field, and each value must be at least 1. Both are enforced by the
+	// CoordinatedPolicy validating webhook rather than by the CRD schema: this field
+	// sits inside the unbounded spec.policies array, where the apiserver's cost
+	// estimator rejects a CEL rule at over 100x the per-rule budget and the whole CRD
+	// then fails to load. Bounding the map alone is not enough; it would also need a
+	// maxItems on spec.policies, which would tighten an already released schema.
+	//
+	// Whether a minimum actually fits the role's replicas is not an admission check,
+	// because a policy may be written before the RoleBasedGroup exists and the replicas
+	// may later be moved by an autoscaler. It is checked when the PodGroup is built and
+	// reported on the RoleBasedGroup as GangConfigured=False.
+	//
+	// When non-empty, only the roles listed in this map participate in
+	// the gang with their respective minimums. Roles absent from this
+	// map are excluded from the gang constraint, but their pods still get
+	// the gang scheduler's schedulerName so the whole group is placed by
+	// one scheduler.
+	//
+	// Per-role minimums are implemented with the Volcano PodGroup
+	// `subGroupPolicy` field and therefore require --scheduler-name=volcano
+	// with Volcano >= 1.14. scheduler-plugins supports basic gang only.
+	//
+	// When the gang field is present but minReplicas is empty (nil), the gang is
+	// all-or-nothing over the roles the enclosing policy rule lists, and minMember is
+	// their combined pod count.
+	//
+	// +optional
+	// +kubebuilder:validation:Type=object
+	MinReplicas map[string]int32 `json:"minReplicas,omitempty"`
 }
 
 // RollingUpdateCoordinationStrategy defines the coordination parameters for rolling updates.

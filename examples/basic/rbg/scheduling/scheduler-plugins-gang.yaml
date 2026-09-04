@@ -2,8 +2,13 @@
 # scheduler-plugins PodGroup ensures co-scheduling: the group is scheduled only
 # when a minimum number of pods can be scheduled simultaneously.
 #
-# NOTE: scheduler-plugins is the default gang scheduling implementation.
-# No special controller configuration is required (--scheduler-name defaults to scheduler-plugins).
+# NOTE: scheduler-plugins is the default gang scheduling implementation
+# (--scheduler-name defaults to scheduler-plugins), but the pods must be scheduled by the
+# profile that runs the coscheduling plugin. If scheduler-plugins is installed as a second
+# scheduler, pass its profile name to the controller with --scheduler-profile-name
+# (Helm: controller.features.gangScheduling.schedulerProfileName; the upstream chart uses
+# scheduler-plugins-scheduler). Leave it empty only when scheduler-plugins replaces the
+# cluster's default scheduler.
 #
 # Optional annotations for scheduler-plugins PodGroup configuration:
 #   rbg.workloads.x-k8s.io/group-gang-scheduling: "true"           # Required: enables gang scheduling

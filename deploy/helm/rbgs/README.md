@@ -116,6 +116,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.pprof.bindAddress` | Address the pprof endpoint binds to | `":6060"` |
 | `controller.pprof.containerPort` | Container port exposed for pprof | `6060` |
 | `controller.features.gangScheduling.schedulerName` | Gang scheduling scheduler: `scheduler-plugins` \| `volcano` | `scheduler-plugins` |
+| `controller.features.gangScheduling.schedulerProfileName` | kube-scheduler profile running the coscheduling plugin, injected as `pod.spec.schedulerName` (`scheduler-plugins` only; empty leaves it untouched) | `""` |
 | `controller.features.portAllocator.enabled` | Enable dynamic port allocation to pods | `false` |
 | `controller.features.portAllocator.strategy` | Port allocation strategy (`random`) | `random` |
 | `controller.features.portAllocator.startPort` | Starting port of the allocatable range | `30000` |
@@ -188,3 +189,5 @@ After upgrading, verify that your overrides took effect:
 helm -n rbgs-system get values rbgs
 kubectl -n rbgs-system get deploy rbgs-controller-manager -o yaml | grep -A20 'args:'
 ```
+
+

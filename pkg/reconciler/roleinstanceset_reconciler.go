@@ -35,13 +35,14 @@ import (
 	workloadsv1alpha2client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
+	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type RoleInstanceSetReconciler struct {
-	scheme          *runtime.Scheme
-	client          client.Client
-	podGroupManager scheduler.PodGroupManager
+	scheme        *runtime.Scheme
+	client        client.Client
+	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
@@ -53,9 +54,9 @@ func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) 
 	}
 }
 
-// SetPodGroupManager implements PodGroupManagerSetter.
-func (r *RoleInstanceSetReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
-	r.podGroupManager = m
+// SetGangScheduler implements GangSchedulerSetter.
+func (r *RoleInstanceSetReconciler) SetGangScheduler(m scheduler.GangScheduler) {
+	r.gangScheduler = m
 }
 
 func (r *RoleInstanceSetReconciler) Validate(
@@ -157,6 +158,20 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	roleInstanceSetAnnotation := maps.Clone(rbg.GetCommonAnnotationsFromRole(role))
 	if role.Annotations[constants.RoleInstancePatternKey] == "" {
 		roleInstanceSetAnnotation[constants.RoleInstancePatternKey] = string(constants.StatefulPattern)
+	}
+
+	// Derive the RoleInstance-level gang flag for every role the gang covers.
+	// A Volcano subGroup is exactly one RoleInstance, so without this the instance's
+	// pods can be recreated non-atomically and drop the subGroup below subGroupSize —
+	// the guarantee that subGroupPolicy depends on. An explicit value on the role wins.
+	if role.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "" {
+		gangStrategy, err := common.GetGangStrategy(ctx, r.client, rbg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve gang scheduling strategy: %w", err)
+		}
+		if common.RoleInGang(role, gangStrategy) {
+			roleInstanceSetAnnotation[constants.RoleInstanceGangSchedulingAnnotationKey] = "true"
+		}
 	}
 
 	// 1. construct role instance configuration
@@ -295,7 +310,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 	roleInstanceTemplateConfig *workloadsv1alpha2client.RoleInstanceTemplateApplyConfiguration,
 ) error {
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	for _, component := range role.GetCustomComponentsPattern().Components {
 		// Deep-copy the pod template and merge component-level labels/annotations into it.
 		// This allows users to set controller-directive annotations (e.g. component-depends-on,
@@ -382,7 +397,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
-	leaderPodReconciler.SetPodGroupManager(r.podGroupManager)
+	leaderPodReconciler.SetGangScheduler(r.gangScheduler)
 	leaderPodReconciler.SetInjectors([]string{configInjector, sidecarInjector, commonEnvInjector, lwpEnvInjector})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, leaderTemp,
@@ -400,7 +415,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 	}
 
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
-	workerPodReconciler.SetPodGroupManager(r.podGroupManager)
+	workerPodReconciler.SetGangScheduler(r.gangScheduler)
 	// workerTemplate do not need to inject sidecar
 	workerPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector, lwpEnvInjector})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
@@ -459,7 +474,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandaloneP
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
-	podReconciler.SetPodGroupManager(r.podGroupManager)
+	podReconciler.SetGangScheduler(r.gangScheduler)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)

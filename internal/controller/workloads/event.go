@@ -45,6 +45,11 @@ const (
 	// override (so it fires once per drift episode, then stops as the adapter
 	// controller writes the value back).
 	ReplicasOverriddenByAdapter = "ReplicasOverriddenByAdapter"
+	// IncompatibleGangConfig is emitted when the resolved gang scheduling
+	// configuration cannot be satisfied by the current roles and scheduler.
+	// Emitted only when the GangConfigured condition changes, not on every
+	// reconcile that observes the same broken configuration.
+	IncompatibleGangConfig = "IncompatibleGangConfig"
 )
 
 // rbg-scaling-adapter events

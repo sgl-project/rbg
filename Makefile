@@ -103,8 +103,25 @@ test-chart: ## Render the Helm chart with helm template and assert the deprecate
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e:  ## Run the e2e tests.
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
+test-e2e:  ## Run the e2e tests (default scheduler only; gang specs live in the labelled suites below).
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='!volcano && !scheduler-plugins' -timeout 30m
+
+# Runs the Volcano-only gang scheduling specs. Requires the controller deployed with
+# --scheduler-name=volcano (helm: controller.features.gangScheduling.schedulerName=volcano)
+# and a cluster Volcano >= v1.14 (PodGroup subGroupPolicy). See test/e2e/testcase/v1alpha2/gang_scheduling.go.
+.PHONY: test-e2e-volcano
+test-e2e-volcano: ## Run the Volcano gang scheduling e2e suite.
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='volcano' -timeout 30m
+
+# Runs the scheduler-plugins gang scheduling specs. Requires scheduler-plugins installed and
+# the controller deployed with --scheduler-name=scheduler-plugins plus
+# --scheduler-profile-name=<the scheduler-plugins profile> (helm:
+# controller.features.gangScheduling.schedulerName / .schedulerProfileName). The
+# as-a-second-scheduler chart uses the profile name scheduler-plugins-scheduler; when
+# scheduler-plugins replaces the default scheduler, leave the profile name empty.
+.PHONY: test-e2e-scheduler-plugins
+test-e2e-scheduler-plugins: ## Run the scheduler-plugins gang scheduling e2e suite.
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='scheduler-plugins' -timeout 30m
 
 # Runs against a cluster where the chart was installed with
 # controller.deprecatedWorkloadTypes.enabled=false. A BeforeSuite preflight fails fast

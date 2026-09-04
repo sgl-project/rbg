@@ -48,6 +48,9 @@ spec:
             {{- end }}
             {{- $gangScheduling := $features.gangScheduling | default dict }}
             - --scheduler-name={{ $gangScheduling.schedulerName | default "scheduler-plugins" }}
+            {{- with $gangScheduling.schedulerProfileName }}
+            - --scheduler-profile-name={{ . }}
+            {{- end }}
             {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
             {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
             {{- if $deprecatedEnabled }}

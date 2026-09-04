@@ -146,6 +146,8 @@ func main() {
 		kubeAPIBurst int
 		// Gang scheduling scheduler name: scheduler-plugins or volcano
 		schedulerName string
+		// Gang scheduling kube-scheduler profile name (scheduler-plugins only)
+		schedulerProfileName string
 		// Pprof profiling
 		enablePprof bool
 		pprofAddr   string
@@ -196,6 +198,14 @@ func main() {
 		&schedulerName, "scheduler-name", string(scheduler.KubeSchedulerPlugin),
 		"The scheduler name to use for gang scheduling. Supported values: scheduler-plugins, volcano. "+
 			"Defaults to scheduler-plugins.",
+	)
+	flag.StringVar(
+		&schedulerProfileName, "scheduler-profile-name", "",
+		"The kube-scheduler profile name running the coscheduling plugin, injected as pod.spec.schedulerName "+
+			"for gang-scheduled pods. Only used with --scheduler-name=scheduler-plugins (Volcano's scheduler name "+
+			"is fixed). The upstream scheduler-plugins chart uses scheduler-plugins-scheduler. When empty, "+
+			"schedulerName is left untouched, so gang scheduling only works if scheduler-plugins is the cluster's "+
+			"default scheduler or the role template sets schedulerName itself.",
 	)
 	flag.Float64Var(
 		&kubeAPIQPS, "kube-api-qps", 20,
@@ -350,7 +360,11 @@ func main() {
 	// ---------------------------------------------------------------------------
 	var webhookResult *webhookBootstrapResult
 	if webhooksEnabled(webhookMode) {
-		webhookResult, err = bootstrapWebhookCerts(mgr, enableDeprecatedWorkloadTypes)
+		// Per-role gang minimums are expressed through Volcano's PodGroup
+		// subGroupPolicy, which the scheduler-plugins PodGroup CRD has no
+		// equivalent for.
+		perRoleGangMinimumsSupported := scheduler.SchedulerPluginType(schedulerName) == scheduler.VolcanoSchedulerPlugin
+		webhookResult, err = bootstrapWebhookCerts(mgr, enableDeprecatedWorkloadTypes, perRoleGangMinimumsSupported)
 		if err != nil {
 			setupLog.Error(err, "unable to bootstrap webhook certs")
 			os.Exit(1)
@@ -364,7 +378,7 @@ func main() {
 	// controller (for recording and injection during reconcile).
 	nodeBindings := instancesync.NewNodeBindingStore()
 
-	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName), nodeBindings)
+	rbgReconciler, err := workloadscontroller.NewRoleBasedGroupReconciler(mgr, scheduler.SchedulerPluginType(schedulerName), schedulerProfileName, nodeBindings)
 	if err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)
@@ -532,7 +546,7 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 // bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
 // conversion webhook, patches the caBundle on CRDs, and registers conversion
 // webhooks with the manager. This should only be called when webhook is enabled.
-func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) (*webhookBootstrapResult, error) {
+func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool, perRoleGangMinimumsSupported bool) (*webhookBootstrapResult, error) {
 	webhookServiceNamespace := os.Getenv("POD_NAMESPACE")
 	if webhookServiceNamespace == "" {
 		setupLog.Info("WARNING: POD_NAMESPACE env not found; caBundle patching may fail")
@@ -575,6 +589,9 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool)
 	}
 	if err = (&workloadsv1alpha2.RoleBasedGroupSet{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return nil, fmt.Errorf("unable to create conversion webhook for RoleBasedGroupSet: %w", err)
+	}
+	if err = (&workloadsv1alpha2.CoordinatedPolicy{}).SetupWebhookWithManager(mgr, perRoleGangMinimumsSupported); err != nil {
+		return nil, fmt.Errorf("unable to create admission webhook for CoordinatedPolicy: %w", err)
 	}
 
 	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil

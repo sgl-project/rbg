@@ -641,7 +641,9 @@ func TestRoleBasedGroupValidator_ValidateCreateName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			validator := &RoleBasedGroupValidator{}
+			scheme := runtime.NewScheme()
+			assert.NoError(t, AddToScheme(scheme))
+			validator := &RoleBasedGroupValidator{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 			rbg := &RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: tt.rbgName, Namespace: "default"},
 			}
@@ -755,4 +757,119 @@ func TestRoleBasedGroupValidator_ValidateUpdateScalingAdapterReplicas(t *testing
 			assert.NoError(t, err)
 		})
 	}
+}
+
+// TestComputeSubGroupSize covers the pod-count-per-replica calculation that drives
+// both GetGroupSize and the Volcano gang subGroupSize.
+func TestComputeSubGroupSize(t *testing.T) {
+	tests := []struct {
+		name string
+		role *RoleSpec
+		want int32
+	}{
+		{
+			name: "nil role",
+			role: nil,
+			want: 1,
+		},
+		{
+			name: "standalone pattern",
+			role: &RoleSpec{Pattern: Pattern{StandalonePattern: &StandalonePattern{}}},
+			want: 1,
+		},
+		{
+			name: "no pattern specified",
+			role: &RoleSpec{},
+			want: 1,
+		},
+		{
+			name: "leaderWorker pattern with size",
+			role: &RoleSpec{Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{Size: ptr.To[int32](4)}}},
+			want: 4,
+		},
+		{
+			name: "leaderWorker pattern without size defaults to leader only",
+			role: &RoleSpec{Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}}},
+			want: 1,
+		},
+		{
+			name: "customComponents pattern sums component sizes",
+			role: &RoleSpec{
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{
+						{Name: "prefill", Size: ptr.To[int32](2)},
+						{Name: "decode", Size: ptr.To[int32](3)},
+					},
+				}},
+			},
+			want: 5,
+		},
+		{
+			name: "customComponents pattern counts components without size as one",
+			role: &RoleSpec{
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{
+						{Name: "prefill", Size: ptr.To[int32](2)},
+						{Name: "decode"},
+					},
+				}},
+			},
+			want: 3,
+		},
+		{
+			name: "customComponents pattern keeps an explicit zero size",
+			role: &RoleSpec{
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{
+						{Name: "prefill", Size: ptr.To[int32](2)},
+						{Name: "decode", Size: ptr.To[int32](0)},
+					},
+				}},
+			},
+			want: 2,
+		},
+		{
+			name: "customComponents pattern with no sizes falls back to 1",
+			role: &RoleSpec{
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{{Name: "decode"}},
+				}},
+			},
+			want: 1,
+		},
+		{
+			name: "customComponents pattern with no components falls back to 1",
+			role: &RoleSpec{Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{}}},
+			want: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ComputeSubGroupSize(tt.role))
+		})
+	}
+}
+
+// TestRoleBasedGroup_GetGroupSize verifies the group size is the sum of
+// subGroupSize * replicas across roles, which is the gang minMember.
+func TestRoleBasedGroup_GetGroupSize(t *testing.T) {
+	rbg := &RoleBasedGroup{
+		Spec: RoleBasedGroupSpec{
+			Roles: []RoleSpec{
+				{
+					Name:     "prefill",
+					Replicas: ptr.To[int32](2),
+					Pattern:  Pattern{StandalonePattern: &StandalonePattern{}},
+				},
+				{
+					Name:     "decode",
+					Replicas: ptr.To[int32](3),
+					Pattern:  Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{Size: ptr.To[int32](4)}},
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, 14, rbg.GetGroupSize())
 }

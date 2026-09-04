@@ -42,7 +42,11 @@
 
 | Key | Description |
 |-----|-------------|
-| `pod-group.scheduling.sigs.k8s.io/name` | The name of the PodGroup for gang scheduling (scheduler-plugins). |
+| `scheduling.x-k8s.io/pod-group` | The name of the PodGroup, read by upstream scheduler-plugins coscheduling. |
+| `pod-group.scheduling.sigs.k8s.io/name` | The name of the PodGroup, read by Koordinator (including ACK). |
+
+Both keys are set on every gang-scheduled pod so the same RoleBasedGroup works on either
+scheduler.
 
 ## Annotations
 
