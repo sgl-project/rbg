@@ -13,6 +13,9 @@ spec:
 {{- if .Values.crdUpgrade.ttlSecondsAfterFinished }}
   ttlSecondsAfterFinished: {{ .Values.crdUpgrade.ttlSecondsAfterFinished }}
 {{- end }}
+{{- if hasKey .Values.crdUpgrade "backoffLimit" }}
+  backoffLimit: {{ .Values.crdUpgrade.backoffLimit }}
+{{- end }}
   template:
     spec:
       {{- with .Values.crdUpgrade.imagePullSecrets | default (.Values.global).imagePullSecrets }}
@@ -48,9 +51,27 @@ metadata:
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
 rules:
+  # "create" cannot be scoped by resourceNames: the object name lives in the
+  # request body, so it is not available to the authorizer.
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
-    verbs: ["create", "get", "update", "patch"]
+    verbs: ["create"]
+  # Named access is restricted to the CRDs shipped in this chart.
+  # Keep in sync with config/crd/bases (baked into the upgrade image).
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "update", "patch"]
+    resourceNames:
+      - clusterengineruntimeprofiles.workloads.x-k8s.io
+      - coordinatedpolicies.workloads.x-k8s.io
+      - instances.workloads.x-k8s.io
+      - instancesets.workloads.x-k8s.io
+      - rolebasedgroups.workloads.x-k8s.io
+      - rolebasedgroupscalingadapters.workloads.x-k8s.io
+      - rolebasedgroupsets.workloads.x-k8s.io
+      - rolebasedgroupwarmups.workloads.x-k8s.io
+      - roleinstances.workloads.x-k8s.io
+      - roleinstancesets.workloads.x-k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

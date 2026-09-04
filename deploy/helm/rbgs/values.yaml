@@ -84,6 +84,8 @@ crdUpgrade:
   enabled: true
   # Time-to-live (TTL) for crd-upgrade jobs after completion. Default is 259200 seconds (3 days).
   ttlSecondsAfterFinished: 259200
+  # Number of retries before considering the crd-upgrade Job failed. Default is 3.
+  backoffLimit: 3
   # imagePullSecrets overrides global.imagePullSecrets for the crd-upgrade Job when set.
   imagePullSecrets: []
   # CRD Upgrader image configuration
