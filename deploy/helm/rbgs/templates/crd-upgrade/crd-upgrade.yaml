@@ -13,7 +13,9 @@ spec:
 {{- if .Values.crdUpgrade.ttlSecondsAfterFinished }}
   ttlSecondsAfterFinished: {{ .Values.crdUpgrade.ttlSecondsAfterFinished }}
 {{- end }}
-  backoffLimit: 3
+{{- if .Values.crdUpgrade.backoffLimit }}
+  backoffLimit: {{ .Values.crdUpgrade.backoffLimit }}
+{{- end }}
   template:
     spec:
       {{- with .Values.crdUpgrade.imagePullSecrets | default (.Values.global).imagePullSecrets }}

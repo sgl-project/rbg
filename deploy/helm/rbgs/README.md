@@ -132,6 +132,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `crdUpgrade.image.pullPolicy` | CRD Upgrader image pull policy | `IfNotPresent` |
 | `crdUpgrade.imagePullSecrets` | Overrides `global.imagePullSecrets` for the Job when set | `[]` |
 | `crdUpgrade.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
+| `crdUpgrade.backoffLimit` | Job retry limit before marking failed | `3` |
 | `crdUpgrade.tolerations` | Job pod tolerations | `[{operator: Exists}]` |
 | `crdUpgrade.nodeSelector` | Job pod node selector | `{}` |
 
