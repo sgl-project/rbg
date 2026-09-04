@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -39,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 )
@@ -432,107 +434,102 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 	return false
 }
 
-// updateExistingRBGs updates existing RoleBasedGroup instances to match the current template.
+// updateExistingRBGs updates existing RoleBasedGroup instances to match the current template
+// using Server-Side Apply. This claims ownership of metadata.labels, metadata.annotations,
+// and spec.roles under the "rbg" field manager instead of the default "manager".
 func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	ctx context.Context, rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbgsToUpdate []*workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	allErrs := make([]error, 0, len(rbgsToUpdate))
 
+	roleACs, err := toRoleSpecApplyConfigurations(rbgset.Spec.GroupTemplate.Spec.Roles)
+	if err != nil {
+		return fmt.Errorf("converting roles to apply configurations: %w", err)
+	}
+	gvk := utils.GetRbgGVK()
+
 	for _, rbg := range rbgsToUpdate {
+		rbgIndex := rbg.Labels[constants.GroupSetIndexLabelKey]
+		syncedLabels, syncedAnnotations := buildSyncedMetadata(rbgset, rbgIndex)
 
-		// Use retry mechanism to handle potential conflicts
-		err := retry.RetryOnConflict(
-			retry.DefaultRetry, func() error {
-				// Get the latest version of the RBG
-				latestRBG := &workloadsv1alpha2.RoleBasedGroup{}
-				if err := r.client.Get(
-					ctx, types.NamespacedName{
-						Name:      rbg.Name,
-						Namespace: rbg.Namespace,
-					}, latestRBG,
-				); err != nil {
-					return err
-				}
+		applyCfg := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+			WithKind(gvk.Kind).
+			WithAPIVersion(gvk.GroupVersion().String()).
+			WithLabels(syncedLabels).
+			WithSpec(applyconfiguration.RoleBasedGroupSpec().WithRoles(roleACs...))
 
-				// Update the spec from template
-				latestRBG.Spec.Roles = rbgset.Spec.GroupTemplate.Spec.Roles
+		// Omitting annotations when the template has none releases this manager's
+		// claim under SSA without clearing annotations owned by other field managers.
+		if len(syncedAnnotations) > 0 {
+			applyCfg = applyCfg.WithAnnotations(syncedAnnotations)
+		}
 
-				// Sync labels and annotations from the template
-				r.syncRBGMetadata(rbgset, latestRBG)
-
-				// Perform the update
-				return r.client.Update(ctx, latestRBG)
-			},
-		)
-
-		if err != nil {
+		if err := utils.PatchObjectApplyConfigurationWithFieldManager(
+			ctx, r.client, applyCfg, utils.PatchSpec, utils.RBGSetSyncFieldManager,
+		); err != nil {
 			allErrs = append(allErrs,
 				fmt.Errorf("failed to update RoleBasedGroup %s: %w", rbg.Name, err))
 		} else {
 			logger.Info("Successfully updated RoleBasedGroup", "name", rbg.Name)
 		}
-
 	}
 
-	// Aggregate all concurrent errors
 	return utilerrors.NewAggregate(allErrs)
 }
 
-// syncRBGMetadata syncs the labels and annotations from Template to the child RBG.
-// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are preserved.
-func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
-	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
-) {
-	// Sync labels: merge template labels first, then overwrite with system-managed labels
-	// to ensure system labels cannot be overridden by template labels.
-	newLabels := make(map[string]string, len(rbgset.Spec.GroupTemplate.Labels)+2)
+// buildSyncedMetadata computes the desired labels and annotations for a child RBG
+// from the parent RoleBasedGroupSet's template. System-managed labels
+// (GroupSetNameLabelKey, GroupSetIndexLabelKey) always win over template labels.
+func buildSyncedMetadata(
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbgIndex string,
+) (labels, annotations map[string]string) {
+	labels = make(map[string]string, len(rbgset.Spec.GroupTemplate.Labels)+2)
 	for k, v := range rbgset.Spec.GroupTemplate.Labels {
-		newLabels[k] = v
+		labels[k] = v
 	}
-	newLabels[constants.GroupSetNameLabelKey] = rbgset.Name
-	newLabels[constants.GroupSetIndexLabelKey] = rbg.Labels[constants.GroupSetIndexLabelKey]
-	rbg.Labels = newLabels
+	labels[constants.GroupSetNameLabelKey] = rbgset.Name
+	labels[constants.GroupSetIndexLabelKey] = rbgIndex
 
-	// Sync annotations: replace with exactly what the template specifies.
-	if len(rbgset.Spec.GroupTemplate.Annotations) == 0 {
-		rbg.Annotations = nil
-	} else {
-		newAnnotations := make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
+	if len(rbgset.Spec.GroupTemplate.Annotations) > 0 {
+		annotations = make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
 		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
-			newAnnotations[k] = v
+			annotations[k] = v
 		}
-		rbg.Annotations = newAnnotations
 	}
+
+	return labels, annotations
+}
+
+// toRoleSpecApplyConfigurations converts a slice of RoleSpec to their apply-configuration
+// equivalents via JSON round-trip. This is safe because both types share identical JSON tags.
+// A field-by-field conversion would be fragile and incomplete given the depth of nested types
+// (PodTemplateSpec, containers, volumes, etc.).
+func toRoleSpecApplyConfigurations(roles []workloadsv1alpha2.RoleSpec) ([]*applyconfiguration.RoleSpecApplyConfiguration, error) {
+	if len(roles) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(roles)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling roles: %w", err)
+	}
+	var roleACs []*applyconfiguration.RoleSpecApplyConfiguration
+	if err := json.Unmarshal(b, &roleACs); err != nil {
+		return nil, fmt.Errorf("unmarshaling roles to apply configurations: %w", err)
+	}
+	return roleACs, nil
 }
 
 // newRBGForSet creates a new RoleBasedGroup object based on the set's template.
+// The OwnerReference is set by the caller (scaleUp).
 func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workloadsv1alpha2.RoleBasedGroup {
-	// Merge template labels first, then overwrite with system-managed labels to ensure
-	// system labels cannot be overridden by template labels.
-	rbgLabels := make(map[string]string, len(rbgset.Spec.GroupTemplate.Labels)+2)
-	for k, v := range rbgset.Spec.GroupTemplate.Labels {
-		rbgLabels[k] = v
-	}
-	rbgLabels[constants.GroupSetNameLabelKey] = rbgset.Name
-	rbgLabels[constants.GroupSetIndexLabelKey] = fmt.Sprintf("%d", index)
-
-	// Copy annotations from the template.
-	var rbgAnnotations map[string]string
-	if len(rbgset.Spec.GroupTemplate.Annotations) > 0 {
-		rbgAnnotations = make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
-		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
-			rbgAnnotations[k] = v
-		}
-	}
-
+	labels, annotations := buildSyncedMetadata(rbgset, fmt.Sprintf("%d", index))
 	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   rbgset.Namespace,
 			Name:        fmt.Sprintf("%s-%d", rbgset.Name, index),
-			Labels:      rbgLabels,
-			Annotations: rbgAnnotations,
-			// The OwnerReference will be set in the scaleUp function.
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 			Roles: rbgset.Spec.GroupTemplate.Spec.Roles,

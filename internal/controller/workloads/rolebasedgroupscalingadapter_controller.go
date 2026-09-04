@@ -24,7 +24,6 @@ import (
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -499,28 +497,25 @@ func (r *RoleBasedGroupScalingAdapterReconciler) GetTargetRbgFromAdapter(
 func (r *RoleBasedGroupScalingAdapterReconciler) updateRoleReplicas(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, targetRoleName string, newReplicas *int32,
 ) error {
-	return retry.RetryOnConflict(
-		retry.DefaultBackoff, func() error {
-			for index, role := range rbg.Spec.Roles {
-				if role.Name == targetRoleName {
-					role.Replicas = newReplicas
-					rbg.Spec.Roles[index] = role
-					break
-				}
-			}
-			if err := r.client.Update(ctx, rbg); err != nil {
-				if apierrors.IsConflict(err) {
-					if err := r.client.Get(
-						ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, rbg,
-					); err != nil {
-						return err
-					}
-				}
-				return err
-			}
-			return nil
-		},
-	)
+	gvk := utils.GetRbgGVK()
+	applyCfg := applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
+		WithKind(gvk.Kind).
+		WithAPIVersion(gvk.GroupVersion().String()).
+		WithSpec(
+			applyconfiguration.RoleBasedGroupSpec().
+				WithRoles(
+					applyconfiguration.RoleSpec().
+						WithName(targetRoleName).
+						WithReplicas(*newReplicas),
+				),
+		)
+
+	if err := utils.PatchObjectApplyConfigurationWithFieldManager(
+		ctx, r.client, applyCfg, utils.PatchSpec, utils.RBGReplicaFieldManager,
+	); err != nil {
+		return fmt.Errorf("apply replica update for role %q: %w", targetRoleName, err)
+	}
+	return nil
 }
 
 // extractLabelSelectorDefault extracts a LabelSelector string from the given role's scale subresource.
