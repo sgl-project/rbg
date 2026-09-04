@@ -33807,6 +33807,10 @@ spec:
                                       description: |-
                                         Type indicates the type of the InstanceSetUpdateStrategy.
                                         Default is InPlaceIfPossible.
+                                      enum:
+                                      - RecreatePod
+                                      - InPlaceIfPossible
+                                      - InPlaceOnly
                                       type: string
                                   type: object
                                 type:

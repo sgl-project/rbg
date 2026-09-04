@@ -135,13 +135,6 @@ func validateRoleTemplateFields(
 			)
 		}
 
-		// RawExtension cannot be inspected by CEL, so validate in controller.
-		if !hasTemplatePatch {
-			return fmt.Errorf(
-				"spec.roles[%d]: templateRef.patch is required when templateRef is set (if no overrides needed, set patch to empty object: {})",
-				index,
-			)
-		}
 		return nil
 	}
 

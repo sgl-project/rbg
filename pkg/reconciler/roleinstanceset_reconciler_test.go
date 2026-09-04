@@ -438,12 +438,11 @@ func TestRoleInstanceSetReconciler_ValidateRoleTemplateReferences(t *testing.T) 
 			expectError:      false,
 		},
 		{
-			name:             "RoleInstanceSet with templateRef but no templatePatch should fail",
+			name:             "RoleInstanceSet with templateRef but no templatePatch should succeed",
 			workloadKind:     "RoleInstanceSet",
 			useTemplateRef:   true,
 			useTemplatePatch: false,
-			expectError:      true,
-			errorMsg:         "templateRef.patch is required when templateRef is set",
+			expectError:      false,
 		},
 		{
 			name:           "LeaderWorkerSet with templateRef should fail",
