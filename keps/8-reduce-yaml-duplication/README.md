@@ -104,7 +104,15 @@ roles:
 | templateRef | template | templatePatch |
 |-------------|----------|---------------|
 | Not set | Required | Rejected |
-| Set | Rejected | Required |
+| Set | Rejected | Optional |
+
+When `templateRef` is set, `templatePatch` is optional: the patch is merged into the
+roleTemplate only when provided. A role may reference a template without any overlay.
+
+> **Version note**: v1alpha1 keeps the originally proposed semantics frozen — a role
+> with `templateRef` still requires `templatePatch`. v1alpha2 relaxed this to make
+> `templatePatch` optional; the two API versions therefore differ on this point by
+> design, and v1alpha1 objects converting to v1alpha2 are not rejected for it.
 
 ### API Overview
 
@@ -299,9 +307,8 @@ In LWS scenarios, roleTemplate provides shared configuration (image, volumes, re
 ```mermaid
 flowchart TD
     A[Reconcile Role] --> B{Has templateRef?}
-    B -->|Yes| C[Validate: templatePatch is set]
-    C --> D[Fetch roleTemplate by name]
-    D --> E[Strategic Merge: roleTemplate.template + role.templatePatch]
+    B -->|Yes| D[Fetch roleTemplate by name]
+    D --> E[Strategic Merge: roleTemplate.template + role.templatePatch (if set)]
     E --> F[Create StatefulSet]
     B -->|No| G[Validate: template is set]
     G --> H[Use role.template directly]
@@ -312,9 +319,8 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[Reconcile Role] --> B{Has templateRef?}
-    B -->|Yes| C[Validate: templatePatch is set]
-    C --> D[Fetch roleTemplate by name]
-    D --> E[Strategic Merge: roleTemplate.template + role.templatePatch]
+    B -->|Yes| D[Fetch roleTemplate by name]
+    D --> E[Strategic Merge: roleTemplate.template + role.templatePatch (if set)]
     E --> F[Merged Base Template]
     B -->|No| G[Validate: template is set]
     G --> H[Use role.template]
@@ -326,9 +332,9 @@ flowchart TD
 ```
 
 **Processing Order**:
-1. Validate: `template` XOR `templatePatch` based on `templateRef`
+1. Validate: `template` is required when `templateRef` is not set; `templatePatch` is optional
 2. Fetch roleTemplate by name (if using RoleTemplate)
-3. Strategic Merge: `roleTemplate.template` + `role.templatePatch` → merged base template
+3. Strategic Merge: `roleTemplate.template` + `role.templatePatch` (only when provided) → merged base template
 4. For LWS workloads:
    - Apply `patchLeaderTemplate` to merged base → Leader Pod spec
    - Apply `patchWorkerTemplate` to merged base → Worker Pod spec
@@ -465,6 +471,7 @@ Role: decode
 - Template resolution by name
 - Strategic Merge logic for different field types (volumes, env, resources, command)
 - Validation: `templatePatch` requires `templateRef`
+- Validation: `templateRef` without `templatePatch` is accepted (v1alpha2; v1alpha1 keeps requiring it)
 - Validation: `template` and `templatePatch` are mutually exclusive
 - Validation: templateRef references non-existent template
 - Validation: templateRef references template in different RBG (should fail)
@@ -553,3 +560,4 @@ roles:
 - **2025-10-24**: Revised to focus on RoleTemplates (Phase 1), defer ExtraArgs
 - **2025-10-27**: Supplemented Controller Behavior section with update workflow and ControllerRevision evolution details
 - **2025-10-30**: Updated API design with `role.templatePatch` field and preview/diff tooling, aligned naming with Kubernetes ecosystem conventions
+- **2026-09-07**: Made `templatePatch` optional when `templateRef` is set (v1alpha2); removed the controller-side requirement that a template reference must carry a patch. v1alpha1 keeps the original required-patch semantics frozen

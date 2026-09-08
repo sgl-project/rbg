@@ -543,7 +543,7 @@ func checkSnapshotDiff(fs *findings, before, after map[string]RBGSnapshot, rec r
 	checkNoRestarts(fs, before, after)
 	checkPodMetadataStable(fs, before, after)
 	checkServicesStable(fs, before, after, rec.leaderOnlyServices)
-	checkOwnersStable(fs, before, after, rec.generationBumps)
+	checkOwnersStable(fs, before, after, rec.generationBumps, rec.objectBumps)
 	checkNoRevisionExplosion(fs, before, after)
 	checkStillReady(fs, before, after)
 }
@@ -870,6 +870,13 @@ type recordedRewrites struct {
 	// that a known rewrite does not have to be reported every run.
 	generationBumps map[string]int64
 
+	// objectBumps is how many times one specific owner object's spec is rewritten
+	// within the interval, keyed by the owner key ("Kind/name") checkOwnersStable
+	// uses. It exists for rewrites that are one-offs rather than per-start: they
+	// are asserted exactly once against that object, and every other object of the
+	// same kind is still held to zero. It is carried through acrossStarts unscaled.
+	objectBumps map[string]int64
+
 	// leaderOnlyServices are the shared Services whose selector the upgrade narrows to
 	// the leader component. Only the exact narrowing is folded: it must be visible in
 	// this Service's selector diff, the added selector key must be
@@ -887,7 +894,11 @@ func (r recordedRewrites) acrossStarts(starts int64) recordedRewrites {
 	for kind, perStart := range r.generationBumps {
 		scaled[kind] = perStart * starts
 	}
-	return recordedRewrites{generationBumps: scaled, leaderOnlyServices: r.leaderOnlyServices}
+	return recordedRewrites{
+		generationBumps:    scaled,
+		objectBumps:        r.objectBumps,
+		leaderOnlyServices: r.leaderOnlyServices,
+	}
 }
 
 // controllerStartRewrites is what starting a controller process rewrites, on this
@@ -927,6 +938,16 @@ var controllerStartRewrites = recordedRewrites{
 var upgradeRewrites = recordedRewrites{
 	generationBumps: controllerStartRewrites.generationBumps,
 
+	// The legacy-strategy fixture stores the v1alpha1 spelling "Recreate" of the
+	// update strategy type, which v0.7.0 copied verbatim into the RoleInstanceSet.
+	// The new RoleInstanceSet CRD enum rejects that value, so the upgraded
+	// controller repairs the stored spec to "RecreatePod" on its first reconcile.
+	// The repair is a one-off -- the next apply is a no-op -- and it is scoped to
+	// this one object: every other RoleInstanceSet is still held to zero bumps.
+	objectBumps: map[string]int64{
+		"RoleInstanceSet/" + legacyStrategyRISName(): 1,
+	},
+
 	// KEP 260 flips the default of sharedServiceSelection: v0.7.0 treated an unset
 	// field as All, and the current release resolves it to LeaderOnly for
 	// RoleInstanceSet leader-worker roles. The controller then patches the selector of
@@ -949,7 +970,12 @@ var upgradeRewrites = recordedRewrites{
 // what the controller hashes is the RBG spec, so a rewrite there reaches every role at
 // once. A RoleBasedGroupSet root has no recorded bump at all, so any rewrite of the
 // object that would restamp its children is reported.
-func checkOwnersStable(fs *findings, before, after map[string]RBGSnapshot, bumps map[string]int64) {
+func checkOwnersStable(
+	fs *findings,
+	before, after map[string]RBGSnapshot,
+	bumps map[string]int64,
+	objectBumps map[string]int64,
+) {
 	var problems []string
 	for rbgName, beforeSnap := range before {
 		afterSnap, ok := after[rbgName]
@@ -982,11 +1008,12 @@ func checkOwnersStable(fs *findings, before, after map[string]RBGSnapshot, bumps
 			}
 			kind, _, _ := strings.Cut(key, "/")
 			got := afterOwner.Generation - beforeOwner.Generation
-			if want := bumps[kind]; got != want {
+			want := bumps[kind] + objectBumps[key]
+			if got != want {
 				problems = append(problems, fmt.Sprintf(
 					"%s: owner %s spec was rewritten %d time(s) (generation %d -> %d), not the %d "+
 						"this comparison expects for %s; more means a rewrite nobody has "+
-						"attributed yet, fewer means the recorded one is gone and "+
+						"attributed yet, fewer means a recorded one is gone and "+
 						"upgradeRewrites.generationBumps is stale",
 					rbgName, key, got, beforeOwner.Generation, afterOwner.Generation, want, kind))
 			}

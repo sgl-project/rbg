@@ -582,6 +582,9 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	if err = certMgr.PatchValidatingWebhookCABundle(ctx, rbgwebhook.ValidatingWebhookConfigurations(), caCert); err != nil {
 		return nil, fmt.Errorf("unable to patch caBundle on validating webhook configurations: %w", err)
 	}
+	if err = certMgr.PatchMutatingWebhookCABundle(ctx, rbgwebhook.MutatingWebhookConfigurations(), caCert); err != nil {
+		return nil, fmt.Errorf("unable to patch caBundle on mutating webhook configurations: %w", err)
+	}
 
 	// Register conversion webhooks so the API server can convert between v1alpha1 and v1alpha2.
 	if err = (&workloadsv1alpha2.RoleBasedGroup{}).SetupWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
@@ -592,6 +595,9 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	}
 	if err = (&workloadsv1alpha2.CoordinatedPolicy{}).SetupWebhookWithManager(mgr, perRoleGangMinimumsSupported); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for CoordinatedPolicy: %w", err)
+	}
+	if err = (&workloadsv1alpha2.RoleInstanceSet{}).SetupWebhookWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("unable to create admission webhook for RoleInstanceSet: %w", err)
 	}
 
 	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil
@@ -606,6 +612,7 @@ func setupWebhookCertController(mgr ctrl.Manager, result *webhookBootstrapResult
 		CACert:                 result.caCert,
 		CRDNames:               rbgwebhook.ConversionWebhookCRDs(),
 		ValidatingWebhookNames: rbgwebhook.ValidatingWebhookConfigurations(),
+		MutatingWebhookNames:   rbgwebhook.MutatingWebhookConfigurations(),
 	}
 	return webhookCertReconciler.SetupWithManager(mgr, options)
 }

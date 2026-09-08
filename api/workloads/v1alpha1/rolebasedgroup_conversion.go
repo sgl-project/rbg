@@ -233,6 +233,28 @@ func convertTemplateRefV1alpha1ToV2(ref *TemplateRef, patch *runtime.RawExtensio
 	return r
 }
 
+// convertUpdateStrategyTypeV1alpha1ToV2 converts a v1alpha1 UpdateStrategyType to v1alpha2.
+// The v1alpha1 "Recreate" spelling is mapped to the v1alpha2 "RecreatePod" name.
+// An empty value is preserved as-is (matching convertRestartPolicyV1alpha1ToV2) so
+// that the v1alpha2 defaulting (CRD default / mutating webhook / reconciler) applies
+// the documented InPlaceIfPossible default instead of baking it into stored objects.
+func convertUpdateStrategyTypeV1alpha1ToV2(src UpdateStrategyType) v2.UpdateStrategyType {
+	if src == RecreateUpdateStrategyType {
+		return v2.RecreatePodUpdateStrategyType
+	}
+	return v2.UpdateStrategyType(src)
+}
+
+// convertUpdateStrategyTypeV2ToV1alpha1 converts a v1alpha2 UpdateStrategyType to v1alpha1.
+// It is the inverse of convertUpdateStrategyTypeV1alpha1ToV2: RecreatePod maps back to
+// the v1alpha1 "Recreate" spelling; all other values pass through unchanged.
+func convertUpdateStrategyTypeV2ToV1alpha1(src v2.UpdateStrategyType) UpdateStrategyType {
+	if src == v2.RecreatePodUpdateStrategyType {
+		return RecreateUpdateStrategyType
+	}
+	return UpdateStrategyType(src)
+}
+
 func convertRolloutStrategyV1alpha1ToV2(src *RolloutStrategy) *v2.RolloutStrategy {
 	if src == nil {
 		return nil
@@ -242,7 +264,7 @@ func convertRolloutStrategyV1alpha1ToV2(src *RolloutStrategy) *v2.RolloutStrateg
 	}
 	if src.RollingUpdate != nil {
 		dst.RollingUpdate = &v2.RollingUpdate{
-			Type:           v2.UpdateStrategyType(src.RollingUpdate.Type),
+			Type:           convertUpdateStrategyTypeV1alpha1ToV2(src.RollingUpdate.Type),
 			Partition:      src.RollingUpdate.Partition,
 			MaxUnavailable: src.RollingUpdate.MaxUnavailable,
 			MaxSurge:       src.RollingUpdate.MaxSurge,
@@ -423,7 +445,7 @@ func convertRolloutStrategyV2ToV1alpha1(src *v2.RolloutStrategy) *RolloutStrateg
 	}
 	if src.RollingUpdate != nil {
 		dst.RollingUpdate = &RollingUpdate{
-			Type:           UpdateStrategyType(src.RollingUpdate.Type),
+			Type:           convertUpdateStrategyTypeV2ToV1alpha1(src.RollingUpdate.Type),
 			Partition:      src.RollingUpdate.Partition,
 			MaxUnavailable: src.RollingUpdate.MaxUnavailable,
 			MaxSurge:       src.RollingUpdate.MaxSurge,

@@ -109,3 +109,41 @@ func TestPatchWebhookCABundle_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting ValidatingWebhookConfiguration")
 }
+
+func TestPatchWebhookCABundle_MutatingNeedsUpdate(t *testing.T) {
+	caCert := []byte("new-ca-bundle")
+	oldCert := []byte("old-ca-bundle")
+
+	mwc := &admissionregistrationv1.MutatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-mwc"},
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
+			{Name: "hook1", ClientConfig: admissionregistrationv1.WebhookClientConfig{CABundle: oldCert}},
+			{Name: "hook2", ClientConfig: admissionregistrationv1.WebhookClientConfig{CABundle: oldCert}},
+		},
+	}
+
+	s := newScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(s).WithObjects(mwc).Build()
+	m := &CertManager{client: fakeClient}
+
+	err := m.patchOneMutatingWebhook(context.Background(), "test-mwc", caCert)
+	require.NoError(t, err)
+
+	got := &admissionregistrationv1.MutatingWebhookConfiguration{}
+	require.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(mwc), got))
+	for _, wh := range got.Webhooks {
+		assert.Equal(t, caCert, wh.ClientConfig.CABundle)
+	}
+}
+
+func TestPatchWebhookCABundle_MutatingNotFound(t *testing.T) {
+	caCert := []byte("new-ca-bundle")
+
+	s := newScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(s).Build()
+	m := &CertManager{client: fakeClient}
+
+	err := m.patchOneMutatingWebhook(context.Background(), "nonexistent", caCert)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting MutatingWebhookConfiguration")
+}

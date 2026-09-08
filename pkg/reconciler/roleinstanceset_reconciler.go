@@ -253,9 +253,9 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
 		rollingUpdate := role.RolloutStrategy.RollingUpdate
-		if rollingUpdate.Type == "" {
-			rollingUpdate.Type = workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType
-		}
+		// Normalize legacy values ("" and v1alpha1's "Recreate") so objects that
+		// predate the CRD enum still work when webhooks are disabled.
+		rollingUpdate.Type = workloadsv1alpha2.NormalizeUpdateStrategyType(rollingUpdate.Type)
 		updateStrategyConfig := workloadsv1alpha2client.RoleInstanceSetUpdateStrategy().
 			WithType(rollingUpdate.Type).
 			WithPaused(rollingUpdate.Paused)

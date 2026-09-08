@@ -26,6 +26,8 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -146,6 +148,46 @@ func RunUpgradeSpecs(f *framework.Framework) {
 				"restartPolicyConfig survived, so this cluster is not running the v0.7.0 CRDs and "+
 					"the fixtures would not be v0.7.0-shaped",
 			)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 1] stores an explicit empty update strategy type", func() {
+			// v0.7.0's CRDs had no enum on the update strategy type, so an object
+			// could carry any string, including the empty one. The typed client's
+			// omitempty tags cannot express `type: ""` -- they drop the field -- so
+			// this fixture is written through an unstructured object and the field
+			// is injected by hand. Phase 3 then has a stored empty value to assert
+			// on, which is what a v0.7.0 object written with the field unset
+			// actually looks like.
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(buildLegacyStrategyEmptyFixture(f.Namespace))
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			empty := &unstructured.Unstructured{Object: raw}
+			gomega.Expect(
+				unstructured.SetNestedField(
+					empty.Object, "", "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
+				),
+			).To(gomega.Succeed())
+
+			gomega.Expect(f.Client.Create(f.Ctx, empty)).To(gomega.Succeed())
+
+			stored := &unstructured.Unstructured{}
+			stored.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, stored),
+			).To(gomega.Succeed())
+			val, found, err := unstructured.NestedString(
+				stored.Object, "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
+			)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(found).To(
+				gomega.BeTrue(), "the explicit empty strategy type was dropped instead of stored",
+			)
+			gomega.Expect(val).To(gomega.BeEmpty())
+
+			// The fixture is part of the experiment, so it must converge like every
+			// other one before the snapshot is taken.
+			f.ExpectRbgV2Equal(buildLegacyStrategyEmptyFixture(f.Namespace))
 		},
 	)
 
@@ -358,6 +400,45 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			)
 			gomega.Expect(ccPattern.RestartPolicyConfig).To(
 				gomega.BeNil(), "restartPolicyConfig was written onto an object that never had it",
+			)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 3] leaves the stored update strategy type of v0.7.0 objects as it was written", func() {
+			// The new CRDs add an enum to the update strategy type that rejects both
+			// values these fixtures store. Any write back of the stored object --
+			// controller-driven or not -- would therefore 422 on the new CRDs and
+			// silently stop every later write to the role, while the object itself
+			// stays broken. That the values survive the upgrade untouched is what
+			// lets the mutating webhook heal them on the user's next write instead,
+			// which phase 4 exercises.
+			strat := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, strat),
+			).To(gomega.Succeed())
+			gomega.Expect(strat.Spec.Roles).To(gomega.HaveLen(1))
+			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
+			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
+			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.LegacyRecreateUpdateStrategyType),
+				"the stored legacy strategy type was rewritten",
+			)
+
+			empty := &unstructured.Unstructured{}
+			empty.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, empty),
+			).To(gomega.Succeed())
+			val, found, err := unstructured.NestedString(
+				empty.Object, "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
+			)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(found).To(
+				gomega.BeTrue(), "the explicit empty strategy type was removed from the stored object",
+			)
+			gomega.Expect(val).To(
+				gomega.BeEmpty(), "the stored empty strategy type was rewritten",
 			)
 		},
 	)
@@ -622,7 +703,8 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkSameRBGSet(fs, baseline, after)
 			checkNoPodChurn(fs, baseline, after)
 			checkNoRestarts(fs, baseline, after)
-			checkOwnersStable(fs, baseline, after, upgradeRewrites.acrossStarts(controllerStarts).generationBumps)
+			rec := upgradeRewrites.acrossStarts(controllerStarts)
+			checkOwnersStable(fs, baseline, after, rec.generationBumps, rec.objectBumps)
 			fs.report()
 		},
 	)
@@ -762,6 +844,66 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkPodMetadataStable(fs, baseline, settled)
 			fs.report()
 			f.ExpectRbgSetEqual(legacySet)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 4] heals legacy update strategy types on the next write through the mutating webhook", func() {
+			// The stored values phase 3 confirmed cannot be written again: the new
+			// CRD enums reject both. What keeps upgraded clusters working is the
+			// mutating webhook, which normalizes a legacy value before validation.
+			// This spec performs the first post-upgrade write a user or the
+			// controller would make -- a metadata-only update -- and asserts the
+			// stored value comes out of it as a value the enum accepts.
+			//
+			// Both writes change the stored spec, so each fixture may roll its pod;
+			// both are added to `mutated` for the untouched checks.
+			heal := func(name string) {
+				mutated = append(mutated, name)
+				key := client.ObjectKey{Namespace: f.Namespace, Name: name}
+				ginkgo.By("annotating " + name + " through the mutating webhook")
+				gomega.Expect(
+					retry.RetryOnConflict(
+						retry.DefaultRetry, func() error {
+							live := &workloadsv1alpha2.RoleBasedGroup{}
+							if err := f.Client.Get(f.Ctx, key, live); err != nil {
+								return err
+							}
+							if live.Annotations == nil {
+								live.Annotations = map[string]string{}
+							}
+							live.Annotations["upgrade-e2e/legacy-strategy-healed"] = "1"
+							return f.Client.Update(f.Ctx, live)
+						},
+					),
+				).To(gomega.Succeed())
+			}
+
+			heal(fxLegacyStrategy)
+			heal(fxLegacyStrategyEmpty)
+
+			strat := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, strat),
+			).To(gomega.Succeed())
+			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+				"the mutating webhook did not normalize the legacy strategy type",
+			)
+
+			empty := &unstructured.Unstructured{}
+			empty.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, empty),
+			).To(gomega.Succeed())
+			val, found, err := unstructured.NestedString(
+				empty.Object, "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
+			)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(found).To(
+				gomega.BeTrue(), "the mutating webhook did not default the empty strategy type",
+			)
+			gomega.Expect(val).To(gomega.Equal(string(workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType)))
 		},
 	)
 

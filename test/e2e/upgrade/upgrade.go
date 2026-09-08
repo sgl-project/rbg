@@ -42,7 +42,8 @@ import (
 const (
 	// gateTimeout bounds each step of waitForUpgradeReady. It is generous because
 	// the controller has to start, elect a leader, mint a CA and patch it into two
-	// CRDs plus the validating webhook config before the cluster accepts RBG writes.
+	// CRDs plus the validating and mutating webhook configs before the cluster
+	// accepts RBG writes.
 	gateTimeout  = 5 * time.Minute
 	gateInterval = 2 * time.Second
 
@@ -132,12 +133,13 @@ func runHelmUpgrade(f *framework.Framework) {
 //  3. Conversion caBundle is repopulated. ensure-crds-up-to-date.sh uses
 //     `kubectl replace`, which drops spec.conversion.webhook.clientConfig.caBundle
 //     for a moment before the controller patches it back.
-//  4. Every webhook of the validating webhook configuration has a caBundle. The
-//     chart ships it with an empty caBundle and failurePolicy: Fail, so until the
-//     controller patches it every RBG create and update is rejected.
+//  4. Every webhook of the validating and mutating webhook configurations has a
+//     caBundle. The chart ships both with an empty caBundle and failurePolicy:
+//     Fail, so until the controller patches them every RBG create and update is
+//     rejected.
 //  5. Conversion actually round-trips. A caBundle that is present but wrong is a
-//     real failure mode that steps 3 and 4 cannot see, because they only check the
-//     field is non-empty.
+//     real failure mode that step 3 cannot see, because it only checks the field
+//     is non-empty.
 func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
 	ginkgo.By("waiting for the new CRD bundle to be applied")
 	waitCRDsUpgraded(f)
@@ -150,6 +152,9 @@ func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
 
 	ginkgo.By("waiting for the validating webhook caBundle to be injected")
 	waitValidatingWebhookCABundle(f)
+
+	ginkgo.By("waiting for the mutating webhook caBundle to be injected")
+	waitMutatingWebhookCABundle(f)
 
 	ginkgo.By("verifying conversion actually round-trips")
 	waitConversionActuallyWorks(f, conversionProbeName)
@@ -219,6 +224,19 @@ func waitValidatingWebhookCABundle(f *framework.Framework) {
 	}, gateTimeout, gateInterval).Should(gomega.Succeed())
 }
 
+func waitMutatingWebhookCABundle(f *framework.Framework) {
+	gomega.Eventually(func(g gomega.Gomega) {
+		mwc := &admissionv1.MutatingWebhookConfiguration{}
+		g.Expect(f.Client.Get(f.Ctx, clientObjectKey(mutatingWebhookName), mwc)).To(gomega.Succeed())
+		g.Expect(mwc.Webhooks).ToNot(gomega.BeEmpty())
+		for _, wh := range mwc.Webhooks {
+			g.Expect(wh.ClientConfig.CABundle).ToNot(gomega.BeEmpty(),
+				"webhook %q of %s still has an empty caBundle; with failurePolicy Fail every RBG write is rejected",
+				wh.Name, mutatingWebhookName)
+		}
+	}, gateTimeout, gateInterval).Should(gomega.Succeed())
+}
+
 // waitConversionActuallyWorks reads one object through both served versions. Reading
 // through v1alpha1 goes via the conversion webhook, so this exercises the whole
 // path: correct CA, reachable service, working handler.
@@ -244,8 +262,8 @@ func waitConversionActuallyWorks(f *framework.Framework, name string) {
 // replacing.
 //
 // The certificate gates are the same ones the upgrade waits on, and for the same reason:
-// the new process mints its own certificate, so until it has patched both the validating
-// webhook configuration and the conversion CRDs, the caBundle out there belongs to a key
+// the new process mints its own certificate, so until it has patched the webhook
+// configurations and the conversion CRDs, the caBundle out there belongs to a key
 // nobody holds any more. conversionProbeName is the object the round-trip is read through,
 // which is what separates a caBundle that is present from one that works.
 func restartController(f *framework.Framework, conversionProbeName string) {
@@ -276,9 +294,10 @@ func restartController(f *framework.Framework, conversionProbeName string) {
 	controllerStarts++
 
 	waitControllerRolledOut(f)
-	// The new process mints its certificate and patches the webhook config again on
-	// startup, and until it has, every RBG write is rejected.
+	// The new process mints its certificate and patches the webhook configs again
+	// on startup, and until it has, every RBG write is rejected.
 	waitValidatingWebhookCABundle(f)
+	waitMutatingWebhookCABundle(f)
 	waitCRDConversionCABundle(f)
 	waitConversionActuallyWorks(f, conversionProbeName)
 }

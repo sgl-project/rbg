@@ -1246,3 +1246,55 @@ func TestRoleBasedGroup_ConvertTo_CustomComponentsPattern_RestartPolicy(t *testi
 	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart,
 		role.CustomComponentsPattern.RestartPolicyConfig.Type)
 }
+
+func TestRoleBasedGroup_RoundTrip_UpdateStrategyType(t *testing.T) {
+	// Round-trip: v1alpha1 → v1alpha2 → v1alpha1. The v1alpha1 "Recreate" spelling
+	// must map to v1alpha2 "RecreatePod" (the v1alpha2 CRD enum rejects "Recreate"),
+	// while the empty value is preserved so defaulting stays a write-time concern.
+	tests := []struct {
+		name       string
+		typ        UpdateStrategyType
+		expectedV2 v2.UpdateStrategyType
+		expectedV1 UpdateStrategyType
+	}{
+		{"empty preserved", "", "", ""},
+		{"Recreate maps to RecreatePod and back", RecreateUpdateStrategyType, v2.RecreatePodUpdateStrategyType, RecreateUpdateStrategyType},
+		{"InPlaceIfPossible preserved", InPlaceIfPossibleUpdateStrategyType, v2.InPlaceIfPossibleUpdateStrategyType, InPlaceIfPossibleUpdateStrategyType},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							RolloutStrategy: &RolloutStrategy{
+								Type:          RollingUpdateStrategyType,
+								RollingUpdate: &RollingUpdate{Type: tc.typ},
+							},
+							LeaderWorkerSet: &LeaderWorkerTemplate{
+								Size: ptr.To(int32(2)),
+							},
+							TemplateSource: TemplateSource{Template: podTemplate("app")},
+						},
+					},
+				},
+			}
+
+			hub := &v2.RoleBasedGroup{}
+			require.NoError(t, original.ConvertTo(hub))
+			require.NotNil(t, hub.Spec.Roles[0].RolloutStrategy)
+			require.NotNil(t, hub.Spec.Roles[0].RolloutStrategy.RollingUpdate)
+			assert.Equal(t, tc.expectedV2, hub.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type)
+
+			restored := &RoleBasedGroup{}
+			require.NoError(t, restored.ConvertFrom(hub))
+			require.NotNil(t, restored.Spec.Roles[0].RolloutStrategy)
+			require.NotNil(t, restored.Spec.Roles[0].RolloutStrategy.RollingUpdate)
+			assert.Equal(t, tc.expectedV1, restored.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type)
+		})
+	}
+}
