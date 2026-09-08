@@ -8761,6 +8761,7 @@ spec:
                                 Can be an absolute number (e.g., 5) or a percentage (e.g., "10%").
                               x-kubernetes-int-or-string: true
                             progression:
+                              default: OrderScheduled
                               description: Progression defines the order in which
                                 replicas are scheduled during scaling.
                               enum:

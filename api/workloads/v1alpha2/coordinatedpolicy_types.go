@@ -164,6 +164,7 @@ type ScalingCoordinationStrategy struct {
 	// Progression defines the order in which replicas are scheduled during scaling.
 	// +optional
 	// +kubebuilder:validation:Enum={OrderScheduled,OrderReady}
+	// +kubebuilder:default=OrderScheduled
 	Progression ScalingProgression `json:"progression,omitempty"`
 }
 
