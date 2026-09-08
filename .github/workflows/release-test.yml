@@ -567,6 +567,7 @@ jobs:
           kubectl get crd rolebasedgroupsets.workloads.x-k8s.io -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}' | head -c 40 || true
           echo ""
           kubectl get validatingwebhookconfiguration rbgs-validating-webhook-configuration -o jsonpath='{range .webhooks[*]}{.name}{"="}{.clientConfig.caBundle}{"\n"}{end}' | cut -c1-60 || true
+          kubectl get mutatingwebhookconfiguration rbgs-mutating-webhook-configuration -o jsonpath='{range .webhooks[*]}{.name}{"="}{.clientConfig.caBundle}{"\n"}{end}' | cut -c1-60 || true
           echo "=== Events ==="
           kubectl get events -A --sort-by='.lastTimestamp' | tail -80 || true
           kind export logs /tmp/kind-upgrade-logs --name rbgs-upgrade-e2e || true
