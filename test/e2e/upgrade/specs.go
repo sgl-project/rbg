@@ -163,11 +163,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(buildLegacyStrategyEmptyFixture(f.Namespace))
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			empty := &unstructured.Unstructured{Object: raw}
-			gomega.Expect(
-				unstructured.SetNestedField(
-					empty.Object, "", "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
-				),
-			).To(gomega.Succeed())
+			gomega.Expect(setFirstRoleStrategyType(empty, "")).To(gomega.Succeed())
 
 			gomega.Expect(f.Client.Create(f.Ctx, empty)).To(gomega.Succeed())
 
@@ -176,9 +172,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(
 				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, stored),
 			).To(gomega.Succeed())
-			val, found, err := unstructured.NestedString(
-				stored.Object, "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
-			)
+			val, found, err := firstRoleStrategyType(stored)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			gomega.Expect(found).To(
 				gomega.BeTrue(), "the explicit empty strategy type was dropped instead of stored",
@@ -413,14 +407,14 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// stays broken. That the values survive the upgrade untouched is what
 			// lets the mutating webhook heal them on the user's next write instead,
 			// which phase 4 exercises.
-			strat := &workloadsv1alpha2.RoleBasedGroup{}
+			legacyRBG := &workloadsv1alpha2.RoleBasedGroup{}
 			gomega.Expect(
-				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, strat),
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, legacyRBG),
 			).To(gomega.Succeed())
-			gomega.Expect(strat.Spec.Roles).To(gomega.HaveLen(1))
-			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
-			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
-			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+			gomega.Expect(legacyRBG.Spec.Roles).To(gomega.HaveLen(1))
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
 				gomega.Equal(workloadsv1alpha2.LegacyRecreateUpdateStrategyType),
 				"the stored legacy strategy type was rewritten",
 			)
@@ -430,9 +424,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(
 				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, empty),
 			).To(gomega.Succeed())
-			val, found, err := unstructured.NestedString(
-				empty.Object, "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
-			)
+			val, found, err := firstRoleStrategyType(empty)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			gomega.Expect(found).To(
 				gomega.BeTrue(), "the explicit empty strategy type was removed from the stored object",
@@ -882,11 +874,11 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			heal(fxLegacyStrategy)
 			heal(fxLegacyStrategyEmpty)
 
-			strat := &workloadsv1alpha2.RoleBasedGroup{}
+			legacyRBG := &workloadsv1alpha2.RoleBasedGroup{}
 			gomega.Expect(
-				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, strat),
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, legacyRBG),
 			).To(gomega.Succeed())
-			gomega.Expect(strat.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
 				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
 				"the mutating webhook did not normalize the legacy strategy type",
 			)
@@ -896,9 +888,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(
 				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, empty),
 			).To(gomega.Succeed())
-			val, found, err := unstructured.NestedString(
-				empty.Object, "spec", "roles", "0", "rolloutStrategy", "rollingUpdate", "type",
-			)
+			val, found, err := firstRoleStrategyType(empty)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			gomega.Expect(found).To(
 				gomega.BeTrue(), "the mutating webhook did not default the empty strategy type",
@@ -1280,6 +1270,55 @@ func midRollRollingUpdate(rbg *workloadsv1alpha2.RoleBasedGroup) *workloadsv1alp
 	gomega.Expect(strategy).ToNot(gomega.BeNil())
 	gomega.Expect(strategy.RollingUpdate).ToNot(gomega.BeNil())
 	return strategy.RollingUpdate
+}
+
+// firstRole returns the first entry of spec.roles of an unstructured RoleBasedGroup
+// as a map. The unstructured nested-field helpers traverse maps only and do not
+// interpret an index as a path element, so the roles slice is taken out first and its
+// first element queried directly. A copy is used on the write path below, so mutating
+// the returned map never aliases the object it was read from.
+func firstRole(rbg *unstructured.Unstructured) (map[string]interface{}, error) {
+	roles, found, err := unstructured.NestedSlice(rbg.Object, "spec", "roles")
+	if err != nil {
+		return nil, err
+	}
+	if !found || len(roles) == 0 {
+		return nil, fmt.Errorf("spec.roles is missing or empty")
+	}
+	role, ok := roles[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("spec.roles[0] is a %T, not a map", roles[0])
+	}
+	return role, nil
+}
+
+// firstRoleStrategyType reads spec.roles[0].rolloutStrategy.rollingUpdate.type of an
+// unstructured RoleBasedGroup.
+func firstRoleStrategyType(rbg *unstructured.Unstructured) (string, bool, error) {
+	role, err := firstRole(rbg)
+	if err != nil {
+		return "", false, err
+	}
+	return unstructured.NestedString(role, "rolloutStrategy", "rollingUpdate", "type")
+}
+
+// setFirstRoleStrategyType writes value to spec.roles[0].rolloutStrategy.rollingUpdate.type
+// of an unstructured RoleBasedGroup. NestedSlice returns a deep copy, so the mutated
+// slice is written back explicitly.
+func setFirstRoleStrategyType(rbg *unstructured.Unstructured, value string) error {
+	role, err := firstRole(rbg)
+	if err != nil {
+		return err
+	}
+	if err := unstructured.SetNestedField(role, value, "rolloutStrategy", "rollingUpdate", "type"); err != nil {
+		return err
+	}
+	roles, _, err := unstructured.NestedSlice(rbg.Object, "spec", "roles")
+	if err != nil {
+		return err
+	}
+	roles[0] = role
+	return unstructured.SetNestedSlice(rbg.Object, roles, "spec", "roles")
 }
 
 // countSurvivors returns how many of the pods in before are still the same pod in after.

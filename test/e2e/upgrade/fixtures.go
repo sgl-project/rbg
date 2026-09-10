@@ -49,8 +49,8 @@ const (
 	// later write that keeps them. Phase 3 asserts the upgrade leaves the stored
 	// values alone, and phase 4 proves the mutating webhook heals them on the next
 	// real write.
-	fxLegacyStrategy      = "up-strat"
-	fxLegacyStrategyEmpty = "up-strat-empty"
+	fxLegacyStrategy      = "up-legacy"
+	fxLegacyStrategyEmpty = "up-legacy-empty"
 	// fxPending never becomes ready, and fxMidRoll is half-rolled when the upgrade
 	// lands. Both exist because every other fixture is converged and quiet by the
 	// time the upgrade starts, which is the one cluster state an upgrade is least

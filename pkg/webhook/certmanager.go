@@ -226,36 +226,76 @@ func (m *CertManager) retry(ctx context.Context, kind, name string, op func() er
 }
 
 func (m *CertManager) patchOneValidatingWebhook(ctx context.Context, name string, caCert []byte) error {
-	config := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+	return m.patchOneWebhookConfiguration(
+		ctx, "ValidatingWebhookConfiguration", name,
+		&admissionregistrationv1.ValidatingWebhookConfiguration{}, caCert,
+	)
+}
+
+// webhookCABundles exposes the per-webhook caBundle fields of either webhook
+// configuration type as closures, so the patch logic is written once for both.
+type webhookCABundles struct {
+	count int
+	get   func(i int) []byte
+	set   func(i int, ca []byte)
+}
+
+func caBundleAccessors(config client.Object) webhookCABundles {
+	switch c := config.(type) {
+	case *admissionregistrationv1.ValidatingWebhookConfiguration:
+		return webhookCABundles{
+			count: len(c.Webhooks),
+			get:   func(i int) []byte { return c.Webhooks[i].ClientConfig.CABundle },
+			set:   func(i int, ca []byte) { c.Webhooks[i].ClientConfig.CABundle = ca },
+		}
+	case *admissionregistrationv1.MutatingWebhookConfiguration:
+		return webhookCABundles{
+			count: len(c.Webhooks),
+			get:   func(i int) []byte { return c.Webhooks[i].ClientConfig.CABundle },
+			set:   func(i int, ca []byte) { c.Webhooks[i].ClientConfig.CABundle = ca },
+		}
+	}
+	return webhookCABundles{}
+}
+
+// patchOneWebhookConfiguration patches webhooks[*].clientConfig.caBundle on the webhook
+// configuration named name, which config must be an empty object of the kind named by
+// kind. The object is fetched and patched in place. This is idempotent.
+func (m *CertManager) patchOneWebhookConfiguration(
+	ctx context.Context, kind, name string, config client.Object, caCert []byte,
+) error {
 	if err := m.client.Get(ctx, client.ObjectKey{Name: name}, config); err != nil {
-		return fmt.Errorf("getting ValidatingWebhookConfiguration %s: %w", name, err)
+		return fmt.Errorf("getting %s %s: %w", kind, name, err)
 	}
 
-	if len(config.Webhooks) == 0 {
-		certLog.Info("ValidatingWebhookConfiguration has no webhooks, skipping", "name", name)
+	accessors := caBundleAccessors(config)
+	if accessors.count == 0 {
+		certLog.Info(kind+" has no webhooks, skipping", "name", name)
 		return nil
 	}
 
 	needsPatch := false
-	for i := range config.Webhooks {
-		if !bytes.Equal(config.Webhooks[i].ClientConfig.CABundle, caCert) {
+	for i := 0; i < accessors.count; i++ {
+		if !bytes.Equal(accessors.get(i), caCert) {
 			needsPatch = true
 			break
 		}
 	}
 	if !needsPatch {
-		certLog.V(1).Info("ValidatingWebhookConfiguration caBundle already up to date", "name", name)
+		certLog.V(1).Info(kind+" caBundle already up to date", "name", name)
 		return nil
 	}
 
-	patch := client.MergeFrom(config.DeepCopy())
-	for i := range config.Webhooks {
-		config.Webhooks[i].ClientConfig.CABundle = caCert
+	// client.MergeFrom requires a base snapshot; see patchOneCRD for why the
+	// DeepCopy cost is acceptable here.
+	patch := client.MergeFrom(config.DeepCopyObject().(client.Object))
+	for i := 0; i < accessors.count; i++ {
+		accessors.set(i, caCert)
 	}
 	if err := m.client.Patch(ctx, config, patch); err != nil {
-		return fmt.Errorf("patching caBundle on ValidatingWebhookConfiguration %s: %w", name, err)
+		return fmt.Errorf("patching caBundle on %s %s: %w", kind, name, err)
 	}
-	certLog.Info("patched caBundle on ValidatingWebhookConfiguration", "name", name)
+	certLog.Info("patched caBundle on "+kind, "name", name)
 	return nil
 }
 
@@ -289,35 +329,8 @@ func (m *CertManager) patchMutatingWebhookWithRetry(ctx context.Context, name st
 }
 
 func (m *CertManager) patchOneMutatingWebhook(ctx context.Context, name string, caCert []byte) error {
-	config := &admissionregistrationv1.MutatingWebhookConfiguration{}
-	if err := m.client.Get(ctx, client.ObjectKey{Name: name}, config); err != nil {
-		return fmt.Errorf("getting MutatingWebhookConfiguration %s: %w", name, err)
-	}
-
-	if len(config.Webhooks) == 0 {
-		certLog.Info("MutatingWebhookConfiguration has no webhooks, skipping", "name", name)
-		return nil
-	}
-
-	needsPatch := false
-	for i := range config.Webhooks {
-		if !bytes.Equal(config.Webhooks[i].ClientConfig.CABundle, caCert) {
-			needsPatch = true
-			break
-		}
-	}
-	if !needsPatch {
-		certLog.V(1).Info("MutatingWebhookConfiguration caBundle already up to date", "name", name)
-		return nil
-	}
-
-	patch := client.MergeFrom(config.DeepCopy())
-	for i := range config.Webhooks {
-		config.Webhooks[i].ClientConfig.CABundle = caCert
-	}
-	if err := m.client.Patch(ctx, config, patch); err != nil {
-		return fmt.Errorf("patching caBundle on MutatingWebhookConfiguration %s: %w", name, err)
-	}
-	certLog.Info("patched caBundle on MutatingWebhookConfiguration", "name", name)
-	return nil
+	return m.patchOneWebhookConfiguration(
+		ctx, "MutatingWebhookConfiguration", name,
+		&admissionregistrationv1.MutatingWebhookConfiguration{}, caCert,
+	)
 }
