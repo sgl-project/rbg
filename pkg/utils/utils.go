@@ -36,6 +36,27 @@ import (
 const (
 	FieldManager = "rbg"
 
+	// RBGReplicaFieldManager is used when the RBGSA controller writes
+	// spec.roles[].replicas back to its parent RBG.
+	//
+	// SSA-claim release semantics: when the same field manager re-applies with a
+	// narrower claim, fields it previously owned but no longer claims are released
+	// and (if no other manager owns them) removed by the API server. The discovery
+	// annotation Apply, the RBGSet→RBG sync Apply, and this replica Apply each
+	// claim disjoint subsets of the RBG, so they MUST run under distinct field
+	// managers — otherwise they ping-pong and silently strip each other's writes.
+	RBGReplicaFieldManager = "rbg-replicas"
+
+	// RBGDiscoveryFieldManager is used when the RBG controller writes the
+	// discovery-config-mode annotation. See RBGReplicaFieldManager for the
+	// rationale behind a distinct field manager.
+	RBGDiscoveryFieldManager = "rbg-discovery"
+
+	// RBGSetSyncFieldManager is used when the RBGSet controller syncs metadata
+	// and spec.roles from a parent RBGSet template down to its child RBGs. See
+	// RBGReplicaFieldManager for the rationale behind a distinct field manager.
+	RBGSetSyncFieldManager = "rbg-set-sync"
+
 	PatchAll    PatchType = "all"
 	PatchSpec   PatchType = "spec"
 	PatchStatus PatchType = "status"
@@ -43,11 +64,22 @@ const (
 
 type PatchType string
 
-// nolint:staticcheck
-// TODO:  SA1019: Use client.Client.Apply() instead
 func PatchObjectApplyConfiguration(
 	ctx context.Context, k8sClient client.Client,
 	objApplyConfig interface{}, patchType PatchType,
+) error {
+	return PatchObjectApplyConfigurationWithFieldManager(ctx, k8sClient, objApplyConfig, patchType, FieldManager)
+}
+
+// PatchObjectApplyConfigurationWithFieldManager is like PatchObjectApplyConfiguration but uses
+// the provided field manager. Use a distinct field manager for each logical Apply path that
+// targets disjoint fields on the same object, otherwise SSA-claim-release semantics will cause
+// the Apply calls to strip each other's writes.
+//
+//nolint:staticcheck // SA1019: Use client.Client.Apply() instead
+func PatchObjectApplyConfigurationWithFieldManager(
+	ctx context.Context, k8sClient client.Client,
+	objApplyConfig interface{}, patchType PatchType, fieldManager string,
 ) error {
 	logger := log.FromContext(ctx)
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(objApplyConfig)
@@ -62,14 +94,10 @@ func PatchObjectApplyConfiguration(
 
 	logger.V(1).Info("patch content", "patchObject", patch.Object)
 
-	// Use server side apply and add fieldmanager to the rbg owned fields
-	// If there are conflicts in the fields owned by the rbg controller, rbg will obtain the ownership and force override
-	// these fields to the ones desired by the rbg controller
-	// TODO b/316776287 add E2E test for SSA
 	if patchType == PatchSpec || patchType == PatchAll {
 		err = k8sClient.Patch(
 			ctx, patch, client.Apply, &client.PatchOptions{
-				FieldManager: FieldManager,
+				FieldManager: fieldManager,
 				Force:        ptr.To[bool](true),
 			},
 		)
@@ -84,7 +112,7 @@ func PatchObjectApplyConfiguration(
 			ctx, patch, client.Apply,
 			&client.SubResourcePatchOptions{
 				PatchOptions: client.PatchOptions{
-					FieldManager: FieldManager,
+					FieldManager: fieldManager,
 					Force:        ptr.To[bool](true),
 				},
 			},

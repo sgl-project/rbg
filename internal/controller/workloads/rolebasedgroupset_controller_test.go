@@ -22,16 +22,17 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/rbgs/api/workloads/constants"
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 )
 
 // TestRoleBasedGroupSetReconciler_scaleUp tests the scaleUp function.
@@ -735,17 +736,17 @@ func TestNewRBGForSet_MetadataPropagation(t *testing.T) {
 	}
 }
 
-// TestSyncRBGMetadata tests the syncRBGMetadata method.
-func TestSyncRBGMetadata(t *testing.T) {
+// TestBuildSyncedMetadata tests the buildSyncedMetadata method.
+func TestBuildSyncedMetadata(t *testing.T) {
 	tests := []struct {
 		name                string
 		rbgset              *workloadsv1alpha2.RoleBasedGroupSet
-		rbg                 *workloadsv1alpha2.RoleBasedGroup
+		rbgIndex            string
 		expectedLabels      map[string]string
 		expectedAnnotations map[string]string
 	}{
 		{
-			name: "Syncs template labels and annotations, preserves system labels",
+			name: "Builds template labels and annotations, includes system labels",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
@@ -755,16 +756,7 @@ func TestSyncRBGMetadata(t *testing.T) {
 					},
 				},
 			},
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						constants.GroupSetNameLabelKey:  "test-rbgset",
-						constants.GroupSetIndexLabelKey: "1",
-						"old-label":                     "old-value",
-					},
-					Annotations: map[string]string{"old-annotation": "old-value"},
-				},
-			},
+			rbgIndex: "1",
 			expectedLabels: map[string]string{
 				constants.GroupSetNameLabelKey:  "test-rbgset",
 				constants.GroupSetIndexLabelKey: "1",
@@ -773,22 +765,14 @@ func TestSyncRBGMetadata(t *testing.T) {
 			expectedAnnotations: map[string]string{"app.io/env": "prod"},
 		},
 		{
-			name: "Clears annotations when template has none",
+			name: "Returns nil annotations when template has none",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
 					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
 				},
 			},
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						constants.GroupSetNameLabelKey:  "test-rbgset",
-						constants.GroupSetIndexLabelKey: "0",
-					},
-					Annotations: map[string]string{"stale-annotation": "value"},
-				},
-			},
+			rbgIndex: "0",
 			expectedLabels: map[string]string{
 				constants.GroupSetNameLabelKey:  "test-rbgset",
 				constants.GroupSetIndexLabelKey: "0",
@@ -796,7 +780,7 @@ func TestSyncRBGMetadata(t *testing.T) {
 			expectedAnnotations: nil,
 		},
 		{
-			name: "Removes extra non-system labels not in template",
+			name: "Only system labels when template has no labels",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
@@ -805,19 +789,32 @@ func TestSyncRBGMetadata(t *testing.T) {
 					},
 				},
 			},
-			rbg: &workloadsv1alpha2.RoleBasedGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						constants.GroupSetNameLabelKey:  "test-rbgset",
-						constants.GroupSetIndexLabelKey: "0",
-						"stale-label":                   "old",
-					},
-				},
-			},
+			rbgIndex: "0",
 			expectedLabels: map[string]string{
 				constants.GroupSetNameLabelKey:  "test-rbgset",
 				constants.GroupSetIndexLabelKey: "0",
 				"env":                           "prod",
+			},
+			expectedAnnotations: nil,
+		},
+		{
+			name: "System labels cannot be overridden by template labels",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels: map[string]string{
+							constants.GroupSetIndexLabelKey: "99",
+							"tier":                          "backend",
+						},
+					},
+				},
+			},
+			rbgIndex: "1",
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "1", // system label wins
+				"tier":                          "backend",
 			},
 			expectedAnnotations: nil,
 		},
@@ -826,10 +823,9 @@ func TestSyncRBGMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				r := &RoleBasedGroupSetReconciler{}
-				r.syncRBGMetadata(tt.rbgset, tt.rbg)
-				assert.Equal(t, tt.expectedLabels, tt.rbg.Labels)
-				assert.Equal(t, tt.expectedAnnotations, tt.rbg.Annotations)
+				labels, annotations := buildSyncedMetadata(tt.rbgset, tt.rbgIndex)
+				assert.Equal(t, tt.expectedLabels, labels)
+				assert.Equal(t, tt.expectedAnnotations, annotations)
 			},
 		)
 	}
@@ -1143,6 +1139,295 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 				} else {
 					assert.Equal(t, metav1.ConditionFalse, condition.Status)
 				}
+			},
+		)
+	}
+}
+
+// TestToRoleSpecApplyConfigurations tests JSON round-trip conversion of RoleSpec to apply configurations.
+func TestToRoleSpecApplyConfigurations(t *testing.T) {
+	tests := []struct {
+		name    string
+		roles   []workloadsv1alpha2.RoleSpec
+		wantErr bool
+		verify  func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration)
+	}{
+		{
+			name:  "nil roles returns nil",
+			roles: nil,
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Nil(t, result)
+			},
+		},
+		{
+			name:  "empty roles returns nil",
+			roles: []workloadsv1alpha2.RoleSpec{},
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Nil(t, result)
+			},
+		},
+		{
+			name: "basic role with name and replicas",
+			roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To(int32(3)),
+				},
+			},
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Len(t, result, 1)
+				assert.NotNil(t, result[0].Name)
+				assert.Equal(t, "worker", *result[0].Name)
+				assert.NotNil(t, result[0].Replicas)
+				assert.Equal(t, int32(3), *result[0].Replicas)
+			},
+		},
+		{
+			name: "role with labels annotations and dependencies",
+			roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name:         "trainer",
+					Replicas:     ptr.To(int32(2)),
+					Labels:       map[string]string{"role": "trainer"},
+					Annotations:  map[string]string{"note": "important"},
+					Dependencies: []string{"coordinator"},
+				},
+			},
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Len(t, result, 1)
+				assert.Equal(t, map[string]string{"role": "trainer"}, result[0].Labels)
+				assert.Equal(t, map[string]string{"note": "important"}, result[0].Annotations)
+				assert.Equal(t, []string{"coordinator"}, result[0].Dependencies)
+			},
+		},
+		{
+			name: "role with scaling adapter",
+			roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name:     "scaler",
+					Replicas: ptr.To(int32(1)),
+					ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+						Enable: true,
+					},
+				},
+			},
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Len(t, result, 1)
+				assert.NotNil(t, result[0].ScalingAdapter)
+				assert.NotNil(t, result[0].ScalingAdapter.Enable)
+				assert.True(t, *result[0].ScalingAdapter.Enable)
+			},
+		},
+		{
+			name: "role with standalone pattern and env vars",
+			roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name:     "worker",
+					Replicas: ptr.To(int32(2)),
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{
+								Template: &corev1.PodTemplateSpec{
+									Spec: corev1.PodSpec{
+										Containers: []corev1.Container{
+											{
+												Name:  "main",
+												Image: "busybox:latest",
+												Env: []corev1.EnvVar{
+													{Name: "FOO", Value: "bar"},
+													{Name: "BAZ", Value: "qux"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Len(t, result, 1)
+				assert.NotNil(t, result[0].StandalonePattern)
+				assert.NotNil(t, result[0].StandalonePattern.Template)
+				containers := result[0].StandalonePattern.Template.Spec.Containers
+				assert.Len(t, containers, 1)
+				assert.Equal(t, "main", *containers[0].Name)
+				assert.Equal(t, "busybox:latest", *containers[0].Image)
+				assert.Len(t, containers[0].Env, 2)
+				assert.Equal(t, "FOO", *containers[0].Env[0].Name)
+				assert.Equal(t, "bar", *containers[0].Env[0].Value)
+				assert.Equal(t, "BAZ", *containers[0].Env[1].Name)
+				assert.Equal(t, "qux", *containers[0].Env[1].Value)
+			},
+		},
+		{
+			name: "multiple roles preserves order",
+			roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "coordinator", Replicas: ptr.To(int32(1))},
+				{Name: "worker", Replicas: ptr.To(int32(4))},
+				{Name: "evaluator", Replicas: ptr.To(int32(1))},
+			},
+			verify: func(t *testing.T, result []*applyconfiguration.RoleSpecApplyConfiguration) {
+				assert.Len(t, result, 3)
+				assert.Equal(t, "coordinator", *result[0].Name)
+				assert.Equal(t, "worker", *result[1].Name)
+				assert.Equal(t, "evaluator", *result[2].Name)
+				assert.Equal(t, int32(4), *result[1].Replicas)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result, err := toRoleSpecApplyConfigurations(tt.roles)
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				assert.NoError(t, err)
+				tt.verify(t, result)
+			},
+		)
+	}
+}
+
+// TestRoleBasedGroupSetReconciler_updateExistingRBGs_SSA tests that updateExistingRBGs
+// uses SSA Apply to sync labels, annotations, and spec.roles to child RBGs.
+func TestRoleBasedGroupSetReconciler_updateExistingRBGs_SSA(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	tests := []struct {
+		name                string
+		rbgset              *workloadsv1alpha2.RoleBasedGroupSet
+		existingRBGs        []*workloadsv1alpha2.RoleBasedGroup
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+		expectedRoleName    string
+		expectErr           bool
+	}{
+		{
+			name: "syncs labels and annotations from template",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(1)),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Labels:      map[string]string{"tier": "backend"},
+						Annotations: map[string]string{"app.io/env": "prod"},
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "new-role", Replicas: ptr.To(int32(1))}},
+						},
+					},
+				},
+			},
+			existingRBGs: []*workloadsv1alpha2.RoleBasedGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-rbgset-0",
+						Namespace: "default",
+						Labels: map[string]string{
+							constants.GroupSetNameLabelKey:  "test-rbgset",
+							constants.GroupSetIndexLabelKey: "0",
+						},
+					},
+					Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha2.RoleSpec{{Name: "old-role", Replicas: ptr.To(int32(1))}},
+					},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+				"tier":                          "backend",
+			},
+			expectedAnnotations: map[string]string{"app.io/env": "prod"},
+			expectedRoleName:    "new-role",
+		},
+		{
+			name: "system labels are preserved",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(1)),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{{Name: "role-a", Replicas: ptr.To(int32(1))}},
+						},
+					},
+				},
+			},
+			existingRBGs: []*workloadsv1alpha2.RoleBasedGroup{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-rbgset-2",
+						Namespace: "default",
+						Labels: map[string]string{
+							constants.GroupSetNameLabelKey:  "test-rbgset",
+							constants.GroupSetIndexLabelKey: "2",
+						},
+					},
+					Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha2.RoleSpec{{Name: "old-role", Replicas: ptr.To(int32(1))}},
+					},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "2",
+			},
+			expectedAnnotations: nil,
+			expectedRoleName:    "role-a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				objs := make([]client.Object, 0, len(tt.existingRBGs))
+				for _, rbg := range tt.existingRBGs {
+					objs = append(objs, rbg.DeepCopy())
+				}
+
+				fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+				r := &RoleBasedGroupSetReconciler{
+					client: fakeClient,
+					scheme: scheme,
+				}
+
+				err := r.updateExistingRBGs(context.Background(), tt.rbgset, tt.existingRBGs)
+				if tt.expectErr {
+					assert.Error(t, err)
+					return
+				}
+				assert.NoError(t, err)
+
+				// Verify the last RBG in the list (the one we always expect to succeed)
+				lastRBG := tt.existingRBGs[len(tt.existingRBGs)-1]
+				updatedRBG := &workloadsv1alpha2.RoleBasedGroup{}
+				err = fakeClient.Get(context.Background(), types.NamespacedName{
+					Name:      lastRBG.Name,
+					Namespace: lastRBG.Namespace,
+				}, updatedRBG)
+				assert.NoError(t, err)
+
+				// Verify labels
+				for k, v := range tt.expectedLabels {
+					assert.Equal(t, v, updatedRBG.Labels[k], "label %s mismatch", k)
+				}
+
+				// Verify annotations
+				if tt.expectedAnnotations != nil {
+					for k, v := range tt.expectedAnnotations {
+						assert.Equal(t, v, updatedRBG.Annotations[k], "annotation %s mismatch", k)
+					}
+				}
+
+				// Verify roles
+				assert.NotEmpty(t, updatedRBG.Spec.Roles)
+				assert.Equal(t, tt.expectedRoleName, updatedRBG.Spec.Roles[0].Name)
 			},
 		)
 	}
