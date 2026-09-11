@@ -236,8 +236,8 @@ func convertTemplateRefV1alpha1ToV2(ref *TemplateRef, patch *runtime.RawExtensio
 // convertUpdateStrategyTypeV1alpha1ToV2 converts a v1alpha1 UpdateStrategyType to v1alpha2.
 // The v1alpha1 "Recreate" spelling is mapped to the v1alpha2 "RecreatePod" name.
 // An empty value is preserved as-is (matching convertRestartPolicyV1alpha1ToV2) so
-// that the v1alpha2 defaulting (CRD default / mutating webhook / reconciler) applies
-// the documented InPlaceIfPossible default instead of baking it into stored objects.
+// that the v1alpha2 defaulting (mutating webhook / reconciler) applies the documented
+// InPlaceIfPossible default instead of baking it into stored objects.
 func convertUpdateStrategyTypeV1alpha1ToV2(src UpdateStrategyType) v2.UpdateStrategyType {
 	if src == RecreateUpdateStrategyType {
 		return v2.RecreatePodUpdateStrategyType

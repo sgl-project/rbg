@@ -240,22 +240,24 @@ type webhookCABundles struct {
 	set   func(i int, ca []byte)
 }
 
-func caBundleAccessors(config client.Object) webhookCABundles {
+func caBundleAccessors(config client.Object) (webhookCABundles, error) {
 	switch c := config.(type) {
 	case *admissionregistrationv1.ValidatingWebhookConfiguration:
 		return webhookCABundles{
 			count: len(c.Webhooks),
 			get:   func(i int) []byte { return c.Webhooks[i].ClientConfig.CABundle },
 			set:   func(i int, ca []byte) { c.Webhooks[i].ClientConfig.CABundle = ca },
-		}
+		}, nil
 	case *admissionregistrationv1.MutatingWebhookConfiguration:
 		return webhookCABundles{
 			count: len(c.Webhooks),
 			get:   func(i int) []byte { return c.Webhooks[i].ClientConfig.CABundle },
 			set:   func(i int, ca []byte) { c.Webhooks[i].ClientConfig.CABundle = ca },
-		}
+		}, nil
 	}
-	return webhookCABundles{}
+	return webhookCABundles{}, fmt.Errorf(
+		"unsupported webhook configuration kind %T for caBundle patching", config,
+	)
 }
 
 // patchOneWebhookConfiguration patches webhooks[*].clientConfig.caBundle on the webhook
@@ -268,7 +270,10 @@ func (m *CertManager) patchOneWebhookConfiguration(
 		return fmt.Errorf("getting %s %s: %w", kind, name, err)
 	}
 
-	accessors := caBundleAccessors(config)
+	accessors, err := caBundleAccessors(config)
+	if err != nil {
+		return err
+	}
 	if accessors.count == 0 {
 		certLog.Info(kind+" has no webhooks, skipping", "name", name)
 		return nil

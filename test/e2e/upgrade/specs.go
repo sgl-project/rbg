@@ -988,10 +988,10 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			time.Sleep(settleDuration)
 			quietAfter := &workloadsv1alpha2.RoleBasedGroup{}
 			gomega.Expect(f.Client.Get(f.Ctx, childKey, quietAfter)).To(gomega.Succeed())
-			gomega.Expect(quietAfter.ResourceVersion).To(
-				gomega.Equal(quietBefore.ResourceVersion),
-				"the RBGS controller kept re-updating the healed child while its template still carries the legacy spelling",
-			)
+			// Generation is the discriminator: the divergence loop the fix removes is a
+			// spec rewrite on every reconcile, and only spec writes advance generation.
+			// ResourceVersion is deliberately not asserted -- any status write bumps it
+			// (see the PodFacts comment in snapshot.go).
 			gomega.Expect(quietAfter.Generation).To(gomega.Equal(quietBefore.Generation))
 			gomega.Expect(quietAfter.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
 				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
@@ -1036,10 +1036,6 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			time.Sleep(settleDuration)
 			templateHealedAfter := &workloadsv1alpha2.RoleBasedGroup{}
 			gomega.Expect(f.Client.Get(f.Ctx, childKey, templateHealedAfter)).To(gomega.Succeed())
-			gomega.Expect(templateHealedAfter.ResourceVersion).To(
-				gomega.Equal(templateHealedBefore.ResourceVersion),
-				"the RBGS controller re-updated a child after the template was healed",
-			)
 			gomega.Expect(templateHealedAfter.Generation).To(gomega.Equal(templateHealedBefore.Generation))
 		},
 	)

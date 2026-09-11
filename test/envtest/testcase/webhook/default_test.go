@@ -67,19 +67,21 @@ var _ = Describe("Mutating webhook defaulters", func() {
 		})
 
 		It("heals a legacy type on update, not only on create", func() {
-			rbg := buildRBG("heal-update", testNs, workloadsv1alpha2.LegacyRecreateUpdateStrategyType)
+			rbg := buildRBG("heal-update", testNs, workloadsv1alpha2.RecreatePodUpdateStrategyType)
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
 
-			// Re-write the same object; the mutating webhook must normalize it again.
+			// Send a legacy value through UPDATE: a stored object can only carry the
+			// pre-enum spelling if it was written before the upgrade, but flipping the
+			// field back to the legacy spelling is the closest in-envtest stand-in for
+			// that stored state. The mutating webhook must heal it before validation.
 			stored := getRBG(rbg.Name, testNs)
-			Expect(stored.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
-				Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
-			)
+			stored.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type = workloadsv1alpha2.LegacyRecreateUpdateStrategyType
 			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(Succeed())
 
 			after := getRBG(rbg.Name, testNs)
 			Expect(after.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
 				Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+				"the mutating webhook did not normalize the legacy type sent through update",
 			)
 		})
 
@@ -145,6 +147,16 @@ var _ = Describe("Mutating webhook defaulters", func() {
 
 	Context("v1alpha1 write", func() {
 		It("heals the legacy Recreate spelling before the object is stored", func() {
+			// envtest installs the CRDs from config/crd/bases, whose conversion strategy
+			// is None, so no conversion webhook runs and a v1alpha1 object is stored and
+			// read back as-is. The v1alpha2 mutating rule below still matches this
+			// request because the webhook config omits matchPolicy (default Equivalent)
+			// and both versions are served by the same CRD -- so a v1alpha1 write with
+			// the legacy spelling exercises the same admission heal a production
+			// v1alpha1 write goes through. In production, with the conversion webhook,
+			// a v1alpha1 read of the stored value round-trips to "Recreate" again; the
+			// value this spec sees here (RecreatePod) is the envtest view of the healed
+			// storage.
 			rbg := wrappersv1.BuildBasicRoleBasedGroup("v1a1-heal", testNs).
 				WithRoles([]workloadsv1alpha1.RoleSpec{
 					func() workloadsv1alpha1.RoleSpec {

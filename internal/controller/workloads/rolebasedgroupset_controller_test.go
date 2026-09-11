@@ -233,6 +233,48 @@ func TestRoleBasedGroupSetReconciler_scaleDown(t *testing.T) {
 	}
 }
 
+// TestRolesEqual_DoesNotMutateInputs proves the normalized comparison keeps the
+// caller's RoleSpecs untouched. rolesEqual previously normalized in place through
+// the shared *RolloutStrategy/*RollingUpdate pointers, which reached into the
+// informer-cache objects being compared; the deep copy added here must prevent that.
+func TestRolesEqual_DoesNotMutateInputs(t *testing.T) {
+	parent := []workloadsv1alpha2.RoleSpec{
+		{
+			Name: "role-1",
+			RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+					Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+				},
+			},
+		},
+	}
+	child := []workloadsv1alpha2.RoleSpec{
+		{
+			Name: "role-1",
+			RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+					Type: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+				},
+			},
+		},
+	}
+
+	parentBefore := parent[0].RolloutStrategy.RollingUpdate.Type
+	childBefore := child[0].RolloutStrategy.RollingUpdate.Type
+
+	r := &RoleBasedGroupSetReconciler{}
+	if !r.rolesEqual(parent, child) {
+		t.Fatal("legacy vs normalized spellings should compare equal")
+	}
+
+	if got := parent[0].RolloutStrategy.RollingUpdate.Type; got != parentBefore {
+		t.Errorf("rolesEqual mutated the parent input: got %q, want %q", got, parentBefore)
+	}
+	if got := child[0].RolloutStrategy.RollingUpdate.Type; got != childBefore {
+		t.Errorf("rolesEqual mutated the child input: got %q, want %q", got, childBefore)
+	}
+}
+
 // TestRoleBasedGroupSetReconciler_needsUpdate tests the needsUpdate method.
 func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -874,6 +916,83 @@ func TestNewRBGForSet_NormalizesLegacyStrategyType(t *testing.T) {
 	}
 	if parentType := rbgset.Spec.GroupTemplate.Spec.Roles[1].RolloutStrategy.RollingUpdate.Type; parentType != workloadsv1alpha2.UpdateStrategyType("") {
 		t.Errorf("parent template was mutated: got %q", parentType)
+	}
+}
+
+// TestRoleBasedGroupSetReconciler_updateExistingRBGs_NormalizesLegacyStrategy
+// drives the update path (not just newRBGForSet) with a legacy template and proves
+// the child is stored with the normalized strategy type, so a pre-webhook template
+// cannot poison an updated child even when webhooks are disabled.
+func TestRoleBasedGroupSetReconciler_updateExistingRBGs_NormalizesLegacyStrategy(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		ns        = "default"
+		setName   = "test-rbgset"
+		childName = "test-rbgset-0"
+	)
+	rbgset := &workloadsv1alpha2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: setName, Namespace: ns},
+		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name: "role-1",
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	child := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      childName,
+			Namespace: ns,
+			Labels: map[string]string{
+				constants.GroupSetNameLabelKey:  setName,
+				constants.GroupSetIndexLabelKey: "0",
+			},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name: "role-1",
+					RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+						RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+							Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	r := &RoleBasedGroupSetReconciler{
+		client: fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(child).Build(),
+	}
+	if err := r.updateExistingRBGs(context.Background(), rbgset, []*workloadsv1alpha2.RoleBasedGroup{child}); err != nil {
+		t.Fatalf("updateExistingRBGs: %v", err)
+	}
+
+	stored := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := r.client.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: childName}, stored); err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if got := stored.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type; got != workloadsv1alpha2.RecreatePodUpdateStrategyType {
+		t.Errorf("child stored with legacy type: got %q, want %q", got, workloadsv1alpha2.RecreatePodUpdateStrategyType)
+	}
+	// The parent template must be left untouched.
+	if got := rbgset.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type; got != workloadsv1alpha2.LegacyRecreateUpdateStrategyType {
+		t.Errorf("parent template was mutated: got %q", got)
 	}
 }
 

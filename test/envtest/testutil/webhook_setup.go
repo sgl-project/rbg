@@ -19,6 +19,8 @@ package testutil
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -116,6 +118,25 @@ func SetupWebhookTestEnv() {
 		Expect(err).NotTo(HaveOccurred())
 	}()
 
-	// Give the server a moment to open its listener before the first request.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the webhook server's listener to come up before the first request is
+	// admitted. A fixed sleep would race a slow bind on a loaded CI runner, and with
+	// failurePolicy=Fail the first Create would fail the whole suite spuriously.
+	Eventually(
+		func() error {
+			conn, err := net.DialTimeout(
+				"tcp",
+				fmt.Sprintf(
+					"%s:%d",
+					TestEnv.WebhookInstallOptions.LocalServingHost,
+					TestEnv.WebhookInstallOptions.LocalServingPort,
+				),
+				250*time.Millisecond,
+			)
+			if err != nil {
+				return err
+			}
+			conn.Close()
+			return nil
+		}, 10*time.Second, 100*time.Millisecond,
+	).Should(Succeed())
 }

@@ -349,11 +349,11 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 		return false
 	}
 
-	// Create copies to avoid modifying the original slices
-	sortedRoles1 := make([]workloadsv1alpha2.RoleSpec, len(roles1))
-	sortedRoles2 := make([]workloadsv1alpha2.RoleSpec, len(roles2))
-	copy(sortedRoles1, roles1)
-	copy(sortedRoles2, roles2)
+	// Deep copies keep the caller's roles untouched: `copy` alone would still share
+	// the *RolloutStrategy/*RollingUpdate pointers, and normalizing through them would
+	// mutate the cached RoleBasedGroup/RoleBasedGroupSet objects being compared.
+	sortedRoles1 := deepCopyRoles(roles1)
+	sortedRoles2 := deepCopyRoles(roles2)
 
 	// Sort both slices by role name
 	sort.Slice(
@@ -380,10 +380,21 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 	return reflect.DeepEqual(sortedRoles1, sortedRoles2)
 }
 
+// deepCopyRoles returns a deep copy of roles so callers can sort, normalize and
+// compare without mutating the source RoleSpecs (which share *RolloutStrategy /
+// *RollingUpdate pointers with the informer-cache objects they came from).
+func deepCopyRoles(roles []workloadsv1alpha2.RoleSpec) []workloadsv1alpha2.RoleSpec {
+	out := make([]workloadsv1alpha2.RoleSpec, len(roles))
+	for i := range roles {
+		roles[i].DeepCopyInto(&out[i])
+	}
+	return out
+}
+
 // normalizeRolloutUpdateTypes rewrites legacy and empty update-strategy type
-// values on each role in place. rolesEqual calls it on its own copies and
-// normalizedGroupTemplateRoles calls it on a deep copy, so no caller's input is
-// mutated.
+// values on each role in place. Callers must pass a slice they own (rolesEqual and
+// normalizedGroupTemplateRoles both operate on deep copies), so no caller's input
+// object is mutated.
 func normalizeRolloutUpdateTypes(roles []workloadsv1alpha2.RoleSpec) {
 	for i := range roles {
 		ru := roles[i].RolloutStrategy
@@ -404,11 +415,7 @@ func normalizeRolloutUpdateTypes(roles []workloadsv1alpha2.RoleSpec) {
 // validation on clusters with webhooks disabled, or leave the child's normalized
 // value diverging from the parent forever where webhooks are enabled.
 func normalizedGroupTemplateRoles(rbgset *workloadsv1alpha2.RoleBasedGroupSet) []workloadsv1alpha2.RoleSpec {
-	src := rbgset.Spec.GroupTemplate.Spec.Roles
-	roles := make([]workloadsv1alpha2.RoleSpec, len(src))
-	for i := range src {
-		src[i].DeepCopyInto(&roles[i])
-	}
+	roles := deepCopyRoles(rbgset.Spec.GroupTemplate.Spec.Roles)
 	normalizeRolloutUpdateTypes(roles)
 	return roles
 }
