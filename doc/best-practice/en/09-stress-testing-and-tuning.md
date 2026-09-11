@@ -212,19 +212,37 @@ bash test/stress/scripts/setup-kwok.sh
 ### Step 2: Deploy Controller
 
 ```bash
-# Deploy Controller, configure resources, parameters, and pprof
-CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
-MAX_RECONCILES=20 KUBE_API_QPS=100 KUBE_API_BURST=200 \
-PPROF_ENABLED=true \
-bash test/stress/scripts/deploy-controller.sh
+# Get current image tag to avoid overwriting with latest; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
+IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+
+helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
+    --set controller.image.tag=${IMAGE_TAG} \
+    --set controller.resources.limits.cpu=8 \
+    --set controller.resources.limits.memory=16Gi \
+    --set controller.tuning.maxConcurrentReconciles=20 \
+    --set controller.tuning.kubeApiQPS=100 \
+    --set controller.tuning.kubeApiBurst=200 \
+    --set controller.pprof.enabled=true \
+    --set controller.pprof.containerPort=6060 \
+    --no-hooks --wait --timeout=120s
+
+# pprof port forwarding (runs in background; stop it with `pkill -f "port-forward.*6060"` when finished)
+pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
+kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
-The deploy script will:
+This command will:
 
-1. Build the Controller image
-2. Deploy (or upgrade) the Controller via Helm, setting resource limits and runtime parameters
-3. Wait for the Controller Pod to be ready
-4. Establish pprof port forwarding (`localhost:6060`)
+1. Upgrade the Controller via Helm, setting resource limits and runtime parameters
+2. Wait for the Controller Pod to be ready
+3. Establish pprof port forwarding (`localhost:6060`)
+
+> **Note**:
+>
+> + `controller.pprof.containerPort` only sets the port exposed in the Pod spec; the pprof server actually binds to `controller.pprof.bindAddress` (default `:6060`). They match here because both use 6060 — to use a different port, set both keys and adjust the port-forward target accordingly, otherwise pprof will not be reachable on the new port.
+> + The repository also provides `test/stress/scripts/deploy-controller.sh`, which wraps the same Helm upgrade but additionally builds the Controller image via `make docker-build` (requires Docker and `make`) and runs the chart's CRD-upgrade hooks, which cannot be scheduled on KWOK nodes. Prefer the manual command above for KWOK-based tests; the script is intended for real clusters.
+>
 
 ### Step 3: Run Stress Test
 
@@ -437,10 +455,18 @@ The following are the operational steps to complete a full stress test from scra
 ```plain
 Step 1: Set up environment and run stress test
     $ FAKE_NODE_COUNT=10 bash test/stress/scripts/setup-kwok.sh
-    $ CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
-      MAX_RECONCILES=20 KUBE_API_QPS=100 KUBE_API_BURST=200 \
-      PPROF_ENABLED=true \
-      bash test/stress/scripts/deploy-controller.sh
+    $ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+    $ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
+      --set controller.image.tag=${IMAGE_TAG} \
+      --set controller.resources.limits.cpu=8 \
+      --set controller.resources.limits.memory=16Gi \
+      --set controller.tuning.maxConcurrentReconciles=20 \
+      --set controller.tuning.kubeApiQPS=100 \
+      --set controller.tuning.kubeApiBurst=200 \
+      --set controller.pprof.enabled=true \
+      --set controller.pprof.containerPort=6060 \
+      --no-hooks --wait --timeout=120s
     $ kubectl port-forward -n rbgs-system \
       deploy/rbgs-controller-manager 6060:6060 &
     $ go run ./test/stress/ \
@@ -455,15 +481,20 @@ Step 2: View report
     $ cat /tmp/rbg-stress-results/summary.json
 
 Step 3: Adjust Controller configuration based on analysis
-    $ CONTROLLER_CPU=16 CONTROLLER_MEMORY=32Gi \
-      MAX_RECONCILES=50 KUBE_API_QPS=200 KUBE_API_BURST=400 \
-      PPROF_ENABLED=true \
-      bash test/stress/scripts/deploy-controller.sh
+    $ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
+      --set controller.image.tag=${IMAGE_TAG} \
+      --set controller.resources.limits.cpu=16 \
+      --set controller.resources.limits.memory=32Gi \
+      --set controller.tuning.maxConcurrentReconciles=50 \
+      --set controller.tuning.kubeApiQPS=200 \
+      --set controller.tuning.kubeApiBurst=400 \
+      --no-hooks --wait --timeout=120s
 
 Step 4: Re-run stress test to validate
     $ go run ./test/stress/ ...
 
 Step 5: Clean up environment
+    $ pkill -f "port-forward.*6060"
     $ bash test/stress/scripts/teardown-kwok.sh
 ```
 
@@ -496,6 +527,52 @@ The Skill will sequentially ask for the following configuration items:
 | **Workload template** | Roles / LWS roles / LWS size / Total RBGs | Simulated RBG workload structure |
 | **Operation QPS** | Create / Update / Delete QPS | Submission rate for each phase |
 | **Update strategy** | In-place update / Rebuild update | Update method for the Update phase |
+
+The Skill automatically executes the following phases:
+
+```plain
+┌──────────────────────────────────────────────────────────────────┐
+│                    /stress-test Execution Flow                     │
+│                                                                  │
+│  Phase 1: Environment setup                                      │
+│  ├── Deploy KWOK Controller + Stages (simulate Pod lifecycle)    │
+│  ├── Create KWOK simulated nodes (default 5, 128 CPU / 512Gi     │
+│  │   each)                                                       │
+│  └── Deploy/upgrade RBG Controller via Helm (resources, params,  │
+│      pprof)                                                      │
+│                                                                  │
+│  Phase 2: Run stress test                                        │
+│  ├── Create phase: create N RBGs at target QPS, wait for all     │
+│  │   Ready                                                       │
+│  ├── Update phase: update all RBGs at target QPS, wait for       │
+│  │   completion                                                  │
+│  └── Delete phase: delete all RBGs at target QPS, wait for       │
+│      cleanup                                                     │
+│                                                                  │
+│  Phase 3: Profiling (optional)                                   │
+│  ├── CPU Profile: collect a 30-second CPU profile per phase (in  │
+│  │   parallel with the test)                                     │
+│  ├── Heap/Allocs/Goroutine: collect memory snapshots after each  │
+│  │   phase                                                       │
+│  └── Generate Top-N text reports                                 │
+│                                                                  │
+│  Phase 4: Report generation                                      │
+│  ├── HTML report: latency distribution charts, error             │
+│  │   classification, pprof data                                  │
+│  ├── summary.json: P50/P90/P99/Max/Avg/actual QPS                │
+│  ├── timing-*.csv: precise per-operation latency data            │
+│  └── errors.log + controller-full.log: Controller logs           │
+│                                                                  │
+│  Phase 5: AI-driven analysis                                     │
+│  ├── Throughput gap analysis (actual QPS vs target QPS)          │
+│  ├── Latency distribution classification (uniform / tail latency │
+│  │   / queue saturation)                                         │
+│  ├── Bottleneck identification (Reconciles / API QPS / CPU /     │
+│  │   memory)                                                     │
+│  └── Concrete tuning suggestions (parameter name + recommended   │
+│      value + rationale)                                          │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 ### Auto-Tuning Mode
 

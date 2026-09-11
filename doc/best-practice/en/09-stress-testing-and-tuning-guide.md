@@ -113,6 +113,11 @@ pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
 kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
+> **Note**:
+>
+> - `controller.pprof.containerPort` only sets the port exposed in the Pod spec; the pprof server actually binds to `controller.pprof.bindAddress` (default `:6060`). They match here because both use 6060 — if you change the port, set both keys and adjust the port-forward target accordingly, otherwise pprof will not be reachable on the new port.
+> - The port-forward runs in the background (`&`). Stop it with `pkill -f "port-forward.*6060"` when finished (also covered in Operation 6).
+
 ### Expected Behavior (Deploy Controller)
 
 - Skips image build (uses existing image in the cluster)
@@ -416,6 +421,8 @@ pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
 kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
+> **Note**: As in Operation 2, if you change the pprof port, set both `controller.pprof.containerPort` and `controller.pprof.bindAddress` and adjust the port-forward target.
+
 ### Step 2: Re-run Stress Test
 
 ```bash
@@ -472,13 +479,16 @@ update: P50=1871.5 P99=2692.3600000000006 QPS=4.70
 delete: P50=173.5 P99=642.1200000000001 QPS=5.01
 ```
 
-Create phase QPS was behind (3.99 vs target 5.0). In the second round, after increasing Reconcile concurrency and API QPS, Create QPS is expected to improve to 4.7 with reduced P99 latency.
+Create phase QPS was behind in Round 1 (3.99 vs target 5.0). In Round 2, after increasing Reconcile concurrency and API QPS, Create QPS improves to 4.70 and Create P99 drops from 7063 ms to 2401 ms — the tuning goal is met.
 
 ---
 
 ## Operation 6: Clean Up Environment
 
 ```bash
+# Stop the background pprof port-forward (started in Operations 2 and 5)
+pkill -f "port-forward.*6060" 2>/dev/null || true
+
 # Delete simulated nodes and stress test namespace
 bash test/stress/scripts/teardown-kwok.sh
 
@@ -523,4 +533,4 @@ kubectl get namespace stress-test
 | Deploy Controller | Resource and parameter configuration | Pod Ready, parameters correct |
 | Run stress test | Create/Update/Delete three phases | 100 RBGs all created, updated, deleted successfully |
 | Analyze report | Throughput, latency, errors, pprof | Create QPS 3.99 (⚠ behind), Update/Delete met, 371 goroutines, 76MB heap, no critical errors |
-| Tune and re-test | Parameter tuning effect validation | After tuning, QPS improved, latency reduced |
+| Tune and re-test | Parameter tuning effect validation | Create phase improved (QPS 3.99→4.70, P99 7063→2401 ms); Update latency regressed (see Operation 5 note) — tuning is a per-phase trade-off |

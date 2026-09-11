@@ -209,19 +209,37 @@ bash test/stress/scripts/setup-kwok.sh
 ### 步骤 2：部署 Controller
 
 ```bash
-# 部署 Controller，配置资源、参数和 pprof
-CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
-MAX_RECONCILES=20 KUBE_API_QPS=100 KUBE_API_BURST=200 \
-PPROF_ENABLED=true \
-bash test/stress/scripts/deploy-controller.sh
+# 获取当前镜像 tag，避免覆盖为 latest；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
+IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+
+helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
+    --set controller.image.tag=${IMAGE_TAG} \
+    --set controller.resources.limits.cpu=8 \
+    --set controller.resources.limits.memory=16Gi \
+    --set controller.tuning.maxConcurrentReconciles=20 \
+    --set controller.tuning.kubeApiQPS=100 \
+    --set controller.tuning.kubeApiBurst=200 \
+    --set controller.pprof.enabled=true \
+    --set controller.pprof.containerPort=6060 \
+    --no-hooks --wait --timeout=120s
+
+# pprof 端口转发（后台运行；结束后用 `pkill -f "port-forward.*6060"` 停止）
+pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
+kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
-部署脚本会：
+该命令会：
 
-1. 构建 Controller 镜像
-2. 通过 Helm 部署（或升级）Controller，设置资源限制和运行时参数
-3. 等待 Controller Pod 就绪
-4. 建立 pprof 的端口转发（`localhost:6060`）
+1. 通过 Helm 升级 Controller，设置资源限制和运行时参数
+2. 等待 Controller Pod 就绪
+3. 建立 pprof 的端口转发（`localhost:6060`）
+
+> **说明**：
+>
+> + `controller.pprof.containerPort` 仅设置 Pod spec 中暴露的端口；pprof 服务实际绑定地址由 `controller.pprof.bindAddress`（默认 `:6060`）决定。此处两者一致（均为 6060）——如需修改端口，需同时设置这两个键并相应调整端口转发目标，否则新端口上无法访问 pprof。
+> + 仓库还提供了 `test/stress/scripts/deploy-controller.sh` 脚本，封装了相同的 Helm 升级，但会额外通过 `make docker-build` 构建 Controller 镜像（需要 Docker 和 `make`），并执行 chart 的 CRD 升级 hook（无法调度到 KWOK 节点）。基于 KWOK 的压测建议直接使用上述手动命令；该脚本适用于真实集群。
+>
 
 ### 步骤 3：运行压测
 
@@ -429,10 +447,18 @@ UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
 ```plain
 步骤 1: 搭建环境并运行压测
     $ FAKE_NODE_COUNT=10 bash test/stress/scripts/setup-kwok.sh
-    $ CONTROLLER_CPU=8 CONTROLLER_MEMORY=16Gi \
-      MAX_RECONCILES=20 KUBE_API_QPS=100 KUBE_API_BURST=200 \
-      PPROF_ENABLED=true \
-      bash test/stress/scripts/deploy-controller.sh
+    $ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+    $ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
+      --set controller.image.tag=${IMAGE_TAG} \
+      --set controller.resources.limits.cpu=8 \
+      --set controller.resources.limits.memory=16Gi \
+      --set controller.tuning.maxConcurrentReconciles=20 \
+      --set controller.tuning.kubeApiQPS=100 \
+      --set controller.tuning.kubeApiBurst=200 \
+      --set controller.pprof.enabled=true \
+      --set controller.pprof.containerPort=6060 \
+      --no-hooks --wait --timeout=120s
     $ kubectl port-forward -n rbgs-system \
       deploy/rbgs-controller-manager 6060:6060 &
     $ go run ./test/stress/ \
@@ -447,15 +473,20 @@ UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
     $ cat /tmp/rbg-stress-results/summary.json
 
 步骤 3: 根据分析结果调整 Controller 配置
-    $ CONTROLLER_CPU=16 CONTROLLER_MEMORY=32Gi \
-      MAX_RECONCILES=50 KUBE_API_QPS=200 KUBE_API_BURST=400 \
-      PPROF_ENABLED=true \
-      bash test/stress/scripts/deploy-controller.sh
+    $ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
+      --set controller.image.tag=${IMAGE_TAG} \
+      --set controller.resources.limits.cpu=16 \
+      --set controller.resources.limits.memory=32Gi \
+      --set controller.tuning.maxConcurrentReconciles=50 \
+      --set controller.tuning.kubeApiQPS=200 \
+      --set controller.tuning.kubeApiBurst=400 \
+      --no-hooks --wait --timeout=120s
 
 步骤 4: 重新压测验证
     $ go run ./test/stress/ ...
 
 步骤 5: 清理环境
+    $ pkill -f "port-forward.*6060"
     $ bash test/stress/scripts/teardown-kwok.sh
 ```
 

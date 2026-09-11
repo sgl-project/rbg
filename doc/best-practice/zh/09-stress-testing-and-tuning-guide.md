@@ -113,6 +113,11 @@ pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
 kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
+> **说明**：
+>
+> - `controller.pprof.containerPort` 仅设置 Pod spec 中暴露的端口；pprof 服务实际绑定地址由 `controller.pprof.bindAddress`（默认 `:6060`）决定。此处两者一致（均为 6060）——如需修改端口，需同时设置这两个键并相应调整端口转发目标，否则新端口上无法访问 pprof。
+> - 端口转发在后台运行（`&`），结束后用 `pkill -f "port-forward.*6060"` 停止（操作六中也会执行）。
+
 ### 预期行为（部署 Controller）
 
 - 跳过镜像构建（使用集群中已有的镜像）
@@ -414,6 +419,8 @@ pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
 kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ```
 
+> **说明**：与操作二相同，如需修改 pprof 端口，需同时设置 `controller.pprof.containerPort` 和 `controller.pprof.bindAddress`，并相应调整端口转发目标。
+
 ### 步骤 2：重新运行压测
 
 ```bash
@@ -470,13 +477,16 @@ update: P50=1871.5 P99=2692.3600000000006 QPS=4.70
 delete: P50=173.5 P99=642.1200000000001 QPS=5.01
 ```
 
-Create 阶段 QPS 落后（3.99 vs 目标 5.0），第二轮增大 Reconcile 并发和 API QPS 后，预期 Create QPS 提升至 4.7，P99 延迟下降。
+第一轮 Create 阶段 QPS 落后（3.99 vs 目标 5.0）。第二轮增大 Reconcile 并发和 API QPS 后，Create QPS 提升至 4.70，Create P99 从 7063 ms 降至 2401 ms，调优目标达成。
 
 ---
 
 ## 操作六：清理环境
 
 ```bash
+# 停止后台运行的 pprof 端口转发（在操作二和操作五中启动）
+pkill -f "port-forward.*6060" 2>/dev/null || true
+
 # 删除模拟节点和压测命名空间
 bash test/stress/scripts/teardown-kwok.sh
 
@@ -521,4 +531,4 @@ kubectl get namespace stress-test
 | 部署 Controller | 资源和参数配置 | Pod Ready，参数正确 |
 | 运行压测 | Create/Update/Delete 三阶段 | 100 RBG 全部创建、更新、删除成功 |
 | 分析报告 | 吞吐量、延迟、错误、pprof | Create QPS 3.99（⚠ 落后），Update/Delete 达标，371 协程，76MB 堆内存，无严重错误 |
-| 调优重测 | 参数调优效果验证 | 调优后 QPS 提升，延迟降低 |
+| 调优重测 | 参数调优效果验证 | Create 阶段改善（QPS 3.99→4.70，P99 7063→2401 ms）；Update 延迟回退（见操作五说明）——调优是分阶段的取舍 |
