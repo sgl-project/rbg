@@ -416,6 +416,83 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 			},
 			expectedUpdate: false,
 		},
+
+		{
+			name: "RBG needs update - strategy type really differs after normalization",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{
+								{
+									Name: "role-1",
+									RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+										RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+											Type: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name: "role-1",
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "RBG no update needed - legacy strategy spelling differs only",
+			// A pre-webhook RoleBasedGroupSet template can keep the v1alpha1 "Recreate"
+			// spelling while its children carry the webhook-normalized "RecreatePod".
+			// The normalized comparison must treat that spelling-only delta as equal, or
+			// the controller would re-issue child updates forever.
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+							Roles: []workloadsv1alpha2.RoleSpec{
+								{
+									Name: "role-1",
+									RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+										RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+											Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name: "role-1",
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -732,6 +809,71 @@ func TestNewRBGForSet_MetadataPropagation(t *testing.T) {
 				assert.Equal(t, tt.rbgset.Namespace, rbg.Namespace)
 			},
 		)
+	}
+}
+
+// TestNewRBGForSet_NormalizesLegacyStrategyType proves a child RBG built from a
+// legacy template never carries a value the v1alpha2 CRD enum rejects, even when
+// webhooks are disabled (and therefore the RBGS defaulter never ran on the stored
+// template).
+func TestNewRBGForSet_NormalizesLegacyStrategyType(t *testing.T) {
+	rbgset := &workloadsv1alpha2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name: "role-1",
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+								},
+							},
+						},
+						{
+							Name: "role-2",
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.UpdateStrategyType(""),
+								},
+							},
+						},
+						{
+							Name: "role-3",
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.InPlaceOnlyUpdateStrategyType,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	rbg := newRBGForSet(rbgset, 0)
+	got := rbg.Spec.Roles
+	if len(got) != 3 {
+		t.Fatalf("expected 3 roles, got %d", len(got))
+	}
+	if got[0].RolloutStrategy.RollingUpdate.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
+		t.Errorf("legacy Recreate not normalized: got %q", got[0].RolloutStrategy.RollingUpdate.Type)
+	}
+	if got[1].RolloutStrategy.RollingUpdate.Type != workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType {
+		t.Errorf("empty type not defaulted: got %q", got[1].RolloutStrategy.RollingUpdate.Type)
+	}
+	if got[2].RolloutStrategy.RollingUpdate.Type != workloadsv1alpha2.InPlaceOnlyUpdateStrategyType {
+		t.Errorf("valid type was changed: got %q", got[2].RolloutStrategy.RollingUpdate.Type)
+	}
+
+	// Building the child must not mutate the parent template.
+	if parentType := rbgset.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type; parentType != workloadsv1alpha2.LegacyRecreateUpdateStrategyType {
+		t.Errorf("parent template was mutated: got %q", parentType)
+	}
+	if parentType := rbgset.Spec.GroupTemplate.Spec.Roles[1].RolloutStrategy.RollingUpdate.Type; parentType != workloadsv1alpha2.UpdateStrategyType("") {
+		t.Errorf("parent template was mutated: got %q", parentType)
 	}
 }
 

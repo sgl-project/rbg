@@ -51,6 +51,12 @@ const (
 	// real write.
 	fxLegacyStrategy      = "up-legacy"
 	fxLegacyStrategyEmpty = "up-legacy-empty"
+	// fxLegacySet is a RoleBasedGroupSet whose GroupTemplate carries the v1alpha1
+	// spelling "Recreate" of the update strategy type. Unlike the standalone
+	// fxLegacyStrategy fixture, its child is produced by the RBGS controller, which
+	// copies the template verbatim -- so a legacy value reaches the child even though
+	// no RoleBasedGroupSet defaulter ever ran on that child.
+	fxLegacySet = "up-legacy-set"
 	// fxPending never becomes ready, and fxMidRoll is half-rolled when the upgrade
 	// lands. Both exist because every other fixture is converged and quiet by the
 	// time the upgrade starts, which is the one cluster state an upgrade is least
@@ -347,6 +353,42 @@ func buildLegacyStrategyEmptyFixture(ns string) *workloadsv1alpha2.RoleBasedGrou
 				WithRollingUpdate(workloadsv1alpha2.RollingUpdate{}).
 				Obj(),
 		}).Obj()
+}
+
+// buildLegacySetFixture stores a RoleBasedGroupSet whose GroupTemplate role carries
+// the v1alpha1 "Recreate" spelling of the update strategy type. v0.7.0's enum-less
+// CRD accepted it and its RBGS controller copied it verbatim into the child, which
+// is how a legacy value can survive in a child no defaulter ever ran on.
+//
+// Phase 3 asserts the upgrade leaves both the template and the child alone; phase 4
+// then heals the child and the template on writes and requires the RBGS controller
+// to keep the children quiet instead of re-issuing updates forever.
+func buildLegacySetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
+	set := wrappersv2.BuildBasicRoleBasedGroupSet(fxLegacySet, ns).WithReplicas(1).Obj()
+	set.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{
+		wrappersv2.BuildStandaloneRole(legacyStrategyRole).
+			WithReplicas(1).
+			WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
+				Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+			}).
+			Obj(),
+	}
+	return set
+}
+
+// legacySetChildName is the name of the child RoleBasedGroup the legacy-set fixture
+// produces, computed through the same <set>-<index> scheme the controller uses.
+func legacySetChildName() string {
+	return fxLegacySet + "-0"
+}
+
+// legacySetChildRISName is the name of the RoleInstanceSet the legacy-set fixture's
+// child owns, computed through the same production helper the controller uses so the
+// recorded generation bump in snapshot.go cannot drift from the real object.
+func legacySetChildRISName() string {
+	child := wrappersv2.BuildBasicRoleBasedGroup(legacySetChildName(), "x").Obj()
+	role := wrappersv2.BuildStandaloneRole(legacyStrategyRole).Obj()
+	return child.GetWorkloadName(&role)
 }
 
 // legacyStrategyRISName is the name of the RoleInstanceSet the legacy-strategy

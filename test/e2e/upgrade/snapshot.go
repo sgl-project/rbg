@@ -945,7 +945,13 @@ var upgradeRewrites = recordedRewrites{
 	// The repair is a one-off -- the next apply is a no-op -- and it is scoped to
 	// this one object: every other RoleInstanceSet is still held to zero bumps.
 	objectBumps: map[string]int64{
+		// The legacy-set fixture's child owns its own RoleInstanceSet, which v0.7.0
+		// also wrote with the legacy "Recreate" spelling copied verbatim from the
+		// template, so the upgraded controller repairs that one to "RecreatePod" on
+		// its first reconcile too. The RBGS layer itself must not rewrite the child
+		// RoleBasedGroup; that is asserted by checkOwnersStable via a zero bump.
 		"RoleInstanceSet/" + legacyStrategyRISName(): 1,
+		"RoleInstanceSet/" + legacySetChildRISName(): 1,
 	},
 
 	// KEP 260 flips the default of sharedServiceSelection: v0.7.0 treated an unset

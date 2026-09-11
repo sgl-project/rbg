@@ -367,8 +367,50 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 		},
 	)
 
+	// Normalize legacy update-strategy type values before comparing. The RBGS
+	// defaulter only runs on RoleBasedGroupSet spec writes, so a stored template can
+	// keep the v1alpha1 "Recreate" spelling while children carry the
+	// webhook-normalized "RecreatePod"; comparing the normalized forms keeps such a
+	// spelling-only delta from being read as a real change, which would re-issue
+	// child updates forever.
+	normalizeRolloutUpdateTypes(sortedRoles1)
+	normalizeRolloutUpdateTypes(sortedRoles2)
+
 	// Compare the sorted slices
 	return reflect.DeepEqual(sortedRoles1, sortedRoles2)
+}
+
+// normalizeRolloutUpdateTypes rewrites legacy and empty update-strategy type
+// values on each role in place. rolesEqual calls it on its own copies and
+// normalizedGroupTemplateRoles calls it on a deep copy, so no caller's input is
+// mutated.
+func normalizeRolloutUpdateTypes(roles []workloadsv1alpha2.RoleSpec) {
+	for i := range roles {
+		ru := roles[i].RolloutStrategy
+		if ru == nil || ru.RollingUpdate == nil {
+			continue
+		}
+		roles[i].RolloutStrategy.RollingUpdate.Type = workloadsv1alpha2.NormalizeUpdateStrategyType(
+			ru.RollingUpdate.Type,
+		)
+	}
+}
+
+// normalizedGroupTemplateRoles returns a deep copy of the set's GroupTemplate roles
+// with legacy update-strategy type values normalized. Children must be created and
+// updated from this form: the RBGS defaulter only fires on RoleBasedGroupSet spec
+// writes, so a legacy value stored before the enum was introduced is never healed on
+// the parent itself, and copying it verbatim into a child would fail CRD enum
+// validation on clusters with webhooks disabled, or leave the child's normalized
+// value diverging from the parent forever where webhooks are enabled.
+func normalizedGroupTemplateRoles(rbgset *workloadsv1alpha2.RoleBasedGroupSet) []workloadsv1alpha2.RoleSpec {
+	src := rbgset.Spec.GroupTemplate.Spec.Roles
+	roles := make([]workloadsv1alpha2.RoleSpec, len(src))
+	for i := range src {
+		src[i].DeepCopyInto(&roles[i])
+	}
+	normalizeRolloutUpdateTypes(roles)
+	return roles
 }
 
 // needsUpdate checks if a child RBG needs to be updated based on changes in the parent RBGSet.
@@ -455,8 +497,9 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 					return err
 				}
 
-				// Update the spec from template
-				latestRBG.Spec.Roles = rbgset.Spec.GroupTemplate.Spec.Roles
+				// Update the spec from template, normalizing legacy update-strategy type
+				// values so a pre-webhook legacy template cannot poison the child.
+				latestRBG.Spec.Roles = normalizedGroupTemplateRoles(rbgset)
 
 				// Sync labels and annotations from the template
 				r.syncRBGMetadata(rbgset, latestRBG)
@@ -535,7 +578,9 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 			// The OwnerReference will be set in the scaleUp function.
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-			Roles: rbgset.Spec.GroupTemplate.Spec.Roles,
+			// Normalize legacy update-strategy type values the same way updateExistingRBGs
+			// does, so a fresh child never carries a value the CRD enum rejects.
+			Roles: normalizedGroupTemplateRoles(rbgset),
 		},
 	}
 }
