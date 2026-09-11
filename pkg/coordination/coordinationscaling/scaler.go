@@ -34,11 +34,12 @@ type CoordinationScaler struct {
 
 // RoleScalingState represents the current scaling state of a role.
 type RoleScalingState struct {
-	RoleName          string
-	DesiredReplicas   int32
-	CurrentReplicas   int32
-	ScheduledReplicas int32 // Number of replicas that have been scheduled (have nodeName)
-	ReadyReplicas     int32 // Number of replicas that are ready
+	RoleName        string
+	DesiredReplicas int32
+	CurrentReplicas int32
+	ScheduledPods   int64 // Non-terminating Pods with nodeName set.
+	ExpectedPods    int64 // Pods expected from current replicas.
+	ReadyReplicas   int32 // Number of replicas that are ready
 }
 
 // NewCoordinationScalerFromPolicy creates a new CoordinationScaler instance from v1alpha2 CoordinatedPolicyRule.
@@ -226,8 +227,8 @@ func (s *CoordinationScaler) canProceedToNextBatch(
 		// Check based on progression type
 		switch progression {
 		case workloadsv1alpha2.OrderScheduledProgression:
-			// All current replicas must be scheduled
-			if state.ScheduledReplicas < state.CurrentReplicas {
+			// Wait for the expected Pod count
+			if state.ScheduledPods < state.ExpectedPods {
 				return false
 			}
 		case workloadsv1alpha2.OrderReadyProgression:

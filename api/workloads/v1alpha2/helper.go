@@ -99,7 +99,8 @@ func ComputeSubGroupSize(role *RoleSpec) int32 {
 				total++
 				continue
 			}
-			total += *c.Size
+			// The RoleInstance controller creates no Pods for non-positive sizes.
+			total += max(*c.Size, 0)
 		}
 		return total
 	}

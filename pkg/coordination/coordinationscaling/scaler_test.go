@@ -110,18 +110,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -135,18 +137,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   15, // 5% progress
-					ScheduledReplicas: 15, // All scheduled
-					ReadyReplicas:     15, // All ready
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 15, // 5% progress
+					ExpectedPods:    15,
+					ScheduledPods:   15, // All scheduled
+					ReadyReplicas:   15, // All ready
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   0, // 0% progress
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 0, // 0% progress
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -160,18 +164,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   15, // 5% progress
-					ScheduledReplicas: 15,
-					ReadyReplicas:     15,
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 15, // 5% progress
+					ExpectedPods:    15,
+					ScheduledPods:   15,
+					ReadyReplicas:   15,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   5, // 5% progress
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 5, // 5% progress
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -185,18 +191,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   285, // 95% progress
-					ScheduledReplicas: 285,
-					ReadyReplicas:     285,
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 285, // 95% progress
+					ExpectedPods:    285,
+					ScheduledPods:   285,
+					ReadyReplicas:   285,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   90, // 90% progress
-					ScheduledReplicas: 90,
-					ReadyReplicas:     90,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 90, // 90% progress
+					ExpectedPods:    90,
+					ScheduledPods:   90,
+					ReadyReplicas:   90,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -210,18 +218,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   300, // 100% progress
-					ScheduledReplicas: 300,
-					ReadyReplicas:     300,
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 300, // 100% progress
+					ExpectedPods:    300,
+					ScheduledPods:   300,
+					ReadyReplicas:   300,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   100, // 100% progress
-					ScheduledReplicas: 100,
-					ReadyReplicas:     100,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 100, // 100% progress
+					ExpectedPods:    100,
+					ScheduledPods:   100,
+					ReadyReplicas:   100,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -235,25 +245,28 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "10%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   200,
-					CurrentReplicas:   20, // 10% progress
-					ScheduledReplicas: 20,
-					ReadyReplicas:     20,
+					RoleName:        "prefill",
+					DesiredReplicas: 200,
+					CurrentReplicas: 20, // 10% progress
+					ExpectedPods:    20,
+					ScheduledPods:   20,
+					ReadyReplicas:   20,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   0, // 0% progress
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 0, // 0% progress
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"router": {
-					RoleName:          "router",
-					DesiredReplicas:   50,
-					CurrentReplicas:   5, // 10% progress
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "router",
+					DesiredReplicas: 50,
+					CurrentReplicas: 5, // 10% progress
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -268,32 +281,36 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"router": {
-					RoleName:          "router",
-					DesiredReplicas:   10,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "router",
+					DesiredReplicas: 10,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"worker": {
-					RoleName:          "worker",
-					DesiredReplicas:   50,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "worker",
+					DesiredReplicas: 50,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -309,39 +326,44 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "8%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   500,
-					CurrentReplicas:   50, // 10% progress
-					ScheduledReplicas: 50,
-					ReadyReplicas:     50,
+					RoleName:        "prefill",
+					DesiredReplicas: 500,
+					CurrentReplicas: 50, // 10% progress
+					ExpectedPods:    50,
+					ScheduledPods:   50,
+					ReadyReplicas:   50,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   200,
-					CurrentReplicas:   20, // 10% progress
-					ScheduledReplicas: 20,
-					ReadyReplicas:     20,
+					RoleName:        "decode",
+					DesiredReplicas: 200,
+					CurrentReplicas: 20, // 10% progress
+					ExpectedPods:    20,
+					ScheduledPods:   20,
+					ReadyReplicas:   20,
 				},
 				"router": {
-					RoleName:          "router",
-					DesiredReplicas:   20,
-					CurrentReplicas:   1, // 5% progress (slowest)
-					ScheduledReplicas: 1,
-					ReadyReplicas:     1,
+					RoleName:        "router",
+					DesiredReplicas: 20,
+					CurrentReplicas: 1, // 5% progress (slowest)
+					ExpectedPods:    1,
+					ScheduledPods:   1,
+					ReadyReplicas:   1,
 				},
 				"worker": {
-					RoleName:          "worker",
-					DesiredReplicas:   100,
-					CurrentReplicas:   8, // 8% progress
-					ScheduledReplicas: 8,
-					ReadyReplicas:     8,
+					RoleName:        "worker",
+					DesiredReplicas: 100,
+					CurrentReplicas: 8, // 8% progress
+					ExpectedPods:    8,
+					ScheduledPods:   8,
+					ReadyReplicas:   8,
 				},
 				"monitor": {
-					RoleName:          "monitor",
-					DesiredReplicas:   10,
-					CurrentReplicas:   1, // 10% progress
-					ScheduledReplicas: 1,
-					ReadyReplicas:     1,
+					RoleName:        "monitor",
+					DesiredReplicas: 10,
+					CurrentReplicas: 1, // 10% progress
+					ExpectedPods:    1,
+					ScheduledPods:   1,
+					ReadyReplicas:   1,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -359,25 +381,28 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "10%",
 			roleStates: map[string]RoleScalingState{
 				"large": {
-					RoleName:          "large",
-					DesiredReplicas:   1000,
-					CurrentReplicas:   100, // 10% progress
-					ScheduledReplicas: 100,
-					ReadyReplicas:     100,
+					RoleName:        "large",
+					DesiredReplicas: 1000,
+					CurrentReplicas: 100, // 10% progress
+					ExpectedPods:    100,
+					ScheduledPods:   100,
+					ReadyReplicas:   100,
 				},
 				"medium": {
-					RoleName:          "medium",
-					DesiredReplicas:   100,
-					CurrentReplicas:   5, // 5% progress (slowest)
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "medium",
+					DesiredReplicas: 100,
+					CurrentReplicas: 5, // 5% progress (slowest)
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 				"small": {
-					RoleName:          "small",
-					DesiredReplicas:   10,
-					CurrentReplicas:   1, // 10% progress
-					ScheduledReplicas: 1,
-					ReadyReplicas:     1,
+					RoleName:        "small",
+					DesiredReplicas: 10,
+					CurrentReplicas: 1, // 10% progress
+					ExpectedPods:    1,
+					ScheduledPods:   1,
+					ReadyReplicas:   1,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -393,18 +418,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   0,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "prefill",
+					DesiredReplicas: 0,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   50,
-					ScheduledReplicas: 50,
-					ReadyReplicas:     50,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 50,
+					ExpectedPods:    50,
+					ScheduledPods:   50,
+					ReadyReplicas:   50,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -418,18 +445,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "10%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   0,
-					CurrentReplicas:   5,
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "prefill",
+					DesiredReplicas: 0,
+					CurrentReplicas: 5,
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   10,
-					ScheduledReplicas: 10,
-					ReadyReplicas:     10,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 10,
+					ExpectedPods:    10,
+					ScheduledPods:   10,
+					ReadyReplicas:   10,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -443,18 +472,20 @@ func TestCalculateTargetReplicas(t *testing.T) {
 			maxSkew: "5%",
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   0,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "prefill",
+					DesiredReplicas: 0,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   0,
-					CurrentReplicas:   0,
-					ScheduledReplicas: 0,
-					ReadyReplicas:     0,
+					RoleName:        "decode",
+					DesiredReplicas: 0,
+					CurrentReplicas: 0,
+					ExpectedPods:    0,
+					ScheduledPods:   0,
+					ReadyReplicas:   0,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -611,18 +642,20 @@ func TestProgressionStrategy(t *testing.T) {
 			progression: workloadsv1alpha2.OrderScheduledProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   15,
-					ScheduledReplicas: 10, // Not all scheduled yet
-					ReadyReplicas:     10,
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 15,
+					ExpectedPods:    15,
+					ScheduledPods:   10, // Not all scheduled yet
+					ReadyReplicas:   10,
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   5,
-					ScheduledReplicas: 5, // All scheduled
-					ReadyReplicas:     5,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 5,
+					ExpectedPods:    5,
+					ScheduledPods:   5, // All scheduled
+					ReadyReplicas:   5,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -637,18 +670,20 @@ func TestProgressionStrategy(t *testing.T) {
 			progression: workloadsv1alpha2.OrderScheduledProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   15,
-					ScheduledReplicas: 15, // All scheduled
-					ReadyReplicas:     10, // Not all ready (but OK for OrderScheduled)
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 15,
+					ExpectedPods:    15,
+					ScheduledPods:   15, // All scheduled
+					ReadyReplicas:   10, // Not all ready (but OK for OrderScheduled)
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   5,
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 5,
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -663,18 +698,20 @@ func TestProgressionStrategy(t *testing.T) {
 			progression: workloadsv1alpha2.OrderReadyProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   15,
-					ScheduledReplicas: 15, // All scheduled
-					ReadyReplicas:     10, // Not all ready yet
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 15,
+					ExpectedPods:    15,
+					ScheduledPods:   15, // All scheduled
+					ReadyReplicas:   10, // Not all ready yet
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   5,
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 5,
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 			},
 			wantTargets: map[string]int32{
@@ -689,18 +726,20 @@ func TestProgressionStrategy(t *testing.T) {
 			progression: workloadsv1alpha2.OrderReadyProgression,
 			roleStates: map[string]RoleScalingState{
 				"prefill": {
-					RoleName:          "prefill",
-					DesiredReplicas:   300,
-					CurrentReplicas:   15,
-					ScheduledReplicas: 15,
-					ReadyReplicas:     15, // All ready
+					RoleName:        "prefill",
+					DesiredReplicas: 300,
+					CurrentReplicas: 15,
+					ExpectedPods:    15,
+					ScheduledPods:   15,
+					ReadyReplicas:   15, // All ready
 				},
 				"decode": {
-					RoleName:          "decode",
-					DesiredReplicas:   100,
-					CurrentReplicas:   5,
-					ScheduledReplicas: 5,
-					ReadyReplicas:     5,
+					RoleName:        "decode",
+					DesiredReplicas: 100,
+					CurrentReplicas: 5,
+					ExpectedPods:    5,
+					ScheduledPods:   5,
+					ReadyReplicas:   5,
 				},
 			},
 			wantTargets: map[string]int32{
