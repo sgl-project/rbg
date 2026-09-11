@@ -28,6 +28,7 @@
 | `rbg.workloads.x-k8s.io/role-instance-index` | The index of RoleInstance in Role (for ordered scenarios). |
 | `rbg.workloads.x-k8s.io/role-instance-owner` | The owning RoleInstanceSet name; used as the RoleInstanceSet selector. |
 | `rbg.workloads.x-k8s.io/role-instance-delete` | Marks a RoleInstance for specified deletion. |
+| `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` | The current lifecycle state of a RoleInstance. |
 
 ### Component Level Labels
 
@@ -74,7 +75,7 @@ scheduler.
 |-----|-------------|
 | `rbg.workloads.x-k8s.io/role-instance-pattern` | Identifies the RoleInstance organization pattern (Stateful/Stateless). |
 | `rbg.workloads.x-k8s.io/role-instance-gang-scheduling` | Enables gang-scheduling aware behavior at the RoleInstance level. |
-| `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` | Identifies the lifecycle state of a RoleInstance. |
+| `rbg.workloads.x-k8s.io/role-instance-lifecycle-timestamp` | Identifies the timestamp of the most recent RoleInstance lifecycle state change. |
 | `rbg.workloads.x-k8s.io/inplace-update-state` | Identifies the in-place update state. |
 | `rbg.workloads.x-k8s.io/inplace-update-grace` | Identifies the in-place update grace period configuration. |
 
