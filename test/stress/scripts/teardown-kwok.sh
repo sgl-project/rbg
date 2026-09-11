@@ -29,6 +29,7 @@ if [ "${UNINSTALL_KWOK}" = "true" ]; then
     kubectl delete stage pod-initialize --ignore-not-found=true 2>/dev/null || true
     kubectl delete stage pod-running --ignore-not-found=true 2>/dev/null || true
     kubectl delete stage pod-ready --ignore-not-found=true 2>/dev/null || true
+    kubectl delete stage pod-ready-blocked --ignore-not-found=true 2>/dev/null || true
     kubectl delete stage pod-delete --ignore-not-found=true 2>/dev/null || true
 else
     echo "[3/3] Keeping kwok installed (set UNINSTALL_KWOK=true to remove)"

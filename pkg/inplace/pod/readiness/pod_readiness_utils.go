@@ -22,7 +22,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
-	util "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	podadapter "sigs.k8s.io/rbgs/pkg/inplace/pod/clientadapter"
 )
 
@@ -61,8 +60,9 @@ func addNotReadyKey(adp podadapter.Adapter, pod *v1.Pod, msg Message, condType v
 			condition.LastTransitionTime = metav1.Now()
 		}
 
-		// set pod ready condition to "False"
-		util.UpdatePodReadyCondition(newPod)
+		// Write only the gate condition. Ready is kubelet-owned: kubelet derives it from
+		// ContainersReady plus the readiness gates. So writing it anyway is harmful:
+		// might shortly flip the pod back to the state we just moved it away from.
 		if err = adp.UpdatePodStatus(newPod); err != nil {
 			return err
 		}
@@ -96,8 +96,7 @@ func removeNotReadyKey(adp podadapter.Adapter, pod *v1.Pod, msg Message, condTyp
 		}
 		condition.Message = messages.dump()
 		condition.LastTransitionTime = metav1.Now()
-		// Re-evaluate pod Ready condition after updating readiness gate
-		util.UpdatePodReadyCondition(newPod)
+		// Ready is left to kubelet here too; see the note in addNotReadyKey.
 		if err = adp.UpdatePodStatus(newPod); err != nil {
 			return err
 		}

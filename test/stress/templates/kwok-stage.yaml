@@ -1,5 +1,16 @@
 # KWOK Stage resources to simulate Pod lifecycle for stress testing.
 # These stages automatically transition Pods to Ready state and handle deletion.
+#
+# Readiness-gate fidelity: the controller only writes readiness gates (InPlaceUpdateReady,
+# InstancePodReady) and leaves the kubelet-owned Ready condition to the kubelet. KWOK has no
+# kubelet, so the Ready promotion is emulated exclusively by the gate-aware pod-ready stage:
+#   - pod-running        runs containers (ContainersReady=True) but never promotes Ready;
+#   - pod-ready          flips Ready=True only while no gate is False;
+#   - pod-ready-blocked  flips Ready=False as soon as any gate is False (take-out-of-rotation).
+# Gate types must be kept in sync with api/workloads/constants (PodReadinessGate types the
+# controller injects). Known fidelity gap (accepted): a missing gate condition is treated as
+# satisfied, unlike kubelet which treats it as not-ready; the controller fills both gate
+# conditions right after Pod creation, so the window is transient.
 ---
 apiVersion: kwok.x-k8s.io/v1alpha1
 kind: Stage
@@ -70,8 +81,11 @@ spec:
         - type: Initialized
           status: "True"
           lastTransitionTime: {{ $now | Quote }}
+        # Ready must stay False here: only the gate-aware pod-ready stage may promote a pod
+        # to Ready=True. Writing Ready=True unconditionally would briefly expose a pod the
+        # controller has already gated out, before pod-ready-blocked flips it back.
         - type: Ready
-          status: "True"
+          status: "False"
           lastTransitionTime: {{ $now | Quote }}
         - type: ContainersReady
           status: "True"
@@ -111,6 +125,12 @@ spec:
         operator: 'NotIn'
         values:
           - "True"
+      # Only promote to Ready while the controller has not gated the pod out of rotation.
+      # Emulates kubelet deriving Ready from the readiness gates (see file header).
+      - key: '[.status.conditions.[]? | select((.type == "InPlaceUpdateReady" or .type == "InstancePodReady") and .status == "False")] | if length > 0 then "False" else "True" end'
+        operator: 'NotIn'
+        values:
+          - "False"
   delay:
     durationMilliseconds: 1000
   next:
@@ -142,6 +162,42 @@ spec:
             running:
               startedAt: {{ $now | Quote }}
         {{ end }}
+---
+# Gate-aware counterpart of pod-ready: when the controller has written any readiness gate to
+# False (markPodNotReady / take-out-of-rotation), flip Ready to False exactly like a kubelet
+# would. Only the Ready condition is patched; Pod statuses are merged with a strategic merge
+# patch for Pods, so the controller-owned gate conditions are preserved.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-ready-blocked
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: '.metadata.deletionTimestamp'
+        operator: 'DoesNotExist'
+      - key: '.status.podIP'
+        operator: 'Exists'
+      - key: '.status.conditions.[] | select( .type == "Ready" ) | .status'
+        operator: 'NotIn'
+        values:
+          - "False"
+      - key: '[.status.conditions.[]? | select((.type == "InPlaceUpdateReady" or .type == "InstancePodReady") and .status == "False")] | if length > 0 then "False" else "True" end'
+        operator: 'In'
+        values:
+          - "False"
+  delay:
+    durationMilliseconds: 1000
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      conditions:
+        - type: Ready
+          status: "False"
+          lastTransitionTime: {{ $now | Quote }}
 ---
 apiVersion: kwok.x-k8s.io/v1alpha1
 kind: Stage

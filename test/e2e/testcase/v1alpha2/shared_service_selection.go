@@ -260,8 +260,9 @@ func expectLeaderWorkerPodsMatching(
 				return false
 			}
 			component := pod.Labels[constants.ComponentNameLabelKey]
-			if component == "" || pod.Status.PodIP == "" {
-				logger.V(1).Info("waiting for labeled leader-worker pods", "pod", pod.Name, "component", component, "podIP", pod.Status.PodIP)
+			ready := podReady(&pod)
+			if component == "" || pod.Status.PodIP == "" || !ready {
+				logger.V(1).Info("waiting for labeled ready leader-worker pods", "pod", pod.Name, "component", component, "podIP", pod.Status.PodIP, "ready", ready)
 				return false
 			}
 			if matches != nil && !matches(&pod) {
@@ -360,6 +361,17 @@ func podIPsByName(podsByComponent map[string]corev1.Pod) map[string]string {
 		podIPs[pod.Name] = pod.Status.PodIP
 	}
 	return podIPs
+}
+
+// podReady reports whether the kubelet has published Ready=True for the pod.
+func podReady(pod *corev1.Pod) bool {
+	for i := range pod.Status.Conditions {
+		c := &pod.Status.Conditions[i]
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func dumpSharedServiceSelectionDebugInfo(
