@@ -135,7 +135,9 @@ func SetupWebhookTestEnv() {
 			if err != nil {
 				return err
 			}
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				return err
+			}
 			return nil
 		}, 10*time.Second, 100*time.Millisecond,
 	).Should(Succeed())
