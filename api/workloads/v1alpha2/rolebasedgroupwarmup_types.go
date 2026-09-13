@@ -24,12 +24,11 @@ import (
 type WarmupJobPhase string
 
 const (
-	WarmupJobPhaseNone             WarmupJobPhase = ""
-	WarmupJobPhaseRunning          WarmupJobPhase = "Running"
-	WarmupJobPhaseWaitingForTarget WarmupJobPhase = "WaitingForTarget"
-	WarmupJobPhasePaused           WarmupJobPhase = "Paused"
-	WarmupJobPhaseCompleted        WarmupJobPhase = "Completed"
-	WarmupJobPhaseFailed           WarmupJobPhase = "Failed"
+	WarmupJobPhaseNone      WarmupJobPhase = ""
+	WarmupJobPhaseRunning   WarmupJobPhase = "Running"
+	WarmupJobPhasePaused    WarmupJobPhase = "Paused"
+	WarmupJobPhaseCompleted WarmupJobPhase = "Completed"
+	WarmupJobPhaseFailed    WarmupJobPhase = "Failed"
 )
 
 type ImagePreloadAction struct {

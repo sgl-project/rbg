@@ -167,9 +167,7 @@ At least one of `imagePreload` or `customizedAction` must be specified (enforced
 | `phase`          | `WarmupJobPhase`     | Current phase of the warmup job.                         |
 | `conditions`     | `[]metav1.Condition` | Standard Kubernetes conditions (see below).              |
 
-**WarmupJobPhase values:** `Running`, `WaitingForTarget`, `Paused`, `Completed`, `Failed`.
-
-`WaitingForTarget` is used when `targetRoleBasedGroup.name` does not exist yet. The controller records `TargetReady=False` and periodically retries. If the target RBG is created later, the Warmup returns to normal reconciliation.
+**WarmupJobPhase values:** `Running`, `Paused`, `Completed`, `Failed`.
 
 **Condition types:**
 
@@ -177,9 +175,8 @@ At least one of `imagePreload` or `customizedAction` must be specified (enforced
 |------------------|--------|--------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `Complete`       | True   | `WarmupCompleted`              | All nodes reached a terminal state and failures are within tolerance.                                                                                                   |
 | `Complete`       | True   | `NoNodesMatched`               | No nodes matched the target configuration; job completed immediately.                                                                                                   |
-| `TargetReady`    | False  | `RoleBasedGroupNotFound`       | The target RoleBasedGroup does not exist yet; reconciliation is retried periodically.                                                                                  |
-| `TargetReady`    | True   | `RoleBasedGroupFound`           | The target RoleBasedGroup exists and can be inspected for target Pods.                                                                                                  |
 | `Failed`         | True   | `GlobalTimeoutExceeded`        | `globalTimeoutSeconds` exceeded; active Pods were deleted.                                                                                                              |
+| `Failed`         | True   | `InvalidTarget`                | The referenced RoleBasedGroup does not exist; the one-shot Warmup must be recreated after fixing the target.                                                            |
 | `Failed`         | True   | `MaxFailedNodesExceeded`       | Permanently-failed nodes exceeded `maxFailedNodes`.                                                                                                                     |
 | `VolumeConflict` | True   | `ConflictingVolumeDefinitions` | Two roles defined the same volume name with different specs; the first definition wins. Containers from the other role may reference a volume spec they did not expect. |
 
@@ -283,7 +280,7 @@ spec:
 
 ![alt text](warmup-job-state-machine.png)
 
-- **Step 1:** The controller validates the Warmup actions before discovering nodes. It then discovers target nodes from `spec.targetNodes` (by node names or label selector) or `spec.targetRoleBasedGroup` (by listing Pods of the referenced RBG and extracting their node assignments). If the referenced RBG does not exist, it sets `status.phase` to `WaitingForTarget`, records `TargetReady=False` with reason `RoleBasedGroupNotFound`, and retries periodically. Once the RBG exists, it records `TargetReady=True` and continues normal reconciliation.
+- **Step 1:** The controller validates the Warmup actions before discovering nodes. It then discovers target nodes from `spec.targetNodes` (by node names or label selector) or `spec.targetRoleBasedGroup` (by listing Pods of the referenced RBG and extracting their node assignments). If the referenced RBG does not exist, the one-shot Warmup enters `Failed` with reason `InvalidTarget` and does not retry. The user must fix the target and create a new Warmup.
 
 - **Step 2:** The controller creates one warmup Pod per target node. Each Pod is pinned to its node via `nodeSelector: {"kubernetes.io/hostname": <nodeName>}`. Pods are labeled with the warmup CR name, UID, and target node name for tracking. The total number of concurrent warmup Pods is limited by `spec.policies.parallelism`. Pods are created in deterministic order (sorted by node name) to ensure consistent behavior across controller restarts.
 
