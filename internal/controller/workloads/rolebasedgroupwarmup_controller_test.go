@@ -32,6 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -966,5 +967,96 @@ func TestReconcile_WaitingTargetResumesAfterRBGCreated(t *testing.T) {
 	}
 	if len(warmupPods.Items) != 1 {
 		t.Fatalf("expected one warmup pod after target appears, got %d", len(warmupPods.Items))
+	}
+}
+
+func TestReconcile_InvalidLegacyActionsFailBeforeNodeDiscovery(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions workloadsv1alpha2.WarmupActions
+	}{
+		{
+			name: "empty image list",
+			actions: workloadsv1alpha2.WarmupActions{
+				ImagePreload: &workloadsv1alpha2.ImagePreloadAction{},
+			},
+		},
+		{
+			name: "empty customized containers",
+			actions: workloadsv1alpha2.WarmupActions{
+				CustomizedAction: &workloadsv1alpha2.CustomizedAction{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "invalid-legacy", Namespace: "default", UID: types.UID(tt.name)},
+				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+					TargetNodes: &workloadsv1alpha2.TargetNodes{
+						NodeSelector:  map[string]string{"does-not-exist": "true"},
+						WarmupActions: tt.actions,
+					},
+				},
+			}
+			r := newWarmupReconciler(warmup)
+
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: warmup.Name, Namespace: warmup.Namespace}}); err != nil {
+				t.Fatalf("unexpected reconcile error: %v", err)
+			}
+
+			updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+			if err := r.Get(ctx, types.NamespacedName{Name: warmup.Name, Namespace: warmup.Namespace}, updated); err != nil {
+				t.Fatalf("failed to get warmup: %v", err)
+			}
+			if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+				t.Fatalf("expected Failed phase, got %q", updated.Status.Phase)
+			}
+			if len(updated.Status.Conditions) == 0 || updated.Status.Conditions[0].Reason != "InvalidWarmupSpec" {
+				t.Fatalf("expected InvalidWarmupSpec condition, got %#v", updated.Status.Conditions)
+			}
+		})
+	}
+}
+
+func TestWaitForTargetDoesNotWriteUnchangedStatus(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "missing-rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			TargetRoleBasedGroup: &workloadsv1alpha2.TargetRoleBasedGroup{Name: "does-not-exist"},
+		},
+	}
+	statusUpdates := 0
+	scheme := newWarmupTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(warmup).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupWarmup{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" {
+					statusUpdates++
+				}
+				return c.SubResource(subResourceName).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &RoleBasedGroupWarmupReconciler{Client: fakeClient, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+
+	if _, err := r.waitForTarget(ctx, warmup); err != nil {
+		t.Fatalf("first waitForTarget failed: %v", err)
+	}
+	if statusUpdates != 1 {
+		t.Fatalf("expected one status update on first wait, got %d", statusUpdates)
+	}
+
+	if _, err := r.waitForTarget(ctx, warmup); err != nil {
+		t.Fatalf("second waitForTarget failed: %v", err)
+	}
+	if statusUpdates != 1 {
+		t.Fatalf("expected unchanged status to avoid another update, got %d updates", statusUpdates)
 	}
 }

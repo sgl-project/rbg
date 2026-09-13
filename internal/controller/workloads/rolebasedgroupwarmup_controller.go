@@ -174,6 +174,12 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileFinished(ctx context.Context, 
 func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	if err := validateWarmupSpec(warmup.Spec); err != nil {
+		logger.Error(err, "invalid warmup specification")
+		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, nil, nil, nil, nil,
+			"InvalidWarmupSpec", err.Error())
+	}
+
 	activePods, succeededPods, failedPods, err := r.listWarmupPods(ctx, *warmup)
 	if err != nil {
 		logger.Error(err, "failed to list warmup pods")
@@ -187,12 +193,6 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		}
 		logger.Error(err, "failed to get desired nodes to warm up")
 		return ctrl.Result{}, err
-	}
-
-	if err := validateWarmupActions(desiredNodes); err != nil {
-		logger.Error(err, "invalid warmup actions")
-		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes,
-			"InvalidWarmupSpec", err.Error())
 	}
 
 	if warmup.Spec.TargetRoleBasedGroup != nil {
@@ -246,6 +246,7 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 }
 
 func (r *RoleBasedGroupWarmupReconciler) waitForTarget(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup) (ctrl.Result, error) {
+	oldStatus := warmup.Status.DeepCopy()
 	condition := metav1.Condition{
 		Type:               "TargetReady",
 		Status:             metav1.ConditionFalse,
@@ -255,8 +256,10 @@ func (r *RoleBasedGroupWarmupReconciler) waitForTarget(ctx context.Context, warm
 	}
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, condition)
 	warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseWaitingForTarget
-	if err := r.Status().Update(ctx, warmup); err != nil {
-		return ctrl.Result{}, err
+	if !apiequality.Semantic.DeepEqual(*oldStatus, warmup.Status) {
+		if err := r.Status().Update(ctx, warmup); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	return ctrl.Result{RequeueAfter: MissingTargetRequeuePeriod}, nil
 }
@@ -294,6 +297,19 @@ func validateWarmupActions(desiredNodes map[string][]workloadsv1alpha2.WarmupAct
 		}
 	}
 	return nil
+}
+
+func validateWarmupSpec(spec workloadsv1alpha2.RoleBasedGroupWarmupSpec) error {
+	actionsByTarget := make(map[string][]workloadsv1alpha2.WarmupActions)
+	if spec.TargetNodes != nil {
+		actionsByTarget["targetNodes"] = []workloadsv1alpha2.WarmupActions{spec.TargetNodes.WarmupActions}
+	}
+	if spec.TargetRoleBasedGroup != nil {
+		for roleName, actions := range spec.TargetRoleBasedGroup.Roles {
+			actionsByTarget[fmt.Sprintf("role %q", roleName)] = []workloadsv1alpha2.WarmupActions{actions}
+		}
+	}
+	return validateWarmupActions(actionsByTarget)
 }
 
 // computePermanentlyFailedNodes returns the set of nodes whose failure count exceeds the backoff limit.
