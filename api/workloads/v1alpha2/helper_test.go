@@ -873,3 +873,23 @@ func TestRoleBasedGroup_GetGroupSize(t *testing.T) {
 
 	assert.Equal(t, 14, rbg.GetGroupSize())
 }
+
+func TestNormalizeUpdateStrategyType(t *testing.T) {
+	tests := []struct {
+		name string
+		in   UpdateStrategyType
+		want UpdateStrategyType
+	}{
+		{"empty defaults to InPlaceIfPossible", "", InPlaceIfPossibleUpdateStrategyType},
+		{"legacy Recreate maps to RecreatePod", LegacyRecreateUpdateStrategyType, RecreatePodUpdateStrategyType},
+		{"RecreatePod passes through", RecreatePodUpdateStrategyType, RecreatePodUpdateStrategyType},
+		{"InPlaceIfPossible passes through", InPlaceIfPossibleUpdateStrategyType, InPlaceIfPossibleUpdateStrategyType},
+		{"InPlaceOnly passes through", InPlaceOnlyUpdateStrategyType, InPlaceOnlyUpdateStrategyType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, NormalizeUpdateStrategyType(tt.in))
+		})
+	}
+}

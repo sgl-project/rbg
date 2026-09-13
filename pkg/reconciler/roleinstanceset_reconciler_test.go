@@ -395,6 +395,65 @@ func TestRoleInstanceSetReconciler_RoundsUpMaxUnavailableWhenMaxSurgeIsZero(t *t
 	assert.Equal(t, "0", ris.Spec.UpdateStrategy.MaxSurge.String())
 }
 
+func TestRoleInstanceSetReconciler_NormalizesLegacyUpdateStrategyType(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	tests := []struct {
+		name string
+		in   workloadsv1alpha2.UpdateStrategyType
+		want workloadsv1alpha2.UpdateStrategyType
+	}{
+		{
+			name: "legacy Recreate becomes RecreatePod",
+			in:   workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+			want: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+		},
+		{
+			name: "empty becomes InPlaceIfPossible",
+			in:   "",
+			want: workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := wrappersv2.BuildStandaloneRole("test-role").
+				WithReplicas(1).
+				WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet").
+				WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
+					Type:           tt.in,
+					MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+					MaxSurge:       ptr.To(intstr.FromInt32(0)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
+				}).
+				Obj()
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+				Obj()
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+
+			ctx := context.Background()
+			err := reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
+			assert.NoError(t, err)
+
+			ris := &workloadsv1alpha2.RoleInstanceSet{}
+			err = fakeClient.Get(
+				ctx,
+				types.NamespacedName{
+					Name:      rbg.GetWorkloadName(&role),
+					Namespace: rbg.Namespace,
+				},
+				ris,
+			)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, ris.Spec.UpdateStrategy.Type)
+		})
+	}
+}
+
 func TestRoleInstanceSetReconciler_ValidateRolloutStrategyRoundsUpMaxUnavailableWhenMaxSurgeIsZero(t *testing.T) {
 	strategy := &workloadsv1alpha2.RolloutStrategy{
 		Type: workloadsv1alpha2.RollingUpdateStrategyType,

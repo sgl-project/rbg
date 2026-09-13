@@ -137,6 +137,7 @@ const (
 	warmupCRDName = "rolebasedgroupwarmups.workloads.x-k8s.io"
 
 	validatingWebhookName = "rbgs-validating-webhook-configuration"
+	mutatingWebhookName   = "rbgs-mutating-webhook-configuration"
 
 	// fromAppVersionPrefix is what the v0.7.0 chart records as its appVersion.
 	fromAppVersionPrefix = "0.7.0"

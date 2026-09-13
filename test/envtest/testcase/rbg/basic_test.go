@@ -18,6 +18,7 @@ package rbg
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -291,6 +292,88 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 			}
 
 			expectInvalidCreate(ris)
+		})
+
+		It("Should accept all valid v1alpha2 update strategy types", func() {
+			for _, updateType := range []workloadsv1alpha2.UpdateStrategyType{
+				workloadsv1alpha2.RecreatePodUpdateStrategyType,
+				workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+				workloadsv1alpha2.InPlaceOnlyUpdateStrategyType,
+			} {
+				rbg := &workloadsv1alpha2.RoleBasedGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "valid-rbg-update-type-" + strings.ToLower(string(updateType)),
+						Namespace: testNs,
+					},
+					Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha2.RoleSpec{
+							{
+								Name:     "worker",
+								Replicas: ptr.To(int32(1)),
+								RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+									Type: workloadsv1alpha2.RollingUpdateStrategyType,
+									RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+										Type: updateType,
+									},
+								},
+								Pattern: workloadsv1alpha2.Pattern{
+									StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+										TemplateSource: workloadsv1alpha2.TemplateSource{
+											Template: ptr.To(nginxPodTemplate()),
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+
+				Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+			}
+		})
+
+		It("Should allow updating a valid v1alpha2 rolloutStrategy", func() {
+			rbgName := "valid-rbg-update-path"
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rbgName,
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
+								Type: workloadsv1alpha2.RollingUpdateStrategyType,
+								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+									Type: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+								},
+							},
+							Pattern: workloadsv1alpha2.Pattern{
+								StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+									TemplateSource: workloadsv1alpha2.TemplateSource{
+										Template: ptr.To(nginxPodTemplate()),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			// Flip an unrelated spec field to prove that updates to objects carrying
+			// an enum-valid update type are not rejected by the CRD validation.
+			Eventually(func() error {
+				created := &workloadsv1alpha2.RoleBasedGroup{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{Name: rbgName, Namespace: testNs}, created); err != nil {
+					return err
+				}
+				created.Spec.Roles[0].RolloutStrategy.RollingUpdate.Paused = true
+				return testutil.K8sClient.Update(testutil.Ctx, created)
+			}, timeout, interval).Should(Succeed())
 		})
 	})
 })

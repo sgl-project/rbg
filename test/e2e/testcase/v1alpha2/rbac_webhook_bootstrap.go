@@ -141,7 +141,7 @@ func RunRBACAndWebhookBootstrapTestCases(f *framework.Framework) {
 			)
 
 			ginkgo.It(
-				"should inject the CA bundle into the validating webhook and conversion CRDs", func() {
+				"should inject the CA bundle into the admission webhooks and conversion CRDs", func() {
 					for _, name := range rbgwebhook.ValidatingWebhookConfigurations() {
 						gomega.Eventually(func() error {
 							vwc, err := f.Clientset.AdmissionregistrationV1().ValidatingWebhookConfigurations().Get(f.Ctx, name, metav1.GetOptions{})
@@ -159,6 +159,25 @@ func RunRBACAndWebhookBootstrapTestCases(f *framework.Framework) {
 							return nil
 						}, bootstrapTimeout, bootstrapInterval).Should(gomega.Succeed(),
 							"caBundle must be injected into ValidatingWebhookConfiguration %s", name)
+					}
+
+					for _, name := range rbgwebhook.MutatingWebhookConfigurations() {
+						gomega.Eventually(func() error {
+							mwc, err := f.Clientset.AdmissionregistrationV1().MutatingWebhookConfigurations().Get(f.Ctx, name, metav1.GetOptions{})
+							if err != nil {
+								return err
+							}
+							if len(mwc.Webhooks) == 0 {
+								return fmt.Errorf("MutatingWebhookConfiguration %s has no webhooks", name)
+							}
+							for _, wh := range mwc.Webhooks {
+								if len(wh.ClientConfig.CABundle) == 0 {
+									return fmt.Errorf("webhook %q in %s has empty caBundle", wh.Name, name)
+								}
+							}
+							return nil
+						}, bootstrapTimeout, bootstrapInterval).Should(gomega.Succeed(),
+							"caBundle must be injected into MutatingWebhookConfiguration %s", name)
 					}
 
 					crdClient := newCRDClient()

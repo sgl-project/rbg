@@ -42,6 +42,21 @@ const (
 	fxCustom     = "up-cc"
 	fxSet        = "up-set"
 	fxV1alpha1   = "up-v1a1"
+	// fxLegacyStrategy stores the v1alpha1 spelling "Recreate" of the update
+	// strategy type, and fxLegacyStrategyEmpty stores an explicit empty string.
+	// v0.7.0's CRDs had no enum on that field, so both are values only objects
+	// written before the upgrade can carry; the enum the new CRDs add rejects any
+	// later write that keeps them. Phase 3 asserts the upgrade leaves the stored
+	// values alone, and phase 4 proves the mutating webhook heals them on the next
+	// real write.
+	fxLegacyStrategy      = "up-legacy"
+	fxLegacyStrategyEmpty = "up-legacy-empty"
+	// fxLegacySet is a RoleBasedGroupSet whose GroupTemplate carries the v1alpha1
+	// spelling "Recreate" of the update strategy type. Unlike the standalone
+	// fxLegacyStrategy fixture, its child is produced by the RBGS controller, which
+	// copies the template verbatim -- so a legacy value reaches the child even though
+	// no RoleBasedGroupSet defaulter ever ran on that child.
+	fxLegacySet = "up-legacy-set"
 	// fxPending never becomes ready, and fxMidRoll is half-rolled when the upgrade
 	// lands. Both exist because every other fixture is converged and quiet by the
 	// time the upgrade starts, which is the one cluster state an upgrade is least
@@ -118,6 +133,7 @@ func buildFixtures(ns string) []*workloadsv1alpha2.RoleBasedGroup {
 		buildScalingAdapterFixture(ns),
 		buildCustomComponentsFixture(ns),
 		buildMidRolloutFixture(ns),
+		buildLegacyStrategyFixture(ns),
 	}
 }
 
@@ -303,6 +319,85 @@ func buildMidRolloutFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
 				WithTemplate(&template).
 				Obj(),
 		}).Obj()
+}
+
+// legacyStrategyRole is the role of both legacy-strategy fixtures. It is shared so
+// the recorded RoleInstanceSet repair in snapshot.go names the right owner.
+const legacyStrategyRole = "worker"
+
+// buildLegacyStrategyFixture stores the v1alpha1 spelling "Recreate" of the update
+// strategy type, which v0.7.0's enum-less CRD accepted and its controller copied
+// verbatim into the RoleInstanceSet. One replica, because the strategy type only
+// shapes how a rollout proceeds and nothing here rolls.
+func buildLegacyStrategyFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
+	return wrappersv2.BuildBasicRoleBasedGroup(fxLegacyStrategy, ns).
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole(legacyStrategyRole).
+				WithReplicas(1).
+				WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
+					Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+				}).
+				Obj(),
+		}).Obj()
+}
+
+// buildLegacyStrategyEmptyFixture is the same shape with the type left unset. It is
+// written through an unstructured object in phase 1 so that an explicit `type: ""`
+// really is stored: the typed client's omitempty tags would drop the field, and an
+// absent field is not the stored empty value phase 3 claims to preserve.
+func buildLegacyStrategyEmptyFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
+	return wrappersv2.BuildBasicRoleBasedGroup(fxLegacyStrategyEmpty, ns).
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole(legacyStrategyRole).
+				WithReplicas(1).
+				WithRollingUpdate(workloadsv1alpha2.RollingUpdate{}).
+				Obj(),
+		}).Obj()
+}
+
+// buildLegacySetFixture stores a RoleBasedGroupSet whose GroupTemplate role carries
+// the v1alpha1 "Recreate" spelling of the update strategy type. v0.7.0's enum-less
+// CRD accepted it and its RBGS controller copied it verbatim into the child, which
+// is how a legacy value can survive in a child no defaulter ever ran on.
+//
+// Phase 3 asserts the upgrade leaves both the template and the child alone; phase 4
+// then heals the child and the template on writes and requires the RBGS controller
+// to keep the children quiet instead of re-issuing updates forever.
+func buildLegacySetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
+	set := wrappersv2.BuildBasicRoleBasedGroupSet(fxLegacySet, ns).WithReplicas(1).Obj()
+	set.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{
+		wrappersv2.BuildStandaloneRole(legacyStrategyRole).
+			WithReplicas(1).
+			WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
+				Type: workloadsv1alpha2.LegacyRecreateUpdateStrategyType,
+			}).
+			Obj(),
+	}
+	return set
+}
+
+// legacySetChildName is the name of the child RoleBasedGroup the legacy-set fixture
+// produces, computed through the same <set>-<index> scheme the controller uses.
+func legacySetChildName() string {
+	return fxLegacySet + "-0"
+}
+
+// legacySetChildRISName is the name of the RoleInstanceSet the legacy-set fixture's
+// child owns, computed through the same production helper the controller uses so the
+// recorded generation bump in snapshot.go cannot drift from the real object.
+func legacySetChildRISName() string {
+	child := wrappersv2.BuildBasicRoleBasedGroup(legacySetChildName(), "x").Obj()
+	role := wrappersv2.BuildStandaloneRole(legacyStrategyRole).Obj()
+	return child.GetWorkloadName(&role)
+}
+
+// legacyStrategyRISName is the name of the RoleInstanceSet the legacy-strategy
+// fixtures own, computed through the same production helper the controller uses so
+// the recorded generation bump in snapshot.go cannot drift from the real object.
+func legacyStrategyRISName() string {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup(fxLegacyStrategy, "x")
+	role := wrappersv2.BuildStandaloneRole(legacyStrategyRole).Obj()
+	return rbg.GetWorkloadName(&role)
 }
 
 // buildPendingFixture never becomes ready: its pod cannot be scheduled anywhere.

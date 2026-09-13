@@ -8,7 +8,7 @@ CRD upgrade Job into your Kubernetes cluster.
 
 - **Controller manager** (`rbgs-controller-manager` Deployment) reconciling RBG workloads.
 - **RBAC**: ServiceAccounts, ClusterRole/ClusterRoleBinding, and cert Role/RoleBinding.
-- **Webhooks**: a validating webhook configuration and the webhook Service
+- **Webhooks**: validating and mutating webhook configurations and the webhook Service
   (certificates are bootstrapped by the controller itself, no cert-manager required).
 - **CRD Upgrader Job** (optional, enabled by default): a `pre-install,pre-upgrade` Helm hook Job
   (with its own ServiceAccount and RBAC) that applies/upgrades the RBG CRDs before the controller starts.

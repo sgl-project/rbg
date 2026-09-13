@@ -26,6 +26,8 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -63,6 +65,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		// neither of these is a plain ready-by-the-end RoleBasedGroup.
 		pending   *workloadsv1alpha2.RoleBasedGroup
 		legacySet *workloadsv1alpha1.RoleBasedGroupSet
+		// legacySetV2 is the v1alpha2 RoleBasedGroupSet whose GroupTemplate carries the
+		// legacy "Recreate" spelling. It is kept separate from legacySet (a v1alpha1
+		// set) because the two prove different things: the v1alpha1 fixture covers the
+		// conversion path, this one covers the RBGS -> child RBG propagation of a
+		// legacy value and the controller's duty not to fight its healing.
+		legacySetV2 *workloadsv1alpha2.RoleBasedGroupSet
 
 		// before is the pre-upgrade snapshot every phase 3 assertion compares against.
 		before map[string]RBGSnapshot
@@ -93,6 +101,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			legacy = buildV1alpha1Fixture(f.Namespace)
 			pending = buildPendingFixture(f.Namespace)
 			legacySet = buildV1alpha1SetFixture(f.Namespace)
+			legacySetV2 = buildLegacySetFixture(f.Namespace)
 		},
 	)
 
@@ -150,6 +159,40 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
+		"[phase 1] stores an explicit empty update strategy type", func() {
+			// v0.7.0's CRDs had no enum on the update strategy type, so an object
+			// could carry any string, including the empty one. The typed client's
+			// omitempty tags cannot express `type: ""` -- they drop the field -- so
+			// this fixture is written through an unstructured object and the field
+			// is injected by hand. Phase 3 then has a stored empty value to assert
+			// on, which is what a v0.7.0 object written with the field unset
+			// actually looks like.
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(buildLegacyStrategyEmptyFixture(f.Namespace))
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			empty := &unstructured.Unstructured{Object: raw}
+			gomega.Expect(setFirstRoleStrategyType(empty, "")).To(gomega.Succeed())
+
+			gomega.Expect(f.Client.Create(f.Ctx, empty)).To(gomega.Succeed())
+
+			stored := &unstructured.Unstructured{}
+			stored.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, stored),
+			).To(gomega.Succeed())
+			val, found, err := firstRoleStrategyType(stored)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(found).To(
+				gomega.BeTrue(), "the explicit empty strategy type was dropped instead of stored",
+			)
+			gomega.Expect(val).To(gomega.BeEmpty())
+
+			// The fixture is part of the experiment, so it must converge like every
+			// other one before the snapshot is taken.
+			f.ExpectRbgV2Equal(buildLegacyStrategyEmptyFixture(f.Namespace))
+		},
+	)
+
+	ginkgo.It(
 		"[phase 1] creates RoleBasedGroups on v0.7.0 and waits for every role to be ready", func() {
 			for _, rbg := range rbgs {
 				ginkgo.By("creating " + rbg.Name)
@@ -158,6 +201,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(f.Client.Create(f.Ctx, rbgSet)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacy)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacySet)).To(gomega.Succeed())
+			gomega.Expect(f.Client.Create(f.Ctx, legacySetV2)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, pending)).To(gomega.Succeed())
 
 			for _, rbg := range rbgs {
@@ -166,6 +210,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			}
 			f.ExpectRbgV2ScalingAdapterEqual(findFixture(rbgs, fxScaling))
 			f.ExpectRbgSetV2Equal(rbgSet)
+			f.ExpectRbgSetV2Equal(legacySetV2)
 			f.ExpectRbgEqual(legacy)
 			f.ExpectRbgSetEqual(legacySet)
 
@@ -358,6 +403,77 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			)
 			gomega.Expect(ccPattern.RestartPolicyConfig).To(
 				gomega.BeNil(), "restartPolicyConfig was written onto an object that never had it",
+			)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 3] leaves the stored update strategy type of v0.7.0 objects as it was written", func() {
+			// The new CRDs add an enum to the update strategy type that rejects both
+			// values these fixtures store. Any write back of the stored object --
+			// controller-driven or not -- would therefore 422 on the new CRDs and
+			// silently stop every later write to the role, while the object itself
+			// stays broken. That the values survive the upgrade untouched is what
+			// lets the mutating webhook heal them on the user's next write instead,
+			// which phase 4 exercises.
+			legacyRBG := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, legacyRBG),
+			).To(gomega.Succeed())
+			gomega.Expect(legacyRBG.Spec.Roles).To(gomega.HaveLen(1))
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.LegacyRecreateUpdateStrategyType),
+				"the stored legacy strategy type was rewritten",
+			)
+
+			empty := &unstructured.Unstructured{}
+			empty.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, empty),
+			).To(gomega.Succeed())
+			val, found, err := firstRoleStrategyType(empty)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(found).To(
+				gomega.BeTrue(), "the explicit empty strategy type was removed from the stored object",
+			)
+			gomega.Expect(val).To(
+				gomega.BeEmpty(), "the stored empty strategy type was rewritten",
+			)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 3] leaves a legacy RoleBasedGroupSet template and its child alone", func() {
+			// The RBGS controller copies the GroupTemplate verbatim into its children, so
+			// a legacy "Recreate" value written before the enum reaches both the stored
+			// set and the child the controller stamped out of it. The upgrade must leave
+			// both alone: this is the input the phase-4 convergence spec starts from, and
+			// a rewrite here would either 422 on the new CRD enum or roll the child's
+			// pods for no reason.
+			set := &workloadsv1alpha2.RoleBasedGroupSet{}
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacySet}, set),
+			).To(gomega.Succeed())
+			gomega.Expect(set.Spec.GroupTemplate.Spec.Roles).To(gomega.HaveLen(1))
+			gomega.Expect(set.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
+			gomega.Expect(set.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
+			gomega.Expect(set.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.LegacyRecreateUpdateStrategyType),
+				"the stored legacy template strategy type was rewritten",
+			)
+
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: legacySetChildName()}, child),
+			).To(gomega.Succeed())
+			gomega.Expect(child.Spec.Roles).To(gomega.HaveLen(1))
+			gomega.Expect(child.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
+			gomega.Expect(child.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
+			gomega.Expect(child.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.LegacyRecreateUpdateStrategyType),
+				"the stored legacy strategy type in the child RoleBasedGroup was rewritten",
 			)
 		},
 	)
@@ -622,7 +738,8 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkSameRBGSet(fs, baseline, after)
 			checkNoPodChurn(fs, baseline, after)
 			checkNoRestarts(fs, baseline, after)
-			checkOwnersStable(fs, baseline, after, upgradeRewrites.acrossStarts(controllerStarts).generationBumps)
+			rec := upgradeRewrites.acrossStarts(controllerStarts)
+			checkOwnersStable(fs, baseline, after, rec.generationBumps, rec.objectBumps)
 			fs.report()
 		},
 	)
@@ -762,6 +879,164 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkPodMetadataStable(fs, baseline, settled)
 			fs.report()
 			f.ExpectRbgSetEqual(legacySet)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 4] heals legacy update strategy types on the next write through the mutating webhook", func() {
+			// The stored values phase 3 confirmed cannot be written again: the new
+			// CRD enums reject both. What keeps upgraded clusters working is the
+			// mutating webhook, which normalizes a legacy value before validation.
+			// This spec performs the first post-upgrade write a user or the
+			// controller would make -- a metadata-only update -- and asserts the
+			// stored value comes out of it as a value the enum accepts.
+			//
+			// Both writes change the stored spec, so each fixture may roll its pod;
+			// both are added to `mutated` for the untouched checks.
+			heal := func(name string) {
+				mutated = append(mutated, name)
+				key := client.ObjectKey{Namespace: f.Namespace, Name: name}
+				ginkgo.By("annotating " + name + " through the mutating webhook")
+				gomega.Expect(
+					retry.RetryOnConflict(
+						retry.DefaultRetry, func() error {
+							live := &workloadsv1alpha2.RoleBasedGroup{}
+							if err := f.Client.Get(f.Ctx, key, live); err != nil {
+								return err
+							}
+							if live.Annotations == nil {
+								live.Annotations = map[string]string{}
+							}
+							live.Annotations["upgrade-e2e/legacy-strategy-healed"] = "1"
+							return f.Client.Update(f.Ctx, live)
+						},
+					),
+				).To(gomega.Succeed())
+			}
+
+			heal(fxLegacyStrategy)
+			heal(fxLegacyStrategyEmpty)
+
+			legacyRBG := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategy}, legacyRBG),
+			).To(gomega.Succeed())
+			gomega.Expect(legacyRBG.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+				"the mutating webhook did not normalize the legacy strategy type",
+			)
+
+			empty := &unstructured.Unstructured{}
+			empty.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			gomega.Expect(
+				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacyStrategyEmpty}, empty),
+			).To(gomega.Succeed())
+			val, found, err := firstRoleStrategyType(empty)
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(found).To(
+				gomega.BeTrue(), "the mutating webhook did not default the empty strategy type",
+			)
+			gomega.Expect(val).To(gomega.Equal(string(workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType)))
+		},
+	)
+
+	ginkgo.It(
+		"[phase 4] heals a legacy RoleBasedGroupSet template without re-updating its children", func() {
+			// The RoleBasedGroupSet defaulter only runs on the set's own spec writes, so
+			// the stored template can keep the legacy "Recreate" spelling while a child
+			// gets healed on its own write at any time. An unnormalized comparison would
+			// then read parent(Recreate) and child(RecreatePod) as different and re-issue
+			// child updates forever (webhooks on) or fail validation on every write
+			// (webhooks off). The controller must normalize before comparing and before
+			// assigning into children so the healed child is left alone, and the children
+			// must stay quiet once the template itself heals.
+			children := childRBGNames(f, fxLegacySet)
+			gomega.Expect(children).To(
+				gomega.HaveLen(1), "the legacy set has no child RoleBasedGroup, so there is nothing to observe",
+			)
+			childName := children[0]
+			childKey := client.ObjectKey{Namespace: f.Namespace, Name: childName}
+
+			ginkgo.By("healing the child through its own write while the template stays legacy")
+			gomega.Expect(
+				retry.RetryOnConflict(
+					retry.DefaultRetry, func() error {
+						live := &workloadsv1alpha2.RoleBasedGroup{}
+						if err := f.Client.Get(f.Ctx, childKey, live); err != nil {
+							return err
+						}
+						return f.Client.Update(f.Ctx, live)
+					},
+				),
+			).To(gomega.Succeed())
+
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Eventually(
+				func(g gomega.Gomega) {
+					g.Expect(f.Client.Get(f.Ctx, childKey, child)).To(gomega.Succeed())
+					g.Expect(child.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+						gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+						"the mutating webhook did not normalize the child's legacy strategy type",
+					)
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.Succeed())
+
+			ginkgo.By("letting the RBGS controller reconcile against the healed child")
+			time.Sleep(settleDuration)
+			quietBefore := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(f.Client.Get(f.Ctx, childKey, quietBefore)).To(gomega.Succeed())
+			time.Sleep(settleDuration)
+			quietAfter := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(f.Client.Get(f.Ctx, childKey, quietAfter)).To(gomega.Succeed())
+			// Generation is the discriminator: the divergence loop the fix removes is a
+			// spec rewrite on every reconcile, and only spec writes advance generation.
+			// ResourceVersion is deliberately not asserted -- any status write bumps it
+			// (see the PodFacts comment in snapshot.go).
+			gomega.Expect(quietAfter.Generation).To(gomega.Equal(quietBefore.Generation))
+			gomega.Expect(quietAfter.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+				"the RBGS controller wrote the legacy template value back into the healed child",
+			)
+
+			ginkgo.By("healing the set's template with a metadata-only write")
+			mutated = append(mutated, fxLegacySet)
+			mutated = append(mutated, childName)
+			setKey := client.ObjectKey{Namespace: f.Namespace, Name: fxLegacySet}
+			gomega.Expect(
+				retry.RetryOnConflict(
+					retry.DefaultRetry, func() error {
+						live := &workloadsv1alpha2.RoleBasedGroupSet{}
+						if err := f.Client.Get(f.Ctx, setKey, live); err != nil {
+							return err
+						}
+						if live.Annotations == nil {
+							live.Annotations = map[string]string{}
+						}
+						live.Annotations["upgrade-e2e/legacy-set-healed"] = "1"
+						return f.Client.Update(f.Ctx, live)
+					},
+				),
+			).To(gomega.Succeed())
+
+			set := &workloadsv1alpha2.RoleBasedGroupSet{}
+			gomega.Eventually(
+				func(g gomega.Gomega) {
+					g.Expect(f.Client.Get(f.Ctx, setKey, set)).To(gomega.Succeed())
+					g.Expect(set.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
+						gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+						"the mutating webhook did not normalize the set's legacy template type",
+					)
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.Succeed())
+
+			ginkgo.By("requiring the children to stay quiet once the template is healed")
+			time.Sleep(settleDuration)
+			templateHealedBefore := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(f.Client.Get(f.Ctx, childKey, templateHealedBefore)).To(gomega.Succeed())
+			time.Sleep(settleDuration)
+			templateHealedAfter := &workloadsv1alpha2.RoleBasedGroup{}
+			gomega.Expect(f.Client.Get(f.Ctx, childKey, templateHealedAfter)).To(gomega.Succeed())
+			gomega.Expect(templateHealedAfter.Generation).To(gomega.Equal(templateHealedBefore.Generation))
 		},
 	)
 
@@ -1138,6 +1413,55 @@ func midRollRollingUpdate(rbg *workloadsv1alpha2.RoleBasedGroup) *workloadsv1alp
 	gomega.Expect(strategy).ToNot(gomega.BeNil())
 	gomega.Expect(strategy.RollingUpdate).ToNot(gomega.BeNil())
 	return strategy.RollingUpdate
+}
+
+// firstRole returns the first entry of spec.roles of an unstructured RoleBasedGroup
+// as a map. The unstructured nested-field helpers traverse maps only and do not
+// interpret an index as a path element, so the roles slice is taken out first and its
+// first element queried directly. A copy is used on the write path below, so mutating
+// the returned map never aliases the object it was read from.
+func firstRole(rbg *unstructured.Unstructured) (map[string]interface{}, error) {
+	roles, found, err := unstructured.NestedSlice(rbg.Object, "spec", "roles")
+	if err != nil {
+		return nil, err
+	}
+	if !found || len(roles) == 0 {
+		return nil, fmt.Errorf("spec.roles is missing or empty")
+	}
+	role, ok := roles[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("spec.roles[0] is a %T, not a map", roles[0])
+	}
+	return role, nil
+}
+
+// firstRoleStrategyType reads spec.roles[0].rolloutStrategy.rollingUpdate.type of an
+// unstructured RoleBasedGroup.
+func firstRoleStrategyType(rbg *unstructured.Unstructured) (string, bool, error) {
+	role, err := firstRole(rbg)
+	if err != nil {
+		return "", false, err
+	}
+	return unstructured.NestedString(role, "rolloutStrategy", "rollingUpdate", "type")
+}
+
+// setFirstRoleStrategyType writes value to spec.roles[0].rolloutStrategy.rollingUpdate.type
+// of an unstructured RoleBasedGroup. NestedSlice returns a deep copy, so the mutated
+// slice is written back explicitly.
+func setFirstRoleStrategyType(rbg *unstructured.Unstructured, value string) error {
+	role, err := firstRole(rbg)
+	if err != nil {
+		return err
+	}
+	if err := unstructured.SetNestedField(role, value, "rolloutStrategy", "rollingUpdate", "type"); err != nil {
+		return err
+	}
+	roles, _, err := unstructured.NestedSlice(rbg.Object, "spec", "roles")
+	if err != nil {
+		return err
+	}
+	roles[0] = role
+	return unstructured.SetNestedSlice(rbg.Object, roles, "spec", "roles")
 }
 
 // countSurvivors returns how many of the pods in before are still the same pod in after.

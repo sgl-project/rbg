@@ -74,3 +74,79 @@ webhooks:
     - UPDATE
     resources:
     - coordinatedpolicies
+---
+# MutatingWebhookConfiguration defaulting legacy update-strategy type values
+# ("" and the v1alpha1 "Recreate" spelling) so objects stored before the
+# rollingUpdate.type enum was introduced remain writable.
+#
+# NOTE: caBundle is intentionally left empty here for the same reason as the
+# validating configuration above; WebhookCertReconciler patches it at runtime.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: rbgs-mutating-webhook-configuration
+  labels:
+    control-plane: rbgs-controller
+    app.kubernetes.io/name: rbgs
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+webhooks:
+- name: mrolebasedgroup.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroups
+- name: mroleinstanceset.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - roleinstancesets
+- name: mrolebasedgroupset.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets

@@ -20,8 +20,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// SetupWebhookWithManager sets up the conversion and validating webhooks for
-// RoleBasedGroup with the Manager.
+// SetupWebhookWithManager sets up the conversion, validating and defaulting
+// webhooks for RoleBasedGroup with the Manager.
 func (r *RoleBasedGroup) SetupWebhookWithManager(
 	mgr ctrl.Manager,
 	enableDeprecatedWorkloadTypes bool,
@@ -32,6 +32,7 @@ func (r *RoleBasedGroup) SetupWebhookWithManager(
 			Client:                        mgr.GetClient(),
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
+		WithDefaulter(&RoleBasedGroupDefaulter{}).
 		Complete()
 }
 
@@ -46,13 +47,23 @@ func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGan
 		Complete()
 }
 
-// SetupWebhookWithManager sets up the conversion and validating webhooks for
-// RoleBasedGroupSet with the Manager.
+// SetupWebhookWithManager sets up the conversion, validating and defaulting
+// webhooks for RoleBasedGroupSet with the Manager.
 func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&RoleBasedGroupSetValidator{
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
+		WithDefaulter(&RoleBasedGroupSetDefaulter{}).
+		Complete()
+}
+
+// SetupWebhookWithManager sets up the defaulting webhook for RoleInstanceSet
+// with the Manager.
+func (r *RoleInstanceSet) SetupWebhookWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr).
+		For(r).
+		WithDefaulter(&RoleInstanceSetDefaulter{}).
 		Complete()
 }
