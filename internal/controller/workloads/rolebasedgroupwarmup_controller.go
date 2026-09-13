@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -50,6 +51,9 @@ const (
 	// MaxRequeueDelay caps long requeue intervals to avoid workqueue scheduling drift.
 	// Even for multi-day TTLs, the controller wakes up at most every 10 minutes to recheck.
 	MaxRequeueDelay = 10 * time.Minute
+
+	// MissingTargetRequeuePeriod prevents a missing target from causing a hot error retry loop.
+	MissingTargetRequeuePeriod = 30 * time.Second
 )
 
 // RoleBasedGroupWarmupReconciler reconciles a RoleBasedGroupWarmup object
@@ -117,6 +121,8 @@ func (r *RoleBasedGroupWarmupReconciler) Reconcile(ctx context.Context, req ctrl
 	switch warmup.Status.Phase {
 	case workloadsv1alpha2.WarmupJobPhaseFailed, workloadsv1alpha2.WarmupJobPhaseCompleted:
 		return r.reconcileFinished(ctx, warmup)
+	case workloadsv1alpha2.WarmupJobPhaseWaitingForTarget:
+		return r.reconcileUnfinished(ctx, warmup)
 	case workloadsv1alpha2.WarmupJobPhasePaused:
 		warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
 		if err := r.Status().Update(ctx, warmup); err != nil {
@@ -176,8 +182,21 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 
 	desiredNodes, err := r.getDesiredNodesToWarmup(ctx, *warmup)
 	if err != nil {
+		if apierrors.IsNotFound(err) && warmup.Spec.TargetRoleBasedGroup != nil {
+			return r.waitForTarget(ctx, warmup)
+		}
 		logger.Error(err, "failed to get desired nodes to warm up")
 		return ctrl.Result{}, err
+	}
+
+	if err := validateWarmupActions(desiredNodes); err != nil {
+		logger.Error(err, "invalid warmup actions")
+		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes,
+			"InvalidWarmupSpec", err.Error())
+	}
+
+	if warmup.Spec.TargetRoleBasedGroup != nil {
+		setTargetReadyCondition(warmup, true, "RoleBasedGroupFound", "Target RoleBasedGroup is available")
 	}
 
 	// Check global timeout
@@ -224,6 +243,57 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	}
 
 	return r.requeueForTimeout(warmup), nil
+}
+
+func (r *RoleBasedGroupWarmupReconciler) waitForTarget(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup) (ctrl.Result, error) {
+	condition := metav1.Condition{
+		Type:               "TargetReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: warmup.Generation,
+		Reason:             "RoleBasedGroupNotFound",
+		Message:            fmt.Sprintf("target RoleBasedGroup %q was not found", warmup.Spec.TargetRoleBasedGroup.Name),
+	}
+	apimeta.SetStatusCondition(&warmup.Status.Conditions, condition)
+	warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseWaitingForTarget
+	if err := r.Status().Update(ctx, warmup); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: MissingTargetRequeuePeriod}, nil
+}
+
+func setTargetReadyCondition(warmup *workloadsv1alpha2.RoleBasedGroupWarmup, ready bool, reason, message string) {
+	status := metav1.ConditionFalse
+	if ready {
+		status = metav1.ConditionTrue
+	}
+	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
+		Type:               "TargetReady",
+		Status:             status,
+		ObservedGeneration: warmup.Generation,
+		Reason:             reason,
+		Message:            message,
+	})
+}
+
+func validateWarmupActions(desiredNodes map[string][]workloadsv1alpha2.WarmupActions) error {
+	for nodeName, actions := range desiredNodes {
+		for _, action := range actions {
+			if action.ImagePreload != nil {
+				if len(action.ImagePreload.Images) == 0 {
+					return fmt.Errorf("node %q has imagePreload with no images", nodeName)
+				}
+				for _, image := range action.ImagePreload.Images {
+					if strings.TrimSpace(image) == "" {
+						return fmt.Errorf("node %q has an empty image reference", nodeName)
+					}
+				}
+			}
+			if action.CustomizedAction != nil && len(action.CustomizedAction.Containers) == 0 {
+				return fmt.Errorf("node %q has customizedAction with no containers", nodeName)
+			}
+		}
+	}
+	return nil
 }
 
 // computePermanentlyFailedNodes returns the set of nodes whose failure count exceeds the backoff limit.

@@ -94560,6 +94560,7 @@ spec:
                           Images specifies the container images to be preloaded onto target nodes.
                           Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
                         items:
+                          minLength: 1
                           type: string
                         minItems: 1
                         type: array
@@ -97668,6 +97669,7 @@ spec:
                                 Images specifies the container images to be preloaded onto target nodes.
                                 Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
                               items:
+                                minLength: 1
                                 type: string
                               minItems: 1
                               type: array
