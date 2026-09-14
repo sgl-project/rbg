@@ -10,7 +10,7 @@ controller:
   imagePullSecrets: []
   image:
     repository: rolebasedgroup/rbgs-controller
-    tag: "v0.8.0-16705159"
+    tag: "v0.9.0-c500c963"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -97,7 +97,7 @@ crdUpgrade:
   # CRD Upgrader image configuration
   image:
     repository: rolebasedgroup/rbgs-upgrade-crd
-    tag: "v0.8.0-16705159"
+    tag: "v0.9.0-c500c963"
     pullPolicy: IfNotPresent
   # Tolerations for CRD Upgrader Job pod
   tolerations:
