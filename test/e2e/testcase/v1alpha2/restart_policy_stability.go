@@ -115,7 +115,8 @@ func runRestartPolicyRecreateTest(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstance,
 			})).Should(gomega.Succeed())
 		gomega.Expect(targetPodList.Items).ShouldNot(gomega.BeEmpty())
-		targetPod := &targetPodList.Items[0]
+		targetPod := findActivePod(targetPodList.Items)
+		gomega.Expect(targetPod).NotTo(gomega.BeNil(), "expected an active Pod before triggering failure")
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
 		// Wait for the target instance's pods to be fully recreated (new UIDs)
@@ -199,7 +200,8 @@ func runRestartPolicyNoneReplaceTest(f *framework.Framework) {
 				constants.GroupNameLabelKey: rbg.Name,
 				constants.RoleNameLabelKey:  "role-1",
 			})).Should(gomega.Succeed())
-		targetPod := &podList.Items[0]
+		targetPod := findActivePod(podList.Items)
+		gomega.Expect(targetPod).NotTo(gomega.BeNil(), "expected an active Pod before eviction")
 		targetPodName := targetPod.Name
 
 		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
@@ -288,10 +290,12 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 			firstUIDs[p.Name] = p.UID
 		}
 
+		selectedPod := findActivePod(podList.Items)
+		gomega.Expect(selectedPod).NotTo(gomega.BeNil(), "expected an active Pod before triggering failure")
 		targetPod := &corev1.Pod{}
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
 			Namespace: f.Namespace,
-			Name:      podList.Items[0].Name,
+			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -321,9 +325,11 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 			secondUIDs[p.Name] = p.UID
 		}
 
+		selectedPod = findActivePod(podList.Items)
+		gomega.Expect(selectedPod).NotTo(gomega.BeNil(), "expected an active Pod before triggering failure")
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
 			Namespace: f.Namespace,
-			Name:      podList.Items[0].Name,
+			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -464,10 +470,12 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 			firstUIDs[p.Name] = p.UID
 		}
 
+		selectedPod := findActivePod(podList.Items)
+		gomega.Expect(selectedPod).NotTo(gomega.BeNil(), "expected an active Pod before triggering failure")
 		targetPod := &corev1.Pod{}
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
 			Namespace: f.Namespace,
-			Name:      podList.Items[0].Name,
+			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -487,9 +495,11 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 			secondUIDs[p.Name] = p.UID
 		}
 
+		selectedPod = findActivePod(podList.Items)
+		gomega.Expect(selectedPod).NotTo(gomega.BeNil(), "expected an active Pod before triggering failure")
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
 			Namespace: f.Namespace,
-			Name:      podList.Items[0].Name,
+			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
 		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
 
@@ -643,6 +653,18 @@ func filterActivePods(pods []corev1.Pod) []corev1.Pod {
 		}
 	}
 	return active
+}
+
+// findActivePod returns one non-terminating, non-terminal Pod. Pod list order is not stable.
+func findActivePod(pods []corev1.Pod) *corev1.Pod {
+	for i := range pods {
+		if pods[i].DeletionTimestamp == nil &&
+			pods[i].Status.Phase != corev1.PodFailed &&
+			pods[i].Status.Phase != corev1.PodSucceeded {
+			return &pods[i]
+		}
+	}
+	return nil
 }
 
 // getInstancePodUIDs returns pod UIDs for a specific RoleInstance.
