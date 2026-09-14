@@ -35,6 +35,7 @@ type ImagePreloadAction struct {
 	// Images specifies the container images to be preloaded onto target nodes.
 	// Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
 	// +required
 	Images []string `json:"images"`
 
