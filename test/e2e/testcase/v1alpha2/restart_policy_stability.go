@@ -21,6 +21,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -646,9 +647,7 @@ func waitForInstanceFullyRecovered(f *framework.Framework, instanceName string) 
 func filterActivePods(pods []corev1.Pod) []corev1.Pod {
 	var active []corev1.Pod
 	for i := range pods {
-		if pods[i].DeletionTimestamp == nil &&
-			pods[i].Status.Phase != corev1.PodFailed &&
-			pods[i].Status.Phase != corev1.PodSucceeded {
+		if kubecontroller.IsPodActive(&pods[i]) {
 			active = append(active, pods[i])
 		}
 	}
@@ -658,9 +657,7 @@ func filterActivePods(pods []corev1.Pod) []corev1.Pod {
 // findActivePod returns one non-terminating, non-terminal Pod. Pod list order is not stable.
 func findActivePod(pods []corev1.Pod) *corev1.Pod {
 	for i := range pods {
-		if pods[i].DeletionTimestamp == nil &&
-			pods[i].Status.Phase != corev1.PodFailed &&
-			pods[i].Status.Phase != corev1.PodSucceeded {
+		if kubecontroller.IsPodActive(&pods[i]) {
 			return &pods[i]
 		}
 	}
