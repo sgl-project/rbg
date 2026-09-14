@@ -362,7 +362,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			after := waitQuiesced(f, mutated...)
 
 			fs := &findings{}
-			runDetectors(fs, f, before, after, preUpgradeMark, upgradeRewrites.acrossStarts(controllerStarts), mutated)
+			runDetectors(fs, f, before, after, preUpgradeMark, upgradeRewrites, mutated)
 			fs.report()
 		},
 	)
@@ -445,13 +445,17 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
-		"[phase 3] leaves a legacy RoleBasedGroupSet template and its child alone", func() {
+		"[phase 3] leaves a legacy RoleBasedGroupSet template as written, and heals its child", func() {
 			// The RBGS controller copies the GroupTemplate verbatim into its children, so
 			// a legacy "Recreate" value written before the enum reaches both the stored
-			// set and the child the controller stamped out of it. The upgrade must leave
-			// both alone: this is the input the phase-4 convergence spec starts from, and
-			// a rewrite here would either 422 on the new CRD enum or roll the child's
-			// pods for no reason.
+			// set and the child the controller stamped out of it. The two diverge at the
+			// upgrade. The set has no writer above it, so its template keeps the legacy
+			// spelling until someone writes the set -- phase 4 does, and watches the
+			// heal. The child is different: the RBGS controller re-applies it with the
+			// strategy type normalized, so the stored child is healed to "RecreatePod"
+			// on the upgraded controller's first reconcile. Asserting the healed value
+			// rather than "unchanged" keeps a second rewrite, or a rewrite to anything
+			// else, a failure.
 			set := &workloadsv1alpha2.RoleBasedGroupSet{}
 			gomega.Expect(
 				f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: fxLegacySet}, set),
@@ -472,8 +476,8 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(child.Spec.Roles[0].RolloutStrategy).ToNot(gomega.BeNil())
 			gomega.Expect(child.Spec.Roles[0].RolloutStrategy.RollingUpdate).ToNot(gomega.BeNil())
 			gomega.Expect(child.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
-				gomega.Equal(workloadsv1alpha2.LegacyRecreateUpdateStrategyType),
-				"the stored legacy strategy type in the child RoleBasedGroup was rewritten",
+				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
+				"the stored legacy strategy type in the child RoleBasedGroup was not healed",
 			)
 		},
 	)
@@ -542,10 +546,10 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// what every later restart of the Deployment does. A rewrite that only happens
 			// on a cold cache is invisible until then.
 			//
-			// The baseline is taken now rather than reusing `before`, and only what a
-			// controller start is itself known to rewrite is tolerated. The upgrade's own
-			// changes do not apply: the shared Service selector was already narrowed by
-			// the hop, so narrowing it again here would be a finding.
+			// The baseline is taken now rather than reusing `before`, and nothing is
+			// tolerated: a controller start rewrites no spec content. The upgrade's own
+			// changes do not apply either: the shared Service selector was already narrowed
+			// by the hop, so narrowing it again here would be a finding.
 			mark := metav1.Now()
 			baseline := captureAll(gomega.Default, f)
 
@@ -555,7 +559,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			time.Sleep(settleDuration)
 
 			fs := &findings{}
-			runDetectors(fs, f, baseline, captureAll(gomega.Default, f), mark, controllerStartRewrites.acrossStarts(1), nil)
+			runDetectors(fs, f, baseline, captureAll(gomega.Default, f), mark, recordedRewrites{}, nil)
 			fs.report()
 		},
 	)
@@ -572,7 +576,6 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// conversion caBundle while it replaces the CRDs.
 			mark := metav1.Now()
 			baseline := captureAll(gomega.Default, f)
-			startsBefore := controllerStarts
 
 			runHelmUpgrade(f)
 			waitForUpgradeReady(f, fxV1alpha1)
@@ -581,15 +584,10 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			time.Sleep(settleDuration)
 
 			fs := &findings{}
-			// Identical values leave the controller Deployment alone, so this normally
-			// spans no controller start at all and tolerates nothing. Taking the delta
-			// rather than asserting zero keeps the spec measuring what happened: if the
-			// chart does replace the pods, the per-start rewrite is expected and the rest
-			// of the interval is still held to changing nothing.
-			runDetectors(
-				fs, f, baseline, captureAll(gomega.Default, f), mark,
-				controllerStartRewrites.acrossStarts(controllerStarts-startsBefore), nil,
-			)
+			// A second run of the same chart rewrites nothing, whether or not it
+			// replaces the controller pods: a controller start rewrites no spec
+			// content, so there is no per-start allowance to scale with the delta.
+			runDetectors(fs, f, baseline, captureAll(gomega.Default, f), mark, recordedRewrites{}, nil)
 			fs.report()
 		},
 	)
@@ -738,8 +736,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkSameRBGSet(fs, baseline, after)
 			checkNoPodChurn(fs, baseline, after)
 			checkNoRestarts(fs, baseline, after)
-			rec := upgradeRewrites.acrossStarts(controllerStarts)
-			checkOwnersStable(fs, baseline, after, rec.generationBumps, rec.objectBumps)
+			checkOwnersStable(fs, baseline, after, upgradeRewrites.specRewrites)
 			fs.report()
 		},
 	)
