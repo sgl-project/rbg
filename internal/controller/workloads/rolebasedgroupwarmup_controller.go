@@ -169,16 +169,16 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileFinished(ctx context.Context, 
 func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	if err := validateWarmupSpec(warmup.Spec); err != nil {
-		logger.Error(err, "invalid warmup specification")
-		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, nil, nil, nil, nil,
-			"InvalidWarmupSpec", err.Error())
-	}
-
 	activePods, succeededPods, failedPods, err := r.listWarmupPods(ctx, *warmup)
 	if err != nil {
 		logger.Error(err, "failed to list warmup pods")
 		return ctrl.Result{}, err
+	}
+
+	if err := validateWarmupSpec(warmup.Spec); err != nil {
+		logger.Error(err, "invalid warmup specification")
+		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
+			"InvalidWarmupSpec", err.Error())
 	}
 
 	desiredNodes, err := r.getDesiredNodesToWarmup(ctx, *warmup)
@@ -489,14 +489,22 @@ func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Con
 			Name:      rbgTarget.Name,
 			Namespace: warmup.Namespace,
 		}
+		reader := client.Reader(r.Client)
 		if err := r.Get(ctx, rbgKey, rbg); err != nil {
-			logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
-			return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+			if !apierrors.IsNotFound(err) || r.apiReader == nil {
+				logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
+				return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+			}
+			if fallbackErr := r.apiReader.Get(ctx, rbgKey, rbg); fallbackErr != nil {
+				logger.Error(fallbackErr, "Failed to confirm RoleBasedGroup with API reader", "name", rbgTarget.Name, "namespace", warmup.Namespace)
+				return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, fallbackErr)
+			}
+			reader = r.apiReader
 		}
 
 		// List all Pods belonging to this RoleBasedGroup
 		podList := &corev1.PodList{}
-		if err := r.List(ctx, podList,
+		if err := reader.List(ctx, podList,
 			client.InNamespace(warmup.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbgTarget.Name}); err != nil {
 			logger.Error(err, "Failed to list Pods for RoleBasedGroup", "name", rbgTarget.Name)
