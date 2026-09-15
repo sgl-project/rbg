@@ -615,6 +615,14 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(target)
 
 		if !isFree && initialBaseUnavail+newlyUnavail >= effectiveBudget {
+			if observed, ok := instanceUnhealthySince.Load(target.UID); ok {
+				if first, ok := observed.(time.Time); ok {
+					// Retry when this target can pass the health window without
+					// an unrelated instance event. The window may have just expired.
+					wait := max(time.Until(first.Add(stableUnhealthyDuration)), time.Nanosecond)
+					durationStore.Push(getInstanceSetKey(set), wait)
+				}
+			}
 			klog.InfoS("Rolling update budget exhausted",
 				"instanceSet", klog.KObj(set), "instance", klog.KObj(target),
 				"initialBaseUnavail", initialBaseUnavail, "newlyUnavail", newlyUnavail,
