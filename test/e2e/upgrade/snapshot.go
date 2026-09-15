@@ -1205,7 +1205,8 @@ func podFactsByName(snap RBGSnapshot, podName string) (PodFacts, bool) {
 //
 // revisionAdds records the new revisions a known rewrite is expected to stamp:
 // an entry passes only when exactly that many revisions were added and none were
-// removed. When a change is found, the added revisions are fetched back and
+// removed, so a recording whose addition never happens fails as stale. When a
+// change is found, the added revisions are fetched back and
 // diffed against the surviving pre-upgrade revision of the same owner, so the
 // report says which field moved the hash rather than only that it moved.
 // ControllerRevision data is written once and never mutated, so reading the
@@ -1217,12 +1218,15 @@ func checkNoRevisionExplosion(fs *findings, f *framework.Framework, before, afte
 		if !ok {
 			continue
 		}
-		if strings.Join(beforeSnap.RevisionNames, ",") == strings.Join(afterSnap.RevisionNames, ",") {
-			continue
-		}
 		added := missingFrom(afterSnap.RevisionNames, beforeSnap.RevisionNames)
 		removed := missingFrom(beforeSnap.RevisionNames, afterSnap.RevisionNames)
 		if len(removed) == 0 && len(added) == revisionAdds[rbgName] {
+			continue
+		}
+		if len(added) == 0 && len(removed) == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"%s: %d recorded new ControllerRevision(s) never appeared, so the recording is stale",
+				rbgName, revisionAdds[rbgName]))
 			continue
 		}
 		problems = append(problems, describeRevisionChange(f, rbgName, beforeSnap, afterSnap))
