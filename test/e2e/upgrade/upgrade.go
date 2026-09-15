@@ -62,15 +62,6 @@ func newCRDObject() *unstructured.Unstructured {
 
 func clientObjectKey(name string) client.ObjectKey { return client.ObjectKey{Name: name} }
 
-// controllerStarts counts the controller process starts the suite has caused since the
-// pre-upgrade snapshot was taken. Comparisons that span it scale the per-start entries of
-// recordedRewrites by this, so a phase that restarts the controller does not have to be
-// re-counted by hand in every later comparison.
-//
-// It is incremented from what the cluster shows, not from what an action is assumed to
-// do: an upgrade that leaves the pods in place does not start a controller.
-var controllerStarts int64
-
 // runHelmUpgrade upgrades the release in place to the version under test.
 //
 // Every value is passed explicitly on its current path and --reuse-values is
@@ -113,7 +104,6 @@ func runHelmUpgrade(f *framework.Framework) {
 	after, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods after upgrading")
 	if !slices.Equal(before, after) {
-		controllerStarts++
 		ginkgo.By(fmt.Sprintf("the upgrade replaced the controller pods (%v -> %v)", before, after))
 	}
 }
@@ -291,7 +281,6 @@ func restartController(f *framework.Framework, conversionProbeName string) {
 			g.Expect(old).ToNot(gomega.ContainElement(name), "controller pod %s has not been replaced yet", name)
 		}
 	}, gateTimeout, gateInterval).Should(gomega.Succeed())
-	controllerStarts++
 
 	waitControllerRolledOut(f)
 	// The new process mints its certificate and patches the webhook configs again
