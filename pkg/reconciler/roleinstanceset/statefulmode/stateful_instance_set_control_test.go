@@ -805,6 +805,116 @@ func TestProgressUpdateBudget(t *testing.T) {
 	}
 }
 
+func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](2)
+	set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(0))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(2))
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].ReadinessProbe = &v1.Probe{
+		ProbeHandler: v1.ProbeHandler{Exec: &v1.ExecAction{Command: []string{"true"}}},
+	}
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].ReadinessProbe = nil
+	updateRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = updateRev.Name
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, currentRev.Name, false, true),
+		buildInst(set.Name, 1, currentRev.Name, false, true),
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+	objectManager := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objectManager, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	reconcile := func() time.Duration {
+		t.Helper()
+		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return durationStore.Pop(key)
+	}
+	assertWait := func(wait, upperBound time.Duration) {
+		t.Helper()
+		if wait <= 0 || wait > upperBound {
+			t.Fatalf("retry = %v, want a positive delay of at most %v", wait, upperBound)
+		}
+		if len(objectManager.deleted) != 0 {
+			t.Fatalf("instances deleted before the health window expired: %v", objectManager.deleted)
+		}
+	}
+
+	// The first pass must protect both instances and request another check.
+	assertWait(reconcile(), stableUnhealthyDuration)
+
+	// An unrelated event must not start a new ten-second window.
+	firstObserved := time.Now().Add(-6 * time.Second)
+	for _, inst := range instances {
+		instanceUnhealthySince.Store(inst.UID, firstObserved)
+	}
+	wait := reconcile()
+	assertWait(wait, 4*time.Second)
+	if remaining := time.Until(firstObserved.Add(stableUnhealthyDuration)); wait < remaining {
+		t.Fatalf("retry = %v, want at least %v", wait, remaining)
+	}
+	for _, inst := range instances {
+		if got, _ := instanceUnhealthySince.Load(inst.UID); got != firstObserved {
+			t.Fatalf("first unhealthy observation changed: got %v, want %v", got, firstObserved)
+		}
+	}
+	durationStore.Push(key, time.Second)
+	assertWait(reconcile(), time.Second)
+
+	// The highest ordinal recovers, but the other instance still consumes
+	// the budget. This healthy target must wait for an instance event.
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(1))
+	recovered := instances[1]
+	recovered.Status.Conditions[0].Status = v1.ConditionTrue
+	if wait := reconcile(); wait != 0 {
+		t.Fatalf("healthy targets requested a health-window retry: %v", wait)
+	}
+	if len(objectManager.deleted) != 0 {
+		t.Fatalf("healthy instances deleted with no update budget: %v", objectManager.deleted)
+	}
+	if _, ok := instanceUnhealthySince.Load(recovered.UID); ok {
+		t.Fatalf("healthy instance %s retained its old timer", recovered.Name)
+	}
+	recovered.Status.Conditions[0].Status = v1.ConditionFalse
+
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(2))
+	assertWait(reconcile(), stableUnhealthyDuration)
+	for _, inst := range instances {
+		instanceUnhealthySince.Store(inst.UID, time.Now().Add(-2*stableUnhealthyDuration))
+	}
+	if wait := reconcile(); wait != 0 {
+		t.Fatalf("expired health windows requested another retry: %v", wait)
+	}
+	deleted := sets.New(objectManager.deleted...)
+	for _, inst := range instances {
+		if !deleted.Has(inst.Name) {
+			t.Fatalf("rollout did not resume after the health window: deleted %v", objectManager.deleted)
+		}
+	}
+}
+
 func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	// helper: build set with given prior status fields
 	priorStatus := func(updateRev string, updatedReplicas int32) *workloadsv1alpha2.RoleInstanceSet {
