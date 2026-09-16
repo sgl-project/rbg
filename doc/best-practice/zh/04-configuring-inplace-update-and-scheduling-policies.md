@@ -73,7 +73,7 @@ RBG 提供两种更新策略，通过 `rollingUpdate.type` 配置：
 | `InPlaceIfPossible` | 优先原地更新；若变更超出镜像范围，回退到重建 Pod | **推荐**，大多数场景的默认选择 |
 | `RecreatePod` | 删除旧 Pod 并创建新 Pod | 需要完全重建的场景 |
 
-> **说明**：`InPlaceOnly` 策略在 API 中保留但未单独实现，其行为与 `InPlaceIfPossible` 一致（原地更新不可行时回退到重建 Pod）。请使用 `InPlaceIfPossible` 替代。
+> **说明**：`InPlaceOnly` 策略**已废弃（deprecated）**。出于向后兼容考虑仍保留在 API 中，但并未单独实现，其行为与 `InPlaceIfPossible` 一致（原地更新不可行时回退到重建 Pod）。请使用 `InPlaceIfPossible` 替代。
 
 
 ### 支持原地更新的变更范围

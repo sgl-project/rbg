@@ -24,7 +24,7 @@ roles:
 |------|-------------|----------|
 | `RecreatePod` | Delete old pods before creating new ones | Stateful workloads, GPU pods |
 | `InPlaceIfPossible` | Update pod spec without recreation if possible | Image updates, resource changes |
-| `InPlaceOnly` | Only in-place update, fail if not possible | Strict in-place updates |
+| `InPlaceOnly` | **Deprecated.** Not separately implemented; behaves identically to `InPlaceIfPossible` | Use `InPlaceIfPossible` instead |
 
 ### RecreatePod Strategy
 
