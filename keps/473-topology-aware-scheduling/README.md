@@ -360,29 +360,3 @@ spec:
 ### Version Skew Strategy
 
 `TopologyConstraint` is an additive, optional API. Older controllers ignore the new fields (constraints simply unenforced); newer controllers reading objects written by older versions see no constraints and render nothing. No control-plane/node coordination is involved beyond the scheduler's own version requirements, which are detected at runtime via CRD schema inspection.
-
-## Drawbacks
-
-1. **No cross-scheduler portability of values.** `required: BlockLayer` means nothing on a Volcano cluster. The API *shape* is uniform, but level identifiers are scheduler-bound; fleets mixing schedulers rewrite the two strings per constraint when migrating workloads. Accepted: the vocabulary layer that would buy value portability costs more in learning and operations than the migration convenience is worth — and the same-scheduler fleet case works unchanged.
-2. **Fidelity varies by dialect.** Volcano cannot anchor a soft target mid-tree (absorbed by scoring); Koordinator cannot express instance-level constraints (one uniform topology spec per GangGroup); the native scheduler has no group semantics at all. The API promises a uniform semantic that not every backend fully delivers — mitigated by explicit failure/degradation signaling, but users must still understand their scheduler's column of the matrix.
-3. **No schema-level defense against typos.** A free-form string cannot be validated at admission (webhooks avoid cross-resource reads); a mistyped identifier is caught only at reconcile, asynchronously. Mitigated by precise conditions/events naming the offending value.
-
-## Alternatives
-
-### Alternative 1: Vocabulary Indirection via a TopologyProfile CRD
-
-An earlier revision of this KEP introduced a cluster-scoped `TopologyProfile` CRD: a conventionally singleton registry mapping portable level names (`rack`, `block`) to per-dialect coordinates (tier/tierName, topologyLayer, alias, labelKey), auto-discovered from scheduler objects and continuously validated. Users would reference the portable names; the translation layer resolves them.
-
-**Rejected (for now)**: with one controller bound to one scheduler, the indirection's only payoff — cross-scheduler-transparent manifests — serves a case we do not have; meanwhile it costs a new CRD plus controller, a learned abstraction, and a second naming system to keep aligned with the scheduler's own. The string field leaves an evolutionary path: if multi-scheduler fleets become real, a vocabulary layer can return as an additive opt-in (e.g., an explicit `profileRef` on the constraint) without changing pass-through semantics. The ConfigMap variant of the same idea is strictly worse (no status, no schema validation) and needs no separate discussion.
-
-### Alternative 2: Node Label Keys as the Uniform Vocabulary
-
-Reference levels by label key (e.g., `topology.cloud.com/rack`) in every dialect, as Kueue TAS does.
-
-**Rejected** as the *uniform* vocabulary: it presumes label-backed topology, which is false for UFM/RoCE-discovered Volcano trees where label keys are meaningless; and three of the four dialects natively speak *names* (tierName / topologyLayer / alias). Note the chosen design still uses label keys where they are native — on the Kueue/native dialect the pass-through value *is* a label key.
-
-### Alternative 3: Structured Per-Scheduler Fields
-
-Give the constraint one structured block per scheduler (`volcano.tierName`, `koordinator.layer`, `kai.alias`, …), typed and documented per dialect.
-
-**Rejected**: leaks a scheduler enum into the workload API — every newly supported scheduler becomes an API change; and users would still need to know which block their cluster reads — the same knowledge the pass-through string requires, with more YAML to write.
