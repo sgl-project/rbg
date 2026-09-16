@@ -885,7 +885,8 @@ func TestNewRBGForSet_NormalizesLegacyStrategyType(t *testing.T) {
 							Name: "role-3",
 							RolloutStrategy: &workloadsv1alpha2.RolloutStrategy{
 								RollingUpdate: &workloadsv1alpha2.RollingUpdate{
-									Type: workloadsv1alpha2.InPlaceOnlyUpdateStrategyType,
+									// Deprecated value that must still pass through unchanged.
+									Type: workloadsv1alpha2.UpdateStrategyType("InPlaceOnly"),
 								},
 							},
 						},
@@ -906,7 +907,7 @@ func TestNewRBGForSet_NormalizesLegacyStrategyType(t *testing.T) {
 	if got[1].RolloutStrategy.RollingUpdate.Type != workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType {
 		t.Errorf("empty type not defaulted: got %q", got[1].RolloutStrategy.RollingUpdate.Type)
 	}
-	if got[2].RolloutStrategy.RollingUpdate.Type != workloadsv1alpha2.InPlaceOnlyUpdateStrategyType {
+	if got[2].RolloutStrategy.RollingUpdate.Type != workloadsv1alpha2.UpdateStrategyType("InPlaceOnly") {
 		t.Errorf("valid type was changed: got %q", got[2].RolloutStrategy.RollingUpdate.Type)
 	}
 
