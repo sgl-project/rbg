@@ -44,7 +44,7 @@ RBG orchestrates role-based, multi-node inference workloads whose pods communica
 
 This KEP introduces topology-aware scheduling for RBG with two pieces:
 
-1. **`TopologyConstraint`** — a group-granularity API (`pack.required` / `pack.preferred`) attached at the RBG level (co-locate the whole group) and at the role level (pack each RoleInstance's pods). The values are **level identifiers in the configured scheduler's own vocabulary, passed through verbatim**: a Volcano `tierName`, a Koordinator `topologyLayer`, a KAI level alias, or a node label key for Kueue/native.
+1. **`TopologyConstraint`** — a group-granularity API (`pack.required` / `pack.preferred`) attached at the RBG level (co-locate the whole group) and at the role level (pack each RoleInstance's pods). The values are **level identifiers in the configured scheduler's own vocabulary, passed through verbatim**: a Volcano `tierName`, a Koordinator `topologyLayer` or a KAI level alias.
 2. **A translation layer** that compiles the unified declaration into the dialect of the configured scheduler — Volcano `networkTopology` (PodGroup and subGroup level), Koordinator `gatherStrategy`, KAI placement constraints, or native pod affinity — validating levels against the scheduler's own topology objects, with explicit, observable failure when a level or a scheduler cannot honor the constraint.
 
 ## Motivation
@@ -59,7 +59,7 @@ The native scheduler cannot express either need:
 - Node labels form **flat** topology domains (`kubernetes.io/hostname`, `topology.kubernetes.io/zone`, custom keys) with no hierarchy or distance semantics — "same rack beats same block beats cross-spine" is inexpressible.
 - Scheduling decisions are **per-pod and greedy**; there is no atomic, group-granularity placement for a set of pods that must land together.
 
-AI schedulers (Volcano, Koordinator, KAI, Kueue) each built topology models that re-interpret node topology as a **domain tree plus group-granularity placement**, but each speaks a different dialect: Volcano uses integer tiers (or tier names) on a `HyperNode` tree, Koordinator uses named `topologyLayer`s, KAI uses level aliases, Kueue and the native scheduler use label keys. RBG, as the workload API, must let users state topology intent once and have it honored on any of these schedulers.
+Schedulers (Volcano, Koordinator, KAI) each built topology models that re-interpret node topology as a **domain tree plus group-granularity placement**, but each speaks a different dialect: Volcano uses integer tiers (or tier names) on a `HyperNode` tree, Koordinator uses named `topologyLayer`s, KAI uses level aliases. RBG, as the workload API, must let users state topology intent once and have it honored on any of these schedulers.
 
 ### Goals
 
@@ -132,7 +132,7 @@ All target schedulers model the data-center network as a **domain tree** — Clu
 
 Key structural facts the design exploits:
 
-- Every dialect can be keyed by a **string**: Volcano `tierName`, Koordinator `topologyLayer`, KAI `alias` are names; Kueue/native use label keys, which are strings too. A single pass-through string field therefore covers all dialects without type branching or a mapping layer.
+- Every dialect can be keyed by a **string**: Volcano `tierName`, Koordinator `topologyLayer`, KAI `alias` are names. A single pass-through string field therefore covers all dialects without type branching or a mapping layer.
 - Volcano's hard mode plus its tier-preferring scoring subsumes a separate soft field; Koordinator and KAI natively support two-tier (required + preferred) declarations.
 - Volcano's `subGroupPolicy` (used by KEP-430 gang translation, partitioned per RoleInstance via `matchLabelKeys`) accepts per-subGroup `networkTopology`, giving instance-granularity constraints for free.
 
@@ -145,7 +145,6 @@ Constraint types `required` and `preferred` are supported:
 | Volcano | HyperNode `spec.tierName` (e.g., `rack`) — **HyperNodes must maintain tierName** | `highestTierName` |
 | Koordinator | `topologyLayer` name (e.g., `BlockLayer`) | gatherStrategy `layer` |
 | KAI | level `alias` of a Topology CR (e.g., `block`) | `requiredTopologyLevel` / `preferredTopologyLevel` |
-| Kueue / native | node label key (e.g., `topology.cloud.com/rack`) | TAS label key / podAffinity `topologyKey` |
 
 **Validation runs at reconcile** (KEP-430 precedent: webhooks avoid cross-resource reads — the informer cache is not started when the webhook serves; admission checks syntax only):
 
