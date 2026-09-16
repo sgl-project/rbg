@@ -32,6 +32,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -84,6 +85,10 @@ type PodFacts struct {
 type ownerFacts struct {
 	UID        types.UID
 	Generation int64
+	// Spec is the object's whole spec as stored, normalized through a JSON round
+	// trip. A generation bump says the spec was rewritten; keeping the spec itself
+	// is what lets the report show what the rewrite changed.
+	Spec map[string]any
 }
 
 // serviceFacts is one Service of an RBG, plus what is behind it.
@@ -132,7 +137,10 @@ type RBGSnapshot struct {
 	// RevisionNames are the sorted ControllerRevision names for this RBG. A new
 	// name appearing is the fingerprint of a changed revision hash.
 	RevisionNames []string
-	ReadyByRole   map[string]int32
+	// Spec is the root object's whole spec as stored, kept for the same reason as
+	// ownerFacts.Spec: a generation bump on the root is reported with the diff.
+	Spec        map[string]any
+	ReadyByRole map[string]int32
 	// RBGReady is the RBG's Ready condition being True.
 	RBGReady bool
 }
@@ -198,6 +206,7 @@ func captureAll(g gomega.Gomega, f *framework.Framework) map[string]RBGSnapshot 
 			Name:       set.Name,
 			RBGUID:     set.UID,
 			Generation: set.Generation,
+			Spec:       specJSONMap(set.Spec),
 		}
 	}
 	return out
@@ -209,6 +218,7 @@ func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.
 		Name:          rbg.Name,
 		RBGUID:        rbg.UID,
 		Generation:    rbg.Generation,
+		Spec:          specJSONMap(rbg.Spec),
 		Roles:         make(map[string]map[string]PodFacts, len(rbg.Spec.Roles)),
 		Owners:        listOwnersForRBG(g, f, rbg),
 		Services:      listServicesForRBG(g, f, rbg),
@@ -326,9 +336,20 @@ func listOwnersForRBG(
 			if err != nil {
 				return err
 			}
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+			if err != nil {
+				return err
+			}
+			// A missing spec is not an error: NestedMap returns a nil map, which
+			// diffs cleanly against another nil map.
+			spec, _, err := unstructured.NestedMap(raw, "spec")
+			if err != nil {
+				return err
+			}
 			out[source.kind+"/"+accessor.GetName()] = ownerFacts{
 				UID:        accessor.GetUID(),
 				Generation: accessor.GetGeneration(),
+				Spec:       spec,
 			}
 			return nil
 		})
@@ -486,7 +507,7 @@ func runDetectors(
 ) {
 	before, after = exclude(before, skip...), exclude(after, skip...)
 
-	checkSnapshotDiff(fs, before, after, rec)
+	checkSnapshotDiff(fs, f, before, after, rec)
 	checkNoKillingEvents(fs, f, since, skip)
 }
 
@@ -522,7 +543,7 @@ func waitQuiesced(f *framework.Framework, skip ...string) map[string]RBGSnapshot
 			latest = captureAll(g, f)
 
 			fs := &findings{}
-			checkSnapshotDiff(fs, exclude(first, skip...), exclude(latest, skip...), recordedRewrites{})
+			checkSnapshotDiff(fs, f, exclude(first, skip...), exclude(latest, skip...), recordedRewrites{})
 			g.Expect(fs.sections).To(gomega.BeEmpty(), strings.Join(fs.sections, "\n\n"))
 		}, quiesceTimeout, time.Second,
 	).Should(
@@ -537,14 +558,14 @@ func waitQuiesced(f *framework.Framework, skip ...string) map[string]RBGSnapshot
 // separate from runDetectors so that a caller with two snapshots and no event mark --
 // waitQuiesced, comparing two post-upgrade samples -- runs the same set rather than
 // picking a few detectors by hand and quietly falling behind as more are added.
-func checkSnapshotDiff(fs *findings, before, after map[string]RBGSnapshot, rec recordedRewrites) {
+func checkSnapshotDiff(fs *findings, f *framework.Framework, before, after map[string]RBGSnapshot, rec recordedRewrites) {
 	checkSameRBGSet(fs, before, after)
 	checkNoPodChurn(fs, before, after)
 	checkNoRestarts(fs, before, after)
 	checkPodMetadataStable(fs, before, after)
 	checkServicesStable(fs, before, after, rec.leaderOnlyServices)
-	checkOwnersStable(fs, before, after, rec.generationBumps, rec.objectBumps)
-	checkNoRevisionExplosion(fs, before, after)
+	checkOwnersStable(fs, before, after, rec.specRewrites)
+	checkNoRevisionExplosion(fs, f, before, after, rec.revisionAdds)
 	checkStillReady(fs, before, after)
 }
 
@@ -852,30 +873,37 @@ func hasDefaultRestartDelays(config map[string]any) bool {
 }
 
 // recordedRewrites is what one action is known to change. Each comparison passes the
-// record for the action it spans -- upgradeRewrites across the hop,
-// controllerStartRewrites across a controller restart, the zero value across an action
-// that must change nothing -- so a change recorded for one action is not silently
-// tolerated for the others.
+// record for the action it spans -- upgradeRewrites across the hop, the zero value
+// across an action that must change nothing -- so a change recorded for one action is
+// not silently tolerated for the others.
 //
 // An entry is only allowed here with the change it stands for named. A difference nobody
 // can attribute is a finding to report, not an entry to add.
 type recordedRewrites struct {
-	// generationBumps is how many times each owner kind's spec is rewritten per
-	// controller process start within the interval. A kind that is absent expects zero,
-	// which is what every kind but one now sees.
+	// specRewrites is the rewrite one named object ("Kind/name" as checkOwnersStable
+	// keys it, the root object under its own kind and name) is recorded to undergo,
+	// expressed on the before snapshot's spec. Applying it yields the spec the object
+	// is expected to hold afterwards, so an entry asserts in both directions: the
+	// recorded rewrite happens -- its precondition is checked against the before
+	// snapshot -- and nothing beyond it does.
 	//
-	// It is per start rather than per interval because the one entry there is fires on
-	// every controller start; a comparison that spans several scales it with
-	// acrossStarts. The count is asserted exactly rather than required to be zero so
-	// that a known rewrite does not have to be reported every run.
-	generationBumps map[string]int64
+	// Content is asserted rather than generation. Generation also advances on writes
+	// whose stored bytes change without moving a field the typed spec round-trips:
+	// the LeaderWorkerSet reconciler, for one, patches on every controller start
+	// because its DeepEqual reads the CRD-defaulted rollingUpdateConfiguration
+	// against a nil one, yet the patch changes no field of the stored spec. Counting
+	// those writes made every comparison depend on how many times the controller
+	// happened to start within the interval. What a content-equal bump could still
+	// hide -- a moved revision hash -- is checkNoRevisionExplosion's job, and it
+	// stays strict.
+	specRewrites map[string]func(map[string]any) error
 
-	// objectBumps is how many times one specific owner object's spec is rewritten
-	// within the interval, keyed by the owner key ("Kind/name") checkOwnersStable
-	// uses. It exists for rewrites that are one-offs rather than per-start: they
-	// are asserted exactly once against that object, and every other object of the
-	// same kind is still held to zero. It is carried through acrossStarts unscaled.
-	objectBumps map[string]int64
+	// revisionAdds is how many new ControllerRevisions each named RoleBasedGroup
+	// is allowed to gain within the interval. A new revision is the fingerprint of
+	// a changed hash, so an entry is only allowed together with the specRewrites
+	// entry that moved the hash. Removed revisions are never tolerated, and a
+	// count that does not match exactly is still reported with the content diff.
+	revisionAdds map[string]int
 
 	// leaderOnlyServices are the shared Services whose selector the upgrade narrows to
 	// the leader component. Only the exact narrowing is folded: it must be visible in
@@ -885,49 +913,7 @@ type recordedRewrites struct {
 	leaderOnlyServices map[string]bool
 }
 
-// acrossStarts scales the per-start rewrites to an interval containing that many
-// controller starts, so a comparison against the pre-upgrade snapshot stays exact as
-// later phases restart the controller. leaderOnlyServices is a one-off narrowing of a
-// selector and is carried through unscaled: once narrowed it stays narrowed.
-func (r recordedRewrites) acrossStarts(starts int64) recordedRewrites {
-	scaled := make(map[string]int64, len(r.generationBumps))
-	for kind, perStart := range r.generationBumps {
-		scaled[kind] = perStart * starts
-	}
-	return recordedRewrites{
-		generationBumps:    scaled,
-		objectBumps:        r.objectBumps,
-		leaderOnlyServices: r.leaderOnlyServices,
-	}
-}
-
-// controllerStartRewrites is what starting a controller process rewrites, on this
-// release and on v0.7.0 alike. It is not upgrade behavior, so it is recorded separately
-// from what the hop itself does and passed by every comparison that spans a controller
-// start.
-var controllerStartRewrites = recordedRewrites{
-	generationBumps: map[string]int64{
-		// lwsSpecEqual can never report equal for a role that leaves
-		// rolloutStrategy.rollingUpdate unset, which every leader-worker fixture here
-		// does. The apply configuration then omits spec.rolloutStrategy entirely while
-		// the LeaderWorkerSet CRD defaults rollingUpdateConfiguration to
-		// {maxSurge: 0, maxUnavailable: 1, partition: 0}, and the reflect.DeepEqual at
-		// lws_reconciler.go:423 compares that against a nil configuration and reports
-		// "RolloutStrategy not equal". So the reconciler patches on every reconcile,
-		// and a converged RoleBasedGroup only reconciles when a controller process
-		// starts -- which is why this reads as exactly one rewrite per start.
-		//
-		// The patch changes no field of the stored spec: the `rbg` field manager does
-		// not own spec.rolloutStrategy, so nothing is added or removed and no pod
-		// moves. Only generation advances. v0.7.0 carries the same comparison, so the
-		// upgrade neither introduces nor fixes this; it is a product bug to report on
-		// its own, not an upgrade regression.
-		"LeaderWorkerSet": 1,
-	},
-}
-
-// upgradeRewrites records the v0.7.0 -> current changes, one entry per change, plus
-// what any controller start does: helm upgrade replaces the controller pods.
+// upgradeRewrites records the v0.7.0 -> current changes, one entry per change.
 //
 // RoleInstanceSet and RoleInstance generations were both 1 while the reconciler rewrote
 // the stored restartPolicy string into restartPolicyConfig. That rewrite moved the
@@ -936,22 +922,33 @@ var controllerStartRewrites = recordedRewrites{
 // adds the RoleInstanceInPlaceUpdateReady gate. With the reconciler no longer touching
 // the template, both kinds are left alone entirely, so neither belongs here.
 var upgradeRewrites = recordedRewrites{
-	generationBumps: controllerStartRewrites.generationBumps,
-
-	// The legacy-strategy fixture stores the v1alpha1 spelling "Recreate" of the
-	// update strategy type, which v0.7.0 copied verbatim into the RoleInstanceSet.
-	// The new RoleInstanceSet CRD enum rejects that value, so the upgraded
-	// controller repairs the stored spec to "RecreatePod" on its first reconcile.
-	// The repair is a one-off -- the next apply is a no-op -- and it is scoped to
-	// this one object: every other RoleInstanceSet is still held to zero bumps.
-	objectBumps: map[string]int64{
+	specRewrites: map[string]func(map[string]any) error{
+		// The legacy-strategy fixture stores the v1alpha1 spelling "Recreate" of the
+		// update strategy type, which v0.7.0 copied verbatim into the RoleInstanceSet.
+		// The new RoleInstanceSet CRD enum rejects that value, so the mutating webhook
+		// heals it to "RecreatePod" on the first write the upgraded controller sends.
+		// The heal is a one-off -- the next apply is a no-op.
+		"RoleInstanceSet/" + legacyStrategyRISName(): healStoredStrategyType,
 		// The legacy-set fixture's child owns its own RoleInstanceSet, which v0.7.0
-		// also wrote with the legacy "Recreate" spelling copied verbatim from the
-		// template, so the upgraded controller repairs that one to "RecreatePod" on
-		// its first reconcile too. The RBGS layer itself must not rewrite the child
-		// RoleBasedGroup; that is asserted by checkOwnersStable via a zero bump.
-		"RoleInstanceSet/" + legacyStrategyRISName(): 1,
-		"RoleInstanceSet/" + legacySetChildRISName(): 1,
+		// also wrote with the legacy spelling copied verbatim from the template, so
+		// it is healed on the upgraded controller's first reconcile too.
+		"RoleInstanceSet/" + legacySetChildRISName(): healStoredStrategyType,
+		// The same heal reaches the child RoleBasedGroup itself: the RBGS controller
+		// re-applies the child from its groupTemplate with the strategy type
+		// normalized, so the stored child spec changes on its first reconcile. A
+		// top-level RoleBasedGroup has no writer above it, so up-legacy keeps the
+		// legacy spelling -- only the child is re-applied.
+		"RoleBasedGroup/" + legacySetChildName(): healRoleStrategyTypes,
+	},
+
+	// Healing the child's stored spec moved the RBG-layer revision hash, so the
+	// controller stamps one new revision for it. The hash moves but no pod does:
+	// the RoleInstanceSet layer is repaired in place and its revision is stable,
+	// which the RoleInstanceSet entries above assert through content. No revision
+	// may be removed, and any count other than one is still reported with its
+	// content diff.
+	revisionAdds: map[string]int{
+		legacySetChildName(): 1,
 	},
 
 	// KEP 260 flips the default of sharedServiceSelection: v0.7.0 treated an unset
@@ -968,19 +965,54 @@ var upgradeRewrites = recordedRewrites{
 	leaderOnlyServices: map[string]bool{sharedServiceName(fxLwp, lwpRole): true},
 }
 
-// checkOwnersStable checks the workload objects behind each role. A generation bump
-// means the new controller rewrote the spec, which is the earliest signal of a
-// revision hash change and shows up before any pod is actually replaced.
-//
-// The root object itself is held to the same standard, under its own kind's bumps key:
-// what the controller hashes is the RBG spec, so a rewrite there reaches every role at
-// once. A RoleBasedGroupSet root has no recorded bump at all, so any rewrite of the
-// object that would restamp its children is reported.
+// healStoredStrategyType is the rewrite the mutating webhook performs on a stored
+// RoleInstanceSet whose spec.updateStrategy.type carries the v1alpha1 "Recreate"
+// spelling: the first write through the new apiserver heals it to "RecreatePod".
+// Applied to the before snapshot it yields the expected after spec. The legacy
+// spelling must be there to replace -- without it the recording is stale, and that
+// is reported rather than silently passing.
+func healStoredStrategyType(spec map[string]any) error {
+	strategy, _ := spec["updateStrategy"].(map[string]any)
+	if got := strategy["type"]; got != string(workloadsv1alpha2.LegacyRecreateUpdateStrategyType) {
+		return fmt.Errorf("updateStrategy.type is %v, not the legacy spelling the upgrade is recorded to heal", got)
+	}
+	strategy["type"] = string(workloadsv1alpha2.RecreatePodUpdateStrategyType)
+	return nil
+}
+
+// healRoleStrategyTypes is the same heal one level up, on a stored RoleBasedGroup:
+// every role carrying the v1alpha1 "Recreate" spelling in
+// roles[].rolloutStrategy.rollingUpdate.type comes out of the write as
+// "RecreatePod". At least one role must carry it, for the same reason as
+// healStoredStrategyType.
+func healRoleStrategyTypes(spec map[string]any) error {
+	roles, _ := spec["roles"].([]any)
+	healed := false
+	for _, item := range roles {
+		role, _ := item.(map[string]any)
+		strategy, _ := role["rolloutStrategy"].(map[string]any)
+		rolling, _ := strategy["rollingUpdate"].(map[string]any)
+		if rolling["type"] == string(workloadsv1alpha2.LegacyRecreateUpdateStrategyType) {
+			rolling["type"] = string(workloadsv1alpha2.RecreatePodUpdateStrategyType)
+			healed = true
+		}
+	}
+	if !healed {
+		return fmt.Errorf("no role carries the legacy strategy spelling the upgrade is recorded to heal")
+	}
+	return nil
+}
+
+// checkOwnersStable checks the workload objects behind each role, and the root object
+// itself. Rather than counting writes, each object's after spec is compared against
+// what the action is recorded to produce: the before spec with the recorded rewrite
+// applied, or the before spec itself when nothing is recorded. The comparison is
+// exact in both directions -- a change nobody recorded fails, and a recorded change
+// that never happened fails the rewrite's precondition.
 func checkOwnersStable(
 	fs *findings,
 	before, after map[string]RBGSnapshot,
-	bumps map[string]int64,
-	objectBumps map[string]int64,
+	specRewrites map[string]func(map[string]any) error,
 ) {
 	var problems []string
 	for rbgName, beforeSnap := range before {
@@ -994,11 +1026,8 @@ func checkOwnersStable(
 				"%s: %s was recreated (UID %s -> %s)",
 				rbgName, beforeSnap.Kind, beforeSnap.RBGUID, afterSnap.RBGUID))
 		}
-		if got, want := afterSnap.Generation-beforeSnap.Generation, bumps[beforeSnap.Kind]; got != want {
-			problems = append(problems, fmt.Sprintf(
-				"%s: %s spec was rewritten %d time(s) (generation %d -> %d), not the %d this "+
-					"comparison expects",
-				rbgName, beforeSnap.Kind, got, beforeSnap.Generation, afterSnap.Generation, want))
+		if problem := compareWithExpected(rbgName, beforeSnap.Kind+"/"+rbgName, beforeSnap.Spec, afterSnap.Spec, specRewrites); problem != "" {
+			problems = append(problems, problem)
 		}
 
 		for key, beforeOwner := range beforeSnap.Owners {
@@ -1012,16 +1041,8 @@ func checkOwnersStable(
 					"%s: owner %s was recreated (UID %s -> %s)",
 					rbgName, key, beforeOwner.UID, afterOwner.UID))
 			}
-			kind, _, _ := strings.Cut(key, "/")
-			got := afterOwner.Generation - beforeOwner.Generation
-			want := bumps[kind] + objectBumps[key]
-			if got != want {
-				problems = append(problems, fmt.Sprintf(
-					"%s: owner %s spec was rewritten %d time(s) (generation %d -> %d), not the %d "+
-						"this comparison expects for %s; more means a rewrite nobody has "+
-						"attributed yet, fewer means a recorded one is gone and "+
-						"upgradeRewrites.generationBumps is stale",
-					rbgName, key, got, beforeOwner.Generation, afterOwner.Generation, want, kind))
+			if problem := compareWithExpected(rbgName, key, beforeOwner.Spec, afterOwner.Spec, specRewrites); problem != "" {
+				problems = append(problems, problem)
 			}
 		}
 		for key := range afterSnap.Owners {
@@ -1030,7 +1051,32 @@ func checkOwnersStable(
 			}
 		}
 	}
-	fs.add("workload objects were replaced, or rewritten a different number of times than recorded", problems)
+	fs.add("workload objects were replaced or their specs rewritten past what is recorded", problems)
+}
+
+// compareWithExpected applies the rewrite recorded for key to a deep copy of
+// beforeSpec -- which yields the spec the object is expected to hold after the
+// action -- and compares it against afterSpec. An empty return means the after
+// spec is exactly what is recorded.
+func compareWithExpected(
+	rbgName, key string,
+	beforeSpec, afterSpec map[string]any,
+	specRewrites map[string]func(map[string]any) error,
+) string {
+	expected := runtime.DeepCopyJSON(beforeSpec)
+	if rewrite, recorded := specRewrites[key]; recorded {
+		if err := rewrite(expected); err != nil {
+			return fmt.Sprintf(
+				"%s: %s is recorded to be rewritten, but the before spec does not carry what "+
+					"the rewrite replaces: %v", rbgName, key, err)
+		}
+	}
+	if diff := cmp.Diff(expected, afterSpec); diff != "" {
+		return fmt.Sprintf(
+			"%s: %s spec differs from what the action is recorded to produce (- expected + after):\n%s",
+			rbgName, key, indentLines(diff, "      "))
+	}
+	return ""
 }
 
 // checkServicesStable checks the Services in front of each role, and the endpoints
@@ -1156,28 +1202,162 @@ func podFactsByName(snap RBGSnapshot, podName string) (PodFacts, bool) {
 // A new revision name is the fingerprint of a changed revision hash. This is
 // corroborating evidence, not the verdict: the authority is the pod identity
 // assertions above, so the message is worded as a suspicion.
-func checkNoRevisionExplosion(fs *findings, before, after map[string]RBGSnapshot) {
+//
+// revisionAdds records the new revisions a known rewrite is expected to stamp:
+// an entry passes only when exactly that many revisions were added and none were
+// removed, so a recording whose addition never happens fails as stale. When a
+// change is found, the added revisions are fetched back and
+// diffed against the surviving pre-upgrade revision of the same owner, so the
+// report says which field moved the hash rather than only that it moved.
+// ControllerRevision data is written once and never mutated, so reading the
+// older revision now still shows what it held before the upgrade.
+func checkNoRevisionExplosion(fs *findings, f *framework.Framework, before, after map[string]RBGSnapshot, revisionAdds map[string]int) {
 	var problems []string
 	for rbgName, beforeSnap := range before {
 		afterSnap, ok := after[rbgName]
 		if !ok {
 			continue
 		}
-		if strings.Join(beforeSnap.RevisionNames, ",") == strings.Join(afterSnap.RevisionNames, ",") {
+		added := missingFrom(afterSnap.RevisionNames, beforeSnap.RevisionNames)
+		removed := missingFrom(beforeSnap.RevisionNames, afterSnap.RevisionNames)
+		if len(removed) == 0 && len(added) == revisionAdds[rbgName] {
 			continue
 		}
-		problems = append(problems, fmt.Sprintf(
-			"%s: ControllerRevisions changed, so the revision hash may have changed"+
-				"\n    added:   %v\n    removed: %v\n    before:  %v\n    after:   %v",
-			rbgName,
-			missingFrom(afterSnap.RevisionNames, beforeSnap.RevisionNames),
-			missingFrom(beforeSnap.RevisionNames, afterSnap.RevisionNames),
-			beforeSnap.RevisionNames, afterSnap.RevisionNames))
+		if len(added) == 0 && len(removed) == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"%s: %d recorded new ControllerRevision(s) never appeared, so the recording is stale",
+				rbgName, revisionAdds[rbgName]))
+			continue
+		}
+		problems = append(problems, describeRevisionChange(f, rbgName, beforeSnap, afterSnap))
 	}
 	// The name encodes which layer produced it: the RBG layer names revisions
 	// <rbg>-<hash>-<n>, the RoleInstanceSet layer names them <set>-<hash>. Both carry
 	// GroupNameLabelKey, so this list spans both and the added names say which moved.
 	fs.add("ControllerRevisions changed across the upgrade", problems)
+}
+
+// describeRevisionChange renders one RBG's revision change, including a content diff
+// for every added revision against the newest surviving revision of the same owner.
+// A fetch failure degrades to the name lists: those already prove the change, and a
+// diagnostic read must never be what fails the spec.
+func describeRevisionChange(
+	f *framework.Framework,
+	rbgName string,
+	beforeSnap, afterSnap RBGSnapshot,
+) string {
+	added := missingFrom(afterSnap.RevisionNames, beforeSnap.RevisionNames)
+	removed := missingFrom(beforeSnap.RevisionNames, afterSnap.RevisionNames)
+
+	head := fmt.Sprintf(
+		"%s: ControllerRevisions changed, so the revision hash may have changed"+
+			"\n    added:   %v\n    removed: %v\n    before:  %v\n    after:   %v",
+		rbgName, added, removed, beforeSnap.RevisionNames, afterSnap.RevisionNames)
+
+	revList := &appsv1.ControllerRevisionList{}
+	if err := f.Client.List(f.Ctx, revList,
+		client.InNamespace(f.Namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgName},
+	); err != nil {
+		return head + fmt.Sprintf("\n    could not list revisions for a content diff: %v", err)
+	}
+
+	byName := make(map[string]*appsv1.ControllerRevision, len(revList.Items))
+	for i := range revList.Items {
+		byName[revList.Items[i].Name] = &revList.Items[i]
+	}
+
+	var details []string
+	for _, name := range added {
+		rev, found := byName[name]
+		if !found {
+			details = append(details, fmt.Sprintf(
+				"    revision %s disappeared before its content could be read", name))
+			continue
+		}
+		details = append(details, describeAddedRevision(name, rev, byName, beforeSnap.RevisionNames))
+	}
+	if len(details) == 0 {
+		return head
+	}
+	return head + "\n" + strings.Join(details, "\n")
+}
+
+// describeAddedRevision describes one added ControllerRevision: who owns it, and how
+// its data differs from the newest pre-upgrade revision of the same owner.
+//
+// The baseline is matched by owner UID rather than by name prefix because the two
+// naming schemes share prefixes: <rbg>-<hash>-<n> and <set>-<hash> both start with
+// the object name, so a prefix match could pair revisions of different owners.
+func describeAddedRevision(
+	name string,
+	rev *appsv1.ControllerRevision,
+	byName map[string]*appsv1.ControllerRevision,
+	beforeNames []string,
+) string {
+	owner := "<no owner>"
+	var ownerUID types.UID
+	if ref := metav1.GetControllerOfNoCopy(rev); ref != nil {
+		owner = fmt.Sprintf("%s/%s", ref.Kind, ref.Name)
+		ownerUID = ref.UID
+	}
+	out := fmt.Sprintf(
+		"    revision %s: revision=%d owner=%s created=%s",
+		name, rev.Revision, owner, rev.CreationTimestamp.Format(time.RFC3339))
+
+	var baseline *appsv1.ControllerRevision
+	for _, beforeName := range beforeNames {
+		candidate, found := byName[beforeName]
+		if !found {
+			continue
+		}
+		if ref := metav1.GetControllerOfNoCopy(candidate); ref == nil || ref.UID != ownerUID {
+			continue
+		}
+		if baseline == nil || candidate.Revision > baseline.Revision {
+			baseline = candidate
+		}
+	}
+	if baseline == nil {
+		return out + fmt.Sprintf(
+			"\n      no pre-upgrade revision of %s survives to diff against; full data:\n%s",
+			owner, indentLines(string(rev.Data.Raw), "        "))
+	}
+
+	diff, err := revisionDataDiff(baseline, rev)
+	if err != nil {
+		return out + fmt.Sprintf("\n      could not diff against %s: %v", baseline.Name, err)
+	}
+	if diff == "" {
+		return out + fmt.Sprintf(
+			"\n      data is identical to %s; only the revision number moved", baseline.Name)
+	}
+	return out + fmt.Sprintf(
+		"\n      diff against %s (- before + after):\n%s", baseline.Name, indentLines(diff, "        "))
+}
+
+// revisionDataDiff diffs the patch two ControllerRevisions carry. The data is JSON,
+// so it is compared as parsed maps: a byte diff would report formatting, not fields.
+func revisionDataDiff(before, after *appsv1.ControllerRevision) (string, error) {
+	beforeMap := map[string]any{}
+	if err := json.Unmarshal(before.Data.Raw, &beforeMap); err != nil {
+		return "", fmt.Errorf("parsing %s: %w", before.Name, err)
+	}
+	afterMap := map[string]any{}
+	if err := json.Unmarshal(after.Data.Raw, &afterMap); err != nil {
+		return "", fmt.Errorf("parsing %s: %w", after.Name, err)
+	}
+	return cmp.Diff(beforeMap, afterMap), nil
+}
+
+// indentLines prefixes every line of text with indent, so a nested diff stays
+// readable inside the report's own indentation.
+func indentLines(text, indent string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i := range lines {
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // checkStillReady requires every role to be as ready as it was, the RBG's Ready

@@ -91,9 +91,8 @@ limitations under the License.
 //   - Single node, and nothing about leader election. The chart ships
 //     controller.replicaCount 2 with --leader-elect on both versions, so the upgrade
 //     does replace a two-replica Deployment -- but nothing here observes which replica
-//     holds the lease, and the per-start rewrite accounting in recordedRewrites assumes
-//     one leader start per rollout. Nothing about multi-node scheduling either, or
-//     rollout behavior under real load.
+//     holds the lease. Nothing about multi-node scheduling either, or rollout behavior
+//     under real load.
 //   - Only the field combinations in fixtures.go. Gang scheduling, GPU/model
 //     workloads, PVC-backed roles and large LeaderWorkerSet sizes are excluded.
 //   - The observation ends when two samples taken settleDuration apart agree, so it
