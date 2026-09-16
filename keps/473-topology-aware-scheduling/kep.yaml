@@ -1,0 +1,17 @@
+title: Topology-Aware Scheduling
+kep-number: 473
+authors:
+  - "@diw-zw"
+status: provisional
+creation-date: 2026-09-16
+reviewers:
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.9.0"
+
+milestone:
+  alpha: "v0.9.0"
