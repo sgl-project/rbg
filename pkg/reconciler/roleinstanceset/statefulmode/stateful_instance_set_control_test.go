@@ -630,6 +630,21 @@ func TestProgressUpdateBudget(t *testing.T) {
 			expectNoDelet:       []string{"s-0"},
 		},
 		{
+			name: "healthy higher ordinal does not block a stably unhealthy target",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, false, true),
+				buildInst("s", 1, testOldRev, true, true),
+			},
+			topo: topology{
+				startOrdinal: 0, endOrdinal: 2, surgeStart: 2,
+				replicas: 2, partition: 0, maxUnavailable: 1, maxSurge: 0,
+				activeSurge: 0, inRollout: true,
+			},
+			markStablyUnhealthy: true,
+			expectedDels:        []string{"s-0"},
+			expectNoDelet:       []string{"s-1"},
+		},
+		{
 			// Mid-rollout, base instances at a superseded revision are
 			// stably unhealthy (e.g. stuck in CrashLoopBackOff). Free path
 			// recovers them so a new updateRev push can make progress
@@ -883,24 +898,25 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 	durationStore.Push(key, time.Second)
 	assertWait(reconcile(), time.Second)
 
-	// The highest ordinal recovers, but the other instance still consumes
-	// the budget. This healthy target must wait for an instance event.
+	// The highest ordinal recovers, but the lower target still consumes
+	// the budget. Its health window must still schedule a retry.
 	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(1))
 	recovered := instances[1]
 	recovered.Status.Conditions[0].Status = v1.ConditionTrue
-	if wait := reconcile(); wait != 0 {
-		t.Fatalf("healthy targets requested a health-window retry: %v", wait)
-	}
-	if len(objectManager.deleted) != 0 {
-		t.Fatalf("healthy instances deleted with no update budget: %v", objectManager.deleted)
-	}
+	assertWait(reconcile(), 4*time.Second)
 	if _, ok := instanceUnhealthySince.Load(recovered.UID); ok {
 		t.Fatalf("healthy instance %s retained its old timer", recovered.Name)
 	}
 	recovered.Status.Conditions[0].Status = v1.ConditionFalse
 
 	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(2))
-	assertWait(reconcile(), stableUnhealthyDuration)
+	// The higher target starts a fresh window; the lower target's earlier
+	// deadline must still determine the next retry.
+	assertWait(reconcile(), 4*time.Second)
+	if got, ok := instanceUnhealthySince.Load(recovered.UID); !ok || got == firstObserved {
+		t.Fatalf("unhealthy instance %s reused its old timer", recovered.Name)
+	}
+
 	for _, inst := range instances {
 		instanceUnhealthySince.Store(inst.UID, time.Now().Add(-2*stableUnhealthyDuration))
 	}

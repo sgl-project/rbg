@@ -627,7 +627,8 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 				"instanceSet", klog.KObj(set), "instance", klog.KObj(target),
 				"initialBaseUnavail", initialBaseUnavail, "newlyUnavail", newlyUnavail,
 				"effectiveBudget", effectiveBudget)
-			return status, nil
+			// A lower target may be free to update or need a timed retry.
+			continue
 		}
 		if isTerminating(target) {
 			continue
