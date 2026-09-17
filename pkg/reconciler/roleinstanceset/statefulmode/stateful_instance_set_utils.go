@@ -259,7 +259,7 @@ type topology struct {
 	maxSurge int
 
 	// activeSurge is the number of surge slots actually allocated this
-	// reconcile. Always 0 when not in rollout. During rollout we size it as
+	// reconcile. A paused rollout can retain existing surge. During an active rollout:
 	//   activeSurge = min(maxSurge, max(surgeNeeded, existingValidSurge))
 	// where surgeNeeded buffers healthy-old base instances beyond
 	// maxUnavailable, and existingValidSurge keeps already-created surge at
@@ -270,9 +270,8 @@ type topology struct {
 	// surgeStart equals replicas: surge ords occupy [surgeStart, endOrdinal).
 	surgeStart int
 
-	// inRollout is true when currentRev != updateRev and the rollout is not
-	// paused. Used to gate surge allocation and to decide whether Phase C
-	// runs at all.
+	// inRollout is true when rollout work remains and the set is not paused.
+	// It also stays true while existing surge protects a base that is not ready.
 	inRollout bool
 }
 
@@ -475,18 +474,36 @@ func allBaseAtUpdateRevHealthy(
 	return seen.Len() == replicas-partition
 }
 
+// hasStaleBaseInstance reports whether a base instance still needs a revision change.
+func hasStaleBaseInstance(
+	instances []*workloadsv1alpha2.RoleInstance,
+	partition, replicas int,
+	updateRevision string,
+) bool {
+	for _, inst := range instances {
+		if !isCreated(inst) || isTerminating(inst) {
+			continue
+		}
+		ord := getOrdinal(inst)
+		if ord >= partition && ord < replicas && getInstanceRevision(inst) != updateRevision {
+			return true
+		}
+	}
+	return false
+}
+
 // computeTopology is the single source of truth for ordinal range sizing
 // during a reconcile. See topology doc for field semantics. Errors only
 // occur on malformed spec (negative percentages etc.).
 //
 // Sizing rules in one place:
 //
-//   - Outside a rollout (currentRev == updateRev): activeSurge = 0,
+//   - Outside a rollout (no pending revision change or surge): activeSurge = 0,
 //     endOrdinal = replicas. Stale surge (if any from a finished rollout)
 //     falls out of range and gets condemned.
 //
-//   - Paused mid-rollout (Paused=true && currentRev != updateRev): freeze the
-//     existing surge in place. activeSurge = existingValidSurge (clamped to
+//   - Paused mid-rollout: preserve existing surge.
+//     activeSurge = existingValidSurge (clamped to
 //     maxSurge). New surge is NOT allocated (no surgeNeeded delta), but
 //     in-flight surge slots stay inside endOrdinal so Phase B does not condemn
 //     them. Pod startup is expensive; throwing away surge on pause and
@@ -538,7 +555,13 @@ func computeTopology(
 	}
 	t.partition = partition
 
-	t.inRollout = currentRevision != updateRevision && !set.Spec.UpdateStrategy.Paused
+	// An early rollback can leave stale base instances even when both revisions match.
+	updatePending := currentRevision != updateRevision || hasStaleBaseInstance(instances, partition, t.replicas, updateRevision)
+	existingSurge := min(countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision), maxSurge)
+	baseComplete := allBaseAtUpdateRevHealthy(instances, partition, t.replicas, updateRevision)
+	// Keep surge until the replacement base is ready, even after its revision changes.
+	updatePending = updatePending || (existingSurge > 0 && !baseComplete)
+	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
 	if maxSurge == 0 {
 		return t, nil
 	}
@@ -546,13 +569,9 @@ func computeTopology(
 	// condemn them. We do NOT allocate new surge here — surgeNeeded is only
 	// considered when actively rolling.
 	if !t.inRollout {
-		if set.Spec.UpdateStrategy.Paused && currentRevision != updateRevision {
-			existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision)
-			if existing > maxSurge {
-				existing = maxSurge
-			}
-			t.activeSurge = existing
-			t.endOrdinal = t.replicas + existing
+		if set.Spec.UpdateStrategy.Paused && updatePending {
+			t.activeSurge = existingSurge
+			t.endOrdinal = t.replicas + existingSurge
 		}
 		return t, nil
 	}
@@ -567,10 +586,9 @@ func computeTopology(
 	// Stickiness only applies while there is still work to do in
 	// [partition, replicas). Once that range is fully at updateRev healthy,
 	// drop the existing-surge floor so surge ramps back down.
-	if !allBaseAtUpdateRevHealthy(instances, partition, t.replicas, updateRevision) {
-		existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision)
-		if existing > active {
-			active = existing
+	if !baseComplete {
+		if existingSurge > active {
+			active = existingSurge
 		}
 	}
 	if active > maxSurge {

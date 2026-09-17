@@ -787,7 +787,7 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 // shouldAdvanceCurrentRevision decides whether status.CurrentRevision can be
 // advanced to updateRev this reconcile. Multi-layer guard:
 //
-//	① We are actually in a rollout (currentRev != updateRev, !Paused).
+//	① The topology reports an active rollout (not paused).
 //	② Partition has been fully consumed (partition == 0). When partition > 0
 //	   the ords below partition are pinned at the "old" revision, so
 //	   advancing CurrentRevision to updateRev would lie about their state and
