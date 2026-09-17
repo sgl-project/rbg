@@ -23,8 +23,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -290,6 +292,220 @@ roles:
       ports:
         http: 8080
     size: 3
+`,
+			wantErr: false,
+		},
+		{
+			name:   "custom components pattern with replicas=2",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "prefill",
+							Replicas: ptr.To(int32(2)),
+							Pattern: workloadsv1alpha2.Pattern{
+								CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+									Components: []workloadsv1alpha2.InstanceComponent{
+										{Name: "leader", Size: ptr.To(int32(1))},
+										{Name: "worker", Size: ptr.To(int32(2))},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2)),
+			},
+			expected: `group:
+  name: test-cluster
+  roles:
+  - prefill
+  size: 1
+roles:
+  prefill:
+    instances:
+    - address: test-cluster-prefill-0-leader-0.s-test-cluster-prefill
+    - address: test-cluster-prefill-0-worker-0.s-test-cluster-prefill
+    - address: test-cluster-prefill-0-worker-1.s-test-cluster-prefill
+    - address: test-cluster-prefill-1-leader-0.s-test-cluster-prefill
+    - address: test-cluster-prefill-1-worker-0.s-test-cluster-prefill
+    - address: test-cluster-prefill-1-worker-1.s-test-cluster-prefill
+    size: 6
+`,
+			wantErr: false,
+		},
+		{
+			name:   "custom components pattern with omitted size defaults to 1",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "decode",
+							Replicas: ptr.To(int32(1)),
+							Pattern: workloadsv1alpha2.Pattern{
+								CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+									Components: []workloadsv1alpha2.InstanceComponent{
+										{Name: "leader"},
+										{Name: "worker", Size: ptr.To(int32(2))},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name:     "decode",
+				Replicas: ptr.To(int32(1)),
+			},
+			expected: `group:
+  name: test-cluster
+  roles:
+  - decode
+  size: 1
+roles:
+  decode:
+    instances:
+    - address: test-cluster-decode-0-leader-0.s-test-cluster-decode
+    - address: test-cluster-decode-0-worker-0.s-test-cluster-decode
+    - address: test-cluster-decode-0-worker-1.s-test-cluster-decode
+    size: 3
+`,
+			wantErr: false,
+		},
+		{
+			name:   "custom components pattern with component serviceName override",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "decode",
+							Replicas: ptr.To(int32(1)),
+							Pattern: workloadsv1alpha2.Pattern{
+								CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+									Components: []workloadsv1alpha2.InstanceComponent{
+										{Name: "leader", Size: ptr.To(int32(1)), ServiceName: "leader-svc"},
+										{Name: "worker", Size: ptr.To(int32(1))},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name:     "decode",
+				Replicas: ptr.To(int32(1)),
+			},
+			expected: `group:
+  name: test-cluster
+  roles:
+  - decode
+  size: 1
+roles:
+  decode:
+    instances:
+    - address: test-cluster-decode-0-leader-0.leader-svc
+    - address: test-cluster-decode-0-worker-0.s-test-cluster-decode
+    size: 2
+`,
+			wantErr: false,
+		},
+		{
+			name:   "leader worker pattern with size=2 on RoleInstanceSet",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "prefill",
+							Replicas: ptr.To(int32(1)),
+							Pattern: workloadsv1alpha2.Pattern{
+								LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+									Size: ptr.To(int32(2)),
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(1)),
+			},
+			expected: `group:
+  name: test-cluster
+  roles:
+  - prefill
+  size: 1
+roles:
+  prefill:
+    instances:
+    - address: test-cluster-prefill-0-0.s-test-cluster-prefill
+    - address: test-cluster-prefill-0-1.s-test-cluster-prefill
+    size: 2
+`,
+			wantErr: false,
+		},
+		{
+			name:   "leader worker pattern with size=2 on LeaderWorkerSet",
+			client: fake.NewClientBuilder().WithScheme(schema).Build(),
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{
+						{
+							Name:     "prefill",
+							Replicas: ptr.To(int32(2)),
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
+							},
+							Pattern: workloadsv1alpha2.Pattern{
+								LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+									Size: ptr.To(int32(2)),
+								},
+							},
+						},
+					},
+				},
+			},
+			role: &workloadsv1alpha2.RoleSpec{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2)),
+			},
+			expected: `group:
+  name: test-cluster
+  roles:
+  - prefill
+  size: 1
+roles:
+  prefill:
+    instances:
+    - address: test-cluster-prefill-0.s-test-cluster-prefill
+    - address: test-cluster-prefill-1.s-test-cluster-prefill
+    - address: test-cluster-prefill-2.s-test-cluster-prefill
+    - address: test-cluster-prefill-3.s-test-cluster-prefill
+    size: 4
 `,
 			wantErr: false,
 		},
