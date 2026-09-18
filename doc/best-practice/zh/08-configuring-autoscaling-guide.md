@@ -710,6 +710,7 @@ spec:
                   - "0.0.0.0"
                   - --port
                   - "8000"
+                  - --enable-metrics
                   - --disaggregation-mode
                   - "prefill"
                   - --tp-size
@@ -743,6 +744,7 @@ spec:
                   - "0.0.0.0"
                   - --port
                   - "8000"
+                  - --enable-metrics
                   - --disaggregation-mode
                   - "decode"
                   - --tp-size
@@ -758,7 +760,7 @@ spec:
 EOF
 
 # 等待所有 Pod 就绪
-kubectl wait --for=condition=ready pod -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo -n inference --timeout=600s
+kubectl wait --for=condition=ready pod -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo --timeout=600s
 ```
 
 ### 步骤 2：创建 AutoScaler CR
@@ -806,7 +808,7 @@ spec:
 
       metricsEndpoint:
         metricSource: sglang
-        port: 9091
+        port: 8000
 EOF
 ```
 
@@ -814,25 +816,25 @@ EOF
 
 ```bash
 # 查看 AutoScaler 状态
-kubectl get autoscaler -n inference
+kubectl get autoscaler
 
 # 查看 AutoScaler 详情
-kubectl get autoscaler pd-autoscaler-demo -n inference -o yaml
+kubectl get autoscaler pd-autoscaler-demo -o yaml
 
 # 查看 Planner Pod
-kubectl get pods -n inference -l app=rbg-planner
+kubectl get pods -l app=rbg-planner
 
 # 查看 Planner 日志（观察预测和计算结果）
-kubectl logs -n inference -l app=rbg-planner --tail=50
+kubectl logs -l app=rbg-planner --tail=50
 
 # 查看当前副本数决策（dryRun 模式下不实际伸缩）
-kubectl get autoscaler pd-autoscaler-demo -n inference -o jsonpath='{.status}'
+kubectl get autoscaler pd-autoscaler-demo -o jsonpath='{.status}'
 
 # 查看 RBG 各角色实际副本数（dryRun 模式下应保持不变）
-kubectl get rbg pd-autoscaler-demo -n inference -o jsonpath='{range .spec.roles[*]}{.name}{"="}{.replicas}{"\n"}{end}'
+kubectl get rbg pd-autoscaler-demo -o jsonpath='{range .spec.roles[*]}{.name}{"="}{.replicas}{"\n"}{end}'
 
 # 查看 RBGSA 状态（两个角色各一个）
-kubectl get rbgsa -n inference
+kubectl get rbgsa
 ```
 
 **预期输出：**
@@ -847,14 +849,14 @@ kubectl get rbgsa -n inference
 
 ```bash
 # 确认 dryRun 观测数据合理后，关闭 dryRun
-kubectl patch autoscaler pd-autoscaler-demo -n inference --type='json' \
+kubectl patch autoscaler pd-autoscaler-demo --type='json' \
   -p='[{"op": "replace", "path": "/spec/implementation/DynamoPlanner/dryRun", "value": false}]'
 
 # 持续观察副本数变化
-watch -n 5 'kubectl get rbg pd-autoscaler-demo -n inference -o jsonpath="{range .spec.roles[*]}{.name}={.replicas}\n{end}"'
+watch -n 5 'kubectl get rbg pd-autoscaler-demo -o jsonpath="{range .spec.roles[*]}{.name}={.replicas}\n{end}"'
 
 # 观察 Pod 变化
-kubectl get pods -n inference -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo -w
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo -w
 ```
 
 > **说明**：关闭 dryRun 后，Planner 会根据 SLA 目标和负载预测自动调整 Prefill 和 Decode 的副本数。观察一段时间后，如果伸缩行为符合预期，则配置完成。如需调参，可参考概念文档中的「推荐的调参流程」。
@@ -862,8 +864,8 @@ kubectl get pods -n inference -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler
 ### 清理（RBG Planner）
 
 ```bash
-kubectl delete autoscaler pd-autoscaler-demo -n inference
-kubectl delete rbg pd-autoscaler-demo -n inference
+kubectl delete autoscaler pd-autoscaler-demo
+kubectl delete rbg pd-autoscaler-demo
 ```
 
 ---

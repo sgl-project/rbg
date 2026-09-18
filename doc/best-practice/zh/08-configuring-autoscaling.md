@@ -395,7 +395,7 @@ spec:
 
       metricsEndpoint:
         metricSource: sglang   # 推理引擎类型：sglang | vllm | dynamo
-        port: 9091             # 指标端口
+        port: 8000             # 指标端口
 ```
 
 #### 参数说明（AutoScaler）
@@ -444,16 +444,16 @@ Profiler 生成的性能画像包含：
 
 ```bash
 # 查看 AutoScaler 状态
-kubectl get autoscaler -n inference
+kubectl get autoscaler
 
 # 查看 Planner Pod 日志
-kubectl logs -n inference -l app=rbg-planner
+kubectl logs -l app=rbg-planner
 
 # 查看当前副本数决策
-kubectl get autoscaler pd-inference -n inference -o jsonpath='{.status.prefillReplicas}{""}{.status.decodeReplicas}'
+kubectl get autoscaler pd-inference -o jsonpath='{.status.prefillReplicas}{""}{.status.decodeReplicas}'
 
 # 查看 RBG 角色副本数（由 Planner 驱动）
-kubectl get rbg pd-inference -n inference -o jsonpath='{range .spec.roles[*]}{.name}{"="}{.replicas}{"\n"}{end}'
+kubectl get rbg pd-inference -o jsonpath='{range .spec.roles[*]}{.name}{"="}{.replicas}{"\n"}{end}'
 ```
 
 ### 推荐的调参流程
@@ -502,7 +502,7 @@ kubectl get hpa
 kubectl get scaledobject
 
 # 查看 AutoScaler 状态
-kubectl get autoscaler -n inference
+kubectl get autoscaler
 
 # 查看 RBGSA 状态
 kubectl get rbgsa

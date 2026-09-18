@@ -710,6 +710,7 @@ spec:
                   - "0.0.0.0"
                   - --port
                   - "8000"
+                  - --enable-metrics
                   - --disaggregation-mode
                   - "prefill"
                   - --tp-size
@@ -743,6 +744,7 @@ spec:
                   - "0.0.0.0"
                   - --port
                   - "8000"
+                  - --enable-metrics
                   - --disaggregation-mode
                   - "decode"
                   - --tp-size
@@ -758,7 +760,7 @@ spec:
 EOF
 
 # Wait for all Pods to be ready
-kubectl wait --for=condition=ready pod -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo -n inference --timeout=600s
+kubectl wait --for=condition=ready pod -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo --timeout=600s
 ```
 
 ### Step 2: Create AutoScaler CR
@@ -806,7 +808,7 @@ spec:
 
       metricsEndpoint:
         metricSource: sglang
-        port: 9091
+        port: 8000
 EOF
 ```
 
@@ -814,25 +816,25 @@ EOF
 
 ```bash
 # Check AutoScaler status
-kubectl get autoscaler -n inference
+kubectl get autoscaler
 
 # Check AutoScaler details
-kubectl get autoscaler pd-autoscaler-demo -n inference -o yaml
+kubectl get autoscaler pd-autoscaler-demo -o yaml
 
 # Check Planner Pod
-kubectl get pods -n inference -l app=rbg-planner
+kubectl get pods -l app=rbg-planner
 
 # Check Planner logs (observe predictions and computed results)
-kubectl logs -n inference -l app=rbg-planner --tail=50
+kubectl logs -l app=rbg-planner --tail=50
 
 # Check current replica count decision (dryRun mode does not actually scale)
-kubectl get autoscaler pd-autoscaler-demo -n inference -o jsonpath='{.status}'
+kubectl get autoscaler pd-autoscaler-demo -o jsonpath='{.status}'
 
 # Check RBG role actual replica counts (should remain unchanged in dryRun mode)
-kubectl get rbg pd-autoscaler-demo -n inference -o jsonpath='{range .spec.roles[*]}{.name}{"="}{.replicas}{"\n"}{end}'
+kubectl get rbg pd-autoscaler-demo -o jsonpath='{range .spec.roles[*]}{.name}{"="}{.replicas}{"\n"}{end}'
 
 # Check RBGSA status (one for each role)
-kubectl get rbgsa -n inference
+kubectl get rbgsa
 ```
 
 **Expected output:**
@@ -847,14 +849,14 @@ kubectl get rbgsa -n inference
 
 ```bash
 # After confirming dryRun observations are reasonable, disable dryRun
-kubectl patch autoscaler pd-autoscaler-demo -n inference --type='json' \
+kubectl patch autoscaler pd-autoscaler-demo --type='json' \
   -p='[{"op": "replace", "path": "/spec/implementation/DynamoPlanner/dryRun", "value": false}]'
 
 # Continuously observe replica count changes
-watch -n 5 'kubectl get rbg pd-autoscaler-demo -n inference -o jsonpath="{range .spec.roles[*]}{.name}={.replicas}\n{end}"'
+watch -n 5 'kubectl get rbg pd-autoscaler-demo -o jsonpath="{range .spec.roles[*]}{.name}={.replicas}\n{end}"'
 
 # Observe Pod changes
-kubectl get pods -n inference -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo -w
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler-demo -w
 ```
 
 > **Note**: After disabling dryRun, the Planner automatically adjusts Prefill and Decode replica counts based on SLA targets and load predictions. Observe for a while — if the scaling behavior meets expectations, the configuration is complete. For tuning, refer to the "Recommended Tuning Process" in the concept document.
@@ -862,8 +864,8 @@ kubectl get pods -n inference -l rbg.workloads.x-k8s.io/group-name=pd-autoscaler
 ### Cleanup (RBG Planner)
 
 ```bash
-kubectl delete autoscaler pd-autoscaler-demo -n inference
-kubectl delete rbg pd-autoscaler-demo -n inference
+kubectl delete autoscaler pd-autoscaler-demo
+kubectl delete rbg pd-autoscaler-demo
 ```
 
 ---
