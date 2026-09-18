@@ -92919,6 +92919,10 @@ spec:
                           required:
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: customized action container image must not be
+                              empty
+                            rule: has(self.image) && self.image != ''
                         minItems: 1
                         type: array
                       volumes:
@@ -94560,6 +94564,7 @@ spec:
                           Images specifies the container images to be preloaded onto target nodes.
                           Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
                         items:
+                          minLength: 1
                           type: string
                         minItems: 1
                         type: array
@@ -96000,6 +96005,10 @@ spec:
                                 required:
                                 - name
                                 type: object
+                                x-kubernetes-validations:
+                                - message: customized action container image must
+                                    not be empty
+                                  rule: has(self.image) && self.image != ''
                               minItems: 1
                               type: array
                             volumes:
@@ -97668,6 +97677,7 @@ spec:
                                 Images specifies the container images to be preloaded onto target nodes.
                                 Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
                               items:
+                                minLength: 1
                                 type: string
                               minItems: 1
                               type: array

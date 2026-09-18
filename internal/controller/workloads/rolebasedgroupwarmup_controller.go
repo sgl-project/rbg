@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -174,8 +175,18 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		return ctrl.Result{}, err
 	}
 
+	if err := validateWarmupSpec(warmup.Spec); err != nil {
+		logger.Error(err, "invalid warmup specification")
+		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
+			"InvalidWarmupSpec", err.Error())
+	}
+
 	desiredNodes, err := r.getDesiredNodesToWarmup(ctx, *warmup)
 	if err != nil {
+		if apierrors.IsNotFound(err) && warmup.Spec.TargetRoleBasedGroup != nil {
+			return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
+				"InvalidTarget", err.Error())
+		}
 		logger.Error(err, "failed to get desired nodes to warm up")
 		return ctrl.Result{}, err
 	}
@@ -224,6 +235,52 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	}
 
 	return r.requeueForTimeout(warmup), nil
+}
+
+func validateWarmupActions(target string, action workloadsv1alpha2.WarmupActions) error {
+	if action.ImagePreload != nil {
+		if len(action.ImagePreload.Images) == 0 {
+			return fmt.Errorf("%s.imagePreload.images must contain at least one image", target)
+		}
+		for i, image := range action.ImagePreload.Images {
+			if strings.TrimSpace(image) == "" {
+				return fmt.Errorf("%s.imagePreload.images[%d] must not be empty", target, i)
+			}
+		}
+	}
+	if action.CustomizedAction != nil {
+		if len(action.CustomizedAction.Containers) == 0 {
+			return fmt.Errorf("%s.customizedAction.containers must contain at least one container", target)
+		}
+		for i, container := range action.CustomizedAction.Containers {
+			if strings.TrimSpace(container.Image) == "" {
+				return fmt.Errorf("%s.customizedAction.containers[%d].image must not be empty", target, i)
+			}
+		}
+	}
+	return nil
+}
+
+func validateWarmupSpec(spec workloadsv1alpha2.RoleBasedGroupWarmupSpec) error {
+	if spec.TargetNodes != nil {
+		if err := validateWarmupActions("spec.targetNodes", spec.TargetNodes.WarmupActions); err != nil {
+			return err
+		}
+	}
+	if spec.TargetRoleBasedGroup != nil {
+		roleNames := make([]string, 0, len(spec.TargetRoleBasedGroup.Roles))
+		for roleName := range spec.TargetRoleBasedGroup.Roles {
+			roleNames = append(roleNames, roleName)
+		}
+		sort.Strings(roleNames)
+		for _, roleName := range roleNames {
+			target := fmt.Sprintf("spec.targetRoleBasedGroup.roles[%q]", roleName)
+			if err := validateWarmupActions(target, spec.TargetRoleBasedGroup.Roles[roleName]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // computePermanentlyFailedNodes returns the set of nodes whose failure count exceeds the backoff limit.
@@ -318,13 +375,14 @@ func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 		}
 		if err := controllerutil.SetControllerReference(warmup, pod, r.Scheme); err != nil {
 			logger.Error(err, "Failed to set owner reference", "node", nodeName)
-			continue
+			return activePods, fmt.Errorf("set owner reference for warmup Pod on node %q: %w", nodeName, err)
 		}
 		if err := r.Create(ctx, pod); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				logger.Error(err, "Failed to create warmup Pod", "node", nodeName)
 				r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "FailedCreatePod",
 					"Failed to create warmup Pod for node %s: %v", nodeName, err)
+				return activePods, fmt.Errorf("create warmup Pod for node %q: %w", nodeName, err)
 			}
 			continue
 		}
@@ -444,14 +502,22 @@ func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Con
 			Name:      rbgTarget.Name,
 			Namespace: warmup.Namespace,
 		}
+		reader := client.Reader(r.Client)
 		if err := r.Get(ctx, rbgKey, rbg); err != nil {
-			logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
-			return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+			if !apierrors.IsNotFound(err) || r.apiReader == nil {
+				logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
+				return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+			}
+			if fallbackErr := r.apiReader.Get(ctx, rbgKey, rbg); fallbackErr != nil {
+				logger.Error(fallbackErr, "Failed to confirm RoleBasedGroup with API reader", "name", rbgTarget.Name, "namespace", warmup.Namespace)
+				return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, fallbackErr)
+			}
+			reader = r.apiReader
 		}
 
 		// List all Pods belonging to this RoleBasedGroup
 		podList := &corev1.PodList{}
-		if err := r.List(ctx, podList,
+		if err := reader.List(ctx, podList,
 			client.InNamespace(warmup.Namespace),
 			client.MatchingLabels{constants.GroupNameLabelKey: rbgTarget.Name}); err != nil {
 			logger.Error(err, "Failed to list Pods for RoleBasedGroup", "name", rbgTarget.Name)
