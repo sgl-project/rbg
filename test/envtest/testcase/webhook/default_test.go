@@ -86,12 +86,13 @@ var _ = Describe("Mutating webhook defaulters", func() {
 		})
 
 		It("still passes valid types through unchanged", func() {
-			rbg := buildRBG("valid-type", testNs, workloadsv1alpha2.InPlaceOnlyUpdateStrategyType)
+			// Deprecated but still a valid enum value.
+			rbg := buildRBG("valid-type", testNs, workloadsv1alpha2.UpdateStrategyType("InPlaceOnly"))
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
 
 			stored := getRBG(rbg.Name, testNs)
 			Expect(stored.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type).To(
-				Equal(workloadsv1alpha2.InPlaceOnlyUpdateStrategyType),
+				Equal(workloadsv1alpha2.UpdateStrategyType("InPlaceOnly")),
 			)
 		})
 	})

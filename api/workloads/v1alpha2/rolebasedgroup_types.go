@@ -111,6 +111,9 @@ const (
 	InPlaceIfPossibleUpdateStrategyType UpdateStrategyType = "InPlaceIfPossible"
 
 	// InPlaceOnlyUpdateStrategyType - Only use in-place update.
+	//
+	// Deprecated: InPlaceOnly is not separately implemented and behaves identically
+	// to InPlaceIfPossible. Use InPlaceIfPossibleUpdateStrategyType instead.
 	InPlaceOnlyUpdateStrategyType UpdateStrategyType = "InPlaceOnly"
 
 	// LegacyRecreateUpdateStrategyType is the v1alpha1 spelling of RecreatePod.
@@ -138,6 +141,7 @@ func NormalizeUpdateStrategyType(t UpdateStrategyType) UpdateStrategyType {
 type RollingUpdate struct {
 	// Type indicates the type of the InstanceSetUpdateStrategy.
 	// Default is InPlaceIfPossible.
+	// Note: InPlaceOnly is deprecated; use InPlaceIfPossible.
 	// +kubebuilder:validation:Enum={RecreatePod,InPlaceIfPossible,InPlaceOnly}
 	Type UpdateStrategyType `json:"type,omitempty"`
 

@@ -119,6 +119,7 @@ type RoleInstanceSetScaleStrategy struct {
 type RoleInstanceSetUpdateStrategy struct {
 	// Type indicates the type of the RoleInstanceSetUpdateStrategy.
 	// Default is InPlaceIfPossible.
+	// Note: InPlaceOnly is deprecated; use InPlaceIfPossible.
 	// +kubebuilder:validation:Enum={RecreatePod,InPlaceIfPossible,InPlaceOnly}
 	Type UpdateStrategyType `json:"type,omitempty"`
 

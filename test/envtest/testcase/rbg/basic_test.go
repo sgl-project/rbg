@@ -298,7 +298,8 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 			for _, updateType := range []workloadsv1alpha2.UpdateStrategyType{
 				workloadsv1alpha2.RecreatePodUpdateStrategyType,
 				workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
-				workloadsv1alpha2.InPlaceOnlyUpdateStrategyType,
+				// Deprecated but still a valid enum value.
+				"InPlaceOnly",
 			} {
 				rbg := &workloadsv1alpha2.RoleBasedGroup{
 					ObjectMeta: metav1.ObjectMeta{
