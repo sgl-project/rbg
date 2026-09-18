@@ -18,6 +18,8 @@ package workloads
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -859,6 +861,156 @@ func TestReconcile_InvalidImageFailsWarmup(t *testing.T) {
 	}
 	if len(pods.Items) != 0 {
 		t.Fatalf("invalid warmup should not create pods, got %d", len(pods.Items))
+	}
+}
+
+func TestReconcile_InvalidCustomizedContainerImageFailsWarmup(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+	}{
+		{name: "empty", image: ""},
+		{name: "whitespace", image: " \t"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "invalid-custom-image", Namespace: "default", UID: types.UID(tt.name)},
+				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+					TargetNodes: &workloadsv1alpha2.TargetNodes{
+						NodeNames: []string{"node-1"},
+						WarmupActions: workloadsv1alpha2.WarmupActions{
+							CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+								Containers: []corev1.Container{{Name: "custom", Image: tt.image}},
+							},
+						},
+					},
+				},
+			}
+			r := newWarmupReconciler(warmup)
+
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: warmup.Name, Namespace: warmup.Namespace}}); err != nil {
+				t.Fatalf("unexpected reconcile error: %v", err)
+			}
+
+			updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+			if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+				t.Fatalf("failed to get warmup: %v", err)
+			}
+			if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+				t.Fatalf("expected Failed phase, got %q", updated.Status.Phase)
+			}
+			if len(updated.Status.Conditions) == 0 || updated.Status.Conditions[0].Reason != "InvalidWarmupSpec" {
+				t.Fatalf("expected InvalidWarmupSpec condition, got %#v", updated.Status.Conditions)
+			}
+
+			pods := &corev1.PodList{}
+			if err := r.List(ctx, pods); err != nil {
+				t.Fatalf("failed to list pods: %v", err)
+			}
+			if len(pods.Items) != 0 {
+				t.Fatalf("invalid warmup should not create pods, got %d", len(pods.Items))
+			}
+		})
+	}
+}
+
+func TestValidateWarmupSpecReportsDeterministicTargetPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		spec       workloadsv1alpha2.RoleBasedGroupWarmupSpec
+		wantTarget string
+	}{
+		{
+			name: "target nodes",
+			spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+				TargetNodes: &workloadsv1alpha2.TargetNodes{
+					WarmupActions: workloadsv1alpha2.WarmupActions{
+						ImagePreload: &workloadsv1alpha2.ImagePreloadAction{},
+					},
+				},
+			},
+			wantTarget: "spec.targetNodes",
+		},
+		{
+			name: "sorted rbg roles",
+			spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+				TargetRoleBasedGroup: &workloadsv1alpha2.TargetRoleBasedGroup{
+					Roles: map[string]workloadsv1alpha2.WarmupActions{
+						"zeta":  {ImagePreload: &workloadsv1alpha2.ImagePreloadAction{}},
+						"alpha": {ImagePreload: &workloadsv1alpha2.ImagePreloadAction{}},
+					},
+				},
+			},
+			wantTarget: `spec.targetRoleBasedGroup.roles["alpha"]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWarmupSpec(tt.spec)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantTarget) {
+				t.Fatalf("expected target path %q in error, got %q", tt.wantTarget, err)
+			}
+		})
+	}
+}
+
+func TestReconcile_PropagatesPodCreateError(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "create-error", Namespace: "default", UID: "uid-create-error"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames:     []string{"node-1"},
+				WarmupActions: workloadsv1alpha2.WarmupActions{ImagePreload: &workloadsv1alpha2.ImagePreloadAction{Images: []string{"busybox:1.36"}}},
+			},
+		},
+	}
+	createErr := errors.New("injected pod create failure")
+	scheme := newWarmupTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(warmup).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupWarmup{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.Pod); ok {
+					return createErr
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &RoleBasedGroupWarmupReconciler{Client: fakeClient, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if !errors.Is(err, createErr) {
+		t.Fatalf("expected Pod create error to be propagated, got %v", err)
+	}
+}
+
+func TestReconcile_PropagatesOwnerReferenceError(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "owner-reference-error", Namespace: "default", UID: "uid-owner-reference-error"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames:     []string{"node-1"},
+				WarmupActions: workloadsv1alpha2.WarmupActions{ImagePreload: &workloadsv1alpha2.ImagePreloadAction{Images: []string{"busybox:1.36"}}},
+			},
+		},
+	}
+	r := newWarmupReconciler(warmup)
+	r.Scheme = runtime.NewScheme()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err == nil || !strings.Contains(err.Error(), "set owner reference") {
+		t.Fatalf("expected owner-reference error to be propagated, got %v", err)
 	}
 }
 

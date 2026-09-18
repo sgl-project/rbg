@@ -237,21 +237,24 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	return r.requeueForTimeout(warmup), nil
 }
 
-func validateWarmupActions(desiredNodes map[string][]workloadsv1alpha2.WarmupActions) error {
-	for nodeName, actions := range desiredNodes {
-		for _, action := range actions {
-			if action.ImagePreload != nil {
-				if len(action.ImagePreload.Images) == 0 {
-					return fmt.Errorf("node %q has imagePreload with no images", nodeName)
-				}
-				for _, image := range action.ImagePreload.Images {
-					if strings.TrimSpace(image) == "" {
-						return fmt.Errorf("node %q has an empty image reference", nodeName)
-					}
-				}
+func validateWarmupActions(target string, action workloadsv1alpha2.WarmupActions) error {
+	if action.ImagePreload != nil {
+		if len(action.ImagePreload.Images) == 0 {
+			return fmt.Errorf("%s.imagePreload.images must contain at least one image", target)
+		}
+		for i, image := range action.ImagePreload.Images {
+			if strings.TrimSpace(image) == "" {
+				return fmt.Errorf("%s.imagePreload.images[%d] must not be empty", target, i)
 			}
-			if action.CustomizedAction != nil && len(action.CustomizedAction.Containers) == 0 {
-				return fmt.Errorf("node %q has customizedAction with no containers", nodeName)
+		}
+	}
+	if action.CustomizedAction != nil {
+		if len(action.CustomizedAction.Containers) == 0 {
+			return fmt.Errorf("%s.customizedAction.containers must contain at least one container", target)
+		}
+		for i, container := range action.CustomizedAction.Containers {
+			if strings.TrimSpace(container.Image) == "" {
+				return fmt.Errorf("%s.customizedAction.containers[%d].image must not be empty", target, i)
 			}
 		}
 	}
@@ -259,16 +262,25 @@ func validateWarmupActions(desiredNodes map[string][]workloadsv1alpha2.WarmupAct
 }
 
 func validateWarmupSpec(spec workloadsv1alpha2.RoleBasedGroupWarmupSpec) error {
-	actionsByTarget := make(map[string][]workloadsv1alpha2.WarmupActions)
 	if spec.TargetNodes != nil {
-		actionsByTarget["targetNodes"] = []workloadsv1alpha2.WarmupActions{spec.TargetNodes.WarmupActions}
-	}
-	if spec.TargetRoleBasedGroup != nil {
-		for roleName, actions := range spec.TargetRoleBasedGroup.Roles {
-			actionsByTarget[fmt.Sprintf("role %q", roleName)] = []workloadsv1alpha2.WarmupActions{actions}
+		if err := validateWarmupActions("spec.targetNodes", spec.TargetNodes.WarmupActions); err != nil {
+			return err
 		}
 	}
-	return validateWarmupActions(actionsByTarget)
+	if spec.TargetRoleBasedGroup != nil {
+		roleNames := make([]string, 0, len(spec.TargetRoleBasedGroup.Roles))
+		for roleName := range spec.TargetRoleBasedGroup.Roles {
+			roleNames = append(roleNames, roleName)
+		}
+		sort.Strings(roleNames)
+		for _, roleName := range roleNames {
+			target := fmt.Sprintf("spec.targetRoleBasedGroup.roles[%q]", roleName)
+			if err := validateWarmupActions(target, spec.TargetRoleBasedGroup.Roles[roleName]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // computePermanentlyFailedNodes returns the set of nodes whose failure count exceeds the backoff limit.
@@ -363,13 +375,14 @@ func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 		}
 		if err := controllerutil.SetControllerReference(warmup, pod, r.Scheme); err != nil {
 			logger.Error(err, "Failed to set owner reference", "node", nodeName)
-			continue
+			return activePods, fmt.Errorf("set owner reference for warmup Pod on node %q: %w", nodeName, err)
 		}
 		if err := r.Create(ctx, pod); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				logger.Error(err, "Failed to create warmup Pod", "node", nodeName)
 				r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "FailedCreatePod",
 					"Failed to create warmup Pod for node %s: %v", nodeName, err)
+				return activePods, fmt.Errorf("create warmup Pod for node %q: %w", nodeName, err)
 			}
 			continue
 		}
