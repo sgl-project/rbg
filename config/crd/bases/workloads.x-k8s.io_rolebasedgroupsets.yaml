@@ -41645,6 +41645,54 @@ spec:
                   created.
                 format: int32
                 type: integer
+              rolloutStrategy:
+                description: |-
+                  RolloutStrategy controls how a change to GroupTemplate is propagated to the child
+                  RoleBasedGroups.
+                properties:
+                  maxSurge:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 0
+                    description: |-
+                      MaxSurge is the maximum number of RoleBasedGroups that can be created above Replicas
+                      during the update.
+                    x-kubernetes-int-or-string: true
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 1
+                    description: |-
+                      MaxUnavailable is the maximum number of RoleBasedGroups that can be unavailable
+                      during the update. Value can be an absolute number (ex: 1) or a percentage of
+                      Replicas (ex: 25%).
+                    x-kubernetes-int-or-string: true
+                  partition:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 0
+                    description: |-
+                      Partition is the number of lowest ordinal RoleBasedGroups that are held back on the
+                      previous template. Only the ordinals in [Partition, Replicas) take part in the
+                      rollout.
+                    x-kubernetes-int-or-string: true
+                  paused:
+                    description: |-
+                      Paused freezes the rollout, so outdated RoleBasedGroups are neither recreated nor
+                      updated. Reconciling Replicas still happens while paused.
+                      Surge groups that already exist are kept.
+                    type: boolean
+                  type:
+                    default: Recreate
+                    description: Type indicates how one child RoleBasedGroup is moved
+                      onto the new template.
+                    enum:
+                    - Recreate
+                    type: string
+                type: object
             required:
             - groupTemplate
             type: object
@@ -41706,6 +41754,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentReplicas:
+                description: |-
+                  CurrentReplicas is the number of child RoleBasedGroups at ordinals below Replicas
+                  whose spec.roles do not match the current GroupTemplate, i.e.
+                format: int32
+                type: integer
+              expectedUpdatedReplicas:
+                description: |-
+                  ExpectedUpdatedReplicas is the number of RoleBasedGroups the rollout is expected to
+                  bring onto the current GroupTemplate. It is calculated as Replicas - Partition.
+                format: int32
+                type: integer
               observedGeneration:
                 description: The generation observed by the deployment controller.
                 format: int64
@@ -41714,6 +41774,20 @@ spec:
                 format: int32
                 type: integer
               replicas:
+                format: int32
+                type: integer
+              updatedReadyReplicas:
+                description: |-
+                  UpdatedReadyReplicas is the number of child RoleBasedGroups at ordinals below
+                  Replicas whose spec.roles match the current GroupTemplate and are also ready.
+                  Surge groups are not counted.
+                format: int32
+                type: integer
+              updatedReplicas:
+                description: |-
+                  UpdatedReplicas is the number of child RoleBasedGroups at ordinals below Replicas
+                  whose spec.roles match the current GroupTemplate, whether they are ready or not.
+                  Surge groups are not counted.
                 format: int32
                 type: integer
             type: object
