@@ -1448,12 +1448,12 @@ spec:
                           required:
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: customized action container image must not be
+                              empty
+                            rule: has(self.image) && self.image != ''
                         minItems: 1
                         type: array
-                        x-kubernetes-validations:
-                        - message: customized action container image must not be empty
-                            or whitespace
-                          rule: self.all(c, has(c.image) && c.image.matches('.*[^[:space:]].*'))
                       volumes:
                         description: Volumes to mount into the customized containers.
                         items:
@@ -4534,12 +4534,12 @@ spec:
                                 required:
                                 - name
                                 type: object
+                                x-kubernetes-validations:
+                                - message: customized action container image must
+                                    not be empty
+                                  rule: has(self.image) && self.image != ''
                               minItems: 1
                               type: array
-                              x-kubernetes-validations:
-                              - message: customized action container image must not
-                                  be empty or whitespace
-                                rule: self.all(c, has(c.image) && c.image.matches('.*[^[:space:]].*'))
                             volumes:
                               description: Volumes to mount into the customized containers.
                               items:
