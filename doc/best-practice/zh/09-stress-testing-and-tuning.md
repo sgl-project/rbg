@@ -47,7 +47,7 @@ RBG 提供一套完整的压测工具链来解决这些问题：
 
 + 已克隆 RBG 仓库并进入项目根目录 `git clone https://github.com/sgl-project/rbg && cd rbg`
 + Kubernetes 集群版本 >= 1.24
-+ 已安装 RBG CRD（参考 [安装指南](https://github.com/sgl-project/rbg)）
++ 已通过 Helm 安装 RBG Controller（`helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace`）；下文命令在已有安装基础上进行调优
 + 本地工具：`helm`、`kubectl`、`go`（>= 1.22）、`curl`
 + **本文档中所有命令均假设在 RBG 仓库根目录下执行**
 + （可选）Controller 镜像支持 `--enable-pprof`（用于性能画像采集）
@@ -209,7 +209,7 @@ bash test/stress/scripts/setup-kwok.sh
 ### 步骤 2：部署 Controller
 
 ```bash
-# 获取当前镜像 tag，避免覆盖为 latest；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
+# 获取当前镜像 tag，避免覆盖为 latest；--reuse-values 保留其他 release 配置；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
 IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
@@ -222,7 +222,7 @@ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set controller.tuning.kubeApiBurst=200 \
     --set controller.pprof.enabled=true \
     --set controller.pprof.containerPort=6060 \
-    --no-hooks --wait --timeout=120s
+    --no-hooks --reuse-values --wait --timeout=120s
 
 # pprof 端口转发（后台运行；结束后用 `pkill -f "port-forward.*6060"` 停止）
 pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
@@ -231,7 +231,7 @@ kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 
 该命令会：
 
-1. 通过 Helm 升级 Controller，设置资源限制和运行时参数
+1. 通过 Helm 升级已有 release（`--reuse-values` 保留其他 release 配置），设置资源限制和运行时参数
 2. 等待 Controller Pod 就绪
 3. 建立 pprof 的端口转发（`localhost:6060`）
 
@@ -446,6 +446,7 @@ UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
 
 ```plain
 步骤 1: 搭建环境并运行压测
+    $ helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace  # 如已安装可跳过
     $ FAKE_NODE_COUNT=10 bash test/stress/scripts/setup-kwok.sh
     $ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
       -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
@@ -458,7 +459,7 @@ UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
       --set controller.tuning.kubeApiBurst=200 \
       --set controller.pprof.enabled=true \
       --set controller.pprof.containerPort=6060 \
-      --no-hooks --wait --timeout=120s
+      --no-hooks --reuse-values --wait --timeout=120s
     $ kubectl port-forward -n rbgs-system \
       deploy/rbgs-controller-manager 6060:6060 &
     $ go run ./test/stress/ \
@@ -480,7 +481,7 @@ UNINSTALL_KWOK=true bash test/stress/scripts/teardown-kwok.sh
       --set controller.tuning.maxConcurrentReconciles=50 \
       --set controller.tuning.kubeApiQPS=200 \
       --set controller.tuning.kubeApiBurst=400 \
-      --no-hooks --wait --timeout=120s
+      --no-hooks --reuse-values --wait --timeout=120s
 
 步骤 4: 重新压测验证
     $ go run ./test/stress/ ...

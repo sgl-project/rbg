@@ -18,7 +18,7 @@
 
 - 已克隆 RBG 仓库并进入项目根目录 `git clone https://github.com/sgl-project/rbg && cd rbg`
 - Kubernetes 集群版本 >= 1.24
-- 已安装 RBG CRD
+- 已通过 Helm 安装 RBG Controller（`helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace`）；本指南在已有安装基础上进行调优
 - 本地工具：`helm`、`kubectl`、`go`（>= 1.22）、`curl`
 - **本文档中所有命令均假设在 RBG 仓库根目录下执行**
 - （可选）Controller 镜像支持 `--enable-pprof`
@@ -93,7 +93,7 @@ bash test/stress/scripts/setup-kwok.sh
 ### 步骤 1：部署 Controller 并配置资源参数
 
 ```bash
-# 获取当前镜像 tag，避免覆盖为 latest；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
+# 获取当前镜像 tag，避免覆盖为 latest；--reuse-values 保留其他 release 配置；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
 IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
@@ -106,7 +106,7 @@ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set controller.tuning.kubeApiBurst=200 \
     --set controller.pprof.enabled=true \
     --set controller.pprof.containerPort=6060 \
-    --no-hooks --wait --timeout=120s
+    --no-hooks --reuse-values --wait --timeout=120s
 
 # pprof 端口转发
 pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
@@ -121,7 +121,7 @@ kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ### 预期行为（部署 Controller）
 
 - 跳过镜像构建（使用集群中已有的镜像）
-- 通过 Helm 升级 Controller，仅更新资源限制和运行时参数
+- 通过 Helm 升级已有 release（`--reuse-values` 保留下列未涉及的配置，如镜像仓库、拉取密钥等），仅更新资源限制和运行时参数
 - 设置资源限制：8 CPU / 16Gi 内存
 - 设置运行时参数：Reconciles=20, QPS=100, Burst=200
 - 启用 pprof
@@ -399,7 +399,7 @@ cat /tmp/rbg-stress-results/goroutine-create-top.txt
 ### 步骤 1：根据分析结果调整配置
 
 ```bash
-# 获取当前镜像 tag，避免覆盖为 latest；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
+# 获取当前镜像 tag，避免覆盖为 latest；--reuse-values 保留其他 release 配置；--no-hooks 跳过 CRD 升级（KWOK 节点无法运行 hook job）
 IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
@@ -412,7 +412,7 @@ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set controller.tuning.kubeApiBurst=400 \
     --set controller.pprof.enabled=true \
     --set controller.pprof.containerPort=6060 \
-    --no-hooks --wait --timeout=120s
+    --no-hooks --reuse-values --wait --timeout=120s
 
 # pprof 端口转发
 pkill -f "port-forward.*6060" 2>/dev/null; sleep 1

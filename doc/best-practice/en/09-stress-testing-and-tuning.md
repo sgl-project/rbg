@@ -49,7 +49,7 @@ RBG provides a complete stress testing toolchain to answer these questions:
 
 + Clone the RBG repository and navigate to the project root `git clone https://github.com/sgl-project/rbg && cd rbg`
 + Kubernetes cluster version >= 1.24
-+ RBG CRD installed (see [Installation Guide](https://github.com/sgl-project/rbg))
++ RBG Controller installed via Helm (`helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace`); the commands below tune the existing installation
 + Local tools: `helm`, `kubectl`, `go` (>= 1.22), `curl`
 + **All commands in this document assume execution from the RBG repository root**
 + (Optional) Controller image supports `--enable-pprof` (for performance profile collection)
@@ -212,7 +212,7 @@ bash test/stress/scripts/setup-kwok.sh
 ### Step 2: Deploy Controller
 
 ```bash
-# Get current image tag to avoid overwriting with latest; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
+# Get current image tag to avoid overwriting with latest; --reuse-values preserves other release settings; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
 IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
@@ -225,7 +225,7 @@ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set controller.tuning.kubeApiBurst=200 \
     --set controller.pprof.enabled=true \
     --set controller.pprof.containerPort=6060 \
-    --no-hooks --wait --timeout=120s
+    --no-hooks --reuse-values --wait --timeout=120s
 
 # pprof port forwarding (runs in background; stop it with `pkill -f "port-forward.*6060"` when finished)
 pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
@@ -234,7 +234,7 @@ kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 
 This command will:
 
-1. Upgrade the Controller via Helm, setting resource limits and runtime parameters
+1. Upgrade the existing release via Helm (`--reuse-values` preserves other release settings), setting resource limits and runtime parameters
 2. Wait for the Controller Pod to be ready
 3. Establish pprof port forwarding (`localhost:6060`)
 
@@ -454,6 +454,7 @@ The following are the operational steps to complete a full stress test from scra
 
 ```plain
 Step 1: Set up environment and run stress test
+    $ helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace  # skip if already installed
     $ FAKE_NODE_COUNT=10 bash test/stress/scripts/setup-kwok.sh
     $ IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
       -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
@@ -466,7 +467,7 @@ Step 1: Set up environment and run stress test
       --set controller.tuning.kubeApiBurst=200 \
       --set controller.pprof.enabled=true \
       --set controller.pprof.containerPort=6060 \
-      --no-hooks --wait --timeout=120s
+      --no-hooks --reuse-values --wait --timeout=120s
     $ kubectl port-forward -n rbgs-system \
       deploy/rbgs-controller-manager 6060:6060 &
     $ go run ./test/stress/ \
@@ -488,7 +489,7 @@ Step 3: Adjust Controller configuration based on analysis
       --set controller.tuning.maxConcurrentReconciles=50 \
       --set controller.tuning.kubeApiQPS=200 \
       --set controller.tuning.kubeApiBurst=400 \
-      --no-hooks --wait --timeout=120s
+      --no-hooks --reuse-values --wait --timeout=120s
 
 Step 4: Re-run stress test to validate
     $ go run ./test/stress/ ...

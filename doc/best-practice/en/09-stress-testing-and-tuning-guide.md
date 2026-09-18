@@ -18,7 +18,7 @@ Validate RBG Controller's stress testing toolchain, including:
 
 - Clone the RBG repository and navigate to the project root `git clone https://github.com/sgl-project/rbg && cd rbg`
 - Kubernetes cluster version >= 1.24
-- RBG CRD installed
+- RBG Controller installed via Helm (`helm install rbgs deploy/helm/rbgs -n rbgs-system --create-namespace`); this guide tunes the existing installation
 - Local tools: `helm`, `kubectl`, `go` (>= 1.22), `curl`
 - **All commands in this document assume execution from the RBG repository root**
 - (Optional) Controller image supports `--enable-pprof`
@@ -93,7 +93,7 @@ bash test/stress/scripts/setup-kwok.sh
 ### Step 1: Deploy Controller and Configure Resource Parameters
 
 ```bash
-# Get current image tag to avoid overwriting with latest; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
+# Get current image tag to avoid overwriting with latest; --reuse-values preserves other release settings; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
 IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
@@ -106,7 +106,7 @@ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set controller.tuning.kubeApiBurst=200 \
     --set controller.pprof.enabled=true \
     --set controller.pprof.containerPort=6060 \
-    --no-hooks --wait --timeout=120s
+    --no-hooks --reuse-values --wait --timeout=120s
 
 # pprof port forwarding
 pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
@@ -121,7 +121,7 @@ kubectl port-forward -n rbgs-system deploy/rbgs-controller-manager 6060:6060 &
 ### Expected Behavior (Deploy Controller)
 
 - Skips image build (uses existing image in the cluster)
-- Upgrades Controller via Helm, only updating resource limits and runtime parameters
+- Upgrades the existing release via Helm (`--reuse-values` preserves settings not listed below, such as image repository and pull secrets), only updating resource limits and runtime parameters
 - Sets resource limits: 8 CPU / 16Gi memory
 - Sets runtime parameters: Reconciles=20, QPS=100, Burst=200
 - Enables pprof
@@ -401,7 +401,7 @@ cat /tmp/rbg-stress-results/goroutine-create-top.txt
 ### Step 1: Adjust Configuration Based on Analysis
 
 ```bash
-# Get current image tag to avoid overwriting with latest; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
+# Get current image tag to avoid overwriting with latest; --reuse-values preserves other release settings; --no-hooks skips CRD upgrade (KWOK nodes cannot run hook jobs)
 IMAGE_TAG=$(kubectl get deploy -n rbgs-system rbgs-controller-manager \
     -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
 
@@ -414,7 +414,7 @@ helm upgrade rbgs deploy/helm/rbgs -n rbgs-system \
     --set controller.tuning.kubeApiBurst=400 \
     --set controller.pprof.enabled=true \
     --set controller.pprof.containerPort=6060 \
-    --no-hooks --wait --timeout=120s
+    --no-hooks --reuse-values --wait --timeout=120s
 
 # pprof port forwarding
 pkill -f "port-forward.*6060" 2>/dev/null; sleep 1
