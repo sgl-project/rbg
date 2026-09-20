@@ -176,6 +176,8 @@ At least one of `imagePreload` or `customizedAction` must be specified (enforced
 | `Complete`       | True   | `WarmupCompleted`              | All nodes reached a terminal state and failures are within tolerance.                                                                                                   |
 | `Complete`       | True   | `NoNodesMatched`               | No nodes matched the target configuration; job completed immediately.                                                                                                   |
 | `Failed`         | True   | `GlobalTimeoutExceeded`        | `globalTimeoutSeconds` exceeded; active Pods were deleted.                                                                                                              |
+| `Failed`         | True   | `InvalidWarmupSpec`            | A warmup action is invalid, such as an empty image or an empty customized action; active Pods are deleted and no new Pods are created.                                  |
+| `Failed`         | True   | `InvalidTarget`                | The referenced RoleBasedGroup does not exist; the one-shot Warmup must be recreated after fixing the target.                                                            |
 | `Failed`         | True   | `MaxFailedNodesExceeded`       | Permanently-failed nodes exceeded `maxFailedNodes`.                                                                                                                     |
 | `VolumeConflict` | True   | `ConflictingVolumeDefinitions` | Two roles defined the same volume name with different specs; the first definition wins. Containers from the other role may reference a volume spec they did not expect. |
 
@@ -279,7 +281,7 @@ spec:
 
 ![alt text](warmup-job-state-machine.png)
 
-- **Step 1:** The controller discovers target nodes from `spec.targetNodes` (by node names or label selector) or `spec.targetRoleBasedGroup` (by listing Pods of the referenced RBG and extracting their node assignments). Sets `status.phase` to `Running`.
+- **Step 1:** The controller validates the Warmup actions before discovering nodes, including image references in both `imagePreload` and `customizedAction`. Invalid actions enter `Failed` with reason `InvalidWarmupSpec`; active warmup Pods are deleted and no new Pods are created. It then discovers target nodes from `spec.targetNodes` (by node names or label selector) or `spec.targetRoleBasedGroup` (by listing Pods of the referenced RBG and extracting their node assignments). If the referenced RBG does not exist, the one-shot Warmup enters `Failed` with reason `InvalidTarget` and does not retry. The user must fix the target and create a new Warmup.
 
 - **Step 2:** The controller creates one warmup Pod per target node. Each Pod is pinned to its node via `nodeSelector: {"kubernetes.io/hostname": <nodeName>}`. Pods are labeled with the warmup CR name, UID, and target node name for tracking. The total number of concurrent warmup Pods is limited by `spec.policies.parallelism`. Pods are created in deterministic order (sorted by node name) to ensure consistent behavior across controller restarts.
 
