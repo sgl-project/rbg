@@ -750,6 +750,34 @@ func TestProgressUpdateBudget(t *testing.T) {
 			expectNoDelet:       []string{"s-0", "s-1"},
 		},
 		{
+			name: "unhealthy updated base still consumes budget",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, true, true),
+				buildInst("s", 1, testUpdateRev, false, true),
+			},
+			topo: topology{
+				startOrdinal: 0, endOrdinal: 2, surgeStart: 2,
+				replicas: 2, partition: 0, maxUnavailable: 1, maxSurge: 0,
+				activeSurge: 0, inRollout: true,
+			},
+			markStablyUnhealthy: true,
+			expectNoDelet:       []string{"s-0", "s-1"},
+		},
+		{
+			name: "unhealthy base below partition still consumes budget",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, false, true),
+				buildInst("s", 1, testOldRev, true, true),
+			},
+			topo: topology{
+				startOrdinal: 0, endOrdinal: 2, surgeStart: 2,
+				replicas: 2, partition: 1, maxUnavailable: 1, maxSurge: 0,
+				activeSurge: 0, inRollout: true,
+			},
+			markStablyUnhealthy: true,
+			expectNoDelet:       []string{"s-0", "s-1"},
+		},
+		{
 			// Partition=2: ord 0,1 below partition stay; only ord 2,3 update.
 			name: "partition: instances below partition stay untouched",
 			replicas: []*workloadsv1alpha2.RoleInstance{
