@@ -51,6 +51,14 @@ const (
 	// MaxRequeueDelay caps long requeue intervals to avoid workqueue scheduling drift.
 	// Even for multi-day TTLs, the controller wakes up at most every 10 minutes to recheck.
 	MaxRequeueDelay = 10 * time.Minute
+
+	// TargetWaitRequeuePeriod is how often a Warmup re-checks a target that is not
+	// ready yet (missing RoleBasedGroup, or target Pods not scheduled).
+	TargetWaitRequeuePeriod = 10 * time.Second
+
+	// ConditionTargetReady reports whether the target RoleBasedGroup is observable and
+	// its Pods are scheduled, so warmup can proceed.
+	ConditionTargetReady = "TargetReady"
 )
 
 // RoleBasedGroupWarmupReconciler reconciles a RoleBasedGroupWarmup object
@@ -184,11 +192,48 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	desiredNodes, err := r.getDesiredNodesToWarmup(ctx, *warmup)
 	if err != nil {
 		if apierrors.IsNotFound(err) && warmup.Spec.TargetRoleBasedGroup != nil {
-			return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
-				"InvalidTarget", err.Error())
+			// A missing target is treated as a "not ready yet" state rather than an
+			// immediate terminal failure: the target may be created moments after the
+			// Warmup (common for a single `kubectl apply`, or GitOps ordering). If a
+			// global timeout is configured and has elapsed, fail terminally instead of
+			// waiting forever.
+			if r.targetWaitExpired(warmup) {
+				return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
+					"InvalidTarget", err.Error())
+			}
+			return r.markTargetNotReady(ctx, warmup, "RoleBasedGroupNotFound", err.Error())
 		}
 		logger.Error(err, "failed to get desired nodes to warm up")
 		return ctrl.Result{}, err
+	}
+
+	// The target RoleBasedGroup exists. If it yielded no nodes because some of its Pods
+	// are not scheduled yet, do not report success: wait until they are scheduled.
+	if warmup.Spec.TargetRoleBasedGroup != nil && len(desiredNodes) == 0 {
+		pending, pendingErr := r.countUnscheduledTargetPods(ctx, *warmup)
+		if pendingErr != nil {
+			logger.Error(pendingErr, "failed to inspect target RoleBasedGroup Pods")
+			return ctrl.Result{}, pendingErr
+		}
+		if pending > 0 {
+			if r.targetWaitExpired(warmup) {
+				return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
+					"GlobalTimeoutExceeded",
+					fmt.Sprintf("Warmup job timed out waiting for %d target Pod(s) to be scheduled", pending))
+			}
+			return r.markTargetNotReady(ctx, warmup, "TargetPodsNotScheduled",
+				fmt.Sprintf("%d target RoleBasedGroup Pod(s) are not scheduled yet", pending))
+		}
+	}
+
+	if warmup.Spec.TargetRoleBasedGroup != nil {
+		apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
+			Type:               ConditionTargetReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "RoleBasedGroupReady",
+			Message:            "target RoleBasedGroup is available",
+			ObservedGeneration: warmup.Generation,
+		})
 	}
 
 	// Check global timeout
@@ -237,6 +282,15 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	return r.requeueForTimeout(warmup), nil
 }
 
+// validateWarmupActions is the only place a customized action container image is
+// checked. It is intentionally not enforced by the CRD: a customized container is a
+// bare corev1.Container embedded in the Warmup spec, so the Pod API's image
+// validation never runs on it, and a CRD-level rule cannot be used safely. An
+// item-scoped CEL rule is re-evaluated on every write, which on Kubernetes <= 1.32
+// makes the status of an already-stored invalid object unwritable (the status
+// strategy runs CEL without ratcheting there), and controller-gen cannot express
+// "required, non-blank" for a slice item. See
+// TestGeneratedWarmupCRDDoesNotValidateContainerImages and the KEP.
 func validateWarmupActions(target string, action workloadsv1alpha2.WarmupActions) error {
 	if action.ImagePreload != nil {
 		if len(action.ImagePreload.Images) == 0 {
@@ -411,6 +465,108 @@ func (r *RoleBasedGroupWarmupReconciler) requeueForTimeout(warmup *workloadsv1al
 		requeueAfter = MaxRequeueDelay
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}
+}
+
+// targetWaitExpired reports whether a configured global timeout has already elapsed
+// while waiting for an unready target. When no timeout is configured, waiting is
+// unbounded and the Warmup stays Running with a TargetReady=False condition.
+func (r *RoleBasedGroupWarmupReconciler) targetWaitExpired(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) bool {
+	if warmup.Spec.Policies == nil || warmup.Spec.Policies.GlobalTimeoutSeconds == nil {
+		return false
+	}
+	start := warmup.Status.StartTime
+	if start == nil || start.IsZero() {
+		// No Pod was created yet, so fall back to the Warmup's creation time.
+		created := warmup.CreationTimestamp
+		if created.IsZero() {
+			return false
+		}
+		start = &created
+	}
+	deadline := start.Add(time.Duration(*warmup.Spec.Policies.GlobalTimeoutSeconds) * time.Second)
+	return !time.Now().Before(deadline)
+}
+
+// markTargetNotReady records a TargetReady=False condition, keeps the job in Running,
+// and requeues without creating any Pods. Unlike a terminal failure this state is
+// recoverable: once the target becomes ready the next reconcile proceeds normally.
+func (r *RoleBasedGroupWarmupReconciler) markTargetNotReady(ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup, reason, message string) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	newStatus := warmup.Status.DeepCopy()
+	newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
+	apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
+		Type:               ConditionTargetReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: warmup.Generation,
+	})
+
+	if !apiequality.Semantic.DeepEqual(warmup.Status, *newStatus) {
+		warmup.Status = *newStatus
+		if err := r.Status().Update(ctx, warmup); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("Target not ready, waiting", "reason", reason, "message", message)
+		r.Recorder.Eventf(warmup, corev1.EventTypeNormal, reason, message)
+	}
+
+	return ctrl.Result{RequeueAfter: TargetWaitRequeuePeriod}, nil
+}
+
+// listTargetRBGPods returns the Pods belonging to the Warmup's target RoleBasedGroup.
+// The cached client is preferred; when the RBG is absent from the cache but present in
+// the API server (informer lag) the uncached reader is used.
+func (r *RoleBasedGroupWarmupReconciler) listTargetRBGPods(ctx context.Context,
+	warmup workloadsv1alpha2.RoleBasedGroupWarmup) ([]corev1.Pod, error) {
+	rbgTarget := warmup.Spec.TargetRoleBasedGroup
+	if rbgTarget == nil {
+		return nil, nil
+	}
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	rbgKey := client.ObjectKey{Name: rbgTarget.Name, Namespace: warmup.Namespace}
+	reader := client.Reader(r.Client)
+	if err := r.Get(ctx, rbgKey, rbg); err != nil {
+		if !apierrors.IsNotFound(err) || r.apiReader == nil {
+			return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+		}
+		if fallbackErr := r.apiReader.Get(ctx, rbgKey, rbg); fallbackErr != nil {
+			return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, fallbackErr)
+		}
+		reader = r.apiReader
+	}
+
+	podList := &corev1.PodList{}
+	if err := reader.List(ctx, podList,
+		client.InNamespace(warmup.Namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgTarget.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list Pods for RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+	}
+	return podList.Items, nil
+}
+
+// countUnscheduledTargetPods counts non-terminating target Pods that have no node
+// assigned yet. Such Pods contribute no warmup target, so a Warmup that only sees
+// unscheduled Pods must not conclude that nothing matched.
+func (r *RoleBasedGroupWarmupReconciler) countUnscheduledTargetPods(ctx context.Context,
+	warmup workloadsv1alpha2.RoleBasedGroupWarmup) (int, error) {
+	pods, err := r.listTargetRBGPods(ctx, warmup)
+	if err != nil {
+		return 0, err
+	}
+	pending := 0
+	for _, pod := range pods {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if pod.Spec.NodeName == "" {
+			pending++
+		}
+	}
+	return pending, nil
 }
 
 // failWarmupJob deletes all active Pods, sets the status to Failed with a condition, and records an event.
