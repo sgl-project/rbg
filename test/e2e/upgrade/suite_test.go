@@ -17,6 +17,7 @@ limitations under the License.
 package upgrade
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/onsi/ginkgo/v2"
@@ -27,7 +28,7 @@ import (
 )
 
 // See the package doc in preflight.go for what this suite proves and what it does not.
-func TestUpgradeV070ToCurrent(t *testing.T) {
+func TestUpgradeToCurrent(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
 
 	f := framework.NewFramework(true)
@@ -85,12 +86,12 @@ func TestUpgradeV070ToCurrent(t *testing.T) {
 	)
 
 	ginkgo.Describe(
-		"[upgrade] v0.7.0 to current upgrade leaves running pods untouched",
+		fmt.Sprintf("[upgrade] %s to current upgrade leaves running pods untouched", fromGitTag()),
 		ginkgo.Ordered,
 		func() {
 			RunUpgradeSpecs(f)
 		},
 	)
 
-	ginkgo.RunSpecs(t, "run rbg v0.7.0 -> current upgrade compatibility e2e test")
+	ginkgo.RunSpecs(t, fmt.Sprintf("run rbg %s -> current upgrade compatibility e2e test", fromGitTag()))
 }

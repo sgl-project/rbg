@@ -22,11 +22,6 @@ env:
   VOLCANO_VERSION: v1.15.1
   LWS_VERSION: v0.7.0
   SCHEDULER_PLUGINS_VERSION: v0.32.7
-  # The published release the upgrade-compatibility job upgrades FROM. Both the git tag
-  # (for the chart) and the image tag (for the published images) are pinned here so a
-  # future bump is a one-place edit.
-  UPGRADE_FROM_GIT_TAG: v0.7.0
-  UPGRADE_FROM_IMAGE_TAG: v0.7.0-888ade7
   # Commit status contexts mirrored onto the PR head commit. Shared by the pending step
   # and the reporting job so the two cannot drift apart.
   STATUS_CONTEXT_HELM: Release Test / e2e-test-helm
@@ -396,20 +391,21 @@ jobs:
         run: |
           kind delete cluster --name rbgs-manifest-e2e || true
 
-  # Upgrade-compatibility test. Installs the published release named in
-  # UPGRADE_FROM_GIT_TAG / UPGRADE_FROM_IMAGE_TAG, creates RBGs on it, then lets the
-  # suite upgrade that release in place to the chart in this PR and assert that no
-  # already-running pod was recreated or restarted. The other two jobs install one
-  # version from scratch, so neither can see an upgrade-only regression.
+  # Upgrade-compatibility test. Runs once per from-release in the matrix: installs
+  # that published release, creates RBGs on it, then lets the suite upgrade the
+  # release in place to the chart in this PR and assert that no already-running pod
+  # was recreated or restarted. The other two jobs install one version from scratch,
+  # so neither can see an upgrade-only regression.
   #
   # This belongs to the release gate rather than the per-PR e2e workflow because the
   # upgrade target is the chart's own default images. Those point at a real published
   # release only once a release PR bumps them, and testing the upgrade with the images
   # actually being shipped is the point: no locally built image.
   #
-  # One value is not a chart default: the suite enables portAllocator, on the v0.7.0
-  # install and on the upgrade alike, which is how the other e2e workflows install rbgs.
-  # Setting it on both sides is what keeps the hop from toggling a feature.
+  # One value is not a chart default: the suite enables portAllocator, on the
+  # from-release install and on the upgrade alike, which is how the other e2e
+  # workflows install rbgs. Setting it on both sides is what keeps the hop from
+  # toggling a feature.
   #
   # The upgrade itself is driven from inside the suite (it exec's helm), so the
   # pre-upgrade snapshot stays in memory across the upgrade. CI only has to hand the
@@ -417,6 +413,19 @@ jobs:
   e2e-test-upgrade:
     needs: check-command
     runs-on: ubuntu-latest
+    name: e2e-test-upgrade (${{ matrix.from.git_tag }})
+    strategy:
+      # Both legs have to report, even when the first one fails.
+      fail-fast: false
+      matrix:
+        # The published releases the job upgrades FROM. Both the git tag (for the
+        # chart, taken from a worktree) and the image tag (for the published images)
+        # are pinned per entry, so a future bump or an added hop is a one-place edit.
+        from:
+          - git_tag: v0.7.0
+            image_tag: v0.7.0-888ade7
+          - git_tag: v0.8.0
+            image_tag: v0.8.0-16705159
     env:
       GOPATH: ${{ github.workspace }}
       GO111MODULE: on
@@ -494,11 +503,11 @@ jobs:
         run: |
           set -euo pipefail
           for repo in rolebasedgroup/rbgs-controller rolebasedgroup/rbgs-upgrade-crd; do
-            image="${repo}:${UPGRADE_FROM_IMAGE_TAG}"
+            image="${repo}:${{ matrix.from.image_tag }}"
             echo "Pulling ${image}"
             if ! docker pull "${image}"; then
               echo "::error::${image} could not be pulled. This job upgrades FROM that published"
-              echo "::error::release; if the tag no longer exists, update UPGRADE_FROM_IMAGE_TAG."
+              echo "::error::release; if the tag no longer exists, update the job's matrix."
               exit 1
             fi
             kind load docker-image "${image}" --name rbgs-upgrade-e2e
@@ -532,8 +541,8 @@ jobs:
       - name: Run upgrade-compatibility E2E tests
         env:
           CI: "true"
-          RBGS_FROM_GIT_TAG: ${{ env.UPGRADE_FROM_GIT_TAG }}
-          RBGS_FROM_TAG: ${{ env.UPGRADE_FROM_IMAGE_TAG }}
+          RBGS_FROM_GIT_TAG: ${{ matrix.from.git_tag }}
+          RBGS_FROM_TAG: ${{ matrix.from.image_tag }}
         run: |
           make test-e2e-upgrade
 
@@ -576,7 +585,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kind-upgrade-release-logs
+          name: kind-upgrade-release-logs-${{ matrix.from.git_tag }}
           path: /tmp/kind-upgrade-logs
           retention-days: 7
 

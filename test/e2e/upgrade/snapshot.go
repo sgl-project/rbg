@@ -157,8 +157,8 @@ type ownerSource struct {
 // roles, plus the scaling adapter: that one is not a workload, but it is created,
 // relabelled and spec-patched by the same controller, and it is the object an
 // autoscaler holds on to. All of them label their objects with GroupNameLabelKey, on
-// v0.7.0 as well as now, so one label query per kind covers every pattern the fixtures
-// use.
+// the supported from-releases as well as now, so one label query per kind covers every
+// pattern the fixtures use.
 func ownerSources() []ownerSource {
 	return []ownerSource{
 		{"RoleInstanceSet", func() client.ObjectList { return &workloadsv1alpha2.RoleInstanceSetList{} }},
@@ -490,10 +490,10 @@ func missingFrom(names, other []string) []string {
 // "this changed nothing" makes the same claim rather than a weaker one that drifts apart
 // as detectors are added.
 //
-// rec is what the compared interval is known to change: upgradeRewrites when the two
-// snapshots span the v0.7.0 -> current upgrade, the zero value for an action that must
-// change nothing at all. skip names the RBGs a spec deliberately disturbed; they are
-// dropped from both snapshots and from the event search.
+// rec is what the compared interval is known to change: the profile's rewrites when
+// the two snapshots span the upgrade to the version under test, the zero value for an
+// action that must change nothing at all. skip names the RBGs a spec deliberately
+// disturbed; they are dropped from both snapshots and from the event search.
 //
 // It fills fs rather than reporting, so a caller can add its own comparisons to the same
 // report. Every detector answers a different question and they are all worth seeing.
@@ -801,10 +801,10 @@ const (
 // deprecated restartPolicy string, so that comparing two stored specs ignores this one
 // rewrite and nothing else.
 //
-// The v1alpha1 write path materializes restartPolicyConfig where v0.7.0 stored the
-// string, and the apiserver then fills in the two delay fields inside it. The pair says
-// the same thing, since the v1alpha2 getters fold the string in and default the delays
-// to these very values.
+// The v1alpha1 write path materializes restartPolicyConfig where a from-release stored
+// the string, and the apiserver then fills in the two delay fields inside it. The pair
+// says the same thing, since the v1alpha2 getters fold the string in and default the
+// delays to these very values.
 //
 // It is recorded rather than reported because on the roles that reach this fold the
 // rewrite stops at the stored RBG spec. Only a LeaderWorkerPattern or a CustomComponents
@@ -873,9 +873,9 @@ func hasDefaultRestartDelays(config map[string]any) bool {
 }
 
 // recordedRewrites is what one action is known to change. Each comparison passes the
-// record for the action it spans -- upgradeRewrites across the hop, the zero value
-// across an action that must change nothing -- so a change recorded for one action is
-// not silently tolerated for the others.
+// record for the action it spans -- the profile's rewrites across the hop, the zero
+// value across an action that must change nothing -- so a change recorded for one
+// action is not silently tolerated for the others.
 //
 // An entry is only allowed here with the change it stands for named. A difference nobody
 // can attribute is a finding to report, not an entry to add.
@@ -911,58 +911,6 @@ type recordedRewrites struct {
 	// component-name=leader and nothing else, no endpoint may be added, and every
 	// endpoint that left must belong to a pod that is not a leader.
 	leaderOnlyServices map[string]bool
-}
-
-// upgradeRewrites records the v0.7.0 -> current changes, one entry per change.
-//
-// RoleInstanceSet and RoleInstance generations were both 1 while the reconciler rewrote
-// the stored restartPolicy string into restartPolicyConfig. That rewrite moved the
-// RoleInstanceSet revision hash and rolled every role on upgrade, and the RoleInstance
-// bump was its consequence: only the resulting in-place update reached the code that
-// adds the RoleInstanceInPlaceUpdateReady gate. With the reconciler no longer touching
-// the template, both kinds are left alone entirely, so neither belongs here.
-var upgradeRewrites = recordedRewrites{
-	specRewrites: map[string]func(map[string]any) error{
-		// The legacy-strategy fixture stores the v1alpha1 spelling "Recreate" of the
-		// update strategy type, which v0.7.0 copied verbatim into the RoleInstanceSet.
-		// The new RoleInstanceSet CRD enum rejects that value, so the mutating webhook
-		// heals it to "RecreatePod" on the first write the upgraded controller sends.
-		// The heal is a one-off -- the next apply is a no-op.
-		"RoleInstanceSet/" + legacyStrategyRISName(): healStoredStrategyType,
-		// The legacy-set fixture's child owns its own RoleInstanceSet, which v0.7.0
-		// also wrote with the legacy spelling copied verbatim from the template, so
-		// it is healed on the upgraded controller's first reconcile too.
-		"RoleInstanceSet/" + legacySetChildRISName(): healStoredStrategyType,
-		// The same heal reaches the child RoleBasedGroup itself: the RBGS controller
-		// re-applies the child from its groupTemplate with the strategy type
-		// normalized, so the stored child spec changes on its first reconcile. A
-		// top-level RoleBasedGroup has no writer above it, so up-legacy keeps the
-		// legacy spelling -- only the child is re-applied.
-		"RoleBasedGroup/" + legacySetChildName(): healRoleStrategyTypes,
-	},
-
-	// Healing the child's stored spec moved the RBG-layer revision hash, so the
-	// controller stamps one new revision for it. The hash moves but no pod does:
-	// the RoleInstanceSet layer is repaired in place and its revision is stable,
-	// which the RoleInstanceSet entries above assert through content. No revision
-	// may be removed, and any count other than one is still reported with its
-	// content diff.
-	revisionAdds: map[string]int{
-		legacySetChildName(): 1,
-	},
-
-	// KEP 260 flips the default of sharedServiceSelection: v0.7.0 treated an unset
-	// field as All, and the current release resolves it to LeaderOnly for
-	// RoleInstanceSet leader-worker roles. The controller then patches the selector of
-	// the shared Service in place, which drops every worker pod IP from its
-	// EndpointSlice without touching a pod. keps/260-leaderonly-service/README.md:251
-	// records this as the breaking case for endpoints and tells affected workloads to
-	// set sharedServiceSelection: All.
-	//
-	// This suite cannot say whether that is the right default, only that it is what the
-	// upgrade does. The entry is the fixture's own Service, so a role whose selector is
-	// narrowed anywhere else still fails.
-	leaderOnlyServices: map[string]bool{sharedServiceName(fxLwp, lwpRole): true},
 }
 
 // healStoredStrategyType is the rewrite the mutating webhook performs on a stored

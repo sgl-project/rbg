@@ -131,23 +131,19 @@ func requireCleanCluster(f *framework.Framework) {
 func installFromRelease(f *framework.Framework) {
 	chart := checkoutFromChart()
 
-	args := []string{
+	// The values come from the profile, expressed on the from-release's own value
+	// paths, which are NOT necessarily the current ones: every top-level key moved
+	// under controller.* between v0.7.0 and v0.8.0. The chart has no values
+	// schema, so passing paths from the wrong layout here would be accepted as
+	// inert keys and would quietly install the chart's own default images instead
+	// of the pinned ones.
+	args := make([]string, 0, 8+len(fromProfile().installValues))
+	args = append(args,
 		"install", helmRelease(), chart,
 		"--create-namespace", "--namespace", controllerNamespace(),
-		// These are the v0.7.0 value paths, which are NOT the current ones: every
-		// top-level key moved under controller.* afterwards. The chart has no values
-		// schema, so passing current paths here would be accepted as inert keys and
-		// would quietly install the chart's own default images instead of the pinned
-		// ones.
-		"--set", "image.repository=" + fromRepo(),
-		"--set", "image.tag=" + fromTag(),
-		"--set", "image.pullPolicy=IfNotPresent",
-		"--set", "crdUpgrade.repository=" + fromCRDUpgradeRepo(),
-		"--set", "crdUpgrade.tag=" + fromTag(),
-		"--set", "crdUpgrade.imagePullPolicy=IfNotPresent",
-		"--set", "portAllocator.enabled=true",
-		"--wait", "--timeout", helmTimeout(),
-	}
+	)
+	args = append(args, fromProfile().installValues...)
+	args = append(args, "--wait", "--timeout", helmTimeout())
 
 	ginkgo.By("running helm " + strings.Join(args, " "))
 	out, err := exec.Command("helm", args...).CombinedOutput()
@@ -214,16 +210,17 @@ func verifyOnFromRelease(f *framework.Framework) {
 	// Unannotated on purpose: the error already says whether helm could not be reached,
 	// reported a different appVersion, or found no release at all. An annotation naming
 	// one of those turns the other two into a wrong diagnosis.
-	gomega.Expect(requireReleaseAppVersion(ns, helmRelease(), fromAppVersionPrefix)).To(gomega.Succeed())
+	gomega.Expect(requireReleaseAppVersion(ns, helmRelease(), fromAppVersionPrefix())).To(gomega.Succeed())
 
-	// The one piece of evidence in this suite that an image tag cannot fake: this CRD
-	// does not exist in the release being upgraded from, so its appearance later can
-	// only come from the upgrade under test.
-	exists, err := crdExists(f, warmupCRDName)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not check whether CRD %s exists", warmupCRDName)
-	gomega.Expect(exists).To(gomega.BeFalse(),
-		"CRD %s exists right after installing %s, but it was introduced later; there is nothing to "+
-			"upgrade and every assertion in this suite would pass vacuously", warmupCRDName, fromGitTag())
+	// The one piece of evidence in this suite that an image tag cannot fake: the
+	// marker does not exist in the release being upgraded from, so its appearance
+	// later can only come from the upgrade under test.
+	marker := fromProfile().newBundleMarker
+	present, err := marker.present(f)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not check %s", marker.description)
+	gomega.Expect(present).To(gomega.BeFalse(),
+		"%s is present right after installing %s, but it was introduced later; there is nothing to "+
+			"upgrade and every assertion in this suite would pass vacuously", marker.description, fromGitTag())
 
 	gomega.Expect(deploymentAvailable(deploy)).To(gomega.BeTrue(),
 		"Deployment %s/%s is not Available with at least one ready replica (readyReplicas=%d)",
