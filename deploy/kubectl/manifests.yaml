@@ -91802,6 +91802,7 @@ spec:
                               description: |-
                                 Container image name.
                                 More info: https://kubernetes.
+                              pattern: .*\S.*
                               type: string
                             imagePullPolicy:
                               description: |-
@@ -92918,11 +92919,8 @@ spec:
                               type: string
                           required:
                           - name
+                          - image
                           type: object
-                          x-kubernetes-validations:
-                          - message: customized action container image must not be
-                              empty
-                            rule: has(self.image) && self.image != ''
                         minItems: 1
                         type: array
                       volumes:
@@ -94870,6 +94868,7 @@ spec:
                                     description: |-
                                       Container image name.
                                       More info: https://kubernetes.
+                                    pattern: .*\S.*
                                     type: string
                                   imagePullPolicy:
                                     description: |-
@@ -96004,11 +96003,8 @@ spec:
                                     type: string
                                 required:
                                 - name
+                                - image
                                 type: object
-                                x-kubernetes-validations:
-                                - message: customized action container image must
-                                    not be empty
-                                  rule: has(self.image) && self.image != ''
                               minItems: 1
                               type: array
                             volumes:
@@ -97863,6 +97859,12 @@ spec:
     storage: true
     subresources:
       status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

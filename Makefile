@@ -61,7 +61,9 @@ help: ## Display this help.
 manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
 	@echo ""
-	@echo "NOTE: config/rbac/role.yaml has been regenerated."
+	@echo "NOTE: config/rbac/role.yaml has been regenerated, and the Warmup CRD is post-processed."
+	go run ./hack/gen-warmup-crd
+	@echo ""
 	go run ./hack/gen-helm-rbac
 	@echo ""
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
