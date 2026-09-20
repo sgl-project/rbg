@@ -151,8 +151,19 @@ At least one of `imagePreload` or `customizedAction` must be specified (enforced
 
 | Field        | Type                   | Description                                      |
 |--------------|------------------------|--------------------------------------------------|
-| `containers` | `[]Container` (min: 1) | Containers to run for custom warmup logic.       |
+| `containers` | `[]Container` (min: 1) | Containers to run for custom warmup logic. Each container's `image` is validated by the controller (not by the CRD); see [Customized container image validation](#customized-container-image-validation). |
 | `volumes`    | `[]Volume`             | Volumes to mount into the customized containers. |
+
+#### Customized container image validation
+
+A customized action container is a bare `corev1.Container` embedded in the Warmup spec, so the Pod API's own image validation (`image` is required, and must not have leading or trailing whitespace) never runs on it. The field is therefore validated by the controller: an action whose container `image` is missing or blank fails the Warmup with reason `InvalidWarmupSpec`, and no Pods are created.
+
+It is deliberately **not** enforced by the CRD:
+
+- An item-scoped CEL rule (`items:XValidation`) is re-evaluated on every write against the whole object. On Kubernetes <= 1.32 the status subresource strategy runs the CEL validator without ratcheting, so an already-stored object with a missing/blank image can no longer have its `status` written at all - the controller cannot record `phase`/`conditions`, and the object is stuck. This is why such a rule is avoided.
+- Structural validation (`required` + `pattern`) cannot be emitted by controller-gen for a slice item, and an array-level CEL rule exceeds the API server's rule-cost budget.
+
+The same reasoning applies to the other pod templates in this project: the RoleBasedGroup, RoleBasedGroupSet, Instance and InstanceSet CRDs do not validate container images either.
 
 #### Status
 
@@ -174,10 +185,13 @@ At least one of `imagePreload` or `customizedAction` must be specified (enforced
 | Type             | Status | Reason                         | Description                                                                                                                                                             |
 |------------------|--------|--------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `Complete`       | True   | `WarmupCompleted`              | All nodes reached a terminal state and failures are within tolerance.                                                                                                   |
-| `Complete`       | True   | `NoNodesMatched`               | No nodes matched the target configuration; job completed immediately.                                                                                                   |
+| `Complete`       | True   | `NoNodesMatched`               | No nodes matched the target configuration; job completed immediately. `targetNodes` selectors that match nothing, or a `targetRoleBasedGroup` whose roles have no Pods at all, complete this way. A `targetRoleBasedGroup` with unscheduled Pods does **not**: the Warmup waits and sets `TargetReady=False` instead. |
 | `Failed`         | True   | `GlobalTimeoutExceeded`        | `globalTimeoutSeconds` exceeded; active Pods were deleted.                                                                                                              |
 | `Failed`         | True   | `InvalidWarmupSpec`            | A warmup action is invalid, such as an empty image or an empty customized action; active Pods are deleted and no new Pods are created.                                  |
-| `Failed`         | True   | `InvalidTarget`                | The referenced RoleBasedGroup does not exist; the one-shot Warmup must be recreated after fixing the target.                                                            |
+| `Failed`         | True   | `InvalidTarget`                | The referenced RoleBasedGroup is still absent once `globalTimeoutSeconds` has elapsed (measured from Warmup creation).                                                    |
+| `TargetReady`    | False  | `RoleBasedGroupNotFound`       | The referenced RoleBasedGroup does not exist yet. The Warmup stays `Running` with no Pods and retries until the target appears.                                          |
+| `TargetReady`    | False  | `TargetPodsNotScheduled`       | The referenced RoleBasedGroup exists but some of its Pods have no node assigned yet. The Warmup waits instead of completing.                                             |
+| `TargetReady`    | True   | `RoleBasedGroupReady`          | The target RoleBasedGroup is observable and its Pods are scheduled; warmup proceeds.                                                                                    |
 | `Failed`         | True   | `MaxFailedNodesExceeded`       | Permanently-failed nodes exceeded `maxFailedNodes`.                                                                                                                     |
 | `VolumeConflict` | True   | `ConflictingVolumeDefinitions` | Two roles defined the same volume name with different specs; the first definition wins. Containers from the other role may reference a volume spec they did not expect. |
 
@@ -281,7 +295,7 @@ spec:
 
 ![alt text](warmup-job-state-machine.png)
 
-- **Step 1:** The controller validates the Warmup actions before discovering nodes, including image references in both `imagePreload` and `customizedAction`. Invalid actions enter `Failed` with reason `InvalidWarmupSpec`; active warmup Pods are deleted and no new Pods are created. It then discovers target nodes from `spec.targetNodes` (by node names or label selector) or `spec.targetRoleBasedGroup` (by listing Pods of the referenced RBG and extracting their node assignments). If the referenced RBG does not exist, the one-shot Warmup enters `Failed` with reason `InvalidTarget` and does not retry. The user must fix the target and create a new Warmup.
+- **Step 1:** The controller validates the Warmup actions before discovering nodes, including image references in both `imagePreload` and `customizedAction`. Invalid actions enter `Failed` with reason `InvalidWarmupSpec`; active warmup Pods are deleted and no new Pods are created. It then discovers target nodes from `spec.targetNodes` (by node names or label selector) or `spec.targetRoleBasedGroup` (by listing Pods of the referenced RBG and extracting their node assignments). If the referenced RBG does not exist yet, the Warmup does not fail immediately: it records `TargetReady=False` with reason `RoleBasedGroupNotFound`, stays in `Running` without creating Pods, and retries every few seconds so that a target created moments later (e.g. from the same `kubectl apply`, or by GitOps ordering) is picked up. Similarly, if the RBG exists but some of its Pods are not scheduled yet, the Warmup records `TargetReady=False` with reason `TargetPodsNotScheduled` and waits rather than reporting `Completed/NoNodesMatched`: an unscheduled Pod has no node to warm, and reporting success would silently skip real warmup work. Waiting is bounded by `globalTimeoutSeconds` when set (measured from the Warmup's creation time while no Pod exists): once it lapses the Warmup enters `Failed` with reason `InvalidTarget` (target still absent) or `GlobalTimeoutExceeded` (Pods still unscheduled). Without `globalTimeoutSeconds`, waiting is unbounded until the target becomes ready.
 
 - **Step 2:** The controller creates one warmup Pod per target node. Each Pod is pinned to its node via `nodeSelector: {"kubernetes.io/hostname": <nodeName>}`. Pods are labeled with the warmup CR name, UID, and target node name for tracking. The total number of concurrent warmup Pods is limited by `spec.policies.parallelism`. Pods are created in deterministic order (sorted by node name) to ensure consistent behavior across controller restarts.
 
