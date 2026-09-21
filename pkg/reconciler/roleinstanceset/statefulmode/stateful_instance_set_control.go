@@ -71,15 +71,29 @@ const (
 	stableUnhealthyDuration = 10 * time.Second
 )
 
+type instanceHealthKey struct {
+	instanceSet    types.NamespacedName
+	instanceSetUID types.UID
+	instanceUID    types.UID
+}
+
+func getInstanceHealthKey(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) instanceHealthKey {
+	return instanceHealthKey{
+		instanceSet:    types.NamespacedName{Namespace: set.Namespace, Name: set.Name},
+		instanceSetUID: set.UID,
+		instanceUID:    inst.UID,
+	}
+}
+
 // observeInstanceHealth maintains the instanceUnhealthySince map: for each
 // instance, record the first observation time when unhealthy, and clear the
 // entry when observed healthy. Called once at the top of every reconcile in
 // Phase A so the timestamps reflect the current cache snapshot.
 //
-// Also opportunistically removes entries for UIDs that no longer appear in
-// the supplied instances slice, preventing the map from growing unbounded as
-// instances are recreated (each delete-and-recreate produces a new UID).
-func observeInstanceHealth(instances []*workloadsv1alpha2.RoleInstance) {
+// Only this set's entries can be removed: the supplied instances slice does
+// not include instances managed by other sets. A recreated set also discards
+// observations made for its previous UID.
+func observeInstanceHealth(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance) {
 	now := time.Now()
 	live := make(map[types.UID]struct{}, len(instances))
 	for _, inst := range instances {
@@ -87,19 +101,23 @@ func observeInstanceHealth(instances []*workloadsv1alpha2.RoleInstance) {
 			continue
 		}
 		live[inst.UID] = struct{}{}
+		key := getInstanceHealthKey(set, inst)
 		if isHealthy(inst) {
-			instanceUnhealthySince.Delete(inst.UID)
+			instanceUnhealthySince.Delete(key)
 			continue
 		}
 		// Unhealthy: record first-observed time if not already recorded.
-		instanceUnhealthySince.LoadOrStore(inst.UID, now)
+		instanceUnhealthySince.LoadOrStore(key, now)
 	}
 	// Drop entries for instances that have disappeared (different UID after
 	// recreate, or fully deleted).
 	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
-		uid, _ := key.(types.UID)
-		if _, alive := live[uid]; !alive {
-			instanceUnhealthySince.Delete(uid)
+		healthKey := key.(instanceHealthKey)
+		if healthKey.instanceSet.Namespace != set.Namespace || healthKey.instanceSet.Name != set.Name {
+			return true
+		}
+		if _, alive := live[healthKey.instanceUID]; !alive || healthKey.instanceSetUID != set.UID {
+			instanceUnhealthySince.Delete(key)
 		}
 		return true
 	})
@@ -110,11 +128,11 @@ func observeInstanceHealth(instances []*workloadsv1alpha2.RoleInstance) {
 // the only signal progressUpdate uses to decide whether a base instance is
 // "free" to update without consuming maxUnavailable budget. See
 // stableUnhealthyDuration for the rationale.
-func isStablyUnhealthy(inst *workloadsv1alpha2.RoleInstance) bool {
+func isStablyUnhealthy(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) bool {
 	if inst == nil || inst.UID == "" {
 		return false
 	}
-	v, ok := instanceUnhealthySince.Load(inst.UID)
+	v, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, inst))
 	if !ok {
 		return false
 	}
@@ -403,7 +421,7 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	// reason over. Healthy instances clear their entry; unhealthy instances
 	// either start a new timer or carry forward the prior one. See
 	// stableUnhealthyDuration for why this gate is the bug-3 defense.
-	observeInstanceHealth(instances)
+	observeInstanceHealth(set, instances)
 
 	minReadySeconds := getMinReadySeconds(set)
 	monotonic := !allowsBurst(set)
@@ -612,10 +630,10 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		//     unhealthy time to satisfy it, while a genuinely broken instance
 		//     accrues quickly.
 		isSurgeSlot := getOrdinal(target) >= topo.replicas
-		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(target)
+		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(set, target)
 
 		if !isFree && initialBaseUnavail+newlyUnavail >= effectiveBudget {
-			if observed, ok := instanceUnhealthySince.Load(target.UID); ok {
+			if observed, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, target)); ok {
 				if first, ok := observed.(time.Time); ok {
 					// Retry when this target can pass the health window without
 					// an unrelated instance event. The window may have just expired.
