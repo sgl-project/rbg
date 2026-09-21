@@ -117,45 +117,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	// ---------------------------------------------------------------------------
-	// Phase 1: build the "already running on v0.7.0" world.
+	// Phase 1: build the "already running on the from-release" world.
 	// ---------------------------------------------------------------------------
 
 	ginkgo.It(
-		"[phase 1] rejects fields the v0.7.0 CRDs do not know", func() {
-			// Positive proof that the fixtures really are being written against the
-			// old schema. The preflight infers this from the absent warmup CRD; this
-			// observes the pruning itself, which is the property phase 3 depends on:
-			// if a v0.8.0-only field survived here, the fixtures would not be
-			// v0.7.0-shaped and the whole comparison would be measuring nothing.
-			probe := wrappersv2.BuildBasicRoleBasedGroup("up-prune-probe", f.Namespace).
-				WithRoles(
-					[]workloadsv1alpha2.RoleSpec{
-						wrappersv2.BuildLeaderWorkerRole("probe").
-							WithReplicas(1).
-							WithSize(2).
-							WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
-							WithBaseDelaySeconds(7).
-							Obj(),
-					},
-				).Obj()
-
-			gomega.Expect(f.Client.Create(f.Ctx, probe)).To(gomega.Succeed())
-			ginkgo.DeferCleanup(
-				func() {
-					gomega.Expect(client.IgnoreNotFound(f.Client.Delete(f.Ctx, probe))).To(gomega.Succeed())
-				},
-			)
-
-			stored := &workloadsv1alpha2.RoleBasedGroup{}
-			gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(probe), stored)).To(gomega.Succeed())
-			gomega.Expect(stored.Spec.Roles).To(gomega.HaveLen(1))
-			gomega.Expect(stored.Spec.Roles[0].LeaderWorkerPattern).ToNot(gomega.BeNil())
-			gomega.Expect(stored.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig).To(
-				gomega.BeNil(),
-				"restartPolicyConfig survived, so this cluster is not running the v0.7.0 CRDs and "+
-					"the fixtures would not be v0.7.0-shaped",
-			)
-		},
+		fmt.Sprintf("[phase 1] rejects fields the %s CRDs do not know", fromGitTag()),
+		func() { runPruneProbe(f) },
 	)
 
 	ginkgo.It(
@@ -193,7 +160,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
-		"[phase 1] creates RoleBasedGroups on v0.7.0 and waits for every role to be ready", func() {
+		fmt.Sprintf("[phase 1] creates RoleBasedGroups on %s and waits for every role to be ready", fromGitTag()), func() {
 			for _, rbg := range rbgs {
 				ginkgo.By("creating " + rbg.Name)
 				gomega.Expect(f.Client.Create(f.Ctx, rbg)).To(gomega.Succeed())
@@ -362,13 +329,13 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			after := waitQuiesced(f, mutated...)
 
 			fs := &findings{}
-			runDetectors(fs, f, before, after, preUpgradeMark, upgradeRewrites, mutated)
+			runDetectors(fs, f, before, after, preUpgradeMark, fromProfile().rewrites, mutated)
 			fs.report()
 		},
 	)
 
 	ginkgo.It(
-		"[phase 3] leaves the stored spec of v0.7.0 objects as it was written", func() {
+		fmt.Sprintf("[phase 3] leaves the stored spec of %s objects as it was written", fromGitTag()), func() {
 			// The new CRDs added restartPolicyConfig alongside the deprecated
 			// restartPolicy string. Because restartPolicyConfig itself carries no
 			// default, an object that never set it gets nothing defaulted onto it --
@@ -408,7 +375,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
-		"[phase 3] leaves the stored update strategy type of v0.7.0 objects as it was written", func() {
+		fmt.Sprintf("[phase 3] leaves the stored update strategy type of %s objects as it was written", fromGitTag()), func() {
 			// The new CRDs add an enum to the update strategy type that rejects both
 			// values these fixtures store. Any write back of the stored object --
 			// controller-driven or not -- would therefore 422 on the new CRDs and
@@ -645,7 +612,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
-		"[phase 4] still scales a role that v0.7.0 created", func() {
+		fmt.Sprintf("[phase 4] still scales a role that %s created", fromGitTag()), func() {
 			target := findFixture(rbgs, fxStandalone)
 			roleName := target.Spec.Roles[0].Name
 			mutated = append(mutated, target.Name)
@@ -736,7 +703,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkSameRBGSet(fs, baseline, after)
 			checkNoPodChurn(fs, baseline, after)
 			checkNoRestarts(fs, baseline, after)
-			checkOwnersStable(fs, baseline, after, upgradeRewrites.specRewrites)
+			checkOwnersStable(fs, baseline, after, fromProfile().rewrites.specRewrites)
 			fs.report()
 		},
 	)
@@ -1076,6 +1043,58 @@ func RunUpgradeSpecs(f *framework.Framework) {
 				}, utils.Timeout, utils.Interval,
 			).Should(gomega.Succeed())
 		},
+	)
+}
+
+// runPruneProbe is the phase-1 spec body that proves the fixtures are being written
+// against the old schema: it writes a field the from-release CRDs do not know and
+// observes the apiserver pruning it. Extracted from RunUpgradeSpecs because the
+// profile gate below is what tips that function over the gocyclo budget.
+func runPruneProbe(f *framework.Framework) {
+	if !fromProfile().prunesRestartPolicyConfig {
+		// The probe watches a field the old CRDs prune. v0.8.0 already knows
+		// restartPolicyConfig, and no schema change between v0.8.0 and the version
+		// under test adds another RoleBasedGroup field to watch, so this hop has
+		// nothing to probe with. The legacy-strategy fixtures carry the proof
+		// instead: their spellings only store because the old CRDs have no enum to
+		// reject them.
+		ginkgo.Skip(fmt.Sprintf(
+			"the %s CRDs do not prune restartPolicyConfig, so there is no field this probe can watch",
+			fromGitTag()))
+	}
+
+	// Positive proof that the fixtures really are being written against the old
+	// schema. The preflight infers this from the absent new-bundle marker; this
+	// observes the pruning itself, which is the property phase 3 depends on: if a
+	// newer field survived here, the fixtures would not be from-release-shaped and
+	// the whole comparison would be measuring nothing.
+	probe := wrappersv2.BuildBasicRoleBasedGroup("up-prune-probe", f.Namespace).
+		WithRoles(
+			[]workloadsv1alpha2.RoleSpec{
+				wrappersv2.BuildLeaderWorkerRole("probe").
+					WithReplicas(1).
+					WithSize(2).
+					WithRestartPolicy(workloadsv1alpha2.RestartPolicyNone).
+					WithBaseDelaySeconds(7).
+					Obj(),
+			},
+		).Obj()
+
+	gomega.Expect(f.Client.Create(f.Ctx, probe)).To(gomega.Succeed())
+	ginkgo.DeferCleanup(
+		func() {
+			gomega.Expect(client.IgnoreNotFound(f.Client.Delete(f.Ctx, probe))).To(gomega.Succeed())
+		},
+	)
+
+	stored := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(probe), stored)).To(gomega.Succeed())
+	gomega.Expect(stored.Spec.Roles).To(gomega.HaveLen(1))
+	gomega.Expect(stored.Spec.Roles[0].LeaderWorkerPattern).ToNot(gomega.BeNil())
+	gomega.Expect(stored.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig).To(
+		gomega.BeNil(),
+		"restartPolicyConfig survived, so this cluster is not running the %s CRDs and "+
+			"the fixtures would not be %s-shaped", fromGitTag(), fromGitTag(),
 	)
 }
 

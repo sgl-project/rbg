@@ -14,8 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package upgrade is a standalone e2e suite that proves a v0.7.0 install can be
-// upgraded to the version under test without disturbing already-running RBG pods.
+// Package upgrade is a standalone e2e suite that proves an install of a supported
+// release -- v0.7.0 or v0.8.0, selected by RBGS_FROM_GIT_TAG -- can be upgraded to
+// the version under test without disturbing already-running RBG pods.
 //
 // Every other e2e suite installs the version under test from scratch, so none of
 // them can catch an upgrade-only regression. The regression this suite exists to
@@ -24,26 +25,30 @@ limitations under the License.
 //
 //   - The inputs to the revision hash change. The hash helper itself only moved
 //     between packages, but the RoleInstanceSet template the controller builds is
-//     assembled fresh each release: it now carries restartPolicyConfig where v0.7.0
-//     carried the restartPolicy string. A template that serializes differently makes
-//     the new controller read every stored spec as modified.
+//     assembled fresh each release: since v0.8.0 it carries restartPolicyConfig
+//     where v0.7.0 carried the restartPolicy string. A template that serializes
+//     differently makes the new controller read every stored spec as modified.
 //   - A new CRD default. The apiserver applies structural defaults on read, so a new
 //     default on a field whose parent object is present silently changes the spec the
 //     new controller sees. Phase 4 sees this: the v1alpha1 write path materializes
 //     restartPolicyConfig, and the apiserver then fills in the delay fields defaulted
 //     inside it.
-//   - The v1alpha1 conversion webhook writing a different v1alpha2 shape than
-//     v0.7.0's webhook did, which lands on any object created or updated through
-//     v1alpha1.
-//   - A controller-side default changing, which rewrites the resources derived from an
-//     object whose own spec nobody touched. sharedServiceSelection is the live example:
-//     v0.7.0 read an unset field as All, the current release resolves it to LeaderOnly,
-//     and the shared Service selector is patched in place accordingly.
+//   - The v1alpha1 conversion webhook writing a different v1alpha2 shape than the
+//     from-release's webhook did, which lands on any object created or updated
+//     through v1alpha1.
+//   - A controller-side default changing, which rewrites the resources derived from
+//     an object whose own spec nobody touched. sharedServiceSelection is the v0.7.0
+//     hop's example: v0.7.0 read an unset field as All, the current release resolves
+//     it to LeaderOnly, and the shared Service selector is patched in place
+//     accordingly. v0.8.0 already resolves it to LeaderOnly, so that hop records no
+//     such change.
 //
 // The first three show up as pod churn. The fourth does not touch a pod at all -- it
 // removes the worker endpoints from a Service that keeps its name, its UID and its
 // cluster IP -- which is why the assertions reach past pod identity to the pods'
-// labels, the Services in front of them and the endpoints behind those.
+// labels, the Services in front of them and the endpoints behind those. What differs
+// between the two hops -- the values layout, the new-bundle marker, and the rewrites
+// the hop is recorded to perform -- lives in profile.go.
 //
 // The assertions are deliberately strict, down to owner generations and
 // ControllerRevision names. They are detectors: when one fires, the finding belongs
@@ -78,14 +83,16 @@ limitations under the License.
 // the release gate rather than the per-PR e2e workflow: the chart carries the published
 // images only once a release bumps it. RBGS_TO_* overrides the target for a local build.
 //
-// One value is deliberately not a chart default: portAllocator is enabled, on the v0.7.0
-// install and on the upgrade alike, which is how the other e2e workflows install rbgs. So
-// this is a feature-enabled upgrade rather than a stock one. What it is not is a feature
-// being toggled by the hop, which would put a configuration change inside the interval
-// every assertion here attributes to the upgrade.
+// One value is deliberately not a chart default: portAllocator is enabled, on the
+// from-release install and on the upgrade alike, which is how the other e2e
+// workflows install rbgs. So this is a feature-enabled upgrade rather than a stock
+// one. What it is not is a feature being toggled by the hop, which would put a
+// configuration change inside the interval every assertion here attributes to the
+// upgrade.
 //
 // What this suite does NOT prove:
-//   - Only the v0.7.0 -> current single hop. Nothing about v0.6.x -> current.
+//   - Only the v0.7.0 -> current and v0.8.0 -> current single hops, one per run.
+//     Nothing about older releases, and nothing about hopping twice in a row.
 //   - Nothing about storage version migration: both versions store v1alpha2. If a
 //     future release changes the storage version, this suite will not cover it.
 //   - Single node, and nothing about leader election. The chart ships
@@ -98,7 +105,7 @@ limitations under the License.
 //   - The observation ends when two samples taken settleDuration apart agree, so it
 //     bounds what is seen: a regression that only rolls pods on a later periodic resync
 //     would not be caught here.
-//   - Nothing about downgrade, and nothing about a v0.7.0 controller reading
+//   - Nothing about downgrade, and nothing about the old controller reading
 //     objects after the new CRDs land.
 package upgrade
 
@@ -131,15 +138,16 @@ const (
 	rbgCRDName    = "rolebasedgroups.workloads.x-k8s.io"
 	rbgSetCRDName = "rolebasedgroupsets.workloads.x-k8s.io"
 	// warmupCRDName does not exist in v0.7.0. Its absence before the upgrade and
-	// presence after it is the only evidence in this suite that cannot be faked by
-	// setting an image tag.
+	// presence after it is the v0.7.0 hop's new-bundle marker: evidence that
+	// cannot be faked by setting an image tag.
 	warmupCRDName = "rolebasedgroupwarmups.workloads.x-k8s.io"
+	// risCRDName is the v0.8.0 hop's marker instead: the CRD exists on both
+	// sides of that hop, and what the new bundle adds to it is the update
+	// strategy type enum.
+	risCRDName = "roleinstancesets.workloads.x-k8s.io"
 
 	validatingWebhookName = "rbgs-validating-webhook-configuration"
 	mutatingWebhookName   = "rbgs-mutating-webhook-configuration"
-
-	// fromAppVersionPrefix is what the v0.7.0 chart records as its appVersion.
-	fromAppVersionPrefix = "0.7.0"
 )
 
 func envOr(key, fallback string) string {
@@ -156,14 +164,34 @@ func controllerNamespace() string { return envOr("RBGS_NAMESPACE", "rbgs-system"
 func helmRelease() string { return envOr("RBGS_RELEASE", "rbgs") }
 
 // fromGitTag is the git tag whose chart the suite installs before upgrading. The
-// chart, not just the images: the values layout changed after v0.7.0, so installing
-// with the chart in the working tree would not reproduce the old install.
+// chart, not just the images: the values layout changed between the supported
+// from-releases, so installing with the chart in the working tree would not
+// reproduce the old install.
 func fromGitTag() string { return envOr("RBGS_FROM_GIT_TAG", "v0.7.0") }
 
-// fromTag is the controller image tag the suite installs before the upgrade, and
-// fromRepo/fromCRDUpgradeRepo are where those images come from. They are overridable
-// so a cluster that cannot reach Docker Hub can point at a mirror.
-func fromTag() string  { return envOr("RBGS_FROM_TAG", "v0.7.0-888ade7") }
+// fromAppVersionPrefix is what the from-release's chart records as its
+// appVersion, derived from the git tag: release charts record
+// <version>-<commit>, so the tag without its v prefix is the prefix.
+func fromAppVersionPrefix() string { return strings.TrimPrefix(fromGitTag(), "v") }
+
+// fromTag is the controller image tag the suite installs before the upgrade. It
+// defaults to the from-release's published tag, so selecting a hop needs only
+// RBGS_FROM_GIT_TAG; the override exists for a locally built from-image.
+// fromRepo/fromCRDUpgradeRepo are where those images come from, overridable so a
+// cluster that cannot reach Docker Hub can point at a mirror.
+func fromTag() string {
+	if v := os.Getenv("RBGS_FROM_TAG"); v != "" {
+		return v
+	}
+	switch fromGitTag() {
+	case "v0.8.0":
+		return "v0.8.0-16705159"
+	default:
+		// v0.7.0 is the default hop. An unknown tag lands here too -- fromProfile()
+		// is what reports it; this only keeps failure messages rendering until then.
+		return "v0.7.0-888ade7"
+	}
+}
 func fromRepo() string { return envOr("RBGS_FROM_REPO", "rolebasedgroup/rbgs-controller") }
 func fromCRDUpgradeRepo() string {
 	return envOr("RBGS_FROM_CRD_UPGRADE_REPO", "rolebasedgroup/rbgs-upgrade-crd")

@@ -66,7 +66,7 @@ func clientObjectKey(name string) client.ObjectKey { return client.ObjectKey{Nam
 //
 // Every value is passed explicitly on its current path and --reuse-values is
 // deliberately not used. The chart moved every top-level value under controller.*
-// between v0.7.0 and now, and the chart has no values schema, so --reuse-values
+// between v0.7.0 and v0.8.0, and the chart has no values schema, so --reuse-values
 // would carry the old paths forward as inert keys and silently install chart
 // defaults instead of the images under test.
 func runHelmUpgrade(f *framework.Framework) {
@@ -82,10 +82,10 @@ func runHelmUpgrade(f *framework.Framework) {
 		"--set", "crdUpgrade.image.repository=" + crdUpgradeRepo(),
 		"--set", "crdUpgrade.image.tag=" + crdUpgradeTag(),
 		"--set", "crdUpgrade.image.pullPolicy=IfNotPresent",
-		// Not a chart default. It is set because the v0.7.0 install sets it, as the
-		// other e2e workflows do: omitting it here would make the hop turn a feature
-		// off, and every assertion in this suite reads what the interval changed as
-		// something the upgrade did.
+		// Not a chart default. It is set because the from-release install sets it, as
+		// the other e2e workflows do: omitting it here would make the hop turn a
+		// feature off, and every assertion in this suite reads what the interval
+		// changed as something the upgrade did.
 		"--set", "controller.features.portAllocator.enabled=true",
 		"--wait", "--timeout", helmTimeout(),
 	}
@@ -150,13 +150,15 @@ func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
 	waitConversionActuallyWorks(f, conversionProbeName)
 }
 
-// waitCRDsUpgraded uses the warmup CRD as the marker for the new bundle: preflight
-// proved it was absent beforehand, so its appearance can only come from this upgrade.
+// waitCRDsUpgraded uses the from-release profile's marker for the new bundle:
+// preflight proved it was absent beforehand, so its appearance can only come from
+// this upgrade.
 func waitCRDsUpgraded(f *framework.Framework) {
+	marker := fromProfile().newBundleMarker
 	gomega.Eventually(func() (bool, error) {
-		return crdExists(f, warmupCRDName)
+		return marker.present(f)
 	}, gateTimeout, gateInterval).Should(gomega.BeTrue(),
-		"CRD %s never appeared, so the crd-upgrade hook did not apply the new CRD bundle", warmupCRDName)
+		"%s never appeared, so the crd-upgrade hook did not apply the new CRD bundle", marker.description)
 }
 
 func waitControllerRolledOut(f *framework.Framework) {

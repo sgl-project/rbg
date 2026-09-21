@@ -88,8 +88,8 @@ const (
 	roleA = "lead"
 	roleB = "follow"
 
-	// lwpRole is the role of the fxLwp fixture. Named because upgradeRewrites has to
-	// name the shared Service in front of it.
+	// lwpRole is the role of the fxLwp fixture. Named because the v0.7.0 profile's
+	// recorded rewrites have to name the shared Service in front of it.
 	lwpRole = "lwp"
 
 	// v1alpha1LwsRole is the role of the v1alpha1 fixture that converts to a
