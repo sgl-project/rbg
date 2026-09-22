@@ -948,8 +948,9 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 }
 
 // progressOrderedReadyUnhealthyTarget updates only the first unhealthy
-// OrderedReady target that has passed the stable-unhealthy window. It returns
-// nil when the normal readiness gate should remain in control.
+// OrderedReady target that has passed the stable-unhealthy window. The target
+// may be a base instance or an in-range stale-revision surge instance. It
+// returns nil when the normal readiness gate should remain in control.
 func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarget(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	status *workloadsv1alpha2.RoleInstanceSetStatus,
@@ -978,18 +979,20 @@ func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarge
 	return err
 }
 
-// orderedReadyCleanupTarget returns the first unhealthy base instance that may
-// be updated despite OrderedReady's readiness gate. The instance must be the
-// first ordinal that blocks the monotonic loop, be an update target, and have
-// been continuously unhealthy for stableUnhealthyDuration. Returning nil keeps
-// the normal OrderedReady behavior.
+// orderedReadyCleanupTarget returns the first unhealthy in-range instance that
+// may be updated despite OrderedReady's readiness gate. The instance must be
+// the first ordinal that blocks the monotonic loop, be an update target, and
+// have been continuously unhealthy for stableUnhealthyDuration. In-range
+// includes stale-revision surge slots, which otherwise cannot be recycled when
+// OrderedReady stops before Phase C. Returning nil keeps the normal OrderedReady
+// behavior.
 func orderedReadyCleanupTarget(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	replicas []*workloadsv1alpha2.RoleInstance,
 	topo topology,
 	updateRev string,
 ) *workloadsv1alpha2.RoleInstance {
-	for ord := topo.startOrdinal; ord < topo.replicas; ord++ {
+	for ord := topo.startOrdinal; ord < topo.endOrdinal; ord++ {
 		idx := ord - topo.startOrdinal
 		if idx < 0 || idx >= len(replicas) || replicas[idx] == nil {
 			return nil

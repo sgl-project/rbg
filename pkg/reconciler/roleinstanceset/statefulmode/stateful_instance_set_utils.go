@@ -270,9 +270,10 @@ type topology struct {
 	// surgeStart equals replicas: surge ords occupy [surgeStart, endOrdinal).
 	surgeStart int
 
-	// inRollout is true when currentRev != updateRev and the rollout is not
-	// paused. Used to gate surge allocation and to decide whether Phase C
-	// runs at all.
+	// inRollout is true when update work remains and the rollout is not paused.
+	// Update work includes a revision mismatch, a stale base instance, or an
+	// in-flight early-rollback replacement. Used to gate surge allocation and to
+	// decide whether Phase C runs at all.
 	inRollout bool
 }
 
@@ -505,7 +506,8 @@ func hasStaleBaseInstance(
 
 // trackEarlyRollbackReplacement maintains the in-memory replacement signal for
 // an early rollback. Once a stale base instance is observed, the signal stays
-// active until all base instances at updateRevision are ready. This bridges the
+// active until all base instances at updateRevision are ready. It is primarily
+// needed when the revision names match again after A -> B -> A. This bridges the
 // gap after the stale instance disappears and before its replacement becomes
 // healthy, allowing existing surge to remain in range. The UID check prevents a
 // same-name replacement set from inheriting the previous set's signal.
@@ -548,11 +550,12 @@ func trackEarlyRollbackReplacement(
 //
 // Sizing rules in one place:
 //
-//   - Outside a rollout (currentRev == updateRev): activeSurge = 0,
-//     endOrdinal = replicas. Stale surge (if any from a finished rollout)
-//     falls out of range and gets condemned.
+//   - Outside a rollout (no revision work, stale base, or in-flight early
+//     rollback replacement): activeSurge = 0, endOrdinal = replicas. Stale
+//     surge (if any from a finished rollout) falls out of range and gets
+//     condemned.
 //
-//   - Paused mid-rollout (Paused=true && currentRev != updateRev): freeze the
+//   - Paused mid-rollout (Paused=true && update work remains): freeze the
 //     existing surge in place. activeSurge = existingValidSurge (clamped to
 //     maxSurge). New surge is NOT allocated (no surgeNeeded delta), but
 //     in-flight surge slots stay inside endOrdinal so Phase B does not condemn
