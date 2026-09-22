@@ -215,6 +215,12 @@ const (
 
 	// RoleInstanceSetConditionFailedUpdate indicates RoleInstanceSet controller failed to update RoleInstances.
 	RoleInstanceSetConditionFailedUpdate RoleInstanceSetConditionType = "FailedUpdate"
+
+	// RoleInstanceSetConditionEarlyRollbackReplacement indicates that an A→B→A
+	// rollback is replacing stale base instances and that existing surge must be
+	// retained until every base replacement is ready. The condition is durable
+	// controller bookkeeping used across restarts and leader changes.
+	RoleInstanceSetConditionEarlyRollbackReplacement RoleInstanceSetConditionType = "EarlyRollbackReplacement"
 )
 
 // RoleInstanceSetCondition describes the state of a RoleInstanceSet at a certain point.
