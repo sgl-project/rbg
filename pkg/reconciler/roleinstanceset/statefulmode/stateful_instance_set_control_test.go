@@ -225,6 +225,63 @@ func TestComputeTopology(t *testing.T) {
 			expectedInRollout: false,
 		},
 		{
+			name: "early rollback: stale base keeps the rollout active",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				s := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+				return s
+			}(),
+			instances: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, "rollback-b", true, true),
+				buildInst("s", 1, testUpdateRev, true, true),
+			},
+			currentRev:        testUpdateRev,
+			updateRev:         testUpdateRev,
+			expectedActSurge:  1,
+			expectedEndOrd:    3,
+			expectedMaxSurge:  1,
+			expectedMaxUnav:   0,
+			expectedInRollout: true,
+		},
+		{
+			name: "no pending rollback: excess surge is not retained",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				s := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+				return s
+			}(),
+			instances: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testUpdateRev, true, true),
+				buildInst("s", 1, testUpdateRev, true, true),
+				buildInst("s", 2, testUpdateRev, true, true),
+			},
+			currentRev:        testUpdateRev,
+			updateRev:         testUpdateRev,
+			expectedActSurge:  0,
+			expectedEndOrd:    2,
+			expectedMaxSurge:  1,
+			expectedMaxUnav:   0,
+			expectedInRollout: false,
+		},
+		{
+			name: "paused early rollback: existing surge stays protected",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				s := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+				s.Spec.UpdateStrategy.Paused = true
+				return s
+			}(),
+			instances: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, "rollback-b", true, true),
+				buildInst("s", 1, testUpdateRev, true, true),
+				buildInst("s", 2, testUpdateRev, true, true),
+			},
+			currentRev:        testUpdateRev,
+			updateRev:         testUpdateRev,
+			expectedActSurge:  1,
+			expectedEndOrd:    3,
+			expectedMaxSurge:  1,
+			expectedMaxUnav:   0,
+			expectedInRollout: false,
+		},
+		{
 			name: "paused with no existing surge: do not allocate new surge",
 			set: func() *workloadsv1alpha2.RoleInstanceSet {
 				s := buildSet("s", 4, ptr.To(intstrutil.FromInt32(2)), ptr.To(intstrutil.FromInt32(0)))
@@ -1131,6 +1188,195 @@ func TestUpdateStatefulInstanceSetOrderedReadyRetriesUnhealthyTarget(t *testing.
 	}
 }
 
+func TestUpdateStatefulInstanceSetResumesEarlyRollback(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](2)
+	set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(0))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(2))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	rolledForwardRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:1.0"
+	updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRev.Name != updateRev.Name || currentRev.Name == rolledForwardRev.Name {
+		t.Fatalf("rollback revisions = %q, %q, %q; want A, B, A", currentRev.Name, rolledForwardRev.Name, updateRev.Name)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = rolledForwardRev.Name
+
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, rolledForwardRev.Name, false, true),
+		buildInst(set.Name, 1, rolledForwardRev.Name, false, true),
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	reconcile := func() time.Duration {
+		t.Helper()
+		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, rolledForwardRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return durationStore.Pop(key)
+	}
+
+	if wait := reconcile(); wait <= 0 || wait > stableUnhealthyDuration {
+		t.Fatalf("retry = %v, want a positive delay of at most %v", wait, stableUnhealthyDuration)
+	}
+	if len(objects.deleted) != 0 {
+		t.Fatalf("early rollback deleted instances before the health window: %v", objects.deleted)
+	}
+
+	for _, inst := range instances {
+		instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), time.Now().Add(-2*stableUnhealthyDuration))
+	}
+	if wait := reconcile(); wait != 0 {
+		t.Fatalf("expired early-rollback health windows requested another retry: %v", wait)
+	}
+	deleted := sets.New(objects.deleted...)
+	for _, inst := range instances {
+		if !deleted.Has(inst.Name) {
+			t.Fatalf("early rollback did not replace stale instance %s: deleted %v", inst.Name, objects.deleted)
+		}
+	}
+}
+
+func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
+	resetInstanceUnhealthySince()
+	resetEarlyRollbackReplacementUIDs()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementUIDs()
+	})
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](1)
+	set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(1))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	rolledForwardRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:1.0"
+	updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRev.Name != updateRev.Name || currentRev.Name == rolledForwardRev.Name {
+		t.Fatalf("rollback revisions = %q, %q, %q; want A, B, A", currentRev.Name, rolledForwardRev.Name, updateRev.Name)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = rolledForwardRev.Name
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+	reconcile := func(instances ...*workloadsv1alpha2.RoleInstance) {
+		t.Helper()
+		objects.created = nil
+		objects.deleted = nil
+		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, rolledForwardRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := buildInst(set.Name, 0, rolledForwardRev.Name, true, true)
+	reconcile(base)
+	if len(objects.created) != 1 || objects.created[0] != fmt.Sprintf("%s-1", set.Name) {
+		t.Fatalf("created = %v, want one rollback surge instance", objects.created)
+	}
+
+	surge := buildInst(set.Name, 1, updateRev.Name, true, true)
+	reconcile(base, surge)
+	if len(objects.deleted) != 1 || objects.deleted[0] != base.Name {
+		t.Fatalf("deleted = %v, want only stale base %s", objects.deleted, base.Name)
+	}
+
+	withTerminating(base)
+	reconcile(base, surge)
+	if len(objects.deleted) != 0 {
+		t.Fatalf("deleted surge while stale base terminated: %v", objects.deleted)
+	}
+
+	replacement := buildInst(set.Name, 0, updateRev.Name, false, true)
+	replacement.Generation = 2
+	reconcile(replacement, surge)
+	if len(objects.deleted) != 0 {
+		t.Fatalf("deleted surge before replacement was ready: %v", objects.deleted)
+	}
+
+	replacement.Status.Conditions[0].Status = v1.ConditionTrue
+	replacement.Status.ObservedGeneration = replacement.Generation
+	reconcile(replacement, surge)
+	if len(objects.deleted) != 1 || objects.deleted[0] != surge.Name {
+		t.Fatalf("deleted = %v, want only completed surge %s", objects.deleted, surge.Name)
+	}
+}
+
+func TestComputeTopologyDoesNotKeepSurgeAfterScaleDown(t *testing.T) {
+	resetEarlyRollbackReplacementUIDs()
+	t.Cleanup(resetEarlyRollbackReplacementUIDs)
+
+	set := buildSet("scale-down", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "scale-down-set"
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, testUpdateRev, false, true),
+		buildInst(set.Name, 1, testUpdateRev, true, true),
+	}
+
+	topo, err := computeTopology(set, instances, testUpdateRev, testUpdateRev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topo.inRollout {
+		t.Fatalf("inRollout = true after scale-down; want false")
+	}
+	if topo.activeSurge != 0 || topo.endOrdinal != int(*set.Spec.Replicas) {
+		t.Fatalf("activeSurge/endOrdinal = %d/%d, want 0/%d", topo.activeSurge, topo.endOrdinal, *set.Spec.Replicas)
+	}
+}
+
 func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	// helper: build set with given prior status fields
 	priorStatus := func(updateRev string, updatedReplicas int32) *workloadsv1alpha2.RoleInstanceSet {
@@ -1247,6 +1493,13 @@ func TestShouldAdvanceCurrentRevision(t *testing.T) {
 
 // resetInstanceUnhealthySince clears the global time-gate map so each test
 // starts from a known empty state.
+func resetEarlyRollbackReplacementUIDs() {
+	earlyRollbackReplacementUIDs.Range(func(key, _ interface{}) bool {
+		earlyRollbackReplacementUIDs.Delete(key)
+		return true
+	})
+}
+
 func resetInstanceUnhealthySince() {
 	instanceUnhealthySince.Range(func(k, _ interface{}) bool {
 		instanceUnhealthySince.Delete(k)

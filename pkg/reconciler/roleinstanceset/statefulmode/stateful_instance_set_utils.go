@@ -475,6 +475,73 @@ func allBaseAtUpdateRevHealthy(
 	return seen.Len() == replicas-partition
 }
 
+// hasStaleBaseInstance reports whether a base instance in the update range is
+// still at a revision other than updateRevision. Terminating instances are
+// included so an early rollback remains pending while the stale instance is
+// being deleted. This catches A -> B -> A, where CurrentRevision and
+// UpdateRevision can have the same name while the live instances are still at B.
+func hasStaleBaseInstance(
+	instances []*workloadsv1alpha2.RoleInstance,
+	partition, replicas int,
+	updateRevision string,
+) bool {
+	if replicas <= partition {
+		return false
+	}
+	for _, inst := range instances {
+		if inst == nil || !isCreated(inst) {
+			continue
+		}
+		ord := getOrdinal(inst)
+		if ord < partition || ord >= replicas {
+			continue
+		}
+		if getInstanceRevision(inst) != updateRevision {
+			return true
+		}
+	}
+	return false
+}
+
+// trackEarlyRollbackReplacement maintains the in-memory replacement signal for
+// an early rollback. Once a stale base instance is observed, the signal stays
+// active until all base instances at updateRevision are ready. This bridges the
+// gap after the stale instance disappears and before its replacement becomes
+// healthy, allowing existing surge to remain in range. The UID check prevents a
+// same-name replacement set from inheriting the previous set's signal.
+func trackEarlyRollbackReplacement(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instances []*workloadsv1alpha2.RoleInstance,
+	partition, replicas int,
+	updateRevision string,
+) bool {
+	if set == nil || set.UID == "" {
+		return false
+	}
+
+	key := getInstanceSetKey(set)
+	uid := string(set.UID)
+	if hasStaleBaseInstance(instances, partition, replicas, updateRevision) {
+		earlyRollbackReplacementUIDs.Store(key, uid)
+		return true
+	}
+
+	value, ok := earlyRollbackReplacementUIDs.Load(key)
+	if !ok {
+		return false
+	}
+	owner, _ := value.(string)
+	if owner != uid {
+		earlyRollbackReplacementUIDs.Delete(key)
+		return false
+	}
+	if allBaseAtUpdateRevHealthy(instances, partition, replicas, updateRevision) {
+		earlyRollbackReplacementUIDs.Delete(key)
+		return false
+	}
+	return true
+}
+
 // computeTopology is the single source of truth for ordinal range sizing
 // during a reconcile. See topology doc for field semantics. Errors only
 // occur on malformed spec (negative percentages etc.).
@@ -538,7 +605,10 @@ func computeTopology(
 	}
 	t.partition = partition
 
-	t.inRollout = currentRevision != updateRevision && !set.Spec.UpdateStrategy.Paused
+	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision)
+	earlyRollbackReplacement := trackEarlyRollbackReplacement(set, instances, t.partition, t.replicas, updateRevision)
+	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
+	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
 	if maxSurge == 0 {
 		return t, nil
 	}
@@ -546,7 +616,7 @@ func computeTopology(
 	// condemn them. We do NOT allocate new surge here — surgeNeeded is only
 	// considered when actively rolling.
 	if !t.inRollout {
-		if set.Spec.UpdateStrategy.Paused && currentRevision != updateRevision {
+		if set.Spec.UpdateStrategy.Paused && updatePending {
 			existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision)
 			if existing > maxSurge {
 				existing = maxSurge
