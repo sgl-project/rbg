@@ -125,6 +125,37 @@ func isStablyUnhealthy(inst *workloadsv1alpha2.RoleInstance) bool {
 	return time.Since(first) >= stableUnhealthyDuration
 }
 
+// remainingUnhealthyWindow returns the time left before inst becomes eligible
+// for the stably-unhealthy cleanup path. It returns false once the window has
+// expired so callers do not schedule a hot loop of zero-length retries.
+func remainingUnhealthyWindow(inst *workloadsv1alpha2.RoleInstance) (time.Duration, bool) {
+	if inst == nil || inst.UID == "" {
+		return 0, false
+	}
+	v, ok := instanceUnhealthySince.Load(inst.UID)
+	if !ok {
+		return 0, false
+	}
+	first, ok := v.(time.Time)
+	if !ok {
+		return 0, false
+	}
+	wait := time.Until(first.Add(stableUnhealthyDuration))
+	return wait, wait > 0
+}
+
+// pushUnhealthyRetry schedules a reconcile for the end of an instance's
+// unhealthy window. Unlike progressUpdate's target-specific retry, this is also
+// used for unhealthy instances that consume the availability budget but are not
+// update targets (for example, instances already at updateRev or below
+// partition). The retry does not release the budget; it only removes the
+// dependency on an unrelated instance event.
+func pushUnhealthyRetry(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) {
+	if wait, ok := remainingUnhealthyWindow(inst); ok {
+		durationStore.Push(getInstanceSetKey(set), wait)
+	}
+}
+
 // StatefulInstanceSetControlInterface implements the control logic for updating InstanceSets managing Instances
 type StatefulInstanceSetControlInterface interface {
 	// UpdateStatefulInstanceSet implements the control logic for Instance creation, update, and deletion
@@ -699,6 +730,9 @@ func (ssc *defaultStatefulInstanceSetControl) collectBaseUnavailable(
 		}
 		if !isHealthy(inst) || opts.CheckRoleInstanceUpdateCompleted(inst) != nil {
 			out.Insert(inst.Name)
+			if !isHealthy(inst) {
+				pushUnhealthyRetry(set, inst)
+			}
 			continue
 		}
 		isAvailable, waitTime := isInstanceRunningAndAvailable(inst, minReadySeconds)
