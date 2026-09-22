@@ -966,6 +966,102 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 	}
 }
 
+func TestProgressUpdateRetriesUnhealthyNonTargets(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	tests := []struct {
+		name      string
+		replicas  []*workloadsv1alpha2.RoleInstance
+		partition int
+	}{
+		{
+			name: "unhealthy instance at update revision requests a retry",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, true, true),
+				buildInst("s", 1, testUpdateRev, false, true),
+			},
+			partition: 0,
+		},
+		{
+			name: "unhealthy instance below partition requests a retry",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, false, true),
+				buildInst("s", 1, testOldRev, true, true),
+			},
+			partition: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+
+			set := buildSet("s", 2, ptr.To(intstrutil.FromInt32(0)), ptr.To(intstrutil.FromInt32(1)))
+			key := getInstanceSetKey(set)
+			durationStore.Pop(key)
+			t.Cleanup(func() { durationStore.Pop(key) })
+
+			objects := &fakeInstanceObjectManager{}
+			recorder := record.NewFakeRecorder(64)
+			control := &defaultStatefulInstanceSetControl{
+				instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+				inplaceControl:  &fakeInplaceControl{},
+				recorder:        recorder,
+			}
+			status := &workloadsv1alpha2.RoleInstanceSetStatus{}
+			topo := topology{
+				startOrdinal:   0,
+				endOrdinal:     2,
+				surgeStart:     2,
+				replicas:       2,
+				partition:      tt.partition,
+				maxUnavailable: 1,
+				maxSurge:       0,
+				inRollout:      true,
+			}
+
+			for _, inst := range tt.replicas {
+				if !isHealthy(inst) {
+					instanceUnhealthySince.Store(inst.UID, time.Now().Add(-6*time.Second))
+				}
+			}
+
+			_, err := control.progressUpdate(set, status,
+				newStatefulRevision(testOldRev, 1), newStatefulRevision(testUpdateRev, 2),
+				nil, tt.replicas, tt.replicas, 0, topo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wait := durationStore.Pop(key)
+			if wait <= 0 || wait > 4*time.Second {
+				t.Fatalf("retry = %v, want a positive delay of at most 4s", wait)
+			}
+			if len(objects.deleted) != 0 {
+				t.Fatalf("budget-protected instances deleted: %v", objects.deleted)
+			}
+
+			for _, inst := range tt.replicas {
+				if !isHealthy(inst) {
+					instanceUnhealthySince.Store(inst.UID, time.Now().Add(-2*stableUnhealthyDuration))
+				}
+			}
+			_, err = control.progressUpdate(set, status,
+				newStatefulRevision(testOldRev, 1), newStatefulRevision(testUpdateRev, 2),
+				nil, tt.replicas, tt.replicas, 0, topo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wait := durationStore.Pop(key); wait != 0 {
+				t.Fatalf("expired non-target window requested another retry: %v", wait)
+			}
+			if len(objects.deleted) != 0 {
+				t.Fatalf("unhealthy non-target must still consume budget; deleted %v", objects.deleted)
+			}
+		})
+	}
+}
+
 func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	// helper: build set with given prior status fields
 	priorStatus := func(updateRev string, updatedReplicas int32) *workloadsv1alpha2.RoleInstanceSet {
