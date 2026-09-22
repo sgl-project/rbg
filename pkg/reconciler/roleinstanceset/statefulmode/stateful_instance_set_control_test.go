@@ -1055,6 +1055,75 @@ func TestProgressUpdateRetriesUnhealthyNonTargets(t *testing.T) {
 	}
 }
 
+func TestUpdateStatefulInstanceSetOrderedReadyRetriesUnhealthyTarget(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](2)
+	set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(0))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	updateRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = updateRev.Name
+
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, currentRev.Name, false, true),
+		buildInst(set.Name, 1, currentRev.Name, true, true),
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	reconcile := func() time.Duration {
+		t.Helper()
+		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return durationStore.Pop(key)
+	}
+
+	instanceUnhealthySince.Store(instances[0].UID, time.Now().Add(-6*time.Second))
+	if wait := reconcile(); wait <= 0 || wait > 4*time.Second {
+		t.Fatalf("retry = %v, want a positive delay of at most 4s", wait)
+	}
+	if len(objects.deleted) != 0 {
+		t.Fatalf("OrderedReady deleted before the health window expired: %v", objects.deleted)
+	}
+
+	instanceUnhealthySince.Store(instances[0].UID, time.Now().Add(-2*stableUnhealthyDuration))
+	if wait := reconcile(); wait != 0 {
+		t.Fatalf("expired OrderedReady health window requested another retry: %v", wait)
+	}
+	deleted := sets.New(objects.deleted...)
+	if !deleted.Has(instances[0].Name) {
+		t.Fatalf("OrderedReady rollout did not resume: deleted %v", objects.deleted)
+	}
+	if deleted.Has(instances[1].Name) {
+		t.Fatalf("OrderedReady cleanup updated a later ordinal: deleted %v", objects.deleted)
+	}
+}
+
 func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	// helper: build set with given prior status fields
 	priorStatus := func(updateRev string, updatedReplicas int32) *workloadsv1alpha2.RoleInstanceSet {

@@ -503,6 +503,18 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		return ssc.processReplica(ctx, set, updateSet, monotonic, replicas, i, &status, scaleMaxUnavailable)
 	}
 	if shouldExit, err := runForAllWithBreak(replicas, processReplicaFn, monotonic); shouldExit || err != nil {
+		// OrderedReady normally stops before Phase C when an instance is not
+		// ready. If that first blocker is itself a stably-unhealthy update
+		// target, run a restricted update for only that ordinal. This keeps
+		// OrderedReady ordering for other replicas while allowing the rollout
+		// to recover after the unhealthy window instead of waiting forever.
+		if err == nil && shouldExit && monotonic {
+			if updateErr := ssc.progressOrderedReadyUnhealthyTarget(set, &status,
+				currentRevision, updateRevision, revisions, instances, replicas,
+				minReadySeconds, topo); updateErr != nil {
+				return &status, updateErr
+			}
+		}
 		updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
 		return &status, err
 	}
@@ -914,6 +926,67 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 	return modified, nil
 }
 
+// progressOrderedReadyUnhealthyTarget updates only the first unhealthy
+// OrderedReady target that has passed the stable-unhealthy window. It returns
+// nil when the normal readiness gate should remain in control.
+func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarget(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	status *workloadsv1alpha2.RoleInstanceSetStatus,
+	currentRevision *apps.ControllerRevision,
+	updateRevision *apps.ControllerRevision,
+	revisions []*apps.ControllerRevision,
+	instances []*workloadsv1alpha2.RoleInstance,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	minReadySeconds int32,
+	topo topology,
+) error {
+	if !topo.inRollout {
+		return nil
+	}
+	target := orderedReadyCleanupTarget(replicas, topo, updateRevision.Name)
+	if target == nil {
+		return nil
+	}
+
+	cleanupTopo := topo
+	cleanupTopo.partition = getOrdinal(target)
+	cleanupTopo.endOrdinal = cleanupTopo.partition + 1
+	cleanupTopo.activeSurge = 0
+	_, err := ssc.progressUpdate(set, status, currentRevision, updateRevision,
+		revisions, instances, replicas, minReadySeconds, cleanupTopo)
+	return err
+}
+
+// orderedReadyCleanupTarget returns the first unhealthy base instance that may
+// be updated despite OrderedReady's readiness gate. The instance must be the
+// first ordinal that blocks the monotonic loop, be an update target, and have
+// been continuously unhealthy for stableUnhealthyDuration. Returning nil keeps
+// the normal OrderedReady behavior.
+func orderedReadyCleanupTarget(
+	replicas []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	updateRev string,
+) *workloadsv1alpha2.RoleInstance {
+	for ord := topo.startOrdinal; ord < topo.replicas; ord++ {
+		idx := ord - topo.startOrdinal
+		if idx < 0 || idx >= len(replicas) || replicas[idx] == nil {
+			return nil
+		}
+		inst := replicas[idx]
+		if !isCreated(inst) {
+			return nil
+		}
+		if isHealthy(inst) {
+			continue
+		}
+		if ord < topo.partition || getInstanceRevision(inst) == updateRev || !isStablyUnhealthy(inst) {
+			return nil
+		}
+		return inst
+	}
+	return nil
+}
+
 // processReplica processes a single replica instance.
 // When monotonic is true (OrderedReady policy), instances are created one at a time:
 // the loop exits after each creation and waits for the instance to become healthy
@@ -953,6 +1026,9 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 	// mode so that the next replica is not processed until this one is ready.
 	if !isHealthy(replicas[i]) {
 		klog.V(4).InfoS("InstanceSet waiting for unhealthy Instance to become healthy", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[i]))
+		if monotonic {
+			pushUnhealthyRetry(set, replicas[i])
+		}
 		return monotonic, false, nil
 	}
 
