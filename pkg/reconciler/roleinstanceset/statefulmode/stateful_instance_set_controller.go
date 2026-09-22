@@ -64,7 +64,7 @@ var (
 	// global client
 	sigsruntimeClient sigsclient.Client
 
-	// instanceUnhealthySince tracks, per RoleInstance UID, the timestamp at
+	// instanceUnhealthySince tracks, per set identity and RoleInstance UID, the timestamp at
 	// which this controller first observed the instance in an unhealthy state.
 	// Reset to zero whenever the controller subsequently observes the same UID
 	// as healthy, so the duration only accumulates over CONSECUTIVE unhealthy
@@ -78,7 +78,7 @@ var (
 	// acceptable — the worst case after a restart is that a genuinely-broken
 	// instance takes one extra stableUnhealthyDuration window before it
 	// becomes eligible for cleanup.
-	instanceUnhealthySince sync.Map // map[types.UID]time.Time
+	instanceUnhealthySince sync.Map // map[instanceHealthKey]time.Time
 )
 
 // NewReconciler creates a new reconcile.Reconciler for external usage
@@ -170,6 +170,8 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 		}
 	}()
 
+	ssc.pruneInstanceHealth()
+
 	set, err := ssc.roleInstanceSetLister.RoleInstanceSets(namespace).Get(name)
 	if errors.IsNotFound(err) {
 		klog.InfoS("InstanceSet deleted", "instanceSet", key)
@@ -199,6 +201,21 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 
 	err = ssc.syncStatefulInstanceSet(ctx, set, instances)
 	return reconcile.Result{RequeueAfter: durationStore.Pop(getInstanceSetKey(set))}, err
+}
+
+// pruneInstanceHealth removes observations for deleted or replaced sets using
+// the informer cache. The outer controller returns early for deleted sets, so
+// reclaim their records when another set reconciles instead of relying on a
+// NotFound request reaching this reconciler.
+func (ssc *ReconcileStatefulInstanceSet) pruneInstanceHealth() {
+	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
+		healthKey := key.(instanceHealthKey)
+		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(healthKey.instanceSet.Namespace).Get(healthKey.instanceSet.Name)
+		if errors.IsNotFound(err) || (err == nil && set.UID != healthKey.instanceSetUID) {
+			instanceUnhealthySince.Delete(key)
+		}
+		return true
+	})
 }
 
 // adoptOrphanRevisions adopts any orphaned ControllerRevisions matched by set's Selector.

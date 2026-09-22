@@ -18,6 +18,7 @@ package statefulmode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -30,11 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	instancelisters "sigs.k8s.io/rbgs/client-go/listers/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 )
 
@@ -798,6 +801,7 @@ func TestProgressUpdateBudget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			set := buildSet("s", int32(tt.topo.replicas), nil, nil)
 			// Reset the cross-test global time-gate map so the prior test's
 			// observations cannot leak in. Tests opt in to "stably unhealthy"
 			// via markStablyUnhealthy below.
@@ -809,12 +813,11 @@ func TestProgressUpdateBudget(t *testing.T) {
 				past := time.Now().Add(-2 * stableUnhealthyDuration)
 				for _, inst := range tt.replicas {
 					if inst != nil && inst.UID != "" && !isHealthy(inst) {
-						instanceUnhealthySince.Store(inst.UID, past)
+						instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), past)
 					}
 				}
 			}
 
-			set := buildSet("s", int32(tt.topo.replicas), nil, nil)
 			fakeOM := &fakeInstanceObjectManager{}
 			recorder := record.NewFakeRecorder(64)
 			ssc := &defaultStatefulInstanceSetControl{
@@ -886,8 +889,12 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 		inplaceControl:  &fakeInplaceControl{},
 		recorder:        recorder,
 	}
+	otherSet := buildSet("other", 1, nil, nil)
+	otherInstance := buildInst(otherSet.Name, 0, testOldRev, false, true)
 	reconcile := func() time.Duration {
 		t.Helper()
+		// Another set's observation must not restart this rollout's wait.
+		observeInstanceHealth(otherSet, []*workloadsv1alpha2.RoleInstance{otherInstance})
 		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
 			instances, []*apps.ControllerRevision{currentRev, updateRev})
 		if err != nil {
@@ -911,7 +918,7 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 	// An unrelated event must not start a new ten-second window.
 	firstObserved := time.Now().Add(-6 * time.Second)
 	for _, inst := range instances {
-		instanceUnhealthySince.Store(inst.UID, firstObserved)
+		instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), firstObserved)
 	}
 	wait := reconcile()
 	assertWait(wait, 4*time.Second)
@@ -919,7 +926,7 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 		t.Fatalf("retry = %v, want at least %v", wait, remaining)
 	}
 	for _, inst := range instances {
-		if got, _ := instanceUnhealthySince.Load(inst.UID); got != firstObserved {
+		if got, _ := instanceUnhealthySince.Load(getInstanceHealthKey(set, inst)); got != firstObserved {
 			t.Fatalf("first unhealthy observation changed: got %v, want %v", got, firstObserved)
 		}
 	}
@@ -932,7 +939,7 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 	recovered := instances[1]
 	recovered.Status.Conditions[0].Status = v1.ConditionTrue
 	assertWait(reconcile(), 4*time.Second)
-	if _, ok := instanceUnhealthySince.Load(recovered.UID); ok {
+	if _, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, recovered)); ok {
 		t.Fatalf("healthy instance %s retained its old timer", recovered.Name)
 	}
 	recovered.Status.Conditions[0].Status = v1.ConditionFalse
@@ -941,12 +948,12 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 	// The higher target starts a fresh window; the lower target's earlier
 	// deadline must still determine the next retry.
 	assertWait(reconcile(), 4*time.Second)
-	if got, ok := instanceUnhealthySince.Load(recovered.UID); !ok || got == firstObserved {
+	if got, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, recovered)); !ok || got == firstObserved {
 		t.Fatalf("unhealthy instance %s reused its old timer", recovered.Name)
 	}
 
 	for _, inst := range instances {
-		instanceUnhealthySince.Store(inst.UID, time.Now().Add(-2*stableUnhealthyDuration))
+		instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), time.Now().Add(-2*stableUnhealthyDuration))
 	}
 	if wait := reconcile(); wait != 0 {
 		t.Fatalf("expired health windows requested another retry: %v", wait)
@@ -1086,43 +1093,61 @@ func TestObserveInstanceHealthAndIsStablyUnhealthy(t *testing.T) {
 	resetInstanceUnhealthySince()
 	defer resetInstanceUnhealthySince()
 
+	set := buildSet("s", 2, nil, nil)
 	healthy := buildInst("s", 0, testOldRev, true, true)
 	unhealthy := buildInst("s", 1, testOldRev, false, true)
 
 	// First observation: nothing is "stably" unhealthy yet — even the
 	// unhealthy instance just had its timer started.
-	observeInstanceHealth([]*workloadsv1alpha2.RoleInstance{healthy, unhealthy})
-	if isStablyUnhealthy(unhealthy) {
+	observeInstanceHealth(set, []*workloadsv1alpha2.RoleInstance{healthy, unhealthy})
+	if isStablyUnhealthy(set, unhealthy) {
 		t.Errorf("just-observed unhealthy must not be stably unhealthy yet")
 	}
-	if isStablyUnhealthy(healthy) {
+	if isStablyUnhealthy(set, healthy) {
 		t.Errorf("healthy instance must never be stably unhealthy")
 	}
 
 	// Backdate the unhealthy timer past the threshold; gate should now fire.
-	instanceUnhealthySince.Store(unhealthy.UID, time.Now().Add(-2*stableUnhealthyDuration))
-	if !isStablyUnhealthy(unhealthy) {
+	firstObserved := time.Now().Add(-2 * stableUnhealthyDuration)
+	instanceUnhealthySince.Store(getInstanceHealthKey(set, unhealthy), firstObserved)
+	if !isStablyUnhealthy(set, unhealthy) {
 		t.Errorf("unhealthy past threshold must be stably unhealthy")
+	}
+
+	// A same-named set in another namespace must not clear this timer,
+	// whether its instances are unhealthy, healthy, or absent.
+	otherSet := set.DeepCopy()
+	otherSet.Namespace = "other"
+	otherInstance := unhealthy.DeepCopy()
+	otherInstance.Namespace = otherSet.Namespace
+	otherInstance.UID = "other-instance"
+	otherHealthy := otherInstance.DeepCopy()
+	otherHealthy.Status.Conditions[0].Status = v1.ConditionTrue
+	for _, instances := range [][]*workloadsv1alpha2.RoleInstance{{otherInstance}, {otherHealthy}, nil} {
+		observeInstanceHealth(otherSet, instances)
+		if got, _ := instanceUnhealthySince.Load(getInstanceHealthKey(set, unhealthy)); got != firstObserved {
+			t.Fatalf("another namespace changed the unhealthy timer: got %v, want %v", got, firstObserved)
+		}
 	}
 
 	// Observe instance flipping back to healthy: timer must reset.
 	healthyAgain := buildInst("s", 1, testOldRev, true, true)
 	healthyAgain.UID = unhealthy.UID
-	observeInstanceHealth([]*workloadsv1alpha2.RoleInstance{healthyAgain})
-	if isStablyUnhealthy(healthyAgain) {
+	observeInstanceHealth(set, []*workloadsv1alpha2.RoleInstance{healthyAgain})
+	if isStablyUnhealthy(set, healthyAgain) {
 		t.Errorf("after observing healthy, gate must reset")
 	}
 	// Even if a later flip-to-unhealthy comes in, the timer is fresh.
 	stillUnhealthy := buildInst("s", 1, testOldRev, false, true)
 	stillUnhealthy.UID = unhealthy.UID
-	observeInstanceHealth([]*workloadsv1alpha2.RoleInstance{stillUnhealthy})
-	if isStablyUnhealthy(stillUnhealthy) {
+	observeInstanceHealth(set, []*workloadsv1alpha2.RoleInstance{stillUnhealthy})
+	if isStablyUnhealthy(set, stillUnhealthy) {
 		t.Errorf("freshly re-observed unhealthy must not satisfy gate")
 	}
 
 	// Disappeared UIDs are garbage-collected from the map.
-	observeInstanceHealth(nil)
-	if _, ok := instanceUnhealthySince.Load(stillUnhealthy.UID); ok {
+	observeInstanceHealth(set, nil)
+	if _, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, stillUnhealthy)); ok {
 		t.Errorf("UID no longer present in instances slice should be GC'd from the map")
 	}
 }
@@ -1131,17 +1156,93 @@ func TestIsStablyUnhealthyEdgeCases(t *testing.T) {
 	resetInstanceUnhealthySince()
 	defer resetInstanceUnhealthySince()
 
-	if isStablyUnhealthy(nil) {
+	set := buildSet("s", 2, nil, nil)
+	if isStablyUnhealthy(set, nil) {
 		t.Errorf("nil instance must return false")
 	}
 	noUID := buildInst("s", 0, testOldRev, false, false) // created=false → no UID
-	if isStablyUnhealthy(noUID) {
+	if isStablyUnhealthy(set, noUID) {
 		t.Errorf("instance without UID must return false")
 	}
 	notInMap := buildInst("s", 1, testOldRev, false, true)
-	if isStablyUnhealthy(notInMap) {
+	if isStablyUnhealthy(set, notInMap) {
 		t.Errorf("instance not yet in the map must return false")
 	}
+}
+
+func TestInstanceHealthRecreation(t *testing.T) {
+	for _, object := range []string{"set", "instance"} {
+		t.Run(object, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+			t.Cleanup(resetInstanceUnhealthySince)
+			set := buildSet("s", 1, nil, nil)
+			instance := buildInst(set.Name, 0, testOldRev, false, true)
+			oldKey := getInstanceHealthKey(set, instance)
+			instanceUnhealthySince.Store(oldKey, time.Now().Add(-2*stableUnhealthyDuration))
+			if object == "set" {
+				// A replacement set can adopt an orphan with the same instance UID.
+				set.UID = "replacement-set"
+			} else {
+				instance.UID = "replacement-instance"
+			}
+			if isStablyUnhealthy(set, instance) {
+				t.Fatal("replacement inherited the old unhealthy window")
+			}
+
+			observeInstanceHealth(set, []*workloadsv1alpha2.RoleInstance{instance})
+			if _, ok := instanceUnhealthySince.Load(oldKey); ok {
+				t.Fatal("replacement retained the old timer")
+			}
+			if _, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, instance)); !ok || isStablyUnhealthy(set, instance) {
+				t.Fatal("replacement must start a fresh unhealthy window")
+			}
+		})
+	}
+}
+
+func TestPruneInstanceHealth(t *testing.T) {
+	for _, state := range []string{"live", "deleted", "recreated", "lookup error"} {
+		t.Run(state, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+			t.Cleanup(resetInstanceUnhealthySince)
+			set := buildSet("prefill", 1, nil, nil)
+			instance := buildInst(set.Name, 0, testOldRev, false, true)
+			firstObserved := time.Now().Add(-2 * stableUnhealthyDuration)
+			key := getInstanceHealthKey(set, instance)
+			instanceUnhealthySince.Store(key, firstObserved)
+			indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+			if state != "deleted" {
+				cachedSet := set.DeepCopy()
+				if state == "recreated" {
+					cachedSet.UID = "replacement-set"
+				}
+				if err := indexer.Add(cachedSet); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "lookup error" {
+				indexer = healthErrorIndexer{Indexer: indexer, err: errors.New("cache lookup failed")}
+			}
+			controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
+
+			controller.pruneInstanceHealth()
+
+			got, exists := instanceUnhealthySince.Load(key)
+			wantPresent := state == "live" || state == "lookup error"
+			if exists != wantPresent || (exists && got != firstObserved) {
+				t.Fatalf("timer after pruning %s set: exists=%v, got=%v, wantPresent=%v", state, exists, got, wantPresent)
+			}
+		})
+	}
+}
+
+type healthErrorIndexer struct {
+	cache.Indexer
+	err error
+}
+
+func (i healthErrorIndexer) GetByKey(string) (interface{}, bool, error) {
+	return nil, false, i.err
 }
 
 func TestComputeMaxUnavailable_RoundsUpWhenMaxSurgeIsZero(t *testing.T) {
