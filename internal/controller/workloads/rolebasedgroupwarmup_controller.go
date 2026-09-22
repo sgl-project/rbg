@@ -207,9 +207,10 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		return ctrl.Result{}, err
 	}
 
-	// The target RoleBasedGroup exists. If it yielded no nodes because some of its Pods
-	// are not scheduled yet, do not report success: wait until they are scheduled.
-	if warmup.Spec.TargetRoleBasedGroup != nil && len(desiredNodes) == 0 {
+	// The target RoleBasedGroup exists. Check every Pod in the selected roles before
+	// creating any warmup Pods: if even one is unscheduled, starting a partial warmup
+	// could complete before the remaining nodes are discovered.
+	if warmup.Spec.TargetRoleBasedGroup != nil {
 		pending, pendingErr := r.countUnscheduledTargetPods(ctx, *warmup)
 		if pendingErr != nil {
 			logger.Error(pendingErr, "failed to inspect target RoleBasedGroup Pods")
@@ -219,19 +220,17 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 			if r.targetWaitExpired(warmup) {
 				return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
 					"GlobalTimeoutExceeded",
-					fmt.Sprintf("Warmup job timed out waiting for %d target Pod(s) to be scheduled", pending))
+					fmt.Sprintf("Warmup job timed out waiting for %d selected target Pod(s) to be scheduled", pending))
 			}
 			return r.markTargetNotReady(ctx, warmup, "TargetPodsNotScheduled",
-				fmt.Sprintf("%d target RoleBasedGroup Pod(s) are not scheduled yet", pending))
+				fmt.Sprintf("%d selected target RoleBasedGroup Pod(s) are not scheduled yet", pending))
 		}
-	}
 
-	if warmup.Spec.TargetRoleBasedGroup != nil {
 		apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 			Type:               ConditionTargetReady,
 			Status:             metav1.ConditionTrue,
 			Reason:             "RoleBasedGroupReady",
-			Message:            "target RoleBasedGroup is available",
+			Message:            "all selected target RoleBasedGroup Pods are scheduled",
 			ObservedGeneration: warmup.Generation,
 		})
 	}
@@ -548,23 +547,34 @@ func (r *RoleBasedGroupWarmupReconciler) listTargetRBGPods(ctx context.Context,
 	return podList.Items, nil
 }
 
-// countUnscheduledTargetPods counts non-terminating target Pods that have no node
-// assigned yet. Such Pods contribute no warmup target, so a Warmup that only sees
-// unscheduled Pods must not conclude that nothing matched.
+// countUnscheduledTargetPods counts non-terminating Pods in the Warmup's selected
+// roles that have no node assigned yet. Such Pods contribute no warmup target yet,
+// so the Warmup must wait for them rather than starting a partial warmup. Pods in
+// unselected roles are deliberately ignored.
 func (r *RoleBasedGroupWarmupReconciler) countUnscheduledTargetPods(ctx context.Context,
 	warmup workloadsv1alpha2.RoleBasedGroupWarmup) (int, error) {
 	pods, err := r.listTargetRBGPods(ctx, warmup)
 	if err != nil {
 		return 0, err
 	}
+
+	selectedRoles := warmup.Spec.TargetRoleBasedGroup.Roles
 	pending := 0
 	for _, pod := range pods {
 		if pod.DeletionTimestamp != nil {
 			continue
 		}
-		if pod.Spec.NodeName == "" {
-			pending++
+		if pod.Spec.NodeName != "" {
+			continue
 		}
+		roleName, selected := pod.Labels[constants.RoleNameLabelKey]
+		if !selected {
+			continue
+		}
+		if _, roleConfigured := selectedRoles[roleName]; !roleConfigured {
+			continue
+		}
+		pending++
 	}
 	return pending, nil
 }
