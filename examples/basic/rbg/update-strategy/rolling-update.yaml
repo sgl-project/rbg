@@ -2,7 +2,7 @@
 # Demonstrates RollingUpdate with different update types:
 # - RecreatePod: delete old pod and create new one
 # - InPlaceIfPossible: try in-place update first, recreate if not possible (default)
-# - InPlaceOnly: only use in-place update, fail if not possible
+# - InPlaceOnly: deprecated; behaves identically to InPlaceIfPossible, use InPlaceIfPossible instead
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -33,13 +33,13 @@ spec:
                 ports:
                   - containerPort: 80
 
-    # InPlaceOnly: strictly in-place update only
+    # RecreatePod: delete and recreate pods (default Kubernetes behavior)
     - name: decode
       replicas: 4
       rolloutStrategy:
         type: RollingUpdate
         rollingUpdate:
-          type: InPlaceOnly
+          type: RecreatePod
           maxUnavailable: 2
       standalonePattern:
         template:
@@ -52,24 +52,3 @@ spec:
                 image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
                 ports:
                   - containerPort: 8080
-
-    # RecreatePod: delete and recreate pods (default Kubernetes behavior)
-    - name: router
-      replicas: 2
-      rolloutStrategy:
-        type: RollingUpdate
-        rollingUpdate:
-          type: RecreatePod
-          maxUnavailable: 1
-          maxSurge: 1
-      standalonePattern:
-        template:
-          metadata:
-            labels:
-              appVersion: v1
-          spec:
-            containers:
-              - name: nginx
-                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
-                ports:
-                  - containerPort: 9090

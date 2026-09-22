@@ -73,7 +73,7 @@ RBG provides two update strategies, configured via `rollingUpdate.type`:
 | `InPlaceIfPossible` | Prefer in-place update; fall back to Pod recreation if changes exceed image scope | **Recommended**, default choice for most scenarios |
 | `RecreatePod` | Delete the old Pod and create a new one | Scenarios requiring full recreation |
 
-> **Note**: The `InPlaceOnly` strategy is retained in the API but not separately implemented; it behaves identically to `InPlaceIfPossible` (falling back to Pod recreation when in-place update is not feasible). Use `InPlaceIfPossible` instead.
+> **Note**: The `InPlaceOnly` strategy is **deprecated**. It is retained in the API for backwards compatibility but is not separately implemented; it behaves identically to `InPlaceIfPossible` (falling back to Pod recreation when in-place update is not feasible). Use `InPlaceIfPossible` instead.
 
 
 ### Supported Change Scope for In-Place Update
