@@ -270,10 +270,16 @@ type topology struct {
 	// surgeStart equals replicas: surge ords occupy [surgeStart, endOrdinal).
 	surgeStart int
 
-	// inRollout is true when currentRev != updateRev and the rollout is not
-	// paused. Used to gate surge allocation and to decide whether Phase C
-	// runs at all.
+	// inRollout is true when update work remains and the rollout is not paused.
+	// Update work includes a revision mismatch, a stale base instance, or an
+	// in-flight early-rollback replacement. Used to gate surge allocation and to
+	// decide whether Phase C runs at all.
 	inRollout bool
+
+	// earlyRollbackReplacement is true while an A→B→A rollback is waiting for
+	// stale base replacements. It is derived from live instances plus a durable
+	// status condition so a controller restart cannot lose the signal.
+	earlyRollbackReplacement bool
 }
 
 // computeMaxSurge resolves spec.UpdateStrategy.MaxSurge against the desired
@@ -505,7 +511,8 @@ func hasStaleBaseInstance(
 
 // trackEarlyRollbackReplacement maintains the in-memory replacement signal for
 // an early rollback. Once a stale base instance is observed, the signal stays
-// active until all base instances at updateRevision are ready. This bridges the
+// active until all base instances at updateRevision are ready. It is primarily
+// needed when the revision names match again after A -> B -> A. This bridges the
 // gap after the stale instance disappears and before its replacement becomes
 // healthy, allowing existing surge to remain in range. The UID check prevents a
 // same-name replacement set from inheriting the previous set's signal.
@@ -526,7 +533,15 @@ func trackEarlyRollbackReplacement(
 		return true
 	}
 
+	// The status condition is the durable form of the signal. Hydrate the
+	// in-memory cache from it after a restart or leader change, then continue
+	// through the UID-guarded path below.
+	persisted := hasEarlyRollbackReplacementCondition(set)
 	value, ok := earlyRollbackReplacementUIDs.Load(key)
+	if !ok && persisted {
+		earlyRollbackReplacementUIDs.Store(key, uid)
+		value, ok = earlyRollbackReplacementUIDs.Load(key)
+	}
 	if !ok {
 		return false
 	}
@@ -542,17 +557,53 @@ func trackEarlyRollbackReplacement(
 	return true
 }
 
+func hasEarlyRollbackReplacementCondition(set *workloadsv1alpha2.RoleInstanceSet) bool {
+	if set == nil {
+		return false
+	}
+	for _, cond := range set.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceSetConditionEarlyRollbackReplacement &&
+			cond.Status == v1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+func setEarlyRollbackReplacementCondition(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	status *workloadsv1alpha2.RoleInstanceSetStatus,
+) {
+	condition := workloadsv1alpha2.RoleInstanceSetCondition{
+		Type:    workloadsv1alpha2.RoleInstanceSetConditionEarlyRollbackReplacement,
+		Status:  v1.ConditionTrue,
+		Reason:  "ReplacingStaleBase",
+		Message: "Retaining surge until every early-rollback base replacement is ready",
+	}
+	for _, existing := range set.Status.Conditions {
+		if existing.Type == condition.Type && existing.Status == condition.Status {
+			condition.LastTransitionTime = existing.LastTransitionTime
+			break
+		}
+	}
+	if condition.LastTransitionTime.IsZero() {
+		condition.LastTransitionTime = metav1.Now()
+	}
+	status.Conditions = append(status.Conditions, condition)
+}
+
 // computeTopology is the single source of truth for ordinal range sizing
 // during a reconcile. See topology doc for field semantics. Errors only
 // occur on malformed spec (negative percentages etc.).
 //
 // Sizing rules in one place:
 //
-//   - Outside a rollout (currentRev == updateRev): activeSurge = 0,
-//     endOrdinal = replicas. Stale surge (if any from a finished rollout)
-//     falls out of range and gets condemned.
+//   - Outside a rollout (no revision work, stale base, or in-flight early
+//     rollback replacement): activeSurge = 0, endOrdinal = replicas. Stale
+//     surge (if any from a finished rollout) falls out of range and gets
+//     condemned.
 //
-//   - Paused mid-rollout (Paused=true && currentRev != updateRev): freeze the
+//   - Paused mid-rollout (Paused=true && update work remains): freeze the
 //     existing surge in place. activeSurge = existingValidSurge (clamped to
 //     maxSurge). New surge is NOT allocated (no surgeNeeded delta), but
 //     in-flight surge slots stay inside endOrdinal so Phase B does not condemn
@@ -607,6 +658,7 @@ func computeTopology(
 
 	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision)
 	earlyRollbackReplacement := trackEarlyRollbackReplacement(set, instances, t.partition, t.replicas, updateRevision)
+	t.earlyRollbackReplacement = earlyRollbackReplacement
 	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
 	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
 	if maxSurge == 0 {

@@ -146,11 +146,14 @@ func isStablyUnhealthy(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1
 // remainingUnhealthyWindow returns the time left before inst becomes eligible
 // for the stably-unhealthy cleanup path. It returns false once the window has
 // expired so callers do not schedule a hot loop of zero-length retries.
-func remainingUnhealthyWindow(inst *workloadsv1alpha2.RoleInstance) (time.Duration, bool) {
-	if inst == nil || inst.UID == "" {
+func remainingUnhealthyWindow(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	inst *workloadsv1alpha2.RoleInstance,
+) (time.Duration, bool) {
+	if set == nil || inst == nil || inst.UID == "" {
 		return 0, false
 	}
-	v, ok := instanceUnhealthySince.Load(inst.UID)
+	v, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, inst))
 	if !ok {
 		return 0, false
 	}
@@ -169,7 +172,7 @@ func remainingUnhealthyWindow(inst *workloadsv1alpha2.RoleInstance) (time.Durati
 // partition). The retry does not release the budget; it only removes the
 // dependency on an unrelated instance event.
 func pushUnhealthyRetry(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) {
-	if wait, ok := remainingUnhealthyWindow(inst); ok {
+	if wait, ok := remainingUnhealthyWindow(set, inst); ok {
 		durationStore.Push(getInstanceSetKey(set), wait)
 	}
 }
@@ -464,6 +467,9 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	status.CollisionCount = ptr.To[int32](collisionCount)
 	status.LabelSelector = selector.String()
 	status.ExpectedUpdatedReplicas = int32(topo.replicas - topo.partition)
+	if topo.earlyRollbackReplacement {
+		setEarlyRollbackReplacementCondition(set, &status)
+	}
 	updateStatus(&status, minReadySeconds, currentRevision, updateRevision, instances)
 
 	// ===============  Phase B — scale & identity  ==================
@@ -749,7 +755,7 @@ func (ssc *defaultStatefulInstanceSetControl) collectBaseUnavailable(
 	opts := instanceinplace.SetOptionsDefaults(&instanceinplace.UpdateOptions{})
 	minWaitTime := MaxMinReadySeconds * time.Second
 
-	for ord := topo.startOrdinal; ord < topo.replicas; ord++ {
+	for ord := topo.startOrdinal; ord < topo.endOrdinal; ord++ {
 		idx := ord - topo.startOrdinal
 		if idx < 0 || idx >= len(replicas) {
 			continue
@@ -945,8 +951,9 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 }
 
 // progressOrderedReadyUnhealthyTarget updates only the first unhealthy
-// OrderedReady target that has passed the stable-unhealthy window. It returns
-// nil when the normal readiness gate should remain in control.
+// OrderedReady target that has passed the stable-unhealthy window. The target
+// may be a base instance or an in-range stale-revision surge instance. It
+// returns nil when the normal readiness gate should remain in control.
 func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarget(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	status *workloadsv1alpha2.RoleInstanceSetStatus,
@@ -961,7 +968,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarge
 	if !topo.inRollout {
 		return nil
 	}
-	target := orderedReadyCleanupTarget(replicas, topo, updateRevision.Name)
+	target := orderedReadyCleanupTarget(set, replicas, topo, updateRevision.Name)
 	if target == nil {
 		return nil
 	}
@@ -975,17 +982,20 @@ func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarge
 	return err
 }
 
-// orderedReadyCleanupTarget returns the first unhealthy base instance that may
-// be updated despite OrderedReady's readiness gate. The instance must be the
-// first ordinal that blocks the monotonic loop, be an update target, and have
-// been continuously unhealthy for stableUnhealthyDuration. Returning nil keeps
-// the normal OrderedReady behavior.
+// orderedReadyCleanupTarget returns the first unhealthy in-range instance that
+// may be updated despite OrderedReady's readiness gate. The instance must be
+// the first ordinal that blocks the monotonic loop, be an update target, and
+// have been continuously unhealthy for stableUnhealthyDuration. In-range
+// includes stale-revision surge slots, which otherwise cannot be recycled when
+// OrderedReady stops before Phase C. Returning nil keeps the normal OrderedReady
+// behavior.
 func orderedReadyCleanupTarget(
+	set *workloadsv1alpha2.RoleInstanceSet,
 	replicas []*workloadsv1alpha2.RoleInstance,
 	topo topology,
 	updateRev string,
 ) *workloadsv1alpha2.RoleInstance {
-	for ord := topo.startOrdinal; ord < topo.replicas; ord++ {
+	for ord := topo.startOrdinal; ord < topo.endOrdinal; ord++ {
 		idx := ord - topo.startOrdinal
 		if idx < 0 || idx >= len(replicas) || replicas[idx] == nil {
 			return nil
@@ -997,7 +1007,7 @@ func orderedReadyCleanupTarget(
 		if isHealthy(inst) {
 			continue
 		}
-		if ord < topo.partition || getInstanceRevision(inst) == updateRev || !isStablyUnhealthy(inst) {
+		if ord < topo.partition || getInstanceRevision(inst) == updateRev || !isStablyUnhealthy(set, inst) {
 			return nil
 		}
 		return inst
