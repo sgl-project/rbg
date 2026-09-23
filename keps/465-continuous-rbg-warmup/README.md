@@ -82,7 +82,8 @@ job-like immutability for both modes.
   reconciliation for missed events.
 - Distinguish a recreated Node and changes to the effective role actions on a
   node.
-- Expose the current per-node progress and a stable Continuous health state.
+- Expose bounded aggregate status and a stable Continuous health state, while
+  using owned Pods as the detailed per-node execution records.
 - Reject ambiguous create and update requests with a validating webhook.
 - Bound owned Pod history without introducing another public API type.
 
@@ -99,6 +100,8 @@ job-like immutability for both modes.
 - Adding a node agent, runtime sidecar, or inference-engine-specific protocol.
 - Supporting a global lifetime timeout or TTL deletion for a Continuous
   resource in the initial release.
+- Automatically timing out an individual Continuous warmup attempt in the
+  initial release.
 
 ## Proposal
 
@@ -151,27 +154,17 @@ WarmupJobPhaseDegraded WarmupJobPhase = "Degraded"
 `Degraded` are non-terminal Continuous phases. `Running` and `Paused` are
 shared by both modes.
 
-Status also gains the observed generation and current per-node state:
+Status also gains the observed generation:
 
 ```go
-type WarmupNodeStatus struct {
-	NodeName           string          `json:"nodeName"`
-	NodeUID            types.UID       `json:"nodeUID"`
-	Revision           string          `json:"revision"`
-	Phase              WarmupNodePhase `json:"phase"`
-	Attempts           int32           `json:"attempts,omitempty"`
-	LastTransitionTime metav1.Time     `json:"lastTransitionTime"`
-	Message            string          `json:"message,omitempty"`
-}
-
-ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-NodeStatuses       []WarmupNodeStatus `json:"nodeStatuses,omitempty"`
+ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 ```
 
-`WarmupNodePhase` has `Pending`, `Running`, `Succeeded`, and `Failed` values.
-`nodeStatuses` is a map-style list keyed by `nodeName`. It contains only the
-current target set, not historical executions. The existing aggregate fields
-`desired`, `active`, `succeeded`, and `failed` remain available.
+The existing aggregate fields `desired`, `active`, `succeeded`, and `failed`
+remain available. Per-node execution details are exposed by owned Warmup Pods,
+whose labels identify the target Node UID, effective revision, and attempt.
+Keeping per-node records out of the parent status bounds the CR size regardless
+of node-pool cardinality.
 
 Continuous does not set `completionTime`. The transition time of the `Ready`
 condition records when the current target set most recently became ready.
@@ -211,12 +204,6 @@ status:
   active: 0
   succeeded: 2
   failed: 0
-  nodeStatuses:
-  - nodeName: gpu-1
-    nodeUID: 292a8727-54f7-48e6-ae16-8ee267e5461f
-    revision: 7fb2c91a
-    phase: Succeeded
-    attempts: 1
 ```
 
 The digest values above are abbreviated for readability. Production image
@@ -285,8 +272,8 @@ Phase is calculated in this order:
 
 1. `Paused` when `spec.paused` is true.
 2. `Running` when a current target node is pending or active.
-3. In Continuous, `Degraded` when the target is unavailable or permanent
-   failures exceed `maxFailedNodes`.
+3. In Continuous, `Degraded` when the target is invalid or unavailable, or
+   permanent failures exceed `maxFailedNodes`.
 4. In Continuous, `Ready` when the current set has reached terminal outcomes
    within the configured failure tolerance.
 5. In Once, the existing `Completed` and `Failed` rules apply unchanged.
@@ -294,12 +281,21 @@ Phase is calculated in this order:
 A Continuous resource with an available target and no matching nodes is
 `Ready` with a `NoNodesMatched` reason. It remains subscribed to target events.
 
+For `targetRoleBasedGroup`, the controller validates every configured key in
+`targetRoleBasedGroup.roles` against the referenced RBG's declared roles before
+resolving Pods. An unknown role sets `TargetValid=False` with reason
+`RoleNotFound` and places an otherwise idle resource in `Degraded`. Only a
+valid role selection with no currently scheduled matching Pods can produce
+`Ready` with reason `NoNodesMatched`. This validation is performed during
+reconciliation rather than admission because it depends on another resource
+that can change independently.
+
 For a non-paused Continuous resource, phase and conditions follow this table:
 
-| Target available | Pending or active nodes | Permanent failures exceed `maxFailedNodes` | Phase | Conditions |
+| Target valid and available | Pending or active nodes | Permanent failures exceed `maxFailedNodes` | Phase | Conditions |
 |---|---:|---:|---|---|
-| No | Yes | Any | `Running` | `Progressing=True`, `TargetAvailable=False`, `Degraded=True` |
-| No | No | Any | `Degraded` | `Ready=False`, `TargetAvailable=False`, `Degraded=True` |
+| No | Yes | Any | `Running` | `Progressing=True`, `TargetValid=False` and/or `TargetAvailable=False`, `Degraded=True` |
+| No | No | Any | `Degraded` | `Ready=False`, `TargetValid=False` and/or `TargetAvailable=False`, `Degraded=True` |
 | Yes | Yes | No | `Running` | `Progressing=True`, `Ready=False`, `TargetAvailable=True` |
 | Yes | Yes | Yes | `Running` | `Progressing=True`, `Ready=False`, `Degraded=True` |
 | Yes | No | Yes | `Degraded` | `Ready=False`, `Progressing=False`, `Degraded=True` |
@@ -307,10 +303,9 @@ For a non-paused Continuous resource, phase and conditions follow this table:
 
 When `maxFailedNodes` is nil, permanent failures do not exceed a threshold and
 the resource can be `Ready` with a non-zero `status.failed`, matching the
-existing Once tolerance semantics. `status.failed` and per-node status expose
+existing Once tolerance semantics. `status.failed` and the per-node Pods expose
 these tolerated failures. When paused, `Paused` takes phase precedence while
-conditions continue to describe the latest observed target and execution
-state.
+conditions continue to describe the latest observed target and execution state.
 
 ### Revision and Node Identity
 
@@ -340,6 +335,21 @@ The existing warmup name, Warmup UID, and node name labels remain. The Node UID
 label distinguishes a recreated Node from an old Pod that still references the
 same node name.
 
+Continuous Pods use a deterministic name instead of `generateName`. The name
+contains a DNS-safe hash of `(warmupUID, nodeUID, revision)` and the attempt
+number, for example:
+
+```text
+rbgw-<execution-hash>-a<attempt>
+```
+
+The full identity remains in labels; the name is only the API-side idempotency
+key. On `AlreadyExists`, or after an ambiguous Create response, the controller
+gets that exact name through the API reader and verifies its owner reference,
+Warmup UID, Node UID, revision, and attempt. A matching Pod is reused. A name
+collision with a non-matching object produces a warning condition and no second
+Pod is created. Once retains its existing `generateName` behavior.
+
 Because the Warmup spec is immutable, revision usually remains constant for
 `targetNodes`. For `targetRoleBasedGroup`, the RBG Pods placed on a node can
 change the set of roles and therefore the merged effective actions, producing a
@@ -356,17 +366,26 @@ Each Continuous reconciliation performs these steps:
 
 1. List owned warmup Pods and index them by node UID, node name, and revision.
 2. Resolve the current target nodes and their effective actions.
-3. Read each target Node UID and compute its effective revision.
-4. Remove status and Pods for nodes that are no longer targeted.
+3. Read each target Node UID and compute its effective revision. For an explicit
+   `targetNodes.nodeNames` entry, confirm a cache `NotFound` with the API reader.
+   A confirmed missing Node remains an unavailable desired target, cannot reuse
+   evidence from its previous UID, and makes `TargetAvailable=False`.
+4. Remove Pods for nodes that are no longer targeted. For an explicit node name
+   that is still configured but currently missing, delete or ignore every Pod
+   labeled with its previous Node UID. If a Node with that name later appears,
+   only its new UID can satisfy the execution identity.
 5. For each desired execution identity:
    - keep a matching active or successful Pod;
    - advance retry accounting from the highest observed attempt label;
    - delete an obsolete active Pod before starting the new revision; and
-   - create a missing Pod within the global `parallelism` budget.
-6. After persisting an observed failure, retain it until the next attempt exists,
-   then remove the previous failed Pod. After a new revision succeeds, delete
-   obsolete terminal Pods for that node.
-7. Update per-node status, aggregate counters, conditions, and phase.
+   - create a missing Pod by its deterministic name within the global
+     `parallelism` budget. An ambiguous response is reconciled by reading the
+     same name, never by allocating another name.
+6. Retain a failed attempt until the next attempt exists, then remove the
+   previous failed Pod. After a new revision succeeds, delete obsolete terminal
+   Pods for that node.
+7. Recompute aggregate counters, conditions, and phase from the desired set and
+   owned Pods.
 8. Return a jittered safety requeue no later than five minutes in the future.
 
 The controller never treats `Ready` or `Degraded` as a finished resource. Once
@@ -409,11 +428,25 @@ the pool to become workload-eligible only after the Warmup reports `Ready`.
   the resource can return to `Ready`.
 - A missing target RBG sets `TargetAvailable=False` and moves an otherwise idle
   Continuous resource to `Degraded`. Recreation triggers recovery.
+- A missing explicit node name has the same unavailable behavior. Old success
+  or failure evidence is invalidated immediately, and a same-name replacement
+  starts with its new Node UID.
+- A configured RBG role that is not declared by the target sets
+  `TargetValid=False` and moves an otherwise idle resource to `Degraded`.
 - Transient API and cache errors return a reconcile error and use workqueue
   rate-limited retries; they do not become permanent node failures.
 - `globalTimeoutSeconds` is rejected for Continuous. A long-lived resource has
   no single meaningful global deadline. A future KEP may add explicitly
   per-node or per-attempt timeout semantics.
+- In the initial release, a Pending or Running Pod has no automatic deadline.
+  It keeps the resource in `Running`. The operator inspects the retained Pod
+  status and logs, then deletes that Pod to restart the node execution, or
+  pauses/deletes the Warmup to stop retries. Because Pods are the retry
+  checkpoint, deleting the sole current Pod resets that execution's attempt
+  evidence and the controller starts again at attempt 1. Manual deletion does
+  not consume `backoffLimitPerNode`; only a Pod that reaches `Failed` advances
+  the attempt counter. This is an explicit alpha operational limitation, not an
+  implicit timeout.
 
 ### Pod Retention and Garbage Collection
 
@@ -422,8 +455,7 @@ terminal execution evidence per target node:
 
 - the matching successful or permanently failed Pod is retained for status,
   retry recovery, and logs;
-- a retry Pod carries a monotonically increasing attempt label, while
-  `nodeStatuses.attempts` stores the highest persisted attempt;
+- a retry Pod carries a monotonically increasing attempt label;
 - after the next retry Pod exists, the previous failed Pod can be deleted;
 - an obsolete terminal Pod is removed after its replacement succeeds; and
 - all Pods for a node are removed when that node leaves the target set.
@@ -451,12 +483,13 @@ artifacts on the same node is safe and desired.
 | Risk | Mitigation |
 |---|---|
 | Node or Pod event fan-out | Use predicates and target indexes; retain periodic reconciliation only as a safety net. |
-| Status size grows with pool size | Keep one compact entry per current target node and no history. |
+| Per-node execution history grows with pool size | Keep per-node details in bounded owned Pods and keep only aggregate counters and conditions in the parent status. |
 | Mutable external content is not detected | Recommend image digests and versioned model/artifact references. |
 | Multiple Once or Continuous Warmups target the same nodes | Treat them as independent resources; document pause-and-replace workflow and rely on each resource's parallelism. A Warmup is namespaced, but Nodes are cluster-scoped, so resources in different namespaces can select the same Node. |
 | Admission webhook is unavailable | Use `failurePolicy=Fail`; existing reconciliation continues, but create/update requests fail until the webhook recovers. |
 | Stricter updates surprise existing users | Document that execution-content updates were not reliably implemented and provide the create-new-resource migration path. |
 | Periodic reconciliation causes synchronized load | Add jitter and cap the interval; event handlers remain the primary trigger. |
+| A Pending or Running warmup Pod is stuck | Continuous remains `Running`; the operator diagnoses and deletes the Pod to restart the execution with reset attempt evidence. Automated per-attempt timeout is deferred beyond alpha. |
 
 ## Design Details
 
@@ -473,27 +506,27 @@ so the selected volume is deterministic. A volume conflict continues to emit
 the existing warning event and condition.
 
 Revision encoding uses a versioned canonical structure and a stable hash. Hash
-collisions are treated as implementation defects; a sufficiently wide digest
-is stored in status, while a Kubernetes-label-safe representation is used on
-Pods.
+collisions are treated as implementation defects; the full digest is stored in
+a Pod annotation, while a Kubernetes-label-safe representation is used in its
+revision label and deterministic name.
 
 ### Status Reconstruction and Controller Restarts
 
-Pods remain the durable execution evidence for active and terminal work.
-`nodeStatuses` is also the durable retry checkpoint for Continuous mode. The
-controller reconciles the two sources by taking the highest attempt recorded in
-status or on a matching Pod. This makes failure observation idempotent across a
-controller crash between a Pod update, status update, retry creation, and old
-Pod deletion.
+Pods are the durable per-node execution evidence for active and terminal work.
+For a retry, the controller creates deterministic attempt `N+1` before deleting
+failed attempt `N`. A restart therefore recovers the highest attempt from the
+remaining Pod labels without a per-node parent-status checkpoint. An ambiguous
+Create is safe because the same attempt has one deterministic name.
 
-Pod and status matching always includes the owning Warmup UID. Recreating a
-Warmup under the same name cannot adopt Pods from the deleted object.
+Pod matching always includes the owning Warmup UID. Recreating a Warmup under
+the same name cannot adopt Pods from the deleted object.
 
 Once continues to count retained failed Pods as specified by KEP-129.
-Continuous uses the attempt label and `nodeStatuses.attempts`, allowing older
-failed Pods to be removed without resetting an unlimited retry sequence. A
-failed Pod must not be deleted until its attempt has been persisted or a higher
-numbered retry Pod has been created.
+Continuous uses the attempt label, allowing older failed Pods to be removed
+without resetting an unlimited retry sequence. A failed Pod must not be deleted
+until a higher numbered retry Pod exists. Deleting the sole current Pod is an
+explicit operator action that resets retry evidence for that execution identity
+and causes it to be created again.
 
 ### Webhook Integration
 
@@ -524,6 +557,10 @@ RBAC.
 - Node UID mismatch for a recreated node.
 - Pod labels include the expected Node UID and prevent an old same-name Node
   execution from satisfying the new Node.
+- Deterministic Continuous Pod names make repeated and ambiguous Create calls
+  idempotent for one `(warmupUID, nodeUID, revision, attempt)`.
+- Confirmed deletion of an explicit node name invalidates old execution
+  evidence; a same-name Node with a new UID starts a fresh execution.
 - Pending-node collection and global parallelism across revisions.
 - Phase transitions among `Running`, `Paused`, `Ready`, and `Degraded`.
 - Cleanup of departed nodes and obsolete revisions.
@@ -535,9 +572,11 @@ RBAC.
   Warmups.
 - RBG Pod scheduling, deletion, and role changes enqueue the indexed Warmup.
 - Target RBG deletion produces `Degraded`; recreation recovers.
+- An unknown configured RBG role produces `TargetValid=False` and cannot be
+  reported as `Ready/NoNodesMatched`.
 - A successful current revision is not rerun on periodic reconciliation.
-- Controller restart reconciles attempt checkpoints and current state from
-  status and Pods without duplicating an attempt.
+- Controller restart recovers the highest current attempt from deterministic
+  Pod names and labels without duplicating an attempt.
 - Webhook admission rejects immutable-field updates and invalid mode-policy
   combinations with useful field paths.
 
@@ -550,15 +589,17 @@ RBAC.
 - Recreating a Node under the same name executes warmup for the new UID.
 - Scheduling an RBG role onto a new node triggers its effective actions.
 - Pause prevents new Pod creation and resume drains the pending set.
+- Deleting a stuck active Pod resets its attempt evidence and restarts the node
+  execution without consuming the failed-attempt budget.
 - Permanent node failure moves an over-threshold resource to `Degraded` while
   other newly added nodes can still warm.
 
 ### Upgrade and Downgrade Strategy
 
 On upgrade, the CRD defaults an absent `mode` to `Once`; existing objects and
-their controller behavior remain one-shot. New optional status fields do not
-affect old clients. The validating webhook begins enforcing execution-content
-immutability for existing objects on their next spec update.
+their controller behavior remain one-shot. The new optional status field and
+phase values do not affect old clients. The validating webhook begins enforcing
+execution-content immutability for existing objects on their next spec update.
 
 Continuous objects must be paused or deleted before downgrading to a controller
 that does not understand the new phase values and watches. Downgrade automation
@@ -567,10 +608,10 @@ remain compatible.
 
 ### Scalability
 
-The feature adds watches for Nodes and RBG workload Pods and adds one status
-entry per current target node. It does not add a new API type. The controller
-already requires list/watch access to Nodes, Pods, and RBGs; this KEP changes
-which events enqueue Warmup reconciliations.
+The feature adds watches for Nodes and RBG workload Pods. It does not add a new
+API type or per-node entries to the parent status. The controller already
+requires list/watch access to Nodes, Pods, and RBGs; this KEP changes which
+events enqueue Warmup reconciliations.
 
 The main scalability risk is Node label churn combined with arbitrary label
 selectors. Predicates limit events to create, delete, and label changes. The
@@ -598,15 +639,20 @@ Operators can inspect:
 
 - `status.phase` for the high-level state;
 - aggregate desired, active, succeeded, and failed counters;
-- `status.nodeStatuses` for node UID, revision, attempts, and last transition;
-- `Ready`, `Progressing`, `Degraded`, and `TargetAvailable` conditions;
+- `Ready`, `Progressing`, `Degraded`, `TargetValid`, and `TargetAvailable`
+  conditions;
+- owned Warmup Pod labels for node UID, revision, and attempt;
+- Pod phase, conditions, termination state, and logs for per-node progress;
 - warning events for target, Pod creation, and volume-conflict failures; and
 - retained terminal Pod logs for the current node execution.
 
 A Continuous resource stuck in `Running` indicates pending work or an active
-Pod. `Degraded` indicates an unavailable target or failures beyond policy. A
-node with an unchanged mutable external artifact reference is intentionally not
-re-executed; operators should create a new Warmup using immutable references.
+Pod. If the Pod does not make progress, the operator inspects its status and
+logs and deletes it to restart that node's execution with reset attempt
+evidence. `Degraded` indicates an invalid or unavailable target or failures
+beyond policy. A node with an unchanged mutable external artifact reference is
+intentionally not re-executed; operators should create a new Warmup using
+immutable references.
 
 ### Graduation Criteria
 
