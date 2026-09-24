@@ -104,7 +104,13 @@ test-chart: ## Render the Helm chart with helm template and assert the deprecate
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
 test-e2e:  ## Run the e2e tests (default scheduler only; gang specs live in the labelled suites below).
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='!volcano && !scheduler-plugins' -timeout 30m
+	# 45m, not 30m: this is the full default-scheduler suite (v1alpha1 rbg/rbgs/roletemplate
+	# plus v1alpha2 rbg/rbgs-rolling/warmup/webhook). On a single-node kind runner it regularly
+	# brushes 30m and tips over on slow cycles (foreground-delete readiness polling, image pulls,
+	# configmap mount churn). A go test timeout that fires mid-suite reports a panic instead of a
+	# spec failure, so the budget must exceed the suite's real wall-clock. Bumped to 45m headroom;
+	# per-spec Eventually timeouts are unchanged, so a genuinely stuck spec still fails fast on its own.
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='!volcano && !scheduler-plugins' -timeout 45m
 
 # Runs the Volcano-only gang scheduling specs. Requires the controller deployed with
 # --scheduler-name=volcano (helm: controller.features.gangScheduling.schedulerName=volcano)
