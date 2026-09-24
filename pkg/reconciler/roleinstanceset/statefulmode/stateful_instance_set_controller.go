@@ -79,6 +79,17 @@ var (
 	// instance takes one extra stableUnhealthyDuration window before it
 	// becomes eligible for cleanup.
 	instanceUnhealthySince sync.Map // map[instanceHealthKey]time.Time
+
+	// earlyRollbackReplacementUIDs tracks the set UID that owns an in-memory
+	// early-rollback replacement signal. The signal starts when a stale base
+	// instance is seen and remains active until every base replacement is
+	// healthy. It is primarily used after A -> B -> A, when CurrentRevision and
+	// UpdateRevision have the same name. This
+	// lets computeTopology keep existing surge through deletion, creation, and
+	// readiness without broadly retaining surge after ordinary scale-downs.
+	// The map is keyed by namespace/name and stores the set UID to avoid stale
+	// state surviving same-name recreation.
+	earlyRollbackReplacementUIDs sync.Map // map[string]string
 )
 
 // NewReconciler creates a new reconcile.Reconciler for external usage
@@ -176,6 +187,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 	if errors.IsNotFound(err) {
 		klog.InfoS("InstanceSet deleted", "instanceSet", key)
 		updateExpectations.DeleteExpectations(key)
+		earlyRollbackReplacementUIDs.Delete(key)
 		return reconcile.Result{}, nil
 	}
 	if err != nil {

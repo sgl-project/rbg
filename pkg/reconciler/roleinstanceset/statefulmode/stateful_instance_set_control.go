@@ -143,6 +143,40 @@ func isStablyUnhealthy(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1
 	return time.Since(first) >= stableUnhealthyDuration
 }
 
+// remainingUnhealthyWindow returns the time left before inst becomes eligible
+// for the stably-unhealthy cleanup path. It returns false once the window has
+// expired so callers do not schedule a hot loop of zero-length retries.
+func remainingUnhealthyWindow(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	inst *workloadsv1alpha2.RoleInstance,
+) (time.Duration, bool) {
+	if set == nil || inst == nil || inst.UID == "" {
+		return 0, false
+	}
+	v, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, inst))
+	if !ok {
+		return 0, false
+	}
+	first, ok := v.(time.Time)
+	if !ok {
+		return 0, false
+	}
+	wait := time.Until(first.Add(stableUnhealthyDuration))
+	return wait, wait > 0
+}
+
+// pushUnhealthyRetry schedules a reconcile for the end of an instance's
+// unhealthy window. Unlike progressUpdate's target-specific retry, this is also
+// used for unhealthy instances that consume the availability budget but are not
+// update targets (for example, instances already at updateRev or below
+// partition). The retry does not release the budget; it only removes the
+// dependency on an unrelated instance event.
+func pushUnhealthyRetry(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) {
+	if wait, ok := remainingUnhealthyWindow(set, inst); ok {
+		durationStore.Push(getInstanceSetKey(set), wait)
+	}
+}
+
 // StatefulInstanceSetControlInterface implements the control logic for updating InstanceSets managing Instances
 type StatefulInstanceSetControlInterface interface {
 	// UpdateStatefulInstanceSet implements the control logic for Instance creation, update, and deletion
@@ -490,6 +524,18 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		return ssc.processReplica(ctx, set, updateSet, monotonic, replicas, i, &status, scaleMaxUnavailable)
 	}
 	if shouldExit, err := runForAllWithBreak(replicas, processReplicaFn, monotonic); shouldExit || err != nil {
+		// OrderedReady normally stops before Phase C when an instance is not
+		// ready. If that first blocker is itself a stably-unhealthy update
+		// target, run a restricted update for only that ordinal. This keeps
+		// OrderedReady ordering for other replicas while allowing the rollout
+		// to recover after the unhealthy window instead of waiting forever.
+		if err == nil && shouldExit && monotonic {
+			if updateErr := ssc.progressOrderedReadyUnhealthyTarget(set, &status,
+				currentRevision, updateRevision, revisions, instances, replicas,
+				minReadySeconds, topo); updateErr != nil {
+				return &status, updateErr
+			}
+		}
 		updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
 		return &status, err
 	}
@@ -717,6 +763,9 @@ func (ssc *defaultStatefulInstanceSetControl) collectBaseUnavailable(
 		}
 		if !isHealthy(inst) || opts.CheckRoleInstanceUpdateCompleted(inst) != nil {
 			out.Insert(inst.Name)
+			if !isHealthy(inst) {
+				pushUnhealthyRetry(set, inst)
+			}
 			continue
 		}
 		isAvailable, waitTime := isInstanceRunningAndAvailable(inst, minReadySeconds)
@@ -898,6 +947,71 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 	return modified, nil
 }
 
+// progressOrderedReadyUnhealthyTarget updates only the first unhealthy
+// OrderedReady target that has passed the stable-unhealthy window. The target
+// may be a base instance or an in-range stale-revision surge instance. It
+// returns nil when the normal readiness gate should remain in control.
+func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarget(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	status *workloadsv1alpha2.RoleInstanceSetStatus,
+	currentRevision *apps.ControllerRevision,
+	updateRevision *apps.ControllerRevision,
+	revisions []*apps.ControllerRevision,
+	instances []*workloadsv1alpha2.RoleInstance,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	minReadySeconds int32,
+	topo topology,
+) error {
+	if !topo.inRollout {
+		return nil
+	}
+	target := orderedReadyCleanupTarget(set, replicas, topo, updateRevision.Name)
+	if target == nil {
+		return nil
+	}
+
+	cleanupTopo := topo
+	cleanupTopo.partition = getOrdinal(target)
+	cleanupTopo.endOrdinal = cleanupTopo.partition + 1
+	cleanupTopo.activeSurge = 0
+	_, err := ssc.progressUpdate(set, status, currentRevision, updateRevision,
+		revisions, instances, replicas, minReadySeconds, cleanupTopo)
+	return err
+}
+
+// orderedReadyCleanupTarget returns the first unhealthy in-range instance that
+// may be updated despite OrderedReady's readiness gate. The instance must be
+// the first ordinal that blocks the monotonic loop, be an update target, and
+// have been continuously unhealthy for stableUnhealthyDuration. In-range
+// includes stale-revision surge slots, which otherwise cannot be recycled when
+// OrderedReady stops before Phase C. Returning nil keeps the normal OrderedReady
+// behavior.
+func orderedReadyCleanupTarget(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	updateRev string,
+) *workloadsv1alpha2.RoleInstance {
+	for ord := topo.startOrdinal; ord < topo.endOrdinal; ord++ {
+		idx := ord - topo.startOrdinal
+		if idx < 0 || idx >= len(replicas) || replicas[idx] == nil {
+			return nil
+		}
+		inst := replicas[idx]
+		if !isCreated(inst) {
+			return nil
+		}
+		if isHealthy(inst) {
+			continue
+		}
+		if ord < topo.partition || getInstanceRevision(inst) == updateRev || !isStablyUnhealthy(set, inst) {
+			return nil
+		}
+		return inst
+	}
+	return nil
+}
+
 // processReplica processes a single replica instance.
 // When monotonic is true (OrderedReady policy), instances are created one at a time:
 // the loop exits after each creation and waits for the instance to become healthy
@@ -937,6 +1051,9 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 	// mode so that the next replica is not processed until this one is ready.
 	if !isHealthy(replicas[i]) {
 		klog.V(4).InfoS("InstanceSet waiting for unhealthy Instance to become healthy", "instanceSet", klog.KObj(set), "instance", klog.KObj(replicas[i]))
+		if monotonic {
+			pushUnhealthyRetry(set, replicas[i])
+		}
 		return monotonic, false, nil
 	}
 
