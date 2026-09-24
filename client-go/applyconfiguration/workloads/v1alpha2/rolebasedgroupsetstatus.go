@@ -24,10 +24,14 @@ import (
 // RoleBasedGroupSetStatusApplyConfiguration represents a declarative configuration of the RoleBasedGroupSetStatus type for use
 // with apply.
 type RoleBasedGroupSetStatusApplyConfiguration struct {
-	ObservedGeneration *int64                           `json:"observedGeneration,omitempty"`
-	Replicas           *int32                           `json:"replicas,omitempty"`
-	ReadyReplicas      *int32                           `json:"readyReplicas,omitempty"`
-	Conditions         []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	ObservedGeneration      *int64                           `json:"observedGeneration,omitempty"`
+	Replicas                *int32                           `json:"replicas,omitempty"`
+	ReadyReplicas           *int32                           `json:"readyReplicas,omitempty"`
+	CurrentReplicas         *int32                           `json:"currentReplicas,omitempty"`
+	UpdatedReplicas         *int32                           `json:"updatedReplicas,omitempty"`
+	UpdatedReadyReplicas    *int32                           `json:"updatedReadyReplicas,omitempty"`
+	ExpectedUpdatedReplicas *int32                           `json:"expectedUpdatedReplicas,omitempty"`
+	Conditions              []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // RoleBasedGroupSetStatusApplyConfiguration constructs a declarative configuration of the RoleBasedGroupSetStatus type for use with
@@ -57,6 +61,38 @@ func (b *RoleBasedGroupSetStatusApplyConfiguration) WithReplicas(value int32) *R
 // If called multiple times, the ReadyReplicas field is set to the value of the last call.
 func (b *RoleBasedGroupSetStatusApplyConfiguration) WithReadyReplicas(value int32) *RoleBasedGroupSetStatusApplyConfiguration {
 	b.ReadyReplicas = &value
+	return b
+}
+
+// WithCurrentReplicas sets the CurrentReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CurrentReplicas field is set to the value of the last call.
+func (b *RoleBasedGroupSetStatusApplyConfiguration) WithCurrentReplicas(value int32) *RoleBasedGroupSetStatusApplyConfiguration {
+	b.CurrentReplicas = &value
+	return b
+}
+
+// WithUpdatedReplicas sets the UpdatedReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdatedReplicas field is set to the value of the last call.
+func (b *RoleBasedGroupSetStatusApplyConfiguration) WithUpdatedReplicas(value int32) *RoleBasedGroupSetStatusApplyConfiguration {
+	b.UpdatedReplicas = &value
+	return b
+}
+
+// WithUpdatedReadyReplicas sets the UpdatedReadyReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdatedReadyReplicas field is set to the value of the last call.
+func (b *RoleBasedGroupSetStatusApplyConfiguration) WithUpdatedReadyReplicas(value int32) *RoleBasedGroupSetStatusApplyConfiguration {
+	b.UpdatedReadyReplicas = &value
+	return b
+}
+
+// WithExpectedUpdatedReplicas sets the ExpectedUpdatedReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ExpectedUpdatedReplicas field is set to the value of the last call.
+func (b *RoleBasedGroupSetStatusApplyConfiguration) WithExpectedUpdatedReplicas(value int32) *RoleBasedGroupSetStatusApplyConfiguration {
+	b.ExpectedUpdatedReplicas = &value
 	return b
 }
 

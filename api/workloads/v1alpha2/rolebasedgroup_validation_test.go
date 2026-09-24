@@ -325,6 +325,42 @@ func TestRoleBasedGroupSetValidator_ValidateUpdateRoleDependencies(t *testing.T)
 	assert.Contains(t, err.Error(), "spec.groupTemplate.spec.roles: dependency cycle detected: head -> worker -> head")
 }
 
+// TestRoleBasedGroupSetValidator_ScalingAdapterCreateOnly pins the admission boundary of the
+// scalingAdapter rule: it is enforced on create, where the controller conflict it guards
+// against is introduced, but not on update, because with failurePolicy=fail an update-time
+// check would lock every set created before the rule existed out of even unrelated updates.
+func TestRoleBasedGroupSetValidator_ScalingAdapterCreateOnly(t *testing.T) {
+	withAdapter := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{
+						{
+							Name:           "worker",
+							Replicas:       ptr.To(int32(1)),
+							ScalingAdapter: &ScalingAdapter{Enable: true},
+						},
+					},
+				},
+			},
+		},
+	}
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	_, err := v.ValidateCreate(context.Background(), withAdapter)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scalingAdapter.enable is not supported")
+
+	// A set that already carries the adapter — the pre-existing object from the upgrade
+	// scenario — must stay updatable, including the update that introduced the adapter.
+	withoutAdapter := withAdapter.DeepCopy()
+	withoutAdapter.Spec.GroupTemplate.Spec.Roles[0].ScalingAdapter = nil
+	_, err = v.ValidateUpdate(context.Background(), withoutAdapter, withAdapter)
+	require.NoError(t, err)
+}
+
 func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(t *testing.T) {
 	tests := []struct {
 		name                          string

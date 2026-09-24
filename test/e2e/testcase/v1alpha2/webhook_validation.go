@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
+	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -113,6 +114,74 @@ func RunWebhookValidationTestCases(f *framework.Framework) {
 					for _, role := range rbg.Spec.Roles {
 						f.ExpectScalingAdapterV2NotExist(rbg, role)
 					}
+				},
+			)
+		},
+	)
+
+	ginkgo.Describe(
+		"rbgset validating webhook", func() {
+
+			// The test case checks whether ValidateCreate() rejects a ScalingAdapter that is
+			// enabled from a group template.
+			ginkgo.It(
+				"should reject RoleBasedGroupSet creation when a group template role enables scalingAdapter",
+				func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("e2e-test", f.Namespace).
+						WithReplicas(1).Obj()
+					rbgset.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{
+						wrappersv2.BuildStandaloneRole("role-1").WithScalingAdapter(true).Obj(),
+					}
+
+					err := f.Client.Create(f.Ctx, rbgset)
+					gomega.Expect(err).Should(gomega.HaveOccurred())
+					gomega.Expect(strings.ToLower(err.Error())).Should(gomega.ContainSubstring("scalingadapter"))
+				},
+			)
+
+			// The scalingAdapter rule is create-only: a set created before the rule existed
+			// (or one that picked up an adapter later) must stay updatable, because the
+			// webhook's failurePolicy=fail would otherwise lock it out of every update.
+			ginkgo.It(
+				"should allow updates on a RoleBasedGroupSet carrying scalingAdapter", func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("e2e-test", f.Namespace).
+						WithReplicas(1).Obj()
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+					f.ExpectRbgSetV2Equal(rbgset)
+
+					// Enabling the adapter on update succeeds: the rule rejects only creation.
+					// The controller writes status concurrently, so retry past resourceVersion
+					// conflicts.
+					gomega.Eventually(
+						func() error {
+							updated := &workloadsv1alpha2.RoleBasedGroupSet{}
+							if err := f.Client.Get(
+								f.Ctx, client.ObjectKeyFromObject(rbgset), updated,
+							); err != nil {
+								return err
+							}
+							updated.Spec.GroupTemplate.Spec.Roles[0].ScalingAdapter = &workloadsv1alpha2.ScalingAdapter{
+								Enable: true,
+							}
+							return f.Client.Update(f.Ctx, updated)
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.Succeed())
+
+					// And the set carrying the adapter stays updatable for unrelated changes,
+					// which is the upgrade-compatibility scenario the create-only boundary exists for.
+					gomega.Eventually(
+						func() error {
+							allowed := &workloadsv1alpha2.RoleBasedGroupSet{}
+							if err := f.Client.Get(
+								f.Ctx, client.ObjectKeyFromObject(rbgset), allowed,
+							); err != nil {
+								return err
+							}
+							allowed.Spec.Replicas = ptr.To(int32(2))
+							return f.Client.Update(f.Ctx, allowed)
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.Succeed())
 				},
 			)
 		},
