@@ -107,8 +107,9 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg-test-role",
-						Namespace: "default",
+						Name:            "test-rbg-test-role",
+						Namespace:       "default",
+						OwnerReferences: claimTestOwnedBy(rbg),
 					},
 					Spec: appsv1.DeploymentSpec{
 						Replicas: ptr.To[int32](1),
@@ -236,8 +237,9 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg-test-role",
-						Namespace: "default",
+						Name:            "test-rbg-test-role",
+						Namespace:       "default",
+						OwnerReferences: claimTestOwnedBy(rbg),
 					},
 					Spec: appsv1.DeploymentSpec{
 						Replicas: &replicas,
@@ -257,8 +259,9 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 			client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-rbg-test-role",
-						Namespace: "default",
+						Name:            "test-rbg-test-role",
+						Namespace:       "default",
+						OwnerReferences: claimTestOwnedBy(rbg),
 					},
 					Spec: appsv1.DeploymentSpec{
 						Replicas: &replicas,

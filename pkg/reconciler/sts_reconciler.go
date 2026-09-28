@@ -103,6 +103,11 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	if err == nil {
+		if err := checkWorkloadClaimable(oldSts, rbg); err != nil {
+			return err
+		}
+	}
 
 	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts, revisionKey)
 	if err != nil {
@@ -516,6 +521,9 @@ func (r *StatefulSetReconciler) ConstructRoleStatus(
 	); err != nil {
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
+	if checkWorkloadClaimable(sts, rbg) != nil {
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, nil
+	}
 	return ConstructWorkloadRoleStatus(ctx, rbg, role,
 		sts.Status.Replicas, sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas,
 		sts.Generation, sts.Status.ObservedGeneration), nil
@@ -529,6 +537,9 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, sts,
 	); err != nil {
 		return false, err
+	}
+	if checkWorkloadClaimable(sts, rbg) != nil {
+		return false, nil
 	}
 
 	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&

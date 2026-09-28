@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -120,6 +121,26 @@ func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1a
 		}
 	}
 
+	return nil
+}
+
+// ErrWorkloadNotClaimable reports that a role's workload exists under its name but the
+// RoleBasedGroup may not manage it.
+var ErrWorkloadNotClaimable = errors.New("workload is not claimable by this RoleBasedGroup")
+
+// checkWorkloadClaimable rejects a workload that the current rbg does not control, such as one RIS
+// left by a same-named RBG deleted in the background, or one that is terminating.
+func checkWorkloadClaimable(obj v1.Object, rbg *workloadsv1alpha2.RoleBasedGroup) error {
+	if obj.GetDeletionTimestamp() != nil {
+		return fmt.Errorf("%w: %s is terminating", ErrWorkloadNotClaimable, obj.GetName())
+	}
+	ref := v1.GetControllerOfNoCopy(obj)
+	switch {
+	case ref == nil:
+		return fmt.Errorf("%w: %s has no controlling RoleBasedGroup", ErrWorkloadNotClaimable, obj.GetName())
+	case ref.UID != rbg.UID:
+		return fmt.Errorf("%w: %s is controlled by uid %s", ErrWorkloadNotClaimable, obj.GetName(), ref.UID)
+	}
 	return nil
 }
 

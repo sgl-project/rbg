@@ -76,6 +76,11 @@ func (r *DeploymentReconciler) Reconciler(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	if err == nil {
+		if err := checkWorkloadClaimable(oldDeploy, rbg); err != nil {
+			return err
+		}
+	}
 
 	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, rollingUpdateStrategy, revisionKey)
 	if err != nil {
@@ -226,6 +231,9 @@ func (r *DeploymentReconciler) ConstructRoleStatus(
 	); err != nil {
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
+	if checkWorkloadClaimable(deploy, rbg) != nil {
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, nil
+	}
 
 	return ConstructWorkloadRoleStatus(ctx, rbg, role,
 		deploy.Status.Replicas, deploy.Status.ReadyReplicas, deploy.Status.UpdatedReplicas,
@@ -240,6 +248,9 @@ func (r *DeploymentReconciler) CheckWorkloadReady(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
 	); err != nil {
 		return false, err
+	}
+	if checkWorkloadClaimable(deploy, rbg) != nil {
+		return false, nil
 	}
 
 	// We don't check ready if workload is rolling update if maxSkew is set.
