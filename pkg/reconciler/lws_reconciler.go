@@ -95,6 +95,11 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 		logger.Error(err, "get lws failed")
 		return err
 	}
+	if err == nil {
+		if err := checkWorkloadClaimable(oldLWS, rbg); err != nil {
+			return err
+		}
+	}
 
 	// the err value was used to pass the differences between the old and new objects,
 	// not to indicate an actual processing error.
@@ -129,6 +134,9 @@ func (r *LeaderWorkerSetReconciler) ConstructRoleStatus(
 	); err != nil {
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
+	if checkWorkloadClaimable(lws, rbg) != nil {
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, nil
+	}
 
 	currentReplicas := lws.Status.Replicas
 	currentReady := lws.Status.ReadyReplicas
@@ -156,6 +164,9 @@ func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, lws,
 	); err != nil {
 		return false, err
+	}
+	if checkWorkloadClaimable(lws, rbg) != nil {
+		return false, nil
 	}
 	return lws.Status.ReadyReplicas == lws.Status.Replicas, nil
 }
