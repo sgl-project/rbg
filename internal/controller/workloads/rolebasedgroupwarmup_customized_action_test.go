@@ -17,7 +17,10 @@ limitations under the License.
 package workloads
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -26,6 +29,54 @@ import (
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+func mappedWarmupPod(nodeName, podName string, phase corev1.PodPhase, statuses ...corev1.ContainerStatus) *corev1.Pod {
+	mappings := make([]customizedActionContainerMapping, 0, len(statuses))
+	containers := make([]corev1.Container, 0, len(statuses))
+	for _, status := range statuses {
+		mappings = append(mappings, customizedActionContainerMapping{
+			PodContainerName: status.Name,
+			ContainerNames:   []string{"node-check"},
+		})
+		containers = append(containers, corev1.Container{Name: status.Name, Image: "busybox"})
+	}
+	raw, err := json.Marshal(mappings)
+	if err != nil {
+		panic(err)
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: podName,
+			Labels: map[string]string{
+				LabelNodeName: nodeName,
+			},
+			Annotations: map[string]string{AnnotationCustomizedActionContainers: string(raw)},
+		},
+		Spec: corev1.PodSpec{Containers: containers},
+		Status: corev1.PodStatus{
+			Phase:             phase,
+			ContainerStatuses: statuses,
+		},
+	}
+}
+
+func terminatedStatus(name string, exitCode int32, reason, message string) corev1.ContainerStatus {
+	return corev1.ContainerStatus{
+		Name: name,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+			ExitCode: exitCode,
+			Reason:   reason,
+			Message:  message,
+		}},
+	}
+}
+
+func waitingStatus(name, reason, message string) corev1.ContainerStatus {
+	return corev1.ContainerStatus{
+		Name:  name,
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason, Message: message}},
+	}
+}
 
 func TestBuildWarmupPodCustomizedActionMetadata(t *testing.T) {
 	r := newWarmupReconciler()
@@ -105,5 +156,188 @@ func TestCustomizedActionMappingsFromPodRejectsMalformedJSON(t *testing.T) {
 	}}}
 	if _, err := customizedActionMappingsFromPod(pod); err == nil {
 		t.Fatal("expected malformed mapping annotation to fail")
+	}
+}
+
+func TestEvaluateCustomizedActionPod(t *testing.T) {
+	longMessage := strings.Repeat("界", customizedActionTerminationMessageLimit)
+	tests := []struct {
+		name       string
+		pod        *corev1.Pod
+		wantState  workloadsv1alpha2.CustomizedActionState
+		wantReason string
+		wantExit   *int32
+		wantDetail string
+	}{
+		{
+			name:       "succeeded",
+			pod:        mappedWarmupPod("node-1", "success", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", "")),
+			wantState:  workloadsv1alpha2.CustomizedActionStateSucceeded,
+			wantReason: CustomizedActionReasonCompleted,
+			wantExit:   ptr.To(int32(0)),
+		},
+		{
+			name:       "non-zero exit",
+			pod:        mappedWarmupPod("node-1", "failed", corev1.PodFailed, terminatedStatus("custom-0", 17, "Error", "GPU check failed")),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
+			wantReason: CustomizedActionReasonContainerExitCode,
+			wantExit:   ptr.To(int32(17)),
+			wantDetail: "GPU check failed",
+		},
+		{
+			name: "deadline exceeded",
+			pod: func() *corev1.Pod {
+				pod := mappedWarmupPod("node-1", "timeout", corev1.PodFailed, terminatedStatus("custom-0", 137, "Error", "terminated"))
+				pod.Status.Reason = "DeadlineExceeded"
+				pod.Spec.ActiveDeadlineSeconds = ptr.To(int64(30))
+				return pod
+			}(),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
+			wantReason: CustomizedActionReasonTimeout,
+			wantExit:   ptr.To(int32(137)),
+		},
+		{
+			name:       "image pull backoff",
+			pod:        mappedWarmupPod("node-1", "pull", corev1.PodPending, waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image")),
+			wantState:  workloadsv1alpha2.CustomizedActionStatePending,
+			wantReason: CustomizedActionReasonImagePullFailed,
+			wantDetail: "back-off pulling image",
+		},
+		{
+			name:       "container start waiting failure",
+			pod:        mappedWarmupPod("node-1", "start", corev1.PodPending, waitingStatus("custom-0", "CreateContainerConfigError", "secret missing")),
+			wantState:  workloadsv1alpha2.CustomizedActionStatePending,
+			wantReason: CustomizedActionReasonContainerStartFailed,
+			wantDetail: "secret missing",
+		},
+		{
+			name:       "container cannot run",
+			pod:        mappedWarmupPod("node-1", "start-terminal", corev1.PodFailed, terminatedStatus("custom-0", 127, "ContainerCannotRun", "executable file not found")),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
+			wantReason: CustomizedActionReasonContainerStartFailed,
+			wantExit:   ptr.To(int32(127)),
+			wantDetail: "executable file not found",
+		},
+		{
+			name: "unschedulable",
+			pod: func() *corev1.Pod {
+				pod := mappedWarmupPod("node-1", "pending", corev1.PodPending, waitingStatus("custom-0", "ContainerCreating", ""))
+				pod.Status.Conditions = []corev1.PodCondition{{
+					Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+					Reason: corev1.PodReasonUnschedulable, Message: "node did not match",
+				}}
+				return pod
+			}(),
+			wantState:  workloadsv1alpha2.CustomizedActionStatePending,
+			wantReason: CustomizedActionReasonNodeNotSchedulable,
+			wantDetail: "node did not match",
+		},
+		{
+			name:       "running",
+			pod:        mappedWarmupPod("node-1", "running", corev1.PodRunning, corev1.ContainerStatus{Name: "custom-0", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}),
+			wantState:  workloadsv1alpha2.CustomizedActionStateRunning,
+			wantReason: "",
+		},
+		{
+			name: "missing status",
+			pod: func() *corev1.Pod {
+				pod := mappedWarmupPod("node-1", "waiting", corev1.PodPending, waitingStatus("custom-0", "ContainerCreating", ""))
+				pod.Status.ContainerStatuses = nil
+				return pod
+			}(),
+			wantState:  workloadsv1alpha2.CustomizedActionStatePending,
+			wantReason: "",
+		},
+		{
+			name:       "termination message is truncated",
+			pod:        mappedWarmupPod("node-1", "long", corev1.PodFailed, terminatedStatus("custom-0", 1, "Error", longMessage)),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
+			wantReason: CustomizedActionReasonContainerExitCode,
+			wantExit:   ptr.To(int32(1)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluateCustomizedActionPod(tt.pod)
+			if got.NodeName != "node-1" || got.PodName != tt.pod.Name {
+				t.Fatalf("unexpected identity: %#v", got)
+			}
+			if got.State != tt.wantState || got.Reason != tt.wantReason {
+				t.Fatalf("expected state/reason %s/%s, got %s/%s", tt.wantState, tt.wantReason, got.State, got.Reason)
+			}
+			if len(got.Containers) != 1 {
+				t.Fatalf("expected one logical container result, got %#v", got.Containers)
+			}
+			container := got.Containers[0]
+			if container.ContainerName != "node-check" || container.PodContainerName != "custom-0" {
+				t.Fatalf("unexpected container identity: %#v", container)
+			}
+			if !apiequality.Semantic.DeepEqual(container.ExitCode, tt.wantExit) {
+				t.Fatalf("expected exit code %v, got %v", tt.wantExit, container.ExitCode)
+			}
+			if tt.wantDetail != "" && !strings.Contains(got.Message+container.TerminationMessage, tt.wantDetail) {
+				t.Fatalf("expected detail %q in result %#v", tt.wantDetail, got)
+			}
+			if len(container.TerminationMessage) > customizedActionTerminationMessageLimit {
+				t.Fatalf("termination message exceeded limit: %d", len(container.TerminationMessage))
+			}
+		})
+	}
+}
+
+func TestEvaluateCustomizedActionPodUsesOnlyMappedContainers(t *testing.T) {
+	pod := mappedWarmupPod("node-1", "mixed", corev1.PodFailed, terminatedStatus("custom-0", 0, "Completed", ""))
+	pod.Spec.Containers = append([]corev1.Container{{Name: "image-preload-0", Image: "missing"}}, pod.Spec.Containers...)
+	pod.Status.ContainerStatuses = append([]corev1.ContainerStatus{terminatedStatus("image-preload-0", 1, "Error", "pull failed")}, pod.Status.ContainerStatuses...)
+
+	got := evaluateCustomizedActionPod(pod)
+	if got.State != workloadsv1alpha2.CustomizedActionStateSucceeded || got.Reason != CustomizedActionReasonCompleted {
+		t.Fatalf("preload failure must not contaminate customized action result: %#v", got)
+	}
+}
+
+func TestEvaluateCustomizedActionPodFallsBackToGeneratedNames(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "legacy", Labels: map[string]string{LabelNodeName: "node-1"},
+			Annotations: map[string]string{AnnotationCustomizedActionContainers: "not-json"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "custom-0", Image: "busybox"}}},
+		Status: corev1.PodStatus{
+			Phase:             corev1.PodSucceeded,
+			ContainerStatuses: []corev1.ContainerStatus{terminatedStatus("custom-0", 0, "Completed", "")},
+		},
+	}
+
+	got := evaluateCustomizedActionPod(pod)
+	if len(got.Containers) != 1 || got.Containers[0].ContainerName != "custom-0" || got.Containers[0].PodContainerName != "custom-0" {
+		t.Fatalf("expected generated-name fallback, got %#v", got)
+	}
+}
+
+func TestEvaluateCustomizedActionResultsSelectsLatestAttemptDeterministically(t *testing.T) {
+	base := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	old := mappedWarmupPod("node-b", "attempt-old", corev1.PodFailed, terminatedStatus("custom-0", 1, "Error", "old"))
+	old.CreationTimestamp = metav1.NewTime(base)
+	latestByName := mappedWarmupPod("node-b", "attempt-z", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", ""))
+	latestByName.CreationTimestamp = metav1.NewTime(base.Add(time.Minute))
+	tiedButEarlierName := mappedWarmupPod("node-b", "attempt-a", corev1.PodFailed, terminatedStatus("custom-0", 2, "Error", "tied"))
+	tiedButEarlierName.CreationTimestamp = latestByName.CreationTimestamp
+	nodeA := mappedWarmupPod("node-a", "attempt-a", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", ""))
+	nodeA.CreationTimestamp = metav1.NewTime(base)
+	preloadOnly := mappedWarmupPod("node-c", "preload", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", ""))
+
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-c": {{ImagePreload: &workloadsv1alpha2.ImagePreloadAction{Images: []string{"busybox"}}}},
+		"node-b": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{Containers: []corev1.Container{{Name: "check", Image: "busybox"}}}}},
+		"node-a": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{Containers: []corev1.Container{{Name: "check", Image: "busybox"}}}}},
+	}
+	got := evaluateCustomizedActionResults(desired, []*corev1.Pod{latestByName, nodeA, old, preloadOnly, tiedButEarlierName})
+	if len(got) != 2 {
+		t.Fatalf("expected two customized action results, got %#v", got)
+	}
+	if got[0].NodeName != "node-a" || got[1].NodeName != "node-b" || got[1].PodName != "attempt-z" {
+		t.Fatalf("unexpected ordering/latest selection: %#v", got)
 	}
 }
