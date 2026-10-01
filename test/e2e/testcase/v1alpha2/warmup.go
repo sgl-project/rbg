@@ -23,6 +23,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1helper "k8s.io/component-helpers/scheduling/corev1"
 	"k8s.io/utils/ptr"
@@ -101,7 +102,7 @@ func RunWarmupTestCases(f *framework.Framework) {
 			gomega.Expect(podList.Items[0].Status.Phase).To(gomega.Equal(corev1.PodSucceeded))
 		})
 
-		ginkgo.It("should complete warmup job with targetRoleBasedGroup mode and merge multi-role actions", func() {
+		ginkgo.It("should complete customized action with targetRoleBasedGroup mode and merge multi-role actions", ginkgo.Label("customized-action"), func() {
 			ginkgo.By("Creating RBG with 2 roles pinned to the same node")
 			// This case verifies action merging: when several roles of the RBG sit on one node, the
 			// controller must create a single warmup Pod there holding every role's action. Both
@@ -236,6 +237,19 @@ func RunWarmupTestCases(f *framework.Framework) {
 			gomega.Expect(warmup.Status.Desired).To(gomega.Equal(int32(1)))
 			gomega.Expect(warmup.Status.Succeeded).To(gomega.Equal(int32(1)))
 			gomega.Expect(warmup.Status.CompletionTime).ToNot(gomega.BeNil())
+			gomega.Expect(warmup.Status.CustomizedActionResults).To(gomega.HaveLen(1))
+			result := warmup.Status.CustomizedActionResults[0]
+			gomega.Expect(result.NodeName).To(gomega.Equal(nodeName))
+			gomega.Expect(result.State).To(gomega.Equal(workloadsv1alpha2.CustomizedActionStateSucceeded))
+			gomega.Expect(result.Reason).To(gomega.Equal("Completed"))
+			gomega.Expect(result.Containers).To(gomega.HaveLen(1))
+			gomega.Expect(result.Containers[0].ContainerName).To(gomega.Equal("decode-task"))
+			gomega.Expect(result.Containers[0].PodContainerName).ToNot(gomega.BeEmpty())
+			gomega.Expect(result.Containers[0].ExitCode).ToNot(gomega.BeNil())
+			gomega.Expect(*result.Containers[0].ExitCode).To(gomega.Equal(int32(0)))
+			condition := apimeta.FindStatusCondition(warmup.Status.Conditions, "CustomizedActionComplete")
+			gomega.Expect(condition).ToNot(gomega.BeNil())
+			gomega.Expect(condition.Status).To(gomega.Equal(metav1.ConditionTrue))
 		})
 
 		ginkgo.It("auto-delete warmup CR after TTL expires", func() {
@@ -351,7 +365,7 @@ func RunWarmupTestCases(f *framework.Framework) {
 			gomega.Expect(foundCondition).To(gomega.BeTrue(), "should have Failed condition with GlobalTimeoutExceeded reason")
 		})
 
-		ginkgo.It("fail warmup job when retry limit is reached", func() {
+		ginkgo.It("fail customized action when retry limit is reached", ginkgo.Label("customized-action"), func() {
 			ginkgo.By("Getting a node name")
 			nodeName := getFirstAvailableNodeName(f)
 
@@ -412,6 +426,127 @@ func RunWarmupTestCases(f *framework.Framework) {
 				}
 			}
 			gomega.Expect(foundCondition).To(gomega.BeTrue(), "should have Failed condition with MaxFailedNodesExceeded reason")
+			gomega.Expect(warmup.Status.CustomizedActionResults).To(gomega.HaveLen(1))
+			result := warmup.Status.CustomizedActionResults[0]
+			gomega.Expect(result.State).To(gomega.Equal(workloadsv1alpha2.CustomizedActionStateFailed))
+			gomega.Expect(result.Reason).To(gomega.Equal("ContainerExitCode"))
+			gomega.Expect(result.Containers).To(gomega.HaveLen(1))
+			gomega.Expect(result.Containers[0].ExitCode).ToNot(gomega.BeNil())
+			gomega.Expect(*result.Containers[0].ExitCode).To(gomega.Equal(int32(1)))
+			customFailed := apimeta.FindStatusCondition(warmup.Status.Conditions, "CustomizedActionFailed")
+			gomega.Expect(customFailed).ToNot(gomega.BeNil())
+			gomega.Expect(customFailed.Status).To(gomega.Equal(metav1.ConditionTrue))
+		})
+
+		ginkgo.It("times out a customized action", ginkgo.Label("customized-action"), func() {
+			nodeName := getFirstAvailableNodeName(f)
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "warmup-action-timeout", Namespace: f.Namespace},
+				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+					Policies: &workloadsv1alpha2.WarmupPolicies{
+						BackoffLimitPerNode: ptr.To(int32(0)),
+						MaxFailedNodes:      ptr.To(int32(0)),
+					},
+					TargetNodes: &workloadsv1alpha2.TargetNodes{
+						NodeNames: []string{nodeName},
+						WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+							TimeoutSeconds:   ptr.To(int64(3)),
+							CompletionPolicy: workloadsv1alpha2.CustomizedActionCompletionPolicyAllSucceeded,
+							Containers: []corev1.Container{{
+								Name: "timeout-check", Image: utils.DefaultImage,
+								Command: []string{"sh", "-c", "sleep 300"},
+							}},
+						}},
+					},
+				},
+			}
+			f.RegisterDebugFn(func() { dumpWarmupDebugInfo(f, warmup) })
+			gomega.Expect(f.Client.Create(f.Ctx, warmup)).To(gomega.Succeed())
+
+			gomega.Eventually(func() workloadsv1alpha2.WarmupJobPhase {
+				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(warmup), warmup); err != nil {
+					return workloadsv1alpha2.WarmupJobPhaseNone
+				}
+				return warmup.Status.Phase
+			}, 60*time.Second, utils.Interval).Should(gomega.Equal(workloadsv1alpha2.WarmupJobPhaseFailed))
+			gomega.Expect(warmup.Status.CustomizedActionResults).To(gomega.HaveLen(1))
+			gomega.Expect(warmup.Status.CustomizedActionResults[0].Reason).To(gomega.Equal("Timeout"))
+			condition := apimeta.FindStatusCondition(warmup.Status.Conditions, "CustomizedActionFailed")
+			gomega.Expect(condition).ToNot(gomega.BeNil())
+
+			pods := &corev1.PodList{}
+			gomega.Expect(f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace), client.MatchingLabels{LabelWarmupName: warmup.Name})).To(gomega.Succeed())
+			gomega.Expect(pods.Items).To(gomega.HaveLen(1))
+			gomega.Expect(pods.Items[0].Spec.ActiveDeadlineSeconds).ToNot(gomega.BeNil())
+			gomega.Expect(*pods.Items[0].Spec.ActiveDeadlineSeconds).To(gomega.Equal(int64(3)))
+		})
+
+		ginkgo.It("reports a customized action container start failure", ginkgo.Label("customized-action"), func() {
+			nodeName := getFirstAvailableNodeName(f)
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "warmup-action-start-failure", Namespace: f.Namespace},
+				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+					Policies: &workloadsv1alpha2.WarmupPolicies{
+						BackoffLimitPerNode: ptr.To(int32(0)), MaxFailedNodes: ptr.To(int32(0)),
+					},
+					TargetNodes: &workloadsv1alpha2.TargetNodes{
+						NodeNames: []string{nodeName},
+						WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+							Containers: []corev1.Container{{
+								Name: "start-check", Image: utils.DefaultImage, Command: []string{"/does-not-exist"},
+							}},
+						}},
+					},
+				},
+			}
+			f.RegisterDebugFn(func() { dumpWarmupDebugInfo(f, warmup) })
+			gomega.Expect(f.Client.Create(f.Ctx, warmup)).To(gomega.Succeed())
+
+			gomega.Eventually(func() string {
+				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(warmup), warmup); err != nil || len(warmup.Status.CustomizedActionResults) == 0 {
+					return ""
+				}
+				return warmup.Status.CustomizedActionResults[0].Reason
+			}, 60*time.Second, utils.Interval).Should(gomega.Equal("ContainerStartFailed"))
+			result := warmup.Status.CustomizedActionResults[0]
+			gomega.Expect(result.Containers).To(gomega.HaveLen(1))
+			gomega.Expect(result.Containers[0].TerminationReason).To(gomega.Or(gomega.Equal("ContainerCannotRun"), gomega.Equal("StartError")))
+		})
+
+		ginkgo.It("reports image pull failure before customized action timeout", ginkgo.Label("customized-action"), func() {
+			nodeName := getFirstAvailableNodeName(f)
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "warmup-action-image-pull", Namespace: f.Namespace},
+				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+					Policies: &workloadsv1alpha2.WarmupPolicies{
+						BackoffLimitPerNode: ptr.To(int32(0)), MaxFailedNodes: ptr.To(int32(0)),
+					},
+					TargetNodes: &workloadsv1alpha2.TargetNodes{
+						NodeNames: []string{nodeName},
+						WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+							TimeoutSeconds: ptr.To(int64(20)),
+							Containers: []corev1.Container{{
+								Name: "pull-check", Image: "registry.invalid/rbg/missing:issue-486",
+							}},
+						}},
+					},
+				},
+			}
+			f.RegisterDebugFn(func() { dumpWarmupDebugInfo(f, warmup) })
+			gomega.Expect(f.Client.Create(f.Ctx, warmup)).To(gomega.Succeed())
+
+			gomega.Eventually(func() string {
+				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(warmup), warmup); err != nil || len(warmup.Status.CustomizedActionResults) == 0 {
+					return ""
+				}
+				return warmup.Status.CustomizedActionResults[0].Reason
+			}, 15*time.Second, utils.Interval).Should(gomega.Equal("ImagePullFailed"))
+			gomega.Eventually(func() string {
+				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(warmup), warmup); err != nil || len(warmup.Status.CustomizedActionResults) == 0 {
+					return ""
+				}
+				return warmup.Status.CustomizedActionResults[0].Reason
+			}, 45*time.Second, utils.Interval).Should(gomega.Equal("Timeout"))
 		})
 
 		ginkgo.It("should complete immediately when no nodes match the target", func() {
