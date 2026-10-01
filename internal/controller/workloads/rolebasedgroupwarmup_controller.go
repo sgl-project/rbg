@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -647,7 +648,8 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 	}
 
 	// Collect customized action containers and volumes
-	ctrHashSet := map[string]bool{}
+	ctrHashToMapping := map[string]int{}
+	customizedMappings := make([]customizedActionContainerMapping, 0)
 	existingVols := map[string]corev1.Volume{}
 	for _, action := range actions {
 		if action.CustomizedAction == nil {
@@ -657,11 +659,19 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			hashCtr := ctr
 			hashCtr.Name = ""
 			h := fmt.Sprintf("%v", utils.HashContainer(&hashCtr))
-			if ctrHashSet[h] {
+			if mappingIndex, exists := ctrHashToMapping[h]; exists {
+				mapping := &customizedMappings[mappingIndex]
+				mapping.ContainerNames = append(mapping.ContainerNames, ctr.Name)
+				sort.Strings(mapping.ContainerNames)
 				continue
 			}
-			ctrHashSet[h] = true
+			originalName := ctr.Name
 			ctr.Name = fmt.Sprintf("custom-%d", len(containers))
+			ctrHashToMapping[h] = len(customizedMappings)
+			customizedMappings = append(customizedMappings, customizedActionContainerMapping{
+				PodContainerName: ctr.Name,
+				ContainerNames:   []string{originalName},
+			})
 			containers = append(containers, ctr)
 		}
 		for _, vol := range action.CustomizedAction.Volumes {
@@ -690,15 +700,25 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			},
 		},
 		Spec: corev1.PodSpec{
-			Containers:       containers,
-			Volumes:          volumes,
-			ImagePullSecrets: imagePullSecrets,
-			RestartPolicy:    corev1.RestartPolicyNever,
-			Tolerations:      warmup.Spec.Tolerations,
+			Containers:            containers,
+			Volumes:               volumes,
+			ImagePullSecrets:      imagePullSecrets,
+			RestartPolicy:         corev1.RestartPolicyNever,
+			Tolerations:           warmup.Spec.Tolerations,
+			ActiveDeadlineSeconds: minimumCustomizedActionTimeout(actions),
 			NodeSelector: map[string]string{
 				"kubernetes.io/hostname": nodeName,
 			},
 		},
+	}
+	if len(customizedMappings) > 0 {
+		mappingJSON, err := json.Marshal(customizedMappings)
+		if err != nil {
+			panic(fmt.Sprintf("marshal internal customized action mappings: %v", err))
+		}
+		pod.Annotations = map[string]string{
+			AnnotationCustomizedActionContainers: string(mappingJSON),
+		}
 	}
 
 	return pod, hasVolumeConflict
