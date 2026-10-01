@@ -98,6 +98,14 @@ spec:
                     description: CustomizedAction runs user-defined containers for
                       custom warmup logic.
                     properties:
+                      completionPolicy:
+                        default: AllSucceeded
+                        description: |-
+                          CompletionPolicy controls how customized action containers are evaluated.
+                          Empty values from legacy objects are treated as AllSucceeded.
+                        enum:
+                        - AllSucceeded
+                        type: string
                       containers:
                         description: |-
                           Containers to run as part of the warmup Pod. Each container runs alongside
@@ -1454,6 +1462,13 @@ spec:
                             rule: has(self.image) && self.image != ''
                         minItems: 1
                         type: array
+                      timeoutSeconds:
+                        description: |-
+                          TimeoutSeconds limits execution of the merged warmup Pod. When multiple
+                          actions target the same node, the smallest configured timeout is used.
+                        format: int64
+                        minimum: 1
+                        type: integer
                       volumes:
                         description: Volumes to mount into the customized containers.
                         items:
@@ -3163,6 +3178,14 @@ spec:
                           description: CustomizedAction runs user-defined containers
                             for custom warmup logic.
                           properties:
+                            completionPolicy:
+                              default: AllSucceeded
+                              description: |-
+                                CompletionPolicy controls how customized action containers are evaluated.
+                                Empty values from legacy objects are treated as AllSucceeded.
+                              enum:
+                              - AllSucceeded
+                              type: string
                             containers:
                               description: |-
                                 Containers to run as part of the warmup Pod. Each container runs alongside
@@ -4540,6 +4563,13 @@ spec:
                                   rule: has(self.image) && self.image != ''
                               minItems: 1
                               type: array
+                            timeoutSeconds:
+                              description: |-
+                                TimeoutSeconds limits execution of the merged warmup Pod. When multiple
+                                actions target the same node, the smallest configured timeout is used.
+                              format: int64
+                              minimum: 1
+                              type: integer
                             volumes:
                               description: Volumes to mount into the customized containers.
                               items:
@@ -6356,6 +6386,67 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - type
+                x-kubernetes-list-type: map
+              customizedActionResults:
+                description: |-
+                  CustomizedActionResults contains the latest attempt for each node with a
+                  customized action.
+                items:
+                  description: |-
+                    CustomizedActionResult describes the latest customized action attempt on a
+                    target node.
+                  properties:
+                    containers:
+                      items:
+                        description: |-
+                          CustomizedActionContainerResult describes the latest observed state of one
+                          logical customized action container.
+                        properties:
+                          containerName:
+                            type: string
+                          exitCode:
+                            format: int32
+                            type: integer
+                          podContainerName:
+                            type: string
+                          state:
+                            description: |-
+                              CustomizedActionContainerState is the execution state of one customized
+                              action container.
+                            type: string
+                          terminationMessage:
+                            type: string
+                          terminationReason:
+                            type: string
+                        required:
+                        - containerName
+                        - podContainerName
+                        - state
+                        type: object
+                      type: array
+                    message:
+                      type: string
+                    nodeName:
+                      type: string
+                    podName:
+                      type: string
+                    reason:
+                      type: string
+                    state:
+                      description: CustomizedActionState is the aggregate execution
+                        state for a node.
+                      type: string
+                    timeoutSeconds:
+                      format: int64
+                      type: integer
+                  required:
+                  - nodeName
+                  - podName
+                  - state
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - nodeName
                 x-kubernetes-list-type: map
               desired:
                 description: Desired is the total number of nodes that need to be

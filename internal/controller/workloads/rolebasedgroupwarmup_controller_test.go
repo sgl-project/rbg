@@ -917,6 +917,60 @@ func TestReconcile_InvalidCustomizedContainerImageFailsWarmup(t *testing.T) {
 	}
 }
 
+func TestValidateWarmupActionsExecutionFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  workloadsv1alpha2.WarmupActions
+		wantErr string
+	}{
+		{
+			name: "zero timeout",
+			action: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+				Containers:     []corev1.Container{{Name: "check", Image: "busybox"}},
+				TimeoutSeconds: ptr.To(int64(0)),
+			}},
+			wantErr: "timeoutSeconds must be greater than 0",
+		},
+		{
+			name: "unsupported completion policy",
+			action: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+				Containers:       []corev1.Container{{Name: "check", Image: "busybox"}},
+				CompletionPolicy: workloadsv1alpha2.CustomizedActionCompletionPolicy("AnySucceeded"),
+			}},
+			wantErr: "unsupported completionPolicy",
+		},
+		{
+			name: "legacy empty policy",
+			action: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+				Containers: []corev1.Container{{Name: "check", Image: "busybox"}},
+			}},
+		},
+		{
+			name: "all succeeded",
+			action: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+				Containers:       []corev1.Container{{Name: "check", Image: "busybox"}},
+				TimeoutSeconds:   ptr.To(int64(30)),
+				CompletionPolicy: workloadsv1alpha2.CustomizedActionCompletionPolicyAllSucceeded,
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWarmupActions("spec.targetNodes", tt.action)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestValidateWarmupSpecReportsDeterministicTargetPath(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -257,6 +257,13 @@ func validateWarmupActions(target string, action workloadsv1alpha2.WarmupActions
 				return fmt.Errorf("%s.customizedAction.containers[%d].image must not be empty", target, i)
 			}
 		}
+		if action.CustomizedAction.TimeoutSeconds != nil && *action.CustomizedAction.TimeoutSeconds <= 0 {
+			return fmt.Errorf("%s.customizedAction.timeoutSeconds must be greater than 0", target)
+		}
+		if action.CustomizedAction.CompletionPolicy != "" &&
+			action.CustomizedAction.CompletionPolicy != workloadsv1alpha2.CustomizedActionCompletionPolicyAllSucceeded {
+			return fmt.Errorf("%s.customizedAction has unsupported completionPolicy %q", target, action.CustomizedAction.CompletionPolicy)
+		}
 	}
 	return nil
 }

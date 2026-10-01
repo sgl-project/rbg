@@ -31,6 +31,37 @@ const (
 	WarmupJobPhaseFailed    WarmupJobPhase = "Failed"
 )
 
+// CustomizedActionCompletionPolicy controls how customized action containers
+// are evaluated for completion.
+type CustomizedActionCompletionPolicy string
+
+const (
+	// CustomizedActionCompletionPolicyAllSucceeded requires every customized
+	// action container to complete successfully.
+	CustomizedActionCompletionPolicyAllSucceeded CustomizedActionCompletionPolicy = "AllSucceeded"
+)
+
+// CustomizedActionState is the aggregate execution state for a node.
+type CustomizedActionState string
+
+const (
+	CustomizedActionStatePending   CustomizedActionState = "Pending"
+	CustomizedActionStateRunning   CustomizedActionState = "Running"
+	CustomizedActionStateSucceeded CustomizedActionState = "Succeeded"
+	CustomizedActionStateFailed    CustomizedActionState = "Failed"
+)
+
+// CustomizedActionContainerState is the execution state of one customized
+// action container.
+type CustomizedActionContainerState string
+
+const (
+	CustomizedActionContainerStateWaiting   CustomizedActionContainerState = "Waiting"
+	CustomizedActionContainerStateRunning   CustomizedActionContainerState = "Running"
+	CustomizedActionContainerStateSucceeded CustomizedActionContainerState = "Succeeded"
+	CustomizedActionContainerStateFailed    CustomizedActionContainerState = "Failed"
+)
+
 type ImagePreloadAction struct {
 	// Images specifies the container images to be preloaded onto target nodes.
 	// Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
@@ -58,6 +89,42 @@ type CustomizedAction struct {
 	// Volumes to mount into the customized containers.
 	// +optional
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
+
+	// TimeoutSeconds limits execution of the merged warmup Pod. When multiple
+	// actions target the same node, the smallest configured timeout is used.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	TimeoutSeconds *int64 `json:"timeoutSeconds,omitempty"`
+
+	// CompletionPolicy controls how customized action containers are evaluated.
+	// Empty values from legacy objects are treated as AllSucceeded.
+	// +optional
+	// +kubebuilder:default=AllSucceeded
+	// +kubebuilder:validation:Enum=AllSucceeded
+	CompletionPolicy CustomizedActionCompletionPolicy `json:"completionPolicy,omitempty"`
+}
+
+// CustomizedActionContainerResult describes the latest observed state of one
+// logical customized action container.
+type CustomizedActionContainerResult struct {
+	ContainerName      string                         `json:"containerName"`
+	PodContainerName   string                         `json:"podContainerName"`
+	State              CustomizedActionContainerState `json:"state"`
+	ExitCode           *int32                         `json:"exitCode,omitempty"`
+	TerminationReason  string                         `json:"terminationReason,omitempty"`
+	TerminationMessage string                         `json:"terminationMessage,omitempty"`
+}
+
+// CustomizedActionResult describes the latest customized action attempt on a
+// target node.
+type CustomizedActionResult struct {
+	NodeName       string                            `json:"nodeName"`
+	PodName        string                            `json:"podName"`
+	State          CustomizedActionState             `json:"state"`
+	Reason         string                            `json:"reason,omitempty"`
+	Message        string                            `json:"message,omitempty"`
+	TimeoutSeconds *int64                            `json:"timeoutSeconds,omitempty"`
+	Containers     []CustomizedActionContainerResult `json:"containers,omitempty"`
 }
 
 // WarmupActions defines what warmup operations to perform on a node.
@@ -214,6 +281,13 @@ type RoleBasedGroupWarmupStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// CustomizedActionResults contains the latest attempt for each node with a
+	// customized action.
+	// +listType=map
+	// +listMapKey=nodeName
+	// +optional
+	CustomizedActionResults []CustomizedActionResult `json:"customizedActionResults,omitempty"`
 }
 
 // +kubebuilder:object:root=true
