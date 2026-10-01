@@ -462,6 +462,36 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	warmup.Status.Active = 0
 	warmup.Status.Succeeded = succeeded
 	warmup.Status.Failed = failed
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	oldCustomizedActionResults := warmup.Status.CustomizedActionResults
+	warmup.Status.CustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
+	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
+	if globallyTimedOut {
+		for i := range warmup.Status.CustomizedActionResults {
+			result := &warmup.Status.CustomizedActionResults[i]
+			if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded {
+				continue
+			}
+			result.State = workloadsv1alpha2.CustomizedActionStateFailed
+			result.Reason = CustomizedActionReasonGlobalTimeout
+			result.Message = message
+		}
+	}
+	var backoffLimit *int32
+	if warmup.Spec.Policies != nil {
+		backoffLimit = warmup.Spec.Policies.BackoffLimitPerNode
+	}
+	permanentlyFailedNodes := r.computePermanentlyFailedNodes(ctx, failedPods, backoffLimit)
+	updateCustomizedActionConditions(
+		&warmup.Status.Conditions,
+		warmup.Generation,
+		warmup.Status.CustomizedActionResults,
+		permanentlyFailedNodes,
+		globallyTimedOut,
+	)
 
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 		Type:               "Failed",
@@ -473,7 +503,11 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 
 	r.Recorder.Eventf(warmup, corev1.EventTypeWarning, reason, message)
 	logger.Info("Warmup job failed", "reason", reason, "succeeded", succeeded, "failed", failed)
-	return r.Status().Update(ctx, warmup)
+	if err := r.Status().Update(ctx, warmup); err != nil {
+		return err
+	}
+	recordCustomizedActionEvents(r.Recorder, warmup, oldCustomizedActionResults, warmup.Status.CustomizedActionResults)
+	return nil
 }
 
 func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Context, warmup workloadsv1alpha2.RoleBasedGroupWarmup) (desiredNodesWithActions map[string][]workloadsv1alpha2.WarmupActions, err error) {
@@ -760,6 +794,11 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	newStatus.Active = active
 	newStatus.Succeeded = succeeded
 	newStatus.Failed = failed
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	newStatus.CustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
 
 	// Set startTime if not already set and Pods exist
 	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {
@@ -834,13 +873,22 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 			}
 		}
 	}
+	updateCustomizedActionConditions(
+		&newStatus.Conditions,
+		warmup.Generation,
+		newStatus.CustomizedActionResults,
+		permanentlyFailedNodes,
+		false,
+	)
 
 	// Only update if status has changed
 	if !apiequality.Semantic.DeepEqual(warmup.Status, *newStatus) {
+		oldCustomizedActionResults := warmup.Status.CustomizedActionResults
 		warmup.Status = *newStatus
 		if err := r.Status().Update(ctx, warmup); err != nil {
 			return err
 		}
+		recordCustomizedActionEvents(r.Recorder, warmup, oldCustomizedActionResults, newStatus.CustomizedActionResults)
 		logger.Info("Updated status", "phase", newStatus.Phase,
 			"desired", newStatus.Desired, "active", newStatus.Active,
 			"succeeded", newStatus.Succeeded, "failed", newStatus.Failed)

@@ -17,6 +17,7 @@ limitations under the License.
 package workloads
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -24,8 +25,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -339,5 +344,163 @@ func TestEvaluateCustomizedActionResultsSelectsLatestAttemptDeterministically(t 
 	}
 	if got[0].NodeName != "node-a" || got[1].NodeName != "node-b" || got[1].PodName != "attempt-z" {
 		t.Fatalf("unexpected ordering/latest selection: %#v", got)
+	}
+}
+
+func TestUpdateStatusIncludesCustomizedActionResults(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1", Generation: 3},
+	}
+	pod := mappedWarmupPod("node-1", "attempt-1", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", ""))
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, []*corev1.Pod{pod}, nil, desired, map[string]bool{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 || updated.Status.CustomizedActionResults[0].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
+		t.Fatalf("unexpected customized action results: %#v", updated.Status.CustomizedActionResults)
+	}
+	complete := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionComplete)
+	if complete == nil || complete.Status != metav1.ConditionTrue {
+		t.Fatalf("expected customized action complete condition, got %#v", updated.Status.Conditions)
+	}
+	if failed := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionFailed); failed != nil {
+		t.Fatalf("did not expect customized action failed condition: %#v", failed)
+	}
+}
+
+func TestUpdateCustomizedActionConditions(t *testing.T) {
+	succeeded := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "success", State: workloadsv1alpha2.CustomizedActionStateSucceeded,
+		Reason: CustomizedActionReasonCompleted,
+	}
+	failed := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "failed", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode,
+	}
+
+	t.Run("retryable failure has no terminal condition", func(t *testing.T) {
+		var conditions []metav1.Condition
+		updateCustomizedActionConditions(&conditions, 1, []workloadsv1alpha2.CustomizedActionResult{failed}, map[string]bool{}, false)
+		if len(conditions) != 0 {
+			t.Fatalf("expected no terminal conditions, got %#v", conditions)
+		}
+	})
+
+	t.Run("permanent failure sets only failed", func(t *testing.T) {
+		conditions := []metav1.Condition{{Type: ConditionCustomizedActionComplete, Status: metav1.ConditionTrue}}
+		updateCustomizedActionConditions(&conditions, 2, []workloadsv1alpha2.CustomizedActionResult{failed}, map[string]bool{"node-1": true}, false)
+		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionComplete) != nil {
+			t.Fatalf("complete condition must be removed: %#v", conditions)
+		}
+		condition := apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed)
+		if condition == nil || condition.Reason != CustomizedActionReasonContainerExitCode {
+			t.Fatalf("expected failed condition, got %#v", conditions)
+		}
+	})
+
+	t.Run("success replaces failed", func(t *testing.T) {
+		conditions := []metav1.Condition{{Type: ConditionCustomizedActionFailed, Status: metav1.ConditionTrue}}
+		updateCustomizedActionConditions(&conditions, 3, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{}, false)
+		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed) != nil {
+			t.Fatalf("failed condition must be removed: %#v", conditions)
+		}
+		condition := apimeta.FindStatusCondition(conditions, ConditionCustomizedActionComplete)
+		if condition == nil || condition.Reason != "AllActionsSucceeded" {
+			t.Fatalf("expected complete condition, got %#v", conditions)
+		}
+	})
+
+	t.Run("preload failure does not turn successful custom action into failure", func(t *testing.T) {
+		var conditions []metav1.Condition
+		updateCustomizedActionConditions(&conditions, 4, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{"node-1": true}, false)
+		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed) != nil {
+			t.Fatalf("unexpected failed condition: %#v", conditions)
+		}
+	})
+}
+
+func TestRecordCustomizedActionEventsOnlyForTransitions(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+	recorder := record.NewFakeRecorder(10)
+	result := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode, Message: "exit code 1",
+	}
+
+	recordCustomizedActionEvents(recorder, warmup, nil, []workloadsv1alpha2.CustomizedActionResult{result})
+	recordCustomizedActionEvents(recorder, warmup, []workloadsv1alpha2.CustomizedActionResult{result}, []workloadsv1alpha2.CustomizedActionResult{result})
+	first := <-recorder.Events
+	if !strings.Contains(first, CustomizedActionReasonContainerExitCode) {
+		t.Fatalf("unexpected first event: %q", first)
+	}
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("unchanged result emitted duplicate event: %q", event)
+	default:
+	}
+
+	retry := result
+	retry.PodName = "attempt-2"
+	recordCustomizedActionEvents(recorder, warmup, []workloadsv1alpha2.CustomizedActionResult{result}, []workloadsv1alpha2.CustomizedActionResult{retry})
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("new retry attempt must emit a new event")
+	}
+}
+
+func TestReconcileGlobalTimeoutPreservesCustomizedActionDiagnostics(t *testing.T) {
+	startTime := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1", Generation: 2},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(1))},
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames: []string{"node-1"},
+				WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+					Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+				}},
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase:     workloadsv1alpha2.WarmupJobPhaseRunning,
+			StartTime: &startTime,
+		},
+	}
+	pod := mappedWarmupPod("node-1", "attempt-1", corev1.PodRunning, corev1.ContainerStatus{
+		Name: "custom-0", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	})
+	pod.Namespace = warmup.Namespace
+	pod.Labels[LabelWarmupName] = warmup.Name
+	pod.Labels[LabelWarmupUID] = string(warmup.UID)
+	r := newWarmupReconciler(warmup, pod)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 {
+		t.Fatalf("expected one preserved result, got %#v", updated.Status.CustomizedActionResults)
+	}
+	result := updated.Status.CustomizedActionResults[0]
+	if result.State != workloadsv1alpha2.CustomizedActionStateFailed || result.Reason != CustomizedActionReasonGlobalTimeout {
+		t.Fatalf("expected global-timeout result, got %#v", result)
+	}
+	condition := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionFailed)
+	if condition == nil || condition.Reason != CustomizedActionReasonGlobalTimeout {
+		t.Fatalf("expected global-timeout customized action condition, got %#v", updated.Status.Conditions)
 	}
 }

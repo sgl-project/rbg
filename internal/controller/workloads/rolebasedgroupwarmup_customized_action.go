@@ -24,6 +24,9 @@ import (
 	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -38,6 +41,10 @@ const (
 	CustomizedActionReasonTimeout              = "Timeout"
 	CustomizedActionReasonNodeNotSchedulable   = "NodeNotSchedulable"
 	CustomizedActionReasonPodFailed            = "PodFailed"
+	CustomizedActionReasonGlobalTimeout        = "GlobalTimeoutExceeded"
+
+	ConditionCustomizedActionComplete = "CustomizedActionComplete"
+	ConditionCustomizedActionFailed   = "CustomizedActionFailed"
 
 	customizedActionTerminationMessageLimit = 1024
 )
@@ -276,4 +283,106 @@ func truncateCustomizedActionMessage(message string) string {
 	}
 	builder.WriteString(suffix)
 	return builder.String()
+}
+
+func updateCustomizedActionConditions(
+	conditions *[]metav1.Condition,
+	generation int64,
+	results []workloadsv1alpha2.CustomizedActionResult,
+	permanentlyFailedNodes map[string]bool,
+	globallyTimedOut bool,
+) {
+	if len(results) == 0 {
+		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
+		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
+		return
+	}
+
+	var terminalFailure *workloadsv1alpha2.CustomizedActionResult
+	for i := range results {
+		if permanentlyFailedNodes[results[i].NodeName] && results[i].State == workloadsv1alpha2.CustomizedActionStateFailed {
+			terminalFailure = &results[i]
+			break
+		}
+	}
+	if globallyTimedOut || terminalFailure != nil {
+		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
+		reason := CustomizedActionReasonGlobalTimeout
+		message := "Customized action execution was terminated by the global timeout"
+		if terminalFailure != nil && !globallyTimedOut {
+			reason = terminalFailure.Reason
+			message = terminalFailure.Message
+			if message == "" {
+				message = fmt.Sprintf("Customized action permanently failed on node %s", terminalFailure.NodeName)
+			}
+		}
+		apimeta.SetStatusCondition(conditions, metav1.Condition{
+			Type:               ConditionCustomizedActionFailed,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: generation,
+			Reason:             reason,
+			Message:            message,
+		})
+		return
+	}
+
+	allSucceeded := true
+	for i := range results {
+		if results[i].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
+			allSucceeded = false
+			break
+		}
+	}
+	if allSucceeded {
+		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
+		apimeta.SetStatusCondition(conditions, metav1.Condition{
+			Type:               ConditionCustomizedActionComplete,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: generation,
+			Reason:             "AllActionsSucceeded",
+			Message:            "All customized actions completed successfully",
+		})
+		return
+	}
+
+	apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
+	apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
+}
+
+func recordCustomizedActionEvents(
+	recorder record.EventRecorder,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	oldResults, newResults []workloadsv1alpha2.CustomizedActionResult,
+) {
+	oldByNode := make(map[string]workloadsv1alpha2.CustomizedActionResult, len(oldResults))
+	for i := range oldResults {
+		oldByNode[oldResults[i].NodeName] = oldResults[i]
+	}
+	for i := range newResults {
+		result := newResults[i]
+		if old, exists := oldByNode[result.NodeName]; exists &&
+			old.PodName == result.PodName && old.State == result.State && old.Reason == result.Reason {
+			continue
+		}
+
+		message := result.Message
+		if message == "" {
+			message = fmt.Sprintf("Customized action on node %s is %s", result.NodeName, result.State)
+		}
+		switch {
+		case result.State == workloadsv1alpha2.CustomizedActionStateSucceeded:
+			recorder.Eventf(warmup, corev1.EventTypeNormal, "CustomizedActionCompleted",
+				"node=%s, pod=%s: %s", result.NodeName, result.PodName, message)
+		case result.State == workloadsv1alpha2.CustomizedActionStateFailed,
+			result.Reason == CustomizedActionReasonImagePullFailed,
+			result.Reason == CustomizedActionReasonContainerStartFailed,
+			result.Reason == CustomizedActionReasonNodeNotSchedulable:
+			reason := result.Reason
+			if reason == "" {
+				reason = CustomizedActionReasonPodFailed
+			}
+			recorder.Eventf(warmup, corev1.EventTypeWarning, reason,
+				"node=%s, pod=%s: %s", result.NodeName, result.PodName, message)
+		}
+	}
 }
