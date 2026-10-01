@@ -291,8 +291,9 @@ func updateCustomizedActionConditions(
 	results []workloadsv1alpha2.CustomizedActionResult,
 	permanentlyFailedNodes map[string]bool,
 	globallyTimedOut bool,
+	desiredCustomizedActionNodes int,
 ) {
-	if len(results) == 0 {
+	if desiredCustomizedActionNodes == 0 || len(results) == 0 {
 		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
 		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
 		return
@@ -333,7 +334,7 @@ func updateCustomizedActionConditions(
 			break
 		}
 	}
-	if allSucceeded {
+	if allSucceeded && len(results) == desiredCustomizedActionNodes {
 		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
 		apimeta.SetStatusCondition(conditions, metav1.Condition{
 			Type:               ConditionCustomizedActionComplete,
@@ -347,6 +348,19 @@ func updateCustomizedActionConditions(
 
 	apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
 	apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
+}
+
+func countDesiredCustomizedActionNodes(desiredNodes map[string][]workloadsv1alpha2.WarmupActions) int {
+	count := 0
+	for _, actions := range desiredNodes {
+		for i := range actions {
+			if actions[i].CustomizedAction != nil {
+				count++
+				break
+			}
+		}
+	}
+	return count
 }
 
 func recordCustomizedActionEvents(

@@ -491,6 +491,7 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		warmup.Status.CustomizedActionResults,
 		permanentlyFailedNodes,
 		globallyTimedOut,
+		countDesiredCustomizedActionNodes(desiredNodes),
 	)
 
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
@@ -879,6 +880,7 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 		newStatus.CustomizedActionResults,
 		permanentlyFailedNodes,
 		false,
+		countDesiredCustomizedActionNodes(desiredNodes),
 	)
 
 	// Only update if status has changed

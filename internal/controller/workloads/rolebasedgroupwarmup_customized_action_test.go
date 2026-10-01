@@ -390,7 +390,7 @@ func TestUpdateCustomizedActionConditions(t *testing.T) {
 
 	t.Run("retryable failure has no terminal condition", func(t *testing.T) {
 		var conditions []metav1.Condition
-		updateCustomizedActionConditions(&conditions, 1, []workloadsv1alpha2.CustomizedActionResult{failed}, map[string]bool{}, false)
+		updateCustomizedActionConditions(&conditions, 1, []workloadsv1alpha2.CustomizedActionResult{failed}, map[string]bool{}, false, 1)
 		if len(conditions) != 0 {
 			t.Fatalf("expected no terminal conditions, got %#v", conditions)
 		}
@@ -398,7 +398,7 @@ func TestUpdateCustomizedActionConditions(t *testing.T) {
 
 	t.Run("permanent failure sets only failed", func(t *testing.T) {
 		conditions := []metav1.Condition{{Type: ConditionCustomizedActionComplete, Status: metav1.ConditionTrue}}
-		updateCustomizedActionConditions(&conditions, 2, []workloadsv1alpha2.CustomizedActionResult{failed}, map[string]bool{"node-1": true}, false)
+		updateCustomizedActionConditions(&conditions, 2, []workloadsv1alpha2.CustomizedActionResult{failed}, map[string]bool{"node-1": true}, false, 1)
 		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionComplete) != nil {
 			t.Fatalf("complete condition must be removed: %#v", conditions)
 		}
@@ -410,7 +410,7 @@ func TestUpdateCustomizedActionConditions(t *testing.T) {
 
 	t.Run("success replaces failed", func(t *testing.T) {
 		conditions := []metav1.Condition{{Type: ConditionCustomizedActionFailed, Status: metav1.ConditionTrue}}
-		updateCustomizedActionConditions(&conditions, 3, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{}, false)
+		updateCustomizedActionConditions(&conditions, 3, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{}, false, 1)
 		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed) != nil {
 			t.Fatalf("failed condition must be removed: %#v", conditions)
 		}
@@ -422,9 +422,17 @@ func TestUpdateCustomizedActionConditions(t *testing.T) {
 
 	t.Run("preload failure does not turn successful custom action into failure", func(t *testing.T) {
 		var conditions []metav1.Condition
-		updateCustomizedActionConditions(&conditions, 4, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{"node-1": true}, false)
+		updateCustomizedActionConditions(&conditions, 4, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{"node-1": true}, false, 1)
 		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed) != nil {
 			t.Fatalf("unexpected failed condition: %#v", conditions)
+		}
+	})
+
+	t.Run("partial success does not complete while another node has no result", func(t *testing.T) {
+		var conditions []metav1.Condition
+		updateCustomizedActionConditions(&conditions, 5, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{}, false, 2)
+		if apimeta.FindStatusCondition(conditions, ConditionCustomizedActionComplete) != nil {
+			t.Fatalf("partial results must not complete all actions: %#v", conditions)
 		}
 	})
 }
