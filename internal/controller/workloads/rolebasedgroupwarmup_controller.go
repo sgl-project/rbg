@@ -63,6 +63,8 @@ type RoleBasedGroupWarmupReconciler struct {
 	Recorder  record.EventRecorder
 }
 
+var marshalCustomizedActionMappings = json.Marshal
+
 func NewRoleBasedGroupWarmupReconciler(mgr ctrl.Manager) *RoleBasedGroupWarmupReconciler {
 	return &RoleBasedGroupWarmupReconciler{
 		Client:    mgr.GetClient(),
@@ -753,12 +755,14 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 		},
 	}
 	if len(customizedMappings) > 0 {
-		mappingJSON, err := json.Marshal(customizedMappings)
+		mappingJSON, err := marshalCustomizedActionMappings(customizedMappings)
 		if err != nil {
-			panic(fmt.Sprintf("marshal internal customized action mappings: %v", err))
-		}
-		pod.Annotations = map[string]string{
-			AnnotationCustomizedActionContainers: string(mappingJSON),
+			r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "CustomizedActionMappingError",
+				"Failed to record customized action container mappings for node %s: %v", nodeName, err)
+		} else {
+			pod.Annotations = map[string]string{
+				AnnotationCustomizedActionContainers: string(mappingJSON),
+			}
 		}
 	}
 
@@ -805,7 +809,12 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	allPods = append(allPods, activePods...)
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
-	newStatus.CustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
+	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+	newStatus.CustomizedActionResults = preserveCustomizedActionResults(
+		desiredNodes,
+		warmup.Status.CustomizedActionResults,
+		observedCustomizedActionResults,
+	)
 
 	// Set startTime if not already set and Pods exist
 	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {

@@ -90,14 +90,16 @@ type CustomizedAction struct {
 	// +optional
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 
-	// TimeoutSeconds limits execution of the merged warmup Pod. When multiple
-	// actions target the same node, the smallest configured timeout is used.
+	// TimeoutSeconds limits execution of the merged warmup Pod, including image
+	// pulls and co-located image preload containers. When multiple actions target
+	// the same node, the smallest configured timeout is used.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	TimeoutSeconds *int64 `json:"timeoutSeconds,omitempty"`
 
 	// CompletionPolicy controls how customized action containers are evaluated.
-	// Empty values from legacy objects are treated as AllSucceeded.
+	// Only AllSucceeded is currently supported. Empty values from legacy objects
+	// are treated as AllSucceeded.
 	// +optional
 	// +kubebuilder:default=AllSucceeded
 	// +kubebuilder:validation:Enum=AllSucceeded

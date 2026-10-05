@@ -91575,7 +91575,8 @@ spec:
                         default: AllSucceeded
                         description: |-
                           CompletionPolicy controls how customized action containers are evaluated.
-                          Empty values from legacy objects are treated as AllSucceeded.
+                          Only AllSucceeded is currently supported. Empty values from legacy objects
+                          are treated as AllSucceeded.
                         enum:
                         - AllSucceeded
                         type: string
@@ -92937,8 +92938,8 @@ spec:
                         type: array
                       timeoutSeconds:
                         description: |-
-                          TimeoutSeconds limits execution of the merged warmup Pod. When multiple
-                          actions target the same node, the smallest configured timeout is used.
+                          TimeoutSeconds limits execution of the merged warmup Pod, including image
+                          pulls and co-located image preload containers.
                         format: int64
                         minimum: 1
                         type: integer
@@ -94655,7 +94656,8 @@ spec:
                               default: AllSucceeded
                               description: |-
                                 CompletionPolicy controls how customized action containers are evaluated.
-                                Empty values from legacy objects are treated as AllSucceeded.
+                                Only AllSucceeded is currently supported. Empty values from legacy objects
+                                are treated as AllSucceeded.
                               enum:
                               - AllSucceeded
                               type: string
@@ -96038,8 +96040,8 @@ spec:
                               type: array
                             timeoutSeconds:
                               description: |-
-                                TimeoutSeconds limits execution of the merged warmup Pod. When multiple
-                                actions target the same node, the smallest configured timeout is used.
+                                TimeoutSeconds limits execution of the merged warmup Pod, including image
+                                pulls and co-located image preload containers.
                               format: int64
                               minimum: 1
                               type: integer

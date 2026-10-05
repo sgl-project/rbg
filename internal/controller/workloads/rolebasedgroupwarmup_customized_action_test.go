@@ -19,6 +19,7 @@ package workloads
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,38 @@ func TestBuildWarmupPodCustomizedActionMetadataDeduplicatesIdentities(t *testing
 	}}
 	if !apiequality.Semantic.DeepEqual(want, mappings) {
 		t.Fatalf("expected mappings %#v, got %#v", want, mappings)
+	}
+}
+
+func TestBuildWarmupPodCustomizedActionMetadataMarshalFailureFallsBack(t *testing.T) {
+	originalMarshal := marshalCustomizedActionMappings
+	marshalCustomizedActionMappings = func(any) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+	t.Cleanup(func() { marshalCustomizedActionMappings = originalMarshal })
+
+	r := newWarmupReconciler()
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+	}
+	actions := []workloadsv1alpha2.WarmupActions{{
+		CustomizedAction: &workloadsv1alpha2.CustomizedAction{Containers: []corev1.Container{{
+			Name: "node-check", Image: "busybox",
+		}}},
+	}}
+
+	pod, _ := r.buildWarmupPod(warmup, "node-1", actions)
+	if pod.Annotations[AnnotationCustomizedActionContainers] != "" {
+		t.Fatalf("expected mapping annotation to be omitted, got %#v", pod.Annotations)
+	}
+	recorder := r.Recorder.(*record.FakeRecorder)
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "CustomizedActionMappingError") {
+			t.Fatalf("unexpected warning event: %q", event)
+		}
+	default:
+		t.Fatal("expected mapping marshal failure event")
 	}
 }
 
@@ -408,6 +441,37 @@ func TestUpdateStatusIncludesCustomizedActionResults(t *testing.T) {
 	}
 	if failed := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionFailed); failed != nil {
 		t.Fatalf("did not expect customized action failed condition: %#v", failed)
+	}
+}
+
+func TestUpdateStatusPreservesLastCustomizedActionResultBetweenAttempts(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase:                   workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{previous},
+		},
+	}
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, nil, nil, desired, map[string]bool{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if !apiequality.Semantic.DeepEqual(updated.Status.CustomizedActionResults, []workloadsv1alpha2.CustomizedActionResult{previous}) {
+		t.Fatalf("expected previous result to remain visible between attempts, got %#v", updated.Status.CustomizedActionResults)
 	}
 }
 

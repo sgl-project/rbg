@@ -274,6 +274,39 @@ func evaluateCustomizedActionResults(
 	return results
 }
 
+func preserveCustomizedActionResults(
+	desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
+	previous, observed []workloadsv1alpha2.CustomizedActionResult,
+) []workloadsv1alpha2.CustomizedActionResult {
+	desiredCustomizedNodes := make(map[string]bool)
+	for nodeName, actions := range desiredNodes {
+		for i := range actions {
+			if actions[i].CustomizedAction != nil {
+				desiredCustomizedNodes[nodeName] = true
+				break
+			}
+		}
+	}
+
+	results := append([]workloadsv1alpha2.CustomizedActionResult(nil), observed...)
+	observedNodes := make(map[string]bool, len(observed))
+	for i := range observed {
+		observedNodes[observed[i].NodeName] = true
+	}
+	for i := range previous {
+		if desiredCustomizedNodes[previous[i].NodeName] && !observedNodes[previous[i].NodeName] {
+			results = append(results, previous[i])
+		}
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].NodeName < results[j].NodeName
+	})
+	return results
+}
+
 func truncateCustomizedActionMessage(message string) string {
 	if len(message) <= customizedActionTerminationMessageLimit {
 		return message
