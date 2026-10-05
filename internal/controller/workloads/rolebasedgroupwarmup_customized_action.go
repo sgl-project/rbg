@@ -135,6 +135,10 @@ func evaluateCustomizedActionContainer(
 		switch {
 		case status.State.Running != nil:
 			state = workloadsv1alpha2.CustomizedActionContainerStateRunning
+		case status.State.Waiting != nil:
+			waiting := status.State.Waiting
+			terminationReason = waiting.Reason
+			terminationMessage = truncateCustomizedActionMessage(waiting.Message)
 		case status.State.Terminated != nil:
 			terminated := status.State.Terminated
 			exitCode = new(int32)
@@ -256,6 +260,9 @@ func evaluateCustomizedActionResults(
 			latestPods[nodeName] = pod
 		}
 	}
+	if len(latestPods) == 0 {
+		return nil
+	}
 
 	results := make([]workloadsv1alpha2.CustomizedActionResult, 0, len(latestPods))
 	for _, pod := range latestPods {
@@ -293,7 +300,7 @@ func updateCustomizedActionConditions(
 	globallyTimedOut bool,
 	desiredCustomizedActionNodes int,
 ) {
-	if desiredCustomizedActionNodes == 0 || len(results) == 0 {
+	if desiredCustomizedActionNodes == 0 || (len(results) == 0 && !globallyTimedOut) {
 		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
 		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
 		return

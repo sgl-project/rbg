@@ -302,6 +302,27 @@ func TestEvaluateCustomizedActionPodUsesOnlyMappedContainers(t *testing.T) {
 	}
 }
 
+func TestEvaluateCustomizedActionPodPreservesWaitingFailureDetails(t *testing.T) {
+	pod := mappedWarmupPod(
+		"node-1",
+		"pull-failure",
+		corev1.PodPending,
+		waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image"),
+	)
+
+	got := evaluateCustomizedActionPod(pod)
+	if len(got.Containers) != 1 {
+		t.Fatalf("expected one container result, got %#v", got.Containers)
+	}
+	container := got.Containers[0]
+	if container.ContainerName != "node-check" || container.PodContainerName != "custom-0" {
+		t.Fatalf("unexpected failing container identity: %#v", container)
+	}
+	if container.TerminationReason != "ImagePullBackOff" || container.TerminationMessage != "back-off pulling image" {
+		t.Fatalf("expected waiting failure details, got %#v", container)
+	}
+}
+
 func TestEvaluateCustomizedActionPodFallsBackToGeneratedNames(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -344,6 +365,18 @@ func TestEvaluateCustomizedActionResultsSelectsLatestAttemptDeterministically(t 
 	}
 	if got[0].NodeName != "node-a" || got[1].NodeName != "node-b" || got[1].PodName != "attempt-z" {
 		t.Fatalf("unexpected ordering/latest selection: %#v", got)
+	}
+}
+
+func TestEvaluateCustomizedActionResultsReturnsNilWithoutLatestPods(t *testing.T) {
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "check", Image: "busybox"}},
+		}}},
+	}
+
+	if got := evaluateCustomizedActionResults(desired, nil); got != nil {
+		t.Fatalf("expected nil results without pods, got %#v", got)
 	}
 }
 
@@ -435,6 +468,54 @@ func TestUpdateCustomizedActionConditions(t *testing.T) {
 			t.Fatalf("partial results must not complete all actions: %#v", conditions)
 		}
 	})
+
+	t.Run("global timeout sets failure before any result exists", func(t *testing.T) {
+		var conditions []metav1.Condition
+		updateCustomizedActionConditions(&conditions, 6, nil, map[string]bool{}, true, 1)
+		condition := apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed)
+		if condition == nil || condition.Reason != CustomizedActionReasonGlobalTimeout {
+			t.Fatalf("expected global-timeout failure condition, got %#v", conditions)
+		}
+	})
+}
+
+func TestFailWarmupJobPreservesCustomizedActionDiagnosticsWithoutDesiredNodes(t *testing.T) {
+	result := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1",
+		PodName:  "attempt-1",
+		State:    workloadsv1alpha2.CustomizedActionStateSucceeded,
+		Reason:   CustomizedActionReasonCompleted,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1", Generation: 2},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{result},
+			Conditions: []metav1.Condition{{
+				Type:               ConditionCustomizedActionComplete,
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: 1,
+				Reason:             "AllActionsSucceeded",
+				Message:            "All customized actions completed successfully",
+			}},
+		},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.failWarmupJob(
+		context.Background(), warmup, nil, nil, nil, nil, "InvalidWarmupSpec", "invalid spec",
+	); err != nil {
+		t.Fatalf("fail warmup job: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if !apiequality.Semantic.DeepEqual(updated.Status.CustomizedActionResults, []workloadsv1alpha2.CustomizedActionResult{result}) {
+		t.Fatalf("expected customized action results to be preserved, got %#v", updated.Status.CustomizedActionResults)
+	}
+	if condition := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionComplete); condition == nil {
+		t.Fatalf("expected customized action completion condition to be preserved, got %#v", updated.Status.Conditions)
+	}
 }
 
 func TestRecordCustomizedActionEventsOnlyForTransitions(t *testing.T) {

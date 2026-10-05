@@ -467,7 +467,11 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
 	oldCustomizedActionResults := warmup.Status.CustomizedActionResults
-	warmup.Status.CustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
+	// A nil desiredNodes value means target resolution failed before the desired
+	// state was available. Preserve the last observed diagnostics in that case.
+	if desiredNodes != nil {
+		warmup.Status.CustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
+	}
 	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
 	if globallyTimedOut {
 		for i := range warmup.Status.CustomizedActionResults {
@@ -485,14 +489,16 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		backoffLimit = warmup.Spec.Policies.BackoffLimitPerNode
 	}
 	permanentlyFailedNodes := r.computePermanentlyFailedNodes(ctx, failedPods, backoffLimit)
-	updateCustomizedActionConditions(
-		&warmup.Status.Conditions,
-		warmup.Generation,
-		warmup.Status.CustomizedActionResults,
-		permanentlyFailedNodes,
-		globallyTimedOut,
-		countDesiredCustomizedActionNodes(desiredNodes),
-	)
+	if desiredNodes != nil {
+		updateCustomizedActionConditions(
+			&warmup.Status.Conditions,
+			warmup.Generation,
+			warmup.Status.CustomizedActionResults,
+			permanentlyFailedNodes,
+			globallyTimedOut,
+			countDesiredCustomizedActionNodes(desiredNodes),
+		)
+	}
 
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 		Type:               "Failed",
