@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"os/exec"
+
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -243,11 +245,11 @@ func runRestartPolicyNoneReplaceTest(f *framework.Framework) {
 func runRestartBackoffDelayTest(f *framework.Framework) {
 	ginkgo.It("RecreateRoleInstanceOnPodRestart with backoff delays second recreation", func() {
 		// Use a large backoff (90s) so the backoff window is still open after
-		// the first crash cycle completes in CI. In Kind clusters, pod startup
+		// the first restart cycle completes in CI. In Kind clusters, pod startup
 		// with the preloaded nginx image typically takes 20–40 s; the full
 		// first-recovery path (deletion + creation + Ready + Restarting cleared)
 		// can reach 50 s. baseDelay=90 ensures at least 40 s of backoff remain
-		// when the second crash is triggered, giving the Consistently check a
+		// when the second restart is triggered, giving the Consistently check a
 		// reliable safety margin.
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-backoff-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
@@ -279,7 +281,7 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 		// Wait for RoleInstance Ready
 		waitForInstanceReady(f, targetInstanceName)
 
-		// --- First crash: no backoff (first restart) ---
+		// --- First container restart: no backoff ---
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{
@@ -298,9 +300,9 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 			Namespace: f.Namespace,
 			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(restartNginxContainer(f, targetPod.Name)).Should(gomega.Succeed())
 
-		// Wait for first recreation (no backoff on first crash)
+		// Wait for first recreation (no backoff on first restart)
 		waitForInstancePodsRecreated(f, rbg, targetInstanceName, firstUIDs)
 
 		// Wait for full recovery
@@ -310,11 +312,11 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 		// Restarting condition cleared. The Restarting condition persists in
 		// status during the creation phase (scaling=true) until pods become
 		// Running+Ready, which causes checkRestartBackoff to skip backoff on
-		// the next crash. We must wait for it to be cleared to ensure the
-		// backoff mechanism works correctly for the second crash.
+		// the next restart. We must wait for it to be cleared to ensure the
+		// backoff mechanism works correctly for the second restart.
 		waitForInstanceFullyRecovered(f, targetInstanceName)
 
-		// --- Second crash: backoff should delay recreation ---
+		// --- Second container restart: backoff should delay recreation ---
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
 			client.MatchingLabels{
@@ -322,7 +324,7 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstanceName,
 			})).Should(gomega.Succeed())
 		secondUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
+		for _, p := range filterActivePods(podList.Items) {
 			secondUIDs[p.Name] = p.UID
 		}
 
@@ -332,7 +334,17 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 			Namespace: f.Namespace,
 			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(targetPod.Status.ContainerStatuses).ShouldNot(gomega.BeEmpty())
+		previousRestartCount := targetPod.Status.ContainerStatuses[0].RestartCount
+		gomega.Expect(restartNginxContainer(f, targetPod.Name)).Should(gomega.Succeed())
+		gomega.Eventually(func() int32 {
+			if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(targetPod), targetPod); err != nil ||
+				len(targetPod.Status.ContainerStatuses) == 0 {
+				return previousRestartCount
+			}
+			return targetPod.Status.ContainerStatuses[0].RestartCount
+		}, utils.Timeout, utils.Interval).Should(gomega.BeNumerically(">", previousRestartCount),
+			"nginx container should restart before checking the backoff window")
 
 		// During backoff window (90s), pods should NOT be recreated immediately.
 		// Check for 15 s — much shorter than the remaining window (≥40 s) but
@@ -347,15 +359,13 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 				}); err != nil {
 				return false
 			}
-			// During backoff, the original (Failed) pods should still exist and
-			// no new pods should have been created. Check that no pod has a UID
-			// different from the originals — any new UID means recreation happened.
-			for _, p := range pods.Items {
-				if p.DeletionTimestamp != nil {
-					continue
-				}
-				if secondUIDs[p.Name] != p.UID {
-					return false // New pod with different UID — recreation happened
+			activePods := filterActivePods(pods.Items)
+			if len(activePods) != len(secondUIDs) {
+				return false
+			}
+			for _, p := range activePods {
+				if uid, ok := secondUIDs[p.Name]; !ok || uid != p.UID {
+					return false
 				}
 			}
 			return true
@@ -564,6 +574,11 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 		}, 30, 2).Should(gomega.BeTrue(),
 			"rolling update should proceed during backoff (new pod with updated env var should be created)")
 	})
+}
+
+func restartNginxContainer(f *framework.Framework, podName string) error {
+	return exec.CommandContext(f.Ctx, "kubectl", "exec", "-n", f.Namespace, podName,
+		"-c", "nginx", "--", "nginx", "-s", "quit").Run()
 }
 
 // waitForInstanceReady waits until the RoleInstance has a Ready=True condition.
