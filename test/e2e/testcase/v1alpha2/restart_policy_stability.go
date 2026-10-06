@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"flag"
 	"os/exec"
 
 	"github.com/onsi/ginkgo/v2"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
@@ -577,8 +579,19 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 }
 
 func restartNginxContainer(f *framework.Framework, podName string) error {
-	return exec.CommandContext(f.Ctx, "kubectl", "exec", "-n", f.Namespace, podName,
-		"-c", "nginx", "--", "nginx", "-s", "quit").Run()
+	kubeconfig := ""
+	if kubeconfigFlag := flag.Lookup(clientconfig.KubeconfigFlagName); kubeconfigFlag != nil {
+		kubeconfig = kubeconfigFlag.Value.String()
+	}
+	return exec.CommandContext(f.Ctx, "kubectl", kubectlRestartArgs(kubeconfig, f.Namespace, podName)...).Run()
+}
+
+func kubectlRestartArgs(kubeconfig, namespace, podName string) []string {
+	args := make([]string, 0, 12)
+	if kubeconfig != "" {
+		args = append(args, "--kubeconfig", kubeconfig)
+	}
+	return append(args, "exec", "-n", namespace, podName, "-c", "nginx", "--", "nginx", "-s", "quit")
 }
 
 // waitForInstanceReady waits until the RoleInstance has a Ready=True condition.
