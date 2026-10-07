@@ -19,6 +19,7 @@ package workloads
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -47,6 +48,9 @@ const (
 	ConditionCustomizedActionFailed   = "CustomizedActionFailed"
 
 	customizedActionTerminationMessageLimit = 1024
+	customizedActionSummaryMessageLimit     = 256
+	customizedActionResultsMaxItems         = 1024
+	customizedActionResultsStatusBudget     = 512 * 1024
 )
 
 type customizedActionContainerMapping struct {
@@ -307,12 +311,118 @@ func preserveCustomizedActionResults(
 	return results
 }
 
+func limitCustomizedActionResults(
+	results []workloadsv1alpha2.CustomizedActionResult,
+) ([]workloadsv1alpha2.CustomizedActionResult, bool) {
+	if len(results) == 0 {
+		return nil, false
+	}
+
+	ordered := append([]workloadsv1alpha2.CustomizedActionResult(nil), results...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftPriority := customizedActionResultPriority(ordered[i].State)
+		rightPriority := customizedActionResultPriority(ordered[j].State)
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return ordered[i].NodeName < ordered[j].NodeName
+	})
+
+	// Reserve two bytes for the surrounding JSON array brackets. Store a compact
+	// summary for each node first so a few detailed failures cannot crowd out all
+	// other affected nodes.
+	usedBytes := 2
+	limited := make([]workloadsv1alpha2.CustomizedActionResult, 0, min(len(ordered), customizedActionResultsMaxItems))
+	originals := make([]workloadsv1alpha2.CustomizedActionResult, 0, cap(limited))
+	entrySizes := make([]int, 0, cap(limited))
+	for i := range ordered {
+		if len(limited) == customizedActionResultsMaxItems {
+			break
+		}
+		summary := customizedActionResultSummary(ordered[i])
+		encoded, err := json.Marshal(summary)
+		if err != nil {
+			continue
+		}
+		entrySize := len(encoded)
+		if len(limited) > 0 {
+			entrySize++
+		}
+		if usedBytes+entrySize > customizedActionResultsStatusBudget {
+			continue
+		}
+		limited = append(limited, summary)
+		originals = append(originals, ordered[i])
+		entrySizes = append(entrySizes, len(encoded))
+		usedBytes += entrySize
+	}
+
+	// Spend the remaining budget on full detail for non-successful results.
+	for i := range limited {
+		if originals[i].State == workloadsv1alpha2.CustomizedActionStateSucceeded {
+			continue
+		}
+		encoded, err := json.Marshal(originals[i])
+		if err != nil {
+			continue
+		}
+		delta := len(encoded) - entrySizes[i]
+		if delta <= 0 || usedBytes+delta > customizedActionResultsStatusBudget {
+			continue
+		}
+		limited[i] = originals[i]
+		entrySizes[i] = len(encoded)
+		usedBytes += delta
+	}
+
+	truncated := len(limited) != len(results)
+	if !truncated {
+		for i := range limited {
+			if !reflect.DeepEqual(limited[i], originals[i]) {
+				truncated = true
+				break
+			}
+		}
+	}
+	sort.Slice(limited, func(i, j int) bool {
+		return limited[i].NodeName < limited[j].NodeName
+	})
+	return limited, truncated
+}
+
+func customizedActionResultSummary(result workloadsv1alpha2.CustomizedActionResult) workloadsv1alpha2.CustomizedActionResult {
+	result.Containers = nil
+	if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded {
+		result.Message = ""
+	} else {
+		result.Message = truncateCustomizedActionMessageTo(result.Message, customizedActionSummaryMessageLimit)
+	}
+	return result
+}
+
+func customizedActionResultPriority(state workloadsv1alpha2.CustomizedActionState) int {
+	switch state {
+	case workloadsv1alpha2.CustomizedActionStateFailed:
+		return 0
+	case workloadsv1alpha2.CustomizedActionStateRunning:
+		return 1
+	case workloadsv1alpha2.CustomizedActionStatePending:
+		return 2
+	default:
+		return 3
+	}
+}
+
 func truncateCustomizedActionMessage(message string) string {
-	if len(message) <= customizedActionTerminationMessageLimit {
+	return truncateCustomizedActionMessageTo(message, customizedActionTerminationMessageLimit)
+}
+
+func truncateCustomizedActionMessageTo(message string, maxBytes int) string {
+	if len(message) <= maxBytes {
 		return message
 	}
 	const suffix = "…"
-	limit := customizedActionTerminationMessageLimit - len(suffix)
+	limit := maxBytes - len(suffix)
 	var builder strings.Builder
 	for _, r := range message {
 		size := utf8.RuneLen(r)

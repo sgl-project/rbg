@@ -81,3 +81,27 @@ func TestGeneratedWarmupCRDValidatesCustomizedContainerImages(t *testing.T) {
 		t.Fatalf("expected item-scoped customized container image validation in both target schemas, got %d", got)
 	}
 }
+
+func TestGeneratedWarmupCRDBoundsCustomizedActionResults(t *testing.T) {
+	manifest, err := os.ReadFile("../../../config/crd/bases/workloads.x-k8s.io_rolebasedgroupwarmups.yaml")
+	if err != nil {
+		t.Fatalf("read generated Warmup CRD: %v", err)
+	}
+
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(manifest, &crd); err != nil {
+		t.Fatalf("decode generated Warmup CRD: %v", err)
+	}
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	status := root.Properties["status"]
+	results := status.Properties["customizedActionResults"]
+	if results.MaxItems == nil || *results.MaxItems != customizedActionResultsMaxItemsForCRDTest {
+		t.Fatalf("expected customizedActionResults maxItems %d, got %v", customizedActionResultsMaxItemsForCRDTest, results.MaxItems)
+	}
+	truncated := status.Properties["customizedActionResultsTruncated"]
+	if truncated.Type != "boolean" {
+		t.Fatalf("expected customizedActionResultsTruncated boolean schema, got %#v", truncated)
+	}
+}
+
+const customizedActionResultsMaxItemsForCRDTest int64 = 1024

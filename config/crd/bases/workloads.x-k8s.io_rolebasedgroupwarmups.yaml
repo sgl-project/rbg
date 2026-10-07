@@ -6446,10 +6446,16 @@ spec:
                   - podName
                   - state
                   type: object
+                maxItems: 1024
                 type: array
                 x-kubernetes-list-map-keys:
                 - nodeName
                 x-kubernetes-list-type: map
+              customizedActionResultsTruncated:
+                description: |-
+                  CustomizedActionResultsTruncated indicates that one or more results or
+                  per-container details were omitted to keep the status size bounded.
+                type: boolean
               desired:
                 description: Desired is the total number of nodes that need to be
                   warmed up.

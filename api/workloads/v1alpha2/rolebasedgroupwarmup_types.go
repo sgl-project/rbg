@@ -285,11 +285,18 @@ type RoleBasedGroupWarmupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// CustomizedActionResults contains the latest attempt for each node with a
-	// customized action.
+	// customized action. Results may be compacted to keep the status within the
+	// Kubernetes object size limit; failures are retained ahead of successes.
 	// +listType=map
 	// +listMapKey=nodeName
+	// +kubebuilder:validation:MaxItems=1024
 	// +optional
 	CustomizedActionResults []CustomizedActionResult `json:"customizedActionResults,omitempty"`
+
+	// CustomizedActionResultsTruncated indicates that one or more results or
+	// per-container details were omitted to keep the status size bounded.
+	// +optional
+	CustomizedActionResultsTruncated bool `json:"customizedActionResultsTruncated,omitempty"`
 }
 
 // +kubebuilder:object:root=true

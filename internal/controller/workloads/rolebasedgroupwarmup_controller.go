@@ -469,15 +469,16 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
 	oldCustomizedActionResults := warmup.Status.CustomizedActionResults
+	allCustomizedActionResults := warmup.Status.CustomizedActionResults
 	// A nil desiredNodes value means target resolution failed before the desired
 	// state was available. Preserve the last observed diagnostics in that case.
 	if desiredNodes != nil {
-		warmup.Status.CustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
+		allCustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
 	}
 	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
 	if globallyTimedOut {
-		for i := range warmup.Status.CustomizedActionResults {
-			result := &warmup.Status.CustomizedActionResults[i]
+		for i := range allCustomizedActionResults {
+			result := &allCustomizedActionResults[i]
 			if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded {
 				continue
 			}
@@ -485,6 +486,10 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 			result.Reason = CustomizedActionReasonGlobalTimeout
 			result.Message = message
 		}
+	}
+	if desiredNodes != nil {
+		warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
+			limitCustomizedActionResults(allCustomizedActionResults)
 	}
 	var backoffLimit *int32
 	if warmup.Spec.Policies != nil {
@@ -495,7 +500,7 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		updateCustomizedActionConditions(
 			&warmup.Status.Conditions,
 			warmup.Generation,
-			warmup.Status.CustomizedActionResults,
+			allCustomizedActionResults,
 			permanentlyFailedNodes,
 			globallyTimedOut,
 			countDesiredCustomizedActionNodes(desiredNodes),
@@ -810,11 +815,13 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
 	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-	newStatus.CustomizedActionResults = preserveCustomizedActionResults(
+	allCustomizedActionResults := preserveCustomizedActionResults(
 		desiredNodes,
 		warmup.Status.CustomizedActionResults,
 		observedCustomizedActionResults,
 	)
+	newStatus.CustomizedActionResults, newStatus.CustomizedActionResultsTruncated =
+		limitCustomizedActionResults(allCustomizedActionResults)
 
 	// Set startTime if not already set and Pods exist
 	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {
@@ -892,7 +899,7 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	updateCustomizedActionConditions(
 		&newStatus.Conditions,
 		warmup.Generation,
-		newStatus.CustomizedActionResults,
+		allCustomizedActionResults,
 		permanentlyFailedNodes,
 		false,
 		countDesiredCustomizedActionNodes(desiredNodes),

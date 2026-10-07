@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -472,6 +473,127 @@ func TestUpdateStatusPreservesLastCustomizedActionResultBetweenAttempts(t *testi
 	}
 	if !apiequality.Semantic.DeepEqual(updated.Status.CustomizedActionResults, []workloadsv1alpha2.CustomizedActionResult{previous}) {
 		t.Fatalf("expected previous result to remain visible between attempts, got %#v", updated.Status.CustomizedActionResults)
+	}
+}
+
+func TestUpdateStatusBoundsCustomizedActionResultsAtScale(t *testing.T) {
+	const nodeCount = 1000
+	longMessage := strings.Repeat("x", customizedActionTerminationMessageLimit)
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "scale", Namespace: "default", UID: "uid-scale"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{MaxFailedNodes: ptr.To(int32(0))},
+		},
+	}
+	desired := make(map[string][]workloadsv1alpha2.WarmupActions, nodeCount)
+	succeededPods := make([]*corev1.Pod, 0, nodeCount-1)
+	failedPods := make([]*corev1.Pod, 0, nodeCount/2)
+	permanentlyFailed := make(map[string]bool, nodeCount/2)
+	for i := 0; i < nodeCount; i++ {
+		nodeName := fmt.Sprintf("node-%04d", i)
+		desired[nodeName] = []workloadsv1alpha2.WarmupActions{{
+			CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+				Containers: []corev1.Container{{Name: "check", Image: "busybox"}},
+			},
+		}}
+		statuses := []corev1.ContainerStatus{
+			terminatedStatus("custom-0", 0, "Completed", longMessage),
+			terminatedStatus("custom-1", 0, "Completed", longMessage),
+			terminatedStatus("custom-2", 0, "Completed", longMessage),
+		}
+		phase := corev1.PodSucceeded
+		if i >= nodeCount/2 {
+			phase = corev1.PodFailed
+			statuses[0] = terminatedStatus("custom-0", 1, "Error", longMessage)
+			permanentlyFailed[nodeName] = true
+		}
+		pod := mappedWarmupPod(nodeName, "attempt-"+nodeName, phase, statuses...)
+		if phase == corev1.PodFailed {
+			failedPods = append(failedPods, pod)
+		} else {
+			succeededPods = append(succeededPods, pod)
+		}
+	}
+	r := newWarmupReconciler(warmup)
+	r.Recorder = record.NewFakeRecorder(nodeCount + 10)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, succeededPods, failedPods, desired, permanentlyFailed); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	serialized, err := json.Marshal(updated.Status.CustomizedActionResults)
+	if err != nil {
+		t.Fatalf("marshal results: %v", err)
+	}
+	if len(serialized) > customizedActionResultsStatusBudget {
+		t.Fatalf("customized action results exceed status budget: got %d bytes, want <= %d", len(serialized), customizedActionResultsStatusBudget)
+	}
+	t.Logf("bounded %d node results to %d bytes", nodeCount, len(serialized))
+	if len(updated.Status.CustomizedActionResults) != nodeCount {
+		t.Fatalf("expected all node summaries to fit, got %d", len(updated.Status.CustomizedActionResults))
+	}
+	if !updated.Status.CustomizedActionResultsTruncated {
+		t.Fatal("expected status to report compacted result details")
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expected full results to drive the terminal phase, got %q", updated.Status.Phase)
+	}
+	if condition := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionFailed); condition == nil {
+		t.Fatalf("expected full results to drive the failure condition, got %#v", updated.Status.Conditions)
+	}
+	foundFailure := false
+	foundDetailedFailure := false
+	for i := range updated.Status.CustomizedActionResults {
+		result := updated.Status.CustomizedActionResults[i]
+		if result.NodeName == "node-0999" {
+			foundFailure = true
+		}
+		if result.State == workloadsv1alpha2.CustomizedActionStateFailed && len(result.Containers) != 0 {
+			foundDetailedFailure = true
+		}
+		if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded && len(result.Containers) != 0 {
+			t.Fatalf("successful result retained container details: %#v", result)
+		}
+	}
+	if !foundFailure {
+		t.Fatal("expected the failed node to be retained ahead of successful results")
+	}
+	if !foundDetailedFailure {
+		t.Fatal("expected remaining budget to retain details for at least one failed node")
+	}
+}
+
+func TestLimitCustomizedActionResultsPrioritizesFailuresAtMaxItems(t *testing.T) {
+	results := make([]workloadsv1alpha2.CustomizedActionResult, 0, customizedActionResultsMaxItems+1)
+	for i := 0; i < customizedActionResultsMaxItems; i++ {
+		results = append(results, workloadsv1alpha2.CustomizedActionResult{
+			NodeName: fmt.Sprintf("success-%04d", i), State: workloadsv1alpha2.CustomizedActionStateSucceeded,
+			Containers: []workloadsv1alpha2.CustomizedActionContainerResult{{ContainerName: "check"}},
+		})
+	}
+	results = append(results, workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "zz-failed", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode,
+	})
+
+	limited, truncated := limitCustomizedActionResults(results)
+	if !truncated {
+		t.Fatal("expected max-items truncation")
+	}
+	if len(limited) != customizedActionResultsMaxItems {
+		t.Fatalf("expected %d results, got %d", customizedActionResultsMaxItems, len(limited))
+	}
+	foundFailure := false
+	for i := range limited {
+		if limited[i].NodeName == "zz-failed" {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Fatal("failure was displaced by successful results")
 	}
 }
 
