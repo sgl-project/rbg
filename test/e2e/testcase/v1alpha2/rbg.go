@@ -19,6 +19,8 @@ package v1alpha2
 import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,6 +53,73 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					// delete rbg
 					gomega.Expect(f.Client.Delete(f.Ctx, rbg)).Should(gomega.Succeed())
 					f.ExpectRbgV2Deleted(rbg)
+				},
+			)
+
+			ginkgo.It(
+				"adopts the workload orphaned by a cascade=orphan deletion on recreate", func() {
+					buildRbg := func() *workloadsv1alpha2.RoleBasedGroup {
+						return wrappersv2.BuildBasicRoleBasedGroup("e2e-test-orphan", f.Namespace).
+							WithRoles(
+								[]workloadsv1alpha2.RoleSpec{
+									wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").Obj(),
+								},
+							).Obj()
+					}
+					rbg := buildRbg()
+
+					f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+					f.ExpectRbgV2Equal(rbg)
+
+					role := rbg.Spec.Roles[0]
+					deployKey := client.ObjectKey{Name: rbg.GetWorkloadName(&role), Namespace: f.Namespace}
+					oldDeploy := &appsv1.Deployment{}
+					gomega.Expect(f.Client.Get(f.Ctx, deployKey, oldDeploy)).Should(gomega.Succeed())
+
+					// Orphan the workload: the GC strips its owner reference but leaves the
+					// healthy, serving workload and its pods running.
+					gomega.Expect(
+						f.Client.Delete(f.Ctx, rbg, client.PropagationPolicy(metav1.DeletePropagationOrphan)),
+					).Should(gomega.Succeed())
+					gomega.Eventually(
+						func() bool {
+							err := f.Client.Get(
+								f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: f.Namespace},
+								&workloadsv1alpha2.RoleBasedGroup{},
+							)
+							return apierrors.IsNotFound(err)
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+					gomega.Eventually(
+						func() bool {
+							deploy := &appsv1.Deployment{}
+							if err := f.Client.Get(f.Ctx, deployKey, deploy); err != nil {
+								return false
+							}
+							return metav1.GetControllerOf(deploy) == nil
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue(), "timed out waiting for the GC to orphan the workload")
+
+					// Recreate the same manifest: the orphan must be adopted in place and the
+					// RBG must become ready off it, without recreating the workload.
+					newRbg := buildRbg()
+					gomega.Expect(f.Client.Create(f.Ctx, newRbg)).Should(gomega.Succeed())
+					f.ExpectRbgV2Equal(newRbg)
+
+					persisted := &workloadsv1alpha2.RoleBasedGroup{}
+					gomega.Expect(
+						f.Client.Get(f.Ctx, client.ObjectKey{Name: newRbg.Name, Namespace: f.Namespace}, persisted),
+					).Should(gomega.Succeed())
+					adopted := &appsv1.Deployment{}
+					gomega.Expect(f.Client.Get(f.Ctx, deployKey, adopted)).Should(gomega.Succeed())
+					gomega.Expect(adopted.UID).To(
+						gomega.Equal(oldDeploy.UID), "the orphaned workload must be adopted, not recreated",
+					)
+					controller := metav1.GetControllerOf(adopted)
+					gomega.Expect(controller).ToNot(gomega.BeNil())
+					gomega.Expect(controller.UID).To(gomega.Equal(persisted.UID))
 				},
 			)
 

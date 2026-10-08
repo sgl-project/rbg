@@ -149,8 +149,9 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 		return err
 	}
 
+	// An orphaned workload is never skipped: the apply re-attaches the controller reference.
 	if semanticallyEqual && revisionHashEqual && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
-		*oldSts.Spec.Replicas == *role.Replicas {
+		*oldSts.Spec.Replicas == *role.Replicas && v1.GetControllerOfNoCopy(oldSts) != nil {
 		logger.Info("sts equal, skip reconcile")
 		return nil
 	}

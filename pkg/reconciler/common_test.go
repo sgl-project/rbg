@@ -19,6 +19,7 @@ package reconciler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,6 +214,23 @@ type claimTestWorkload struct {
 	object     func(meta metav1.ObjectMeta) client.Object
 	empty      func() client.Object
 	reconciler func(s *runtime.Scheme, c client.Client) WorkloadReconciler
+	// equalOrphan builds the workload exactly as the reconciler's apply would persist it, except
+	// with a UID and no controller reference: the shape left by kubectl delete --cascade=orphan
+	// followed by a re-apply of the same manifest. Nil for kinds whose reconcile always patches.
+	equalOrphan func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object
+}
+
+// claimTestAppliedObject converts an apply configuration into the object the apiserver would have
+// persisted, stripped of owner references so it stands in for an orphaned workload.
+func claimTestAppliedObject[T client.Object](t *testing.T, applyConfig any, obj T) T {
+	t.Helper()
+	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(applyConfig)
+	require.NoError(t, err)
+	require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(raw, obj))
+	obj.SetUID("pre-existing-uid")
+	obj.SetGeneration(1)
+	obj.SetOwnerReferences(nil)
+	return obj
 }
 
 func claimTestWorkloads() []claimTestWorkload {
@@ -250,6 +268,13 @@ func claimTestWorkloads() []claimTestWorkload {
 			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
 				return NewDeploymentReconciler(s, c)
 			},
+			equalOrphan: func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object {
+				c := fake.NewClientBuilder().WithScheme(s).Build()
+				cfg, err := NewDeploymentReconciler(s, c).constructDeployApplyConfiguration(
+					context.Background(), rbg, role, &appsv1.Deployment{}, nil, expectedRevisionHash)
+				require.NoError(t, err)
+				return claimTestAppliedObject(t, cfg, &appsv1.Deployment{})
+			},
 		},
 		{
 			kind: "StatefulSet",
@@ -267,6 +292,19 @@ func claimTestWorkloads() []claimTestWorkload {
 			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
 				return NewStatefulSetReconciler(s, c)
 			},
+			equalOrphan: func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object {
+				c := fake.NewClientBuilder().WithScheme(s).Build()
+				cfg, err := NewStatefulSetReconciler(s, c).constructStatefulSetApplyConfiguration(
+					context.Background(), rbg, role, &appsv1.StatefulSet{}, expectedRevisionHash)
+				require.NoError(t, err)
+				sts := claimTestAppliedObject(t, cfg, &appsv1.StatefulSet{})
+				// the apiserver defaults updateStrategy, and the reconcile path reads it
+				sts.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{
+					Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+					RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(0))},
+				}
+				return sts
+			},
 		},
 		{
 			kind: "LeaderWorkerSet",
@@ -281,6 +319,13 @@ func claimTestWorkloads() []claimTestWorkload {
 			empty: func() client.Object { return &lwsv1.LeaderWorkerSet{} },
 			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
 				return NewLeaderWorkerSetReconciler(s, c)
+			},
+			equalOrphan: func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object {
+				c := fake.NewClientBuilder().WithScheme(s).Build()
+				cfg, err := NewLeaderWorkerSetReconciler(s, c).constructLWSApplyConfiguration(
+					context.Background(), rbg, role, nil, expectedRevisionHash)
+				require.NoError(t, err)
+				return claimTestAppliedObject(t, cfg, &lwsv1.LeaderWorkerSet{})
 			},
 		},
 	}
@@ -314,15 +359,17 @@ func claimTestOwnedBy(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerRefer
 }
 
 // TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl covers a workload that exists under
-// the name a role maps to but belongs to someone else: one left behind by a same-named RBG
-// deleted in the background, or one that no controller owns at all.
+// the name a role maps to but must not be managed: one left behind by a same-named RBG deleted in
+// the background, one that no controller owns and that does not carry this group's label, or one
+// that is terminating.
 func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 	scheme := claimTestScheme(t)
 
 	for _, wl := range claimTestWorkloads() {
 		cases := []struct {
-			name   string
-			owners func(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference
+			name        string
+			owners      func(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference
+			terminating bool
 		}{
 			{
 				name: "left behind by a previous RBG of the same name",
@@ -331,8 +378,15 @@ func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 				},
 			},
 			{
-				name:   "orphaned, with no controller at all",
+				name:   "orphaned, without the group label",
 				owners: func(*workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference { return nil },
+			},
+			{
+				name: "terminating",
+				owners: func(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference {
+					return claimTestOwnedBy(rbg)
+				},
+				terminating: true,
 			},
 		}
 
@@ -349,6 +403,10 @@ func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 					Namespace:       rbg.Namespace,
 					Generation:      1,
 					OwnerReferences: tc.owners(rbg),
+				}
+				if tc.terminating {
+					meta.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+					meta.Finalizers = []string{"test.finalizer/rbg"}
 				}
 				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
 				rec := wl.reconciler(scheme, c)
@@ -370,6 +428,80 @@ func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 				assert.Equal(t, tc.owners(rbg), got.GetOwnerReferences(), "the workload must not be adopted")
 			})
 		}
+	}
+}
+
+// TestWorkloadReconcilers_AdoptOrphanedWorkloadCarryingGroupLabel covers the orphan hand-off:
+// kubectl delete rbg --cascade=orphan strips the controller reference but leaves the group label,
+// and a same-named RBG must adopt such a workload instead of wedging on it.
+func TestWorkloadReconcilers_AdoptOrphanedWorkloadCarryingGroupLabel(t *testing.T) {
+	scheme := claimTestScheme(t)
+
+	for _, wl := range claimTestWorkloads() {
+		t.Run(wl.kind, func(t *testing.T) {
+			ctx := context.Background()
+			role := wl.role
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			rbg.UID = claimTestCurrentUID
+
+			meta := metav1.ObjectMeta{
+				Name:       rbg.GetWorkloadName(&role),
+				Namespace:  rbg.Namespace,
+				Generation: 1,
+				Labels:     map[string]string{constants.GroupNameLabelKey: rbg.Name},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
+			rec := wl.reconciler(scheme, c)
+
+			status, err := rec.ConstructRoleStatus(ctx, rbg, &role)
+			require.NoError(t, err)
+			assert.Equal(t, int32(1), status.ReadyReplicas)
+
+			ready, err := rec.CheckWorkloadReady(ctx, rbg, &role)
+			require.NoError(t, err)
+			assert.True(t, ready)
+
+			require.NoError(t, rec.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash))
+
+			got := wl.empty()
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(wl.object(meta)), got))
+			controller := metav1.GetControllerOf(got)
+			require.NotNil(t, controller, "the orphaned workload must be adopted")
+			assert.Equal(t, claimTestCurrentUID, controller.UID)
+		})
+	}
+}
+
+// TestWorkloadReconcilers_AdoptEqualOrphan pins the skip path: an orphaned workload whose spec
+// already matches the desired one must still be applied so the controller reference comes back.
+// Kinds whose reconcile always patches are covered by the adoption test above.
+func TestWorkloadReconcilers_AdoptEqualOrphan(t *testing.T) {
+	scheme := claimTestScheme(t)
+
+	for _, wl := range claimTestWorkloads() {
+		if wl.equalOrphan == nil {
+			continue
+		}
+		t.Run(wl.kind, func(t *testing.T) {
+			ctx := context.Background()
+			role := wl.role
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			rbg.UID = claimTestCurrentUID
+
+			orphan := wl.equalOrphan(t, scheme, rbg, &role)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(orphan).Build()
+			rec := wl.reconciler(scheme, c)
+
+			require.NoError(t, rec.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash))
+
+			got := wl.empty()
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(orphan), got))
+			controller := metav1.GetControllerOf(got)
+			require.NotNil(t, controller, "an orphaned workload must be re-adopted even when its spec is already equal")
+			assert.Equal(t, claimTestCurrentUID, controller.UID)
+		})
 	}
 }
 
