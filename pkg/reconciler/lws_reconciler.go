@@ -113,7 +113,8 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 		logger.Info(fmt.Sprintf("lws hash not equal, old: %s, new: %s",
 			oldLWS.Labels[roleHashKey], newLWS.Labels[roleHashKey]))
 	}
-	if semanticallyEqual && revisionHashEqual {
+	// An orphaned workload is never skipped: the apply re-attaches the controller reference.
+	if semanticallyEqual && revisionHashEqual && metav1.GetControllerOfNoCopy(oldLWS) != nil {
 		logger.Info("lws equal, skip reconcile")
 		return nil
 	}

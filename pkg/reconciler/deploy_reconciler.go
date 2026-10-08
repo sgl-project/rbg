@@ -111,7 +111,8 @@ func (r *DeploymentReconciler) Reconciler(
 			oldDeploy.Labels[roleHashKey],
 			newDeploy.Labels[roleHashKey]))
 	}
-	if semanticallyEqual && revisionHashEqual {
+	// An orphaned workload is never skipped: the apply re-attaches the controller reference.
+	if semanticallyEqual && revisionHashEqual && metav1.GetControllerOfNoCopy(oldDeploy) != nil {
 		logger.Info("deployment equal, skip reconcile")
 		return nil
 	}
