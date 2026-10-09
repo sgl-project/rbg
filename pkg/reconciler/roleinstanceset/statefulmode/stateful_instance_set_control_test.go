@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -489,7 +490,7 @@ func TestComputeTopology(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := computeTopology(tt.set, tt.instances, tt.currentRev, tt.updateRev)
+			got, err := computeTopology(tt.set, tt.instances, tt.currentRev, tt.updateRev, false)
 			if err != nil {
 				t.Fatalf("computeTopology() unexpected error: %v", err)
 			}
@@ -1121,7 +1122,11 @@ func TestProgressUpdateRetriesUnhealthyNonTargets(t *testing.T) {
 
 func TestUpdateStatefulInstanceSetOrderedReadyRetriesUnhealthyTarget(t *testing.T) {
 	resetInstanceUnhealthySince()
-	t.Cleanup(resetInstanceUnhealthySince)
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
 
 	set := newRevisionTestSet("nginx:1.0")
 	set.Spec.Replicas = ptr.To[int32](2)
@@ -1190,7 +1195,11 @@ func TestUpdateStatefulInstanceSetOrderedReadyRetriesUnhealthyTarget(t *testing.
 
 func TestUpdateStatefulInstanceSetResumesEarlyRollback(t *testing.T) {
 	resetInstanceUnhealthySince()
-	t.Cleanup(resetInstanceUnhealthySince)
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
 
 	set := newRevisionTestSet("nginx:1.0")
 	set.Spec.Replicas = ptr.To[int32](2)
@@ -1267,10 +1276,10 @@ func TestUpdateStatefulInstanceSetResumesEarlyRollback(t *testing.T) {
 
 func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
 	resetInstanceUnhealthySince()
-	resetEarlyRollbackReplacementUIDs()
+	resetEarlyRollbackReplacementSignals()
 	t.Cleanup(func() {
 		resetInstanceUnhealthySince()
-		resetEarlyRollbackReplacementUIDs()
+		resetEarlyRollbackReplacementSignals()
 	})
 
 	set := newRevisionTestSet("nginx:1.0")
@@ -1343,7 +1352,7 @@ func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
 	replacement.Generation = 2
 	reconcile(replacement, surge)
 	if len(objects.deleted) != 0 {
-		t.Fatalf("deleted surge after controller restart before replacement was ready: %v", objects.deleted)
+		t.Fatalf("deleted surge before replacement was ready: %v", objects.deleted)
 	}
 	replacement.Status.Conditions[0].Status = v1.ConditionTrue
 	replacement.Status.ObservedGeneration = replacement.Generation
@@ -1351,14 +1360,114 @@ func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
 	if len(objects.deleted) != 1 || objects.deleted[0] != surge.Name {
 		t.Fatalf("deleted = %v, want only completed surge %s", objects.deleted, surge.Name)
 	}
-	if _, ok := earlyRollbackReplacementUIDs.Load(key); ok {
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
 		t.Fatalf("completed early rollback retained its replacement signal")
 	}
 }
 
+func TestUpdateStatefulInstanceSetScalesDownAfterCancelledRollout(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		paused bool
+	}{
+		{name: "paused before replacement work starts", paused: true},
+		{name: "budget-blocked before replacement work starts", paused: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+			resetEarlyRollbackReplacementSignals()
+			t.Cleanup(func() {
+				resetInstanceUnhealthySince()
+				resetEarlyRollbackReplacementSignals()
+			})
+
+			set := newRevisionTestSet("nginx:1.0")
+			set.Spec.Replicas = ptr.To[int32](2)
+			set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+			set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+			set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(1))
+			set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+			set.Spec.UpdateStrategy.Paused = tt.paused
+
+			currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+			rolledForwardRev, err := newRevision(set, 2, ptr.To[int32](0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:1.0"
+			updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if currentRev.Name != updateRev.Name || currentRev.Name == rolledForwardRev.Name {
+				t.Fatalf("rollback revisions = %q, %q, %q; want A, B, A", currentRev.Name, rolledForwardRev.Name, updateRev.Name)
+			}
+			set.Status.CurrentRevision = currentRev.Name
+			set.Status.UpdateRevision = rolledForwardRev.Name
+
+			objects := &fakeInstanceObjectManager{}
+			recorder := record.NewFakeRecorder(64)
+			control := &defaultStatefulInstanceSetControl{
+				instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+				inplaceControl:  &fakeInplaceControl{},
+				recorder:        recorder,
+			}
+			key := getInstanceSetKey(set)
+			revisions := []*apps.ControllerRevision{currentRev, rolledForwardRev, updateRev}
+			baseInstances := []*workloadsv1alpha2.RoleInstance{
+				buildInst(set.Name, 0, currentRev.Name, false, true),
+				buildInst(set.Name, 1, currentRev.Name, true, true),
+			}
+
+			_, err = control.updateStatefulInstanceSet(context.Background(), set, currentRev, rolledForwardRev, 0,
+				baseInstances, revisions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+				t.Fatalf("no replacement work started, but rollback signal was stored")
+			}
+
+			instances := baseInstances
+			if !tt.paused {
+				if len(objects.created) != 1 || objects.created[0] != fmt.Sprintf("%s-2", set.Name) {
+					t.Fatalf("created = %v, want one budget-blocking surge instance", objects.created)
+				}
+				instances = append(append([]*workloadsv1alpha2.RoleInstance{}, baseInstances...),
+					buildInst(set.Name, 2, rolledForwardRev.Name, false, true))
+			}
+
+			set.Spec.UpdateStrategy.Paused = false
+			set.Spec.Replicas = ptr.To[int32](1)
+			objects.created = nil
+			objects.deleted = nil
+			_, err = control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+				instances, revisions)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			deleted := sets.New(objects.deleted...)
+			if !deleted.Has(fmt.Sprintf("%s-1", set.Name)) {
+				t.Fatalf("cancelled rollout did not scale down: deleted=%v", objects.deleted)
+			}
+			if deleted.Has(fmt.Sprintf("%s-0", set.Name)) {
+				t.Fatalf("scale-down deleted the remaining base instance: deleted=%v", objects.deleted)
+			}
+			if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+				t.Fatalf("cancelled rollout retained rollback signal: deleted=%v", objects.deleted)
+			}
+		})
+	}
+}
+
 func TestComputeTopologyDoesNotKeepSurgeAfterScaleDown(t *testing.T) {
-	resetEarlyRollbackReplacementUIDs()
-	t.Cleanup(resetEarlyRollbackReplacementUIDs)
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
 
 	set := buildSet("scale-down", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
 	set.UID = "scale-down-set"
@@ -1367,7 +1476,7 @@ func TestComputeTopologyDoesNotKeepSurgeAfterScaleDown(t *testing.T) {
 		buildInst(set.Name, 1, testUpdateRev, true, true),
 	}
 
-	topo, err := computeTopology(set, instances, testUpdateRev, testUpdateRev)
+	topo, err := computeTopology(set, instances, testUpdateRev, testUpdateRev, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1381,7 +1490,11 @@ func TestComputeTopologyDoesNotKeepSurgeAfterScaleDown(t *testing.T) {
 
 func TestOrderedReadyRetriesUnhealthyStaleSurge(t *testing.T) {
 	resetInstanceUnhealthySince()
-	t.Cleanup(resetInstanceUnhealthySince)
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
 
 	set := newRevisionTestSet("nginx:1.0")
 	set.Spec.Replicas = ptr.To[int32](2)
@@ -1544,31 +1657,95 @@ func TestProgressOrderedReadyUnhealthyTargetSkipsPausedRollout(t *testing.T) {
 	}
 }
 
-func TestComputeTopologyDropsReplacedSetRollbackSignal(t *testing.T) {
-	resetEarlyRollbackReplacementUIDs()
-	t.Cleanup(resetEarlyRollbackReplacementUIDs)
+func TestEarlyRollbackReplacementSignalDropsReplacedSet(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
 
 	oldSet := buildSet("same-name", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
 	oldSet.UID = "old-set-uid"
 	newSet := buildSet("same-name", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
 	newSet.UID = "new-set-uid"
 	key := getInstanceSetKey(newSet)
-	earlyRollbackReplacementUIDs.Store(key, string(oldSet.UID))
+	earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+		setUID:         string(oldSet.UID),
+		updateRevision: testUpdateRev,
+		ordinals:       sets.New(0),
+	})
 
 	instances := []*workloadsv1alpha2.RoleInstance{
 		buildInst(newSet.Name, 0, testUpdateRev, false, true),
 		buildInst(newSet.Name, 1, testUpdateRev, true, true),
 	}
-	topo, err := computeTopology(newSet, instances, testUpdateRev, testUpdateRev)
+	if earlyRollbackReplacementSignalActive(newSet, instances, 0, int(*newSet.Spec.Replicas), testUpdateRev) {
+		t.Fatal("same-name replacement inherited the old set rollback signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("replaced set retained its rollback signal")
+	}
+}
+
+func TestEarlyRollbackReplacementSignalLifecycle(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+	set := buildSet("signal", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "signal-set"
+	key := getInstanceSetKey(set)
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	unhealthyReplacement := buildInst(set.Name, 0, testUpdateRev, false, true)
+	if !earlyRollbackReplacementSignalActive(set, []*workloadsv1alpha2.RoleInstance{unhealthyReplacement}, 0, 2, testUpdateRev) {
+		t.Fatal("unhealthy replacement must keep the signal active")
+	}
+
+	earlyRollbackReplacementSignals.Delete(key)
+	recordEarlyRollbackReplacementSignal(set, 1, testUpdateRev)
+	if earlyRollbackReplacementSignalActive(set, nil, 0, 1, testUpdateRev) {
+		t.Fatal("ordinal outside the update range must invalidate its signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("out-of-range ordinals retained rollback signal")
+	}
+
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	if earlyRollbackReplacementSignalActive(set, []*workloadsv1alpha2.RoleInstance{unhealthyReplacement}, 0, 2, "superseded-rev") {
+		t.Fatal("superseded rollout must invalidate the signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("superseded rollout retained rollback signal")
+	}
+
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	readyReplacement := buildInst(set.Name, 0, testUpdateRev, true, true)
+	readyReplacement.Generation = 2
+	readyReplacement.Status.ObservedGeneration = 2
+	if earlyRollbackReplacementSignalActive(set, []*workloadsv1alpha2.RoleInstance{readyReplacement}, 0, 2, testUpdateRev) {
+		t.Fatal("ready replacement must clear the signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("ready replacement retained rollback signal")
+	}
+}
+
+func TestComputeTopologyDoesNotMutateRollbackSignals(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+	set := buildSet("pure-topology", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "pure-topology-set"
+	key := getInstanceSetKey(set)
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	before, ok := earlyRollbackReplacementSignals.Load(key)
+	if !ok {
+		t.Fatal("test did not seed rollback signal")
+	}
+
+	_, err := computeTopology(set, []*workloadsv1alpha2.RoleInstance{buildInst(set.Name, 0, testUpdateRev, true, true)}, testUpdateRev, testUpdateRev, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if topo.inRollout || topo.activeSurge != 0 || topo.endOrdinal != int(*newSet.Spec.Replicas) {
-		t.Fatalf("topology = inRollout:%v activeSurge:%d endOrdinal:%d; want false/0/%d",
-			topo.inRollout, topo.activeSurge, topo.endOrdinal, *newSet.Spec.Replicas)
-	}
-	if _, ok := earlyRollbackReplacementUIDs.Load(key); ok {
-		t.Fatalf("same-name replacement inherited old set's rollback signal")
+	after, stillPresent := earlyRollbackReplacementSignals.Load(key)
+	if !stillPresent || !reflect.DeepEqual(before, after) {
+		t.Fatal("computeTopology must not mutate rollback signal state")
 	}
 }
 
@@ -1686,11 +1863,11 @@ func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	}
 }
 
-// resetEarlyRollbackReplacementUIDs clears the global early-rollback signal map
+// resetEarlyRollbackReplacementSignals clears the global early-rollback signal map
 // so each test starts from a known empty state.
-func resetEarlyRollbackReplacementUIDs() {
-	earlyRollbackReplacementUIDs.Range(func(key, _ interface{}) bool {
-		earlyRollbackReplacementUIDs.Delete(key)
+func resetEarlyRollbackReplacementSignals() {
+	earlyRollbackReplacementSignals.Range(func(key, _ interface{}) bool {
+		earlyRollbackReplacementSignals.Delete(key)
 		return true
 	})
 }
@@ -1844,6 +2021,43 @@ func TestPruneInstanceHealth(t *testing.T) {
 			wantPresent := state == "live" || state == "lookup error"
 			if exists != wantPresent || (exists && got != firstObserved) {
 				t.Fatalf("timer after pruning %s set: exists=%v, got=%v, wantPresent=%v", state, exists, got, wantPresent)
+			}
+		})
+	}
+}
+
+func TestPruneEarlyRollbackReplacementSignals(t *testing.T) {
+	for _, state := range []string{"live", "deleted", "recreated", "lookup error"} {
+		t.Run(state, func(t *testing.T) {
+			resetEarlyRollbackReplacementSignals()
+			t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+			set := buildSet("prefill", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+			set.UID = "signal-set"
+			recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+			key := getInstanceSetKey(set)
+
+			indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+			if state != "deleted" {
+				cachedSet := set.DeepCopy()
+				if state == "recreated" {
+					cachedSet.UID = "replacement-set"
+				}
+				if err := indexer.Add(cachedSet); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "lookup error" {
+				indexer = healthErrorIndexer{Indexer: indexer, err: errors.New("cache lookup failed")}
+			}
+			controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
+
+			controller.pruneInstanceHealth()
+
+			_, exists := earlyRollbackReplacementSignals.Load(key)
+			wantPresent := state == "live" || state == "lookup error"
+			if exists != wantPresent {
+				t.Fatalf("signal after pruning %s set: exists=%v, want=%v", state, exists, wantPresent)
 			}
 		})
 	}

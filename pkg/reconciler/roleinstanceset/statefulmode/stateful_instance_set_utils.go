@@ -504,14 +504,57 @@ func hasStaleBaseInstance(
 	return false
 }
 
-// trackEarlyRollbackReplacement maintains the in-memory replacement signal for
-// an early rollback. Once a stale base instance is observed, the signal stays
-// active until all base instances at updateRevision are ready. It is primarily
-// needed when the revision names match again after A -> B -> A. This bridges the
-// gap after the stale instance disappears and before its replacement becomes
-// healthy, allowing existing surge to remain in range. The UID check prevents a
-// same-name replacement set from inheriting the previous set's signal.
-func trackEarlyRollbackReplacement(
+// earlyRollbackReplacementSignal identifies replacement work that is actually
+// in flight for an early rollback. The ordinals are scoped to base slots, and
+// the revision is stored so a cancelled or superseded rollout cannot keep a
+// stale signal alive.
+type earlyRollbackReplacementSignal struct {
+	setUID         string
+	updateRevision string
+	ordinals       sets.Set[int]
+}
+
+// recordEarlyRollbackReplacementSignal records that the controller has started
+// replacing a base ordinal during an early rollback. The signal is intentionally
+// created only for actual replacement work; merely observing a stale base while
+// paused or budget-blocked must not retain surge.
+func recordEarlyRollbackReplacementSignal(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	ordinal int,
+	updateRevision string,
+) {
+	if set == nil || set.UID == "" || ordinal < 0 || updateRevision == "" {
+		return
+	}
+
+	key := getInstanceSetKey(set)
+	uid := string(set.UID)
+	value, ok := earlyRollbackReplacementSignals.Load(key)
+	signal, valid := value.(earlyRollbackReplacementSignal)
+	if !ok || !valid || signal.setUID != uid || signal.updateRevision != updateRevision {
+		earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+			setUID:         uid,
+			updateRevision: updateRevision,
+			ordinals:       sets.New(ordinal),
+		})
+		return
+	}
+
+	ordinals := signal.ordinals.Clone()
+	ordinals.Insert(ordinal)
+	earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+		setUID:         uid,
+		updateRevision: updateRevision,
+		ordinals:       ordinals,
+	})
+}
+
+// earlyRollbackReplacementSignalActive reports whether recorded replacement
+// work is still in flight. It invalidates the signal when the set is recreated,
+// the target revision changes, all tracked ordinals leave the update range, or
+// every tracked replacement is ready. Missing or unhealthy replacements keep
+// the signal active so the controller recreates them and retains surge.
+func earlyRollbackReplacementSignalActive(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instances []*workloadsv1alpha2.RoleInstance,
 	partition, replicas int,
@@ -522,31 +565,62 @@ func trackEarlyRollbackReplacement(
 	}
 
 	key := getInstanceSetKey(set)
-	uid := string(set.UID)
-	if hasStaleBaseInstance(instances, partition, replicas, updateRevision) {
-		earlyRollbackReplacementUIDs.Store(key, uid)
-		return true
-	}
-
-	value, ok := earlyRollbackReplacementUIDs.Load(key)
+	value, ok := earlyRollbackReplacementSignals.Load(key)
 	if !ok {
 		return false
 	}
-	owner, _ := value.(string)
-	if owner != uid {
-		earlyRollbackReplacementUIDs.Delete(key)
+	signal, valid := value.(earlyRollbackReplacementSignal)
+	if !valid || signal.setUID != string(set.UID) || signal.updateRevision != updateRevision || signal.ordinals.Len() == 0 {
+		earlyRollbackReplacementSignals.Delete(key)
 		return false
 	}
-	if allBaseAtUpdateRevHealthy(instances, partition, replicas, updateRevision) {
-		earlyRollbackReplacementUIDs.Delete(key)
+
+	ordinals := signal.ordinals.Clone()
+	for ordinal := range ordinals {
+		if ordinal < partition || ordinal >= replicas {
+			ordinals.Delete(ordinal)
+		}
+	}
+	if ordinals.Len() == 0 {
+		earlyRollbackReplacementSignals.Delete(key)
 		return false
 	}
-	return true
+
+	byOrdinal := make(map[int]*workloadsv1alpha2.RoleInstance, ordinals.Len())
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		if ord := getOrdinal(inst); ord >= 0 {
+			byOrdinal[ord] = inst
+		}
+	}
+
+	for ordinal := range ordinals {
+		inst := byOrdinal[ordinal]
+		if inst == nil || !isCreated(inst) || isTerminating(inst) ||
+			getInstanceRevision(inst) != updateRevision || !isHealthy(inst) ||
+			inst.Status.ObservedGeneration < inst.Generation {
+			if ordinals.Len() != signal.ordinals.Len() {
+				earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+					setUID:         signal.setUID,
+					updateRevision: signal.updateRevision,
+					ordinals:       ordinals,
+				})
+			}
+			return true
+		}
+	}
+
+	earlyRollbackReplacementSignals.Delete(key)
+	return false
 }
 
 // computeTopology is the single source of truth for ordinal range sizing
 // during a reconcile. See topology doc for field semantics. Errors only
-// occur on malformed spec (negative percentages etc.).
+// occur on malformed spec (negative percentages etc.). The caller supplies
+// whether early-rollback replacement work is active so this function remains
+// free of global-map side effects.
 //
 // Sizing rules in one place:
 //
@@ -579,6 +653,7 @@ func computeTopology(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instances []*workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision string,
+	earlyRollbackReplacement bool,
 ) (topology, error) {
 	t := topology{
 		startOrdinal:    0,
@@ -609,7 +684,6 @@ func computeTopology(
 	t.partition = partition
 
 	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision)
-	earlyRollbackReplacement := trackEarlyRollbackReplacement(set, instances, t.partition, t.replicas, updateRevision)
 	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
 	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
 	if maxSurge == 0 {

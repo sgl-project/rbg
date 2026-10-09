@@ -169,8 +169,8 @@ func remainingUnhealthyWindow(
 // unhealthy window. Unlike progressUpdate's target-specific retry, this is also
 // used for unhealthy instances that consume the availability budget but are not
 // update targets (for example, instances already at updateRev or below
-// partition). The retry does not release the budget; it only removes the
-// dependency on an unrelated instance event.
+// partition). The retry does not release the budget; until the unhealthy
+// window expires, it only removes the dependency on an unrelated instance event.
 func pushUnhealthyRetry(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) {
 	if wait, ok := remainingUnhealthyWindow(set, inst); ok {
 		durationStore.Push(getInstanceSetKey(set), wait)
@@ -445,7 +445,7 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	if err != nil {
 		return set.Status.DeepCopy(), err
 	}
-	topo, err := computeTopology(set, instances, currentRevision.Name, updateRevision.Name)
+	topo, err := computeTopologyForReconcile(set, instances, currentRevision.Name, updateRevision.Name)
 	if err != nil {
 		return set.Status.DeepCopy(), err
 	}
@@ -562,6 +562,26 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		status.CurrentRevision = updateRevision.Name
 	}
 	return &status, nil
+}
+
+// computeTopologyForReconcile refreshes the in-memory early-rollback replacement
+// signal, then computes topology with that result. Keeping this outside
+// computeTopology preserves the topology function as side-effect free.
+func computeTopologyForReconcile(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instances []*workloadsv1alpha2.RoleInstance,
+	currentRevision, updateRevision string,
+) (topology, error) {
+	partition, err := computePartition(set)
+	if err != nil {
+		return topology{}, err
+	}
+	specReplicas := 0
+	if set.Spec.Replicas != nil {
+		specReplicas = int(*set.Spec.Replicas)
+	}
+	earlyRollbackReplacement := earlyRollbackReplacementSignalActive(set, instances, partition, specReplicas, updateRevision)
+	return computeTopology(set, instances, currentRevision, updateRevision, earlyRollbackReplacement)
 }
 
 // countUnhealthy returns the count of unhealthy instances across the in-range
@@ -832,6 +852,9 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	klog.InfoS("Updating instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(target),
 		"from", getInstanceRevision(target), "to", updateRevision.Name,
 		"isSurge", isSurgeSlot, "free", isFree)
+	if !isSurgeSlot && currentRevision.Name == updateRevision.Name && isTerminating(target) {
+		recordEarlyRollbackReplacementSignal(set, getOrdinal(target), updateRevision.Name)
+	}
 	var inplacing bool
 	var err error
 	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
@@ -847,6 +870,9 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 			return false, err
 		}
 		transitioned = actualDeleting
+	}
+	if transitioned && !isSurgeSlot && currentRevision.Name == updateRevision.Name {
+		recordEarlyRollbackReplacementSignal(set, getOrdinal(target), updateRevision.Name)
 	}
 	return transitioned && getInstanceRevision(target) == currentRevision.Name, nil
 }
