@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -271,4 +272,121 @@ func TestRoleBasedGroupSet_RoundTrip(t *testing.T) {
 	assert.Equal(t, "prefill", restored.Spec.Template.Roles[0].Name)
 	require.NotNil(t, restored.Spec.Template.PodGroupPolicy)
 	assert.Equal(t, &timeout, restored.Spec.Template.PodGroupPolicy.KubeScheduling.ScheduleTimeoutSeconds)
+}
+
+// TestRoleBasedGroupSet_RoundTrip_PreservesRolloutStrategy pins the blocker scenario: a set on
+// the rolling path is read through v1alpha1 and written back with a full-object update, and the
+// strategy plus the v1alpha2-only rollout status fields must survive the trip.
+func TestRoleBasedGroupSet_RoundTrip_PreservesRolloutStrategy(t *testing.T) {
+	hub := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(3)),
+			RolloutStrategy: &v2.GroupSetRolloutStrategy{
+				Type:           v2.RecreateStrategyType,
+				Partition:      ptr.To(intstr.FromInt32(1)),
+				MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+				MaxSurge:       ptr.To(intstr.FromString("25%")),
+			},
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Spec: v2.RoleBasedGroupSpec{
+					Roles: []v2.RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
+				},
+			},
+		},
+		Status: v2.RoleBasedGroupSetStatus{
+			Replicas:                3,
+			ReadyReplicas:           3,
+			CurrentReplicas:         1,
+			UpdatedReplicas:         2,
+			UpdatedReadyReplicas:    2,
+			ExpectedUpdatedReplicas: 2,
+			CurrentRevision:         "rbgs-old",
+			UpdateRevision:          "rbgs-new",
+		},
+	}
+
+	view := &RoleBasedGroupSet{}
+	require.NoError(t, view.ConvertFrom(hub))
+	assert.Contains(t, view.Annotations, annotationV1alpha2RolloutStrategy)
+	assert.Contains(t, view.Annotations, annotationV1alpha2RolloutStatus)
+	assert.NotContains(t, view.Annotations, annotationV1alpha1PodGroupPolicy,
+		"hub-carried v1alpha1 stash keys must stay out of the v1alpha1 view")
+
+	// A GitOps client edits only what it understands (e.g. a label) and writes the object back.
+	view.Labels = map[string]string{"synced": "true"}
+	roundTripped := &v2.RoleBasedGroupSet{}
+	require.NoError(t, view.ConvertTo(roundTripped))
+
+	assert.Equal(t, hub.Spec.RolloutStrategy, roundTripped.Spec.RolloutStrategy)
+	assert.Equal(t, hub.Status.CurrentReplicas, roundTripped.Status.CurrentReplicas)
+	assert.Equal(t, hub.Status.UpdatedReplicas, roundTripped.Status.UpdatedReplicas)
+	assert.Equal(t, hub.Status.UpdatedReadyReplicas, roundTripped.Status.UpdatedReadyReplicas)
+	assert.Equal(t, hub.Status.ExpectedUpdatedReplicas, roundTripped.Status.ExpectedUpdatedReplicas)
+	assert.Equal(t, hub.Status.CurrentRevision, roundTripped.Status.CurrentRevision)
+	assert.Equal(t, hub.Status.UpdateRevision, roundTripped.Status.UpdateRevision)
+	assert.NotContains(t, roundTripped.Annotations, annotationV1alpha2RolloutStrategy,
+		"the stash must not leak into storage; the hub keeps the values in native fields")
+	assert.NotContains(t, roundTripped.Annotations, annotationV1alpha2RolloutStatus)
+}
+
+// TestRoleBasedGroupSet_ConvertTo_NativeV1alpha1HasNoStrategy covers the opposite direction: an
+// object that only ever existed as v1alpha1 carries no stash, and conversion must leave the
+// strategy unset so the set stays on the legacy path.
+func TestRoleBasedGroupSet_ConvertTo_NativeV1alpha1HasNoStrategy(t *testing.T) {
+	src := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Template: RoleBasedGroupSpec{
+				Roles: []RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
+			},
+		},
+	}
+
+	dst := &v2.RoleBasedGroupSet{}
+	require.NoError(t, src.ConvertTo(dst))
+	assert.Nil(t, dst.Spec.RolloutStrategy)
+	assert.Zero(t, dst.Status.CurrentRevision)
+	assert.Zero(t, dst.Status.UpdateRevision)
+}
+
+// TestRoleBasedGroupSet_ConvertFrom_NoStrategyNoStash: a set on the legacy path produces no
+// v1alpha2 stash annotations, keeping the v1alpha1 view free of conversion noise.
+func TestRoleBasedGroupSet_ConvertFrom_NoStrategyNoStash(t *testing.T) {
+	hub := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Spec: v2.RoleBasedGroupSpec{
+					Roles: []v2.RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
+				},
+			},
+		},
+		Status: v2.RoleBasedGroupSetStatus{Replicas: 1, ReadyReplicas: 1},
+	}
+
+	view := &RoleBasedGroupSet{}
+	require.NoError(t, view.ConvertFrom(hub))
+	assert.NotContains(t, view.Annotations, annotationV1alpha2RolloutStrategy)
+	assert.NotContains(t, view.Annotations, annotationV1alpha2RolloutStatus)
+}
+
+// TestRoleBasedGroupSet_ConvertTo_CorruptStash surfaces a hand-corrupted stash as an error
+// instead of silently dropping it.
+func TestRoleBasedGroupSet_ConvertTo_CorruptStash(t *testing.T) {
+	src := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rbgs",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				annotationV1alpha2RolloutStrategy: "{not-json",
+			},
+		},
+	}
+
+	err := src.ConvertTo(&v2.RoleBasedGroupSet{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), annotationV1alpha2RolloutStrategy)
 }
