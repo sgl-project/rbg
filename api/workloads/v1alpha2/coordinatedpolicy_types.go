@@ -93,6 +93,14 @@ type SchedulingCoordinationStrategy struct {
 	//
 	// +optional
 	Gang *GangSchedulingStrategy `json:"gang,omitempty"`
+
+	// TopologyConstraint defines topology co-location for the roles listed in
+	// the enclosing policy rule's `roles` field. Roles not listed are
+	// unconstrained by this rule; list every role of the RoleBasedGroup for
+	// whole-group co-location. The declaration is immutable for the workload
+	// lifecycle.
+	// +optional
+	TopologyConstraint *TopologyConstraint `json:"topologyConstraint,omitempty"`
 }
 
 // GangSchedulingStrategy defines gang scheduling parameters per role.

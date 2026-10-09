@@ -18,9 +18,12 @@ package v1alpha2
 
 import (
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // ValidateCoordinatedPolicyGang validates every scheduling.gang strategy in the policy.
@@ -93,4 +96,123 @@ func sortedKeys(m map[string]int32) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ValidateCoordinatedPolicyRuleNames ensures every policy rule name is a DNS-1123
+// label. Topology PodGroup names and labels are derived from these names and must not
+// depend on characters that Kubernetes rejects in generated object metadata.
+func ValidateCoordinatedPolicyRuleNames(policy *CoordinatedPolicy) error {
+	var allErrs []error
+	for i := range policy.Spec.Policies {
+		if errs := validation.IsDNS1123Label(policy.Spec.Policies[i].Name); len(errs) > 0 {
+			allErrs = append(allErrs, fmt.Errorf(
+				"spec.policies[%d].name: %q is not a valid DNS-1123 label: %s",
+				i, policy.Spec.Policies[i].Name, errs[0]))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// ValidateCoordinatedPolicyTopology validates syntax and rule-local overlap for
+// topology constraints. Role existence and level semantics are checked during
+// reconcile, because a CoordinatedPolicy may be created before its RBG.
+func ValidateCoordinatedPolicyTopology(policy *CoordinatedPolicy) error {
+	var allErrs []error
+	seenRoles := map[string]string{}
+	seenRuleNames := map[string]struct{}{}
+	for i := range policy.Spec.Policies {
+		rule := &policy.Spec.Policies[i]
+		if rule.Strategy.Scheduling == nil || rule.Strategy.Scheduling.TopologyConstraint == nil {
+			continue
+		}
+		path := fmt.Sprintf("spec.policies[%d].strategy.scheduling.topologyConstraint", i)
+		if err := ValidateTopologyConstraint(path, rule.Strategy.Scheduling.TopologyConstraint); err != nil {
+			allErrs = append(allErrs, err)
+		}
+		if _, duplicate := seenRuleNames[rule.Name]; duplicate {
+			allErrs = append(allErrs, fmt.Errorf(
+				"%s: duplicate topology rule name %q; topology-bearing rule names must be unique",
+				path, rule.Name))
+		} else {
+			seenRuleNames[rule.Name] = struct{}{}
+		}
+		for _, roleName := range rule.Roles {
+			if existing, exists := seenRoles[roleName]; exists {
+				allErrs = append(allErrs, fmt.Errorf(
+					"%s: role %q is also covered by topology rule %q; a role may appear in at most one topology-bearing rule",
+					path, roleName, existing))
+				continue
+			}
+			seenRoles[roleName] = rule.Name
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// ValidateCoordinatedPolicyTopologyImmutability rejects changes to the complete set of
+// topology-bearing policy rules. Topology is a launch-time placement contract, so the
+// rule set cannot be added to, removed from, or changed in place.
+func ValidateCoordinatedPolicyTopologyImmutability(oldPolicy, newPolicy *CoordinatedPolicy) error {
+	// Compare the complete topology-bearing rule set rather than a name-keyed map. The
+	// CRD does not require unique policy names, so duplicate names must not hide one of
+	// the rules from removal detection.
+	if !topologyRuleIdentitiesEqual(
+		topologyRuleIdentities(oldPolicy),
+		topologyRuleIdentities(newPolicy),
+	) {
+		return fmt.Errorf(
+			"spec.policies topology rules are immutable for the workload lifecycle; delete and recreate the affected workload to change them")
+	}
+	return nil
+}
+
+type topologyRuleIdentity struct {
+	Name     string
+	Roles    []string
+	Topology *TopologyConstraint
+}
+
+func topologyRuleIdentities(policy *CoordinatedPolicy) []topologyRuleIdentity {
+	if policy == nil {
+		return nil
+	}
+	identities := make([]topologyRuleIdentity, 0)
+	for i := range policy.Spec.Policies {
+		rule := &policy.Spec.Policies[i]
+		if rule.Strategy.Scheduling == nil || rule.Strategy.Scheduling.TopologyConstraint == nil {
+			continue
+		}
+		identities = append(identities, topologyRuleIdentity{
+			Name:     rule.Name,
+			Roles:    canonicalRoleNames(rule.Roles),
+			Topology: rule.Strategy.Scheduling.TopologyConstraint,
+		})
+	}
+	sort.Slice(identities, func(i, j int) bool {
+		if identities[i].Name != identities[j].Name {
+			return identities[i].Name < identities[j].Name
+		}
+		return strings.Join(identities[i].Roles, "\x00") < strings.Join(identities[j].Roles, "\x00")
+	})
+	return identities
+}
+
+func canonicalRoleNames(roleNames []string) []string {
+	canonical := slices.Clone(roleNames)
+	sort.Strings(canonical)
+	return canonical
+}
+
+func topologyRuleIdentitiesEqual(left, right []topologyRuleIdentity) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Name != right[i].Name ||
+			!slices.Equal(left[i].Roles, right[i].Roles) ||
+			!TopologyConstraintsEqual(left[i].Topology, right[i].Topology) {
+			return false
+		}
+	}
+	return true
 }

@@ -46,10 +46,11 @@ const (
 )
 
 type PodReconciler struct {
-	scheme        *runtime.Scheme
-	client        client.Client
-	injectObjects []string
-	gangScheduler scheduler.GangScheduler
+	scheme             *runtime.Scheme
+	client             client.Client
+	injectObjects      []string
+	gangScheduler      scheduler.GangScheduler
+	placementScheduler scheduler.PlacementScheduler
 }
 
 func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconciler {
@@ -67,6 +68,7 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 // labels/annotations into pod templates.
 func (r *PodReconciler) SetGangScheduler(m scheduler.GangScheduler) {
 	r.gangScheduler = m
+	r.placementScheduler = scheduler.AsPlacementScheduler(m)
 }
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
@@ -143,8 +145,16 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	// Inject gang-scheduling labels/annotations if a GangScheduler is configured.
-	if r.gangScheduler != nil {
+	// Inject scheduler-owned placement fields. The placement compiler is preferred
+	// because it emits one membership derived from the PlacementPlan; the gang-only
+	// injector remains as the compatibility path for schedulers without KEP-473.
+	if r.placementScheduler != nil {
+		plan, err := common.GetPlacementPlan(ctx, r.client, rbg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve placement plan: %w", err)
+		}
+		r.placementScheduler.InjectPlacementSchedulingFields(rbg, role, plan, podTemplateApplyConfiguration)
+	} else if r.gangScheduler != nil {
 		gangStrategy, err := common.GetGangStrategy(ctx, r.client, rbg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve gang scheduling strategy: %w", err)

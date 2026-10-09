@@ -166,6 +166,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - topology.volcano.sh
+  resources:
+  - hypernodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - workloads.x-k8s.io
   resources:
   - clusterengineruntimeprofiles
@@ -215,6 +223,7 @@ rules:
 - apiGroups:
   - workloads.x-k8s.io
   resources:
+  - coordinatedpolicies/finalizers
   - instancesets/finalizers
   - rolebasedgroups/finalizers
   - rolebasedgroupsets/finalizers

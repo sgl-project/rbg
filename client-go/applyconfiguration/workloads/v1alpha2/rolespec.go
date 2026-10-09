@@ -25,18 +25,19 @@ import (
 // RoleSpecApplyConfiguration represents a declarative configuration of the RoleSpec type for use
 // with apply.
 type RoleSpecApplyConfiguration struct {
-	Name                      *string                            `json:"name,omitempty"`
-	Labels                    map[string]string                  `json:"labels,omitempty"`
-	Annotations               map[string]string                  `json:"annotations,omitempty"`
-	Replicas                  *int32                             `json:"replicas,omitempty"`
-	RolloutStrategy           *RolloutStrategyApplyConfiguration `json:"rolloutStrategy,omitempty"`
-	Dependencies              []string                           `json:"dependencies,omitempty"`
-	PatternApplyConfiguration `json:",inline"`
-	ServicePorts              []v1.ServicePort                   `json:"servicePorts,omitempty"`
-	EngineRuntimes            []EngineRuntimeApplyConfiguration  `json:"engineRuntimes,omitempty"`
-	ScalingAdapter            *ScalingAdapterApplyConfiguration  `json:"scalingAdapter,omitempty"`
-	MinReadySeconds           *int32                             `json:"minReadySeconds,omitempty"`
-	PodManagementPolicy       *constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+	Name                       *string                            `json:"name,omitempty"`
+	Labels                     map[string]string                  `json:"labels,omitempty"`
+	Annotations                map[string]string                  `json:"annotations,omitempty"`
+	Replicas                   *int32                             `json:"replicas,omitempty"`
+	RolloutStrategy            *RolloutStrategyApplyConfiguration `json:"rolloutStrategy,omitempty"`
+	Dependencies               []string                           `json:"dependencies,omitempty"`
+	PatternApplyConfiguration  `json:",inline"`
+	InstanceTopologyConstraint *TopologyConstraintApplyConfiguration `json:"instanceTopologyConstraint,omitempty"`
+	ServicePorts               []v1.ServicePort                      `json:"servicePorts,omitempty"`
+	EngineRuntimes             []EngineRuntimeApplyConfiguration     `json:"engineRuntimes,omitempty"`
+	ScalingAdapter             *ScalingAdapterApplyConfiguration     `json:"scalingAdapter,omitempty"`
+	MinReadySeconds            *int32                                `json:"minReadySeconds,omitempty"`
+	PodManagementPolicy        *constants.PodManagementPolicyType    `json:"podManagementPolicy,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -128,6 +129,14 @@ func (b *RoleSpecApplyConfiguration) WithLeaderWorkerPattern(value *LeaderWorker
 // If called multiple times, the CustomComponentsPattern field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithCustomComponentsPattern(value *CustomComponentsPatternApplyConfiguration) *RoleSpecApplyConfiguration {
 	b.PatternApplyConfiguration.CustomComponentsPattern = value
+	return b
+}
+
+// WithInstanceTopologyConstraint sets the InstanceTopologyConstraint field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the InstanceTopologyConstraint field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithInstanceTopologyConstraint(value *TopologyConstraintApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.InstanceTopologyConstraint = value
 	return b
 }
 

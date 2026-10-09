@@ -69,14 +69,35 @@ const (
 type GangScheduler struct {
 	client client.Client
 
+	// hyperNodeReader is the manager cache when the Volcano placement compiler is
+	// wired through the controller factory. It is nil in unit tests and standalone
+	// construction, in which case loadTopologyLevels falls back to the passed reader.
+	hyperNodeReader client.Reader
+
 	subGroupMu        sync.Mutex
 	subGroupSupported bool
 	subGroupProbedAt  time.Time
+
+	networkTopologyMu        sync.Mutex
+	networkTopologySupported bool
+	networkTopologyProbedAt  time.Time
+
+	topologySubGroupMu        sync.Mutex
+	topologySubGroupSupported bool
+	topologySubGroupProbedAt  time.Time
 }
 
 // New returns a new GangScheduler for Volcano.
 func New(c client.Client) *GangScheduler {
 	return &GangScheduler{client: c}
+}
+
+// SetHyperNodeReader configures the shared-informer-backed reader used for Volcano
+// HyperNode lists. It is intentionally a separate setter rather than a constructor
+// option so the scheduler factory can provide a manager cache only when the active
+// scheduler is Volcano.
+func (m *GangScheduler) SetHyperNodeReader(reader client.Reader) {
+	m.hyperNodeReader = reader
 }
 
 // ReconcilePodGroup creates, updates, or deletes the Volcano PodGroup
