@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -221,6 +222,63 @@ func TestComputeTopology(t *testing.T) {
 			expectedActSurge:  0,
 			expectedEndOrd:    4,
 			expectedMaxSurge:  2,
+			expectedMaxUnav:   0,
+			expectedInRollout: false,
+		},
+		{
+			name: "early rollback: stale base keeps the rollout active",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				s := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+				return s
+			}(),
+			instances: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, "rollback-b", true, true),
+				buildInst("s", 1, testUpdateRev, true, true),
+			},
+			currentRev:        testUpdateRev,
+			updateRev:         testUpdateRev,
+			expectedActSurge:  1,
+			expectedEndOrd:    3,
+			expectedMaxSurge:  1,
+			expectedMaxUnav:   0,
+			expectedInRollout: true,
+		},
+		{
+			name: "no pending rollback: excess surge is not retained",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				s := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+				return s
+			}(),
+			instances: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testUpdateRev, true, true),
+				buildInst("s", 1, testUpdateRev, true, true),
+				buildInst("s", 2, testUpdateRev, true, true),
+			},
+			currentRev:        testUpdateRev,
+			updateRev:         testUpdateRev,
+			expectedActSurge:  0,
+			expectedEndOrd:    2,
+			expectedMaxSurge:  1,
+			expectedMaxUnav:   0,
+			expectedInRollout: false,
+		},
+		{
+			name: "paused early rollback: existing surge stays protected",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				s := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+				s.Spec.UpdateStrategy.Paused = true
+				return s
+			}(),
+			instances: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, "rollback-b", true, true),
+				buildInst("s", 1, testUpdateRev, true, true),
+				buildInst("s", 2, testUpdateRev, true, true),
+			},
+			currentRev:        testUpdateRev,
+			updateRev:         testUpdateRev,
+			expectedActSurge:  1,
+			expectedEndOrd:    3,
+			expectedMaxSurge:  1,
 			expectedMaxUnav:   0,
 			expectedInRollout: false,
 		},
@@ -432,7 +490,7 @@ func TestComputeTopology(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := computeTopology(tt.set, tt.instances, tt.currentRev, tt.updateRev)
+			got, err := computeTopology(tt.set, tt.instances, tt.currentRev, tt.updateRev, false)
 			if err != nil {
 				t.Fatalf("computeTopology() unexpected error: %v", err)
 			}
@@ -966,6 +1024,731 @@ func TestUpdateStatefulInstanceSetRetriesUnhealthyRollout(t *testing.T) {
 	}
 }
 
+func TestProgressUpdateRetriesUnhealthyNonTargets(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	tests := []struct {
+		name      string
+		replicas  []*workloadsv1alpha2.RoleInstance
+		partition int
+	}{
+		{
+			name: "unhealthy instance at update revision requests a retry",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, true, true),
+				buildInst("s", 1, testUpdateRev, false, true),
+			},
+			partition: 0,
+		},
+		{
+			name: "unhealthy instance below partition requests a retry",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, false, true),
+				buildInst("s", 1, testOldRev, true, true),
+			},
+			partition: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+
+			set := buildSet("s", 2, ptr.To(intstrutil.FromInt32(0)), ptr.To(intstrutil.FromInt32(1)))
+			key := getInstanceSetKey(set)
+			durationStore.Pop(key)
+			t.Cleanup(func() { durationStore.Pop(key) })
+
+			objects := &fakeInstanceObjectManager{}
+			recorder := record.NewFakeRecorder(64)
+			control := &defaultStatefulInstanceSetControl{
+				instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+				inplaceControl:  &fakeInplaceControl{},
+				recorder:        recorder,
+			}
+			status := &workloadsv1alpha2.RoleInstanceSetStatus{}
+			topo := topology{
+				startOrdinal:   0,
+				endOrdinal:     2,
+				surgeStart:     2,
+				replicas:       2,
+				partition:      tt.partition,
+				maxUnavailable: 1,
+				maxSurge:       0,
+				inRollout:      true,
+			}
+
+			for _, inst := range tt.replicas {
+				if !isHealthy(inst) {
+					instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), time.Now().Add(-6*time.Second))
+				}
+			}
+
+			_, err := control.progressUpdate(set, status,
+				newStatefulRevision(testOldRev, 1), newStatefulRevision(testUpdateRev, 2),
+				nil, tt.replicas, tt.replicas, 0, topo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wait := durationStore.Pop(key)
+			if wait <= 0 || wait > 4*time.Second {
+				t.Fatalf("retry = %v, want a positive delay of at most 4s", wait)
+			}
+			if len(objects.deleted) != 0 {
+				t.Fatalf("budget-protected instances deleted: %v", objects.deleted)
+			}
+
+			for _, inst := range tt.replicas {
+				if !isHealthy(inst) {
+					instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), time.Now().Add(-2*stableUnhealthyDuration))
+				}
+			}
+			_, err = control.progressUpdate(set, status,
+				newStatefulRevision(testOldRev, 1), newStatefulRevision(testUpdateRev, 2),
+				nil, tt.replicas, tt.replicas, 0, topo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wait := durationStore.Pop(key); wait != 0 {
+				t.Fatalf("expired non-target window requested another retry: %v", wait)
+			}
+			if len(objects.deleted) != 0 {
+				t.Fatalf("unhealthy non-target must still consume budget; deleted %v", objects.deleted)
+			}
+		})
+	}
+}
+
+func TestUpdateStatefulInstanceSetOrderedReadyRetriesUnhealthyTarget(t *testing.T) {
+	resetInstanceUnhealthySince()
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](2)
+	set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(0))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	updateRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = updateRev.Name
+
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, currentRev.Name, false, true),
+		buildInst(set.Name, 1, currentRev.Name, true, true),
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	reconcile := func() time.Duration {
+		t.Helper()
+		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return durationStore.Pop(key)
+	}
+
+	instanceUnhealthySince.Store(getInstanceHealthKey(set, instances[0]), time.Now().Add(-6*time.Second))
+	if wait := reconcile(); wait <= 0 || wait > 4*time.Second {
+		t.Fatalf("retry = %v, want a positive delay of at most 4s", wait)
+	}
+	if len(objects.deleted) != 0 {
+		t.Fatalf("OrderedReady deleted before the health window expired: %v", objects.deleted)
+	}
+
+	instanceUnhealthySince.Store(getInstanceHealthKey(set, instances[0]), time.Now().Add(-2*stableUnhealthyDuration))
+	if wait := reconcile(); wait != 0 {
+		t.Fatalf("expired OrderedReady health window requested another retry: %v", wait)
+	}
+	deleted := sets.New(objects.deleted...)
+	if !deleted.Has(instances[0].Name) {
+		t.Fatalf("OrderedReady rollout did not resume: deleted %v", objects.deleted)
+	}
+	if deleted.Has(instances[1].Name) {
+		t.Fatalf("OrderedReady cleanup updated a later ordinal: deleted %v", objects.deleted)
+	}
+}
+
+func TestUpdateStatefulInstanceSetResumesEarlyRollback(t *testing.T) {
+	resetInstanceUnhealthySince()
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](2)
+	set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(0))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(2))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	rolledForwardRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:1.0"
+	updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRev.Name != updateRev.Name || currentRev.Name == rolledForwardRev.Name {
+		t.Fatalf("rollback revisions = %q, %q, %q; want A, B, A", currentRev.Name, rolledForwardRev.Name, updateRev.Name)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = rolledForwardRev.Name
+
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, rolledForwardRev.Name, false, true),
+		buildInst(set.Name, 1, rolledForwardRev.Name, false, true),
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	reconcile := func() time.Duration {
+		t.Helper()
+		_, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, rolledForwardRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return durationStore.Pop(key)
+	}
+
+	if wait := reconcile(); wait <= 0 || wait > stableUnhealthyDuration {
+		t.Fatalf("retry = %v, want a positive delay of at most %v", wait, stableUnhealthyDuration)
+	}
+	if len(objects.deleted) != 0 {
+		t.Fatalf("early rollback deleted instances before the health window: %v", objects.deleted)
+	}
+
+	for _, inst := range instances {
+		instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), time.Now().Add(-2*stableUnhealthyDuration))
+	}
+	if wait := reconcile(); wait != 0 {
+		t.Fatalf("expired early-rollback health windows requested another retry: %v", wait)
+	}
+	deleted := sets.New(objects.deleted...)
+	for _, inst := range instances {
+		if !deleted.Has(inst.Name) {
+			t.Fatalf("early rollback did not replace stale instance %s: deleted %v", inst.Name, objects.deleted)
+		}
+	}
+}
+
+func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
+	resetInstanceUnhealthySince()
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](1)
+	set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(1))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	rolledForwardRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:1.0"
+	updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRev.Name != updateRev.Name || currentRev.Name == rolledForwardRev.Name {
+		t.Fatalf("rollback revisions = %q, %q, %q; want A, B, A", currentRev.Name, rolledForwardRev.Name, updateRev.Name)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = rolledForwardRev.Name
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	key := getInstanceSetKey(set)
+	durationStore.Pop(key)
+	t.Cleanup(func() { durationStore.Pop(key) })
+	reconcile := func(instances ...*workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceSetStatus {
+		t.Helper()
+		objects.created = nil
+		objects.deleted = nil
+		status, err := control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+			instances, []*apps.ControllerRevision{currentRev, rolledForwardRev, updateRev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+
+	base := buildInst(set.Name, 0, rolledForwardRev.Name, true, true)
+	reconcile(base)
+	if len(objects.created) != 1 || objects.created[0] != fmt.Sprintf("%s-1", set.Name) {
+		t.Fatalf("created = %v, want one rollback surge instance", objects.created)
+	}
+
+	surge := buildInst(set.Name, 1, updateRev.Name, true, true)
+	reconcile(base, surge)
+	if len(objects.deleted) != 1 || objects.deleted[0] != base.Name {
+		t.Fatalf("deleted = %v, want only stale base %s", objects.deleted, base.Name)
+	}
+
+	withTerminating(base)
+	reconcile(base, surge)
+	if len(objects.deleted) != 0 {
+		t.Fatalf("deleted surge while stale base terminated: %v", objects.deleted)
+	}
+	replacement := buildInst(set.Name, 0, updateRev.Name, false, true)
+	replacement.Generation = 2
+	reconcile(replacement, surge)
+	if len(objects.deleted) != 0 {
+		t.Fatalf("deleted surge before replacement was ready: %v", objects.deleted)
+	}
+	replacement.Status.Conditions[0].Status = v1.ConditionTrue
+	replacement.Status.ObservedGeneration = replacement.Generation
+	reconcile(replacement, surge)
+	if len(objects.deleted) != 1 || objects.deleted[0] != surge.Name {
+		t.Fatalf("deleted = %v, want only completed surge %s", objects.deleted, surge.Name)
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatalf("completed early rollback retained its replacement signal")
+	}
+}
+
+func TestUpdateStatefulInstanceSetScalesDownAfterCancelledRollout(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		paused bool
+	}{
+		{name: "paused before replacement work starts", paused: true},
+		{name: "budget-blocked before replacement work starts", paused: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+			resetEarlyRollbackReplacementSignals()
+			t.Cleanup(func() {
+				resetInstanceUnhealthySince()
+				resetEarlyRollbackReplacementSignals()
+			})
+
+			set := newRevisionTestSet("nginx:1.0")
+			set.Spec.Replicas = ptr.To[int32](2)
+			set.Spec.PodManagementPolicy = constants.ParallelPodManagement
+			set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+			set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(1))
+			set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+			set.Spec.UpdateStrategy.Paused = tt.paused
+
+			currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+			rolledForwardRev, err := newRevision(set, 2, ptr.To[int32](0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:1.0"
+			updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if currentRev.Name != updateRev.Name || currentRev.Name == rolledForwardRev.Name {
+				t.Fatalf("rollback revisions = %q, %q, %q; want A, B, A", currentRev.Name, rolledForwardRev.Name, updateRev.Name)
+			}
+			set.Status.CurrentRevision = currentRev.Name
+			set.Status.UpdateRevision = rolledForwardRev.Name
+
+			objects := &fakeInstanceObjectManager{}
+			recorder := record.NewFakeRecorder(64)
+			control := &defaultStatefulInstanceSetControl{
+				instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+				inplaceControl:  &fakeInplaceControl{},
+				recorder:        recorder,
+			}
+			key := getInstanceSetKey(set)
+			revisions := []*apps.ControllerRevision{currentRev, rolledForwardRev, updateRev}
+			baseInstances := []*workloadsv1alpha2.RoleInstance{
+				buildInst(set.Name, 0, currentRev.Name, false, true),
+				buildInst(set.Name, 1, currentRev.Name, true, true),
+			}
+
+			_, err = control.updateStatefulInstanceSet(context.Background(), set, currentRev, rolledForwardRev, 0,
+				baseInstances, revisions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+				t.Fatalf("no replacement work started, but rollback signal was stored")
+			}
+
+			instances := baseInstances
+			if !tt.paused {
+				if len(objects.created) != 1 || objects.created[0] != fmt.Sprintf("%s-2", set.Name) {
+					t.Fatalf("created = %v, want one budget-blocking surge instance", objects.created)
+				}
+				instances = append(append([]*workloadsv1alpha2.RoleInstance{}, baseInstances...),
+					buildInst(set.Name, 2, rolledForwardRev.Name, false, true))
+			}
+
+			set.Spec.UpdateStrategy.Paused = false
+			set.Spec.Replicas = ptr.To[int32](1)
+			objects.created = nil
+			objects.deleted = nil
+			_, err = control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+				instances, revisions)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			deleted := sets.New(objects.deleted...)
+			if !deleted.Has(fmt.Sprintf("%s-1", set.Name)) {
+				t.Fatalf("cancelled rollout did not scale down: deleted=%v", objects.deleted)
+			}
+			if deleted.Has(fmt.Sprintf("%s-0", set.Name)) {
+				t.Fatalf("scale-down deleted the remaining base instance: deleted=%v", objects.deleted)
+			}
+			if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+				t.Fatalf("cancelled rollout retained rollback signal: deleted=%v", objects.deleted)
+			}
+		})
+	}
+}
+
+func TestComputeTopologyDoesNotKeepSurgeAfterScaleDown(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+	set := buildSet("scale-down", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "scale-down-set"
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, testUpdateRev, false, true),
+		buildInst(set.Name, 1, testUpdateRev, true, true),
+	}
+
+	topo, err := computeTopology(set, instances, testUpdateRev, testUpdateRev, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topo.inRollout {
+		t.Fatalf("inRollout = true after scale-down; want false")
+	}
+	if topo.activeSurge != 0 || topo.endOrdinal != int(*set.Spec.Replicas) {
+		t.Fatalf("activeSurge/endOrdinal = %d/%d, want 0/%d", topo.activeSurge, topo.endOrdinal, *set.Spec.Replicas)
+	}
+}
+
+func TestOrderedReadyRetriesUnhealthyStaleSurge(t *testing.T) {
+	resetInstanceUnhealthySince()
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(func() {
+		resetInstanceUnhealthySince()
+		resetEarlyRollbackReplacementSignals()
+	})
+
+	set := newRevisionTestSet("nginx:1.0")
+	set.Spec.Replicas = ptr.To[int32](2)
+	set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": set.Name}}
+	set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstrutil.FromInt32(1))
+	set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstrutil.FromInt32(0))
+
+	currentRev, err := newRevision(set, 1, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+	midRev, err := newRevision(set, 2, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:3.0"
+	updateRev, err := newRevision(set, 3, ptr.To[int32](0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Status.CurrentRevision = currentRev.Name
+	set.Status.UpdateRevision = midRev.Name
+
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(set.Name, 0, currentRev.Name, true, true),
+		buildInst(set.Name, 1, currentRev.Name, true, true),
+		buildInst(set.Name, 2, midRev.Name, false, true),
+	}
+	instanceUnhealthySince.Store(getInstanceHealthKey(set, instances[2]), time.Now().Add(-2*stableUnhealthyDuration))
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	_, err = control.updateStatefulInstanceSet(context.Background(), set, currentRev, updateRev, 0,
+		instances, []*apps.ControllerRevision{currentRev, midRev, updateRev})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleted := sets.New(objects.deleted...)
+	if !deleted.Has(instances[2].Name) {
+		t.Fatalf("OrderedReady did not recycle stale unhealthy surge: deleted %v", objects.deleted)
+	}
+	if deleted.Has(instances[0].Name) || deleted.Has(instances[1].Name) {
+		t.Fatalf("OrderedReady stale-surge cleanup touched base instances: deleted %v", objects.deleted)
+	}
+}
+
+func TestOrderedReadyCleanupTargetGuards(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	set := buildSet("s", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "ordered-ready-guard-set"
+	tests := []struct {
+		name       string
+		replicas   []*workloadsv1alpha2.RoleInstance
+		topo       topology
+		targetName string
+	}{
+		{
+			name: "unhealthy instance below partition is not a cleanup target",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, false, true),
+				buildInst("s", 1, testOldRev, true, true),
+			},
+			topo: topology{startOrdinal: 0, endOrdinal: 2, replicas: 2, partition: 1},
+		},
+		{
+			name: "unhealthy instance at update revision is not a cleanup target",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testUpdateRev, false, true),
+				buildInst("s", 1, testOldRev, true, true),
+			},
+			topo: topology{startOrdinal: 0, endOrdinal: 2, replicas: 2, partition: 0},
+		},
+		{
+			name: "healthy predecessor does not hide a later cleanup target",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, true, true),
+				buildInst("s", 1, testOldRev, false, true),
+			},
+			topo:       topology{startOrdinal: 0, endOrdinal: 2, replicas: 2, partition: 0},
+			targetName: "s-1",
+		},
+		{
+			name:     "missing replica is not a cleanup target",
+			replicas: []*workloadsv1alpha2.RoleInstance{nil, buildInst("s", 1, testOldRev, false, true)},
+			topo:     topology{startOrdinal: 0, endOrdinal: 2, replicas: 2, partition: 0},
+		},
+		{
+			name: "unhealthy stale-revision surge is a cleanup target",
+			replicas: []*workloadsv1alpha2.RoleInstance{
+				buildInst("s", 0, testOldRev, true, true),
+				buildInst("s", 1, testOldRev, true, true),
+				buildInst("s", 2, "mid-rev", false, true),
+			},
+			topo:       topology{startOrdinal: 0, endOrdinal: 3, replicas: 2, partition: 0, surgeStart: 2},
+			targetName: "s-2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+			for _, inst := range tt.replicas {
+				if inst != nil && !isHealthy(inst) {
+					instanceUnhealthySince.Store(getInstanceHealthKey(set, inst), time.Now().Add(-2*stableUnhealthyDuration))
+				}
+			}
+
+			target := orderedReadyCleanupTarget(set, tt.replicas, tt.topo, testUpdateRev)
+			if tt.targetName == "" {
+				if target != nil {
+					t.Fatalf("target = %s, want nil", target.Name)
+				}
+				return
+			}
+			if target == nil || target.Name != tt.targetName {
+				t.Fatalf("target = %v, want %s", target, tt.targetName)
+			}
+		})
+	}
+}
+
+func TestProgressOrderedReadyUnhealthyTargetSkipsPausedRollout(t *testing.T) {
+	resetInstanceUnhealthySince()
+	t.Cleanup(resetInstanceUnhealthySince)
+
+	set := buildSet("s", 1, ptr.To(intstrutil.FromInt32(0)), ptr.To(intstrutil.FromInt32(0)))
+	set.Spec.UpdateStrategy.Paused = true
+	target := buildInst("s", 0, testOldRev, false, true)
+	instanceUnhealthySince.Store(getInstanceHealthKey(set, target), time.Now().Add(-2*stableUnhealthyDuration))
+
+	objects := &fakeInstanceObjectManager{}
+	recorder := record.NewFakeRecorder(64)
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objects, recorder),
+		inplaceControl:  &fakeInplaceControl{},
+		recorder:        recorder,
+	}
+	topo := topology{
+		startOrdinal: 0, endOrdinal: 1, surgeStart: 1,
+		replicas: 1, partition: 0, inRollout: false,
+	}
+	err := control.progressOrderedReadyUnhealthyTarget(set, &workloadsv1alpha2.RoleInstanceSetStatus{},
+		newStatefulRevision(testOldRev, 1), newStatefulRevision(testUpdateRev, 2),
+		nil, []*workloadsv1alpha2.RoleInstance{target}, []*workloadsv1alpha2.RoleInstance{target}, 0, topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objects.deleted) != 0 {
+		t.Fatalf("paused OrderedReady rollout deleted instance: %v", objects.deleted)
+	}
+}
+
+func TestEarlyRollbackReplacementSignalDropsReplacedSet(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+	oldSet := buildSet("same-name", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	oldSet.UID = "old-set-uid"
+	newSet := buildSet("same-name", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	newSet.UID = "new-set-uid"
+	key := getInstanceSetKey(newSet)
+	earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+		setUID:         string(oldSet.UID),
+		updateRevision: testUpdateRev,
+		ordinals:       sets.New(0),
+	})
+
+	instances := []*workloadsv1alpha2.RoleInstance{
+		buildInst(newSet.Name, 0, testUpdateRev, false, true),
+		buildInst(newSet.Name, 1, testUpdateRev, true, true),
+	}
+	if earlyRollbackReplacementSignalActive(newSet, instances, 0, int(*newSet.Spec.Replicas), testUpdateRev) {
+		t.Fatal("same-name replacement inherited the old set rollback signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("replaced set retained its rollback signal")
+	}
+}
+
+func TestEarlyRollbackReplacementSignalLifecycle(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+	set := buildSet("signal", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "signal-set"
+	key := getInstanceSetKey(set)
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	unhealthyReplacement := buildInst(set.Name, 0, testUpdateRev, false, true)
+	if !earlyRollbackReplacementSignalActive(set, []*workloadsv1alpha2.RoleInstance{unhealthyReplacement}, 0, 2, testUpdateRev) {
+		t.Fatal("unhealthy replacement must keep the signal active")
+	}
+
+	earlyRollbackReplacementSignals.Delete(key)
+	recordEarlyRollbackReplacementSignal(set, 1, testUpdateRev)
+	if earlyRollbackReplacementSignalActive(set, nil, 0, 1, testUpdateRev) {
+		t.Fatal("ordinal outside the update range must invalidate its signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("out-of-range ordinals retained rollback signal")
+	}
+
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	if earlyRollbackReplacementSignalActive(set, []*workloadsv1alpha2.RoleInstance{unhealthyReplacement}, 0, 2, "superseded-rev") {
+		t.Fatal("superseded rollout must invalidate the signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("superseded rollout retained rollback signal")
+	}
+
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	readyReplacement := buildInst(set.Name, 0, testUpdateRev, true, true)
+	readyReplacement.Generation = 2
+	readyReplacement.Status.ObservedGeneration = 2
+	if earlyRollbackReplacementSignalActive(set, []*workloadsv1alpha2.RoleInstance{readyReplacement}, 0, 2, testUpdateRev) {
+		t.Fatal("ready replacement must clear the signal")
+	}
+	if _, ok := earlyRollbackReplacementSignals.Load(key); ok {
+		t.Fatal("ready replacement retained rollback signal")
+	}
+}
+
+func TestComputeTopologyDoesNotMutateRollbackSignals(t *testing.T) {
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+	set := buildSet("pure-topology", 2, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+	set.UID = "pure-topology-set"
+	key := getInstanceSetKey(set)
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	before, ok := earlyRollbackReplacementSignals.Load(key)
+	if !ok {
+		t.Fatal("test did not seed rollback signal")
+	}
+
+	_, err := computeTopology(set, []*workloadsv1alpha2.RoleInstance{buildInst(set.Name, 0, testUpdateRev, true, true)}, testUpdateRev, testUpdateRev, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, stillPresent := earlyRollbackReplacementSignals.Load(key)
+	if !stillPresent || !reflect.DeepEqual(before, after) {
+		t.Fatal("computeTopology must not mutate rollback signal state")
+	}
+}
+
 func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	// helper: build set with given prior status fields
 	priorStatus := func(updateRev string, updatedReplicas int32) *workloadsv1alpha2.RoleInstanceSet {
@@ -1080,8 +1863,15 @@ func TestShouldAdvanceCurrentRevision(t *testing.T) {
 	}
 }
 
-// resetInstanceUnhealthySince clears the global time-gate map so each test
-// starts from a known empty state.
+// resetEarlyRollbackReplacementSignals clears the global early-rollback signal map
+// so each test starts from a known empty state.
+func resetEarlyRollbackReplacementSignals() {
+	earlyRollbackReplacementSignals.Range(func(key, _ interface{}) bool {
+		earlyRollbackReplacementSignals.Delete(key)
+		return true
+	})
+}
+
 func resetInstanceUnhealthySince() {
 	instanceUnhealthySince.Range(func(k, _ interface{}) bool {
 		instanceUnhealthySince.Delete(k)
@@ -1231,6 +2021,43 @@ func TestPruneInstanceHealth(t *testing.T) {
 			wantPresent := state == "live" || state == "lookup error"
 			if exists != wantPresent || (exists && got != firstObserved) {
 				t.Fatalf("timer after pruning %s set: exists=%v, got=%v, wantPresent=%v", state, exists, got, wantPresent)
+			}
+		})
+	}
+}
+
+func TestPruneEarlyRollbackReplacementSignals(t *testing.T) {
+	for _, state := range []string{"live", "deleted", "recreated", "lookup error"} {
+		t.Run(state, func(t *testing.T) {
+			resetEarlyRollbackReplacementSignals()
+			t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+			set := buildSet("prefill", 1, ptr.To(intstrutil.FromInt32(1)), ptr.To(intstrutil.FromInt32(0)))
+			set.UID = "signal-set"
+			recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+			key := getInstanceSetKey(set)
+
+			indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+			if state != "deleted" {
+				cachedSet := set.DeepCopy()
+				if state == "recreated" {
+					cachedSet.UID = "replacement-set"
+				}
+				if err := indexer.Add(cachedSet); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "lookup error" {
+				indexer = healthErrorIndexer{Indexer: indexer, err: errors.New("cache lookup failed")}
+			}
+			controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
+
+			controller.pruneInstanceHealth()
+
+			_, exists := earlyRollbackReplacementSignals.Load(key)
+			wantPresent := state == "live" || state == "lookup error"
+			if exists != wantPresent {
+				t.Fatalf("signal after pruning %s set: exists=%v, want=%v", state, exists, wantPresent)
 			}
 		})
 	}

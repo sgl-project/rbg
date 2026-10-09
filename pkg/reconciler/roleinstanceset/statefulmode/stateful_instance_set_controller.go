@@ -22,6 +22,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,6 +80,16 @@ var (
 	// instance takes one extra stableUnhealthyDuration window before it
 	// becomes eligible for cleanup.
 	instanceUnhealthySince sync.Map // map[instanceHealthKey]time.Time
+
+	// earlyRollbackReplacementSignals tracks in-memory early-rollback
+	// replacement work. A signal records the set UID, target revision, and the
+	// base ordinals whose replacements are in flight. It is created only when
+	// the controller actually starts replacing an ordinal, and remains active
+	// until those ordinals are healthy at the target revision, leave the update
+	// range, or the rollout is superseded. This keeps existing surge through
+	// deletion, creation, and readiness without retaining surge after ordinary
+	// scale-downs or cancelled rollouts. The map is keyed by namespace/name.
+	earlyRollbackReplacementSignals sync.Map // map[string]earlyRollbackReplacementSignal
 )
 
 // NewReconciler creates a new reconcile.Reconciler for external usage
@@ -176,6 +187,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 	if errors.IsNotFound(err) {
 		klog.InfoS("InstanceSet deleted", "instanceSet", key)
 		updateExpectations.DeleteExpectations(key)
+		earlyRollbackReplacementSignals.Delete(key)
 		return reconcile.Result{}, nil
 	}
 	if err != nil {
@@ -203,16 +215,35 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 	return reconcile.Result{RequeueAfter: durationStore.Pop(getInstanceSetKey(set))}, err
 }
 
-// pruneInstanceHealth removes observations for deleted or replaced sets using
-// the informer cache. The outer controller returns early for deleted sets, so
-// reclaim their records when another set reconciles instead of relying on a
-// NotFound request reaching this reconciler.
+// pruneInstanceHealth removes health observations and early-rollback signals
+// for deleted or replaced sets using the informer cache. The outer controller
+// returns early for deleted sets, so reclaim their records when another set
+// reconciles instead of relying on a NotFound request reaching this reconciler.
 func (ssc *ReconcileStatefulInstanceSet) pruneInstanceHealth() {
 	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
 		healthKey := key.(instanceHealthKey)
 		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(healthKey.instanceSet.Namespace).Get(healthKey.instanceSet.Name)
 		if errors.IsNotFound(err) || (err == nil && set.UID != healthKey.instanceSetUID) {
 			instanceUnhealthySince.Delete(key)
+		}
+		return true
+	})
+
+	earlyRollbackReplacementSignals.Range(func(key, value interface{}) bool {
+		setKey, ok := key.(string)
+		if !ok {
+			earlyRollbackReplacementSignals.Delete(key)
+			return true
+		}
+		namespace, name, ok := strings.Cut(setKey, "/")
+		if !ok {
+			earlyRollbackReplacementSignals.Delete(key)
+			return true
+		}
+		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(namespace).Get(name)
+		signal, signalOK := value.(earlyRollbackReplacementSignal)
+		if errors.IsNotFound(err) || (err == nil && (!signalOK || string(set.UID) != signal.setUID)) {
+			earlyRollbackReplacementSignals.Delete(key)
 		}
 		return true
 	})

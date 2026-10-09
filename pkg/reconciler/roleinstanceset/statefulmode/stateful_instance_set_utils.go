@@ -270,9 +270,10 @@ type topology struct {
 	// surgeStart equals replicas: surge ords occupy [surgeStart, endOrdinal).
 	surgeStart int
 
-	// inRollout is true when currentRev != updateRev and the rollout is not
-	// paused. Used to gate surge allocation and to decide whether Phase C
-	// runs at all.
+	// inRollout is true when update work remains and the rollout is not paused.
+	// Update work includes a revision mismatch, a stale base instance, or an
+	// in-flight early-rollback replacement. Used to gate surge allocation and to
+	// decide whether Phase C runs at all.
 	inRollout bool
 }
 
@@ -475,17 +476,160 @@ func allBaseAtUpdateRevHealthy(
 	return seen.Len() == replicas-partition
 }
 
+// hasStaleBaseInstance reports whether a base instance in the update range is
+// still at a revision other than updateRevision. Terminating instances are
+// included so an early rollback remains pending while the stale instance is
+// being deleted. This catches A -> B -> A, where CurrentRevision and
+// UpdateRevision can have the same name while the live instances are still at B.
+func hasStaleBaseInstance(
+	instances []*workloadsv1alpha2.RoleInstance,
+	partition, replicas int,
+	updateRevision string,
+) bool {
+	if replicas <= partition {
+		return false
+	}
+	for _, inst := range instances {
+		if inst == nil || !isCreated(inst) {
+			continue
+		}
+		ord := getOrdinal(inst)
+		if ord < partition || ord >= replicas {
+			continue
+		}
+		if getInstanceRevision(inst) != updateRevision {
+			return true
+		}
+	}
+	return false
+}
+
+// earlyRollbackReplacementSignal identifies replacement work that is actually
+// in flight for an early rollback. The ordinals are scoped to base slots, and
+// the revision is stored so a cancelled or superseded rollout cannot keep a
+// stale signal alive.
+type earlyRollbackReplacementSignal struct {
+	setUID         string
+	updateRevision string
+	ordinals       sets.Set[int]
+}
+
+// recordEarlyRollbackReplacementSignal records that the controller has started
+// replacing a base ordinal during an early rollback. The signal is intentionally
+// created only for actual replacement work; merely observing a stale base while
+// paused or budget-blocked must not retain surge.
+func recordEarlyRollbackReplacementSignal(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	ordinal int,
+	updateRevision string,
+) {
+	if set == nil || set.UID == "" || ordinal < 0 || updateRevision == "" {
+		return
+	}
+
+	key := getInstanceSetKey(set)
+	uid := string(set.UID)
+	value, ok := earlyRollbackReplacementSignals.Load(key)
+	signal, valid := value.(earlyRollbackReplacementSignal)
+	if !ok || !valid || signal.setUID != uid || signal.updateRevision != updateRevision {
+		earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+			setUID:         uid,
+			updateRevision: updateRevision,
+			ordinals:       sets.New(ordinal),
+		})
+		return
+	}
+
+	ordinals := signal.ordinals.Clone()
+	ordinals.Insert(ordinal)
+	earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+		setUID:         uid,
+		updateRevision: updateRevision,
+		ordinals:       ordinals,
+	})
+}
+
+// earlyRollbackReplacementSignalActive reports whether recorded replacement
+// work is still in flight. It invalidates the signal when the set is recreated,
+// the target revision changes, all tracked ordinals leave the update range, or
+// every tracked replacement is ready. Missing or unhealthy replacements keep
+// the signal active so the controller recreates them and retains surge.
+func earlyRollbackReplacementSignalActive(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instances []*workloadsv1alpha2.RoleInstance,
+	partition, replicas int,
+	updateRevision string,
+) bool {
+	if set == nil || set.UID == "" {
+		return false
+	}
+
+	key := getInstanceSetKey(set)
+	value, ok := earlyRollbackReplacementSignals.Load(key)
+	if !ok {
+		return false
+	}
+	signal, valid := value.(earlyRollbackReplacementSignal)
+	if !valid || signal.setUID != string(set.UID) || signal.updateRevision != updateRevision || signal.ordinals.Len() == 0 {
+		earlyRollbackReplacementSignals.Delete(key)
+		return false
+	}
+
+	ordinals := signal.ordinals.Clone()
+	for ordinal := range ordinals {
+		if ordinal < partition || ordinal >= replicas {
+			ordinals.Delete(ordinal)
+		}
+	}
+	if ordinals.Len() == 0 {
+		earlyRollbackReplacementSignals.Delete(key)
+		return false
+	}
+
+	byOrdinal := make(map[int]*workloadsv1alpha2.RoleInstance, ordinals.Len())
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		if ord := getOrdinal(inst); ord >= 0 {
+			byOrdinal[ord] = inst
+		}
+	}
+
+	for ordinal := range ordinals {
+		inst := byOrdinal[ordinal]
+		if inst == nil || !isCreated(inst) || isTerminating(inst) ||
+			getInstanceRevision(inst) != updateRevision || !isHealthy(inst) ||
+			inst.Status.ObservedGeneration < inst.Generation {
+			if ordinals.Len() != signal.ordinals.Len() {
+				earlyRollbackReplacementSignals.Store(key, earlyRollbackReplacementSignal{
+					setUID:         signal.setUID,
+					updateRevision: signal.updateRevision,
+					ordinals:       ordinals,
+				})
+			}
+			return true
+		}
+	}
+
+	earlyRollbackReplacementSignals.Delete(key)
+	return false
+}
+
 // computeTopology is the single source of truth for ordinal range sizing
 // during a reconcile. See topology doc for field semantics. Errors only
-// occur on malformed spec (negative percentages etc.).
+// occur on malformed spec (negative percentages etc.). The caller supplies
+// whether early-rollback replacement work is active so this function remains
+// free of global-map side effects.
 //
 // Sizing rules in one place:
 //
-//   - Outside a rollout (currentRev == updateRev): activeSurge = 0,
-//     endOrdinal = replicas. Stale surge (if any from a finished rollout)
-//     falls out of range and gets condemned.
+//   - Outside a rollout (no revision work, stale base, or in-flight early
+//     rollback replacement): activeSurge = 0, endOrdinal = replicas. Stale
+//     surge (if any from a finished rollout) falls out of range and gets
+//     condemned.
 //
-//   - Paused mid-rollout (Paused=true && currentRev != updateRev): freeze the
+//   - Paused mid-rollout (Paused=true && update work remains): freeze the
 //     existing surge in place. activeSurge = existingValidSurge (clamped to
 //     maxSurge). New surge is NOT allocated (no surgeNeeded delta), but
 //     in-flight surge slots stay inside endOrdinal so Phase B does not condemn
@@ -509,6 +653,7 @@ func computeTopology(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instances []*workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision string,
+	earlyRollbackReplacement bool,
 ) (topology, error) {
 	t := topology{
 		startOrdinal:    0,
@@ -538,7 +683,9 @@ func computeTopology(
 	}
 	t.partition = partition
 
-	t.inRollout = currentRevision != updateRevision && !set.Spec.UpdateStrategy.Paused
+	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision)
+	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
+	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
 	if maxSurge == 0 {
 		return t, nil
 	}
@@ -546,7 +693,7 @@ func computeTopology(
 	// condemn them. We do NOT allocate new surge here — surgeNeeded is only
 	// considered when actively rolling.
 	if !t.inRollout {
-		if set.Spec.UpdateStrategy.Paused && currentRevision != updateRevision {
+		if set.Spec.UpdateStrategy.Paused && updatePending {
 			existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision)
 			if existing > maxSurge {
 				existing = maxSurge
