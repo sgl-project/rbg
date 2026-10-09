@@ -31,7 +31,7 @@ import (
 )
 
 func RunUpdateStrategyTestCases(f *framework.Framework) {
-	ginkgo.Describe("update strategy", ginkgo.Label("update", "serial"), func() {
+	ginkgo.Describe("update strategy", ginkgo.Label("update", "rollout", "serial"), func() {
 
 		ginkgo.It("[RoleInstanceSet] InPlaceIfPossible does not recreate pods when only image changes", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(

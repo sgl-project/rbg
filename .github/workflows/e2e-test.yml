@@ -11,8 +11,6 @@ on:
       - opened
       - synchronize
       - reopened
-      - labeled
-      - unlabeled
   workflow_dispatch:
 
 concurrency:
@@ -28,7 +26,6 @@ env:
   LWS_VERSION: v0.7.0
   SCHEDULER_PLUGINS_VERSION: v0.32.7
   E2E_IMAGE_TAG: e2e-ci
-  E2E_PR_FILTER: "smoke || rbac || webhook"
 
 permissions: read-all
 
@@ -61,7 +58,6 @@ jobs:
 
           SHOULD_RUN="false"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # Manual runs should always exercise the full matrix.
             SHOULD_RUN="true"
           elif [ -n "$CHANGED_FILES" ]; then
             NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
@@ -122,16 +118,42 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  e2e-pr:
-    name: PR smoke e2e
+  e2e-matrix:
+    name: E2E ${{ matrix.group }}
     needs:
       - check-changes
       - build-images
-    if: >-
-      needs.check-changes.outputs.should_run == 'true' &&
-      github.event_name == 'pull_request'
+    if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: lifecycle
+            filter: "lifecycle && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 25
+          - group: workload
+            filter: "workload && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 30
+          - group: update
+            filter: "(update && !rollout) && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 35
+          - group: rollout
+            filter: "rollout && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 40
+          - group: feature
+            filter: "(feature && !rollout) && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 35
+          - group: webhook-rbac
+            filter: "(webhook || rbac) && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 25
+          - group: scheduler
+            filter: "scheduler && !volcano && !scheduler-plugins && !v1alpha1"
+            timeout_minutes: 35
+          - group: v1alpha1
+            filter: "v1alpha1"
+            timeout_minutes: 35
     steps:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
@@ -145,7 +167,7 @@ jobs:
       - name: Setup Kind and RBGS
         uses: ./.github/actions/setup-e2e-cluster
         with:
-          cluster_name: rbgs-pr-e2e
+          cluster_name: rbgs-${{ matrix.group }}-e2e
           install_mode: helm
           image_tag: ${{ env.E2E_IMAGE_TAG }}
           scheduler: default
@@ -154,11 +176,12 @@ jobs:
           kind_version: ${{ env.KIND_VERSION }}
           lws_version: ${{ env.LWS_VERSION }}
 
-      - name: Run PR smoke e2e
+      - name: Run E2E ${{ matrix.group }} slice
         run: |
           make test-e2e \
-            E2E_LABEL_FILTER='(${{ env.E2E_PR_FILTER }}) && !volcano && !scheduler-plugins && !v1alpha1' \
-            E2E_TIMEOUT=20m
+            E2E_LABEL_FILTER='${{ matrix.filter }}' \
+            E2E_TIMEOUT=${{ matrix.timeout_minutes }}m \
+            E2E_FAIL_FAST=false
 
       - name: Collect diagnostics
         if: failure()
@@ -169,13 +192,13 @@ jobs:
           kubectl describe pods -n rbgs-system -l control-plane=rbgs-controller || true
           echo "=== Events ==="
           kubectl get events -A --sort-by='.lastTimestamp' | tail -100 || true
-          kind export logs /tmp/kind-logs --name rbgs-pr-e2e || true
+          kind export logs "/tmp/kind-${{ matrix.group }}-logs" --name "rbgs-${{ matrix.group }}-e2e" || true
 
       - name: Upload Ginkgo reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-pr-reports
+          name: e2e-${{ matrix.group }}-reports
           path: test/e2e/artifacts
           retention-days: 7
           if-no-files-found: warn
@@ -184,25 +207,23 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-pr-kind-logs
-          path: /tmp/kind-logs
+          name: e2e-${{ matrix.group }}-kind-logs
+          path: /tmp/kind-${{ matrix.group }}-logs
           retention-days: 7
           if-no-files-found: warn
 
       - name: Cleanup
         if: always()
-        run: kind delete cluster --name rbgs-pr-e2e || true
+        run: kind delete cluster --name "rbgs-${{ matrix.group }}-e2e" || true
 
   e2e-manifest:
     name: Manifest installation e2e
     needs:
       - check-changes
       - build-images
-    if: >-
-      needs.check-changes.outputs.should_run == 'true' &&
-      github.event_name == 'pull_request'
+    if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
@@ -229,7 +250,8 @@ jobs:
         run: |
           make test-e2e \
             E2E_LABEL_FILTER='(smoke || install || rbac || webhook) && !volcano && !scheduler-plugins && !v1alpha1' \
-            E2E_TIMEOUT=20m
+            E2E_TIMEOUT=20m \
+            E2E_FAIL_FAST=false
 
       - name: Collect diagnostics
         if: failure()
@@ -264,85 +286,12 @@ jobs:
         if: always()
         run: kind delete cluster --name rbgs-manifest-e2e || true
 
-  e2e-full:
-    name: Full default-scheduler e2e
-    needs:
-      - check-changes
-      - build-images
-    if: >-
-      needs.check-changes.outputs.should_run == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-       github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5.0.0
-
-      - name: Download E2E images
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-images
-          path: _artifacts/e2e-images
-
-      - name: Setup Kind and RBGS
-        uses: ./.github/actions/setup-e2e-cluster
-        with:
-          cluster_name: rbgs-full-e2e
-          install_mode: helm
-          image_tag: ${{ env.E2E_IMAGE_TAG }}
-          scheduler: default
-          port_allocator_enabled: "true"
-          kubernetes_version: ${{ env.KUBERNETES_VERSION }}
-          kind_version: ${{ env.KIND_VERSION }}
-          lws_version: ${{ env.LWS_VERSION }}
-
-      - name: Run full default-scheduler e2e
-        run: make test-e2e E2E_TIMEOUT=45m
-
-      - name: Collect diagnostics
-        if: failure()
-        run: |
-          echo "=== Controller logs ==="
-          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
-          echo "=== Controller pod ==="
-          kubectl describe pods -n rbgs-system -l control-plane=rbgs-controller || true
-          echo "=== Events ==="
-          kubectl get events -A --sort-by='.lastTimestamp' | tail -100 || true
-          kind export logs /tmp/kind-full-logs --name rbgs-full-e2e || true
-
-      - name: Upload Ginkgo reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-full-reports
-          path: test/e2e/artifacts
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Upload Kind logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-full-kind-logs
-          path: /tmp/kind-full-logs
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Cleanup
-        if: always()
-        run: kind delete cluster --name rbgs-full-e2e || true
-
   e2e-deprecated-disabled:
     name: Deprecated workloads disabled e2e
     needs:
       - check-changes
       - build-images
-    if: >-
-      needs.check-changes.outputs.should_run == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-       github.ref == 'refs/heads/main' ||
-       contains(github.event.pull_request.labels.*.name, 'run-compat-e2e'))
+    if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -408,11 +357,7 @@ jobs:
     needs:
       - check-changes
       - build-images
-    if: >-
-      needs.check-changes.outputs.should_run == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-       github.ref == 'refs/heads/main' ||
-       contains(github.event.pull_request.labels.*.name, 'run-gang-e2e'))
+    if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -480,11 +425,7 @@ jobs:
     needs:
       - check-changes
       - build-images
-    if: >-
-      needs.check-changes.outputs.should_run == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-       github.ref == 'refs/heads/main' ||
-       contains(github.event.pull_request.labels.*.name, 'run-gang-e2e'))
+    if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

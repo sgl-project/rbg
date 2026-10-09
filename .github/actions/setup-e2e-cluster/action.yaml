@@ -89,8 +89,31 @@ runs:
     - name: Install LeaderWorkerSet CRDs
       shell: bash
       run: |
+        set -euo pipefail
+        lws_image="registry.k8s.io/lws/lws:${{ inputs.lws_version }}"
+        lws_image="${lws_image/:v/:}"
+
+        # Several matrix jobs start concurrently and registry.k8s.io can return
+        # HTTP 429 while the in-cluster pull is racing. Pull outside Kind with
+        # retries, then load the image so the LWS controller starts immediately.
+        pulled=false
+        for attempt in $(seq 1 6); do
+          if docker pull "$lws_image"; then
+            pulled=true
+            break
+          fi
+          echo "LWS image pull attempt $attempt failed; retrying in 15s"
+          sleep 15
+        done
+        if [ "$pulled" != true ]; then
+          echo "::error::failed to pull $lws_image"
+          exit 1
+        fi
+        kind load docker-image "$lws_image" --name "${{ inputs.cluster_name }}"
+
         kubectl apply --server-side -f "https://github.com/kubernetes-sigs/lws/releases/download/${{ inputs.lws_version }}/manifests.yaml"
         kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+        kubectl -n lws-system wait --for=condition=available deployment/lws-controller-manager --timeout=300s
 
     - name: Install Volcano
       if: ${{ inputs.scheduler == 'volcano' }}
@@ -218,15 +241,29 @@ runs:
           sleep 2
         done
 
-        for config in \
-          validatingwebhookconfiguration/rbgs-validating-webhook-configuration \
-          mutatingwebhookconfiguration/rbgs-mutating-webhook-configuration; do
-          ca_bundle=$(kubectl get "$config" -o jsonpath='{.webhooks[*].clientConfig.caBundle}')
-          if [ -z "$ca_bundle" ]; then
-            echo "::error::$config has an empty caBundle"
-            kubectl get "$config" -o yaml || true
+        for i in $(seq 1 30); do
+          ready=true
+          for config in \
+            validatingwebhookconfiguration/rbgs-validating-webhook-configuration \
+            mutatingwebhookconfiguration/rbgs-mutating-webhook-configuration; do
+            ca_bundle=$(kubectl get "$config" -o jsonpath='{.webhooks[*].clientConfig.caBundle}' 2>/dev/null || true)
+            if [ -z "$ca_bundle" ]; then
+              ready=false
+              break
+            fi
+          done
+          if [ "$ready" = true ]; then
+            echo "webhook caBundle injection verified"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "::error::webhook configurations did not receive caBundle"
+            kubectl get validatingwebhookconfiguration/rbgs-validating-webhook-configuration -o yaml || true
+            kubectl get mutatingwebhookconfiguration/rbgs-mutating-webhook-configuration -o yaml || true
             exit 1
           fi
+          echo "waiting for webhook caBundle injection... ($i/30)"
+          sleep 5
         done
 
     - name: Pre-load e2e workload images
@@ -237,6 +274,18 @@ runs:
           "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
         )
         for image in "${images[@]}"; do
-          docker pull "$image"
+          pulled=false
+          for attempt in $(seq 1 6); do
+            if docker pull "$image"; then
+              pulled=true
+              break
+            fi
+            echo "image pull attempt $attempt failed for $image; retrying in 15s"
+            sleep 15
+          done
+          if [ "$pulled" != true ]; then
+            echo "::error::failed to pull $image"
+            exit 1
+          fi
           kind load docker-image "$image" --name "${{ inputs.cluster_name }}"
         done

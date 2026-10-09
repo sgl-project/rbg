@@ -41,7 +41,7 @@ const (
 
 // RunComponentOrderingTestCases registers e2e tests for component-depends-on (startAfter/deleteAfter).
 func RunComponentOrderingTestCases(f *framework.Framework) {
-	ginkgo.Describe("component ordering (startAfter/deleteAfter)", ginkgo.Label("update", "serial"), func() {
+	ginkgo.Describe("component ordering (startAfter/deleteAfter)", ginkgo.Label("update", "rollout", "serial"), func() {
 		// Case 1: startAfter — router pod must be created after leader and worker are Ready
 		ginkgo.It("router should be created only after leader and worker are Ready (startAfter)", func() {
 			rbg := buildOrderedRBG(f.Namespace)

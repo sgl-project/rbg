@@ -50,7 +50,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectRbgV2Equal(rbg)
 	})
 
-	ginkgo.It("update leader-worker role replicas & template", ginkgo.Label("smoke", "workload", "update"), func() {
+	ginkgo.It("update leader-worker role replicas & template", ginkgo.Label("smoke", "workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
@@ -73,7 +73,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectWorkloadV2PodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
-	ginkgo.It("lws with rollingUpdate", ginkgo.Label("workload", "update"), func() {
+	ginkgo.It("lws with rollingUpdate", ginkgo.Label("workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
@@ -98,7 +98,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectRbgV2Equal(rbg)
 	})
 
-	ginkgo.It("leaderWorkerPattern env variables are correctly injected in default RoleInstanceSet mode", func() {
+	ginkgo.It("leaderWorkerPattern env variables are correctly injected in default RoleInstanceSet mode", ginkgo.Label("workload"), func() {
 		role := wrappersv2.BuildLeaderWorkerRole("role-1").WithSize(3).Obj()
 		// Replace the default nginx container with a busybox one that prints env vars.
 		role.LeaderWorkerPattern.Template.Spec.Containers = []corev1.Container{{
@@ -172,7 +172,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		}
 	})
 
-	ginkgo.It("leaderWorkerPattern runs CPU torchrun distributed job successfully", func() {
+	ginkgo.It("leaderWorkerPattern runs CPU torchrun distributed job successfully", ginkgo.Label("workload", "slow"), func() {
 		const torchrunTimeout = 10 * time.Minute
 
 		// Shell script that installs torch and then runs a real CPU distributed
