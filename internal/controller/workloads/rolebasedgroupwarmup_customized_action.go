@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -34,6 +35,7 @@ import (
 
 const (
 	AnnotationCustomizedActionContainers = "workloads.x-k8s.io/customized-action-containers"
+	LabelWarmupAttempt                   = "workloads.x-k8s.io/warmup-attempt"
 
 	CustomizedActionReasonCompleted            = "Completed"
 	CustomizedActionReasonContainerExitCode    = "ContainerExitCode"
@@ -192,14 +194,6 @@ func aggregateCustomizedActionState(
 		if !exists {
 			continue
 		}
-		if waiting := status.State.Waiting; waiting != nil {
-			switch waiting.Reason {
-			case "ErrImagePull", "ImagePullBackOff":
-				return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonImagePullFailed, waiting.Message
-			case "CreateContainerConfigError", "CreateContainerError", "RunContainerError":
-				return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonContainerStartFailed, waiting.Message
-			}
-		}
 		if terminated := status.State.Terminated; terminated != nil {
 			switch terminated.Reason {
 			case "ContainerCannotRun", "StartError":
@@ -220,6 +214,27 @@ func aggregateCustomizedActionState(
 			anyRunning = true
 		default:
 			allSucceeded = false
+		}
+	}
+	for _, mapping := range mappings {
+		status, exists := statuses[mapping.PodContainerName]
+		if !exists || status.State.Waiting == nil {
+			continue
+		}
+		waiting := status.State.Waiting
+		containerName := mapping.PodContainerName
+		if len(mapping.ContainerNames) > 0 {
+			containerName = strings.Join(mapping.ContainerNames, ",")
+		}
+		message := fmt.Sprintf("container=%s", containerName)
+		if waiting.Message != "" {
+			message += ": " + waiting.Message
+		}
+		switch waiting.Reason {
+		case "ErrImagePull", "ImagePullBackOff":
+			return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonImagePullFailed, message
+		case "CreateContainerConfigError", "CreateContainerError", "RunContainerError":
+			return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonContainerStartFailed, message
 		}
 	}
 	if allSucceeded {
@@ -259,8 +274,7 @@ func evaluateCustomizedActionResults(
 			continue
 		}
 		current := latestPods[nodeName]
-		if current == nil || pod.CreationTimestamp.After(current.CreationTimestamp.Time) ||
-			(pod.CreationTimestamp.Equal(&current.CreationTimestamp) && pod.Name > current.Name) {
+		if current == nil || customizedActionPodIsNewer(pod, current) {
 			latestPods[nodeName] = pod
 		}
 	}
@@ -276,6 +290,27 @@ func evaluateCustomizedActionResults(
 		return results[i].NodeName < results[j].NodeName
 	})
 	return results
+}
+
+func customizedActionPodIsNewer(candidate, current *corev1.Pod) bool {
+	candidateAttempt, candidateHasAttempt := warmupPodAttempt(candidate)
+	currentAttempt, currentHasAttempt := warmupPodAttempt(current)
+	if candidateHasAttempt || currentHasAttempt {
+		if candidateHasAttempt != currentHasAttempt {
+			return candidateHasAttempt
+		}
+		if candidateAttempt != currentAttempt {
+			return candidateAttempt > currentAttempt
+		}
+	}
+	return candidate.CreationTimestamp.After(current.CreationTimestamp.Time) ||
+		(candidate.CreationTimestamp.Equal(&current.CreationTimestamp) && candidate.Name > current.Name)
+}
+
+func warmupPodAttempt(pod *corev1.Pod) (int64, bool) {
+	raw := pod.Labels[LabelWarmupAttempt]
+	attempt, err := strconv.ParseInt(raw, 10, 64)
+	return attempt, err == nil && attempt > 0
 }
 
 func preserveCustomizedActionResults(
@@ -357,11 +392,8 @@ func limitCustomizedActionResults(
 		usedBytes += entrySize
 	}
 
-	// Spend the remaining budget on full detail for non-successful results.
+	// Spend the remaining budget on full detail in priority order.
 	for i := range limited {
-		if originals[i].State == workloadsv1alpha2.CustomizedActionStateSucceeded {
-			continue
-		}
 		encoded, err := json.Marshal(originals[i])
 		if err != nil {
 			continue

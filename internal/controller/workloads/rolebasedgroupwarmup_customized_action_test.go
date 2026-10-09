@@ -336,6 +336,35 @@ func TestEvaluateCustomizedActionPodUsesOnlyMappedContainers(t *testing.T) {
 	}
 }
 
+func TestEvaluateCustomizedActionPodTerminalFailureBeatsWaitingError(t *testing.T) {
+	pod := mappedWarmupPod(
+		"node-1",
+		"mixed-failure",
+		corev1.PodFailed,
+		waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image"),
+		terminatedStatus("custom-1", 17, "Error", "GPU check failed"),
+	)
+
+	got := evaluateCustomizedActionPod(pod)
+	if got.State != workloadsv1alpha2.CustomizedActionStateFailed || got.Reason != CustomizedActionReasonContainerExitCode {
+		t.Fatalf("terminal failure must beat waiting error, got %#v", got)
+	}
+}
+
+func TestEvaluateCustomizedActionPodWaitingMessageIncludesContainer(t *testing.T) {
+	pod := mappedWarmupPod(
+		"node-1",
+		"pull-failure",
+		corev1.PodPending,
+		waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image"),
+	)
+
+	got := evaluateCustomizedActionPod(pod)
+	if !strings.Contains(got.Message, "container=node-check") {
+		t.Fatalf("expected original container identity in aggregate message, got %q", got.Message)
+	}
+}
+
 func TestEvaluateCustomizedActionPodPreservesWaitingFailureDetails(t *testing.T) {
 	pod := mappedWarmupPod(
 		"node-1",
@@ -402,6 +431,26 @@ func TestEvaluateCustomizedActionResultsSelectsLatestAttemptDeterministically(t 
 	}
 }
 
+func TestEvaluateCustomizedActionResultsPrefersMonotonicAttempt(t *testing.T) {
+	created := metav1.NewTime(time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC))
+	olderByAttempt := mappedWarmupPod("node-1", "attempt-z", corev1.PodFailed, terminatedStatus("custom-0", 1, "Error", "old"))
+	olderByAttempt.CreationTimestamp = created
+	olderByAttempt.Labels["workloads.x-k8s.io/warmup-attempt"] = "1"
+	newerByAttempt := mappedWarmupPod("node-1", "attempt-a", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", ""))
+	newerByAttempt.CreationTimestamp = created
+	newerByAttempt.Labels["workloads.x-k8s.io/warmup-attempt"] = "2"
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "check", Image: "busybox"}},
+		}}},
+	}
+
+	got := evaluateCustomizedActionResults(desired, []*corev1.Pod{olderByAttempt, newerByAttempt})
+	if len(got) != 1 || got[0].PodName != "attempt-a" || got[0].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
+		t.Fatalf("expected monotonic attempt 2 to win, got %#v", got)
+	}
+}
+
 func TestEvaluateCustomizedActionResultsReturnsNilWithoutLatestPods(t *testing.T) {
 	desired := map[string][]workloadsv1alpha2.WarmupActions{
 		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
@@ -435,6 +484,12 @@ func TestUpdateStatusIncludesCustomizedActionResults(t *testing.T) {
 	}
 	if len(updated.Status.CustomizedActionResults) != 1 || updated.Status.CustomizedActionResults[0].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
 		t.Fatalf("unexpected customized action results: %#v", updated.Status.CustomizedActionResults)
+	}
+	if len(updated.Status.CustomizedActionResults[0].Containers) != 1 {
+		t.Fatalf("small successful result lost container detail: %#v", updated.Status.CustomizedActionResults[0])
+	}
+	if updated.Status.CustomizedActionResultsTruncated {
+		t.Fatal("small successful result must not be marked truncated")
 	}
 	complete := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionComplete)
 	if complete == nil || complete.Status != metav1.ConditionTrue {
@@ -701,6 +756,67 @@ func TestFailWarmupJobPreservesCustomizedActionDiagnosticsWithoutDesiredNodes(t 
 	}
 	if condition := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionComplete); condition == nil {
 		t.Fatalf("expected customized action completion condition to be preserved, got %#v", updated.Status.Conditions)
+	}
+}
+
+func TestFailWarmupJobFinalizesNonTerminalCustomizedActionResults(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      workloadsv1alpha2.CustomizedActionResult
+		jobReason   string
+		jobMessage  string
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name: "preserves specific diagnostic",
+			result: workloadsv1alpha2.CustomizedActionResult{
+				NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStatePending,
+				Reason: CustomizedActionReasonImagePullFailed, Message: "container=node-check: back-off pulling image",
+			},
+			jobReason:   CustomizedActionReasonGlobalTimeout,
+			jobMessage:  "warmup timed out",
+			wantReason:  CustomizedActionReasonImagePullFailed,
+			wantMessage: "container=node-check: back-off pulling image",
+		},
+		{
+			name: "fills missing diagnostic from job failure",
+			result: workloadsv1alpha2.CustomizedActionResult{
+				NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateRunning,
+			},
+			jobReason:   "InvalidWarmupSpec",
+			jobMessage:  "invalid spec",
+			wantReason:  "InvalidWarmupSpec",
+			wantMessage: "invalid spec",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+				Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+					Phase:                   workloadsv1alpha2.WarmupJobPhaseRunning,
+					CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{tt.result},
+				},
+			}
+			r := newWarmupReconciler(warmup)
+
+			if err := r.failWarmupJob(context.Background(), warmup, nil, nil, nil, nil, tt.jobReason, tt.jobMessage); err != nil {
+				t.Fatalf("fail warmup job: %v", err)
+			}
+			updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+			if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+				t.Fatalf("get updated warmup: %v", err)
+			}
+			if len(updated.Status.CustomizedActionResults) != 1 {
+				t.Fatalf("expected one result, got %#v", updated.Status.CustomizedActionResults)
+			}
+			got := updated.Status.CustomizedActionResults[0]
+			if got.State != workloadsv1alpha2.CustomizedActionStateFailed || got.Reason != tt.wantReason || got.Message != tt.wantMessage {
+				t.Fatalf("unexpected finalized result: %#v", got)
+			}
+		})
 	}
 }
 

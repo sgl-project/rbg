@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,7 +228,7 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	}
 
 	pendingNodes := collectPendingNodes(desiredNodes, activePods, succeededPods, permanentlyFailedNodes)
-	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods)
+	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods, failedPods)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -351,9 +352,10 @@ func collectPendingNodes(
 func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 	ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
 	pendingNodes []string, desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
-	activePods []*corev1.Pod,
+	activePods, failedPods []*corev1.Pod,
 ) ([]*corev1.Pod, error) {
 	logger := log.FromContext(ctx)
+	nextAttempts := nextWarmupAttempts(failedPods)
 
 	createBudget := len(pendingNodes)
 	if warmup.Spec.Policies != nil && warmup.Spec.Policies.Parallelism != nil {
@@ -374,6 +376,11 @@ func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 		actions := desiredNodes[nodeName]
 		logger.Info("Creating warmup Pod", "node", nodeName)
 		pod, volumeConflict := r.buildWarmupPod(warmup, nodeName, actions)
+		attempt := nextAttempts[nodeName]
+		if attempt == 0 {
+			attempt = 1
+		}
+		pod.Labels[LabelWarmupAttempt] = strconv.FormatInt(attempt, 10)
 		if volumeConflict {
 			apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 				Type:               "VolumeConflict",
@@ -401,6 +408,30 @@ func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 			"Created warmup Pod for node %s", nodeName)
 	}
 	return activePods, nil
+}
+
+func nextWarmupAttempts(failedPods []*corev1.Pod) map[string]int64 {
+	failedCounts := make(map[string]int64)
+	maxAttempts := make(map[string]int64)
+	for _, pod := range failedPods {
+		nodeName := pod.Labels[LabelNodeName]
+		if nodeName == "" {
+			continue
+		}
+		failedCounts[nodeName]++
+		if attempt, ok := warmupPodAttempt(pod); ok && attempt > maxAttempts[nodeName] {
+			maxAttempts[nodeName] = attempt
+		}
+	}
+	for nodeName, count := range failedCounts {
+		if count > maxAttempts[nodeName] {
+			maxAttempts[nodeName] = count
+		}
+	}
+	for nodeName := range maxAttempts {
+		maxAttempts[nodeName]++
+	}
+	return maxAttempts
 }
 
 // requeueForTimeout returns a Result with RequeueAfter set if global timeout is configured and the job is still running.
@@ -476,14 +507,16 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		allCustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
 	}
 	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
-	if globallyTimedOut {
-		for i := range allCustomizedActionResults {
-			result := &allCustomizedActionResults[i]
-			if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded {
-				continue
-			}
-			result.State = workloadsv1alpha2.CustomizedActionStateFailed
-			result.Reason = CustomizedActionReasonGlobalTimeout
+	for i := range allCustomizedActionResults {
+		result := &allCustomizedActionResults[i]
+		if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded {
+			continue
+		}
+		result.State = workloadsv1alpha2.CustomizedActionStateFailed
+		if result.Reason == "" {
+			result.Reason = reason
+		}
+		if result.Message == "" {
 			result.Message = message
 		}
 	}

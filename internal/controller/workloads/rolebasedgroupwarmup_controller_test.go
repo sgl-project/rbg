@@ -463,6 +463,43 @@ func TestCollectPendingNodes(t *testing.T) {
 	}
 }
 
+func TestReconcileStampsMonotonicWarmupAttempt(t *testing.T) {
+	ctx := context.Background()
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "retry-attempt", Namespace: "default", UID: "uid-retry-attempt"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{BackoffLimitPerNode: ptr.To(int32(2))},
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames: []string{"node-1"},
+				WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+					Containers: []corev1.Container{{Name: "check", Image: "busybox"}},
+				}},
+			},
+		},
+	}
+	failed := makeWarmupPod("retry-attempt-1", warmup.Namespace, warmup.Name, string(warmup.UID), "node-1", corev1.PodFailed)
+	failed.Labels["workloads.x-k8s.io/warmup-attempt"] = "1"
+	r := newWarmupReconciler(warmup, failed)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(warmup.Namespace)); err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodFailed {
+			if got := pod.Labels["workloads.x-k8s.io/warmup-attempt"]; got != "2" {
+				t.Fatalf("expected retry attempt 2, got %q on pod %s", got, pod.Name)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected a retry pod, got %#v", pods.Items)
+}
+
 // ==================== requeueForTimeout Tests ====================
 
 func TestRequeueForTimeout(t *testing.T) {

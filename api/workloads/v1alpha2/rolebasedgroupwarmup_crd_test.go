@@ -62,6 +62,37 @@ func countCustomizedContainerImageRules(schema *apiextensionsv1.JSONSchemaProps,
 	return count
 }
 
+func countCompletionPolicyEnums(schema *apiextensionsv1.JSONSchemaProps) (count int, allAllowEmpty bool) {
+	allAllowEmpty = true
+	if property, ok := schema.Properties["completionPolicy"]; ok {
+		count++
+		allowsEmpty := false
+		for _, value := range property.Enum {
+			if string(value.Raw) == `""` {
+				allowsEmpty = true
+				break
+			}
+		}
+		allAllowEmpty = allowsEmpty
+	}
+	for _, property := range schema.Properties {
+		nestedCount, nestedAllowsEmpty := countCompletionPolicyEnums(&property)
+		count += nestedCount
+		allAllowEmpty = allAllowEmpty && nestedAllowsEmpty
+	}
+	if schema.AdditionalProperties != nil && schema.AdditionalProperties.Schema != nil {
+		nestedCount, nestedAllowsEmpty := countCompletionPolicyEnums(schema.AdditionalProperties.Schema)
+		count += nestedCount
+		allAllowEmpty = allAllowEmpty && nestedAllowsEmpty
+	}
+	if schema.Items != nil && schema.Items.Schema != nil {
+		nestedCount, nestedAllowsEmpty := countCompletionPolicyEnums(schema.Items.Schema)
+		count += nestedCount
+		allAllowEmpty = allAllowEmpty && nestedAllowsEmpty
+	}
+	return count, allAllowEmpty
+}
+
 func TestGeneratedWarmupCRDValidatesCustomizedContainerImages(t *testing.T) {
 	manifest, err := os.ReadFile("../../../config/crd/bases/workloads.x-k8s.io_rolebasedgroupwarmups.yaml")
 	if err != nil {
@@ -101,6 +132,23 @@ func TestGeneratedWarmupCRDBoundsCustomizedActionResults(t *testing.T) {
 	truncated := status.Properties["customizedActionResultsTruncated"]
 	if truncated.Type != "boolean" {
 		t.Fatalf("expected customizedActionResultsTruncated boolean schema, got %#v", truncated)
+	}
+}
+
+func TestGeneratedWarmupCRDAllowsEmptyCompletionPolicy(t *testing.T) {
+	manifest, err := os.ReadFile("../../../config/crd/bases/workloads.x-k8s.io_rolebasedgroupwarmups.yaml")
+	if err != nil {
+		t.Fatalf("read generated Warmup CRD: %v", err)
+	}
+
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(manifest, &crd); err != nil {
+		t.Fatalf("decode generated Warmup CRD: %v", err)
+	}
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	count, allAllowEmpty := countCompletionPolicyEnums(root)
+	if count != 2 || !allAllowEmpty {
+		t.Fatalf("expected both completionPolicy schemas to allow an explicit empty value, count=%d allowEmpty=%t", count, allAllowEmpty)
 	}
 }
 

@@ -102,7 +102,7 @@ type CustomizedAction struct {
 	// are treated as AllSucceeded.
 	// +optional
 	// +kubebuilder:default=AllSucceeded
-	// +kubebuilder:validation:Enum=AllSucceeded
+	// +kubebuilder:validation:Enum="";AllSucceeded
 	CompletionPolicy CustomizedActionCompletionPolicy `json:"completionPolicy,omitempty"`
 }
 
@@ -120,11 +120,13 @@ type CustomizedActionContainerResult struct {
 // CustomizedActionResult describes the latest customized action attempt on a
 // target node.
 type CustomizedActionResult struct {
-	NodeName       string                            `json:"nodeName"`
-	PodName        string                            `json:"podName"`
-	State          CustomizedActionState             `json:"state"`
-	Reason         string                            `json:"reason,omitempty"`
-	Message        string                            `json:"message,omitempty"`
+	NodeName string                `json:"nodeName"`
+	PodName  string                `json:"podName"`
+	State    CustomizedActionState `json:"state"`
+	Reason   string                `json:"reason,omitempty"`
+	Message  string                `json:"message,omitempty"`
+	// TimeoutSeconds is the effective deadline of the merged warmup Pod. It is
+	// the smallest configured timeout among actions co-located on this node.
 	TimeoutSeconds *int64                            `json:"timeoutSeconds,omitempty"`
 	Containers     []CustomizedActionContainerResult `json:"containers,omitempty"`
 }

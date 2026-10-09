@@ -91578,6 +91578,7 @@ spec:
                           Only AllSucceeded is currently supported. Empty values from legacy objects
                           are treated as AllSucceeded.
                         enum:
+                        - ""
                         - AllSucceeded
                         type: string
                       containers:
@@ -94659,6 +94660,7 @@ spec:
                                 Only AllSucceeded is currently supported. Empty values from legacy objects
                                 are treated as AllSucceeded.
                               enum:
+                              - ""
                               - AllSucceeded
                               type: string
                             containers:
@@ -97912,6 +97914,9 @@ spec:
                         state for a node.
                       type: string
                     timeoutSeconds:
+                      description: |-
+                        TimeoutSeconds is the effective deadline of the merged warmup Pod. It is
+                        the smallest configured timeout among actions co-located on this node.
                       format: int64
                       type: integer
                   required:
