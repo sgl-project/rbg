@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -45,7 +47,14 @@ func (v *CoordinatedPolicyValidator) ValidateCreate(_ context.Context, obj runti
 }
 
 // ValidateUpdate validates a CoordinatedPolicy on update.
-func (v *CoordinatedPolicyValidator) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
+func (v *CoordinatedPolicyValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	oldPolicy, ok := oldObj.(*CoordinatedPolicy)
+	if !ok {
+		return nil, fmt.Errorf("expected *CoordinatedPolicy but got %T", oldObj)
+	}
+	if err := ValidateCoordinatedPolicyTopologyImmutability(oldPolicy, v.policy(newObj)); err != nil {
+		return nil, err
+	}
 	return nil, v.validate(newObj)
 }
 
@@ -61,5 +70,17 @@ func (v *CoordinatedPolicyValidator) validate(obj runtime.Object) error {
 	}
 	klog.V(4).InfoS("validating CoordinatedPolicy", "name", policy.Name, "namespace", policy.Namespace)
 
-	return ValidateCoordinatedPolicyGang(policy, v.PerRoleGangMinimumsSupported)
+	var allErrs []error
+	if err := ValidateCoordinatedPolicyGang(policy, v.PerRoleGangMinimumsSupported); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := ValidateCoordinatedPolicyTopology(policy); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+func (v *CoordinatedPolicyValidator) policy(obj runtime.Object) *CoordinatedPolicy {
+	policy, _ := obj.(*CoordinatedPolicy)
+	return policy
 }

@@ -2273,16 +2273,19 @@ func TestRaiseScalingTargetsToGangMinimum(t *testing.T) {
 // stubGangScheduler lets a test drive Step 7 of Reconcile without a real PodGroup CRD.
 type stubGangScheduler struct {
 	err error
+
+	gangStrategies []*common.GangStrategy
 }
 
 func (s *stubGangScheduler) ReconcilePodGroup(
-	context.Context,
-	*workloadsv1alpha2.RoleBasedGroup,
-	*common.GangStrategy,
-	*builder.TypedBuilder[reconcile.Request],
-	*sync.Map,
-	client.Reader,
+	_ context.Context,
+	_ *workloadsv1alpha2.RoleBasedGroup,
+	gangStrategy *common.GangStrategy,
+	_ *builder.TypedBuilder[reconcile.Request],
+	_ *sync.Map,
+	_ client.Reader,
 ) error {
+	s.gangStrategies = append(s.gangStrategies, gangStrategy)
 	return s.err
 }
 
@@ -2292,6 +2295,17 @@ func (s *stubGangScheduler) InjectPodSchedulingFields(
 	*common.GangStrategy,
 	*coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
+}
+
+func TestReconcilePlacementCompatibilityCleansPodGroupWhenPlanNil(t *testing.T) {
+	stub := &stubGangScheduler{}
+	r := &RoleBasedGroupReconciler{gangScheduler: stub}
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+
+	_, err := r.reconcilePlacement(context.Background(), rbg, nil)
+	require.NoError(t, err)
+	require.Len(t, stub.gangStrategies, 1)
+	require.Nil(t, stub.gangStrategies[0])
 }
 
 // TestReconcileIncompatibleGangConfig pins the retry and notification policy for a gang

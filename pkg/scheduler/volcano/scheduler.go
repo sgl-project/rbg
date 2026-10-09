@@ -72,6 +72,14 @@ type GangScheduler struct {
 	subGroupMu        sync.Mutex
 	subGroupSupported bool
 	subGroupProbedAt  time.Time
+
+	networkTopologyMu        sync.Mutex
+	networkTopologySupported bool
+	networkTopologyProbedAt  time.Time
+
+	topologySubGroupMu        sync.Mutex
+	topologySubGroupSupported bool
+	topologySubGroupProbedAt  time.Time
 }
 
 // New returns a new GangScheduler for Volcano.

@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -64,11 +65,11 @@ func ValidateRoleDependencies(rbg *RoleBasedGroup) error {
 
 func validateRoleDependencies(fieldPath string, roles []RoleSpec) error {
 	roleNames := make(map[string]struct{}, len(roles))
+	var allErrs []error
 	for i := range roles {
 		roleNames[roles[i].Name] = struct{}{}
 	}
 
-	var allErrs []error
 	graph := make(map[string][]string, len(roles))
 	for i := range roles {
 		role := &roles[i]
@@ -305,4 +306,109 @@ func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error
 	// Wrap once instead of repeating the hint per role: with several offending
 	// roles the hint is identical and would otherwise dominate the message.
 	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), deprecatedWorkloadTypeHint)
+}
+
+// ValidateRoleTopologyConstraints performs self-contained syntax validation on every
+// role-level instance topology constraint. Level existence and parent/child ordering
+// are scheduler-dialect-specific and are validated during reconcile.
+func ValidateRoleTopologyConstraints(rbg *RoleBasedGroup) error {
+	return validateRoleTopologyConstraints("spec.roles", rbg.Spec.Roles)
+}
+
+func validateRoleTopologyConstraints(fieldPath string, roles []RoleSpec) error {
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		if role.InstanceTopologyConstraint == nil {
+			continue
+		}
+		if err := ValidateTopologyConstraint(
+			fmt.Sprintf("%s[%d].instanceTopologyConstraint", fieldPath, i),
+			role.InstanceTopologyConstraint,
+		); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// ValidateTopologyConstraint validates the non-dialect-specific parts of a topology
+// constraint. A non-nil constraint must define a pack level; otherwise it would be
+// treated as topology-bearing without conveying a schedulable requirement. Empty
+// strings are rejected because they are almost always typos, while a missing object
+// means the constraint is disabled.
+func ValidateTopologyConstraint(path string, constraint *TopologyConstraint) error {
+	if constraint == nil {
+		return nil
+	}
+	var errs []error
+	if constraint.Pack == nil || (constraint.Pack.Required == nil && constraint.Pack.Preferred == nil) {
+		errs = append(errs, fmt.Errorf(
+			"%s.pack must specify at least one of required or preferred", path))
+	}
+	if constraint.TopologyName != nil {
+		if err := validateTopologyIdentifier(path+".topologyName", *constraint.TopologyName); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if constraint.Pack != nil {
+		if constraint.Pack.Required != nil {
+			if err := validateTopologyIdentifier(path+".pack.required", *constraint.Pack.Required); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if constraint.Pack.Preferred != nil {
+			if err := validateTopologyIdentifier(path+".pack.preferred", *constraint.Pack.Preferred); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return utilerrors.NewAggregate(errs)
+}
+
+func validateTopologyIdentifier(path, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s must not be empty", path)
+	}
+	if len(value) > 253 {
+		return fmt.Errorf("%s must be at most 253 characters, got %d", path, len(value))
+	}
+	return nil
+}
+
+// ValidateRoleTopologyImmutability rejects changes to the set of role-level topology
+// declarations. Topology is a launch-time placement contract: adding, removing, or
+// changing a declaration requires deleting and recreating the RBG. Ordinary changes
+// to roles that never carry a topology constraint remain allowed.
+func ValidateRoleTopologyImmutability(oldRBG, newRBG *RoleBasedGroup) error {
+	oldTopologies := roleTopologyDeclarations(oldRBG.Spec.Roles)
+	newTopologies := roleTopologyDeclarations(newRBG.Spec.Roles)
+	if len(oldTopologies) != len(newTopologies) {
+		return fmt.Errorf(
+			"spec.roles topology constraints are immutable for the RoleBasedGroup lifecycle; delete and recreate the workload to add or remove one")
+	}
+	for roleName, oldConstraint := range oldTopologies {
+		newConstraint, exists := newTopologies[roleName]
+		if !exists || !TopologyConstraintsEqual(oldConstraint, newConstraint) {
+			return fmt.Errorf(
+				"spec.roles[%s].instanceTopologyConstraint is immutable for the RoleBasedGroup lifecycle; delete and recreate the workload to change it",
+				roleName,
+			)
+		}
+	}
+	return nil
+}
+
+func roleTopologyDeclarations(roles []RoleSpec) map[string]*TopologyConstraint {
+	declarations := make(map[string]*TopologyConstraint, len(roles))
+	for i := range roles {
+		if roles[i].InstanceTopologyConstraint != nil {
+			declarations[roles[i].Name] = roles[i].InstanceTopologyConstraint
+		}
+	}
+	return declarations
+}
+
+func TopologyConstraintsEqual(left, right *TopologyConstraint) bool {
+	return reflect.DeepEqual(left, right)
 }

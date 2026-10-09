@@ -138,6 +138,34 @@ spec:
                                     that must be scheduled together as part of the gang.
                                   type: object
                               type: object
+                            topologyConstraint:
+                              description: |-
+                                TopologyConstraint defines topology co-location for the roles listed in
+                                the enclosing policy rule's `roles` field.
+                              properties:
+                                pack:
+                                  description: |-
+                                    Pack specifies topology packing constraints. A non-nil TopologyConstraint
+                                    must set at least one of Pack.required or Pack.preferred.
+                                  properties:
+                                    preferred:
+                                      description: |-
+                                        Preferred is a best-effort topology constraint. The scheduler may fall
+                                        back to a broader domain, bounded by Required when both are set.
+                                      type: string
+                                    required:
+                                      description: |-
+                                        Required is a hard topology constraint. The workload is not scheduled if
+                                        the constraint cannot be satisfied.
+                                      type: string
+                                  type: object
+                                topologyName:
+                                  description: |-
+                                    TopologyName names the scheduler's topology resource when the active
+                                    dialect has one. Today this is the KAI Topology CR name. Volcano and
+                                    Koordinator do not consume the field.
+                                  type: string
+                              type: object
                           type: object
                       type: object
                   required:

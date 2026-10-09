@@ -51,6 +51,9 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := validateRoleTopologyConstraints("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
@@ -61,7 +64,11 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 }
 
 // ValidateUpdate validates a RoleBasedGroupSet on update.
-func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
+func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	oldRBGS, ok := oldObj.(*RoleBasedGroupSet)
+	if !ok {
+		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", oldObj)
+	}
 	rbgs, ok := newObj.(*RoleBasedGroupSet)
 	if !ok {
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", newObj)
@@ -72,6 +79,9 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := validateRoleTopologyConstraints("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes(
 			"spec.groupTemplate.spec.roles",
@@ -80,8 +90,33 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime
 			allErrs = append(allErrs, err)
 		}
 	}
+	if err := validateTopologyImmutability(oldRBGS, rbgs); err != nil {
+		allErrs = append(allErrs, err)
+	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
+}
+
+// validateTopologyImmutability prevents an RBGSet template update from changing its
+// topology contract. The parent comparison is self-contained, so it needs no
+// cross-resource child lookup.
+func validateTopologyImmutability(oldRBGS, newRBGS *RoleBasedGroupSet) error {
+	oldTopologies := roleTopologyDeclarations(oldRBGS.Spec.GroupTemplate.Spec.Roles)
+	newTopologies := roleTopologyDeclarations(newRBGS.Spec.GroupTemplate.Spec.Roles)
+	if len(oldTopologies) != len(newTopologies) {
+		return fmt.Errorf(
+			"spec.groupTemplate.spec.roles topology constraints are immutable for the RoleBasedGroupSet lifecycle; delete and recreate it to add or remove one")
+	}
+	for roleName, oldConstraint := range oldTopologies {
+		newConstraint, exists := newTopologies[roleName]
+		if !exists || !TopologyConstraintsEqual(oldConstraint, newConstraint) {
+			return fmt.Errorf(
+				"spec.groupTemplate.spec.roles[%s].instanceTopologyConstraint is immutable for the RoleBasedGroupSet lifecycle; delete and recreate it to change it",
+				roleName,
+			)
+		}
+	}
+	return nil
 }
 
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.
