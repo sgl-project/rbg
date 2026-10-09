@@ -116,7 +116,7 @@ test-e2e:  ## Run the e2e tests (default scheduler only; gang specs live in the 
 # --scheduler-name=volcano (helm: controller.features.gangScheduling.schedulerName=volcano)
 # and a cluster Volcano >= v1.14 (PodGroup subGroupPolicy). See test/e2e/testcase/v1alpha2/gang_scheduling.go.
 .PHONY: test-e2e-volcano
-test-e2e-volcano: ## Run the Volcano gang scheduling e2e suite.
+test-e2e-volcano: ## Run the Volcano gang and topology-aware scheduling e2e suite.
 	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='volcano' -timeout 30m
 
 # Runs the scheduler-plugins gang scheduling specs. Requires scheduler-plugins installed and
