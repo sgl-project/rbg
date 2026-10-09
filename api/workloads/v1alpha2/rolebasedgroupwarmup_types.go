@@ -51,7 +51,6 @@ type CustomizedAction struct {
 	// image preload containers. The warmup is considered complete when all containers
 	// finish successfully.
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:items:XValidation:rule="has(self.image) && self.image != ''",message="customized action container image must not be empty"
 	// +required
 	Containers []corev1.Container `json:"containers"`
 
