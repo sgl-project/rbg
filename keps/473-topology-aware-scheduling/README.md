@@ -298,9 +298,9 @@ Topology is a launch-time placement contract. The set of topology declarations i
 
 Admission compares the old and new topology declarations directly. An RBGSet template likewise compares its old and new topology declarations, so parent validation is self-contained and requires no cross-resource child lookup.
 
-Topology immutability is enforced by v1alpha2 validating admission. Deployments that disable validating webhooks explicitly opt out of this guarantee; the controller then renders the latest desired topology instead of reconstructing historical admission state. Clusters that use topology constraints should run with validating webhooks enabled. V1alpha1 does not model the new topology fields, so a v1alpha1 read-then-write round trip that removes or changes them is also outside this enforcement boundary and is a user error.
+Topology immutability is enforced by v1alpha2 validating admission. Delete-and-recreate of a topology-bearing CoordinatedPolicy cannot bypass that contract while its matching RBG is active: the controller protects the active policy with a finalizer and releases it only after the RBG has been deleted. Deployments that disable validating webhooks explicitly opt out of this guarantee; the controller then renders the latest desired topology instead of reconstructing historical admission state. Clusters that use topology constraints should run with validating webhooks enabled. V1alpha1 does not model the new topology fields, so a v1alpha1 read-then-write round trip that removes or changes them is also outside this enforcement boundary and is a user error.
 
-To change topology, delete and recreate the affected workload. Rolling updates that change topology constraints are out of scope for this KEP. Running pods are never migrated or evicted by this controller.
+To change topology, delete and recreate the affected workload (and, when needed, its topology-bearing CoordinatedPolicy). Rolling updates that change topology constraints are out of scope for this KEP. Running pods are never migrated or evicted by this controller.
 
 If the referenced topology resource is deleted, the next reconcile reports `TopologyResourceUnresolved`; if a referenced level is removed or renamed, the next reconcile reports `LevelUnresolved`. In both cases new pod creation is gated, and already-running pods are not evicted or migrated. The controller does not watch scheduler topology objects; it relies on the next workload-driven reconcile to discover drift.
 
@@ -592,7 +592,7 @@ spec:
 1. envtest: create scheduler topology fixtures + RBG with both attachment points, assert the rendered PodGroups (PlacementGroup-derived `spec.networkTopology`, `subGroupPolicy[].networkTopology`, and any PodGroup created for rule-external instance constraints) field-by-field.
 2. Failure gating: an incompatible plan or unknown level prevents Role create/update and Pod creation; cleanup of deleted roles still works; running pods are not evicted.
 3. Topology-object change triggers re-validation of referencing RBGs; level removal flips their conditions.
-4. Deleting the constraint removes rendered dialect fields on the next reconcile.
+4. Lifecycle immutability: in-place topology removal or change is rejected by admission; deleting an active topology-bearing CoordinatedPolicy is held by its finalizer until the matching RBG is deleted; after delete-and-recreate without topology, the new lifecycle renders no topology dialect fields.
 
 #### e2e tests
 
@@ -617,7 +617,7 @@ spec:
 ### Upgrade / Downgrade Strategy
 
 - **Upgrade**: all new fields are optional; existing RBGs and CoordinatedPolicies without topology configuration produce the same PlacementPlan and the same PodGroup rendering as KEP-430.
-- **Downgrade**: removing the topology fields removes the rendered dialect fields on the next reconcile; already-scheduled pods are unaffected. Rolling the controller back to a version without this feature leaves rendered PodGroup fields in place but unmaintained — they remain valid scheduler configuration and can be cleaned up manually.
+- **Downgrade**: topology fields are immutable in place. A workload that no longer needs topology must be deleted and recreated without topology so its rendered dialect fields are removed for the new lifecycle; already-scheduled pods from the old lifecycle are not migrated. Rolling the controller back to a version without this feature leaves rendered PodGroup fields in place but unmaintained — they remain valid scheduler configuration and can be cleaned up manually.
 
 ### Version Skew Strategy
 
