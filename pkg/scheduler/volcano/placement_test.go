@@ -209,6 +209,9 @@ func TestInjectPlacementSchedulingFieldsRoleOutsidePlanGetsNoMembership(t *testi
 	pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
 	New(nil).InjectPlacementSchedulingFields(rbg, &rbg.Spec.Roles[1], plan, pts)
 
+	if pts.Spec != nil && pts.Spec.SchedulerName != nil {
+		t.Fatalf("expected no schedulerName for a role outside the plan, got %#v", pts.Spec)
+	}
 	if pts.ObjectMetaApplyConfiguration != nil && pts.Annotations[AnnotationKey] != "" {
 		t.Fatalf("expected no PodGroup annotation, got %#v", pts.Annotations)
 	}
@@ -400,34 +403,179 @@ func TestBuildTopologySubGroupsRejectsZeroSizeRole(t *testing.T) {
 	require.Contains(t, err.Error(), "subgroup size must be at least 1")
 }
 
-func TestPlacementPodGroupNameUsesReadableSourceAndRBGIdentity(t *testing.T) {
+func TestPlacementPodGroupNameUsesReadableSourceAndScopeIdentity(t *testing.T) {
 	rbgName := strings.Repeat("infer", 20)
-	first := &workloadsv1alpha2.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: rbgName, Namespace: "default", UID: "uid-a"},
 	}
-	second := first.DeepCopy()
-	second.UID = "uid-b"
+	sourceName := "prefill-decode-block-" + strings.Repeat("x", 40)
 	group := &common.PlacementGroup{
-		ID:   "scope-id",
-		Name: "r-prefill",
+		ID:   "scope-id-a",
+		Name: "p-" + sourceName,
 		Scope: common.PlacementScope{
-			Roles:       []string{"prefill"},
+			Roles:       []string{"prefill", "decode"},
 			PartitionBy: common.PartitionByRoleInstance,
 		},
 		Topology: &workloadsv1alpha2.TopologyConstraint{
 			Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("rack")},
 		},
 	}
-
-	firstName := placementPodGroupName(first, group, 0)
-	secondName := placementPodGroupName(second, group, 0)
-	if firstName == secondName {
-		t.Fatalf("expected RBG UID to distinguish same-named scopes, got %q", firstName)
+	collision := &common.PlacementGroup{
+		ID:   "scope-id-b",
+		Name: group.Name,
+		Scope: common.PlacementScope{
+			Roles:       []string{"prefill", "decode"},
+			PartitionBy: common.PartitionByRoleInstance,
+		},
+		Topology: group.Topology,
 	}
-	if !strings.Contains(firstName, "-r-prefill-") {
+
+	firstName := placementPodGroupName(rbg, group, 0)
+	secondName := placementPodGroupName(rbg, collision, 0)
+	if firstName == secondName {
+		t.Fatalf("expected distinct PlacementGroup IDs to produce distinct names, got %q", firstName)
+	}
+	if !strings.Contains(firstName, "-p-prefill-decode-block-") {
 		t.Fatalf("expected readable placement name in %q", firstName)
 	}
 	if len(firstName) > 63 {
 		t.Fatalf("expected DNS-label-compatible name, got %q", firstName)
 	}
+
+	labels := placementPodGroupLabels(group)
+	if labels[constants.PlacementGroupIDLabelKey] != group.ID {
+		t.Fatalf("expected full scope ID label, got %#v", labels)
+	}
+	if labels[constants.PlacementGroupSourceLabelKey] != sourceName {
+		t.Fatalf("expected untruncated source label, got %#v", labels)
+	}
+	if labels[constants.PlacementGroupPartitionLabelKey] != "role-instance-name" {
+		t.Fatalf("expected partition label, got %#v", labels)
+	}
+}
+
+func TestReconcilePlacementRendersDistinctNamesForLongSharedPrefixes(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, apiextensionsv1.AddToScheme(testScheme))
+	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(testScheme))
+
+	rbg := rbgWithRoles(
+		standaloneRole("prefill", 2, constants.RoleInstanceSetWorkloadType),
+		standaloneRole("decode", 2, constants.RoleInstanceSetWorkloadType),
+	)
+	rbg.UID = "rbg-uid"
+	prefix := "prefill-decode-block-"
+	constraint := &workloadsv1alpha2.TopologyConstraint{
+		Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("rack")},
+	}
+	plan := &common.PlacementPlan{
+		Root: &common.PlacementGroup{
+			Children: []*common.PlacementGroup{
+				{
+					ID:       "scope-id-a",
+					Name:     prefix + "a",
+					Scope:    common.PlacementScope{Roles: []string{"prefill"}},
+					Topology: constraint,
+				},
+				{
+					ID:       "scope-id-b",
+					Name:     prefix + "b",
+					Scope:    common.PlacementScope{Roles: []string{"decode"}},
+					Topology: constraint,
+				},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(hyperNodeCRD()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if hyperNodes, ok := list.(*unstructured.UnstructuredList); ok {
+					hyperNodes.SetAPIVersion("topology.volcano.sh/v1alpha1")
+					hyperNodes.SetKind("HyperNodeList")
+					hyperNodes.Items = []unstructured.Unstructured{testHyperNode("rack", "rack", 1)}
+					return nil
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+	m := New(c)
+	m.networkTopologySupported = true
+	m.networkTopologyProbedAt = time.Now()
+	m.topologySubGroupSupported = true
+	m.topologySubGroupProbedAt = time.Now()
+	watched := sync.Map{}
+	watched.Store(CrdName, struct{}{})
+
+	_, err := m.ReconcilePlacement(
+		context.Background(), rbg, plan,
+		&builder.TypedBuilder[reconcile.Request]{}, &watched, c,
+	)
+	require.NoError(t, err)
+
+	podGroups := &volcanoschedulingv1beta1.PodGroupList{}
+	require.NoError(t, c.List(context.Background(), podGroups, &client.ListOptions{Namespace: rbg.Namespace}))
+	require.Len(t, podGroups.Items, 2)
+	names := sets.New[string]()
+	for i := range podGroups.Items {
+		item := &podGroups.Items[i]
+		names.Insert(item.Name)
+		require.NotEmpty(t, item.Labels[constants.PlacementGroupIDLabelKey])
+		require.Contains(t, item.Labels[constants.PlacementGroupSourceLabelKey], prefix)
+	}
+	require.Len(t, names, 2)
+}
+
+func hyperNodeCRD() *apiextensionsv1.CustomResourceDefinition {
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: HyperNodeCrdName},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{{
+				Type:   apiextensionsv1.Established,
+				Status: apiextensionsv1.ConditionTrue,
+			}},
+		},
+	}
+}
+
+func TestLoadTopologyLevelsUsesConfiguredSharedInformerReader(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, apiextensionsv1.AddToScheme(testScheme))
+
+	var apiLists, cacheLists int
+	apiReader := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(hyperNodeCRD()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				apiLists++
+				return cl.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+	cacheReader := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+				cacheLists++
+				hyperNodes, ok := list.(*unstructured.UnstructuredList)
+				require.True(t, ok)
+				hyperNodes.SetAPIVersion("topology.volcano.sh/v1alpha1")
+				hyperNodes.SetKind("HyperNodeList")
+				hyperNodes.Items = []unstructured.Unstructured{testHyperNode("rack", "rack", 1)}
+				return nil
+			},
+		}).
+		Build()
+
+	m := New(nil)
+	m.SetHyperNodeReader(cacheReader)
+	levels, err := m.loadTopologyLevels(context.Background(), apiReader)
+	require.NoError(t, err)
+	require.Equal(t, 1, levels["rack"])
+	require.Equal(t, 1, cacheLists)
+	require.Equal(t, 0, apiLists)
 }

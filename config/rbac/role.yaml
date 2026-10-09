@@ -188,6 +188,7 @@ rules:
 - apiGroups:
   - workloads.x-k8s.io
   resources:
+  - coordinatedpolicies/finalizers
   - instancesets/finalizers
   - rolebasedgroups/finalizers
   - rolebasedgroupsets/finalizers

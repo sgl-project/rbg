@@ -72,9 +72,19 @@ const (
 	// SchedulerUnsupported is emitted when the active scheduler dialect cannot
 	// compile a valid PlacementPlan without semantic loss.
 	SchedulerUnsupported = "SchedulerUnsupported"
-	// TopologyTranslationFailed is emitted when a topology level cannot be resolved
-	// or violates parent/child ordering.
+	// TopologyTranslationFailed is emitted when a topology value cannot be translated
+	// and no more specific KEP-473 reason applies.
 	TopologyTranslationFailed = "TopologyTranslationFailed"
+	// RoleUnresolved is emitted when a topology rule names a role absent from its RBG.
+	RoleUnresolved = "RoleUnresolved"
+	// LevelUnresolved is emitted when a requested topology level is absent or inconsistent.
+	LevelUnresolved = "LevelUnresolved"
+	// IncompatibleTopologyNames is emitted when one plan resolves multiple topologyName values.
+	IncompatibleTopologyNames = "IncompatibleTopologyNames"
+	// TopologyResourceUnresolved is emitted when a dialect's topology resource is missing.
+	TopologyResourceUnresolved = "TopologyResourceUnresolved"
+	// InvalidLevelOrder is emitted when parent/child levels violate scheduler ordering.
+	InvalidLevelOrder = "InvalidLevelOrder"
 	// PreferredAbsorbed is emitted when Volcano cannot anchor the preferred topology
 	// level and generic topology scoring is used instead.
 	PreferredAbsorbed = "PreferredAbsorbed"
