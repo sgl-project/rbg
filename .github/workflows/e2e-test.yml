@@ -517,10 +517,10 @@ jobs:
         run: |
           kind delete cluster --name rbgs-deprecated-e2e || true
 
-  # E2E test for the Volcano gang scheduling specs (Label("volcano")). These need the
-  # controller deployed with --scheduler-name=volcano and a cluster Volcano >= v1.14
-  # (PodGroup subGroupPolicy). They cannot share the main suite, which runs against the
-  # cluster's default scheduler. Runs on its own Kind cluster.
+  # E2E test for the Volcano gang and topology-aware scheduling specs (Label("volcano")).
+  # These need the controller deployed with --scheduler-name=volcano and a cluster
+  # Volcano >= v1.14 (PodGroup subGroupPolicy). They cannot share the main suite, which
+  # runs against the cluster's default scheduler. Runs on its own Kind cluster.
   e2e-test-volcano-gang:
     needs: check-changes
     if: needs.check-changes.outputs.should_run == 'true'
@@ -566,6 +566,36 @@ jobs:
           kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
           kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
           kubectl get pods -n volcano-system
+
+      - name: Enable Volcano network topology plugin
+        run: |
+          kubectl patch configmap volcano-scheduler-configmap -n volcano-system --type merge -p "$(cat <<'EOF'
+          data:
+            volcano-scheduler.conf: |
+              actions: "enqueue, allocate, backfill"
+              tiers:
+              - plugins:
+                - name: priority
+                - name: gang
+                  enablePreemptable: false
+                - name: conformance
+              - plugins:
+                - name: overcommit
+                - name: drf
+                  enablePreemptable: false
+                - name: predicates
+                - name: proportion
+                - name: nodeorder
+                - name: binpack
+                - name: network-topology-aware
+                  arguments:
+                    weight: 10
+                    hypernode.binpack.normal-pod.enable: false
+          EOF
+          )"
+          kubectl rollout restart deployment/volcano-scheduler -n volcano-system
+          kubectl rollout status deployment/volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
 
       - name: Install Helm
         run: |
@@ -621,7 +651,7 @@ jobs:
           done
           echo "All e2e test images loaded successfully"
 
-      - name: Run Volcano gang scheduling E2E tests
+      - name: Run Volcano gang and topology-aware E2E tests
         run: |
           make test-e2e-volcano
 
