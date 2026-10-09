@@ -59,6 +59,38 @@ type TemplateRef struct {
 	Patch *runtime.RawExtension `json:"patch,omitempty"`
 }
 
+// TopologyConstraint defines topology placement requirements. The field is reused
+// at two scopes: RoleSpec.InstanceTopologyConstraint packs the pods of one
+// RoleInstance, while CoordinatedPolicy scheduling topologyConstraint packs all
+// pods of the enclosing rule's roles. Topology declarations are immutable for the
+// workload lifecycle.
+type TopologyConstraint struct {
+	// TopologyName names the scheduler's topology resource when the active
+	// dialect has one. Today this is the KAI Topology CR name. Volcano and
+	// Koordinator do not consume the field. If omitted, the controller uses its
+	// configured default for that dialect.
+	// +optional
+	TopologyName *string `json:"topologyName,omitempty"`
+
+	// Pack specifies topology packing constraints. A non-nil TopologyConstraint
+	// must set at least one of Pack.required or Pack.preferred.
+	// +optional
+	Pack *TopologyPackConstraint `json:"pack,omitempty"`
+}
+
+// TopologyPackConstraint defines hard and soft gather constraints.
+type TopologyPackConstraint struct {
+	// Required is a hard topology constraint. The workload is not scheduled if
+	// the constraint cannot be satisfied.
+	// +optional
+	Required *string `json:"required,omitempty"`
+
+	// Preferred is a best-effort topology constraint. The scheduler may fall
+	// back to a broader domain, bounded by Required when both are set.
+	// +optional
+	Preferred *string `json:"preferred,omitempty"`
+}
+
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -275,6 +307,13 @@ type RoleSpec struct {
 	// Either standalonePattern or leaderWorkerPattern can be specified, not both.
 	// +optional
 	Pattern `json:",inline"`
+
+	// InstanceTopologyConstraint packs the pods of each RoleInstance of this
+	// role into one topology domain. It applies to every pattern that can
+	// produce multiple pods per RoleInstance, including LeaderWorkerPattern and
+	// CustomComponentsPattern.
+	// +optional
+	InstanceTopologyConstraint *TopologyConstraint `json:"instanceTopologyConstraint,omitempty"`
 
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`
@@ -583,6 +622,11 @@ const (
 	// for this rbg can be satisfied by the current roles and scheduler. The condition
 	// is absent when gang scheduling is disabled.
 	RoleBasedGroupGangConfigured RoleBasedGroupConditionType = "GangConfigured"
+
+	// RoleBasedGroupTopologyTranslated means the scheduler resolved and rendered
+	// the topology part of the placement plan without silent semantic loss. The
+	// condition is absent when the RBG has no topology declarations.
+	RoleBasedGroupTopologyTranslated RoleBasedGroupConditionType = "TopologyTranslated"
 )
 
 // +kubebuilder:object:root=true

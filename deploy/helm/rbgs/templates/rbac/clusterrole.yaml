@@ -166,6 +166,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - topology.volcano.sh
+  resources:
+  - hypernodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - workloads.x-k8s.io
   resources:
   - clusterengineruntimeprofiles

@@ -60,3 +60,22 @@ const (
 	FailedGetRBGRole           = "FailedGetRBGRole"
 	FailedGetRBGScalingAdapter = "FailedGetRBGScalingAdapter"
 )
+
+// topology placement events
+const (
+	// FailedReconcilePlacement is emitted when the scheduler compiler cannot render
+	// the PlacementPlan, including unsupported topology dialects and unknown levels.
+	FailedReconcilePlacement = "FailedReconcilePlacement"
+	// IncompatiblePlacementGroups is emitted when gang and topology scopes partially
+	// overlap, so no scheduler can preserve both guarantees.
+	IncompatiblePlacementGroups = "IncompatiblePlacementGroups"
+	// SchedulerUnsupported is emitted when the active scheduler dialect cannot
+	// compile a valid PlacementPlan without semantic loss.
+	SchedulerUnsupported = "SchedulerUnsupported"
+	// TopologyTranslationFailed is emitted when a topology level cannot be resolved
+	// or violates parent/child ordering.
+	TopologyTranslationFailed = "TopologyTranslationFailed"
+	// PreferredAbsorbed is emitted when Volcano cannot anchor the preferred topology
+	// level and generic topology scoring is used instead.
+	PreferredAbsorbed = "PreferredAbsorbed"
+)

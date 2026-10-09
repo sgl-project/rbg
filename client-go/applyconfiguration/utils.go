@@ -243,6 +243,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.TemplateRefApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("TemplateSource"):
 		return &workloadsv1alpha2.TemplateSourceApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("TopologyConstraint"):
+		return &workloadsv1alpha2.TopologyConstraintApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("TopologyPackConstraint"):
+		return &workloadsv1alpha2.TopologyPackConstraintApplyConfiguration{}
 
 	}
 	return nil

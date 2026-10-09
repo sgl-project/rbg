@@ -124,3 +124,24 @@ func NewGangScheduler(schedulerName SchedulerPluginType, c client.Client, schedu
 			schedulerName, KubeSchedulerPlugin, VolcanoSchedulerPlugin)
 	}
 }
+
+// PlacementScheduler is the KEP-473 scheduler compiler contract. The concrete
+// interface lives in scheduler/common so scheduler backends can implement it without
+// importing the scheduler factory package.
+type PlacementScheduler = common.PlacementScheduler
+
+// PlacementRenderResult reports how a PlacementPlan was compiled.
+type PlacementRenderResult = common.PlacementRenderResult
+
+// AsPlacementScheduler returns the scheduler's placement compiler when the active
+// dialect implements KEP-473. A nil result means topology-aware scheduling is
+// unsupported; gang-only behavior continues through GangScheduler.
+func AsPlacementScheduler(g GangScheduler) PlacementScheduler {
+	if g == nil {
+		return nil
+	}
+	if placement, ok := g.(PlacementScheduler); ok {
+		return placement
+	}
+	return nil
+}

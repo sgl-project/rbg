@@ -60,6 +60,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(_ context.Context, obj runtime.
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := ValidateRoleTopologyConstraints(rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
@@ -86,6 +89,12 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		allErrs = append(allErrs, err)
 	}
 	if err := ValidateRoleDependencies(rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := ValidateRoleTopologyConstraints(rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := ValidateRoleTopologyImmutability(oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
