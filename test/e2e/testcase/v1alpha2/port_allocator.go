@@ -37,7 +37,7 @@ const (
 )
 
 func RunPortAllocatorTestCases(f *framework.Framework) {
-	ginkgo.Describe("port allocator", func() {
+	ginkgo.Describe("port allocator", ginkgo.Label("feature"), func() {
 		ginkgo.It("should allocate ports and store in annotations", func() {
 			ginkgo.By("Creating RBG with port-allocator annotation")
 			rbg := buildPortAllocatorTestRBG(f.Namespace)

@@ -1,0 +1,242 @@
+name: Setup RBGS E2E cluster
+description: Creates a Kind cluster, installs required schedulers, loads CI images, and deploys RBGS
+
+inputs:
+  cluster_name:
+    description: Kind cluster name
+    required: true
+  install_mode:
+    description: Controller installation mode (helm or manifest)
+    required: false
+    default: helm
+  image_tag:
+    description: Tag assigned to locally built controller and CRD upgrader images
+    required: false
+    default: e2e-ci
+  image_artifact:
+    description: Path to the docker image archive downloaded from the build job
+    required: false
+    default: _artifacts/e2e-images/images.tar
+  scheduler:
+    description: Gang scheduling backend (default, volcano, or scheduler-plugins)
+    required: false
+    default: default
+  scheduler_profile_name:
+    description: Scheduler profile used by scheduler-plugins
+    required: false
+    default: scheduler-plugins-scheduler
+  port_allocator_enabled:
+    description: Whether to enable the port allocator feature
+    required: false
+    default: "false"
+  deprecated_workload_types_disabled:
+    description: Whether to disable deprecated workload types
+    required: false
+    default: "false"
+  kubernetes_version:
+    description: kindest/node image tag
+    required: false
+    default: v1.31.12
+  kind_version:
+    description: Kind release version
+    required: false
+    default: v0.31.0
+  lws_version:
+    description: LeaderWorkerSet release version
+    required: false
+    default: v0.7.0
+  volcano_version:
+    description: Volcano release version
+    required: false
+    default: v1.15.1
+  scheduler_plugins_version:
+    description: scheduler-plugins release version
+    required: false
+    default: v0.32.7
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5.5.0
+      with:
+        go-version: 1.26.6
+        cache: true
+
+    - name: Install Kind
+      shell: bash
+      run: |
+        curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ inputs.kind_version }}/kind-linux-amd64"
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+
+    - name: Install Helm
+      shell: bash
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        helm version
+
+    - name: Create Kind cluster
+      shell: bash
+      run: |
+        kind create cluster \
+          --name "${{ inputs.cluster_name }}" \
+          --image "kindest/node:${{ inputs.kubernetes_version }}" \
+          --wait 5m
+        kubectl cluster-info
+        kubectl get nodes
+
+    - name: Install LeaderWorkerSet CRDs
+      shell: bash
+      run: |
+        kubectl apply --server-side -f "https://github.com/kubernetes-sigs/lws/releases/download/${{ inputs.lws_version }}/manifests.yaml"
+        kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+    - name: Install Volcano
+      if: ${{ inputs.scheduler == 'volcano' }}
+      shell: bash
+      run: |
+        kubectl apply -f "https://raw.githubusercontent.com/volcano-sh/volcano/${{ inputs.volcano_version }}/installer/volcano-development.yaml"
+        kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
+        kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
+        kubectl get pods -n volcano-system
+
+    - name: Install scheduler-plugins
+      if: ${{ inputs.scheduler == 'scheduler-plugins' }}
+      shell: bash
+      run: |
+        chart_version="${{ inputs.scheduler_plugins_version }}"
+        helm install scheduler-plugins \
+          "https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${chart_version}/scheduler-plugins-${chart_version#v}.tgz" \
+          --create-namespace \
+          --namespace scheduler-plugins \
+          --wait \
+          --timeout 300s
+        kubectl get pods -n scheduler-plugins
+
+    - name: Load RBGS images
+      shell: bash
+      run: |
+        docker load --input "${{ inputs.image_artifact }}"
+        kind load docker-image "docker.io/rolebasedgroup/rbgs-controller:${{ inputs.image_tag }}" --name "${{ inputs.cluster_name }}"
+        kind load docker-image "docker.io/rolebasedgroup/rbgs-upgrade-crd:${{ inputs.image_tag }}" --name "${{ inputs.cluster_name }}"
+
+    - name: Validate and install committed manifests
+      if: ${{ inputs.install_mode == 'manifest' }}
+      shell: bash
+      run: |
+        conversion_count=$(grep -c "conversion:" deploy/kubectl/manifests.yaml || true)
+        webhook_count=$(grep -c "strategy: Webhook" deploy/kubectl/manifests.yaml || true)
+        if [ "$conversion_count" -lt 2 ] || [ "$webhook_count" -lt 2 ]; then
+          echo "::error::committed CRDs are missing conversion webhook configuration"
+          echo "Please run 'make manifests' and commit deploy/kubectl/manifests.yaml."
+          exit 1
+        fi
+        kubectl apply --server-side -f deploy/kubectl/manifests.yaml
+
+        patch='[
+          {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "docker.io/rolebasedgroup/rbgs-controller:${{ inputs.image_tag }}"}
+        ]'
+        kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p="$patch"
+
+        if [ "${{ inputs.port_allocator_enabled }}" = "true" ]; then
+          kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-allocate-strategy=random"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--start-port=30000"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-range=5000"}
+          ]'
+        fi
+
+    - name: Deploy controller with Helm
+      if: ${{ inputs.install_mode != 'manifest' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        values=()
+        values+=(--set "controller.image.tag=${{ inputs.image_tag }}")
+        values+=(--set "crdUpgrade.image.tag=${{ inputs.image_tag }}")
+
+        if [ "${{ inputs.port_allocator_enabled }}" = "true" ]; then
+          values+=(--set "controller.features.portAllocator.enabled=true")
+        fi
+
+        if [ "${{ inputs.deprecated_workload_types_disabled }}" = "true" ]; then
+          values+=(--set "controller.deprecatedWorkloadTypes.enabled=false")
+        fi
+
+        if [ "${{ inputs.scheduler }}" = "volcano" ]; then
+          values+=(--set "controller.features.gangScheduling.schedulerName=volcano")
+        elif [ "${{ inputs.scheduler }}" = "scheduler-plugins" ]; then
+          values+=(--set "controller.features.gangScheduling.schedulerName=scheduler-plugins")
+          values+=(--set "controller.features.gangScheduling.schedulerProfileName=${{ inputs.scheduler_profile_name }}")
+        fi
+
+        helm upgrade --install rbgs deploy/helm/rbgs \
+          --create-namespace \
+          --namespace rbgs-system \
+          "${values[@]}" \
+          --wait
+        kubectl get deploy -n rbgs-system
+
+    - name: Wait for controller readiness
+      shell: bash
+      run: |
+        kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+        kubectl get crd rolebasedgroups.workloads.x-k8s.io
+        kubectl get crd coordinatedpolicies.workloads.x-k8s.io
+        kubectl get crd roleinstances.workloads.x-k8s.io
+
+    - name: Verify controller scheduler configuration
+      if: ${{ inputs.scheduler != 'default' }}
+      shell: bash
+      run: |
+        args=$(kubectl get deployment rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[0].args}')
+        echo "controller args: $args"
+        echo "$args" | grep -q -- "--scheduler-name=${{ inputs.scheduler }}"
+
+        if [ "${{ inputs.scheduler }}" = "scheduler-plugins" ]; then
+          echo "$args" | grep -q -- "--scheduler-profile-name=${{ inputs.scheduler_profile_name }}"
+          kubectl -n scheduler-plugins get cm -o yaml | grep -q "schedulerName: ${{ inputs.scheduler_profile_name }}"
+        fi
+
+    - name: Wait for webhook certificate bootstrap
+      shell: bash
+      run: |
+        for i in $(seq 1 30); do
+          cert=$(kubectl -n rbgs-system get secret rbgs-webhook-cert -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)
+          key=$(kubectl -n rbgs-system get secret rbgs-webhook-cert -o jsonpath='{.data.tls\.key}' 2>/dev/null || true)
+          if [ -n "$cert" ] && [ -n "$key" ]; then
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "::error::webhook certificate secret did not bootstrap"
+            kubectl -n rbgs-system describe secret rbgs-webhook-cert || true
+            exit 1
+          fi
+          sleep 2
+        done
+
+        for config in \
+          validatingwebhookconfiguration/rbgs-validating-webhook-configuration \
+          mutatingwebhookconfiguration/rbgs-mutating-webhook-configuration; do
+          ca_bundle=$(kubectl get "$config" -o jsonpath='{.webhooks[*].clientConfig.caBundle}')
+          if [ -z "$ca_bundle" ]; then
+            echo "::error::$config has an empty caBundle"
+            kubectl get "$config" -o yaml || true
+            exit 1
+          fi
+        done
+
+    - name: Pre-load e2e workload images
+      shell: bash
+      run: |
+        images=(
+          "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+          "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+        )
+        for image in "${images[@]}"; do
+          docker pull "$image"
+          kind load docker-image "$image" --name "${{ inputs.cluster_name }}"
+        done

@@ -35,7 +35,7 @@ import (
 )
 
 func RunCoordinatedPolicyTestCases(f *framework.Framework) {
-	ginkgo.Describe("coordinated policy", func() {
+	ginkgo.Describe("coordinated policy", ginkgo.Label("feature", "serial"), func() {
 
 		ginkgo.It("rolling update maxSkew constrains update progress difference between roles", func() {
 			template := buildPodTemplateWithStartupDelay(5, 5)

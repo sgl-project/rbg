@@ -31,11 +31,11 @@ import (
 
 func RunWebhookValidationTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"rbg validating webhook", func() {
+		"rbg validating webhook", ginkgo.Label("webhook"), func() {
 
 			// The test case checks whether ValidateCreate() works fine
 			ginkgo.It(
-				"should reject RoleBasedGroup creation with invalid name containing dot", func() {
+				"should reject RoleBasedGroup creation with invalid name containing dot", ginkgo.Label("smoke"), func() {
 					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test.invalid-name", f.Namespace).
 						WithRoles(
 							[]workloadsv1alpha2.RoleSpec{

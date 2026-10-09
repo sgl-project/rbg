@@ -29,7 +29,7 @@ import (
 )
 
 func RunConvergenceTestCases(f *framework.Framework) {
-	ginkgo.Describe("convergence", func() {
+	ginkgo.Describe("convergence", ginkgo.Label("update", "serial"), func() {
 
 		ginkgo.It("rapid successive updates converge to final state with no intermediate remnants", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(

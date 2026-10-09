@@ -35,7 +35,7 @@ import (
 )
 
 func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
-	ginkgo.It("create leader-worker role with engine runtime", func() {
+	ginkgo.It("create leader-worker role with engine runtime", ginkgo.Label("smoke", "workload"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
@@ -50,7 +50,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectRbgV2Equal(rbg)
 	})
 
-	ginkgo.It("update leader-worker role replicas & template", func() {
+	ginkgo.It("update leader-worker role replicas & template", ginkgo.Label("smoke", "workload", "update"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
@@ -73,7 +73,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectWorkloadV2PodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
-	ginkgo.It("lws with rollingUpdate", func() {
+	ginkgo.It("lws with rollingUpdate", ginkgo.Label("workload", "update"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
