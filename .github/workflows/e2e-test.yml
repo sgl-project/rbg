@@ -152,7 +152,7 @@ jobs:
             filter: "scheduler && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 35
           - group: v1alpha1
-            filter: "v1alpha1"
+            filter: "v1alpha1 && !volcano && !scheduler-plugins"
             timeout_minutes: 35
     steps:
       - name: Checkout code

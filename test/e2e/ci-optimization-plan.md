@@ -32,7 +32,7 @@
   - `go test ./test/e2e/... -run '^$'`
 - Focused local e2e checks, when a Kind cluster with RBGS is available:
   - `make test-e2e`
-  - `make test-e2e E2E_LABEL_FILTER='(lifecycle || workload || update || rollout || feature || webhook || rbac || scheduler) && !volcano && !scheduler-plugins'`
+  - `make test-e2e E2E_LABEL_FILTER='(lifecycle || workload || update || rollout || feature || webhook || rbac || scheduler || v1alpha1) && !volcano && !scheduler-plugins'`
 - CI validation:
   - `Build E2E images` completes once;
   - all eight default-scheduler matrix slices are scheduled in parallel;
