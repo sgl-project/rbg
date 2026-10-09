@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -113,7 +114,7 @@ type RoleBasedGroupReconciler struct {
 
 func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.SchedulerPluginType, schedulerProfileName string, bindings *instancesync.NodeBindingStore) (*RoleBasedGroupReconciler, error) {
 	c := utilclient.NewClientWithUserAgent(mgr, "rolebasedgroup")
-	gangScheduler, err := scheduler.NewGangScheduler(schedulerName, c, schedulerProfileName)
+	gangScheduler, err := scheduler.NewGangSchedulerWithHyperNodeCache(schedulerName, c, schedulerProfileName, mgr.GetCache())
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +136,7 @@ func NewRoleBasedGroupReconciler(mgr ctrl.Manager, schedulerName scheduler.Sched
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=coordinatedpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=coordinatedpolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=coordinatedpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles/status,verbs=get;update;patch
@@ -169,6 +171,10 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			logger.Info("RoleBasedGroup resource not found. Ignoring since object must be deleted",
 				"name", req.Name,
 				"namespace", req.Namespace)
+			if err := r.releaseCoordinatedPolicyTopologyFinalizerByKey(
+				ctx, req.Namespace, req.Name); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
@@ -178,6 +184,9 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if !rbg.DeletionTimestamp.IsZero() {
+		if err := r.releaseCoordinatedPolicyTopologyFinalizer(ctx, rbg); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -231,6 +240,12 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Step 5: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
 	// When v1alpha1 support is removed, delete this step and coordinatedpolicy_migration_controller.go.
 	if err := EnsureV1alpha1CoordinatedPolicy(ctx, r.client, rbg); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// A topology-bearing CoordinatedPolicy matched to this RBG is lifecycle-critical:
+	// protect it from delete/recreate until the RBG itself has been removed.
+	if err := r.ensureCoordinatedPolicyTopologyFinalizer(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -557,6 +572,79 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, cmApplyConfig, utils.PatchSpec)
 }
 
+func (r *RoleBasedGroupReconciler) ensureCoordinatedPolicyTopologyFinalizer(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	policy := &workloadsv1alpha2.CoordinatedPolicy{}
+	err := r.client.Get(ctx, client.ObjectKeyFromObject(rbg), policy)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get CoordinatedPolicy %s: %w", client.ObjectKeyFromObject(rbg), err)
+	}
+	if !coordinatedPolicyHasTopology(policy) || controllerutil.ContainsFinalizer(
+		policy, constants.CoordinatedPolicyTopologyFinalizer) {
+		return nil
+	}
+
+	controllerutil.AddFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer)
+	if err := r.client.Update(ctx, policy); err != nil {
+		return fmt.Errorf("add CoordinatedPolicy topology finalizer %s: %w", client.ObjectKeyFromObject(rbg), err)
+	}
+	return nil
+}
+
+func (r *RoleBasedGroupReconciler) releaseCoordinatedPolicyTopologyFinalizer(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	return r.releaseCoordinatedPolicyTopologyFinalizerByKey(ctx, rbg.Namespace, rbg.Name)
+}
+
+func (r *RoleBasedGroupReconciler) releaseCoordinatedPolicyTopologyFinalizerByKey(
+	ctx context.Context,
+	namespace, name string,
+) error {
+	policy := &workloadsv1alpha2.CoordinatedPolicy{}
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	err := r.client.Get(ctx, key, policy)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get CoordinatedPolicy %s: %w", key, err)
+	}
+	if !controllerutil.ContainsFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer) {
+		return nil
+	}
+	// Only release when deletion is actually in progress. A cache miss for the RBG
+	// must not strip protection from a live policy.
+	if policy.DeletionTimestamp.IsZero() {
+		return nil
+	}
+
+	controllerutil.RemoveFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer)
+	if err := r.client.Update(ctx, policy); err != nil {
+		return fmt.Errorf("remove CoordinatedPolicy topology finalizer %s: %w", key, err)
+	}
+	return nil
+}
+
+func coordinatedPolicyHasTopology(policy *workloadsv1alpha2.CoordinatedPolicy) bool {
+	if policy == nil {
+		return false
+	}
+	for i := range policy.Spec.Policies {
+		scheduling := policy.Spec.Policies[i].Strategy.Scheduling
+		if scheduling != nil && scheduling.TopologyConstraint != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *RoleBasedGroupReconciler) reconcilePodGroup(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -614,6 +702,9 @@ func (r *RoleBasedGroupReconciler) setPlacementConditions(
 		}
 
 		reason := TopologyTranslationFailed
+		if topologyReason, ok := gangcommon.TopologyTranslationReason(cause); ok {
+			reason = topologyReason
+		}
 		switch {
 		case gangcommon.IsIncompatiblePlacementGroups(cause):
 			reason = IncompatiblePlacementGroups
@@ -1306,6 +1397,21 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 	return nil
 }
 
+func coordinatedPolicyPredicate() predicate.Predicate {
+	return predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicate.Funcs{
+			// Finalized objects receive an UPDATE with deletionTimestamp rather than a
+			// DELETE event. Generation does not change for that metadata-only update.
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return e.ObjectOld.GetDeletionTimestamp().IsZero() &&
+					!e.ObjectNew.GetDeletionTimestamp().IsZero()
+			},
+			DeleteFunc: func(event.DeleteEvent) bool { return true },
+		},
+	)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options, enableDeprecatedWorkloadTypes bool) error {
 	r.enableDeprecatedWorkloadTypes = enableDeprecatedWorkloadTypes
@@ -1341,7 +1447,7 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 					{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}},
 				}
 			},
-		), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		), builder.WithPredicates(coordinatedPolicyPredicate())).
 		Named("workloads-rolebasedgroup")
 
 	if enableDeprecatedWorkloadTypes {

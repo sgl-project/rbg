@@ -315,6 +315,25 @@ func ValidateRoleTopologyConstraints(rbg *RoleBasedGroup) error {
 	return validateRoleTopologyConstraints("spec.roles", rbg.Spec.Roles)
 }
 
+// ValidateRoleNames ensures every RoleSpec.Name is a DNS-1123 label. Placement
+// PodGroup names and labels are derived from role names, so accepting characters
+// outside that alphabet would create objects that fail at reconcile time.
+func ValidateRoleNames(rbg *RoleBasedGroup) error {
+	return validateRoleNames("spec.roles", rbg.Spec.Roles)
+}
+
+func validateRoleNames(fieldPath string, roles []RoleSpec) error {
+	var allErrs []error
+	for i := range roles {
+		if errs := validation.IsDNS1123Label(roles[i].Name); len(errs) > 0 {
+			allErrs = append(allErrs, fmt.Errorf(
+				"%s[%d].name: %q is not a valid DNS-1123 label: %s",
+				fieldPath, i, roles[i].Name, errs[0]))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
 func validateRoleTopologyConstraints(fieldPath string, roles []RoleSpec) error {
 	var allErrs []error
 	for i := range roles {

@@ -226,3 +226,34 @@ func TestAdmissionValidatorsRejectLifecycleTopologyChanges(t *testing.T) {
 		t.Fatal("expected RoleBasedGroupSet admission to reject template topology change")
 	}
 }
+
+func TestValidateRoleNamesRequiresDNS1123Labels(t *testing.T) {
+	rbg := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+		{Name: "prefill"},
+		{Name: "PD/fast"},
+	}}}
+
+	err := ValidateRoleNames(rbg)
+	if err == nil || !strings.Contains(err.Error(), "PD/fast") {
+		t.Fatalf("expected DNS-1123 role-name error, got %v", err)
+	}
+
+	rbg.Spec.Roles[len(rbg.Spec.Roles)-1].Name = "pd-fast"
+	if err := ValidateRoleNames(rbg); err != nil {
+		t.Fatalf("expected valid role names, got %v", err)
+	}
+}
+
+func TestValidateCoordinatedPolicyRuleNamesRequiresDNS1123Labels(t *testing.T) {
+	policy := topologyPolicy("PD/fast", []string{"prefill"})
+
+	err := ValidateCoordinatedPolicyRuleNames(policy)
+	if err == nil || !strings.Contains(err.Error(), "PD/fast") {
+		t.Fatalf("expected DNS-1123 policy-rule-name error, got %v", err)
+	}
+
+	policy.Spec.Policies[0].Name = "pd-fast"
+	if err := ValidateCoordinatedPolicyRuleNames(policy); err != nil {
+		t.Fatalf("expected valid policy rule names, got %v", err)
+	}
+}

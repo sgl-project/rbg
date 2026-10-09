@@ -56,6 +56,55 @@ func TestSetPlacementConditionsRecordsClassifiedResolutionFailure(t *testing.T) 
 	}
 }
 
+func TestSetPlacementConditionsUsesTopologyErrorReason(t *testing.T) {
+	_, r := topologyStatusTestClient(t, &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+	})
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+	}
+	cause := gangcommon.NewTopologyTranslationErrorWithReason(
+		gangcommon.TopologyReasonLevelUnresolved,
+		"Volcano HyperNodes contain no tierName %q", "rack")
+
+	if err := r.setPlacementConditions(context.Background(), rbg, nil, cause, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	condition := findCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupTopologyTranslated))
+	if condition == nil || condition.Reason != LevelUnresolved {
+		t.Fatalf("expected LevelUnresolved condition, got %#v", condition)
+	}
+}
+
+func TestSetPlacementConditionsReportsUnsupportedVolcanoCombination(t *testing.T) {
+	_, r := topologyStatusTestClient(t, &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+	})
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},
+	}
+	plan := &gangcommon.PlacementPlan{Root: &gangcommon.PlacementGroup{
+		Topology: &workloadsv1alpha2.TopologyConstraint{
+			Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("rack")},
+		},
+	}}
+	cause := gangcommon.NewSchedulerUnsupportedError(
+		"Volcano cannot render the contained cross-role topology child group")
+
+	if err := r.setPlacementConditions(context.Background(), rbg, plan, cause, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	condition := findCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupTopologyTranslated))
+	if condition == nil || condition.Reason != SchedulerUnsupported || condition.Status != metav1.ConditionFalse {
+		t.Fatalf("expected TopologyTranslated=False/SchedulerUnsupported, got %#v", condition)
+	}
+	if condition.Message == "" {
+		t.Fatalf("expected warning message describing the unsupported combination, got %#v", condition)
+	}
+}
+
 func TestSetPlacementConditionsDoesNotExposeTopologyForGangOnlyFailure(t *testing.T) {
 	_, r := topologyStatusTestClient(t, &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "default"},

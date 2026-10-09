@@ -48,7 +48,7 @@ func TestResolvePlacementPlanGangOnlyPreservesOneGroup(t *testing.T) {
 	if group.Gang == nil {
 		t.Fatal("expected gang attribute")
 	}
-	if group.Scope.PartitionBy != PartitionByNone {
+	if len(group.Scope.PartitionBy) != 0 {
 		t.Fatalf("expected no partition, got %q", group.Scope.PartitionBy)
 	}
 }
@@ -144,7 +144,7 @@ func TestResolvePlacementPlanRoleConstraintBecomesPerInstanceChild(t *testing.T)
 	if child.Name != "r-prefill" {
 		t.Fatalf("expected role placement name, got %q", child.Name)
 	}
-	if child.Scope.PartitionBy != PartitionByRoleInstance {
+	if !slices.Equal(child.Scope.PartitionBy, PartitionByRoleInstance) {
 		t.Fatalf("expected per-instance child, got %q", child.Scope.PartitionBy)
 	}
 	if len(child.Scope.Roles) != 1 || child.Scope.Roles[0] != "prefill" {
@@ -169,8 +169,12 @@ func TestResolvePlacementPlanRejectsDifferentTopologyNames(t *testing.T) {
 		},
 	}})
 	ctx := placementContext(t, rbg, policy)
-	if _, err := ResolvePlacementPlan(ctx, fakeClient(t, rbg, policy).Build(), rbg, nil); !IsIncompatiblePlacementGroups(err) {
-		t.Fatalf("expected IncompatiblePlacementGroups, got %v", err)
+	_, err := ResolvePlacementPlan(ctx, fakeClient(t, rbg, policy).Build(), rbg, nil)
+	if !IsTopologyTranslationError(err) {
+		t.Fatalf("expected TopologyTranslationError, got %v", err)
+	}
+	if reason, ok := TopologyTranslationReason(err); !ok || reason != TopologyReasonIncompatibleTopologyNames {
+		t.Fatalf("expected IncompatibleTopologyNames reason, got reason=%q ok=%v err=%v", reason, ok, err)
 	}
 }
 

@@ -71,6 +71,9 @@ func (v *CoordinatedPolicyValidator) validate(obj runtime.Object) error {
 	klog.V(4).InfoS("validating CoordinatedPolicy", "name", policy.Name, "namespace", policy.Namespace)
 
 	var allErrs []error
+	if err := ValidateCoordinatedPolicyRuleNames(policy); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if err := ValidateCoordinatedPolicyGang(policy, v.PerRoleGangMinimumsSupported); err != nil {
 		allErrs = append(allErrs, err)
 	}

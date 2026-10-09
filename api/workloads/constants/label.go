@@ -50,6 +50,19 @@ const (
 
 	// GroupUniqueHashLabelKey is used for pod affinity rules in exclusive topology
 	GroupUniqueHashLabelKey = RBGPrefix + "group-unique-hash"
+
+	// PlacementGroupIDLabelKey carries the canonical PlacementGroup ID on rendered
+	// scheduler objects. The ID hashes the full role set and partition-key array, so
+	// it preserves the logical scope even when the object name is abbreviated.
+	PlacementGroupIDLabelKey = RBGPrefix + "placement-group-id"
+
+	// PlacementGroupSourceLabelKey records the untruncated Role or CoordinatedPolicy
+	// rule name that produced a rendered scheduler placement group.
+	PlacementGroupSourceLabelKey = RBGPrefix + "placement-source"
+
+	// PlacementGroupPartitionLabelKey records the dot-separated PartitionBy keys for a
+	// rendered scheduler placement group.
+	PlacementGroupPartitionLabelKey = RBGPrefix + "placement-partition"
 )
 
 // Role level labels

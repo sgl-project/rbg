@@ -32,11 +32,18 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
-const (
+// PartitionBy is the ordered set of labels used to partition a placement scope
+// into concrete placement groups. The current planner emits either no partition
+// keys or the single role-instance-name key, but the logical model keeps the array
+// shape so future partition dimensions do not change the public design.
+type PartitionBy []string
+
+var (
 	// PartitionByNone means all members of a scope form one placement group.
-	PartitionByNone = ""
+	PartitionByNone = PartitionBy{}
 	// PartitionByRoleInstance means one placement group is produced per RoleInstance.
-	PartitionByRoleInstance = "role-instance-name"
+	// It is the singleton form of the former string-valued partition key.
+	PartitionByRoleInstance = PartitionBy{"role-instance-name"}
 )
 
 // PlacementPlan is the scheduler-independent result of resolving gang and topology
@@ -53,9 +60,9 @@ type PlacementScope struct {
 	// Roles contains sorted, unique RBG role names.
 	Roles []string
 
-	// PartitionBy is empty for a whole-scope group and PartitionByRoleInstance for
-	// per-RoleInstance groups.
-	PartitionBy string
+	// PartitionBy is empty for a whole-scope group and contains
+	// PartitionByRoleInstance for per-RoleInstance groups.
+	PartitionBy PartitionBy
 }
 
 // PlacementGroup is one logical placement node. Gang and topology are attributes of
@@ -184,7 +191,8 @@ func buildPlacementGroups(
 			roles := canonicalRoles(rule.Roles)
 			for _, roleName := range roles {
 				if !knownRoles.Has(roleName) {
-					return nil, NewTopologyTranslationError(
+					return nil, NewTopologyTranslationErrorWithReason(
+						TopologyReasonRoleUnresolved,
 						"topology rule %d in CoordinatedPolicy %s/%s references unknown role %q",
 						i, policy.Namespace, policy.Name, roleName)
 				}
@@ -237,7 +245,7 @@ func buildPlacementGroups(
 	return roots, nil
 }
 
-func newPlacementScope(roles []string, partitionBy string) PlacementScope {
+func newPlacementScope(roles []string, partitionBy PartitionBy) PlacementScope {
 	return PlacementScope{Roles: canonicalRoles(roles), PartitionBy: partitionBy}
 }
 
@@ -252,9 +260,13 @@ func scopeID(scope PlacementScope) string {
 	// both produce "a-b-c". Hash the canonical scope instead so disjoint scopes cannot
 	// collide in generated PodGroup names. The 128-bit prefix is long enough to make
 	// accidental collisions negligible while keeping object names bounded.
-	canonical := make([]byte, 0, len(scope.Roles)+len(scope.PartitionBy)+len(scope.Roles)+1)
-	canonical = append(canonical, scope.PartitionBy...)
-	canonical = append(canonical, 0)
+	canonical := make([]byte, 0, 64)
+	canonical = append(canonical, byte(len(scope.PartitionBy)))
+	for _, partition := range scope.PartitionBy {
+		canonical = append(canonical, partition...)
+		canonical = append(canonical, 0)
+	}
+	canonical = append(canonical, byte(len(scope.Roles)))
 	for _, role := range scope.Roles {
 		canonical = append(canonical, role...)
 		canonical = append(canonical, 0)
@@ -331,7 +343,7 @@ const (
 )
 
 func scopeRelation(parent, child PlacementScope) scopeRelationKind {
-	if slices.Equal(parent.Roles, child.Roles) && parent.PartitionBy == child.PartitionBy {
+	if slices.Equal(parent.Roles, child.Roles) && slices.Equal(parent.PartitionBy, child.PartitionBy) {
 		return scopeEqual
 	}
 
@@ -369,15 +381,14 @@ func scopeRelation(parent, child PlacementScope) scopeRelationKind {
 	}
 }
 
-func partitionRank(partitionBy string) int {
-	switch partitionBy {
-	case "":
+func partitionRank(partitionBy PartitionBy) int {
+	if len(partitionBy) == 0 {
 		return 0
-	case PartitionByRoleInstance:
-		return 1
-	default:
-		return -1
 	}
+	if len(partitionBy) == 1 && partitionBy[0] == "role-instance-name" {
+		return 1
+	}
+	return -1
 }
 
 func validateTopologyIdentity(groups []*PlacementGroup) error {
@@ -391,7 +402,8 @@ func validateTopologyIdentity(groups []*PlacementGroup) error {
 			seen.Insert(*group.Topology.TopologyName)
 		}
 		if seen.Len() > 1 {
-			return NewIncompatiblePlacementGroupsError(
+			return NewTopologyTranslationErrorWithReason(
+				TopologyReasonIncompatibleTopologyNames,
 				"topology constraints resolve to different topologyName values %v", sets.List(seen))
 		}
 		for _, child := range group.Children {
@@ -408,6 +420,17 @@ func validateTopologyIdentity(groups []*PlacementGroup) error {
 	}
 	return nil
 }
+
+// KEP-473 condition reasons carried by TopologyTranslationError. Keeping them in the
+// scheduler-independent package lets every dialect return the reason the KEP promises.
+const (
+	TopologyReasonRoleUnresolved             = "RoleUnresolved"
+	TopologyReasonLevelUnresolved            = "LevelUnresolved"
+	TopologyReasonIncompatibleTopologyNames  = "IncompatibleTopologyNames"
+	TopologyReasonTopologyResourceUnresolved = "TopologyResourceUnresolved"
+	TopologyReasonInvalidLevelOrder          = "InvalidLevelOrder"
+	TopologyReasonTopologyTranslationFailed  = "TopologyTranslationFailed"
+)
 
 // IncompatiblePlacementGroupsError reports a placement plan that cannot be represented
 // by the target scheduler because its scopes partially overlap.
@@ -491,12 +514,19 @@ func IsSchedulerUnsupported(err error) bool {
 
 // TopologyTranslationError reports a topology value that cannot be translated for
 // the active scheduler, such as an unknown level or invalid parent/child ordering.
+// Reason preserves the KEP-defined condition reason instead of forcing the controller
+// to infer it from a human-readable message.
 type TopologyTranslationError struct {
+	reason  string
 	message string
 }
 
 func NewTopologyTranslationError(format string, args ...any) *TopologyTranslationError {
-	return &TopologyTranslationError{message: fmt.Sprintf(format, args...)}
+	return NewTopologyTranslationErrorWithReason(TopologyReasonTopologyTranslationFailed, format, args...)
+}
+
+func NewTopologyTranslationErrorWithReason(reason, format string, args ...any) *TopologyTranslationError {
+	return &TopologyTranslationError{reason: reason, message: fmt.Sprintf(format, args...)}
 }
 
 func (e *TopologyTranslationError) Error() string {
@@ -506,4 +536,14 @@ func (e *TopologyTranslationError) Error() string {
 func IsTopologyTranslationError(err error) bool {
 	var target *TopologyTranslationError
 	return errors.As(err, &target)
+}
+
+// TopologyTranslationReason returns the KEP-defined reason carried by err. The second
+// result is false for errors that do not carry a topology-specific reason.
+func TopologyTranslationReason(err error) (string, bool) {
+	var target *TopologyTranslationError
+	if !errors.As(err, &target) || target.reason == "" {
+		return "", false
+	}
+	return target.reason, true
 }

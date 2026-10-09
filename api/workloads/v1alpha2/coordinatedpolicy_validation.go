@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // ValidateCoordinatedPolicyGang validates every scheduling.gang strategy in the policy.
@@ -95,6 +96,21 @@ func sortedKeys(m map[string]int32) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ValidateCoordinatedPolicyRuleNames ensures every policy rule name is a DNS-1123
+// label. Topology PodGroup names and labels are derived from these names and must not
+// depend on characters that Kubernetes rejects in generated object metadata.
+func ValidateCoordinatedPolicyRuleNames(policy *CoordinatedPolicy) error {
+	var allErrs []error
+	for i := range policy.Spec.Policies {
+		if errs := validation.IsDNS1123Label(policy.Spec.Policies[i].Name); len(errs) > 0 {
+			allErrs = append(allErrs, fmt.Errorf(
+				"spec.policies[%d].name: %q is not a valid DNS-1123 label: %s",
+				i, policy.Spec.Policies[i].Name, errs[0]))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
 }
 
 // ValidateCoordinatedPolicyTopology validates syntax and rule-local overlap for
