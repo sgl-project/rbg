@@ -66,7 +66,7 @@ func buildPodTemplateWithStartupDelay(delaySeconds int32, failureThreshold int32
 
 func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 	// Test 1: With maxUnavailable=0 and maxSurge=2, readiness never drops below the replica count.
-	ginkgo.It("[RoleInstanceSet] surge maintains full readiness during rolling update", func() {
+	ginkgo.It("[RoleInstanceSet] surge maintains full readiness during rolling update", ginkgo.Label("update", "rollout", "serial"), func() {
 		initialTemplate := buildPodTemplateWithStartupDelay(5, 5)
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
@@ -126,7 +126,7 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 	// Test 2: With maxUnavailable=2 and maxSurge=2, the controller takes down 2 base
 	// instances immediately while creating 2 surge instances. The ready count drops to 2
 	// (ordinals 0,1), then recovers to 4 after all instances are updated.
-	ginkgo.It("[RoleInstanceSet] surge with maxUnavailable allows faster update with minimum readiness", func() {
+	ginkgo.It("[RoleInstanceSet] surge with maxUnavailable allows faster update with minimum readiness", ginkgo.Label("update", "rollout", "serial"), func() {
 		initialTemplate := buildPodTemplateWithStartupDelay(5, 5)
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
@@ -189,7 +189,7 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 
 	// Test 3: A maxSurge value larger than replicas is capped at the replicas count.
 	// With replicas=2 and maxSurge=4, at most 2 surge instances are created (total 4).
-	ginkgo.It("[RoleInstanceSet] large maxSurge is capped at replicas count", func() {
+	ginkgo.It("[RoleInstanceSet] large maxSurge is capped at replicas count", ginkgo.Label("update", "rollout"), func() {
 		initialTemplate := buildPodTemplateWithStartupDelay(5, 5)
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
@@ -244,7 +244,7 @@ func RunRoleInstanceSetWorkloadTestCases(f *framework.Framework) {
 	// lowers partition to 0, which must trigger ord 0 to update too.
 	// Surge is intentionally 0 here — this test focuses on partition
 	// progression, not surge sizing.
-	ginkgo.It("[RoleInstanceSet] partition decrease progressively rolls more ordinals", func() {
+	ginkgo.It("[RoleInstanceSet] partition decrease progressively rolls more ordinals", ginkgo.Label("update", "rollout", "serial"), func() {
 		initialTemplate := buildPodTemplateWithStartupDelay(5, 5)
 
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(

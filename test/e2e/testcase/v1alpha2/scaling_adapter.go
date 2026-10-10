@@ -30,7 +30,7 @@ import (
 
 func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"rbg scaling adapter controller", func() {
+		"rbg scaling adapter controller", ginkgo.Label("feature"), func() {
 
 			ginkgo.It(
 				"test role with scalingAdapter", func() {

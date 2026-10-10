@@ -102,32 +102,21 @@ test-chart: ## Render the Helm chart with helm template and assert the deprecate
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
+E2E_LABEL_FILTER ?= '!v1alpha1 && !volcano && !scheduler-plugins'
+E2E_TIMEOUT ?= 45m
+E2E_FAIL_FAST ?= true
+
 .PHONY: test-e2e
-test-e2e:  ## Run the e2e tests (default scheduler only; gang specs live in the labelled suites below).
-	# 45m, not 30m: this is the full default-scheduler suite (v1alpha1 rbg/rbgs/roletemplate
-	# plus v1alpha2 rbg/rbgs-rolling/warmup/webhook). On a single-node kind runner it regularly
-	# brushes 30m and tips over on slow cycles (foreground-delete readiness polling, image pulls,
-	# configmap mount churn). A go test timeout that fires mid-suite reports a panic instead of a
-	# spec failure, so the budget must exceed the suite's real wall-clock. Bumped to 45m headroom;
-	# per-spec Eventually timeouts are unchanged, so a genuinely stuck spec still fails fast on its own.
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='!volcano && !scheduler-plugins' -timeout 45m
-
-# Runs the Volcano-only gang scheduling specs. Requires the controller deployed with
-# --scheduler-name=volcano (helm: controller.features.gangScheduling.schedulerName=volcano)
-# and a cluster Volcano >= v1.14 (PodGroup subGroupPolicy). See test/e2e/testcase/v1alpha2/gang_scheduling.go.
-.PHONY: test-e2e-volcano
-test-e2e-volcano: ## Run the Volcano gang scheduling e2e suite.
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='volcano' -timeout 30m
-
-# Runs the scheduler-plugins gang scheduling specs. Requires scheduler-plugins installed and
-# the controller deployed with --scheduler-name=scheduler-plugins plus
-# --scheduler-profile-name=<the scheduler-plugins profile> (helm:
-# controller.features.gangScheduling.schedulerName / .schedulerProfileName). The
-# as-a-second-scheduler chart uses the profile name scheduler-plugins-scheduler; when
-# scheduler-plugins replaces the default scheduler, leave the profile name empty.
-.PHONY: test-e2e-scheduler-plugins
-test-e2e-scheduler-plugins: ## Run the scheduler-plugins gang scheduling e2e suite.
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast --ginkgo.label-filter='scheduler-plugins' -timeout 30m
+test-e2e:  ## Run the v1alpha2 full e2e suite by default; override E2E_LABEL_FILTER for focused runs.
+	# 45m, not 30m: the full default-scheduler v1alpha2 suite regularly brushes 30m on a
+	# single-node Kind runner. A go test timeout that fires mid-suite reports a panic
+	# instead of a spec failure, so keep the budget above the suite's real wall-clock.
+	mkdir -p test/e2e/artifacts
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast=$(E2E_FAIL_FAST) \
+		--ginkgo.label-filter='$(E2E_LABEL_FILTER)' \
+		--ginkgo.junit-report=artifacts/junit.xml \
+		--ginkgo.json-report=artifacts/report.json \
+		-timeout $(E2E_TIMEOUT)
 
 # Runs against a cluster where the chart was installed with
 # controller.deprecatedWorkloadTypes.enabled=false. A BeforeSuite preflight fails fast
@@ -135,7 +124,11 @@ test-e2e-scheduler-plugins: ## Run the scheduler-plugins gang scheduling e2e sui
 # ordinary (enabled) release. See test/e2e/apicompat.
 .PHONY: test-e2e-deprecated-disabled
 test-e2e-deprecated-disabled: ## Run the deprecated-workload-types-disabled e2e suite.
-	go test ./test/e2e/apicompat/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
+	mkdir -p test/e2e/apicompat/artifacts
+	go test ./test/e2e/apicompat/ -v -ginkgo.v --ginkgo.fail-fast \
+		--ginkgo.junit-report=artifacts/junit.xml \
+		--ginkgo.json-report=artifacts/report.json \
+		-timeout 30m
 
 # Runs against a throwaway cluster with NO rbgs install: the suite installs the
 # from-release itself from a git worktree of the tag, upgrades it in place to the
@@ -156,7 +149,11 @@ test-e2e-upgrade: ## Run the upgrade-compatibility e2e suite (RBGS_FROM_GIT_TAG=
 	# from-release install, fixture startup, the helm upgrade, the settle window and
 	# phase 4. A go test timeout that fires first reports a panic instead of the
 	# gate's own message.
-	go test ./test/e2e/upgrade/ -v -ginkgo.v --ginkgo.fail-fast -timeout 60m
+	mkdir -p test/e2e/upgrade/artifacts
+	go test ./test/e2e/upgrade/ -v -ginkgo.v --ginkgo.fail-fast \
+		--ginkgo.junit-report=artifacts/junit.xml \
+		--ginkgo.json-report=artifacts/report.json \
+		-timeout 60m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

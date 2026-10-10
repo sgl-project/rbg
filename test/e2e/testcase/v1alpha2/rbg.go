@@ -31,10 +31,10 @@ import (
 
 func RunRbgControllerTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"rbg controller", func() {
+		"rbg controller", ginkgo.Label("lifecycle"), func() {
 
 			ginkgo.It(
-				"create & delete rbg with standalone roles", func() {
+				"create & delete rbg with standalone roles", ginkgo.Label("smoke"), func() {
 					rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithRoles(
 							[]workloadsv1alpha2.RoleSpec{

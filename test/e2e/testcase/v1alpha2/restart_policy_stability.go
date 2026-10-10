@@ -35,7 +35,7 @@ import (
 )
 
 func RunRestartPolicyStabilityTestCases(f *framework.Framework) {
-	ginkgo.Describe("restart policy stability", func() {
+	ginkgo.Describe("restart policy stability", ginkgo.Label("update", "serial"), func() {
 		runRestartPolicyRecreateTest(f)
 		runRestartPolicyNoneReplaceTest(f)
 		runRestartBackoffDelayTest(f)

@@ -30,7 +30,7 @@ import (
 )
 
 func RunStabilityTestCases(f *framework.Framework) {
-	ginkgo.Describe("stability", func() {
+	ginkgo.Describe("stability", ginkgo.Label("update", "serial"), func() {
 
 		ginkgo.It("updating one role does not affect other roles and updated role is stable after update", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
