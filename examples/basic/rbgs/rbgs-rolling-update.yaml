@@ -1,7 +1,8 @@
 # Example: RoleBasedGroupSet recreate rolling update (v1alpha2)
 # Two identical RoleBasedGroups are rolled one at a time: the highest ordinal is deleted,
 # rebuilt from groupTemplate under the same name, and only once it is Ready again does the
-# next one start.
+# next one start. Use type: InPlaceUpdate (the default) to keep group UIDs and let each
+# downstream workload roll its own Pods instead.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroupSet
 metadata:
@@ -14,8 +15,8 @@ spec:
     # Type selects how ONE child RoleBasedGroup is moved onto the new template.
     #   Recreate        - delete the RoleBasedGroup and rebuild it, so every downstream
     #                     workload and Pod is replaced and the group restarts as a whole.
-    #                     This is the only value the controller implements today.
-    #   InPlaceUpdate   - reserved; the CRD enum rejects it for now.
+    #   InPlaceUpdate   - update the RoleBasedGroup object in place, keeping its name and UID,
+    #                     and let each downstream workload roll its own Pods. This is the default.
     type: Recreate
 
     # At most one group may be unavailable at a time. With replicas: 2 that means one
