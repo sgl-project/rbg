@@ -1416,6 +1416,8 @@ sigs.k8s.io/kustomize/kyaml/yaml/walk
 sigs.k8s.io/lws/api/leaderworkerset/scheme
 sigs.k8s.io/lws/api/leaderworkerset/v1
 sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1
+sigs.k8s.io/lws/pkg/utils/pod
+sigs.k8s.io/lws/pkg/utils/revision
 # sigs.k8s.io/randfill v1.0.0
 ## explicit; go 1.18
 sigs.k8s.io/randfill
