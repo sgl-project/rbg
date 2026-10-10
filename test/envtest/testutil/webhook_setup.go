@@ -39,16 +39,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
-// SetupWebhookTestEnv initializes a webhook-enabled test environment: the same
-// CRDs as SetupTestEnv, plus the three mutating admission webhooks the release
-// installs (RoleBasedGroup, RoleBasedGroupSet, RoleInstanceSet defaulters) served
-// by the manager's webhook server. No controllers are started: the point of this
-// suite is the admission path itself, and the objects it creates must survive
-// exactly as the webhooks wrote them.
-//
-// SetupTestEnv deliberately wires no webhooks, so the existing suites keep running
-// without admission interfering with their expectations. The webhook tests live in
-// their own task package and must call this function, not SetupTestEnv.
+// SetupWebhookTestEnv serves the three defaulters and the RBGSet validator without starting workload controllers.
 func SetupWebhookTestEnv() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 

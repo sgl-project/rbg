@@ -306,28 +306,33 @@ func TestRoleBasedGroupSet_RoundTrip_PreservesRolloutStrategy(t *testing.T) {
 		},
 	}
 
-	view := &RoleBasedGroupSet{}
-	require.NoError(t, view.ConvertFrom(hub))
-	assert.Contains(t, view.Annotations, annotationV1alpha2RolloutStrategy)
-	assert.Contains(t, view.Annotations, annotationV1alpha2RolloutStatus)
-	assert.NotContains(t, view.Annotations, annotationV1alpha1PodGroupPolicy,
-		"hub-carried v1alpha1 stash keys must stay out of the v1alpha1 view")
+	for _, strategyType := range []v2.GroupUpdateStrategyType{v2.RecreateStrategyType, v2.InPlaceUpdateStrategyType} {
+		t.Run(string(strategyType), func(t *testing.T) {
+			original := hub.DeepCopy()
+			original.Spec.RolloutStrategy.Type = strategyType
+			view := &RoleBasedGroupSet{}
+			require.NoError(t, view.ConvertFrom(original))
+			assert.Contains(t, view.Annotations, annotationV1alpha2RolloutStrategy)
+			assert.Contains(t, view.Annotations, annotationV1alpha2RolloutStatus)
+			assert.NotContains(t, view.Annotations, annotationV1alpha1PodGroupPolicy,
+				"hub-carried v1alpha1 stash keys must stay out of the v1alpha1 view")
 
-	// A GitOps client edits only what it understands (e.g. a label) and writes the object back.
-	view.Labels = map[string]string{"synced": "true"}
-	roundTripped := &v2.RoleBasedGroupSet{}
-	require.NoError(t, view.ConvertTo(roundTripped))
+			view.Labels = map[string]string{"synced": "true"}
+			roundTripped := &v2.RoleBasedGroupSet{}
+			require.NoError(t, view.ConvertTo(roundTripped))
 
-	assert.Equal(t, hub.Spec.RolloutStrategy, roundTripped.Spec.RolloutStrategy)
-	assert.Equal(t, hub.Status.CurrentReplicas, roundTripped.Status.CurrentReplicas)
-	assert.Equal(t, hub.Status.UpdatedReplicas, roundTripped.Status.UpdatedReplicas)
-	assert.Equal(t, hub.Status.UpdatedReadyReplicas, roundTripped.Status.UpdatedReadyReplicas)
-	assert.Equal(t, hub.Status.ExpectedUpdatedReplicas, roundTripped.Status.ExpectedUpdatedReplicas)
-	assert.Equal(t, hub.Status.CurrentRevision, roundTripped.Status.CurrentRevision)
-	assert.Equal(t, hub.Status.UpdateRevision, roundTripped.Status.UpdateRevision)
-	assert.NotContains(t, roundTripped.Annotations, annotationV1alpha2RolloutStrategy,
-		"the stash must not leak into storage; the hub keeps the values in native fields")
-	assert.NotContains(t, roundTripped.Annotations, annotationV1alpha2RolloutStatus)
+			assert.Equal(t, original.Spec.RolloutStrategy, roundTripped.Spec.RolloutStrategy)
+			assert.Equal(t, original.Status.CurrentReplicas, roundTripped.Status.CurrentReplicas)
+			assert.Equal(t, original.Status.UpdatedReplicas, roundTripped.Status.UpdatedReplicas)
+			assert.Equal(t, original.Status.UpdatedReadyReplicas, roundTripped.Status.UpdatedReadyReplicas)
+			assert.Equal(t, original.Status.ExpectedUpdatedReplicas, roundTripped.Status.ExpectedUpdatedReplicas)
+			assert.Equal(t, original.Status.CurrentRevision, roundTripped.Status.CurrentRevision)
+			assert.Equal(t, original.Status.UpdateRevision, roundTripped.Status.UpdateRevision)
+			assert.NotContains(t, roundTripped.Annotations, annotationV1alpha2RolloutStrategy,
+				"the stash must not leak into storage; the hub keeps the values in native fields")
+			assert.NotContains(t, roundTripped.Annotations, annotationV1alpha2RolloutStatus)
+		})
+	}
 }
 
 // TestRoleBasedGroupSet_ConvertTo_NativeV1alpha1HasNoStrategy covers the opposite direction: an

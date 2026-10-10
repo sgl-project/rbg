@@ -115,20 +115,36 @@ func validateGroupSetRolloutStrategy(spec *RoleBasedGroupSetSpec) error {
 	}
 
 	var allErrs []error
-	if strategy.Type != "" && strategy.Type != RecreateStrategyType {
-		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.type: unsupported value %q; only Recreate is supported", strategy.Type))
+	if strategy.Type != "" && strategy.Type != RecreateStrategyType && strategy.Type != InPlaceUpdateStrategyType {
+		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.type: unsupported value %q; supported values are Recreate and InPlaceUpdate", strategy.Type))
 	}
 
-	maxUnavailable, unavailablePercent, unavailableErr := parseGroupSetIntOrPercent(strategy.MaxUnavailable, 1)
+	maxUnavailable, _, unavailableErr := parseGroupSetIntOrPercent(strategy.MaxUnavailable, 1)
 	if unavailableErr != nil {
 		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxUnavailable: %w", unavailableErr))
+	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.maxUnavailable", strategy.MaxUnavailable); err != nil {
+		allErrs = append(allErrs, err)
 	}
-	maxSurge, surgePercent, surgeErr := parseGroupSetIntOrPercent(strategy.MaxSurge, 0)
+	maxSurge, _, surgeErr := parseGroupSetIntOrPercent(strategy.MaxSurge, 0)
 	if surgeErr != nil {
 		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxSurge: %w", surgeErr))
+	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.maxSurge", strategy.MaxSurge); err != nil {
+		allErrs = append(allErrs, err)
 	}
-	if unavailableErr == nil && surgeErr == nil && !unavailablePercent && !surgePercent && maxUnavailable == 0 && maxSurge == 0 {
-		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy: maxUnavailable and maxSurge cannot both be integer 0"))
+	// Check the declared values, not percentages resolved against replicas: a positive
+	// percentage that rounds down to zero is handled by the controller's fallback.
+	switch strategy.Type {
+	case RecreateStrategyType:
+		if unavailableErr == nil && surgeErr == nil && maxUnavailable == 0 && maxSurge == 0 {
+			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy: maxUnavailable and maxSurge cannot both be 0 or 0%% for Recreate"))
+		}
+	case "", InPlaceUpdateStrategyType:
+		if surgeErr == nil && maxSurge > 0 {
+			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxSurge: must be omitted, 0 or 0%% for InPlaceUpdate"))
+		}
+		if unavailableErr == nil && maxUnavailable == 0 {
+			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxUnavailable: must be greater than 0 for InPlaceUpdate"))
+		}
 	}
 
 	replicas := int64(1)
@@ -138,8 +154,8 @@ func validateGroupSetRolloutStrategy(spec *RoleBasedGroupSetSpec) error {
 	partition, partitionPercent, partitionErr := parseGroupSetIntOrPercent(strategy.Partition, 0)
 	if partitionErr != nil {
 		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.partition: %w", partitionErr))
-	} else if partitionPercent && partition > 100 {
-		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.partition: percentage must be between 0%% and 100%%"))
+	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.partition", strategy.Partition); err != nil {
+		allErrs = append(allErrs, err)
 	} else {
 		if partitionPercent {
 			partition = partition * replicas / 100
@@ -149,6 +165,20 @@ func validateGroupSetRolloutStrategy(spec *RoleBasedGroupSetSpec) error {
 		}
 	}
 	return utilerrors.NewAggregate(allErrs)
+}
+
+func validateGroupSetRolloutPercentage(field string, value *intstr.IntOrString) error {
+	if value == nil {
+		return nil
+	}
+	percentage, isPercent, err := parseGroupSetIntOrPercent(value, 0)
+	if err != nil || !isPercent {
+		return nil
+	}
+	if percentage > 100 {
+		return fmt.Errorf("%s: percentage must be between 0%% and 100%%", field)
+	}
+	return nil
 }
 
 func parseGroupSetIntOrPercent(value *intstr.IntOrString, defaultValue int64) (int64, bool, error) {

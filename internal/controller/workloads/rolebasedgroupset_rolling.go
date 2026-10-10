@@ -43,12 +43,17 @@ type groupSetRolloutLimits struct {
 	partition      int
 	maxSurge       int
 	maxUnavailable int
+	inPlaceUpdate  bool
 }
 
 func resolveGroupSetRollout(set *workloadsv1alpha2.RoleBasedGroupSet) (groupSetRolloutLimits, error) {
 	var limits groupSetRolloutLimits
 	strategy := set.Spec.RolloutStrategy
-	if strategy.Type != "" && strategy.Type != workloadsv1alpha2.RecreateStrategyType {
+	switch strategy.Type {
+	case workloadsv1alpha2.RecreateStrategyType:
+	case "", workloadsv1alpha2.InPlaceUpdateStrategyType:
+		limits.inPlaceUpdate = true
+	default:
 		return limits, fmt.Errorf("unsupported RoleBasedGroupSet rollout strategy %q", strategy.Type)
 	}
 	replicas := int(*set.Spec.Replicas)
@@ -69,8 +74,10 @@ func resolveGroupSetRollout(set *workloadsv1alpha2.RoleBasedGroupSet) (groupSetR
 	if limits.partition, err = resolve(strategy.Partition, 0, false); err != nil {
 		return limits, err
 	}
-	if limits.maxSurge, err = resolve(strategy.MaxSurge, 0, true); err != nil {
-		return limits, err
+	if !limits.inPlaceUpdate {
+		if limits.maxSurge, err = resolve(strategy.MaxSurge, 0, true); err != nil {
+			return limits, err
+		}
 	}
 	if limits.maxUnavailable, err = resolve(strategy.MaxUnavailable, 1, false); err != nil {
 		return limits, err
@@ -89,8 +96,12 @@ func groupSetOrdinal(set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv
 }
 
 func groupSetChildReady(child *workloadsv1alpha2.RoleBasedGroup) bool {
-	return child.DeletionTimestamp.IsZero() && child.Status.ObservedGeneration >= child.Generation &&
-		meta.IsStatusConditionTrue(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady))
+	if !child.DeletionTimestamp.IsZero() || child.Status.ObservedGeneration < child.Generation ||
+		!meta.IsStatusConditionTrue(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)) {
+		return false
+	}
+	rolling := meta.FindStatusCondition(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+	return rolling == nil || (rolling.ObservedGeneration >= child.Generation && rolling.Status == metav1.ConditionFalse)
 }
 
 func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
@@ -185,13 +196,15 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		return changed, err
 	}
 
-	changed, err = r.warmUpGroupSetSurge(ctx, set, existing, replicas, limits, update, outdatedBase, capacity)
-	if err != nil {
-		return changed, err
+	if !limits.inPlaceUpdate {
+		changed, err = r.warmUpGroupSetSurge(ctx, set, existing, replicas, limits, update, outdatedBase, capacity)
+		if err != nil {
+			return changed, err
+		}
 	}
 
-	deleted, err := r.deleteGroupSetOutdatedChildren(ctx, set, children, existing, outdated, ready, replicas, limits, update)
-	return changed || deleted, err
+	updated, err := r.rolloutGroupSetChildren(ctx, set, children, existing, outdated, ready, replicas, limits, update)
+	return changed || updated, err
 }
 
 // deleteOutOfRangeGroupSetChildren removes children with a broken ordinal label or an ordinal at
@@ -280,9 +293,6 @@ func (r *RoleBasedGroupSetReconciler) fillMissingGroupSetBaseOrdinals(
 	return changed, nil
 }
 
-// classifyGroupSetChildrenForRollout splits the in-scope children into up-to-date, scale-only,
-// and outdated. A scale-only child differs from the update revision only in role replicas, which
-// is applied in place here; anything else is recreated by the caller under the budget.
 func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
 	ctx context.Context, existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int,
 	limits groupSetRolloutLimits, update *groupSetRevision,
@@ -294,7 +304,7 @@ func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
 		if index < limits.partition || !child.DeletionTimestamp.IsZero() || r.groupSetMatchesRevision(child, update) {
 			continue
 		}
-		if groupSetOnlyReplicasChanged(child, update.template) {
+		if !limits.inPlaceUpdate && groupSetOnlyReplicasChanged(child, update.template) {
 			updated := child.DeepCopy()
 			updated.Spec = *update.template.Spec.DeepCopy()
 			updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
@@ -339,15 +349,14 @@ func (r *RoleBasedGroupSetReconciler) warmUpGroupSetSurge(
 	return changed, nil
 }
 
-// deleteGroupSetOutdatedChildren recreates the outdated children the budget allows, highest
-// ordinal first, and reclaims surge capacity once the partition-scoped rollout is done.
-func (r *RoleBasedGroupSetReconciler) deleteGroupSetOutdatedChildren(
+func (r *RoleBasedGroupSetReconciler) rolloutGroupSetChildren(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children *workloadsv1alpha2.RoleBasedGroupList,
 	existing map[int]*workloadsv1alpha2.RoleBasedGroup, outdated []*workloadsv1alpha2.RoleBasedGroup,
 	ready, replicas int, limits groupSetRolloutLimits, update *groupSetRevision,
 ) (bool, error) {
 	minimumReady := max(0, replicas-limits.maxUnavailable)
-	if r.groupSetPartitionReady(set, children, update, limits.partition) {
+	reclaimSurge := r.groupSetPartitionReady(set, children, update, limits.partition)
+	if reclaimSurge {
 		outdated = nil
 		for index, child := range existing {
 			if index >= replicas && child.DeletionTimestamp.IsZero() {
@@ -366,7 +375,11 @@ func (r *RoleBasedGroupSetReconciler) deleteGroupSetOutdatedChildren(
 		if isReady && ready <= minimumReady {
 			continue
 		}
-		if err := r.deleteRollingGroupSetChild(ctx, child); err != nil {
+		if limits.inPlaceUpdate && !reclaimSurge {
+			if err := r.updateRollingGroupSetChild(ctx, set, child, update); err != nil {
+				return changed, err
+			}
+		} else if err := r.deleteRollingGroupSetChild(ctx, child); err != nil {
 			return changed, err
 		}
 		if isReady {
@@ -375,6 +388,17 @@ func (r *RoleBasedGroupSetReconciler) deleteGroupSetOutdatedChildren(
 		changed = true
 	}
 	return changed, nil
+}
+
+func (r *RoleBasedGroupSetReconciler) updateRollingGroupSetChild(
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet,
+	child *workloadsv1alpha2.RoleBasedGroup, update *groupSetRevision,
+) error {
+	updated := child.DeepCopy()
+	updated.Spec = *update.template.Spec.DeepCopy()
+	r.syncRBGMetadata(set, updated)
+	updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
+	return r.client.Update(ctx, updated)
 }
 
 func (r *RoleBasedGroupSetReconciler) createRollingGroupSetChild(
