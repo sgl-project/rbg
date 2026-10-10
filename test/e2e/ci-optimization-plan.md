@@ -20,7 +20,7 @@
 4. Common Kind, LWS, scheduler, image-loading, and RBGS setup is centralized in a composite action.
 5. Ginkgo emits JUnit and JSON reports, which are uploaded even when tests pass.
 6. Jobs have bounded timeouts, and a newer push to the same PR cancels the older run.
-7. Timing-sensitive tests carry explicit labels and run serially within their slice; the zero-unavailable surge test monitors Pod-level invariants continuously.
+7. Timing-sensitive tests carry explicit labels and run serially within their slice.
 8. No issue-comment command or PR label is used to select whether a suite runs.
 
 ## Verification
@@ -50,4 +50,3 @@
 - Kept manifest, deprecated-disabled, Volcano, and scheduler-plugins as independent parallel jobs.
 - Added retries for the LWS registry pull and webhook caBundle injection checks, addressing the setup failures observed in the first CI run.
 - Added Ginkgo JUnit/JSON reports to e2e Make targets.
-- Reworked the zero-unavailable surge rollout test to gate on a stable base, wait for the rollout to begin, and continuously monitor Pod-level maxSurge/readiness invariants until completion.
