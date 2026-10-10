@@ -17,6 +17,7 @@ limitations under the License.
 package rbgs_rolling
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"slices"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -247,9 +249,15 @@ func rollingStateOf(ns, setName string) (string, error) {
 	return fmt.Sprintf("%s=%s", condition.Status, condition.Reason), nil
 }
 
-// markChildPodsReady reports every pending Pod of a child RoleBasedGroup as Running and
-// Ready, standing in for the kubelet that envtest does not run.
+// markChildPodsReady starts pending containers but deliberately does not complete image
+// updates. Running Pods still need kubelet-owned Ready recomputed after gates change.
 func markChildPodsReady(ns, name string) error {
+	return simulateChildKubelet(ns, name, false)
+}
+
+// simulateChildKubelet only writes Pod status. In particular, it preserves custom conditions
+// and never writes controller-owned readiness gates or any RBG/RIS/RI status.
+func simulateChildKubelet(ns, name string, completeImageUpdate bool) error {
 	pods := &corev1.PodList{}
 	if err := testutil.K8sClient.List(testutil.Ctx, pods, client.InNamespace(ns),
 		client.MatchingLabels{constants.GroupNameLabelKey: name}); err != nil {
@@ -257,19 +265,106 @@ func markChildPodsReady(ns, name string) error {
 	}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !pod.DeletionTimestamp.IsZero() || pod.Status.Phase == corev1.PodRunning {
+		if !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
-		fresh := &corev1.Pod{}
-		if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(pod), fresh); err != nil {
-			return err
+		before := pod.DeepCopy()
+		pod.Status.Phase = corev1.PodRunning
+		for _, container := range pod.Spec.Containers {
+			index := slices.IndexFunc(pod.Status.ContainerStatuses, func(s corev1.ContainerStatus) bool {
+				return s.Name == container.Name
+			})
+			if index < 0 {
+				pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, corev1.ContainerStatus{Name: container.Name})
+				index = len(pod.Status.ContainerStatuses) - 1
+			}
+			status := &pod.Status.ContainerStatuses[index]
+			if status.Image == "" || (completeImageUpdate && status.Image != container.Image) {
+				if status.Image != "" {
+					// Increment exactly once, matching the RI controller's pre-update baseline.
+					status.RestartCount++
+				}
+				status.Image = container.Image
+				status.ImageID = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(container.Image)))
+				status.ContainerID = fmt.Sprintf("containerd://%s-%s-%d", pod.UID, container.Name, status.RestartCount)
+				status.Ready = true
+				status.Started = ptr.To(true)
+				status.State = corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}
+			}
 		}
-		testutil.SetPodRunningAndReady(fresh)
-		if err := testutil.K8sClient.Status().Update(testutil.Ctx, fresh); err != nil {
-			return err
+		setKubeletCondition(pod, corev1.PodInitialized, corev1.ConditionTrue)
+		setKubeletCondition(pod, corev1.ContainersReady, corev1.ConditionTrue)
+		ready := corev1.ConditionTrue
+		for _, gate := range pod.Spec.ReadinessGates {
+			if podConditionStatus(pod, gate.ConditionType) != corev1.ConditionTrue {
+				ready = corev1.ConditionFalse
+			}
+		}
+		setKubeletCondition(pod, corev1.PodReady, ready)
+		if !equality.Semantic.DeepEqual(before.Status, pod.Status) {
+			// Update uses resourceVersion, so a concurrent controller gate update is not lost.
+			if err := testutil.K8sClient.Status().Update(testutil.Ctx, pod); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func podConditionStatus(pod *corev1.Pod, conditionType corev1.PodConditionType) corev1.ConditionStatus {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == conditionType {
+			return condition.Status
+		}
+	}
+	return corev1.ConditionUnknown
+}
+
+func setKubeletCondition(pod *corev1.Pod, conditionType corev1.PodConditionType, status corev1.ConditionStatus) {
+	for i := range pod.Status.Conditions {
+		condition := &pod.Status.Conditions[i]
+		if condition.Type == conditionType {
+			if condition.Status != status {
+				*condition = corev1.PodCondition{Type: conditionType, Status: status, LastTransitionTime: metav1.Now()}
+			}
+			return
+		}
+	}
+	pod.Status.Conditions = append(pod.Status.Conditions,
+		corev1.PodCondition{Type: conditionType, Status: status, LastTransitionTime: metav1.Now()})
+}
+
+// downstreamOf follows actual owner UIDs rather than assuming stateful/stateless RI names.
+// These cases intentionally have exactly one role, instance and Pod per RBG.
+type downstream struct {
+	set      *workloadsv1alpha2.RoleInstanceSet
+	instance *workloadsv1alpha2.RoleInstance
+	pod      *corev1.Pod
+}
+
+func downstreamOf(g Gomega, child *workloadsv1alpha2.RoleBasedGroup) downstream {
+	sets := &workloadsv1alpha2.RoleInstanceSetList{}
+	g.Expect(testutil.K8sClient.List(testutil.Ctx, sets, client.InNamespace(child.Namespace))).To(Succeed())
+	sets.Items = slices.DeleteFunc(sets.Items, func(set workloadsv1alpha2.RoleInstanceSet) bool {
+		return !ownedBy(&set, map[types.UID]bool{child.UID: true})
+	})
+	g.Expect(sets.Items).To(HaveLen(1))
+	set := &sets.Items[0]
+	instances := &workloadsv1alpha2.RoleInstanceList{}
+	g.Expect(testutil.K8sClient.List(testutil.Ctx, instances, client.InNamespace(child.Namespace))).To(Succeed())
+	instances.Items = slices.DeleteFunc(instances.Items, func(instance workloadsv1alpha2.RoleInstance) bool {
+		return !ownedBy(&instance, map[types.UID]bool{set.UID: true})
+	})
+	g.Expect(instances.Items).To(HaveLen(1))
+	instance := &instances.Items[0]
+	pods := &corev1.PodList{}
+	g.Expect(testutil.K8sClient.List(testutil.Ctx, pods, client.InNamespace(child.Namespace))).To(Succeed())
+	pods.Items = slices.DeleteFunc(pods.Items, func(pod corev1.Pod) bool {
+		return !ownedBy(&pod, map[types.UID]bool{instance.UID: true})
+	})
+	g.Expect(pods.Items).To(HaveLen(1))
+	g.Expect(pods.Items[0].DeletionTimestamp.IsZero()).To(BeTrue())
+	return downstream{set: set, instance: instance, pod: &pods.Items[0]}
 }
 
 // waitChildReady drives one child to the Ready condition its controller computes, which is
@@ -289,6 +384,10 @@ func waitChildReady(ns, name string) {
 		}
 		if !meta.IsStatusConditionTrue(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)) {
 			return fmt.Errorf("RoleBasedGroup %s is not Ready", name)
+		}
+		rolling := meta.FindStatusCondition(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+		if rolling != nil && (rolling.ObservedGeneration < child.Generation || rolling.Status != metav1.ConditionFalse) {
+			return fmt.Errorf("RoleBasedGroup %s has not finished updating its workloads", name)
 		}
 		return nil
 	}, timeout, interval).Should(Succeed())

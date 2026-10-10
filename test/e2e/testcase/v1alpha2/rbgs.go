@@ -20,6 +20,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -33,8 +34,8 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
-// rolloutMarker is added to the container env of the group template to drive a recreate
-// rolling update.
+// rolloutMarker is added to the container env of the group template to drive a rolling
+// update that replaces Pods, even when the set strategy preserves the RBG objects.
 const (
 	rolloutMarkerName  = "RBGSET_ROLLOUT_MARKER"
 	rolloutMarkerValue = "rolled"
@@ -46,7 +47,11 @@ func hasRolloutMarker(role workloadsv1alpha2.RoleSpec) bool {
 	if role.StandalonePattern == nil || role.StandalonePattern.Template == nil {
 		return false
 	}
-	for _, container := range role.StandalonePattern.Template.Spec.Containers {
+	return containersHaveRolloutMarker(role.StandalonePattern.Template.Spec.Containers)
+}
+
+func containersHaveRolloutMarker(containers []corev1.Container) bool {
+	for _, container := range containers {
 		for _, env := range container.Env {
 			if env.Name == rolloutMarkerName && env.Value == rolloutMarkerValue {
 				return true
@@ -441,8 +446,199 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 
 			runRbgSetPartitionRolloutCases(f)
 			runRbgSetPartitionRecoveryCases(f)
+			runRbgSetInPlaceUpdateCases(f)
 		},
 	)
+}
+
+// Keep these specs separate: gocyclo counts nested closures in the registrar.
+func runRbgSetInPlaceUpdateCases(f *framework.Framework) {
+	ginkgo.It(
+		"InPlaceUpdate preserves group UIDs while RecreatePod rolls within partition and availability budgets", func() {
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(3).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 1)).Obj()
+			rbgset.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			rollingUpdate := wrappersv2.BuildRollingUpdate(1, 0)
+			rollingUpdate.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+			rbgset.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate = &rollingUpdate
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).To(gomega.HaveLen(3))
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+			initialChildren := f.ListRbgSetV2Children(rbgset)
+			initialPods := rbgSetSinglePodUIDs(f, initialChildren)
+
+			// This changes an immutable Pod field: the role must replace Pods, not RBGs.
+			triggerRbgSetRollout(f, rbgset)
+			partitionComplete := func() bool {
+				return rbgSetInPlacePartitionComplete(f, rbgset, initialChildren, initialPods, 1)
+			}
+			gomega.Eventually(partitionComplete, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+			phase1Pods := rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))
+			gomega.Consistently(func() bool {
+				complete := partitionComplete()
+				gomega.Expect(rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))).To(gomega.Equal(phase1Pods))
+				return complete
+			}, 15, 2).Should(gomega.BeTrue())
+
+			updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+				rs.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+			})
+			rolloutComplete := func() bool {
+				complete := rbgSetInPlacePartitionComplete(f, rbgset, initialChildren, initialPods, 0)
+				// Releasing test-0 must not restart the already updated upper ordinals.
+				for _, child := range initialChildren[1:] {
+					gomega.Expect(getPodUIDsForRole(f, &child, child.Spec.Roles[0].Name)).To(
+						gomega.Equal(phase1Pods[child.Name]),
+					)
+				}
+				return complete
+			}
+			gomega.Eventually(rolloutComplete, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+			finalPods := rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))
+			gomega.Consistently(func() bool {
+				complete := rolloutComplete()
+				gomega.Expect(rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))).To(gomega.Equal(finalPods))
+				return complete
+			}, 15, 2).Should(gomega.BeTrue())
+		},
+	)
+}
+
+// Assert invariants on every poll, including while waiting for Pods and status to converge.
+func observeRbgSetInPlaceChildren(
+	f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet, initialUIDs map[string]types.UID,
+) []workloadsv1alpha2.RoleBasedGroup {
+	children := f.ListRbgSetV2Children(rbgset)
+	base, surge := framework.SplitRbgSetV2Children(children, len(initialUIDs))
+	gomega.Expect(surge).To(gomega.BeEmpty(), "maxSurge=0 forbids surge throughout the rollout")
+	gomega.Expect(framework.RbgSetV2ChildUIDs(base)).To(
+		gomega.Equal(initialUIDs), "InPlaceUpdate must preserve every base group name and UID",
+	)
+	observed := make([]workloadsv1alpha2.RoleBasedGroup, 0, len(base))
+	for _, child := range base {
+		gomega.Expect(child.DeletionTimestamp.IsZero()).To(gomega.BeTrue(), "group %s must not be deleted", child.Name)
+		rolling := meta.FindStatusCondition(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+		if child.Status.ObservedGeneration >= child.Generation &&
+			(rolling == nil || (rolling.ObservedGeneration >= child.Generation && rolling.Status == metav1.ConditionFalse)) {
+			observed = append(observed, child)
+		}
+	}
+	gomega.Expect(framework.CountRbgSetV2ReadyChildren(observed)).To(
+		gomega.BeNumerically(">=", len(initialUIDs)-1), "maxUnavailable=1 must hold throughout the rollout",
+	)
+	return base
+}
+
+func rbgSetSinglePodUIDs(
+	f *framework.Framework, children []workloadsv1alpha2.RoleBasedGroup,
+) map[string]map[string]types.UID {
+	result := make(map[string]map[string]types.UID, len(children))
+	for _, child := range children {
+		uids := getPodUIDsForRole(f, &child, child.Spec.Roles[0].Name)
+		gomega.Expect(uids).To(gomega.HaveLen(1), "group %s must have one non-terminating Pod", child.Name)
+		result[child.Name] = uids
+	}
+	return result
+}
+
+// Do not mistake an updated RBG spec or stale Ready condition for a completed Pod rollout.
+func rbgSetSinglePod(f *framework.Framework, child *workloadsv1alpha2.RoleBasedGroup) *corev1.Pod {
+	pods := &corev1.PodList{}
+	gomega.Expect(f.Client.List(f.Ctx, pods, client.InNamespace(child.Namespace), client.MatchingLabels{
+		constants.GroupNameLabelKey: child.Name,
+		constants.RoleNameLabelKey:  child.Spec.Roles[0].Name,
+	})).Should(gomega.Succeed())
+	if len(pods.Items) != 1 || !pods.Items[0].DeletionTimestamp.IsZero() {
+		return nil
+	}
+	return &pods.Items[0]
+}
+
+func rbgSetPodReady(pod *corev1.Pod) bool {
+	if pod == nil || !pod.DeletionTimestamp.IsZero() {
+		return false
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func rbgSetInPlacePartitionComplete(
+	f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet,
+	initialChildren []workloadsv1alpha2.RoleBasedGroup, initialPods map[string]map[string]types.UID, partition int,
+) bool {
+	children := observeRbgSetInPlaceChildren(f, rbgset, framework.RbgSetV2ChildUIDs(initialChildren))
+	complete := framework.CountRbgSetV2ReadyChildren(children) == len(initialChildren)
+	for i := range children {
+		child := &children[i]
+		ordinal := framework.RbgSetV2ChildOrdinal(*child)
+		pod := rbgSetSinglePod(f, child)
+		if ordinal < partition {
+			original := framework.RbgSetV2ChildByOrdinal(initialChildren, ordinal)
+			gomega.Expect(original).NotTo(gomega.BeNil())
+			gomega.Expect(child.Spec).To(gomega.Equal(original.Spec), "partition must hold the entire child spec back")
+			gomega.Expect(pod).NotTo(gomega.BeNil(), "the held-back Pod must not disappear or terminate")
+			gomega.Expect(initialPods[child.Name]).To(gomega.HaveKeyWithValue(pod.Name, pod.UID))
+			gomega.Expect(containersHaveRolloutMarker(pod.Spec.Containers)).To(gomega.BeFalse())
+		} else if pod == nil {
+			complete = false
+			continue
+		} else {
+			// The name may or may not change; no original UID may survive RecreatePod.
+			complete = complete && hasRolloutMarker(child.Spec.Roles[0]) &&
+				containersHaveRolloutMarker(pod.Spec.Containers) && initialPods[child.Name][pod.Name] != pod.UID
+		}
+		complete = complete && rbgSetPodReady(pod) && child.Status.ObservedGeneration >= child.Generation
+	}
+	previousRevision := initialChildren[0].Labels[constants.GroupSetRevisionLabelKey]
+	gomega.Expect(previousRevision).NotTo(gomega.BeEmpty())
+	return complete && rbgSetRolloutSettled(f, rbgset, children, partition, previousRevision)
+}
+
+// Match the latest generation, revision labels and terminal status, not a prior rollout's condition.
+func rbgSetRolloutSettled(
+	f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet,
+	children []workloadsv1alpha2.RoleBasedGroup, partition int, previousRevision string,
+) bool {
+	latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+	expected := *latest.Spec.Replicas - int32(partition)
+	status := latest.Status
+	if latest.Generation != rbgset.Generation || status.ObservedGeneration != latest.Generation ||
+		status.UpdateRevision == "" || status.UpdateRevision == previousRevision ||
+		status.Replicas != *latest.Spec.Replicas || status.ReadyReplicas != *latest.Spec.Replicas ||
+		status.CurrentReplicas != int32(partition) || status.UpdatedReplicas != expected ||
+		status.UpdatedReadyReplicas != expected || status.ExpectedUpdatedReplicas != expected {
+		return false
+	}
+	reason := "RolloutComplete"
+	currentRevision := status.UpdateRevision
+	if partition > 0 {
+		reason = "PartitionComplete"
+		currentRevision = previousRevision
+	}
+	rolling := meta.FindStatusCondition(status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+	if rolling == nil || rolling.Status != metav1.ConditionFalse || rolling.Reason != reason ||
+		rolling.ObservedGeneration != latest.Generation || status.CurrentRevision != currentRevision {
+		return false
+	}
+	for _, child := range children {
+		revision := status.UpdateRevision
+		if framework.RbgSetV2ChildOrdinal(child) < partition {
+			revision = previousRevision
+		}
+		if child.Labels[constants.GroupSetRevisionLabelKey] != revision {
+			return false
+		}
+	}
+	return true
 }
 
 // runRbgSetPartitionRolloutCases registers the partition-scoped rollout specs. gocyclo

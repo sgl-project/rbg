@@ -41648,8 +41648,8 @@ spec:
                 type: integer
               rolloutStrategy:
                 description: |-
-                  RolloutStrategy controls how a change to GroupTemplate is propagated to the child
-                  RoleBasedGroups.
+                  RolloutStrategy controls updates to child RoleBasedGroups. When unset, legacy
+                  unordered updates apply; an empty strategy defaults to InPlaceUpdate.
                 properties:
                   maxSurge:
                     anyOf:
@@ -41657,19 +41657,29 @@ spec:
                     - type: string
                     default: 0
                     description: |-
-                      MaxSurge is the maximum number of RoleBasedGroups that can be created above Replicas
-                      during the update.
+                      MaxSurge is ignored by the controller for InPlaceUpdate; admission only allows
+                      it to be omitted, 0 or 0% in that mode.
+                      For Recreate, it is the maximum number of RoleBasedGroups created above Replicas.
                     x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be a non-negative integer or a percentage from
+                        0% to 100%
+                      rule: 'type(self) == int ? self >= 0 : self.matches(''^[0-9]{1,3}%$'')
+                        && int(self.substring(0, self.size()-1)) <= 100'
                   maxUnavailable:
                     anyOf:
                     - type: integer
                     - type: string
                     default: 1
                     description: |-
-                      MaxUnavailable is the maximum number of RoleBasedGroups that can be unavailable
-                      during the update. Value can be an absolute number (ex: 1) or a percentage of
-                      Replicas (ex: 25%).
+                      MaxUnavailable limits unavailable RoleBasedGroups during updates. It defaults to 1.
+                      InPlaceUpdate rejects 0 and 0%; the controller enforces a resolved minimum of 1.
                     x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be a non-negative integer or a percentage from
+                        0% to 100%
+                      rule: 'type(self) == int ? self >= 0 : self.matches(''^[0-9]{1,3}%$'')
+                        && int(self.substring(0, self.size()-1)) <= 100'
                   partition:
                     anyOf:
                     - type: integer
@@ -41680,12 +41690,19 @@ spec:
                       previous template. Only the ordinals in [Partition, Replicas) take part in the
                       rollout.
                     x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be a non-negative integer or a percentage from
+                        0% to 100%
+                      rule: 'type(self) == int ? self >= 0 : self.matches(''^[0-9]{1,3}%$'')
+                        && int(self.substring(0, self.size()-1)) <= 100'
                   type:
-                    default: Recreate
-                    description: Type indicates how one child RoleBasedGroup is moved
-                      onto the new template.
+                    default: InPlaceUpdate
+                    description: |-
+                      Type indicates how one child RoleBasedGroup is moved onto the new template.
+                      Defaults to InPlaceUpdate when omitted or empty.
                     enum:
                     - Recreate
+                    - InPlaceUpdate
                     type: string
                 type: object
             required:

@@ -45,9 +45,10 @@ type RoleBasedGroupSetSpec struct {
 	// GroupTemplate describes the RoleBasedGroup that will be created.
 	GroupTemplate RoleBasedGroupTemplateSpec `json:"groupTemplate"`
 
-	// RolloutStrategy controls how a change to GroupTemplate is propagated to the child
-	// RoleBasedGroups. When it is unset every outdated RoleBasedGroup is updated in place
-	// within a single reconcile, with no ordering and no availability gating.
+	// RolloutStrategy controls updates to child RoleBasedGroups. When unset, legacy
+	// unordered updates apply; an empty strategy defaults to InPlaceUpdate.
+	// Legacy updates change every outdated RoleBasedGroup in place within a single
+	// reconcile, with no ordering and no availability gating.
 	// +optional
 	RolloutStrategy *GroupSetRolloutStrategy `json:"rolloutStrategy,omitempty"`
 }
@@ -65,7 +66,6 @@ const (
 	// InPlaceUpdateStrategyType - Update the RoleBasedGroup object in place,
 	// keeping its name and UID, and let each downstream workload decide how its Pods move
 	// to the new template according to its own role level rolloutStrategy.
-	// the current controller only implements Recreate.
 	InPlaceUpdateStrategyType GroupUpdateStrategyType = "InPlaceUpdate"
 )
 
@@ -73,8 +73,9 @@ const (
 // use to perform updates of its child RoleBasedGroups.
 type GroupSetRolloutStrategy struct {
 	// Type indicates how one child RoleBasedGroup is moved onto the new template.
-	// +kubebuilder:validation:Enum={Recreate}
-	// +kubebuilder:default=Recreate
+	// Defaults to InPlaceUpdate when omitted or empty.
+	// +kubebuilder:validation:Enum=Recreate;InPlaceUpdate
+	// +kubebuilder:default=InPlaceUpdate
 	Type GroupUpdateStrategyType `json:"type,omitempty"`
 
 	// Partition is the number of lowest ordinal RoleBasedGroups that are held back on the
@@ -84,25 +85,32 @@ type GroupSetRolloutStrategy struct {
 	// It must not be greater than Replicas.
 	//
 	// +optional
+	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? self >= 0 : self.matches('^[0-9]{1,3}%$') && int(self.substring(0, self.size()-1)) <= 100",message="must be a non-negative integer or a percentage from 0% to 100%"
 	// +kubebuilder:default=0
 	Partition *intstr.IntOrString `json:"partition,omitempty"`
 
-	// MaxUnavailable is the maximum number of RoleBasedGroups that can be unavailable
-	// during the update. Value can be an absolute number (ex: 1) or a percentage of
-	// Replicas (ex: 25%). Absolute number is calculated from percentage by rounding down.
-	// A resolved value of 0 is allowed.
+	// MaxUnavailable limits unavailable RoleBasedGroups during updates. It defaults to 1.
+	// InPlaceUpdate rejects 0 and 0%; the controller enforces a resolved minimum of 1.
+	// Value can be a non-negative integer (ex: 1) or a percentage of Replicas (ex: 25%),
+	// rounded down. Positive percentages are allowed even when they resolve to 0.
+	// Recreate rejects MaxUnavailable and MaxSurge both being 0 or 0%, including mixed
+	// forms; positive percentages that resolve to 0 are handled by the controller.
 	//
 	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? self >= 0 : self.matches('^[0-9]{1,3}%$') && int(self.substring(0, self.size()-1)) <= 100",message="must be a non-negative integer or a percentage from 0% to 100%"
 	// +kubebuilder:default=1
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 
-	// MaxSurge is the maximum number of RoleBasedGroups that can be created above Replicas
-	// during the update. They occupy the ordinals in [Replicas, Replicas+MaxSurge) and take
-	// traffic exactly like the base groups do. Value can be an absolute number (ex: 1) or a
-	// percentage of Replicas (ex: 25%).
-	// Absolute number is calculated from percentage by rounding up.
+	// MaxSurge is ignored by the controller for InPlaceUpdate; admission only allows
+	// it to be omitted, 0 or 0% in that mode.
+	// For Recreate, it is the maximum number of RoleBasedGroups created above Replicas.
+	// They occupy the ordinals in [Replicas, Replicas+MaxSurge) and take traffic exactly
+	// like the base groups do. Value can be a non-negative integer (ex: 1) or a percentage
+	// of Replicas (ex: 25%), rounded up. It defaults to 0.
 	//
 	// +kubebuilder:validation:XIntOrString
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? self >= 0 : self.matches('^[0-9]{1,3}%$') && int(self.substring(0, self.size()-1)) <= 100",message="must be a non-negative integer or a percentage from 0% to 100%"
 	// +kubebuilder:default=0
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
 }
