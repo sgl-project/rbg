@@ -25,6 +25,8 @@ const (
 
 	// GroupSetIndexLabelKey identifies the index of the RBG within the RBGSet
 	GroupSetIndexLabelKey = RBGPrefix + "groupset-index"
+
+	GroupSetRevisionLabelKey = RBGPrefix + "groupset-revision"
 )
 
 // Group level labels

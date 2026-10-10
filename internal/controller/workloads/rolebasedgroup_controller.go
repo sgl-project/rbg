@@ -218,8 +218,8 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 4: Construct role statuses
-	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
+	// Step 4: Construct role statuses and the independent rollout completion barrier.
+	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expectedRolesRevisionHash)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -284,6 +284,11 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
+	// RI or LWS children can finish without changing their parent's aggregate
+	// counts. Recheck the barrier even when no workload status event is emitted.
+	if apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)) {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -689,8 +694,10 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	expectedRolesRevisionHash map[string]string,
 ) ([]workloadsv1alpha2.RoleStatus, error) {
 	roleStatuses := make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
+	rolloutComplete := true
 
 	for _, role := range rbg.Spec.Roles {
 		logger := log.FromContext(ctx)
@@ -717,10 +724,18 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 			}
 		}
 		roleStatuses = append(roleStatuses, roleStatus)
+
+		// Capacity status can deliberately retain old counts. Never use those counts
+		// to release rollout budget before Step 8 has applied the target workload.
+		complete, err := r.roleWorkloadRolloutComplete(roleCtx, rbg, &role, expectedRolesRevisionHash[role.Name])
+		if err != nil {
+			return nil, err
+		}
+		rolloutComplete = rolloutComplete && complete
 	}
 
-	// Always update the RBG status via SSA patch.
-	if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+	// Publish capacity and rollout completion in the same SSA status patch.
+	if err := r.updateRBGStatus(ctx, rbg, roleStatuses, rolloutComplete); err != nil {
 		r.recorder.Eventf(
 			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
 			"Failed to update status for %s: %v", rbg.Name, err,
@@ -765,6 +780,7 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus,
+	rolloutComplete bool,
 ) error {
 	// Capture current status before mutation to avoid unnecessary SSA patches.
 	// Since constructAndUpdateRoleStatuses now calls this on every reconcile,
@@ -808,6 +824,19 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	readyCondition.ObservedGeneration = rbg.Generation
 
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, readyCondition)
+	rolloutCondition := metav1.Condition{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: rbg.Generation,
+		Reason:             "RolesUpdating",
+		Message:            "Waiting for all target role workloads to be updated and ready",
+	}
+	if rolloutComplete {
+		rolloutCondition.Status = metav1.ConditionFalse
+		rolloutCondition.Reason = "AllRolesUpdated"
+		rolloutCondition.Message = "All target role workloads are updated and ready"
+	}
+	apimeta.SetStatusCondition(&rbg.Status.Conditions, rolloutCondition)
 	rbg.Status.ObservedGeneration = rbg.Generation
 
 	// update role status
@@ -817,7 +846,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 			// if found, update
 			if roleStatuses[i].Name == oldStatus.Name {
 				found = true
-				if roleStatuses[i].Replicas != oldStatus.Replicas || roleStatuses[i].ReadyReplicas != oldStatus.ReadyReplicas {
+				if !reflect.DeepEqual(roleStatuses[i], oldStatus) {
 					rbg.Status.RoleStatuses[j] = roleStatuses[i]
 				}
 				break
@@ -1697,7 +1726,9 @@ func RBGPredicate() predicate.Funcs {
 			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
 			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok1 && ok2 {
-				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
+				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) ||
+					!reflect.DeepEqual(oldRbg.Annotations, newRbg.Annotations) ||
+					!reflect.DeepEqual(oldRbg.Labels, newRbg.Labels) {
 					ctrl.Log.Info("enqueue: rbg update event", "rbg", klog.KObj(e.ObjectOld))
 					return true
 				}

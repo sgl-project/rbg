@@ -2364,7 +2364,10 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	stub.err = nil
 	result, err = r.Reconcile(ctx, request)
 	require.NoError(t, err)
-	assert.Zero(t, result.RequeueAfter)
+	// Gang configuration is now valid, but the newly created workloads still
+	// need to finish rolling out before the completion barrier is released.
+	assert.Positive(t, result.RequeueAfter)
+	assert.Less(t, result.RequeueAfter, incompatibleGangConfigRequeue)
 	condition = gangConfigured()
 	require.NotNil(t, condition)
 	assert.Equal(t, metav1.ConditionTrue, condition.Status)
