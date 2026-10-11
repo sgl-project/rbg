@@ -19,7 +19,6 @@ package reconciler
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -360,16 +359,15 @@ func claimTestOwnedBy(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerRefer
 
 // TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl covers a workload that exists under
 // the name a role maps to but must not be managed: one left behind by a same-named RBG deleted in
-// the background, one that no controller owns and that does not carry this group's label, or one
-// that is terminating.
+// the background (foreign controller uid), or one that no controller owns and that does not carry
+// this group's label.
 func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 	scheme := claimTestScheme(t)
 
 	for _, wl := range claimTestWorkloads() {
 		cases := []struct {
-			name        string
-			owners      func(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference
-			terminating bool
+			name   string
+			owners func(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference
 		}{
 			{
 				name: "left behind by a previous RBG of the same name",
@@ -380,13 +378,6 @@ func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 			{
 				name:   "orphaned, without the group label",
 				owners: func(*workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference { return nil },
-			},
-			{
-				name: "terminating",
-				owners: func(rbg *workloadsv1alpha2.RoleBasedGroup) []metav1.OwnerReference {
-					return claimTestOwnedBy(rbg)
-				},
-				terminating: true,
 			},
 		}
 
@@ -403,10 +394,6 @@ func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 					Namespace:       rbg.Namespace,
 					Generation:      1,
 					OwnerReferences: tc.owners(rbg),
-				}
-				if tc.terminating {
-					meta.DeletionTimestamp = &metav1.Time{Time: time.Now()}
-					meta.Finalizers = []string{"test.finalizer/rbg"}
 				}
 				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
 				rec := wl.reconciler(scheme, c)
@@ -469,6 +456,39 @@ func TestWorkloadReconcilers_AdoptOrphanedWorkloadCarryingGroupLabel(t *testing.
 			controller := metav1.GetControllerOf(got)
 			require.NotNil(t, controller, "the orphaned workload must be adopted")
 			assert.Equal(t, claimTestCurrentUID, controller.UID)
+		})
+	}
+}
+
+// TestWorkloadReconcilers_ClaimTerminatingWorkloadTheyOwn pins the cleanup invariant: a workload
+// that is terminating but still controlled by this rbg must stay claimable. Rejecting it would make
+// the role reconcile return an error, which propagates out of reconcileRoles and skips the cleanup
+// step, so a role removed from the spec would keep its leftover workload and dependents running.
+func TestWorkloadReconcilers_ClaimTerminatingWorkloadTheyOwn(t *testing.T) {
+	scheme := claimTestScheme(t)
+
+	for _, wl := range claimTestWorkloads() {
+		t.Run(wl.kind, func(t *testing.T) {
+			ctx := context.Background()
+			role := wl.role
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			rbg.UID = claimTestCurrentUID
+
+			now := metav1.Now()
+			meta := metav1.ObjectMeta{
+				Name:              rbg.GetWorkloadName(&role),
+				Namespace:         rbg.Namespace,
+				Generation:        1,
+				OwnerReferences:   claimTestOwnedBy(rbg),
+				DeletionTimestamp: &now,
+				Finalizers:        []string{"test.finalizer/rbg"},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
+			rec := wl.reconciler(scheme, c)
+
+			require.NoError(t, rec.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash),
+				"a terminating workload the RBG owns must not abort the reconcile before cleanup")
 		})
 	}
 }

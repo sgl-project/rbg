@@ -128,14 +128,16 @@ func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1a
 // RoleBasedGroup may not manage it.
 var ErrWorkloadNotClaimable = errors.New("workload is not claimable by this RoleBasedGroup")
 
-// checkWorkloadClaimable rejects a workload that the current rbg does not control, such as one RIS
-// left by a same-named RBG deleted in the background, or one that is terminating. An orphaned
-// workload (e.g. left by kubectl delete --cascade=orphan) that still carries this group's label is
-// claimable: the apply that follows re-attaches the controller reference, adopting it.
+// checkWorkloadClaimable rejects only a workload the current rbg genuinely may not manage: one
+// controlled by a different RoleBasedGroup (foreign uid, e.g. left by a same-named RBG deleted in
+// the background), or an orphan that does not carry this group's label. An orphaned workload that
+// still carries the group's label (e.g. left by kubectl delete --cascade=orphan) is claimable: the
+// apply that follows re-attaches the controller reference, adopting it.
+//
+// A terminating workload the rbg itself owns must stay claimable: rejecting it would abort the role
+// reconcile with an error, which propagates out of reconcileRoles and skips the cleanup step, so a
+// role removed from the spec would keep its leftover workload and dependents running.
 func checkWorkloadClaimable(obj v1.Object, rbg *workloadsv1alpha2.RoleBasedGroup) error {
-	if obj.GetDeletionTimestamp() != nil {
-		return fmt.Errorf("%w: %s is terminating", ErrWorkloadNotClaimable, obj.GetName())
-	}
 	ref := v1.GetControllerOfNoCopy(obj)
 	switch {
 	case ref == nil:
