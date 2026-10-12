@@ -68,6 +68,21 @@ jobs:
         run: |
           make test-chart
 
+  e2e-matrix-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Check E2E matrix coverage
+        run: make test-e2e-matrix-coverage
+
   build:
     env:
       GOPATH: ${{ github.workspace }}

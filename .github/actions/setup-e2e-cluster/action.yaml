@@ -33,6 +33,10 @@ inputs:
     description: Whether to disable deprecated workload types
     required: false
     default: "false"
+  go_version:
+    description: Go version used by the composite action
+    required: false
+    default: "1.26.6"
   kubernetes_version:
     description: kindest/node image tag
     required: false
@@ -91,6 +95,8 @@ runs:
       run: |
         set -euo pipefail
         lws_image="registry.k8s.io/lws/lws:${{ inputs.lws_version }}"
+        # LWS release tags are v-prefixed, but the published image tag omits
+        # the v (for example, release v0.7.0 uses image tag 0.7.0).
         lws_image="${lws_image/:v/:}"
 
         # Several matrix jobs start concurrently and registry.k8s.io can return
@@ -153,7 +159,7 @@ runs:
         webhook_count=$(grep -c "strategy: Webhook" deploy/kubectl/manifests.yaml || true)
         if [ "$conversion_count" -lt 2 ] || [ "$webhook_count" -lt 2 ]; then
           echo "::error::committed CRDs are missing conversion webhook configuration"
-          echo "Please run 'make manifests' and commit deploy/kubectl/manifests.yaml."
+          echo "Please run 'make build-installer' and commit deploy/kubectl/manifests.yaml."
           exit 1
         fi
         kubectl apply --server-side -f deploy/kubectl/manifests.yaml
@@ -206,10 +212,33 @@ runs:
     - name: Wait for controller readiness
       shell: bash
       run: |
+        set -euo pipefail
         kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
-        kubectl get crd rolebasedgroups.workloads.x-k8s.io
-        kubectl get crd coordinatedpolicies.workloads.x-k8s.io
-        kubectl get crd roleinstances.workloads.x-k8s.io
+
+        # Manifest installs only contain the CRDs rendered into the consolidated
+        # installer. Helm installs run the CRD upgrader, whose image is built from
+        # every CRD under config/crd/bases.
+        if [ "${{ inputs.install_mode }}" = "manifest" ]; then
+          expected_crds=$(awk '
+            /^kind: CustomResourceDefinition$/ { in_crd = 1; next }
+            in_crd && /^  name:/ { print $2; in_crd = 0 }
+          ' deploy/kubectl/manifests.yaml | sort -u)
+        else
+          expected_crds=$(awk '
+            /^kind: CustomResourceDefinition$/ { in_crd = 1; next }
+            in_crd && /^  name:/ { print $2; in_crd = 0 }
+          ' config/crd/bases/*.yaml | sort -u)
+        fi
+        if [ -z "$expected_crds" ]; then
+          echo "::error::no expected CRDs found for readiness validation"
+          exit 1
+        fi
+
+        echo "Verifying CRDs:"
+        echo "$expected_crds"
+        while IFS= read -r crd; do
+          kubectl wait --for=condition=established "crd/$crd" --timeout=60s
+        done <<< "$expected_crds"
 
     - name: Verify controller scheduler configuration
       if: ${{ inputs.scheduler != 'default' }}
@@ -246,8 +275,8 @@ runs:
           for config in \
             validatingwebhookconfiguration/rbgs-validating-webhook-configuration \
             mutatingwebhookconfiguration/rbgs-mutating-webhook-configuration; do
-            ca_bundle=$(kubectl get "$config" -o jsonpath='{.webhooks[*].clientConfig.caBundle}' 2>/dev/null || true)
-            if [ -z "$ca_bundle" ]; then
+            ca_bundles=$(kubectl get "$config" -o jsonpath='{range .webhooks[*]}{.clientConfig.caBundle}{"\n"}{end}' 2>/dev/null || true)
+            if [ -z "$ca_bundles" ] || printf '%s\n' "$ca_bundles" | grep -q '^$'; then
               ready=false
               break
             fi

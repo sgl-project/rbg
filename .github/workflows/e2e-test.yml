@@ -115,7 +115,7 @@ jobs:
         with:
           name: e2e-images
           path: _artifacts/e2e-images/images.tar
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
   e2e-matrix:
@@ -125,7 +125,7 @@ jobs:
       - build-images
     if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -133,27 +133,35 @@ jobs:
           - group: lifecycle
             filter: "lifecycle && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 25
+            job_timeout_minutes: 35
           - group: workload
-            filter: "workload && !volcano && !scheduler-plugins && !v1alpha1"
+            filter: "(workload && !rollout) && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 30
+            job_timeout_minutes: 40
           - group: update
             filter: "(update && !rollout) && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 35
+            job_timeout_minutes: 45
           - group: rollout
             filter: "rollout && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 40
+            job_timeout_minutes: 50
           - group: feature
             filter: "(feature && !rollout) && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 35
+            job_timeout_minutes: 45
           - group: webhook-rbac
             filter: "(webhook || rbac) && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 25
+            job_timeout_minutes: 35
           - group: scheduler
             filter: "scheduler && !volcano && !scheduler-plugins && !v1alpha1"
             timeout_minutes: 35
+            job_timeout_minutes: 45
           - group: v1alpha1
             filter: "v1alpha1 && !volcano && !scheduler-plugins"
             timeout_minutes: 35
+            job_timeout_minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
@@ -167,6 +175,7 @@ jobs:
       - name: Setup Kind and RBGS
         uses: ./.github/actions/setup-e2e-cluster
         with:
+          go_version: ${{ env.GO_VERSION }}
           cluster_name: rbgs-${{ matrix.group }}-e2e
           install_mode: helm
           image_tag: ${{ env.E2E_IMAGE_TAG }}
@@ -184,7 +193,7 @@ jobs:
             E2E_FAIL_FAST=false
 
       - name: Collect diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "=== Controller logs ==="
           kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
@@ -204,7 +213,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Kind logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-${{ matrix.group }}-kind-logs
@@ -223,7 +232,7 @@ jobs:
       - build-images
     if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@v5.0.0
@@ -237,6 +246,7 @@ jobs:
       - name: Setup Kind and RBGS from committed manifests
         uses: ./.github/actions/setup-e2e-cluster
         with:
+          go_version: ${{ env.GO_VERSION }}
           cluster_name: rbgs-manifest-e2e
           install_mode: manifest
           image_tag: ${{ env.E2E_IMAGE_TAG }}
@@ -249,12 +259,12 @@ jobs:
       - name: Run manifest installation e2e
         run: |
           make test-e2e \
-            E2E_LABEL_FILTER='(smoke || install || rbac || webhook) && !volcano && !scheduler-plugins && !v1alpha1' \
-            E2E_TIMEOUT=20m \
+            E2E_LABEL_FILTER='!volcano && !scheduler-plugins' \
+            E2E_TIMEOUT=45m \
             E2E_FAIL_FAST=false
 
       - name: Collect diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "=== Controller logs ==="
           kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
@@ -274,7 +284,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Kind logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-manifest-kind-logs
@@ -307,6 +317,7 @@ jobs:
       - name: Setup Kind and RBGS with deprecated workloads disabled
         uses: ./.github/actions/setup-e2e-cluster
         with:
+          go_version: ${{ env.GO_VERSION }}
           cluster_name: rbgs-deprecated-e2e
           install_mode: helm
           image_tag: ${{ env.E2E_IMAGE_TAG }}
@@ -320,7 +331,7 @@ jobs:
         run: make test-e2e-deprecated-disabled
 
       - name: Collect diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "=== Controller logs ==="
           kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
@@ -340,7 +351,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Kind logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-deprecated-kind-logs
@@ -373,6 +384,7 @@ jobs:
       - name: Setup Kind, Volcano, and RBGS
         uses: ./.github/actions/setup-e2e-cluster
         with:
+          go_version: ${{ env.GO_VERSION }}
           cluster_name: rbgs-volcano-e2e
           install_mode: helm
           image_tag: ${{ env.E2E_IMAGE_TAG }}
@@ -387,14 +399,14 @@ jobs:
           make test-e2e E2E_LABEL_FILTER='volcano' E2E_TIMEOUT=30m
 
       - name: Collect diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "=== Controller logs ==="
           kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
           echo "=== Volcano logs ==="
           kubectl logs -n volcano-system -l app=volcano-scheduler --tail=300 || true
           echo "=== PodGroups ==="
-          kubectl get podgroups.scheduling.x-k8s.io -A -o yaml || true
+          kubectl get podgroups.scheduling.volcano.sh -A -o yaml || true
           echo "=== Events ==="
           kubectl get events -A --sort-by='.lastTimestamp' | tail -100 || true
           kind export logs /tmp/kind-volcano-logs --name rbgs-volcano-e2e || true
@@ -409,7 +421,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Kind logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-volcano-kind-logs
@@ -442,6 +454,7 @@ jobs:
       - name: Setup Kind, scheduler-plugins, and RBGS
         uses: ./.github/actions/setup-e2e-cluster
         with:
+          go_version: ${{ env.GO_VERSION }}
           cluster_name: rbgs-sp-e2e
           install_mode: helm
           image_tag: ${{ env.E2E_IMAGE_TAG }}
@@ -457,7 +470,7 @@ jobs:
           make test-e2e E2E_LABEL_FILTER='scheduler-plugins' E2E_TIMEOUT=30m
 
       - name: Collect diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "=== Controller logs ==="
           kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=300 || true
@@ -479,7 +492,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Kind logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-scheduler-plugins-kind-logs

@@ -30,22 +30,29 @@ import (
 func TestE2E(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
 
-	f := framework.NewFramework(true)
+	// Create the Kubernetes client only when the suite is actually run.  Ginkgo
+	// dry runs use this suite to compute label-filter coverage without a cluster.
+	var f *framework.Framework
 	ginkgo.BeforeSuite(
 		func() {
+			f = framework.NewFramework(true)
 			f.BeforeAll()
 		},
 	)
 
 	ginkgo.AfterSuite(
 		func() {
-			f.AfterAll()
+			if f != nil {
+				f.AfterAll()
+			}
 		},
 	)
 
 	ginkgo.AfterEach(
 		func() {
-			f.AfterEach()
+			if f != nil {
+				f.AfterEach()
+			}
 		},
 	)
 

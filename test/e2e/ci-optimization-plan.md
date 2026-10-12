@@ -19,7 +19,7 @@
 3. Controller and CRD upgrader images are built once per workflow run and reused by every matrix job.
 4. Common Kind, LWS, scheduler, image-loading, and RBGS setup is centralized in a composite action.
 5. Ginkgo emits JUnit and JSON reports, which are uploaded even when tests pass.
-6. Jobs have bounded timeouts, and a newer push to the same PR cancels the older run.
+6. Jobs have bounded timeouts, matrix job timeouts exceed their Go test timeouts so cancelled runs can still emit diagnostics, and a newer push to the same PR cancels the older run.
 7. Timing-sensitive tests carry explicit labels and run serially within their slice.
 8. No issue-comment command or PR label is used to select whether a suite runs.
 
@@ -30,6 +30,7 @@
   - `git diff --check`
 - Unit and compile checks:
   - `go test ./test/e2e/... -run '^$'`
+  - `make test-e2e-matrix-coverage`
 - Focused local e2e checks, when a Kind cluster with RBGS is available:
   - `make test-e2e`
   - `make test-e2e E2E_LABEL_FILTER='(lifecycle || workload || update || rollout || feature || webhook || rbac || scheduler || v1alpha1) && !volcano && !scheduler-plugins'`
@@ -37,8 +38,9 @@
   - `Build E2E images` completes once;
   - all eight default-scheduler matrix slices are scheduled in parallel;
   - manifest, deprecated-disabled, Volcano, and scheduler-plugins jobs are scheduled without a label or comment;
+  - the manifest installation job runs the full legacy default-suite filter (`!volcano && !scheduler-plugins`);
   - each slice uploads a JUnit/JSON report;
-  - the union of all matrix filters covers the full v1alpha1 and v1alpha2 e2e suite.
+  - the matrix coverage guard verifies that the union of all matrix filters exactly covers the full v1alpha1 and v1alpha2 legacy default suite.
 
 ## Implemented scope
 
@@ -47,6 +49,8 @@
 - Added a build-once `e2e-images` artifact job.
 - Added a reusable `.github/actions/setup-e2e-cluster` composite action for Kind, LWS, Volcano, scheduler-plugins, image loading, and RBGS installation.
 - Replaced the monolithic PR/full default-scheduler job with an eight-way parallel matrix.
-- Kept manifest, deprecated-disabled, Volcano, and scheduler-plugins as independent parallel jobs.
+- Kept manifest, deprecated-disabled, Volcano, and scheduler-plugins as independent parallel jobs, with manifest installation retaining the full legacy default-suite filter.
 - Added retries for the LWS registry pull and webhook caBundle injection checks, addressing the setup failures observed in the first CI run.
+- Added a no-cluster Ginkgo dry-run guard that fails CI when a spec is not covered by the matrix filters.
+- Added setup and reporting timeout headroom for matrix jobs and validates every webhook caBundle and all expected CRDs.
 - Added Ginkgo JUnit/JSON reports to e2e Make targets.

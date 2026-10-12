@@ -98,17 +98,21 @@ test-coverage-html: test
 test-chart: ## Render the Helm chart with helm template and assert the deprecated-workload-types toggle. Requires helm; needs no cluster.
 	go test ./test/chart/ -v
 
+.PHONY: test-e2e-matrix-coverage
+test-e2e-matrix-coverage: ## Verify that the E2E matrix slices cover the legacy default suite. Requires no cluster.
+	go test ./test/e2e/ci -run '^TestMatrixSlicesCoverLegacyDefaultSuite$' -count=1 -v
+
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-E2E_LABEL_FILTER ?= '!v1alpha1 && !volcano && !scheduler-plugins'
+E2E_LABEL_FILTER ?= '!volcano && !scheduler-plugins'
 E2E_TIMEOUT ?= 45m
 E2E_FAIL_FAST ?= true
 
 .PHONY: test-e2e
-test-e2e:  ## Run the v1alpha2 full e2e suite by default; override E2E_LABEL_FILTER for focused runs.
-	# 45m, not 30m: the full default-scheduler v1alpha2 suite regularly brushes 30m on a
+test-e2e:  ## Run the full default-scheduler e2e suite by default; override E2E_LABEL_FILTER for focused runs.
+	# 45m, not 30m: the full default-scheduler v1alpha1 and v1alpha2 suite regularly brushes 30m on a
 	# single-node Kind runner. A go test timeout that fires mid-suite reports a panic
 	# instead of a spec failure, so keep the budget above the suite's real wall-clock.
 	mkdir -p test/e2e/artifacts
