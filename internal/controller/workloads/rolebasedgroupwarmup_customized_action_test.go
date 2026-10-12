@@ -1361,7 +1361,13 @@ func TestReconcileReportsDisplacedFailureAfterPartialRetryCreation(t *testing.T)
 func TestReconcileGlobalTimeoutPreservesCustomizedActionDiagnostics(t *testing.T) {
 	startTime := metav1.NewTime(time.Now().Add(-2 * time.Minute))
 	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1", Generation: 2},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test",
+			Namespace:         "default",
+			UID:               "uid-1",
+			Generation:        2,
+			CreationTimestamp: startTime,
+		},
 		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
 			Policies: &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(1))},
 			TargetNodes: &workloadsv1alpha2.TargetNodes{

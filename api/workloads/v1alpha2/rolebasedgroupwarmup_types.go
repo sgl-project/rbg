@@ -217,7 +217,8 @@ type WarmupPolicies struct {
 	MaxFailedNodes *int32 `json:"maxFailedNodes,omitempty"`
 
 	// GlobalTimeoutSeconds specifies the overall timeout for the warmup job,
-	// measured from the time the first Pod is created (status.startTime).
+	// measured from the Warmup's creation time. It bounds both waiting for the
+	// target to become ready and running warmup Pods as a single budget.
 	// When the timeout is exceeded, all active Pods are deleted and the job
 	// is marked as Failed regardless of other settings.
 	// If not set (nil), no timeout is applied.

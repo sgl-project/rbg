@@ -60,7 +60,7 @@ spec:
                   globalTimeoutSeconds:
                     description: |-
                       GlobalTimeoutSeconds specifies the overall timeout for the warmup job,
-                      measured from the time the first Pod is created (status.startTime).
+                      measured from the Warmup's creation time.
                     format: int64
                     minimum: 1
                     type: integer
