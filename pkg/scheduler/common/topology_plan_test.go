@@ -338,3 +338,44 @@ func TestResolvePlacementPlanIgnoresStaleTerminatingPolicy(t *testing.T) {
 		t.Fatal("expected the stale terminating policy to be ignored")
 	}
 }
+
+func TestTopologyContractID(t *testing.T) {
+	nonePlan := &PlacementPlan{Root: &PlacementGroup{
+		Gang:  &GangStrategy{Roles: sets.New("prefill")},
+		Scope: PlacementScope{Roles: []string{"prefill"}},
+	}}
+	if got := nonePlan.TopologyContractID(); got != "none" {
+		t.Fatalf("expected no-topology contract ID \"none\", got %q", got)
+	}
+	if got := (*PlacementPlan)(nil).TopologyContractID(); got != "none" {
+		t.Fatalf("expected nil plan contract ID \"none\", got %q", got)
+	}
+
+	topology := &workloadsv1alpha2.TopologyConstraint{
+		Pack: &workloadsv1alpha2.TopologyPackConstraint{
+			Required:  ptrTo("block"),
+			Preferred: ptrTo("rack"),
+		},
+	}
+	first := &PlacementPlan{Root: &PlacementGroup{
+		Scope:    PlacementScope{Roles: []string{"decode", "prefill"}},
+		Topology: topology,
+	}}
+	second := &PlacementPlan{Root: &PlacementGroup{
+		Scope:    PlacementScope{Roles: []string{"decode", "prefill"}},
+		Topology: topology,
+	}}
+	if first.TopologyContractID() != second.TopologyContractID() {
+		t.Fatal("expected equal topology declarations to produce the same contract ID")
+	}
+
+	changed := &PlacementPlan{Root: &PlacementGroup{
+		Scope: PlacementScope{Roles: []string{"decode", "prefill"}},
+		Topology: &workloadsv1alpha2.TopologyConstraint{
+			Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptrTo("rack")},
+		},
+	}}
+	if first.TopologyContractID() == changed.TopologyContractID() {
+		t.Fatal("expected different topology declarations to produce different contract IDs")
+	}
+}

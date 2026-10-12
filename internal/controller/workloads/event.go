@@ -83,6 +83,9 @@ const (
 	IncompatibleTopologyNames = "IncompatibleTopologyNames"
 	// TopologyResourceUnresolved is emitted when a dialect's topology resource is missing.
 	TopologyResourceUnresolved = "TopologyResourceUnresolved"
+	// TopologyPolicyLate is emitted when a topology-bearing policy appears after the
+	// RBG has already accepted a different (including empty) topology contract.
+	TopologyPolicyLate = "TopologyPolicyLate"
 	// InvalidLevelOrder is emitted when parent/child levels violate scheduler ordering.
 	InvalidLevelOrder = "InvalidLevelOrder"
 	// PreferredAbsorbed is emitted when Volcano cannot anchor the preferred topology

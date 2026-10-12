@@ -28,7 +28,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/constants"
+	apiworkloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 )
 
@@ -47,6 +48,44 @@ var _ = Describe("Topology-aware scheduling lifecycle", func() {
 		testutil.DeleteNamespace(testNs)
 	})
 
+	It("rejects a topology policy that arrives after the RBG accepted no topology", func() {
+		rbgName := "infer-late"
+		key := types.NamespacedName{Name: rbgName, Namespace: testNs}
+
+		Expect(testutil.K8sClient.Create(testutil.Ctx, topologyRBG(rbgName, testNs))).To(Succeed())
+		Eventually(func() string {
+			rbg := &apiworkloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, rbg); err != nil {
+				return ""
+			}
+			return rbg.Annotations[workloadsv1alpha2.RBGTopologyContractAnnotation]
+		}, timeout, interval).Should(Equal("none"))
+
+		Expect(testutil.K8sClient.Create(
+			testutil.Ctx, topologyPolicy(rbgName, testNs, "block"))).To(Succeed())
+
+		// Trigger reconcile through the normal event path with a spec change. The RBG
+		// update predicate compares Spec, so an annotation-only update would not enqueue.
+		rbg := &apiworkloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
+		rbg.Spec.Roles[0].Replicas = ptrInt32(2)
+		Expect(testutil.K8sClient.Update(testutil.Ctx, rbg)).To(Succeed())
+
+		Eventually(func() *metav1.Condition {
+			fresh := &apiworkloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, fresh); err != nil {
+				return nil
+			}
+			return apimeta.FindStatusCondition(
+				fresh.Status.Conditions, string(apiworkloadsv1alpha2.RoleBasedGroupTopologyTranslated))
+		}, timeout, interval).Should(And(
+			Not(BeNil()),
+			WithTransform(func(condition *metav1.Condition) string {
+				return string(condition.Status) + "/" + condition.Reason
+			}, Equal("False/TopologyPolicyLate")),
+		))
+	})
+
 	It("protects an active topology policy and supports delete-and-recreate", func() {
 		rbgName := "infer"
 		key := types.NamespacedName{Name: rbgName, Namespace: testNs}
@@ -54,17 +93,17 @@ var _ = Describe("Topology-aware scheduling lifecycle", func() {
 		Expect(testutil.K8sClient.Create(testutil.Ctx, topologyRBG(rbgName, testNs))).To(Succeed())
 		Expect(testutil.K8sClient.Create(testutil.Ctx, topologyPolicy(rbgName, testNs, "block"))).To(Succeed())
 
-		policy := &workloadsv1alpha2.CoordinatedPolicy{}
+		policy := &apiworkloadsv1alpha2.CoordinatedPolicy{}
 		Eventually(func() []string {
 			Expect(testutil.K8sClient.Get(testutil.Ctx, key, policy)).To(Succeed())
 			return policy.Finalizers
 		}, timeout, interval).Should(ContainElement("workloads.x-k8s.io/topology-policy-protection"))
 
-		rbg := &workloadsv1alpha2.RoleBasedGroup{}
+		rbg := &apiworkloadsv1alpha2.RoleBasedGroup{}
 		Eventually(func() *metav1.Condition {
 			Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
 			return apimeta.FindStatusCondition(
-				rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupTopologyTranslated))
+				rbg.Status.Conditions, string(apiworkloadsv1alpha2.RoleBasedGroupTopologyTranslated))
 		}, timeout, interval).ShouldNot(BeNil())
 
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, policy)).To(Succeed())
@@ -74,7 +113,7 @@ var _ = Describe("Topology-aware scheduling lifecycle", func() {
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, topologyRBG(rbgName, testNs))).To(Succeed())
 		Eventually(func() bool {
 			return apierrors.IsNotFound(
-				testutil.K8sClient.Get(testutil.Ctx, key, &workloadsv1alpha2.CoordinatedPolicy{}))
+				testutil.K8sClient.Get(testutil.Ctx, key, &apiworkloadsv1alpha2.CoordinatedPolicy{}))
 		}, timeout, interval).Should(BeTrue())
 
 		// Recreating the same RBG name starts from clean revision history; the
@@ -92,7 +131,7 @@ var _ = Describe("Topology-aware scheduling lifecycle", func() {
 		Expect(testutil.K8sClient.Create(testutil.Ctx, topologyPolicy(rbgName, testNs, "rack"))).To(Succeed())
 
 		Eventually(func() []string {
-			recreated := &workloadsv1alpha2.CoordinatedPolicy{}
+			recreated := &apiworkloadsv1alpha2.CoordinatedPolicy{}
 			if err := testutil.K8sClient.Get(testutil.Ctx, key, recreated); err != nil {
 				return nil
 			}
@@ -101,25 +140,25 @@ var _ = Describe("Topology-aware scheduling lifecycle", func() {
 	})
 })
 
-func topologyRBG(name, namespace string) *workloadsv1alpha2.RoleBasedGroup {
-	return &workloadsv1alpha2.RoleBasedGroup{
+func topologyRBG(name, namespace string) *apiworkloadsv1alpha2.RoleBasedGroup {
+	return &apiworkloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{
+		Spec: apiworkloadsv1alpha2.RoleBasedGroupSpec{Roles: []apiworkloadsv1alpha2.RoleSpec{
 			{Name: "prefill", Replicas: ptrInt32(1)},
 		}},
 	}
 }
 
-func topologyPolicy(name, namespace, level string) *workloadsv1alpha2.CoordinatedPolicy {
-	return &workloadsv1alpha2.CoordinatedPolicy{
+func topologyPolicy(name, namespace, level string) *apiworkloadsv1alpha2.CoordinatedPolicy {
+	return &apiworkloadsv1alpha2.CoordinatedPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: workloadsv1alpha2.CoordinatedPolicySpec{Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+		Spec: apiworkloadsv1alpha2.CoordinatedPolicySpec{Policies: []apiworkloadsv1alpha2.CoordinatedPolicyRule{{
 			Name:  "pd",
 			Roles: []string{"prefill"},
-			Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
-				Scheduling: &workloadsv1alpha2.SchedulingCoordinationStrategy{
-					TopologyConstraint: &workloadsv1alpha2.TopologyConstraint{
-						Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: &level},
+			Strategy: apiworkloadsv1alpha2.CoordinatedPolicyStrategy{
+				Scheduling: &apiworkloadsv1alpha2.SchedulingCoordinationStrategy{
+					TopologyConstraint: &apiworkloadsv1alpha2.TopologyConstraint{
+						Pack: &apiworkloadsv1alpha2.TopologyPackConstraint{Required: &level},
 					},
 				},
 			},

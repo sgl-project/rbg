@@ -655,7 +655,7 @@ func TestBuildTopologySubGroupsRendersCrossRoleChild(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, absorbed)
 	require.Len(t, policies, 1)
-	require.Equal(t, "p-pd", policies[0].Name)
+	require.Equal(t, "policy-pd", policies[0].Name)
 	require.NotNil(t, policies[0].LabelSelector)
 	require.Equal(t, map[string]string{constants.GroupNameLabelKey: rbg.Name}, policies[0].LabelSelector.MatchLabels)
 	require.Equal(t, []metav1.LabelSelectorRequirement{{

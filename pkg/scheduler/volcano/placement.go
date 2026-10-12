@@ -727,10 +727,13 @@ func buildTopologySubGroups(
 }
 
 func topologySubGroupName(group *common.PlacementGroup) string {
+	// The policy namespace keeps a cross-role subGroup from colliding with a role
+	// named like its source rule (for example a role literally named "p-pd") when
+	// gang and topology subGroup policies are merged by name.
 	if group.Name != "" {
-		return group.Name
+		return "policy-" + placementSourceName(group.Name)
 	}
-	return "g-" + strings.Join(group.Scope.Roles, "-")
+	return "policy-" + strings.Join(group.Scope.Roles, "-")
 }
 
 func rootNetworkTopologyForGroup(group *common.PlacementGroup) (

@@ -268,6 +268,13 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		ctx, rbg, placement.gangStrategy, placement.gangErr); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Record the contract only after the plan resolved and rendered successfully; a
+	// failing translation must not freeze an invalid or partial contract.
+	if placement.gangErr == nil && placement.placementErr == nil {
+		if err := r.ensureTopologyContract(ctx, rbg, placement.plan); err != nil {
+			placement.placementErr = err
+		}
+	}
 	if err := r.setPlacementConditions(
 		ctx, rbg, placement.plan, placement.placementErr, placement.renderResult); err != nil {
 		return ctrl.Result{}, err
@@ -570,6 +577,38 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 		)
 
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, cmApplyConfig, utils.PatchSpec)
+}
+
+// ensureTopologyContract freezes the topology contract at first successful placement
+// acceptance. The first accepted plan (including "none") is recorded on the RBG; a
+// later topology-bearing CoordinatedPolicy or any contract change is rejected as
+// TopologyPolicyLate so it is never applied to an already-running workload.
+func (r *RoleBasedGroupReconciler) ensureTopologyContract(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	plan *gangcommon.PlacementPlan,
+) error {
+	desired := plan.TopologyContractID()
+	recorded := rbg.Annotations[constants.RBGTopologyContractAnnotation]
+	if recorded == "" {
+		annotations := make(map[string]string, len(rbg.Annotations)+1)
+		for key, value := range rbg.Annotations {
+			annotations[key] = value
+		}
+		annotations[constants.RBGTopologyContractAnnotation] = desired
+		rbg.Annotations = annotations
+		if err := r.client.Update(ctx, rbg); err != nil {
+			return fmt.Errorf("record topology contract %s: %w", client.ObjectKeyFromObject(rbg), err)
+		}
+		return nil
+	}
+	if recorded != desired {
+		return gangcommon.NewTopologyTranslationErrorWithReason(
+			gangcommon.TopologyReasonTopologyPolicyLate,
+			"topology contract changed after acceptance (recorded %q, desired %q); delete and recreate the RoleBasedGroup with the intended topology",
+			recorded, desired)
+	}
+	return nil
 }
 
 func (r *RoleBasedGroupReconciler) ensureCoordinatedPolicyTopologyFinalizer(

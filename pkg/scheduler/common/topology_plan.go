@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -88,6 +89,57 @@ type PlacementGroup struct {
 // HasTopology reports whether any node in the plan carries a topology constraint.
 func (p *PlacementPlan) HasTopology() bool {
 	return p != nil && groupHasTopology(p.Root)
+}
+
+// TopologyContractID returns a stable identifier for the topology declarations in
+// the plan. A plan without topology returns "none". The controller records this
+// value when a plan is first accepted and rejects later changes (including a
+// topology-bearing CoordinatedPolicy appearing after "none" was accepted) as
+// TopologyPolicyLate.
+func (p *PlacementPlan) TopologyContractID() string {
+	if p == nil || p.Root == nil || !p.HasTopology() {
+		return "none"
+	}
+	var contract strings.Builder
+	appendTopologyContractGroup(&contract, p.Root)
+	sum := sha256.Sum256([]byte(contract.String()))
+	return hex.EncodeToString(sum[:16])
+}
+
+func appendTopologyContractGroup(contract *strings.Builder, group *PlacementGroup) {
+	if group == nil {
+		return
+	}
+	contract.WriteString("roles:")
+	contract.WriteString(strings.Join(group.Scope.Roles, "\x00"))
+	contract.WriteString(";partition:")
+	contract.WriteString(strings.Join(group.Scope.PartitionBy, "\x00"))
+	contract.WriteString(";gang:")
+	if group.Gang != nil {
+		contract.WriteString("1")
+	} else {
+		contract.WriteString("0")
+	}
+	contract.WriteString(";topology:")
+	if group.Topology != nil {
+		if group.Topology.TopologyName != nil {
+			contract.WriteString(*group.Topology.TopologyName)
+		}
+		if group.Topology.Pack != nil {
+			contract.WriteString(";required:")
+			if group.Topology.Pack.Required != nil {
+				contract.WriteString(*group.Topology.Pack.Required)
+			}
+			contract.WriteString(";preferred:")
+			if group.Topology.Pack.Preferred != nil {
+				contract.WriteString(*group.Topology.Pack.Preferred)
+			}
+		}
+	}
+	for _, child := range group.Children {
+		contract.WriteString(";child:")
+		appendTopologyContractGroup(contract, child)
+	}
 }
 
 func groupHasTopology(group *PlacementGroup) bool {
@@ -439,6 +491,7 @@ const (
 	TopologyReasonIncompatibleTopologyNames  = "IncompatibleTopologyNames"
 	TopologyReasonTopologyResourceUnresolved = "TopologyResourceUnresolved"
 	TopologyReasonInvalidLevelOrder          = "InvalidLevelOrder"
+	TopologyReasonTopologyPolicyLate         = "TopologyPolicyLate"
 	TopologyReasonTopologyTranslationFailed  = "TopologyTranslationFailed"
 )
 
