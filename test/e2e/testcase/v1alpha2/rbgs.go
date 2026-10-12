@@ -28,9 +28,9 @@ import (
 
 func RunRbgSetControllerTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"rbgset controller", func() {
+		"rbgset controller", ginkgo.Label("lifecycle"), func() {
 			ginkgo.It(
-				"create & delete rbgset", func() {
+				"create & delete rbgset", ginkgo.Label("smoke"), func() {
 					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).Obj()
 
 					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })

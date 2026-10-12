@@ -27,7 +27,7 @@ import (
 )
 
 func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
-	ginkgo.It("update standalone role replicas & template (stateful)", func() {
+	ginkgo.It("update standalone role replicas & template (stateful)", ginkgo.Label("smoke", "workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "StatefulSet").Obj(),
 		}).Obj()
@@ -49,7 +49,7 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 	})
 
 	//nolint:dupl
-	ginkgo.It("standalone role with rollingUpdate (stateful)", func() {
+	ginkgo.It("standalone role with rollingUpdate (stateful)", ginkgo.Label("workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildStandaloneRole("role-1").

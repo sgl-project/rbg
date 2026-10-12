@@ -30,7 +30,10 @@ import (
 func TestE2E(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
 
-	f := framework.NewFramework(true)
+	// A non-nil framework must be available while the spec tree is constructed.
+	// The Kubernetes clients are connected lazily in BeforeSuite so Ginkgo dry
+	// runs can compute label-filter coverage without a cluster.
+	f := framework.NewLazyFramework(true)
 	ginkgo.BeforeSuite(
 		func() {
 			f.BeforeAll()
@@ -53,6 +56,7 @@ func TestE2E(t *testing.T) {
 	// Run explicitly with: ginkgo --label-filter=v1alpha1
 	ginkgo.Describe(
 		"[v1alpha1] Run role based controller e2e tests",
+		ginkgo.Label("v1alpha1", "compat"),
 		func() {
 			testcasev1alpha1.RunRbgControllerTestCases(f)
 			testcasev1alpha1.RunControllerRevisionTestCases(f)

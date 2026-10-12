@@ -36,7 +36,7 @@ import (
 // restartPolicy string field (the v0.7.0 shape) and the restartPolicyConfig
 // object that replaced it.
 func RunRestartPolicyFieldTestCases(f *framework.Framework) {
-	ginkgo.Describe("restart policy field resolution", func() {
+	ginkgo.Describe("restart policy field resolution", ginkgo.Label("update"), func() {
 		runRestartPolicyResolutionMatrixTest(f)
 		runRestartPolicyConfigOverridesLegacyTest(f)
 		runLegacyRestartPolicyRecreatesInstanceTest(f)

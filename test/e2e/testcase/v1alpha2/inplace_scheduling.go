@@ -47,7 +47,7 @@ import (
 //  2. The affinity references kubernetes.io/hostname with the correct node name
 //  3. Both roles reference the same node (single-node cluster)
 func RunInplaceSchedulingTestCases(f *framework.Framework) {
-	ginkgo.Describe("inplace-scheduling", func() {
+	ginkgo.Describe("inplace-scheduling", ginkgo.Label("scheduler", "serial"), func() {
 
 		ginkgo.It("injects nodeAffinity after rolling upgrade for both Pod and Component granularity", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-inplace-scheduling", f.Namespace).WithRoles(

@@ -53,7 +53,28 @@ type Framework struct {
 	debugFn   func()
 }
 
+// NewLazyFramework creates the suite-level framework without connecting to a
+// cluster. It supports Ginkgo dry runs that construct the spec tree without
+// running BeforeSuite. BeforeAll initializes the Kubernetes clients.
+func NewLazyFramework(development bool) *Framework {
+	return &Framework{
+		Ctx: initLogger(context.TODO(), development),
+	}
+}
+
+// NewFramework creates the framework and connects to the current cluster.
 func NewFramework(development bool) *Framework {
+	f := NewLazyFramework(development)
+	f.Initialize()
+	return f
+}
+
+// Initialize connects the framework to the current Kubernetes cluster.
+func (f *Framework) Initialize() {
+	if f.Client != nil && f.Clientset != nil {
+		return
+	}
+
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(discoveryv1.AddToScheme(scheme))
@@ -68,13 +89,8 @@ func NewFramework(development bool) *Framework {
 	clientset, err := kubernetes.NewForConfig(cfg)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-	ctx := initLogger(context.TODO(), development)
-
-	return &Framework{
-		Ctx:       ctx,
-		Client:    runtimeClient,
-		Clientset: clientset,
-	}
+	f.Client = runtimeClient
+	f.Clientset = clientset
 }
 
 // RegisterDebugFn registers a debug function to be called in AfterEach before resources are deleted.
@@ -126,6 +142,8 @@ func initLogger(ctx context.Context, development bool) context.Context {
 }
 
 func (f *Framework) BeforeAll() {
+	f.Initialize()
+
 	ns := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "test-ns-",

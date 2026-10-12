@@ -34,7 +34,7 @@ import (
 )
 
 func RunControllerRevisionTestCases(f *framework.Framework) {
-	ginkgo.Describe("revision testcase", func() {
+	ginkgo.Describe("revision testcase", ginkgo.Label("lifecycle"), func() {
 
 		ginkgo.It("scenario of overriding changes that fail the semantically equal check", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).

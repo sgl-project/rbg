@@ -70,7 +70,7 @@ func controllerNamespace() string {
 // likely to break silently when the chart/kustomize layout is reorganized.
 func RunRBACAndWebhookBootstrapTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"controller RBAC and webhook-cert bootstrap", func() {
+		"controller RBAC and webhook-cert bootstrap", ginkgo.Label("rbac", "install"), func() {
 			ns := controllerNamespace()
 
 			ginkgo.BeforeEach(func() {
@@ -78,7 +78,7 @@ func RunRBACAndWebhookBootstrapTestCases(f *framework.Framework) {
 			})
 
 			ginkgo.It(
-				"should install the controller RBAC objects with resolvable bindings", func() {
+				"should install the controller RBAC objects with resolvable bindings", ginkgo.Label("smoke"), func() {
 					_, err := f.Clientset.RbacV1().ClusterRoles().Get(f.Ctx, controllerClusterRoleName, metav1.GetOptions{})
 					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "ClusterRole %q should exist", controllerClusterRoleName)
 

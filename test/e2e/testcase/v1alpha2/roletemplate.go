@@ -35,7 +35,7 @@ import (
 
 func RunRoleTemplateTestCases(f *framework.Framework) {
 	ginkgo.Describe(
-		"roletemplate controller", func() {
+		"roletemplate controller", ginkgo.Label("feature"), func() {
 
 			// Test 1: Basic functionality - create RBG with templateRef and verify workloads
 			ginkgo.It(

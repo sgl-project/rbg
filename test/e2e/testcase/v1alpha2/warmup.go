@@ -43,7 +43,7 @@ const (
 
 // RunWarmupTestCases runs all warmup e2e test cases.
 func RunWarmupTestCases(f *framework.Framework) {
-	ginkgo.Describe("warmup", func() {
+	ginkgo.Describe("warmup", ginkgo.Label("feature", "serial"), func() {
 
 		ginkgo.It("should complete warmup job with targetNodes mode", func() {
 			ginkgo.By("Getting a node name")

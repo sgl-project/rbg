@@ -19,6 +19,10 @@ go.work
 # Go build binary
 main
 
+# Locally generated E2E build and report artifacts
+_artifacts/
+test/e2e/**/artifacts/
+
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 

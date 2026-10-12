@@ -37,7 +37,7 @@ import (
 // RunDiscoveryConfigMapTestCases registers e2e tests for the discovery ConfigMap
 // generated for stateful roles with mixed patterns.
 func RunDiscoveryConfigMapTestCases(f *framework.Framework) {
-	ginkgo.Describe("discovery ConfigMap for mixed role patterns", func() {
+	ginkgo.Describe("discovery ConfigMap for mixed role patterns", ginkgo.Label("feature"), func() {
 		ginkgo.It("should expose component-level addresses for multi-pod patterns and keep native behavior for StandalonePattern", func() {
 			rbg := buildDiscoveryConfigMapRBG(f.Namespace)
 

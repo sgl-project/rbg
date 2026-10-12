@@ -43,7 +43,7 @@ func RunInactivePodTestCases(f *framework.Framework) {
 // Case 1: Evicted Pod triggers replacement Pod creation
 // RoleInstance Controller creates replacement Pod through normal reconciliation.
 func runEvictedPodTest(f *framework.Framework) {
-	ginkgo.It("evicted pod triggers replacement pod creation", func() {
+	ginkgo.It("evicted pod triggers replacement pod creation", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-evicted-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
@@ -82,7 +82,7 @@ func runEvictedPodTest(f *framework.Framework) {
 // Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
 // Only the RoleInstance containing the Failed pod is recreated; other RoleInstances are unaffected.
 func runFailedPodRecreationTest(f *framework.Framework) {
-	ginkgo.It("failed pod triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", func() {
+	ginkgo.It("failed pod triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-instance-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithReplicas(2).
@@ -175,7 +175,7 @@ func runFailedPodRecreationTest(f *framework.Framework) {
 // When a component has the restart-trigger-policy=Ignore annotation, its pod failures
 // should not trigger the restart policy for the entire RoleInstance.
 func runIgnoredComponentTest(f *framework.Framework) {
-	ginkgo.It("ignored component pod failure does NOT trigger RoleInstance recreation", func() {
+	ginkgo.It("ignored component pod failure does NOT trigger RoleInstance recreation", ginkgo.Label("update", "serial"), func() {
 		// Build a customComponentsPattern RBG with two components:
 		// - "main": the primary component (no annotation)
 		// - "monitor": auxiliary component with Ignore annotation
@@ -292,7 +292,7 @@ func runIgnoredComponentTest(f *framework.Framework) {
 
 // Case 4: Non-ignored component pod failure DOES trigger RoleInstance recreation
 func runNonIgnoredComponentTest(f *framework.Framework) {
-	ginkgo.It("non-ignored component pod failure triggers RoleInstance recreation", func() {
+	ginkgo.It("non-ignored component pod failure triggers RoleInstance recreation", ginkgo.Label("update", "serial"), func() {
 		mainTemplate := wrappersv2.BuildBasicPodTemplateSpec()
 		monitorTemplate := wrappersv2.BuildBasicPodTemplateSpec()
 		monitorTemplate.ObjectMeta = metav1.ObjectMeta{
@@ -405,7 +405,7 @@ func runNonIgnoredComponentTest(f *framework.Framework) {
 
 // Case 6: RestartPolicy=None creates replacement pod for inactive pod
 func runRestartPolicyNoneTest(f *framework.Framework) {
-	ginkgo.It("inactive pod triggers replacement pod creation with RestartPolicy=None", func() {
+	ginkgo.It("inactive pod triggers replacement pod creation with RestartPolicy=None", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-none-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
 				WithWorkload("apps/v1", "Deployment").
@@ -463,7 +463,7 @@ func runRestartPolicyNoneTest(f *framework.Framework) {
 // restart-policy recreations. After a recreation triggers, Restarting=True is set;
 // it is cleared once the instance becomes Ready again, and no further recreation occurs.
 func runRestartingConditionTest(f *framework.Framework) {
-	ginkgo.It("restarting condition prevents cascading restart-policy recreations", func() {
+	ginkgo.It("restarting condition prevents cascading restart-policy recreations", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-restarting-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithReplicas(1).

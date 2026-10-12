@@ -37,7 +37,7 @@ import (
 )
 
 func RunSharedServiceSelectionTestCases(f *framework.Framework) {
-	ginkgo.Describe("shared service selection", func() {
+	ginkgo.Describe("shared service selection", ginkgo.Label("feature"), func() {
 		ginkgo.It("should follow the policy round trip between LeaderOnly and All", func() {
 			role := wrappersv2.BuildLeaderWorkerRole("decode").Obj()
 			role.LeaderWorkerPattern.Template = &corev1.PodTemplateSpec{
