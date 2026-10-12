@@ -181,6 +181,7 @@ For KAI, the level string is a `nodeLabel` key or a `TopologyLevel.alias`. Curre
 | Check | Source | Notes |
 |---|---|---|
 | Constraint shape | Admission | A non-nil `TopologyConstraint` must set at least one of `pack.required` or `pack.preferred`; `{}`, `topologyName` only, and `pack: {}` are rejected |
+| Generated-name source syntax | Admission | Role names and topology-bearing policy-rule names must be DNS-1123 labels; invalid source names are rejected instead of being sanitized by the compiler |
 | Level existence | Active scheduler's topology objects (HyperNode set / ClusterNetworkTopology / the configured KAI Topology CR) | Unknown identifier → `TopologyTranslated=False` + event, never silent degradation |
 | Required/preferred relative order | Ordering from the same objects, after both identifiers resolve | `preferred` must be the same level as or narrower than `required`; a broader preferred level is rejected as `InvalidLevelOrder` before rendering |
 | Child level equal to or narrower than parent | Ordering from the same objects | A child placement group must not require a broader domain than its parent; reversed nesting is rejected |
@@ -300,7 +301,9 @@ Topology is a launch-time placement contract. The set of topology declarations i
 
 Admission compares the old and new topology declarations directly. An RBGSet template likewise compares its old and new topology declarations, so parent validation is self-contained and requires no cross-resource child lookup.
 
-Topology immutability is enforced by v1alpha2 validating admission. Delete-and-recreate of a topology-bearing CoordinatedPolicy cannot bypass that contract while its matching RBG is active: the controller protects the active policy with a finalizer. Release is keyed to the matching RBG's **UID**, not merely its name, so a GitOps delete-and-recreate of an RBG with the same name cannot satisfy the release condition. A terminating policy is frozen: Kubernetes rejects updates to a deleting object, so the planner keeps resolving its recorded declarations while the recorded RBG UID is still the active RBG. If a terminating policy's recorded UID no longer matches the RBG (for example after a same-name recreate), the planner ignores it and the controller releases the finalizer. The finalizer otherwise remains until the UID-recorded RBG is deleted.
+**Contract freeze and late policy creation.** The combined RBG/CoordinatedPolicy topology contract freezes when the controller first accepts a placement plan for the RBG, before it creates or updates Roles. On that first acceptance the controller records the accepted topology contract (a canonical identifier of the topology declarations, including `none`) on the RBG. A CoordinatedPolicy may be created before the RBG; that is a normal launch ordering and the recorded contract is its topology. But if the RBG has already accepted `none` and a topology-bearing policy appears later, or if the recorded topology differs from the currently resolved declarations, reconcile reports `TopologyTranslated=False` with reason `TopologyPolicyLate`, creates no PodGroup, and gates Role create/update. The late policy is not applied to running pods; deleting and recreating the RBG (with the policy already present) starts a new lifecycle. Removing all topology after a non-empty contract is treated the same way. Role-level constraints cannot arrive late because RBG admission makes the Role declaration immutable from create onward.
+
+Topology immutability is enforced by v1alpha2 validating admission. Delete-and-recreate of a topology-bearing CoordinatedPolicy cannot bypass that contract while its matching RBG is active: the controller protects the active policy with a finalizer. Release is keyed to the matching RBG's **UID**, not merely its name, so a GitOps delete-and-recreate of an RBG with the same name cannot satisfy the release condition for the old lifecycle. A terminating policy whose recorded UID still matches the active RBG remains authoritative because validating admission continues to reject topology changes on update requests (Kubernetes itself permits updates to deleting objects; it only prohibits adding finalizers). If a terminating policy's recorded UID no longer matches the RBG (for example after a same-name recreate), the planner ignores it, the replacement RBG never inherits the old contract, and the controller releases the finalizer once that recorded UID is deleted. The finalizer otherwise remains until the UID-recorded RBG is deleted.
 
 Deployments that disable validating webhooks explicitly opt out of this guarantee; the controller then renders the latest desired topology instead of reconstructing historical admission state. Clusters that use topology constraints should run with validating webhooks enabled. V1alpha1 does not model the new topology fields, so a v1alpha1 read-then-write round trip that removes or changes them is also outside this enforcement boundary and is a user error.
 
@@ -308,7 +311,7 @@ Escape hatch and rollback: the finalizer can be removed manually with `kubectl p
 
 To change topology, delete and recreate the affected workload (and, when needed, its topology-bearing CoordinatedPolicy). Rolling updates that change topology constraints are out of scope for this KEP. Running pods are never migrated or evicted by this controller.
 
-If the referenced topology resource is deleted, the next reconcile reports `TopologyResourceUnresolved`; if a referenced level is removed or renamed, the next reconcile reports `LevelUnresolved`. In both cases new pod creation is gated, and already-running pods are not evicted or migrated. The controller does not watch scheduler topology objects; it relies on the next workload-driven reconcile (generation update, scale, rollout, recovery, or controller resync) to discover drift. Tests force this transition with an RBG annotation/generation update; no scheduler-object watch is required.
+If the referenced topology resource is deleted, the next reconcile reports `TopologyResourceUnresolved`; if a referenced level is removed or renamed, the next reconcile reports `LevelUnresolved`. In both cases new pod creation is gated, and already-running pods are not evicted or migrated. The controller does not watch scheduler topology objects; it relies on the next workload-driven reconcile (a spec change such as a replicas update that leaves topology untouched, rollout, recovery, or controller resync) to discover drift. Tests force this transition with a concrete RBG spec change, not an annotation-only update: the RBG update predicate compares `Spec`, so a metadata-only update does not enqueue the controller. No scheduler-object watch is required.
 
 ### Placement Planning
 
@@ -442,7 +445,7 @@ Legacy gang-only PodGroups keep the KEP-430 name `rbg.Name`. Topology-bearing Po
 - The placement name is at most 22 characters:
   - `r-<role.Name>` for a RoleSpec instance constraint;
   - `p-<policyRule.Name>` for a CoordinatedPolicy topology rule.
-- Role and policy-rule source names are not tightened at the API level; the compiler truncates the source portion to 20 readable characters when rendering the placement name.
+- Role names and topology-bearing policy-rule names are validated at admission as DNS-1123 labels. Source names therefore never inject characters that are invalid in generated Kubernetes object names; the compiler truncates the source portion to 20 readable characters when rendering the placement name.
 - The placement hash is the first six bytes of SHA-256 over the RBG UID and the full `PlacementGroup.ID`, rendered as twelve hexadecimal characters. Including the full logical-group identity — not only the RBG UID — makes the name collision-safe within one RBG, including when two policy rules share their first 20 characters.
 - The total is at most 62 characters, below the Kubernetes DNS-label limit.
 
@@ -450,7 +453,7 @@ Per-dialect naming rules:
 
 - **Volcano**: a gang-only single PodGroup keeps the KEP-430 name `rbg.Name` (equivalence is golden-tested). A topology-bearing PodGroup uses the placement form above. In the containment case where a gang-bearing parent has topology-bearing subGroups, the gang parent keeps `rbg.Name`; each topology-bearing subGroup uses the placement form.
 - **Koordinator**: there is no rendered root group object. GangGroup members are the existing per-role-instance (or per-role, when `PartitionBy=none`) PodGroups named `<rbg.Name>-<role.Name>-<instance-index>` / `<rbg.Name>-<role.Name>`; the GangGroup identity is the annotation, not a new object name.
-- **KAI**: the root PodGroup is named `rbg.Name`. SubGroup names are scoped to that root and use deterministic scope names: `<rule-name>` for a cross-role child, `<role.Name>-<instance-index>` for an instance constraint, and `<role.Name>` for an uncovered role-level child. A role is split per instance only when it carries an instance constraint.
+- **KAI**: the root PodGroup is named `rbg.Name`. SubGroup names are unique across the entire subGroup tree, not merely among siblings, and use kind-prefixed namespaces: `policy-<rule-name>` for a cross-role child, `instance-<role.Name>-<instance-index>` for an instance constraint, and `role-<role.Name>` for an uncovered role-level child. The prefixes prevent a rule named `prefill-0` from colliding with the instance subGroup `instance-prefill-0`. Parent references and pod bindings use exactly these generated names; a compiler never emits a raw source name directly. A role is split per instance only when it carries an instance constraint.
 
 #### Translation Matrix
 
@@ -525,7 +528,7 @@ spec:
 
 The `scheduling.sigs.k8s.io` API group and `minMember: 0` are Koordinator's deployed PodGroup CRD dialect. If the runtime-installed CRD is the upstream scheduler-plugins dialect (`scheduling.x-k8s.io`, `minMember >= 1`), the compiler reports `SchedulerUnsupported` for topology-only groups instead of inventing a threshold.
 
-**KAI** — subGroups nest arbitrarily, so the plan lands in a single PodGroup: the rule becomes a nested subGroup spanning prefill+decode with its own `topologyConstraint`, per-instance subGroups carry instance packing, and uncovered roles only appear as sibling subGroups when they declare their own instance-level constraints. The root PodGroup is named `rbg.Name`; only topology-bearing subGroups use the placement naming rule. Decode has no instance constraint, so it appears as one role-level child of `pd-colocation` and is not split into `decode-0`/`decode-1`. KAI levels are `nodeLabel` keys or aliases, and `topology` names the selected KAI Topology CR (`TopologyConstraint.topologyName`, or the controller default when omitted):
+**KAI** — subGroups nest arbitrarily, so the plan lands in a single PodGroup: the rule becomes a nested subGroup spanning prefill+decode with its own `topologyConstraint`, per-instance subGroups carry instance packing, and uncovered roles only appear as sibling subGroups when they declare their own instance-level constraints. The root PodGroup is named `rbg.Name`; subGroups use the kind-prefixed naming rule so names are unique across the whole tree. Decode has no instance constraint, so it appears as one role-level child of `policy-pd-colocation` and is not split into `decode-0`/`decode-1`. KAI levels are `nodeLabel` keys or aliases, and `topology` names the selected KAI Topology CR (`TopologyConstraint.topologyName`, or the controller default when omitted):
 
 ```yaml
 apiVersion: scheduling.run.ai/v2alpha2
@@ -535,26 +538,26 @@ metadata:
 spec:
   minSubGroup: 0                 # root: topology-only — router never blocks pd-colocation
   subGroups:
-  - name: pd-colocation          # the CoordinatedPolicy rule over prefill+decode
+  - name: policy-pd-colocation   # kind-prefixed CoordinatedPolicy rule over prefill+decode
     minSubGroup: 0               # topology-only: no gang requirement
     topologyConstraint:          # cross-role
       topology: cluster-topology    # from TopologyConstraint.topologyName or controller default
       requiredTopologyLevel: topology.block
       preferredTopologyLevel: topology.rack
-  - name: prefill-0              # per-instance leaf subGroups carry instance packing
-    parent: pd-colocation
+  - name: instance-prefill-0     # per-instance leaf subGroups carry instance packing
+    parent: policy-pd-colocation
     minMember: 0
     topologyConstraint:
       topology: cluster-topology
       requiredTopologyLevel: topology.rack
-  - name: prefill-1
-    parent: pd-colocation
+  - name: instance-prefill-1
+    parent: policy-pd-colocation
     minMember: 0
     topologyConstraint:
       topology: cluster-topology
       requiredTopologyLevel: topology.rack
-  - name: decode              # no instance constraint: one role-level child, not per-instance
-    parent: pd-colocation
+  - name: role-decode        # no instance constraint: one role-level child, not per-instance
+    parent: policy-pd-colocation
     minMember: 0
 ```
 
@@ -564,7 +567,7 @@ spec:
 
 - **RBG conditions**:
   - `GangConfigured` — retained from KEP-430 for gang-only failures.
-  - `TopologyTranslated` — present only when topology is configured; `False` with reasons such as `IncompatiblePlacementGroups`, `IncompatibleTopologyNames`, `RoleUnresolved`, `InvalidLevelOrder`, `LevelUnresolved`, `TopologyResourceUnresolved` (KAI), or `SchedulerUnsupported`. On success it is `True`; when Volcano cannot anchor a preferred level, the reason is `PreferredAbsorbed` and a warning event is emitted.
+  - `TopologyTranslated` — present only when topology is configured; `False` with reasons such as `IncompatiblePlacementGroups`, `IncompatibleTopologyNames`, `RoleUnresolved`, `InvalidLevelOrder`, `LevelUnresolved`, `TopologyResourceUnresolved` (KAI), `SchedulerUnsupported`, or `TopologyPolicyLate`. On success it is `True`; when Volcano cannot anchor a preferred level, the reason is `PreferredAbsorbed` and a warning event is emitted.
   - Condition transitions emit warning events (edge-triggered, per the KEP-430 event-spam analysis).
 - **Placement gating is explicit.** While `GangConfigured` or `TopologyTranslated` is false, Role create/update is paused; status explains why no new pod was created.
 - Placement outcomes themselves (which domain a group landed in) remain owned by the scheduler (e.g., Volcano's allocated-HyperNode bookkeeping); RBG status links failure *reasons* back to the declaring object.
@@ -598,16 +601,18 @@ spec:
 6. Topology-only groups: Volcano `minMember: 0`, KAI `minSubGroup: 0`, and gang threshold fields omitted unless gang is configured.
 7. Mutability: adding, removing, or changing topology is rejected for the workload lifecycle; ordinary topology-free role changes remain allowed.
 8. Volcano runtime detection: CRD schema inspection for `tierName` / subGroup `networkTopology`; unmaintained-tierName and unsupported paths.
-9. Generated names: two placement groups in the same RBG whose source names share their first 20 characters produce distinct names because the hash includes the full `PlacementGroup.ID`; per-dialect naming rules (Volcano gang-only vs topology-bearing, Koordinator member names, KAI root/subGroup names) are golden-tested.
+9. Generated names: two placement groups in the same RBG whose source names share their first 20 characters produce distinct names because the hash includes the full `PlacementGroup.ID`; per-dialect naming rules (Volcano gang-only vs topology-bearing, Koordinator member names, KAI root/subGroup names) are golden-tested. Admission rejects non-DNS-1123 source names, and KAI cross-kind collisions (a rule named like a role instance) produce distinct kind-prefixed subGroup names with matching parent references and bindings.
 10. Koordinator runtime detection: the installed PodGroup CRD dialect (`scheduling.sigs.k8s.io` vs `scheduling.x-k8s.io`) and the `minMember` schema decide whether topology-only rendering is supported; the upstream CRD reports `SchedulerUnsupported`.
-11. Finalizer lifecycle: release is keyed to the RBG UID; a terminating policy matching the active RBG UID remains authoritative, while one whose recorded UID no longer matches is ignored and released; same-name RBG recreation does not release the finalizer for the old UID; manual finalizer removal is the documented escape hatch.
+11. Finalizer lifecycle: release is keyed to the RBG UID; a terminating policy matching the active RBG UID remains authoritative, while one whose recorded UID no longer matches is ignored and released once that UID is deleted; a replacement RBG with the same name never inherits the old contract; manual finalizer removal is the documented escape hatch.
+12. Contract freeze: after an RBG accepts `none`, a newly created topology-bearing policy reports `TopologyPolicyLate`, renders nothing, and gates roles; a policy created before the RBG is accepted normally; a changed contract after a non-empty acceptance is likewise rejected.
 
 #### Integration tests
 
 1. envtest: create scheduler topology fixtures + RBG with both attachment points, assert the rendered PodGroups (PlacementGroup-derived `spec.networkTopology`, `subGroupPolicy[].networkTopology`, and any PodGroup created for rule-external instance constraints) field-by-field.
 2. Failure gating: an incompatible plan or unknown level prevents Role create/update and Pod creation; cleanup of deleted roles still works; running pods are not evicted.
-3. Topology-object change is discovered by the next workload-driven reconcile (forced in tests with an RBG annotation/generation update); level removal flips their conditions.
-4. Lifecycle immutability: in-place topology removal or change is rejected by admission; deleting an active topology-bearing CoordinatedPolicy is held by its finalizer until the UID-recorded RBG is deleted; same-name RBG recreation does not release it; after delete-and-recreate without topology, the new lifecycle renders no topology dialect fields.
+3. Topology-object change is discovered by the next workload-driven reconcile, forced in tests with a concrete spec change (for example a replicas update that leaves topology untouched); level removal flips their conditions. The test must go through the controller event path, not a direct `Reconcile` call.
+4. Lifecycle immutability: in-place topology removal or change is rejected by admission; deleting an active topology-bearing CoordinatedPolicy is held by its finalizer until the UID-recorded RBG is deleted; a same-name replacement RBG never inherits the old contract, and the old policy is released once its recorded UID is gone; after delete-and-recreate without topology, the new lifecycle renders no topology dialect fields.
+5. Creation order: a topology-bearing policy created before the RBG is accepted and rendered; the same policy created after the RBG has accepted `none` reports `TopologyPolicyLate` and gates Role create/update without rendering a PodGroup. The test triggers reconcile with an RBG spec change (replicas) rather than a metadata-only update.
 
 #### e2e tests
 
