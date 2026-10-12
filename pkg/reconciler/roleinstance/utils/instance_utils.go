@@ -28,7 +28,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
@@ -115,16 +114,7 @@ func GetSelectorMatchLabels(instanceName string) map[string]string {
 }
 
 func GetSelector(instance *workloadsv1alpha2.RoleInstance) labels.Selector {
-	matchLabels := GetSelectorMatchLabels(instance.Name)
-	selector := labels.NewSelector()
-	for k, v := range matchLabels {
-		requirement, _ := labels.NewRequirement(
-			k, selection.Equals, []string{v},
-		)
-		selector.Add(*requirement)
-	}
-
-	return selector
+	return labels.SelectorFromSet(GetSelectorMatchLabels(instance.Name))
 }
 
 // GetActiveAndInactivePods get activePods and inactivePods
