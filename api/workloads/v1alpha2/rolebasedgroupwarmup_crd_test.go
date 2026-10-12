@@ -18,8 +18,10 @@ package v1alpha2
 
 import (
 	"os"
-	"strings"
 	"testing"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
 )
 
 // The RoleBasedGroupWarmup CRD intentionally does NOT validate customized action
@@ -57,25 +59,76 @@ func TestGeneratedWarmupCRDDoesNotValidateContainerImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated Warmup CRD: %v", err)
 	}
-	body := string(manifest)
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := yaml.Unmarshal(manifest, crd); err != nil {
+		t.Fatalf("decode generated Warmup CRD: %v", err)
+	}
+	if len(crd.Spec.Versions) == 0 {
+		t.Fatal("generated Warmup CRD has no versions")
+	}
 
-	// The rule installed by #466 must not come back. Banned as two separate markers so
-	// that a reworded message is still caught:
-	//   - the message text, and
-	//   - any x-kubernetes-validations attached to the customizedAction containers
-	//     schema (the CEL rule was the only such rule there).
-	for _, forbidden := range []string{
-		"customized action container image must not be empty",
-		"has(self.image) && self.image != ''",
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("generated CRD contains %q; this rule freezes status updates for "+
-				"pre-existing objects on Kubernetes <= 1.32 and must not be re-added", forbidden)
+	// Both target branches embed the same WarmupActions type. Decode the generated
+	// schema and assert on its paths rather than grepping YAML text: a semantically
+	// equivalent CEL rule with different message text must still fail this test.
+	for _, version := range crd.Spec.Versions {
+		if version.Schema == nil || version.Schema.OpenAPIV3Schema == nil {
+			t.Fatalf("version %q has no schema", version.Name)
+		}
+		spec := schemaProperty(t, version.Schema.OpenAPIV3Schema.Properties, "spec")
+
+		// WarmupActions is inlined in targetNodes and is the additionalProperties
+		// value of targetRoleBasedGroup.roles.
+		targetNodes := schemaProperty(t, spec.Properties, "targetNodes")
+		roles := schemaProperty(t, spec.Properties, "targetRoleBasedGroup", "roles")
+		if roles.AdditionalProperties == nil || roles.AdditionalProperties.Schema == nil {
+			t.Fatalf("version %q: targetRoleBasedGroup.roles additionalProperties schema is missing", version.Name)
+		}
+		actionSchemas := map[string]apiextensionsv1.JSONSchemaProps{
+			"targetNodes.warmupActions":             targetNodes,
+			"targetRoleBasedGroup.roles.<roleName>": *roles.AdditionalProperties.Schema,
+		}
+		for targetPath, actions := range actionSchemas {
+			customized := schemaProperty(t, actions.Properties, "customizedAction")
+			containers := schemaProperty(t, customized.Properties, "containers")
+			if containers.Items == nil || containers.Items.Schema == nil {
+				t.Fatalf("version %q path %s: containers item schema is missing", version.Name, targetPath)
+			}
+			image := schemaProperty(t, containers.Items.Schema.Properties, "image")
+			if len(image.XValidations) != 0 {
+				t.Errorf("version %q path %s: customized action image must not have CEL validations, got %#v",
+					version.Name, targetPath, image.XValidations)
+			}
+
+			preload := schemaProperty(t, actions.Properties, "imagePreload")
+			images := schemaProperty(t, preload.Properties, "images")
+			if images.Items == nil || images.Items.Schema == nil {
+				t.Fatalf("version %q path %s: images item schema is missing", version.Name, targetPath)
+			}
+			if images.Items.Schema.MinLength == nil || *images.Items.Schema.MinLength != 1 {
+				t.Errorf("version %q path %s: imagePreload images minLength=1 marker is missing", version.Name, targetPath)
+			}
 		}
 	}
+}
 
-	// The other validations from #466 stay: images items must still have minLength 1.
-	if !strings.Contains(body, "minLength: 1") {
-		t.Error("imagePreload images minLength marker is missing; it is ratcheting-safe and was kept")
+// schemaProperty follows a path through a JSON schema's properties map.
+func schemaProperty(t *testing.T, props map[string]apiextensionsv1.JSONSchemaProps, path ...string) apiextensionsv1.JSONSchemaProps {
+	t.Helper()
+	current := props
+	var schema apiextensionsv1.JSONSchemaProps
+	for i, name := range path {
+		found, ok := current[name]
+		if !ok {
+			t.Fatalf("schema property %q is missing (path %v)", name, path[:i+1])
+		}
+		schema = found
+		if i == len(path)-1 {
+			return schema
+		}
+		if schema.Properties == nil {
+			t.Fatalf("schema property %q has no nested properties (path %v)", name, path[:i+1])
+		}
+		current = schema.Properties
 	}
+	return schema
 }
