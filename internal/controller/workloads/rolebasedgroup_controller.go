@@ -268,13 +268,6 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		ctx, rbg, placement.gangStrategy, placement.gangErr); err != nil {
 		return ctrl.Result{}, err
 	}
-	// Record the contract only after the plan resolved and rendered successfully; a
-	// failing translation must not freeze an invalid or partial contract.
-	if placement.gangErr == nil && placement.placementErr == nil {
-		if err := r.ensureTopologyContract(ctx, rbg, placement.plan); err != nil {
-			placement.placementErr = err
-		}
-	}
 	if err := r.setPlacementConditions(
 		ctx, rbg, placement.plan, placement.placementErr, placement.renderResult); err != nil {
 		return ctrl.Result{}, err
@@ -328,6 +321,14 @@ func (r *RoleBasedGroupReconciler) resolvePlacement(
 		phase.plan, phase.placementErr = gangcommon.ResolvePlacementPlan(
 			ctx, r.client, rbg, phase.gangStrategy)
 		ctx = gangcommon.WithPlacementPlan(ctx, rbg, phase.plan)
+		// Freeze the contract before scheduler compilation: a late policy must be
+		// reported as TopologyPolicyLate even when the active scheduler would also
+		// report SchedulerUnsupported for the newly resolved declarations.
+		if phase.placementErr == nil {
+			if err := r.ensureTopologyContract(ctx, rbg, phase.plan); err != nil {
+				phase.placementErr = err
+			}
+		}
 		if phase.placementErr == nil {
 			phase.renderResult, phase.placementErr = r.reconcilePlacement(ctx, rbg, phase.plan)
 		}
