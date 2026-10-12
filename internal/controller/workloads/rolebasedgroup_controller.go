@@ -591,13 +591,15 @@ func (r *RoleBasedGroupReconciler) ensureTopologyContract(
 	desired := plan.TopologyContractID()
 	recorded := rbg.Annotations[constants.RBGTopologyContractAnnotation]
 	if recorded == "" {
-		annotations := make(map[string]string, len(rbg.Annotations)+1)
-		for key, value := range rbg.Annotations {
-			annotations[key] = value
+		// Use a merge patch, not Update: earlier status SSA patches advance the stored
+		// object's resourceVersion, and a full Update from the in-memory object would
+		// fail with a conflict and incorrectly gate role creation.
+		old := rbg.DeepCopy()
+		if rbg.Annotations == nil {
+			rbg.Annotations = map[string]string{}
 		}
-		annotations[constants.RBGTopologyContractAnnotation] = desired
-		rbg.Annotations = annotations
-		if err := r.client.Update(ctx, rbg); err != nil {
+		rbg.Annotations[constants.RBGTopologyContractAnnotation] = desired
+		if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
 			return fmt.Errorf("record topology contract %s: %w", client.ObjectKeyFromObject(rbg), err)
 		}
 		return nil

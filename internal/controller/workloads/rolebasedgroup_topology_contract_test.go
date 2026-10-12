@@ -34,6 +34,20 @@ func TestEnsureTopologyContractRecordsFirstAcceptance(t *testing.T) {
 	rbg := topologyContractRBG()
 	c, r := topologyContractReconciler(t, rbg)
 
+	// Advance the stored object after rbg was fetched, mimicking a status SSA patch
+	// that changes resourceVersion. The annotation write must not conflict.
+	fresh := &v1alpha2.RoleBasedGroup{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(rbg), fresh); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Annotations == nil {
+		fresh.Annotations = map[string]string{}
+	}
+	fresh.Annotations["workloads.x-k8s.io/test-resource-version"] = "advanced"
+	if err := c.Update(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := r.ensureTopologyContract(context.Background(), rbg, nil); err != nil {
 		t.Fatal(err)
 	}
