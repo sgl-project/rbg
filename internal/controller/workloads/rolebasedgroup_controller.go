@@ -584,14 +584,57 @@ func (r *RoleBasedGroupReconciler) ensureCoordinatedPolicyTopologyFinalizer(
 	if err != nil {
 		return fmt.Errorf("get CoordinatedPolicy %s: %w", client.ObjectKeyFromObject(rbg), err)
 	}
-	if !coordinatedPolicyHasTopology(policy) || controllerutil.ContainsFinalizer(
-		policy, constants.CoordinatedPolicyTopologyFinalizer) {
+	if !coordinatedPolicyHasTopology(policy) {
+		return nil
+	}
+
+	recordedUID := policy.Annotations[constants.CoordinatedPolicyTopologyRBGUIDAnnotation]
+	if !policy.DeletionTimestamp.IsZero() {
+		// A deleting policy is frozen. If it records an older RBG lifecycle and that
+		// RBG UID is gone, release it so a replacement policy can be created.
+		if recordedUID != "" && recordedUID != string(rbg.UID) {
+			return r.releaseTerminatingPolicyWhenRecordedRBGGone(ctx, policy, recordedUID)
+		}
+		return nil
+	}
+
+	if controllerutil.ContainsFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer) &&
+		recordedUID == string(rbg.UID) {
 		return nil
 	}
 
 	controllerutil.AddFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer)
+	if policy.Annotations == nil {
+		policy.Annotations = map[string]string{}
+	}
+	policy.Annotations[constants.CoordinatedPolicyTopologyRBGUIDAnnotation] = string(rbg.UID)
 	if err := r.client.Update(ctx, policy); err != nil {
 		return fmt.Errorf("add CoordinatedPolicy topology finalizer %s: %w", client.ObjectKeyFromObject(rbg), err)
+	}
+	return nil
+}
+
+// releaseTerminatingPolicyWhenRecordedRBGGone removes the topology finalizer only
+// when the RBG UID recorded on the policy no longer identifies a live RBG. A live
+// RBG with the same name but a different UID does not satisfy the old lifecycle's
+// release condition.
+func (r *RoleBasedGroupReconciler) releaseTerminatingPolicyWhenRecordedRBGGone(
+	ctx context.Context,
+	policy *workloadsv1alpha2.CoordinatedPolicy,
+	recordedUID string,
+) error {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	err := r.client.Get(ctx, client.ObjectKeyFromObject(policy), rbg)
+	if err == nil && string(rbg.UID) == recordedUID && rbg.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get RoleBasedGroup %s: %w", client.ObjectKeyFromObject(policy), err)
+	}
+
+	controllerutil.RemoveFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer)
+	if err := r.client.Update(ctx, policy); err != nil {
+		return fmt.Errorf("remove CoordinatedPolicy topology finalizer %s: %w", client.ObjectKeyFromObject(policy), err)
 	}
 	return nil
 }
@@ -623,6 +666,22 @@ func (r *RoleBasedGroupReconciler) releaseCoordinatedPolicyTopologyFinalizerByKe
 	// must not strip protection from a live policy.
 	if policy.DeletionTimestamp.IsZero() {
 		return nil
+	}
+
+	recordedUID := policy.Annotations[constants.CoordinatedPolicyTopologyRBGUIDAnnotation]
+	if recordedUID != "" {
+		return r.releaseTerminatingPolicyWhenRecordedRBGGone(ctx, policy, recordedUID)
+	}
+
+	// Policies written before UID recording use the name-based fallback. This path
+	// only releases when the same-name RBG is absent or itself deleting.
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	err = r.client.Get(ctx, key, rbg)
+	if err == nil && rbg.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get RoleBasedGroup %s: %w", key, err)
 	}
 
 	controllerutil.RemoveFinalizer(policy, constants.CoordinatedPolicyTopologyFinalizer)

@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -265,5 +266,75 @@ func TestResolvePlacementPlanUnknownRoleReturnsTopologyTranslationError(t *testi
 	)
 	if !IsTopologyTranslationError(err) {
 		t.Fatalf("expected TopologyTranslationError, got %v", err)
+	}
+}
+
+func TestResolvePlacementPlanTerminatingPolicyMatchingUIDStaysAuthoritative(t *testing.T) {
+	rbg := placementRBG()
+	rbg.UID = "rbg-uid-active"
+	policy := placementPolicy([]workloadsv1alpha2.CoordinatedPolicyRule{{
+		Name:  "pd",
+		Roles: []string{"prefill", "decode"},
+		Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+			Scheduling: &workloadsv1alpha2.SchedulingCoordinationStrategy{
+				TopologyConstraint: &workloadsv1alpha2.TopologyConstraint{
+					Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptrTo("block")},
+				},
+			},
+		},
+	}})
+	policy.Annotations = map[string]string{
+		constants.CoordinatedPolicyTopologyRBGUIDAnnotation: string(rbg.UID),
+	}
+	policy.Finalizers = []string{constants.CoordinatedPolicyTopologyFinalizer}
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+
+	plan, err := ResolvePlacementPlan(
+		context.Background(),
+		fakeClient(t, rbg, policy).Build(),
+		rbg,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.HasTopology() {
+		t.Fatal("expected the frozen terminating policy to remain authoritative")
+	}
+}
+
+func TestResolvePlacementPlanIgnoresStaleTerminatingPolicy(t *testing.T) {
+	rbg := placementRBG()
+	rbg.UID = "rbg-uid-new"
+	policy := placementPolicy([]workloadsv1alpha2.CoordinatedPolicyRule{{
+		Name:  "pd",
+		Roles: []string{"prefill", "decode"},
+		Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+			Scheduling: &workloadsv1alpha2.SchedulingCoordinationStrategy{
+				TopologyConstraint: &workloadsv1alpha2.TopologyConstraint{
+					Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptrTo("block")},
+				},
+			},
+		},
+	}})
+	policy.Annotations = map[string]string{
+		constants.CoordinatedPolicyTopologyRBGUIDAnnotation: "rbg-uid-old",
+	}
+	policy.Finalizers = []string{constants.CoordinatedPolicyTopologyFinalizer}
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+
+	plan, err := ResolvePlacementPlan(
+		context.Background(),
+		fakeClient(t, rbg, policy).Build(),
+		rbg,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan != nil && plan.HasTopology() {
+		t.Fatal("expected the stale terminating policy to be ignored")
 	}
 }

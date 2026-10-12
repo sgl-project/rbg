@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -136,6 +137,15 @@ func ResolvePlacementPlan(
 	}
 	if apierrors.IsNotFound(err) {
 		policy = nil
+	}
+	// A terminating policy is frozen while its recorded RBG UID still matches this
+	// RBG, so its declarations remain authoritative. A terminating policy whose
+	// recorded UID no longer matches belongs to an old same-name lifecycle and is
+	// ignored; the controller releases its finalizer separately.
+	if policy != nil && !policy.DeletionTimestamp.IsZero() {
+		if recorded := policy.Annotations[constants.CoordinatedPolicyTopologyRBGUIDAnnotation]; recorded != "" && recorded != string(rbg.UID) {
+			policy = nil
+		}
 	}
 
 	groups, err := buildPlacementGroups(rbg, policy, gangStrategy)

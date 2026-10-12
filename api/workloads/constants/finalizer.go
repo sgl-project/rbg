@@ -20,3 +20,9 @@ package constants
 // CoordinatedPolicy while its matching RoleBasedGroup still exists. Delete and
 // recreate the RBG first; the controller removes this finalizer as part of RBG cleanup.
 const CoordinatedPolicyTopologyFinalizer = "workloads.x-k8s.io/topology-policy-protection"
+
+// CoordinatedPolicyTopologyRBGUIDAnnotation records the UID of the RoleBasedGroup
+// whose lifecycle is protected by CoordinatedPolicyTopologyFinalizer. Release is
+// keyed to this UID so deleting and recreating an RBG with the same name cannot
+// satisfy the release condition for the old lifecycle.
+const CoordinatedPolicyTopologyRBGUIDAnnotation = "workloads.x-k8s.io/topology-policy-protection-uid"

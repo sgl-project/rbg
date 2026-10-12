@@ -282,7 +282,7 @@ func TestReconcilePlacementNoTopologyDeletesStaleTopologyPodGroups(t *testing.T)
 
 func TestBoundedPlacementPodGroupName(t *testing.T) {
 	longName := strings.Repeat("a", 100)
-	got := boundedPlacementPodGroupName(longName, "r-prefill", "uid-a")
+	got := boundedPlacementPodGroupName(longName, "rbg-uid-a", "r-prefill", "scope-id-a")
 	if len(got) != 26+1+len("r-prefill")+1+12 {
 		t.Fatalf("unexpected bounded name length %d: %q", len(got), got)
 	}
@@ -290,33 +290,84 @@ func TestBoundedPlacementPodGroupName(t *testing.T) {
 		t.Fatalf("unexpected bounded name %q", got)
 	}
 
-	otherRBG := boundedPlacementPodGroupName(longName, "r-prefill", "uid-b")
+	otherRBG := boundedPlacementPodGroupName(longName, "rbg-uid-b", "r-prefill", "scope-id-a")
 	if got == otherRBG {
 		t.Fatalf("expected different RBG UIDs to produce different names, got %q", got)
 	}
 
-	otherPlacement := boundedPlacementPodGroupName(longName, "p-pd", "uid-a")
+	otherPlacement := boundedPlacementPodGroupName(longName, "rbg-uid-a", "p-pd", "scope-id-b")
 	if got == otherPlacement {
-		t.Fatalf("expected different placement names to produce different names, got %q", got)
+		t.Fatalf("expected different placement identities to produce different names, got %q", got)
 	}
 
-	longSource := boundedPlacementPodGroupName(longName, "r-"+strings.Repeat("x", 100), "uid-a")
+	otherScope := boundedPlacementPodGroupName(longName, "rbg-uid-a", "r-prefill", "scope-id-b")
+	if got == otherScope {
+		t.Fatalf("expected different PlacementGroup IDs to produce different names, got %q", got)
+	}
+
+	longSource := boundedPlacementPodGroupName(longName, "rbg-uid-a", "r-"+strings.Repeat("x", 100), "scope-id-a")
 	if !strings.Contains(longSource, "-r-"+strings.Repeat("x", 20)+"-") {
 		t.Fatalf("expected source name to be truncated to 20 characters, got %q", longSource)
 	}
 }
 
-func TestValidateTopologyLevelOrderDoesNotCompareRequiredAndPreferred(t *testing.T) {
+func TestPlacementPodGroupNameGangParentWithTopologyChildrenKeepsLegacyName(t *testing.T) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "infer", Namespace: "default", UID: "rbg-uid"},
+	}
+	group := &common.PlacementGroup{
+		Gang: &common.GangStrategy{Roles: sets.New("prefill", "decode", "router")},
+		Scope: common.PlacementScope{
+			Roles: []string{"decode", "prefill", "router"},
+		},
+		Children: []*common.PlacementGroup{{
+			Name: "p-pd",
+			Scope: common.PlacementScope{
+				Roles: []string{"decode", "prefill"},
+			},
+			Topology: &workloadsv1alpha2.TopologyConstraint{
+				Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("block")},
+			},
+		}},
+	}
+	if got := placementPodGroupName(rbg, group, 0); got != rbg.Name {
+		t.Fatalf("expected gang parent to keep %q, got %q", rbg.Name, got)
+	}
+
+	group.Topology = &workloadsv1alpha2.TopologyConstraint{
+		Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("block")},
+	}
+	group.Children = nil
+	if got := placementPodGroupName(rbg, group, 0); got == rbg.Name {
+		t.Fatalf("expected gang+topology on one scope to use a placement name, got %q", got)
+	}
+}
+
+func TestValidateTopologyLevelOrderComparesRequiredAndPreferred(t *testing.T) {
 	levels := map[string]int{"block": 2, "rack": 1}
-	constraint := &workloadsv1alpha2.TopologyConstraint{
+	valid := &workloadsv1alpha2.TopologyConstraint{
 		Pack: &workloadsv1alpha2.TopologyPackConstraint{
 			Required:  ptr.To("block"),
 			Preferred: ptr.To("rack"),
 		},
 	}
-	if err := validateTopologyLevelOrder(constraint, levels); err != nil {
+	if err := validateTopologyLevelOrder(valid, levels); err != nil {
 		t.Fatalf("expected required=block/preferred=rack to be accepted, got %v", err)
 	}
+
+	reversed := &workloadsv1alpha2.TopologyConstraint{
+		Pack: &workloadsv1alpha2.TopologyPackConstraint{
+			Required:  ptr.To("rack"),
+			Preferred: ptr.To("block"),
+		},
+	}
+	err := validateTopologyLevelOrder(reversed, levels)
+	require.Error(t, err)
+	require.True(t, common.IsTopologyTranslationError(err), "expected TopologyTranslationError, got %v", err)
+	reason, ok := common.TopologyTranslationReason(err)
+	require.True(t, ok)
+	require.Equal(t, common.TopologyReasonInvalidLevelOrder, reason)
+	require.Contains(t, err.Error(), "preferred topology level \"block\" (tier 2) is broader than required level \"rack\" (tier 1)")
 }
 
 func TestLoadTopologyLevelsReportsMissingHyperNodeCRD(t *testing.T) {
@@ -578,4 +629,76 @@ func TestLoadTopologyLevelsUsesConfiguredSharedInformerReader(t *testing.T) {
 	require.Equal(t, 1, levels["rack"])
 	require.Equal(t, 1, cacheLists)
 	require.Equal(t, 0, apiLists)
+}
+
+func TestBuildTopologySubGroupsRendersCrossRoleChild(t *testing.T) {
+	rbg := rbgWithRoles(
+		standaloneRole("prefill", 2, ""),
+		standaloneRole("decode", 2, ""),
+		standaloneRole("router", 1, ""),
+	)
+	group := &common.PlacementGroup{
+		Gang: &common.GangStrategy{Roles: sets.New("prefill", "decode", "router")},
+		Scope: common.PlacementScope{
+			Roles: []string{"decode", "prefill", "router"},
+		},
+		Children: []*common.PlacementGroup{{
+			Name:  "p-pd",
+			Scope: common.PlacementScope{Roles: []string{"decode", "prefill"}},
+			Topology: &workloadsv1alpha2.TopologyConstraint{
+				Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("block")},
+			},
+		}},
+	}
+
+	policies, absorbed, err := buildTopologySubGroups(rbg, group)
+	require.NoError(t, err)
+	require.False(t, absorbed)
+	require.Len(t, policies, 1)
+	require.Equal(t, "p-pd", policies[0].Name)
+	require.NotNil(t, policies[0].LabelSelector)
+	require.Equal(t, map[string]string{constants.GroupNameLabelKey: rbg.Name}, policies[0].LabelSelector.MatchLabels)
+	require.Equal(t, []metav1.LabelSelectorRequirement{{
+		Key:      constants.RoleNameLabelKey,
+		Operator: metav1.LabelSelectorOpIn,
+		Values:   []string{"decode", "prefill"},
+	}}, policies[0].LabelSelector.MatchExpressions)
+	require.NotNil(t, policies[0].NetworkTopology)
+	require.Equal(t, volcanoschedulingv1beta1.HardNetworkTopologyMode, policies[0].NetworkTopology.Mode)
+	require.Equal(t, "block", policies[0].NetworkTopology.HighestTierName)
+}
+
+func TestBuildTopologySubGroupsRejectsNestedCrossRoleChildren(t *testing.T) {
+	rbg := rbgWithRoles(
+		standaloneRole("prefill", 2, ""),
+		standaloneRole("decode", 2, ""),
+	)
+	group := &common.PlacementGroup{
+		Gang: &common.GangStrategy{Roles: sets.New("prefill", "decode")},
+		Scope: common.PlacementScope{
+			Roles: []string{"decode", "prefill"},
+		},
+		Children: []*common.PlacementGroup{{
+			Name:  "p-pd",
+			Scope: common.PlacementScope{Roles: []string{"decode", "prefill"}},
+			Topology: &workloadsv1alpha2.TopologyConstraint{
+				Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("block")},
+			},
+			Children: []*common.PlacementGroup{{
+				Name: "r-prefill",
+				Scope: common.PlacementScope{
+					Roles:       []string{"prefill"},
+					PartitionBy: common.PartitionByRoleInstance,
+				},
+				Topology: &workloadsv1alpha2.TopologyConstraint{
+					Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("rack")},
+				},
+			}},
+		}},
+	}
+
+	_, _, err := buildTopologySubGroups(rbg, group)
+	require.Error(t, err)
+	require.True(t, common.IsSchedulerUnsupported(err), "expected SchedulerUnsupportedError, got %v", err)
+	require.Contains(t, err.Error(), "nested topology children")
 }

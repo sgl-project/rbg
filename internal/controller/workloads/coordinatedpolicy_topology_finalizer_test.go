@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,9 +33,10 @@ import (
 )
 
 func TestCoordinatedPolicyTopologyFinalizerLifecycle(t *testing.T) {
-	c, r := finalizerTestReconciler(t, topologyFinalizerRBG(), topologyFinalizerPolicy("block"))
+	rbg := topologyFinalizerRBG()
+	c, r := finalizerTestReconciler(t, rbg, topologyFinalizerPolicy("block"))
 
-	if err := r.ensureCoordinatedPolicyTopologyFinalizer(context.Background(), topologyFinalizerRBG()); err != nil {
+	if err := r.ensureCoordinatedPolicyTopologyFinalizer(context.Background(), rbg); err != nil {
 		t.Fatal(err)
 	}
 	policy := &v1alpha2.CoordinatedPolicy{}
@@ -44,6 +46,9 @@ func TestCoordinatedPolicyTopologyFinalizerLifecycle(t *testing.T) {
 	}
 	if !controllerutil.ContainsFinalizer(policy, workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer) {
 		t.Fatalf("expected topology finalizer on %#v", policy.Finalizers)
+	}
+	if policy.Annotations[workloadsv1alpha2.CoordinatedPolicyTopologyRBGUIDAnnotation] != string(rbg.UID) {
+		t.Fatalf("expected protected RBG UID annotation, got %#v", policy.Annotations)
 	}
 
 	if err := c.Delete(context.Background(), policy); err != nil {
@@ -57,19 +62,39 @@ func TestCoordinatedPolicyTopologyFinalizerLifecycle(t *testing.T) {
 		t.Fatal("expected deletion timestamp while finalizer blocks deletion")
 	}
 
-	if err := c.Delete(context.Background(), topologyFinalizerRBG()); err != nil {
-		t.Fatal(err)
-	}
+	// The active RBG still has the recorded UID, so the policy remains protected.
 	if err := r.releaseCoordinatedPolicyTopologyFinalizerByKey(context.Background(), key.Namespace, key.Name); err != nil {
 		t.Fatal(err)
 	}
+	policy = &v1alpha2.CoordinatedPolicy{}
+	if err := c.Get(context.Background(), key, policy); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(policy, workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer) {
+		t.Fatal("expected the finalizer to remain while the recorded RBG UID is active")
+	}
 
-	// With the old RBG gone, the same name can be reused with a different topology.
+	// Recreating an RBG with the same name does not satisfy the old lifecycle's
+	// UID-keyed release condition, but the old UID is gone, so the stale policy is
+	// released and a replacement policy can be created.
+	if err := c.Delete(context.Background(), rbg); err != nil {
+		t.Fatal(err)
+	}
 	recreatedRBG := topologyFinalizerRBG()
 	recreatedRBG.UID = "rbg-uid-2"
 	if err := c.Create(context.Background(), recreatedRBG); err != nil {
 		t.Fatal(err)
 	}
+	if err := r.releaseCoordinatedPolicyTopologyFinalizerByKey(context.Background(), key.Namespace, key.Name); err != nil {
+		t.Fatal(err)
+	}
+	// With the last finalizer removed, the API server completes deletion of the stale
+	// terminating policy and the replacement can reuse the name.
+	policy = &v1alpha2.CoordinatedPolicy{}
+	if err := c.Get(context.Background(), key, policy); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected the stale terminating policy to be deleted, got %v", err)
+	}
+
 	recreated := topologyFinalizerPolicy("rack")
 	if err := c.Create(context.Background(), recreated); err != nil {
 		t.Fatal(err)
@@ -83,6 +108,34 @@ func TestCoordinatedPolicyTopologyFinalizerLifecycle(t *testing.T) {
 	}
 	if !controllerutil.ContainsFinalizer(recreated, workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer) {
 		t.Fatalf("expected recreated policy to be protected, got %#v", recreated.Finalizers)
+	}
+	if recreated.Annotations[workloadsv1alpha2.CoordinatedPolicyTopologyRBGUIDAnnotation] != string(recreatedRBG.UID) {
+		t.Fatalf("expected recreated policy to record the new RBG UID, got %#v", recreated.Annotations)
+	}
+}
+
+func TestEnsureReleasesStaleTerminatingPolicyForRecreatedRBG(t *testing.T) {
+	rbg := topologyFinalizerRBG()
+	rbg.UID = "rbg-uid-new"
+	policy := topologyFinalizerPolicy("block")
+	policy.Annotations = map[string]string{
+		workloadsv1alpha2.CoordinatedPolicyTopologyRBGUIDAnnotation: "rbg-uid-old",
+	}
+	policy.Finalizers = []string{workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer}
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+
+	c, r := finalizerTestReconciler(t, rbg, policy)
+	if err := r.ensureCoordinatedPolicyTopologyFinalizer(context.Background(), rbg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Removing the finalizer lets the API server complete deletion of the stale
+	// terminating policy, freeing the name for a replacement.
+	policy = &v1alpha2.CoordinatedPolicy{}
+	err := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "rbg"}, policy)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected the stale terminating policy to be deleted, got %v", err)
 	}
 }
 

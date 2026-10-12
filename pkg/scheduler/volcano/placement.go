@@ -171,7 +171,10 @@ func placementPodGroupName(
 	group *common.PlacementGroup,
 	index int,
 ) string {
-	if group.Gang != nil && !groupContainsTopology(group) && len(group.Scope.Roles) > 0 && len(group.Scope.PartitionBy) == 0 {
+	// A gang-bearing parent without its own topology constraint keeps the KEP-430
+	// name even when its subGroups carry topology. A group that directly carries
+	// topology (including gang+topology merged on one scope) uses the placement name.
+	if group.Gang != nil && group.Topology == nil && len(group.Scope.Roles) > 0 && len(group.Scope.PartitionBy) == 0 {
 		return rbg.Name
 	}
 	placementName := placementGroupName(group)
@@ -179,7 +182,7 @@ func placementPodGroupName(
 		placementName = fmt.Sprintf("g-%d", index)
 	}
 	if group.ID != "" {
-		return boundedPlacementPodGroupName(rbg.Name, placementName, group.ID)
+		return boundedPlacementPodGroupName(rbg.Name, string(rbg.UID), placementName, group.ID)
 	}
 	return fmt.Sprintf("%s-placement-%d", rbg.Name, index)
 }
@@ -213,7 +216,7 @@ func placementGroupName(group *common.PlacementGroup) string {
 // PlacementGroup.ID, so distinct scopes in the same RBG cannot collide merely because
 // their readable names share a long prefix. The full source name and canonical scope ID
 // are preserved in labels on the rendered PodGroup.
-func boundedPlacementPodGroupName(rbgName, placementName, scopeID string) string {
+func boundedPlacementPodGroupName(rbgName, rbgUID, placementName, scopeID string) string {
 	const (
 		maxPrefixLength    = 26
 		maxPlacementLength = 22
@@ -225,23 +228,13 @@ func boundedPlacementPodGroupName(rbgName, placementName, scopeID string) string
 	if len(placementName) > maxPlacementLength {
 		placementName = placementName[:maxPlacementLength]
 	}
-	scopeHash := sha256.Sum256([]byte(scopeID))
+	// The hash covers both the RBG identity and the full logical placement identity.
+	// Including the RBG UID prevents same-prefix names from different RBGs in one
+	// namespace from colliding; including the scope ID prevents same-RBG groups whose
+	// readable source names share a long prefix from colliding.
+	identity := rbgUID + "\x00" + scopeID
+	scopeHash := sha256.Sum256([]byte(identity))
 	return prefix + "-" + placementName + "-" + hex.EncodeToString(scopeHash[:6])
-}
-
-func groupContainsTopology(group *common.PlacementGroup) bool {
-	if group == nil {
-		return false
-	}
-	if group.Topology != nil {
-		return true
-	}
-	for _, child := range group.Children {
-		if groupContainsTopology(child) {
-			return true
-		}
-	}
-	return false
 }
 
 func findTopLevelGroupForRole(plan *common.PlacementPlan, roleName string) (*common.PlacementGroup, int) {
@@ -343,8 +336,16 @@ func validateTopologyLevelOrder(
 			common.TopologyReasonLevelUnresolved,
 			"Volcano HyperNodes contain no tierName %q", *constraint.Pack.Preferred)
 	}
-	// Intentionally no required/preferred ordering check: operators may use
-	// site-specific topology names whose relative order is scheduler-owned.
+	if constraint.Pack.Required != nil && constraint.Pack.Preferred != nil {
+		requiredTier, requiredOK := topologyLevelTier(constraint.Pack.Required, levels)
+		preferredTier, preferredOK := topologyLevelTier(constraint.Pack.Preferred, levels)
+		if requiredOK && preferredOK && preferredTier > requiredTier {
+			return common.NewTopologyTranslationErrorWithReason(
+				common.TopologyReasonInvalidLevelOrder,
+				"preferred topology level %q (tier %d) is broader than required level %q (tier %d)",
+				*constraint.Pack.Preferred, preferredTier, *constraint.Pack.Required, requiredTier)
+		}
+	}
 	return nil
 }
 
@@ -619,9 +620,37 @@ func buildTopologySubGroups(
 	absorbed := false
 
 	for _, child := range group.Children {
+		// A whole-scope child is the cross-role containment shape (for example, a
+		// whole-group gang parent with a prefill+decode topology child). Volcano's
+		// flat subGroupPolicy renders it as one entry selecting the child roles with
+		// an In expression and carrying the child networkTopology.
+		if len(child.Scope.PartitionBy) == 0 {
+			if len(child.Children) > 0 {
+				return nil, false, common.NewSchedulerUnsupportedError(
+					"Volcano cannot render nested topology children beneath cross-role child roles %v; flatten the topology scopes or use a scheduler with nested subgroups",
+					child.Scope.Roles)
+			}
+			networkTopology, childAbsorbed := networkTopologyForGroup(child)
+			absorbed = absorbed || childAbsorbed
+			policies = append(policies, volcanoschedulingv1beta1.SubGroupPolicySpec{
+				Name: topologySubGroupName(child),
+				LabelSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						constants.GroupNameLabelKey: rbg.Name,
+					},
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      constants.RoleNameLabelKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   append([]string{}, child.Scope.Roles...),
+					}},
+				},
+				NetworkTopology: networkTopology,
+			})
+			continue
+		}
 		if !slices.Equal(child.Scope.PartitionBy, common.PartitionByRoleInstance) || len(child.Scope.Roles) != 1 {
 			return nil, false, common.NewSchedulerUnsupportedError(
-				"Volcano cannot render the contained cross-role topology child group roles %v with partition %v; use one role per per-instance subgroup",
+				"Volcano cannot render the contained topology child group roles %v with partition %v",
 				child.Scope.Roles, child.Scope.PartitionBy)
 		}
 		roleName := child.Scope.Roles[0]
@@ -695,6 +724,13 @@ func buildTopologySubGroups(
 		})
 	}
 	return policies, absorbed, nil
+}
+
+func topologySubGroupName(group *common.PlacementGroup) string {
+	if group.Name != "" {
+		return group.Name
+	}
+	return "g-" + strings.Join(group.Scope.Roles, "-")
 }
 
 func rootNetworkTopologyForGroup(group *common.PlacementGroup) (
