@@ -51,7 +51,6 @@ type CustomizedAction struct {
 	// image preload containers. The warmup is considered complete when all containers
 	// finish successfully.
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:items:XValidation:rule="has(self.image) && self.image != ''",message="customized action container image must not be empty"
 	// +required
 	Containers []corev1.Container `json:"containers"`
 
@@ -136,7 +135,8 @@ type WarmupPolicies struct {
 	MaxFailedNodes *int32 `json:"maxFailedNodes,omitempty"`
 
 	// GlobalTimeoutSeconds specifies the overall timeout for the warmup job,
-	// measured from the time the first Pod is created (status.startTime).
+	// measured from the Warmup's creation time. It bounds both waiting for the
+	// target to become ready and running warmup Pods as a single budget.
 	// When the timeout is exceeded, all active Pods are deleted and the job
 	// is marked as Failed regardless of other settings.
 	// If not set (nil), no timeout is applied.

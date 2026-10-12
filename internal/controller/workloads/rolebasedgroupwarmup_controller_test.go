@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -518,6 +519,7 @@ func TestRequeueForTimeout(t *testing.T) {
 		{
 			name: "remaining > MaxRequeueDelay, capped at MaxRequeueDelay",
 			warmup: &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: now},
 				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
 					Policies: &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(86400))}, // 1 day
 				},
@@ -532,6 +534,7 @@ func TestRequeueForTimeout(t *testing.T) {
 		{
 			name: "remaining < MaxRequeueDelay, use actual remaining",
 			warmup: &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: pastTime},
 				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
 					Policies: &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(600))}, // 10 min
 				},
@@ -546,6 +549,7 @@ func TestRequeueForTimeout(t *testing.T) {
 		{
 			name: "already timed out, no requeue",
 			warmup: &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: pastTime},
 				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
 					Policies: &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}, // 1 min
 				},
@@ -1014,7 +1018,10 @@ func TestReconcile_PropagatesOwnerReferenceError(t *testing.T) {
 	}
 }
 
-func TestReconcile_MissingTargetRBGFailsWithoutRequeue(t *testing.T) {
+// Superseded by TestReconcile_MissingTargetRBGRecoversWhenCreatedLater and
+// TestReconcile_MissingTargetRBGFailsAfterGlobalTimeout: a missing target is no
+// longer an immediate terminal failure.
+func TestReconcile_MissingTargetRBGDoesNotFailImmediately(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
 	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
 		ObjectMeta: metav1.ObjectMeta{Name: "missing-rbg", Namespace: "default", UID: "uid-missing-rbg"},
@@ -1031,21 +1038,21 @@ func TestReconcile_MissingTargetRBGFailsWithoutRequeue(t *testing.T) {
 
 	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: warmup.Name, Namespace: warmup.Namespace}})
 	if err != nil {
-		t.Fatalf("missing target should fail without reconcile error: %v", err)
+		t.Fatalf("missing target should wait without reconcile error: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("failed target should not requeue, got %#v", result)
+	if result.RequeueAfter != TargetWaitRequeuePeriod {
+		t.Fatalf("missing target should requeue after %s, got %#v", TargetWaitRequeuePeriod, result)
 	}
 
 	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
 	if err := r.Get(ctx, types.NamespacedName{Name: warmup.Name, Namespace: warmup.Namespace}, updated); err != nil {
 		t.Fatalf("failed to get warmup: %v", err)
 	}
-	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
-		t.Fatalf("expected Failed phase, got %q", updated.Status.Phase)
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
+		t.Fatalf("expected Running phase while waiting, got %q", updated.Status.Phase)
 	}
-	if len(updated.Status.Conditions) == 0 || updated.Status.Conditions[0].Reason != "InvalidTarget" {
-		t.Fatalf("expected InvalidTarget condition, got %#v", updated.Status.Conditions)
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond != nil {
+		t.Fatalf("must not record a terminal Failed condition while waiting, got %#v", cond)
 	}
 }
 
@@ -1166,11 +1173,595 @@ func TestGetDesiredNodes_UsesAPIReaderAfterCachedRBGMiss(t *testing.T) {
 	apiClient := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(rbg, targetPod).Build()
 	r := &RoleBasedGroupWarmupReconciler{Client: cachedClient, apiReader: apiClient, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
 
-	desired, err := r.getDesiredNodesToWarmup(ctx, *warmup)
+	targetRBG, targetPods, err := r.getTargetRoleBasedGroupState(ctx, *warmup)
+	if err != nil {
+		t.Fatalf("cached miss should fall back to API reader: %v", err)
+	}
+	if targetRBG == nil || targetRBG.Name != rbg.Name {
+		t.Fatalf("expected target RBG from API reader, got %#v", targetRBG)
+	}
+	desired, err := r.getDesiredNodesToWarmup(ctx, *warmup, targetPods)
 	if err != nil {
 		t.Fatalf("cached miss should fall back to API reader: %v", err)
 	}
 	if len(desired) != 1 || len(desired["node-1"]) != 1 {
 		t.Fatalf("expected actions for node-1, got %#v", desired)
+	}
+}
+
+// ==================== Target readiness / ordering regression tests ====================
+
+func warmupTargetRBGSpec(name string) workloadsv1alpha2.RoleBasedGroupWarmupSpec {
+	return workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+		TargetRoleBasedGroup: &workloadsv1alpha2.TargetRoleBasedGroup{
+			Name: name,
+			Roles: map[string]workloadsv1alpha2.WarmupActions{
+				"worker": {ImagePreload: &workloadsv1alpha2.ImagePreloadAction{Images: []string{"busybox:1.36"}}},
+			},
+		},
+	}
+}
+
+func targetRBGWithWorkerRole(name string, replicas int32) *workloadsv1alpha2.RoleBasedGroup {
+	return &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "worker", Replicas: ptr.To(replicas)},
+			},
+		},
+	}
+}
+
+// A target RoleBasedGroup created after the Warmup must be picked up instead of
+// permanently failing the one-shot Warmup.
+func TestReconcile_MissingTargetRBGRecoversWhenCreatedLater(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "late-target", Namespace: "default", UID: "uid-late-target"},
+		Spec:       warmupTargetRBGSpec("late-rbg"),
+	}
+	r := newWarmupReconciler(warmup)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("missing target should requeue while waiting, got %#v", result)
+	}
+
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
+		t.Fatalf("expected Running while waiting for target, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "RoleBasedGroupNotFound" {
+		t.Fatalf("expected TargetReady=False/RoleBasedGroupNotFound, got %#v", updated.Status.Conditions)
+	}
+
+	// The target appears; the Warmup must now proceed.
+	rbg := targetRBGWithWorkerRole("late-rbg", 1)
+	targetPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "late-rbg-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "late-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-1"},
+	}
+	if err := r.Create(ctx, rbg); err != nil {
+		t.Fatalf("create rbg: %v", err)
+	}
+	if err := r.Create(ctx, targetPod); err != nil {
+		t.Fatalf("create target pod: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile after target created: %v", err)
+	}
+
+	after := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), after); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if after.Status.Phase == workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("warmup must recover once the target exists, got %q (%#v)", after.Status.Phase, after.Status.Conditions)
+	}
+	if cond := apimeta.FindStatusCondition(after.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected TargetReady=True after target exists, got %#v", after.Status.Conditions)
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.MatchingLabels{LabelWarmupName: warmup.Name}); err != nil {
+		t.Fatalf("list warmup pods: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("expected 1 warmup pod once target is ready, got %d", len(pods.Items))
+	}
+}
+
+// A partially scheduled selected role must not start a warmup for only the bound node.
+func TestReconcile_PartiallyScheduledSelectedRoleWaits(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "partial-scheduling", Namespace: "default", UID: "uid-partial-scheduling"},
+		Spec:       warmupTargetRBGSpec("partial-scheduling-rbg"),
+	}
+	rbg := targetRBGWithWorkerRole("partial-scheduling-rbg", 2)
+	boundPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "partial-scheduling-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "partial-scheduling-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-0"},
+	}
+	pendingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "partial-scheduling-worker-1", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "partial-scheduling-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: ""},
+	}
+	r := newWarmupReconciler(warmup, rbg, boundPod, pendingPod)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("reconcile with partially scheduled role: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("expected requeue while selected target Pod is unscheduled, got %#v", result)
+	}
+
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
+		t.Fatalf("expected Running while selected target Pod is unscheduled, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "TargetPodsNotScheduled" {
+		t.Fatalf("expected TargetReady=False/TargetPodsNotScheduled, got %#v", updated.Status.Conditions)
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.MatchingLabels{LabelWarmupName: warmup.Name}); err != nil {
+		t.Fatalf("list warmup pods: %v", err)
+	}
+	if len(pods.Items) != 0 {
+		t.Fatalf("no warmup Pod should be created while a selected target Pod is unscheduled, got %d", len(pods.Items))
+	}
+
+	scheduled := &corev1.Pod{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(pendingPod), scheduled); err != nil {
+		t.Fatalf("get pending target pod: %v", err)
+	}
+	scheduled.Spec.NodeName = "node-1"
+	if err := r.Update(ctx, scheduled); err != nil {
+		t.Fatalf("schedule pending target pod: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile after scheduling: %v", err)
+	}
+
+	after := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), after); err != nil {
+		t.Fatalf("get warmup after scheduling: %v", err)
+	}
+	if after.Status.Desired != 2 {
+		t.Fatalf("expected desired=2 after both target Pods are scheduled, got %d (conditions=%#v)", after.Status.Desired, after.Status.Conditions)
+	}
+	pods = &corev1.PodList{}
+	if err := r.List(ctx, pods, client.MatchingLabels{LabelWarmupName: warmup.Name}); err != nil {
+		t.Fatalf("list warmup pods after scheduling: %v", err)
+	}
+	if len(pods.Items) != 2 {
+		t.Fatalf("expected 2 warmup Pods after target is ready, got %d", len(pods.Items))
+	}
+}
+
+// A pending Pod in an unselected role must not prevent a Warmup whose selected role
+// has no Pods from completing with NoNodesMatched.
+func TestReconcile_UnselectedPendingRoleDoesNotBlock(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "unselected-role", Namespace: "default", UID: "uid-unselected-role"},
+		Spec:       warmupTargetRBGSpec("unselected-role-rbg"),
+	}
+	rbg := targetRBGWithWorkerRole("unselected-role-rbg", 0)
+	pendingRouter := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "unselected-role-router-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "unselected-role-rbg", constants.RoleNameLabelKey: "router"},
+		},
+		Spec: corev1.PodSpec{NodeName: ""},
+	}
+	r := newWarmupReconciler(warmup, rbg, pendingRouter)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("reconcile with pending unselected role: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("pending unselected role should not cause a requeue, got %#v", result)
+	}
+
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("expected Completed when selected role has no Pods, got %q (conditions=%#v)",
+			updated.Status.Phase, updated.Status.Conditions)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Complete"); cond == nil || cond.Reason != "NoNodesMatched" {
+		t.Fatalf("expected Complete/NoNodesMatched, got %#v", updated.Status.Conditions)
+	}
+}
+
+// A lingering missing target must still fail terminally when globalTimeoutSeconds lapses.
+func TestReconcile_MissingTargetRBGFailsAfterGlobalTimeout(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "late-target-timeout", Namespace: "default", UID: "uid-late-timeout",
+			// Make the (creation-time) deadline already expired.
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+		},
+		Spec: warmupTargetRBGSpec("never-rbg"),
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	r := newWarmupReconciler(warmup)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("expired wait should not requeue, got %#v", result)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expected Failed after global timeout, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "InvalidTarget" {
+		t.Fatalf("expected Failed/InvalidTarget, got %#v", updated.Status.Conditions)
+	}
+}
+
+// A newly created RBG whose controller has not created its Pods yet must wait: the
+// expected Pod count comes from the RBG spec, not from the Pod snapshot.
+func TestReconcile_ExpectedTargetPodsNotCreatedWaits(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "pods-not-created", Namespace: "default", UID: "uid-pods-not-created"},
+		Spec:       warmupTargetRBGSpec("not-created-rbg"),
+	}
+	r := newWarmupReconciler(warmup, targetRBGWithWorkerRole("not-created-rbg", 1))
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if result.RequeueAfter != TargetWaitRequeuePeriod {
+		t.Fatalf("expected target-wait requeue, got %#v", result)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("expected Pods must not allow NoNodesMatched, got %#v", updated.Status.Conditions)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "TargetPodsNotScheduled" {
+		t.Fatalf("expected TargetReady=False/TargetPodsNotScheduled, got %#v", updated.Status.Conditions)
+	}
+}
+
+// Pending selected target Pods must fail terminally when the creation-anchored global
+// timeout has already lapsed.
+func TestReconcile_PendingTargetPodsFailAfterGlobalTimeout(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pending-timeout", Namespace: "default", UID: "uid-pending-timeout",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+		},
+		Spec: warmupTargetRBGSpec("timeout-rbg"),
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	pendingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "timeout-rbg-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "timeout-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: ""},
+	}
+	r := newWarmupReconciler(warmup, targetRBGWithWorkerRole("timeout-rbg", 1), pendingPod)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expected Failed after global timeout, got %q", updated.Status.Phase)
+	}
+	cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed")
+	if cond == nil || cond.Reason != "GlobalTimeoutExceeded" ||
+		!strings.Contains(cond.Message, "waiting for 1 selected target Pod") {
+		t.Fatalf("expected Failed/GlobalTimeoutExceeded waiting for target Pod, got %#v", updated.Status.Conditions)
+	}
+}
+
+// If the target RBG is deleted after the Warmup's Pods succeeded, the Warmup must
+// still reach a terminal phase instead of being stranded in Running forever.
+func TestReconcile_TargetDeletedMidRunCompletes(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "deleted-mid-run", Namespace: "default", UID: "uid-deleted-mid-run"},
+		Spec:       warmupTargetRBGSpec("deleted-mid-run-rbg"),
+	}
+	succeededPod := makeWarmupPod("deleted-mid-run-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodSucceeded)
+	r := newWarmupReconciler(warmup, succeededPod)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("fully warmed job must complete after target deletion, got %q (%#v)",
+			updated.Status.Phase, updated.Status.Conditions)
+	}
+	if updated.Status.Succeeded != 1 || updated.Status.Active != 0 {
+		t.Fatalf("terminal counters must be recorded, got active=%d succeeded=%d",
+			updated.Status.Active, updated.Status.Succeeded)
+	}
+}
+
+// A newly pending selected target Pod after warmup Pods exist must not block
+// completion of the nodes that were already warmed.
+func TestReconcile_MidWarmupPendingTargetPodDoesNotBlockCompletion(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "mid-run-pending", Namespace: "default", UID: "uid-mid-run-pending"},
+		Spec:       warmupTargetRBGSpec("mid-run-rbg"),
+	}
+	succeededPod := makeWarmupPod("mid-run-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodSucceeded)
+	scheduledTarget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "mid-run-rbg-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "mid-run-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-1"},
+	}
+	pendingTarget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "mid-run-rbg-worker-1", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "mid-run-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: ""},
+	}
+	r := newWarmupReconciler(warmup, succeededPod, targetRBGWithWorkerRole("mid-run-rbg", 2), scheduledTarget, pendingTarget)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted || updated.Status.Succeeded != 1 {
+		t.Fatalf("warmed nodes must complete despite a pending target Pod, got phase=%q succeeded=%d conditions=%#v",
+			updated.Status.Phase, updated.Status.Succeeded, updated.Status.Conditions)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("TargetReady should remain False while a target Pod is pending, got %#v", updated.Status.Conditions)
+	}
+}
+
+// The run-phase global timeout is anchored at creation, not restarted by
+// status.startTime when the first Pod is created.
+func TestReconcile_GlobalTimeoutAnchoredAtCreationDuringRun(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	now := time.Now()
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "creation-timeout", Namespace: "default", UID: "uid-creation-timeout",
+			CreationTimestamp: metav1.NewTime(now.Add(-120 * time.Second)),
+		},
+		Spec: warmupTargetRBGSpec("creation-timeout-rbg"),
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	warmup.Status.StartTime = ptr.To(metav1.NewTime(now.Add(-30 * time.Second)))
+	warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
+	activePod := makeWarmupPod("creation-timeout-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodRunning)
+	scheduledTarget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "creation-timeout-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "creation-timeout-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-1"},
+	}
+	r := newWarmupReconciler(warmup, activePod, targetRBGWithWorkerRole("creation-timeout-rbg", 1), scheduledTarget)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expected Failed after creation-anchored timeout, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "GlobalTimeoutExceeded" {
+		t.Fatalf("expected Failed/GlobalTimeoutExceeded, got %#v", updated.Status.Conditions)
+	}
+}
+
+// A short global timeout must be enforced by the next requeue, not delayed by the
+// default ten-second target poll.
+func TestReconcile_TargetWaitRequeueHonorsGlobalTimeout(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "short-deadline", Namespace: "default", UID: "uid-short-deadline",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-59 * time.Second)),
+		},
+		Spec: warmupTargetRBGSpec("short-deadline-rbg"),
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	r := newWarmupReconciler(warmup)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter >= TargetWaitRequeuePeriod {
+		t.Fatalf("requeue should honor the remaining timeout, got %s", result.RequeueAfter)
+	}
+}
+
+// An existing target RBG whose Pods are not scheduled yet must not be reported as a
+// successful (but empty) warmup.
+func TestReconcile_UnscheduledTargetPodsWaitInsteadOfCompleting(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "unscheduled", Namespace: "default", UID: "uid-unscheduled"},
+		Spec:       warmupTargetRBGSpec("pending-rbg"),
+	}
+	rbg := targetRBGWithWorkerRole("pending-rbg", 1)
+	pendingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pending-rbg-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "pending-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: ""}, // not scheduled yet
+	}
+	r := newWarmupReconciler(warmup, rbg, pendingPod)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("unscheduled target Pods must not complete the warmup (desired=%d, conditions=%#v)",
+			updated.Status.Desired, updated.Status.Conditions)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("expected requeue while waiting for Pods to schedule, got %#v", result)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "TargetPodsNotScheduled" {
+		t.Fatalf("expected TargetReady=False/TargetPodsNotScheduled, got %#v", updated.Status.Conditions)
+	}
+
+	// Once the Pod is scheduled the warmup proceeds normally.
+	scheduled := &corev1.Pod{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(pendingPod), scheduled); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	scheduled.Spec.NodeName = "node-1"
+	if err := r.Update(ctx, scheduled); err != nil {
+		t.Fatalf("schedule pod: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile after scheduling: %v", err)
+	}
+	after := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), after); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if after.Status.Desired != 1 {
+		t.Fatalf("expected desired=1 after Pod scheduled, got %d (conditions=%#v)", after.Status.Desired, after.Status.Conditions)
+	}
+}
+
+// An existing target RBG with no Pods at all for the requested roles still completes
+// immediately with NoNodesMatched (no Pods to wait for).
+func TestReconcile_TargetRBGWithNoPodsCompletesNoNodesMatched(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "empty-target", Namespace: "default", UID: "uid-empty-target"},
+		Spec:       warmupTargetRBGSpec("empty-rbg"),
+	}
+	rbg := targetRBGWithWorkerRole("empty-rbg", 0)
+	r := newWarmupReconciler(warmup, rbg)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("no Pods to wait for, should not requeue, got %#v", result)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("expected Completed, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Complete"); cond == nil || cond.Reason != "NoNodesMatched" {
+		t.Fatalf("expected Complete/NoNodesMatched, got %#v", updated.Status.Conditions)
+	}
+}
+
+// A Warmup whose customizedAction containers cannot be represented in a Pod must be
+// rejected by validation and never reach Pod creation.
+func TestReconcile_InvalidCustomizedContainerGapIsClosed(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	for name, image := range map[string]string{"empty": "", "whitespace": " \t"} {
+		t.Run(name, func(t *testing.T) {
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{Name: "gap-" + name, Namespace: "default", UID: types.UID(name)},
+				Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+					TargetNodes: &workloadsv1alpha2.TargetNodes{
+						NodeNames: []string{"node-1"},
+						WarmupActions: workloadsv1alpha2.WarmupActions{
+							CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+								Containers: []corev1.Container{{Name: "c1", Image: image}},
+							},
+						},
+					},
+				},
+			}
+			r := newWarmupReconciler(warmup)
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+				t.Fatalf("unexpected reconcile error: %v", err)
+			}
+			updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+			if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+				t.Fatalf("get warmup: %v", err)
+			}
+			if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+				t.Fatalf("expected Failed, got %q", updated.Status.Phase)
+			}
+			if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "InvalidWarmupSpec" {
+				t.Fatalf("expected Failed/InvalidWarmupSpec, got %#v", updated.Status.Conditions)
+			}
+			pods := &corev1.PodList{}
+			if err := r.List(ctx, pods); err != nil {
+				t.Fatalf("list pods: %v", err)
+			}
+			if len(pods.Items) != 0 {
+				t.Fatalf("no Pod must be created for an invalid image, got %d", len(pods.Items))
+			}
+		})
 	}
 }

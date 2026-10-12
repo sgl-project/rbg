@@ -91533,7 +91533,7 @@ spec:
                   globalTimeoutSeconds:
                     description: |-
                       GlobalTimeoutSeconds specifies the overall timeout for the warmup job,
-                      measured from the time the first Pod is created (status.startTime).
+                      measured from the Warmup's creation time.
                     format: int64
                     minimum: 1
                     type: integer
@@ -92921,10 +92921,6 @@ spec:
                           required:
                           - name
                           type: object
-                          x-kubernetes-validations:
-                          - message: customized action container image must not be
-                              empty
-                            rule: has(self.image) && self.image != ''
                         minItems: 1
                         type: array
                       volumes:
@@ -96007,10 +96003,6 @@ spec:
                                 required:
                                 - name
                                 type: object
-                                x-kubernetes-validations:
-                                - message: customized action container image must
-                                    not be empty
-                                  rule: has(self.image) && self.image != ''
                               minItems: 1
                               type: array
                             volumes:
