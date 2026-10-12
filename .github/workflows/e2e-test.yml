@@ -594,8 +594,11 @@ jobs:
           EOF
           )"
           kubectl rollout restart deployment/volcano-scheduler -n volcano-system
+          # rollout status waits for the new ReplicaSet to be available. Do not add a
+          # label-selected pod wait here: it also selects the previous pod, which stays
+          # Terminating for its full grace period and can time out the step.
           kubectl rollout status deployment/volcano-scheduler -n volcano-system --timeout=300s
-          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=available deployment/volcano-scheduler -n volcano-system --timeout=300s
 
       - name: Install Helm
         run: |

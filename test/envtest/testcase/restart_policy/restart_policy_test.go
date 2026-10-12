@@ -112,6 +112,21 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		}, timeout, interval).Should(Succeed())
 	}
 
+	// Helper: mutate pod status with conflict retries. The controller can update
+	// pod status concurrently with the test, so a single Status().Update may get a
+	// 409 even though the desired state is otherwise valid.
+	updatePodStatus := func(pod *corev1.Pod, mutate func(*corev1.Pod)) {
+		Eventually(func() error {
+			freshPod := &corev1.Pod{}
+			if err := testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(pod), freshPod); err != nil {
+				return err
+			}
+			mutate(freshPod)
+			return testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)
+		}, timeout, interval).Should(Succeed())
+	}
+
 	// Helper: wait for pods to exist for a role
 	waitForPods := func(rbgName, roleName string, count int) {
 		Eventually(func() int {
@@ -1293,12 +1308,10 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// Set phase to Pending (IsRunningAndAvailable requires Phase==Running).
 			podList = listRolePods(rbgName, roleName)
 			for i := range podList.Items {
-				freshPod := &corev1.Pod{}
-				Expect(testutil.K8sClient.Get(testutil.Ctx,
-					client.ObjectKeyFromObject(&podList.Items[i]), freshPod)).Should(Succeed())
-				freshPod.Status.Phase = corev1.PodPending
-				freshPod.Status.Conditions = nil
-				Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+				updatePodStatus(&podList.Items[i], func(freshPod *corev1.Pod) {
+					freshPod.Status.Phase = corev1.PodPending
+					freshPod.Status.Conditions = nil
+				})
 			}
 
 			// Wait for RoleInstance to become not Ready (wasInstanceReady will return false)
@@ -1327,11 +1340,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			survivorName := podList.Items[1].Name
 			survivorUID := podList.Items[1].UID
 
-			freshPod = &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(&podList.Items[0], func(freshPod *corev1.Pod) {
+				freshPod.Status.Phase = corev1.PodFailed
+			})
 
 			// Verify the survivor pod is NOT deleted
 			Consistently(func() types.UID {
