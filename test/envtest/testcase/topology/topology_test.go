@@ -66,10 +66,15 @@ var _ = Describe("Topology-aware scheduling lifecycle", func() {
 
 		// Trigger reconcile through the normal event path with a spec change. The RBG
 		// update predicate compares Spec, so an annotation-only update would not enqueue.
-		rbg := &apiworkloadsv1alpha2.RoleBasedGroup{}
-		Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
-		rbg.Spec.Roles[0].Replicas = ptrInt32(2)
-		Expect(testutil.K8sClient.Update(testutil.Ctx, rbg)).To(Succeed())
+		// Retry the update: the controller records the topology contract concurrently.
+		Eventually(func() error {
+			rbg := &apiworkloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, rbg); err != nil {
+				return err
+			}
+			rbg.Spec.Roles[0].Replicas = ptrInt32(2)
+			return testutil.K8sClient.Update(testutil.Ctx, rbg)
+		}, timeout, interval).Should(Succeed())
 
 		Eventually(func() *metav1.Condition {
 			fresh := &apiworkloadsv1alpha2.RoleBasedGroup{}
