@@ -20,7 +20,8 @@ package v1alpha2
 // SchedulingCoordinationStrategyApplyConfiguration represents a declarative configuration of the SchedulingCoordinationStrategy type for use
 // with apply.
 type SchedulingCoordinationStrategyApplyConfiguration struct {
-	Gang *GangSchedulingStrategyApplyConfiguration `json:"gang,omitempty"`
+	Gang               *GangSchedulingStrategyApplyConfiguration `json:"gang,omitempty"`
+	TopologyConstraint *TopologyConstraintApplyConfiguration     `json:"topologyConstraint,omitempty"`
 }
 
 // SchedulingCoordinationStrategyApplyConfiguration constructs a declarative configuration of the SchedulingCoordinationStrategy type for use with
@@ -34,5 +35,13 @@ func SchedulingCoordinationStrategy() *SchedulingCoordinationStrategyApplyConfig
 // If called multiple times, the Gang field is set to the value of the last call.
 func (b *SchedulingCoordinationStrategyApplyConfiguration) WithGang(value *GangSchedulingStrategyApplyConfiguration) *SchedulingCoordinationStrategyApplyConfiguration {
 	b.Gang = value
+	return b
+}
+
+// WithTopologyConstraint sets the TopologyConstraint field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TopologyConstraint field is set to the value of the last call.
+func (b *SchedulingCoordinationStrategyApplyConfiguration) WithTopologyConstraint(value *TopologyConstraintApplyConfiguration) *SchedulingCoordinationStrategyApplyConfiguration {
+	b.TopologyConstraint = value
 	return b
 }

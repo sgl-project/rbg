@@ -124,3 +124,54 @@ func NewGangScheduler(schedulerName SchedulerPluginType, c client.Client, schedu
 			schedulerName, KubeSchedulerPlugin, VolcanoSchedulerPlugin)
 	}
 }
+
+// PlacementScheduler is the KEP-473 scheduler compiler contract. The concrete
+// interface lives in scheduler/common so scheduler backends can implement it without
+// importing the scheduler factory package.
+type PlacementScheduler = common.PlacementScheduler
+
+// PlacementRenderResult reports how a PlacementPlan was compiled.
+type PlacementRenderResult = common.PlacementRenderResult
+
+// AsPlacementScheduler returns the scheduler's placement compiler when the active
+// dialect implements KEP-473. A nil result means topology-aware scheduling is
+// unsupported; gang-only behavior continues through GangScheduler.
+// HyperNodeReaderSetter is implemented by scheduler backends that can consume a
+// shared informer cache for topology resources. It is deliberately narrow: the factory
+// only passes the manager cache to backends that opt in, avoiding accidental HyperNode
+// informers for kube-scheduler or other configurations.
+type HyperNodeReaderSetter interface {
+	SetHyperNodeReader(client.Reader)
+}
+
+// NewGangSchedulerWithHyperNodeCache constructs a GangScheduler and, when the active
+// backend supports it, wires its topology list path to the manager's shared informer
+// cache. A nil cache preserves the direct-reader behavior used by unit tests.
+func NewGangSchedulerWithHyperNodeCache(
+	schedulerName SchedulerPluginType,
+	c client.Client,
+	schedulerProfileName string,
+	hyperNodeCache client.Reader,
+) (GangScheduler, error) {
+	g, err := NewGangScheduler(schedulerName, c, schedulerProfileName)
+	if err != nil {
+		return nil, err
+	}
+	if hyperNodeCache == nil {
+		return g, nil
+	}
+	if setter, ok := g.(HyperNodeReaderSetter); ok {
+		setter.SetHyperNodeReader(hyperNodeCache)
+	}
+	return g, nil
+}
+
+func AsPlacementScheduler(g GangScheduler) PlacementScheduler {
+	if g == nil {
+		return nil
+	}
+	if placement, ok := g.(PlacementScheduler); ok {
+		return placement
+	}
+	return nil
+}

@@ -103,6 +103,7 @@ func TestValidateCoordinatedPolicyGang(t *testing.T) {
 
 func namedGangPolicy(minReplicas map[string]int32) *CoordinatedPolicy {
 	policy := gangPolicy([]string{"prefill", "decode"}, minReplicas)
+	policy.Spec.Policies[0].Name = "pd"
 	policy.Name = "rbg"
 	policy.Namespace = "default"
 	return policy
