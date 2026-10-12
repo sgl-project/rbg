@@ -100,7 +100,7 @@ test-chart: ## Render the Helm chart with helm template and assert the deprecate
 
 .PHONY: test-e2e-matrix-coverage
 test-e2e-matrix-coverage: ## Verify that the E2E matrix slices cover the legacy default suite. Requires no cluster.
-	go test ./test/e2e/ci -run '^TestMatrixSlicesCoverLegacyDefaultSuite$' -count=1 -v
+	go test ./test/e2e/ci -run '^TestMatrixSlicesCoverLegacyDefaultSuite$$' -count=1 -v
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.

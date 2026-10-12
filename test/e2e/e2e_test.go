@@ -30,29 +30,25 @@ import (
 func TestE2E(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
 
-	// Create the Kubernetes client only when the suite is actually run.  Ginkgo
-	// dry runs use this suite to compute label-filter coverage without a cluster.
-	var f *framework.Framework
+	// A non-nil framework must be available while the spec tree is constructed.
+	// The Kubernetes clients are connected lazily in BeforeSuite so Ginkgo dry
+	// runs can compute label-filter coverage without a cluster.
+	f := framework.NewLazyFramework(true)
 	ginkgo.BeforeSuite(
 		func() {
-			f = framework.NewFramework(true)
 			f.BeforeAll()
 		},
 	)
 
 	ginkgo.AfterSuite(
 		func() {
-			if f != nil {
-				f.AfterAll()
-			}
+			f.AfterAll()
 		},
 	)
 
 	ginkgo.AfterEach(
 		func() {
-			if f != nil {
-				f.AfterEach()
-			}
+			f.AfterEach()
 		},
 	)
 
