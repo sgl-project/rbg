@@ -167,8 +167,19 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	rbg := &workloadsv1alpha2.RoleBasedGroup{}
 	if err := r.client.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, rbg); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Object not found, might be deleted after reconcile request.
-			logger.Info("RoleBasedGroup resource not found. Ignoring since object must be deleted",
+			// The informer cache may lag behind the API server. Confirm actual deletion
+			// with the uncached reader before releasing topology-policy protection.
+			key := types.NamespacedName{Name: req.Name, Namespace: req.Namespace}
+			if err := r.rbgsAPIReader().Get(ctx, key, &workloadsv1alpha2.RoleBasedGroup{}); err == nil {
+				logger.Info("RoleBasedGroup exists in the API server but not in the cache; retrying finalizer release",
+					"name", req.Name,
+					"namespace", req.Namespace)
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			} else if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("confirm RoleBasedGroup deletion %s: %w", key, err)
+			}
+
+			logger.Info("RoleBasedGroup resource is deleted. Ignoring since object must be deleted",
 				"name", req.Name,
 				"namespace", req.Namespace)
 			if err := r.releaseCoordinatedPolicyTopologyFinalizerByKey(
@@ -184,9 +195,9 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if !rbg.DeletionTimestamp.IsZero() {
-		if err := r.releaseCoordinatedPolicyTopologyFinalizer(ctx, rbg); err != nil {
-			return ctrl.Result{}, err
-		}
+		// deletionTimestamp means deletion was requested, not completed. Another
+		// finalizer can keep the RBG alive indefinitely; keep topology protection until
+		// the deletion event reaches reconcile and the API reader confirms NotFound.
 		return ctrl.Result{}, nil
 	}
 
@@ -656,6 +667,13 @@ func (r *RoleBasedGroupReconciler) ensureCoordinatedPolicyTopologyFinalizer(
 	return nil
 }
 
+func (r *RoleBasedGroupReconciler) rbgsAPIReader() client.Reader {
+	if r.apiReader != nil {
+		return r.apiReader
+	}
+	return r.client
+}
+
 // releaseTerminatingPolicyWhenRecordedRBGGone removes the topology finalizer only
 // when the RBG UID recorded on the policy no longer identifies a live RBG. A live
 // RBG with the same name but a different UID does not satisfy the old lifecycle's
@@ -666,11 +684,15 @@ func (r *RoleBasedGroupReconciler) releaseTerminatingPolicyWhenRecordedRBGGone(
 	recordedUID string,
 ) error {
 	rbg := &workloadsv1alpha2.RoleBasedGroup{}
-	err := r.client.Get(ctx, client.ObjectKeyFromObject(policy), rbg)
-	if err == nil && string(rbg.UID) == recordedUID && rbg.DeletionTimestamp.IsZero() {
-		return nil
-	}
-	if err != nil && !apierrors.IsNotFound(err) {
+	err := r.rbgsAPIReader().Get(ctx, client.ObjectKeyFromObject(policy), rbg)
+	if err == nil {
+		// A same-name RBG with a different UID means the recorded lifecycle is gone.
+		// The recorded RBG itself, even while terminating under another finalizer,
+		// remains live and must keep the policy protected.
+		if string(rbg.UID) == recordedUID {
+			return nil
+		}
+	} else if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("get RoleBasedGroup %s: %w", client.ObjectKeyFromObject(policy), err)
 	}
 
@@ -679,13 +701,6 @@ func (r *RoleBasedGroupReconciler) releaseTerminatingPolicyWhenRecordedRBGGone(
 		return fmt.Errorf("remove CoordinatedPolicy topology finalizer %s: %w", client.ObjectKeyFromObject(policy), err)
 	}
 	return nil
-}
-
-func (r *RoleBasedGroupReconciler) releaseCoordinatedPolicyTopologyFinalizer(
-	ctx context.Context,
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-) error {
-	return r.releaseCoordinatedPolicyTopologyFinalizerByKey(ctx, rbg.Namespace, rbg.Name)
 }
 
 func (r *RoleBasedGroupReconciler) releaseCoordinatedPolicyTopologyFinalizerByKey(
@@ -715,11 +730,12 @@ func (r *RoleBasedGroupReconciler) releaseCoordinatedPolicyTopologyFinalizerByKe
 		return r.releaseTerminatingPolicyWhenRecordedRBGGone(ctx, policy, recordedUID)
 	}
 
-	// Policies written before UID recording use the name-based fallback. This path
-	// only releases when the same-name RBG is absent or itself deleting.
+	// Policies written before UID recording use the name-based fallback. Release only
+	// after the uncached reader confirms the same-name RBG is actually gone; a
+	// deletionTimestamp alone does not prove that deletion completed.
 	rbg := &workloadsv1alpha2.RoleBasedGroup{}
-	err = r.client.Get(ctx, key, rbg)
-	if err == nil && rbg.DeletionTimestamp.IsZero() {
+	err = r.rbgsAPIReader().Get(ctx, key, rbg)
+	if err == nil {
 		return nil
 	}
 	if err != nil && !apierrors.IsNotFound(err) {

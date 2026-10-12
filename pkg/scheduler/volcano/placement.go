@@ -142,10 +142,10 @@ func (m *GangScheduler) ReconcilePlacement(
 	return result, nil
 }
 
-// InjectPlacementSchedulingFields injects Volcano as schedulerName and the unique
-// PodGroup annotation only for roles covered by the plan. An uncovered role keeps its
-// configured scheduler: topology-only plans must not silently move unrelated roles to
-// Volcano without also giving them an RBG-managed PodGroup.
+// InjectPlacementSchedulingFields preserves the KEP-430 injector for gang-only
+// plans: every role is sent to Volcano, while only gang members receive the PodGroup
+// annotation. Topology plans use plan membership because an uncovered role has no
+// RBG-managed PodGroup and must keep its configured scheduler.
 func (m *GangScheduler) InjectPlacementSchedulingFields(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	role *workloadsv1alpha2.RoleSpec,
@@ -153,6 +153,17 @@ func (m *GangScheduler) InjectPlacementSchedulingFields(
 	pts *coreapplyv1.PodTemplateSpecApplyConfiguration,
 ) {
 	if plan == nil {
+		return
+	}
+	if !plan.HasTopology() {
+		root := plan.Root
+		if groups := plan.TopLevelGroups(); len(groups) == 1 {
+			root = groups[0]
+		}
+		if root == nil {
+			return
+		}
+		m.InjectPodSchedulingFields(rbg, role, root.Gang, pts)
 		return
 	}
 	group, index := findTopLevelGroupForRole(plan, role.Name)

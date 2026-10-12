@@ -173,7 +173,7 @@ func TestBuildPlacementPodGroupSeparatesRootAndInstanceTopology(t *testing.T) {
 	}
 }
 
-func TestInjectPlacementSchedulingFieldsUsesPlanMembership(t *testing.T) {
+func TestInjectPlacementSchedulingFieldsGangOnlyPreservesLegacyInjector(t *testing.T) {
 	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""), standaloneRole("router", 1, ""))
 	plan := &common.PlacementPlan{
 		Root: &common.PlacementGroup{
@@ -181,6 +181,43 @@ func TestInjectPlacementSchedulingFieldsUsesPlanMembership(t *testing.T) {
 			Scope: common.PlacementScope{
 				Roles:       []string{"prefill"},
 				PartitionBy: common.PartitionByNone,
+			},
+			Gang: &common.GangStrategy{Roles: sets.New("prefill")},
+		},
+	}
+
+	member := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
+	New(nil).InjectPlacementSchedulingFields(rbg, &rbg.Spec.Roles[0], plan, member)
+	if member.Spec == nil || member.Spec.SchedulerName == nil || *member.Spec.SchedulerName != SchedulerName {
+		t.Fatalf("expected schedulerName %q for the gang member, got %#v", SchedulerName, member.Spec)
+	}
+	if member.Annotations == nil || member.Annotations[AnnotationKey] != rbg.Name {
+		t.Fatalf("expected legacy PodGroup annotation %q, got %#v", rbg.Name, member.Annotations)
+	}
+
+	// KEP-430 intentionally sends every role to Volcano. An uncovered role must not
+	// consume resources through another scheduler while the gang waits for dispatch.
+	nonMember := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
+	New(nil).InjectPlacementSchedulingFields(rbg, &rbg.Spec.Roles[1], plan, nonMember)
+	if nonMember.Spec == nil || nonMember.Spec.SchedulerName == nil || *nonMember.Spec.SchedulerName != SchedulerName {
+		t.Fatalf("expected schedulerName %q for the role outside the gang, got %#v", SchedulerName, nonMember.Spec)
+	}
+	if nonMember.ObjectMetaApplyConfiguration != nil && nonMember.Annotations[AnnotationKey] != "" {
+		t.Fatalf("expected no PodGroup annotation for the role outside the gang, got %#v", nonMember.Annotations)
+	}
+}
+
+func TestInjectPlacementSchedulingFieldsUsesTopologyPlanMembership(t *testing.T) {
+	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""), standaloneRole("router", 1, ""))
+	plan := &common.PlacementPlan{
+		Root: &common.PlacementGroup{
+			ID: "prefill",
+			Scope: common.PlacementScope{
+				Roles:       []string{"prefill"},
+				PartitionBy: common.PartitionByNone,
+			},
+			Topology: &workloadsv1alpha2.TopologyConstraint{
+				Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("rack")},
 			},
 		},
 	}
@@ -195,7 +232,7 @@ func TestInjectPlacementSchedulingFieldsUsesPlanMembership(t *testing.T) {
 	}
 }
 
-func TestInjectPlacementSchedulingFieldsRoleOutsidePlanGetsNoMembership(t *testing.T) {
+func TestInjectPlacementSchedulingFieldsRoleOutsideTopologyPlanKeepsScheduler(t *testing.T) {
 	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""), standaloneRole("router", 1, ""))
 	plan := &common.PlacementPlan{
 		Root: &common.PlacementGroup{
@@ -204,13 +241,16 @@ func TestInjectPlacementSchedulingFieldsRoleOutsidePlanGetsNoMembership(t *testi
 				Roles:       []string{"prefill"},
 				PartitionBy: common.PartitionByNone,
 			},
+			Topology: &workloadsv1alpha2.TopologyConstraint{
+				Pack: &workloadsv1alpha2.TopologyPackConstraint{Required: ptr.To("rack")},
+			},
 		},
 	}
 	pts := &coreapplyv1.PodTemplateSpecApplyConfiguration{}
 	New(nil).InjectPlacementSchedulingFields(rbg, &rbg.Spec.Roles[1], plan, pts)
 
 	if pts.Spec != nil && pts.Spec.SchedulerName != nil {
-		t.Fatalf("expected no schedulerName for a role outside the plan, got %#v", pts.Spec)
+		t.Fatalf("expected no schedulerName for a role outside the topology plan, got %#v", pts.Spec)
 	}
 	if pts.ObjectMetaApplyConfiguration != nil && pts.Annotations[AnnotationKey] != "" {
 		t.Fatalf("expected no PodGroup annotation, got %#v", pts.Annotations)

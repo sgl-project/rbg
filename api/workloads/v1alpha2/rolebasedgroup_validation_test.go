@@ -300,6 +300,48 @@ func TestRoleBasedGroupSetValidator_ValidateCreateRoleDependencies(t *testing.T)
 	assert.Contains(t, err.Error(), `role "worker" depends on unknown role "ghost"`)
 }
 
+func TestRoleBasedGroupSetValidator_ValidateCreateRoleNames(t *testing.T) {
+	rbgs := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{{Name: "PD/fast", Replicas: ptr.To(int32(1))}},
+				},
+			},
+		},
+	}
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	_, err := v.ValidateCreate(context.Background(), rbgs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `spec.groupTemplate.spec.roles[0].name`)
+	assert.Contains(t, err.Error(), `"PD/fast" is not a valid DNS-1123 label`)
+}
+
+func TestRoleBasedGroupSetValidator_ValidateUpdateRoleNames(t *testing.T) {
+	oldRBGS := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{{Name: "pd-fast", Replicas: ptr.To(int32(1))}},
+				},
+			},
+		},
+	}
+	newRBGS := oldRBGS.DeepCopy()
+	newRBGS.Spec.GroupTemplate.Spec.Roles[0].Name = "PD/fast"
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	_, err := v.ValidateUpdate(context.Background(), oldRBGS, newRBGS)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `spec.groupTemplate.spec.roles[0].name`)
+	assert.Contains(t, err.Error(), `"PD/fast" is not a valid DNS-1123 label`)
+}
+
 func TestRoleBasedGroupSetValidator_ValidateUpdateRoleDependencies(t *testing.T) {
 	oldRBGS := &RoleBasedGroupSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},

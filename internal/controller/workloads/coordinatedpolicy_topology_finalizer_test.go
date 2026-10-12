@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/constants"
 	v1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -136,6 +137,108 @@ func TestEnsureReleasesStaleTerminatingPolicyForRecreatedRBG(t *testing.T) {
 	err := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "rbg"}, policy)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("expected the stale terminating policy to be deleted, got %v", err)
+	}
+}
+
+func TestReleaseKeepsTopologyFinalizerWhileRBGIsTerminating(t *testing.T) {
+	rbg := topologyFinalizerRBG()
+	rbg.Finalizers = []string{"example.com/hold"}
+	now := metav1.Now()
+	rbg.DeletionTimestamp = &now
+
+	policy := topologyFinalizerPolicy("block")
+	policy.Annotations = map[string]string{
+		workloadsv1alpha2.CoordinatedPolicyTopologyRBGUIDAnnotation: string(rbg.UID),
+	}
+	policy.Finalizers = []string{workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer}
+	policy.DeletionTimestamp = &now
+
+	_, r := finalizerTestReconciler(t, rbg, policy)
+	if err := r.releaseCoordinatedPolicyTopologyFinalizerByKey(
+		context.Background(), rbg.Namespace, rbg.Name); err != nil {
+		t.Fatal(err)
+	}
+
+	policy = &v1alpha2.CoordinatedPolicy{}
+	if err := r.client.Get(
+		context.Background(), types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.Name}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(policy, workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer) {
+		t.Fatalf("expected topology finalizer to remain while the recorded RBG is still terminating, got %#v", policy.Finalizers)
+	}
+}
+
+func TestReleaseUsesAPIReaderToAvoidCacheLag(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	rbg := topologyFinalizerRBG()
+	policy := topologyFinalizerPolicy("block")
+	policy.Annotations = map[string]string{
+		workloadsv1alpha2.CoordinatedPolicyTopologyRBGUIDAnnotation: string(rbg.UID),
+	}
+	policy.Finalizers = []string{workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer}
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+
+	cache := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, policy).Build()
+	r := &RoleBasedGroupReconciler{client: cache, apiReader: apiReader}
+
+	if err := r.releaseCoordinatedPolicyTopologyFinalizerByKey(
+		context.Background(), rbg.Namespace, rbg.Name); err != nil {
+		t.Fatal(err)
+	}
+
+	policy = &v1alpha2.CoordinatedPolicy{}
+	if err := cache.Get(
+		context.Background(), types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.Name}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(policy, workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer) {
+		t.Fatalf("expected cache lag not to release topology protection, got %#v", policy.Finalizers)
+	}
+}
+
+func TestReconcileCacheNotFoundConfirmsRBGWithAPIReader(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	rbg := topologyFinalizerRBG()
+	policy := topologyFinalizerPolicy("block")
+	policy.Annotations = map[string]string{
+		workloadsv1alpha2.CoordinatedPolicyTopologyRBGUIDAnnotation: string(rbg.UID),
+	}
+	policy.Finalizers = []string{workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer}
+	now := metav1.Now()
+	policy.DeletionTimestamp = &now
+
+	cache := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, policy).Build()
+	r := &RoleBasedGroupReconciler{client: cache, apiReader: apiReader}
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.Name},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatalf("expected a requeue while the API server still has the RBG, got %#v", result)
+	}
+
+	policy = &v1alpha2.CoordinatedPolicy{}
+	if err := cache.Get(
+		context.Background(), types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.Name}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if !controllerutil.ContainsFinalizer(policy, workloadsv1alpha2.CoordinatedPolicyTopologyFinalizer) {
+		t.Fatalf("expected cached NotFound not to release topology protection, got %#v", policy.Finalizers)
 	}
 }
 
