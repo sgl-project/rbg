@@ -22,6 +22,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -29,11 +30,11 @@ const (
 	// annotationV1alpha2RolloutStrategy stores the serialized v1alpha2 spec.rolloutStrategy on
 	// the v1alpha1 object, so a full-object write through v1alpha1 round-trips it back to the
 	// hub object instead of silently reverting the set to the legacy static path.
-	annotationV1alpha2RolloutStrategy = "conversion.workloads.x-k8s.io/v1alpha2-rollout-strategy"
+	annotationV1alpha2RolloutStrategy = constants.ConversionV1alpha2RolloutStrategyAnnotationKey
 
 	// annotationV1alpha2RolloutStatus stores the v1alpha2-only rollout status fields on the
 	// v1alpha1 object for the same round trip.
-	annotationV1alpha2RolloutStatus = "conversion.workloads.x-k8s.io/v1alpha2-rollout-status"
+	annotationV1alpha2RolloutStatus = constants.ConversionV1alpha2RolloutStatusAnnotationKey
 )
 
 // groupSetRolloutStatusFields are the RoleBasedGroupSet status fields that exist only in
