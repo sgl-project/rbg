@@ -31,6 +31,39 @@ const (
 	WarmupJobPhaseFailed    WarmupJobPhase = "Failed"
 )
 
+// CustomizedActionCompletionPolicy controls how customized action containers
+// are evaluated for completion.
+type CustomizedActionCompletionPolicy string
+
+const (
+	// CustomizedActionCompletionPolicyAllSucceeded requires every customized
+	// action container to complete successfully.
+	CustomizedActionCompletionPolicyAllSucceeded CustomizedActionCompletionPolicy = "AllSucceeded"
+)
+
+// CustomizedActionState is the aggregate execution state for a node.
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed
+type CustomizedActionState string
+
+const (
+	CustomizedActionStatePending   CustomizedActionState = "Pending"
+	CustomizedActionStateRunning   CustomizedActionState = "Running"
+	CustomizedActionStateSucceeded CustomizedActionState = "Succeeded"
+	CustomizedActionStateFailed    CustomizedActionState = "Failed"
+)
+
+// CustomizedActionContainerState is the execution state of one customized
+// action container.
+// +kubebuilder:validation:Enum=Waiting;Running;Succeeded;Failed
+type CustomizedActionContainerState string
+
+const (
+	CustomizedActionContainerStateWaiting   CustomizedActionContainerState = "Waiting"
+	CustomizedActionContainerStateRunning   CustomizedActionContainerState = "Running"
+	CustomizedActionContainerStateSucceeded CustomizedActionContainerState = "Succeeded"
+	CustomizedActionContainerStateFailed    CustomizedActionContainerState = "Failed"
+)
+
 type ImagePreloadAction struct {
 	// Images specifies the container images to be preloaded onto target nodes.
 	// Each entry must be a valid image reference (e.g., "registry.example.com/app:v1.0").
@@ -58,6 +91,55 @@ type CustomizedAction struct {
 	// Volumes to mount into the customized containers.
 	// +optional
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
+
+	// TimeoutSeconds limits execution of the merged warmup Pod, including image
+	// pulls and co-located image preload containers. When multiple actions target
+	// the same node, the smallest configured timeout is used.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	TimeoutSeconds *int64 `json:"timeoutSeconds,omitempty"`
+
+	// CompletionPolicy controls how customized action containers are evaluated.
+	// Only AllSucceeded is currently supported. Empty values from legacy objects
+	// are treated as AllSucceeded.
+	// +optional
+	// +kubebuilder:default=AllSucceeded
+	// +kubebuilder:validation:Enum="";AllSucceeded
+	CompletionPolicy CustomizedActionCompletionPolicy `json:"completionPolicy,omitempty"`
+}
+
+// CustomizedActionContainerResult describes the latest observed state of one
+// logical customized action container.
+type CustomizedActionContainerResult struct {
+	ContainerName    string                         `json:"containerName"`
+	PodContainerName string                         `json:"podContainerName"`
+	State            CustomizedActionContainerState `json:"state"`
+	ExitCode         *int32                         `json:"exitCode,omitempty"`
+	// +kubebuilder:validation:MaxLength=128
+	TerminationReason string `json:"terminationReason,omitempty"`
+	// TerminationMessage may contain workload-provided diagnostic text. Access
+	// to Warmup status should therefore be granted with the same care as Pod logs.
+	// +kubebuilder:validation:MaxLength=1024
+	TerminationMessage string `json:"terminationMessage,omitempty"`
+}
+
+// CustomizedActionResult describes the latest customized action attempt on a
+// target node.
+type CustomizedActionResult struct {
+	NodeName string                `json:"nodeName"`
+	PodName  string                `json:"podName"`
+	State    CustomizedActionState `json:"state"`
+	// +kubebuilder:validation:MaxLength=128
+	Reason string `json:"reason,omitempty"`
+	// Message may contain workload-provided diagnostic text. Access to Warmup
+	// status should therefore be granted with the same care as Pod logs.
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message,omitempty"`
+	// TimeoutSeconds is the effective deadline of the merged warmup Pod. It is
+	// the smallest configured timeout among actions co-located on this node.
+	TimeoutSeconds *int64 `json:"timeoutSeconds,omitempty"`
+	// +kubebuilder:validation:MaxItems=1024
+	Containers []CustomizedActionContainerResult `json:"containers,omitempty"`
 }
 
 // WarmupActions defines what warmup operations to perform on a node.
@@ -214,6 +296,20 @@ type RoleBasedGroupWarmupStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// CustomizedActionResults contains the latest attempt for each node with a
+	// customized action. Results may be compacted to keep the status within the
+	// Kubernetes object size limit; failures are retained ahead of successes.
+	// +listType=map
+	// +listMapKey=nodeName
+	// +kubebuilder:validation:MaxItems=1024
+	// +optional
+	CustomizedActionResults []CustomizedActionResult `json:"customizedActionResults,omitempty"`
+
+	// CustomizedActionResultsTruncated indicates that one or more results or
+	// per-container details were omitted to keep the status size bounded.
+	// +optional
+	CustomizedActionResultsTruncated bool `json:"customizedActionResultsTruncated,omitempty"`
 }
 
 // +kubebuilder:object:root=true

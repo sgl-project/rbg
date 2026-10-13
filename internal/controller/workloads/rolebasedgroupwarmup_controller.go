@@ -18,8 +18,10 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +63,8 @@ type RoleBasedGroupWarmupReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  record.EventRecorder
 }
+
+var marshalCustomizedActionMappings = json.Marshal
 
 func NewRoleBasedGroupWarmupReconciler(mgr ctrl.Manager) *RoleBasedGroupWarmupReconciler {
 	return &RoleBasedGroupWarmupReconciler{
@@ -223,8 +227,25 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		}
 	}
 
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	preCreateCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+
 	pendingNodes := collectPendingNodes(desiredNodes, activePods, succeededPods, permanentlyFailedNodes)
-	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods)
+	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods, failedPods)
+	postCreatePods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	postCreatePods = append(postCreatePods, activePods...)
+	postCreatePods = append(postCreatePods, succeededPods...)
+	postCreatePods = append(postCreatePods, failedPods...)
+	recordDisplacedCustomizedActionFailures(
+		r.Recorder,
+		warmup,
+		warmup.Status.CustomizedActionResults,
+		preCreateCustomizedActionResults,
+		evaluateCustomizedActionResults(desiredNodes, postCreatePods),
+	)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -256,6 +277,13 @@ func validateWarmupActions(target string, action workloadsv1alpha2.WarmupActions
 			if strings.TrimSpace(container.Image) == "" {
 				return fmt.Errorf("%s.customizedAction.containers[%d].image must not be empty", target, i)
 			}
+		}
+		if action.CustomizedAction.TimeoutSeconds != nil && *action.CustomizedAction.TimeoutSeconds <= 0 {
+			return fmt.Errorf("%s.customizedAction.timeoutSeconds must be greater than 0", target)
+		}
+		if action.CustomizedAction.CompletionPolicy != "" &&
+			action.CustomizedAction.CompletionPolicy != workloadsv1alpha2.CustomizedActionCompletionPolicyAllSucceeded {
+			return fmt.Errorf("%s.customizedAction has unsupported completionPolicy %q", target, action.CustomizedAction.CompletionPolicy)
 		}
 	}
 	return nil
@@ -341,9 +369,10 @@ func collectPendingNodes(
 func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 	ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
 	pendingNodes []string, desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
-	activePods []*corev1.Pod,
+	activePods, failedPods []*corev1.Pod,
 ) ([]*corev1.Pod, error) {
 	logger := log.FromContext(ctx)
+	nextAttempts := nextWarmupAttempts(failedPods)
 
 	createBudget := len(pendingNodes)
 	if warmup.Spec.Policies != nil && warmup.Spec.Policies.Parallelism != nil {
@@ -364,6 +393,11 @@ func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 		actions := desiredNodes[nodeName]
 		logger.Info("Creating warmup Pod", "node", nodeName)
 		pod, volumeConflict := r.buildWarmupPod(warmup, nodeName, actions)
+		attempt := nextAttempts[nodeName]
+		if attempt == 0 {
+			attempt = 1
+		}
+		pod.Labels[LabelWarmupAttempt] = strconv.FormatInt(attempt, 10)
 		if volumeConflict {
 			apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 				Type:               "VolumeConflict",
@@ -391,6 +425,30 @@ func (r *RoleBasedGroupWarmupReconciler) createPodsForNodes(
 			"Created warmup Pod for node %s", nodeName)
 	}
 	return activePods, nil
+}
+
+func nextWarmupAttempts(failedPods []*corev1.Pod) map[string]int64 {
+	failedCounts := make(map[string]int64)
+	maxAttempts := make(map[string]int64)
+	for _, pod := range failedPods {
+		nodeName := pod.Labels[LabelNodeName]
+		if nodeName == "" {
+			continue
+		}
+		failedCounts[nodeName]++
+		if attempt, ok := warmupPodAttempt(pod); ok && attempt > maxAttempts[nodeName] {
+			maxAttempts[nodeName] = attempt
+		}
+	}
+	for nodeName, count := range failedCounts {
+		if count > maxAttempts[nodeName] {
+			maxAttempts[nodeName] = count
+		}
+	}
+	for nodeName := range maxAttempts {
+		maxAttempts[nodeName]++
+	}
+	return maxAttempts
 }
 
 // requeueForTimeout returns a Result with RequeueAfter set if global timeout is configured and the job is still running.
@@ -454,6 +512,64 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	warmup.Status.Active = 0
 	warmup.Status.Succeeded = succeeded
 	warmup.Status.Failed = failed
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	oldCustomizedActionResults := append(
+		[]workloadsv1alpha2.CustomizedActionResult(nil),
+		warmup.Status.CustomizedActionResults...,
+	)
+	oldCustomizedActionResultsTruncated := warmup.Status.CustomizedActionResultsTruncated
+	allCustomizedActionResults := warmup.Status.CustomizedActionResults
+	preservedPrevious := false
+	// A nil desiredNodes value means target resolution failed before the desired
+	// state was available. Preserve the last observed diagnostics in that case.
+	if desiredNodes != nil {
+		observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+		allCustomizedActionResults, preservedPrevious = preserveCustomizedActionResults(
+			desiredNodes,
+			warmup.Status.CustomizedActionResults,
+			observedCustomizedActionResults,
+			allPods,
+		)
+	}
+	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
+	for i := range allCustomizedActionResults {
+		result := &allCustomizedActionResults[i]
+		if result.State == workloadsv1alpha2.CustomizedActionStateSucceeded {
+			continue
+		}
+		result.State = workloadsv1alpha2.CustomizedActionStateFailed
+		if result.Reason == "" {
+			result.Reason = truncateCustomizedActionMessageTo(reason, customizedActionTerminationReasonLimit)
+		}
+		if result.Message == "" {
+			result.Message = truncateCustomizedActionMessage(message)
+		}
+	}
+	if desiredNodes != nil {
+		warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
+			limitCustomizedActionResults(allCustomizedActionResults)
+		if preservedPrevious && oldCustomizedActionResultsTruncated {
+			warmup.Status.CustomizedActionResultsTruncated = true
+		}
+	}
+	var backoffLimit *int32
+	if warmup.Spec.Policies != nil {
+		backoffLimit = warmup.Spec.Policies.BackoffLimitPerNode
+	}
+	permanentlyFailedNodes := r.computePermanentlyFailedNodes(ctx, failedPods, backoffLimit)
+	if desiredNodes != nil {
+		updateCustomizedActionConditions(
+			&warmup.Status.Conditions,
+			warmup.Generation,
+			allCustomizedActionResults,
+			permanentlyFailedNodes,
+			globallyTimedOut,
+			countDesiredCustomizedActionNodes(desiredNodes),
+		)
+	}
 
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 		Type:               "Failed",
@@ -465,7 +581,11 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 
 	r.Recorder.Eventf(warmup, corev1.EventTypeWarning, reason, message)
 	logger.Info("Warmup job failed", "reason", reason, "succeeded", succeeded, "failed", failed)
-	return r.Status().Update(ctx, warmup)
+	if err := r.Status().Update(ctx, warmup); err != nil {
+		return err
+	}
+	recordCustomizedActionEvents(r.Recorder, warmup, oldCustomizedActionResults, warmup.Status.CustomizedActionResults)
+	return nil
 }
 
 func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Context, warmup workloadsv1alpha2.RoleBasedGroupWarmup) (desiredNodesWithActions map[string][]workloadsv1alpha2.WarmupActions, err error) {
@@ -640,7 +760,8 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 	}
 
 	// Collect customized action containers and volumes
-	ctrHashSet := map[string]bool{}
+	ctrHashToMapping := map[string]int{}
+	customizedMappings := make([]customizedActionContainerMapping, 0)
 	existingVols := map[string]corev1.Volume{}
 	for _, action := range actions {
 		if action.CustomizedAction == nil {
@@ -650,11 +771,18 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			hashCtr := ctr
 			hashCtr.Name = ""
 			h := fmt.Sprintf("%v", utils.HashContainer(&hashCtr))
-			if ctrHashSet[h] {
+			if mappingIndex, exists := ctrHashToMapping[h]; exists {
+				mapping := &customizedMappings[mappingIndex]
+				mapping.ContainerNames = append(mapping.ContainerNames, ctr.Name)
 				continue
 			}
-			ctrHashSet[h] = true
+			originalName := ctr.Name
 			ctr.Name = fmt.Sprintf("custom-%d", len(containers))
+			ctrHashToMapping[h] = len(customizedMappings)
+			customizedMappings = append(customizedMappings, customizedActionContainerMapping{
+				PodContainerName: ctr.Name,
+				ContainerNames:   []string{originalName},
+			})
 			containers = append(containers, ctr)
 		}
 		for _, vol := range action.CustomizedAction.Volumes {
@@ -671,6 +799,9 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			volumes = append(volumes, vol)
 		}
 	}
+	for i := range customizedMappings {
+		sort.Strings(customizedMappings[i].ContainerNames)
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -683,15 +814,27 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			},
 		},
 		Spec: corev1.PodSpec{
-			Containers:       containers,
-			Volumes:          volumes,
-			ImagePullSecrets: imagePullSecrets,
-			RestartPolicy:    corev1.RestartPolicyNever,
-			Tolerations:      warmup.Spec.Tolerations,
+			Containers:            containers,
+			Volumes:               volumes,
+			ImagePullSecrets:      imagePullSecrets,
+			RestartPolicy:         corev1.RestartPolicyNever,
+			Tolerations:           warmup.Spec.Tolerations,
+			ActiveDeadlineSeconds: minimumCustomizedActionTimeout(actions),
 			NodeSelector: map[string]string{
 				"kubernetes.io/hostname": nodeName,
 			},
 		},
+	}
+	if len(customizedMappings) > 0 {
+		mappingJSON, err := marshalCustomizedActionMappings(customizedMappings)
+		if err != nil {
+			r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "CustomizedActionMappingError",
+				"Failed to record customized action container mappings for node %s: %v", nodeName, err)
+		} else {
+			pod.Annotations = map[string]string{
+				AnnotationCustomizedActionContainers: string(mappingJSON),
+			}
+		}
 	}
 
 	return pod, hasVolumeConflict
@@ -733,6 +876,22 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	newStatus.Active = active
 	newStatus.Succeeded = succeeded
 	newStatus.Failed = failed
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResults(
+		desiredNodes,
+		warmup.Status.CustomizedActionResults,
+		observedCustomizedActionResults,
+		allPods,
+	)
+	newStatus.CustomizedActionResults, newStatus.CustomizedActionResultsTruncated =
+		limitCustomizedActionResults(allCustomizedActionResults)
+	if preservedPrevious && warmup.Status.CustomizedActionResultsTruncated {
+		newStatus.CustomizedActionResultsTruncated = true
+	}
 
 	// Set startTime if not already set and Pods exist
 	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {
@@ -807,13 +966,23 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 			}
 		}
 	}
+	updateCustomizedActionConditions(
+		&newStatus.Conditions,
+		warmup.Generation,
+		allCustomizedActionResults,
+		permanentlyFailedNodes,
+		false,
+		countDesiredCustomizedActionNodes(desiredNodes),
+	)
 
 	// Only update if status has changed
 	if !apiequality.Semantic.DeepEqual(warmup.Status, *newStatus) {
+		oldCustomizedActionResults := warmup.Status.CustomizedActionResults
 		warmup.Status = *newStatus
 		if err := r.Status().Update(ctx, warmup); err != nil {
 			return err
 		}
+		recordCustomizedActionEvents(r.Recorder, warmup, oldCustomizedActionResults, newStatus.CustomizedActionResults)
 		logger.Info("Updated status", "phase", newStatus.Phase,
 			"desired", newStatus.Desired, "active", newStatus.Active,
 			"succeeded", newStatus.Succeeded, "failed", newStatus.Failed)
