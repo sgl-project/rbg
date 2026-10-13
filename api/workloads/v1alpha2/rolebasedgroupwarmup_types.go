@@ -42,6 +42,7 @@ const (
 )
 
 // CustomizedActionState is the aggregate execution state for a node.
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed
 type CustomizedActionState string
 
 const (
@@ -53,6 +54,7 @@ const (
 
 // CustomizedActionContainerState is the execution state of one customized
 // action container.
+// +kubebuilder:validation:Enum=Waiting;Running;Succeeded;Failed
 type CustomizedActionContainerState string
 
 const (
@@ -109,12 +111,16 @@ type CustomizedAction struct {
 // CustomizedActionContainerResult describes the latest observed state of one
 // logical customized action container.
 type CustomizedActionContainerResult struct {
-	ContainerName      string                         `json:"containerName"`
-	PodContainerName   string                         `json:"podContainerName"`
-	State              CustomizedActionContainerState `json:"state"`
-	ExitCode           *int32                         `json:"exitCode,omitempty"`
-	TerminationReason  string                         `json:"terminationReason,omitempty"`
-	TerminationMessage string                         `json:"terminationMessage,omitempty"`
+	ContainerName    string                         `json:"containerName"`
+	PodContainerName string                         `json:"podContainerName"`
+	State            CustomizedActionContainerState `json:"state"`
+	ExitCode         *int32                         `json:"exitCode,omitempty"`
+	// +kubebuilder:validation:MaxLength=128
+	TerminationReason string `json:"terminationReason,omitempty"`
+	// TerminationMessage may contain workload-provided diagnostic text. Access
+	// to Warmup status should therefore be granted with the same care as Pod logs.
+	// +kubebuilder:validation:MaxLength=1024
+	TerminationMessage string `json:"terminationMessage,omitempty"`
 }
 
 // CustomizedActionResult describes the latest customized action attempt on a
@@ -123,12 +129,17 @@ type CustomizedActionResult struct {
 	NodeName string                `json:"nodeName"`
 	PodName  string                `json:"podName"`
 	State    CustomizedActionState `json:"state"`
-	Reason   string                `json:"reason,omitempty"`
-	Message  string                `json:"message,omitempty"`
+	// +kubebuilder:validation:MaxLength=128
+	Reason string `json:"reason,omitempty"`
+	// Message may contain workload-provided diagnostic text. Access to Warmup
+	// status should therefore be granted with the same care as Pod logs.
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message,omitempty"`
 	// TimeoutSeconds is the effective deadline of the merged warmup Pod. It is
 	// the smallest configured timeout among actions co-located on this node.
-	TimeoutSeconds *int64                            `json:"timeoutSeconds,omitempty"`
-	Containers     []CustomizedActionContainerResult `json:"containers,omitempty"`
+	TimeoutSeconds *int64 `json:"timeoutSeconds,omitempty"`
+	// +kubebuilder:validation:MaxItems=1024
+	Containers []CustomizedActionContainerResult `json:"containers,omitempty"`
 }
 
 // WarmupActions defines what warmup operations to perform on a node.

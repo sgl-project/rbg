@@ -227,8 +227,25 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		}
 	}
 
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	preCreateCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+
 	pendingNodes := collectPendingNodes(desiredNodes, activePods, succeededPods, permanentlyFailedNodes)
 	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods, failedPods)
+	postCreatePods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	postCreatePods = append(postCreatePods, activePods...)
+	postCreatePods = append(postCreatePods, succeededPods...)
+	postCreatePods = append(postCreatePods, failedPods...)
+	recordDisplacedCustomizedActionFailures(
+		r.Recorder,
+		warmup,
+		warmup.Status.CustomizedActionResults,
+		preCreateCustomizedActionResults,
+		evaluateCustomizedActionResults(desiredNodes, postCreatePods),
+	)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -499,12 +516,23 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	allPods = append(allPods, activePods...)
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
-	oldCustomizedActionResults := warmup.Status.CustomizedActionResults
+	oldCustomizedActionResults := append(
+		[]workloadsv1alpha2.CustomizedActionResult(nil),
+		warmup.Status.CustomizedActionResults...,
+	)
+	oldCustomizedActionResultsTruncated := warmup.Status.CustomizedActionResultsTruncated
 	allCustomizedActionResults := warmup.Status.CustomizedActionResults
+	preservedPrevious := false
 	// A nil desiredNodes value means target resolution failed before the desired
 	// state was available. Preserve the last observed diagnostics in that case.
 	if desiredNodes != nil {
-		allCustomizedActionResults = evaluateCustomizedActionResults(desiredNodes, allPods)
+		observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+		allCustomizedActionResults, preservedPrevious = preserveCustomizedActionResults(
+			desiredNodes,
+			warmup.Status.CustomizedActionResults,
+			observedCustomizedActionResults,
+			allPods,
+		)
 	}
 	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
 	for i := range allCustomizedActionResults {
@@ -514,15 +542,18 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		}
 		result.State = workloadsv1alpha2.CustomizedActionStateFailed
 		if result.Reason == "" {
-			result.Reason = reason
+			result.Reason = truncateCustomizedActionMessageTo(reason, customizedActionTerminationReasonLimit)
 		}
 		if result.Message == "" {
-			result.Message = message
+			result.Message = truncateCustomizedActionMessage(message)
 		}
 	}
 	if desiredNodes != nil {
 		warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
 			limitCustomizedActionResults(allCustomizedActionResults)
+		if preservedPrevious && oldCustomizedActionResultsTruncated {
+			warmup.Status.CustomizedActionResultsTruncated = true
+		}
 	}
 	var backoffLimit *int32
 	if warmup.Spec.Policies != nil {
@@ -743,7 +774,6 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			if mappingIndex, exists := ctrHashToMapping[h]; exists {
 				mapping := &customizedMappings[mappingIndex]
 				mapping.ContainerNames = append(mapping.ContainerNames, ctr.Name)
-				sort.Strings(mapping.ContainerNames)
 				continue
 			}
 			originalName := ctr.Name
@@ -768,6 +798,9 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			existingVols[vol.Name] = vol
 			volumes = append(volumes, vol)
 		}
+	}
+	for i := range customizedMappings {
+		sort.Strings(customizedMappings[i].ContainerNames)
 	}
 
 	pod := &corev1.Pod{
@@ -848,13 +881,17 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
 	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-	allCustomizedActionResults := preserveCustomizedActionResults(
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResults(
 		desiredNodes,
 		warmup.Status.CustomizedActionResults,
 		observedCustomizedActionResults,
+		allPods,
 	)
 	newStatus.CustomizedActionResults, newStatus.CustomizedActionResultsTruncated =
 		limitCustomizedActionResults(allCustomizedActionResults)
+	if preservedPrevious && warmup.Status.CustomizedActionResultsTruncated {
+		newStatus.CustomizedActionResultsTruncated = true
+	}
 
 	// Set startTime if not already set and Pods exist
 	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {

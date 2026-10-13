@@ -50,8 +50,11 @@ const (
 	ConditionCustomizedActionFailed   = "CustomizedActionFailed"
 
 	customizedActionTerminationMessageLimit = 1024
+	customizedActionTerminationReasonLimit  = 128
+	customizedActionEventMessageLimit       = 1024
 	customizedActionSummaryMessageLimit     = 256
 	customizedActionResultsMaxItems         = 1024
+	customizedActionContainersMaxItems      = 1024
 	customizedActionResultsStatusBudget     = 512 * 1024
 )
 
@@ -143,13 +146,13 @@ func evaluateCustomizedActionContainer(
 			state = workloadsv1alpha2.CustomizedActionContainerStateRunning
 		case status.State.Waiting != nil:
 			waiting := status.State.Waiting
-			terminationReason = waiting.Reason
+			terminationReason = truncateCustomizedActionMessageTo(waiting.Reason, customizedActionTerminationReasonLimit)
 			terminationMessage = truncateCustomizedActionMessage(waiting.Message)
 		case status.State.Terminated != nil:
 			terminated := status.State.Terminated
 			exitCode = new(int32)
 			*exitCode = terminated.ExitCode
-			terminationReason = terminated.Reason
+			terminationReason = truncateCustomizedActionMessageTo(terminated.Reason, customizedActionTerminationReasonLimit)
 			terminationMessage = truncateCustomizedActionMessage(terminated.Message)
 			if terminated.ExitCode == 0 {
 				state = workloadsv1alpha2.CustomizedActionContainerStateSucceeded
@@ -179,35 +182,25 @@ func aggregateCustomizedActionState(
 	containers []workloadsv1alpha2.CustomizedActionContainerResult,
 	statuses map[string]corev1.ContainerStatus,
 ) (workloadsv1alpha2.CustomizedActionState, string, string) {
-	if pod.Status.Reason == "DeadlineExceeded" {
-		return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonTimeout, pod.Status.Message
-	}
+	deadlineExceeded := pod.Status.Reason == "DeadlineExceeded"
 	for i := range pod.Status.Conditions {
 		condition := pod.Status.Conditions[i]
 		if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == corev1.PodReasonUnschedulable {
-			return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonNodeNotSchedulable, condition.Message
-		}
-	}
-
-	for _, mapping := range mappings {
-		status, exists := statuses[mapping.PodContainerName]
-		if !exists {
-			continue
-		}
-		if terminated := status.State.Terminated; terminated != nil {
-			switch terminated.Reason {
-			case "ContainerCannotRun", "StartError":
-				return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonContainerStartFailed, terminated.Message
-			}
+			return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonNodeNotSchedulable,
+				truncateCustomizedActionMessage(condition.Message)
 		}
 	}
 
 	allSucceeded := len(containers) > 0
 	anyRunning := false
+	var failedContainer *workloadsv1alpha2.CustomizedActionContainerResult
 	for i := range containers {
 		switch containers[i].State {
 		case workloadsv1alpha2.CustomizedActionContainerStateFailed:
-			return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonContainerExitCode, containers[i].TerminationMessage
+			allSucceeded = false
+			if failedContainer == nil {
+				failedContainer = &containers[i]
+			}
 		case workloadsv1alpha2.CustomizedActionContainerStateSucceeded:
 		case workloadsv1alpha2.CustomizedActionContainerStateRunning:
 			allSucceeded = false
@@ -215,6 +208,24 @@ func aggregateCustomizedActionState(
 		default:
 			allSucceeded = false
 		}
+	}
+	if allSucceeded {
+		return workloadsv1alpha2.CustomizedActionStateSucceeded, CustomizedActionReasonCompleted, ""
+	}
+	if deadlineExceeded {
+		return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonTimeout,
+			truncateCustomizedActionMessage(pod.Status.Message)
+	}
+	for i := range containers {
+		switch containers[i].TerminationReason {
+		case "ContainerCannotRun", "StartError":
+			return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonContainerStartFailed,
+				containers[i].TerminationMessage
+		}
+	}
+	if failedContainer != nil {
+		return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonContainerExitCode,
+			failedContainer.TerminationMessage
 	}
 	for _, mapping := range mappings {
 		status, exists := statuses[mapping.PodContainerName]
@@ -230,22 +241,25 @@ func aggregateCustomizedActionState(
 		if waiting.Message != "" {
 			message += ": " + waiting.Message
 		}
+		message = truncateCustomizedActionMessage(message)
+		state := workloadsv1alpha2.CustomizedActionStatePending
+		if pod.Status.Phase == corev1.PodFailed {
+			state = workloadsv1alpha2.CustomizedActionStateFailed
+		}
 		switch waiting.Reason {
 		case "ErrImagePull", "ImagePullBackOff":
-			return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonImagePullFailed, message
+			return state, CustomizedActionReasonImagePullFailed, message
 		case "CreateContainerConfigError", "CreateContainerError", "RunContainerError":
-			return workloadsv1alpha2.CustomizedActionStatePending, CustomizedActionReasonContainerStartFailed, message
+			return state, CustomizedActionReasonContainerStartFailed, message
 		}
-	}
-	if allSucceeded {
-		return workloadsv1alpha2.CustomizedActionStateSucceeded, CustomizedActionReasonCompleted, ""
 	}
 	if pod.Status.Phase == corev1.PodFailed {
 		message := pod.Status.Message
 		if message == "" {
 			message = pod.Status.Reason
 		}
-		return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonPodFailed, message
+		return workloadsv1alpha2.CustomizedActionStateFailed, CustomizedActionReasonPodFailed,
+			truncateCustomizedActionMessage(message)
 	}
 	if anyRunning {
 		return workloadsv1alpha2.CustomizedActionStateRunning, "", ""
@@ -316,7 +330,8 @@ func warmupPodAttempt(pod *corev1.Pod) (int64, bool) {
 func preserveCustomizedActionResults(
 	desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
 	previous, observed []workloadsv1alpha2.CustomizedActionResult,
-) []workloadsv1alpha2.CustomizedActionResult {
+	pods []*corev1.Pod,
+) ([]workloadsv1alpha2.CustomizedActionResult, bool) {
 	desiredCustomizedNodes := make(map[string]bool)
 	for nodeName, actions := range desiredNodes {
 		for i := range actions {
@@ -327,23 +342,54 @@ func preserveCustomizedActionResults(
 		}
 	}
 
-	results := append([]workloadsv1alpha2.CustomizedActionResult(nil), observed...)
+	previousByNode := make(map[string]workloadsv1alpha2.CustomizedActionResult, len(previous))
+	for i := range previous {
+		previousByNode[previous[i].NodeName] = previous[i]
+	}
+	podsByName := make(map[string]*corev1.Pod, len(pods))
+	for i := range pods {
+		podsByName[pods[i].Name] = pods[i]
+	}
+	results := make([]workloadsv1alpha2.CustomizedActionResult, 0, len(observed)+len(previous))
+	preservedPrevious := false
 	observedNodes := make(map[string]bool, len(observed))
 	for i := range observed {
-		observedNodes[observed[i].NodeName] = true
+		result := observed[i]
+		observedNodes[result.NodeName] = true
+		if old, exists := previousByNode[result.NodeName]; exists && customizedActionObservationRegressed(old, result, podsByName) {
+			result = old
+			preservedPrevious = true
+		}
+		results = append(results, result)
 	}
 	for i := range previous {
 		if desiredCustomizedNodes[previous[i].NodeName] && !observedNodes[previous[i].NodeName] {
 			results = append(results, previous[i])
+			preservedPrevious = true
 		}
 	}
 	if len(results) == 0 {
-		return nil
+		return nil, false
 	}
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].NodeName < results[j].NodeName
 	})
-	return results
+	return results, preservedPrevious
+}
+
+func customizedActionObservationRegressed(
+	previous, observed workloadsv1alpha2.CustomizedActionResult,
+	podsByName map[string]*corev1.Pod,
+) bool {
+	if previous.PodName == observed.PodName {
+		return false
+	}
+	previousPod, previousExists := podsByName[previous.PodName]
+	observedPod, observedExists := podsByName[observed.PodName]
+	if previousExists && observedExists {
+		return !customizedActionPodIsNewer(observedPod, previousPod)
+	}
+	return observed.State == workloadsv1alpha2.CustomizedActionStateFailed
 }
 
 func limitCustomizedActionResults(
@@ -394,6 +440,9 @@ func limitCustomizedActionResults(
 
 	// Spend the remaining budget on full detail in priority order.
 	for i := range limited {
+		if len(originals[i].Containers) > customizedActionContainersMaxItems {
+			continue
+		}
 		encoded, err := json.Marshal(originals[i])
 		if err != nil {
 			continue
@@ -488,6 +537,24 @@ func updateCustomizedActionConditions(
 			break
 		}
 	}
+	allSucceeded := len(results) == desiredCustomizedActionNodes
+	for i := range results {
+		if results[i].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
+			allSucceeded = false
+			break
+		}
+	}
+	if allSucceeded {
+		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
+		apimeta.SetStatusCondition(conditions, metav1.Condition{
+			Type:               ConditionCustomizedActionComplete,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: generation,
+			Reason:             "AllActionsSucceeded",
+			Message:            "All customized actions completed successfully",
+		})
+		return
+	}
 	if globallyTimedOut || terminalFailure != nil {
 		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
 		reason := CustomizedActionReasonGlobalTimeout
@@ -505,25 +572,6 @@ func updateCustomizedActionConditions(
 			ObservedGeneration: generation,
 			Reason:             reason,
 			Message:            message,
-		})
-		return
-	}
-
-	allSucceeded := true
-	for i := range results {
-		if results[i].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
-			allSucceeded = false
-			break
-		}
-	}
-	if allSucceeded && len(results) == desiredCustomizedActionNodes {
-		apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
-		apimeta.SetStatusCondition(conditions, metav1.Condition{
-			Type:               ConditionCustomizedActionComplete,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: generation,
-			Reason:             "AllActionsSucceeded",
-			Message:            "All customized actions completed successfully",
 		})
 		return
 	}
@@ -567,8 +615,11 @@ func recordCustomizedActionEvents(
 		}
 		switch {
 		case result.State == workloadsv1alpha2.CustomizedActionStateSucceeded:
-			recorder.Eventf(warmup, corev1.EventTypeNormal, "CustomizedActionCompleted",
-				"node=%s, pod=%s: %s", result.NodeName, result.PodName, message)
+			eventMessage := truncateCustomizedActionMessageTo(
+				fmt.Sprintf("node=%s, pod=%s: %s", result.NodeName, result.PodName, message),
+				customizedActionEventMessageLimit,
+			)
+			recorder.Event(warmup, corev1.EventTypeNormal, "CustomizedActionCompleted", eventMessage)
 		case result.State == workloadsv1alpha2.CustomizedActionStateFailed,
 			result.Reason == CustomizedActionReasonImagePullFailed,
 			result.Reason == CustomizedActionReasonContainerStartFailed,
@@ -577,8 +628,32 @@ func recordCustomizedActionEvents(
 			if reason == "" {
 				reason = CustomizedActionReasonPodFailed
 			}
-			recorder.Eventf(warmup, corev1.EventTypeWarning, reason,
-				"node=%s, pod=%s: %s", result.NodeName, result.PodName, message)
+			eventMessage := truncateCustomizedActionMessageTo(
+				fmt.Sprintf("node=%s, pod=%s: %s", result.NodeName, result.PodName, message),
+				customizedActionEventMessageLimit,
+			)
+			recorder.Event(warmup, corev1.EventTypeWarning, reason, eventMessage)
 		}
+	}
+}
+
+func recordDisplacedCustomizedActionFailures(
+	recorder record.EventRecorder,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	previous, beforeCreate, afterCreate []workloadsv1alpha2.CustomizedActionResult,
+) {
+	afterByNode := make(map[string]workloadsv1alpha2.CustomizedActionResult, len(afterCreate))
+	for i := range afterCreate {
+		afterByNode[afterCreate[i].NodeName] = afterCreate[i]
+	}
+	for i := range beforeCreate {
+		failed := beforeCreate[i]
+		if failed.State != workloadsv1alpha2.CustomizedActionStateFailed {
+			continue
+		}
+		if latest, exists := afterByNode[failed.NodeName]; exists && latest.PodName == failed.PodName {
+			continue
+		}
+		recordCustomizedActionEvents(recorder, warmup, previous, []workloadsv1alpha2.CustomizedActionResult{failed})
 	}
 }

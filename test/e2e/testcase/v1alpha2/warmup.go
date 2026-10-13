@@ -513,7 +513,7 @@ func RunWarmupTestCases(f *framework.Framework) {
 			gomega.Expect(result.Containers[0].TerminationReason).To(gomega.Or(gomega.Equal("ContainerCannotRun"), gomega.Equal("StartError")))
 		})
 
-		ginkgo.It("reports image pull failure before customized action timeout", ginkgo.Label("customized-action"), func() {
+		ginkgo.It("times out a customized action whose image cannot be pulled", ginkgo.Label("customized-action"), func() {
 			nodeName := getFirstAvailableNodeName(f)
 			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
 				ObjectMeta: metav1.ObjectMeta{Name: "warmup-action-image-pull", Namespace: f.Namespace},
@@ -535,12 +535,6 @@ func RunWarmupTestCases(f *framework.Framework) {
 			f.RegisterDebugFn(func() { dumpWarmupDebugInfo(f, warmup) })
 			gomega.Expect(f.Client.Create(f.Ctx, warmup)).To(gomega.Succeed())
 
-			gomega.Eventually(func() string {
-				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(warmup), warmup); err != nil || len(warmup.Status.CustomizedActionResults) == 0 {
-					return ""
-				}
-				return warmup.Status.CustomizedActionResults[0].Reason
-			}, 15*time.Second, utils.Interval).Should(gomega.Equal("ImagePullFailed"))
 			gomega.Eventually(func() string {
 				if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(warmup), warmup); err != nil || len(warmup.Status.CustomizedActionResults) == 0 {
 					return ""

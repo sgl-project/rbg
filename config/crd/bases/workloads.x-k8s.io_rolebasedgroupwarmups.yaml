@@ -6417,28 +6417,49 @@ spec:
                             description: |-
                               CustomizedActionContainerState is the execution state of one customized
                               action container.
+                            enum:
+                            - Waiting
+                            - Running
+                            - Succeeded
+                            - Failed
                             type: string
                           terminationMessage:
+                            description: |-
+                              TerminationMessage may contain workload-provided diagnostic text. Access
+                              to Warmup status should therefore be granted with the same care as Pod logs.
+                            maxLength: 1024
                             type: string
                           terminationReason:
+                            maxLength: 128
                             type: string
                         required:
                         - containerName
                         - podContainerName
                         - state
                         type: object
+                      maxItems: 1024
                       type: array
                     message:
+                      description: |-
+                        Message may contain workload-provided diagnostic text. Access to Warmup
+                        status should therefore be granted with the same care as Pod logs.
+                      maxLength: 1024
                       type: string
                     nodeName:
                       type: string
                     podName:
                       type: string
                     reason:
+                      maxLength: 128
                       type: string
                     state:
                       description: CustomizedActionState is the aggregate execution
                         state for a node.
+                      enum:
+                      - Pending
+                      - Running
+                      - Succeeded
+                      - Failed
                       type: string
                     timeoutSeconds:
                       description: |-

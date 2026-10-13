@@ -29,10 +29,13 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -236,6 +239,32 @@ func TestEvaluateCustomizedActionPod(t *testing.T) {
 			wantExit:   ptr.To(int32(137)),
 		},
 		{
+			name: "deadline takes priority over container start failure",
+			pod: func() *corev1.Pod {
+				pod := mappedWarmupPod("node-1", "start-timeout", corev1.PodFailed, terminatedStatus("custom-0", 127, "ContainerCannotRun", "executable not found"))
+				pod.Status.Reason = "DeadlineExceeded"
+				pod.Status.Message = "Pod was active longer than specified deadline"
+				return pod
+			}(),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
+			wantReason: CustomizedActionReasonTimeout,
+			wantExit:   ptr.To(int32(127)),
+		},
+		{
+			name: "customized action succeeds before co-located preload deadline",
+			pod: func() *corev1.Pod {
+				pod := mappedWarmupPod("node-1", "preload-timeout", corev1.PodFailed, terminatedStatus("custom-0", 0, "Completed", ""))
+				pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: "image-preload-1", Image: "large-image"})
+				pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, waitingStatus("image-preload-1", "ContainerCreating", "pulling image"))
+				pod.Status.Reason = "DeadlineExceeded"
+				pod.Status.Message = "Pod was active longer than specified deadline"
+				return pod
+			}(),
+			wantState:  workloadsv1alpha2.CustomizedActionStateSucceeded,
+			wantReason: CustomizedActionReasonCompleted,
+			wantExit:   ptr.To(int32(0)),
+		},
+		{
 			name:       "image pull backoff",
 			pod:        mappedWarmupPod("node-1", "pull", corev1.PodPending, waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image")),
 			wantState:  workloadsv1alpha2.CustomizedActionStatePending,
@@ -246,6 +275,20 @@ func TestEvaluateCustomizedActionPod(t *testing.T) {
 			name:       "container start waiting failure",
 			pod:        mappedWarmupPod("node-1", "start", corev1.PodPending, waitingStatus("custom-0", "CreateContainerConfigError", "secret missing")),
 			wantState:  workloadsv1alpha2.CustomizedActionStatePending,
+			wantReason: CustomizedActionReasonContainerStartFailed,
+			wantDetail: "secret missing",
+		},
+		{
+			name:       "failed pod preserves image pull diagnostic as terminal",
+			pod:        mappedWarmupPod("node-1", "pull-terminal", corev1.PodFailed, waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image")),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
+			wantReason: CustomizedActionReasonImagePullFailed,
+			wantDetail: "back-off pulling image",
+		},
+		{
+			name:       "failed pod preserves container start diagnostic as terminal",
+			pod:        mappedWarmupPod("node-1", "start-waiting-terminal", corev1.PodFailed, waitingStatus("custom-0", "CreateContainerConfigError", "secret missing")),
+			wantState:  workloadsv1alpha2.CustomizedActionStateFailed,
 			wantReason: CustomizedActionReasonContainerStartFailed,
 			wantDetail: "secret missing",
 		},
@@ -320,6 +363,41 @@ func TestEvaluateCustomizedActionPod(t *testing.T) {
 			}
 			if len(container.TerminationMessage) > customizedActionTerminationMessageLimit {
 				t.Fatalf("termination message exceeded limit: %d", len(container.TerminationMessage))
+			}
+		})
+	}
+}
+
+func TestEvaluateCustomizedActionPodBoundsAggregateMessages(t *testing.T) {
+	longMessage := strings.Repeat("界", customizedActionTerminationMessageLimit)
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+	}{
+		{
+			name: "deadline",
+			pod: func() *corev1.Pod {
+				pod := mappedWarmupPod("node-1", "deadline", corev1.PodFailed, terminatedStatus("custom-0", 137, "Error", "terminated"))
+				pod.Status.Reason = "DeadlineExceeded"
+				pod.Status.Message = longMessage
+				return pod
+			}(),
+		},
+		{
+			name: "container start",
+			pod:  mappedWarmupPod("node-1", "start", corev1.PodFailed, terminatedStatus("custom-0", 127, "ContainerCannotRun", longMessage)),
+		},
+		{
+			name: "waiting",
+			pod:  mappedWarmupPod("node-1", "pull", corev1.PodPending, waitingStatus("custom-0", "ImagePullBackOff", longMessage)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluateCustomizedActionPod(tt.pod)
+			if len(got.Message) > customizedActionTerminationMessageLimit {
+				t.Fatalf("aggregate message exceeded %d bytes: %d", customizedActionTerminationMessageLimit, len(got.Message))
 			}
 		})
 	}
@@ -531,6 +609,139 @@ func TestUpdateStatusPreservesLastCustomizedActionResultBetweenAttempts(t *testi
 	}
 }
 
+func TestUpdateStatusPreservesTruncationFlagWithCompactedResult(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase:                            workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults:          []workloadsv1alpha2.CustomizedActionResult{previous},
+			CustomizedActionResultsTruncated: true,
+		},
+	}
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, nil, nil, desired, map[string]bool{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if !updated.Status.CustomizedActionResultsTruncated {
+		t.Fatal("expected preserved compacted result to retain truncation flag")
+	}
+}
+
+func TestUpdateStatusDoesNotRegressToOlderAttempt(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-2", State: workloadsv1alpha2.CustomizedActionStateRunning,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase:                            workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults:          []workloadsv1alpha2.CustomizedActionResult{previous},
+			CustomizedActionResultsTruncated: true,
+		},
+	}
+	older := mappedWarmupPod("node-1", "attempt-1", corev1.PodFailed, terminatedStatus("custom-0", 1, "Error", "old failure"))
+	older.Labels[LabelWarmupAttempt] = "1"
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, nil, []*corev1.Pod{older}, desired, map[string]bool{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 || updated.Status.CustomizedActionResults[0].PodName != previous.PodName {
+		t.Fatalf("expected latest preserved attempt, got %#v", updated.Status.CustomizedActionResults)
+	}
+	if !updated.Status.CustomizedActionResultsTruncated {
+		t.Fatal("expected preserved latest attempt to retain truncation provenance")
+	}
+}
+
+func TestUpdateStatusAcceptsNewerFailedAttempt(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateRunning,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning, CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{previous},
+		},
+	}
+	oldPod := mappedWarmupPod("node-1", "attempt-1", corev1.PodFailed, terminatedStatus("custom-0", 1, "Error", "old failure"))
+	oldPod.Labels[LabelWarmupAttempt] = "1"
+	newPod := mappedWarmupPod("node-1", "attempt-2", corev1.PodFailed, terminatedStatus("custom-0", 2, "Error", "new failure"))
+	newPod.Labels[LabelWarmupAttempt] = "2"
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, nil, []*corev1.Pod{oldPod, newPod}, desired, map[string]bool{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 || updated.Status.CustomizedActionResults[0].PodName != newPod.Name {
+		t.Fatalf("expected newer failed attempt, got %#v", updated.Status.CustomizedActionResults)
+	}
+}
+
+func TestUpdateStatusPreservesMissingLatestTerminalAttempt(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-2", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode, Message: "latest failure",
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning, CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{previous},
+		},
+	}
+	older := mappedWarmupPod("node-1", "attempt-1", corev1.PodFailed, terminatedStatus("custom-0", 1, "Error", "old failure"))
+	older.Labels[LabelWarmupAttempt] = "1"
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(context.Background(), warmup, nil, nil, []*corev1.Pod{older}, desired, map[string]bool{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 || updated.Status.CustomizedActionResults[0].PodName != previous.PodName {
+		t.Fatalf("expected missing latest terminal attempt to be preserved, got %#v", updated.Status.CustomizedActionResults)
+	}
+}
+
 func TestUpdateStatusBoundsCustomizedActionResultsAtScale(t *testing.T) {
 	const nodeCount = 1000
 	longMessage := strings.Repeat("x", customizedActionTerminationMessageLimit)
@@ -718,6 +929,18 @@ func TestUpdateCustomizedActionConditions(t *testing.T) {
 			t.Fatalf("expected global-timeout failure condition, got %#v", conditions)
 		}
 	})
+
+	t.Run("global timeout preserves completed customized actions", func(t *testing.T) {
+		conditions := []metav1.Condition{{Type: ConditionCustomizedActionFailed, Status: metav1.ConditionTrue}}
+		updateCustomizedActionConditions(&conditions, 7, []workloadsv1alpha2.CustomizedActionResult{succeeded}, map[string]bool{}, true, 1)
+		if failedCondition := apimeta.FindStatusCondition(conditions, ConditionCustomizedActionFailed); failedCondition != nil {
+			t.Fatalf("completed customized action must not be marked failed: %#v", conditions)
+		}
+		complete := apimeta.FindStatusCondition(conditions, ConditionCustomizedActionComplete)
+		if complete == nil || complete.Status != metav1.ConditionTrue {
+			t.Fatalf("expected completed customized action condition, got %#v", conditions)
+		}
+	})
 }
 
 func TestFailWarmupJobPreservesCustomizedActionDiagnosticsWithoutDesiredNodes(t *testing.T) {
@@ -820,6 +1043,164 @@ func TestFailWarmupJobFinalizesNonTerminalCustomizedActionResults(t *testing.T) 
 	}
 }
 
+func TestFailWarmupJobEmitsEventForFinalizedCustomizedAction(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{{
+				NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateRunning,
+			}},
+		},
+	}
+	r := newWarmupReconciler(warmup)
+	recorder := r.Recorder.(*record.FakeRecorder)
+
+	if err := r.failWarmupJob(
+		context.Background(), warmup, nil, nil, nil, nil, "InvalidTarget", "target disappeared",
+	); err != nil {
+		t.Fatalf("fail warmup job: %v", err)
+	}
+
+	foundCustomizedActionEvent := false
+	for len(recorder.Events) > 0 {
+		if event := <-recorder.Events; strings.Contains(event, "node=node-1") && strings.Contains(event, "InvalidTarget") {
+			foundCustomizedActionEvent = true
+		}
+	}
+	if !foundCustomizedActionEvent {
+		t.Fatal("expected finalized customized action to emit a per-node warning event")
+	}
+}
+
+func TestFailWarmupJobBoundsFallbackDiagnostics(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{{
+				NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateRunning,
+			}},
+		},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.failWarmupJob(
+		context.Background(), warmup, nil, nil, nil, nil,
+		strings.Repeat("r", customizedActionTerminationReasonLimit+1),
+		strings.Repeat("界", customizedActionTerminationMessageLimit),
+	); err != nil {
+		t.Fatalf("fail warmup job: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	got := updated.Status.CustomizedActionResults[0]
+	if len(got.Reason) > customizedActionTerminationReasonLimit || len(got.Message) > customizedActionTerminationMessageLimit {
+		t.Fatalf("fallback diagnostics exceed API bounds: reason=%d message=%d", len(got.Reason), len(got.Message))
+	}
+}
+
+func TestReconcileDoesNotBlockRetriesWhenStatusIsAtMaxItems(t *testing.T) {
+	const resultCount = customizedActionResultsMaxItems + 1
+	desired := make([]string, 0, resultCount)
+	previous := make([]workloadsv1alpha2.CustomizedActionResult, 0, customizedActionResultsMaxItems)
+	for i := 0; i < resultCount; i++ {
+		nodeName := fmt.Sprintf("node-%04d", i)
+		desired = append(desired, nodeName)
+		if i > 0 {
+			previous = append(previous, workloadsv1alpha2.CustomizedActionResult{
+				NodeName: nodeName, PodName: "old-" + nodeName, State: workloadsv1alpha2.CustomizedActionStateFailed,
+				Reason: CustomizedActionReasonContainerExitCode,
+			})
+		}
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{
+				BackoffLimitPerNode: ptr.To(int32(2)), Parallelism: ptr.To(int32(1)),
+			},
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames: desired,
+				WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+					Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+				}},
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning, CustomizedActionResults: previous,
+		},
+	}
+	failed := mappedWarmupPod("node-0000", "attempt-1", corev1.PodFailed, terminatedStatus("custom-0", 17, "Error", "failed"))
+	failed.Namespace = warmup.Namespace
+	failed.Labels[LabelWarmupName] = warmup.Name
+	failed.Labels[LabelWarmupUID] = string(warmup.UID)
+	failed.Labels[LabelWarmupAttempt] = "1"
+	r := newWarmupReconciler(warmup, failed)
+	r.Recorder = record.NewFakeRecorder(resultCount + 10)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(context.Background(), pods, client.InNamespace(warmup.Namespace)); err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	for i := range pods.Items {
+		if pods.Items[i].Status.Phase != corev1.PodFailed {
+			return
+		}
+	}
+	t.Fatal("expected retry creation to proceed even when result status is at maxItems")
+}
+
+func TestFailWarmupJobPreservesDiagnosticsFromDeletingPod(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStatePending,
+		Reason: CustomizedActionReasonImagePullFailed, Message: "container=node-check: back-off pulling image",
+		Containers: []workloadsv1alpha2.CustomizedActionContainerResult{{
+			ContainerName: "node-check", PodContainerName: "custom-0",
+			State:             workloadsv1alpha2.CustomizedActionContainerStateWaiting,
+			TerminationReason: "ImagePullBackOff",
+		}},
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning, CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{previous},
+		},
+	}
+	pod := mappedWarmupPod("node-1", "attempt-1", corev1.PodRunning, waitingStatus("custom-0", "ImagePullBackOff", "back-off pulling image"))
+	now := metav1.Now()
+	pod.DeletionTimestamp = &now
+	desired := map[string][]workloadsv1alpha2.WarmupActions{
+		"node-1": {{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+			Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+		}}},
+	}
+	r := newWarmupReconciler(warmup)
+
+	if err := r.failWarmupJob(
+		context.Background(), warmup, []*corev1.Pod{pod}, nil, nil, desired,
+		CustomizedActionReasonGlobalTimeout, "warmup timed out",
+	); err != nil {
+		t.Fatalf("fail warmup job: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 {
+		t.Fatalf("expected one preserved result, got %#v", updated.Status.CustomizedActionResults)
+	}
+	got := updated.Status.CustomizedActionResults[0]
+	if got.State != workloadsv1alpha2.CustomizedActionStateFailed || got.Reason != previous.Reason || got.Message != previous.Message || len(got.Containers) != 1 {
+		t.Fatalf("expected preserved diagnostics to be finalized, got %#v", got)
+	}
+}
+
 func TestRecordCustomizedActionEventsOnlyForTransitions(t *testing.T) {
 	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
 	recorder := record.NewFakeRecorder(10)
@@ -847,6 +1228,133 @@ func TestRecordCustomizedActionEventsOnlyForTransitions(t *testing.T) {
 	case <-recorder.Events:
 	default:
 		t.Fatal("new retry attempt must emit a new event")
+	}
+}
+
+func TestRecordCustomizedActionEventsBoundsEventMessage(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"}}
+	recorder := record.NewFakeRecorder(1)
+	result := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateFailed,
+		Reason: CustomizedActionReasonContainerExitCode, Message: strings.Repeat("界", customizedActionTerminationMessageLimit),
+	}
+
+	recordCustomizedActionEvents(recorder, warmup, nil, []workloadsv1alpha2.CustomizedActionResult{result})
+	event := <-recorder.Events
+	parts := strings.SplitN(event, " ", 3)
+	if len(parts) != 3 {
+		t.Fatalf("unexpected event format: %q", event)
+	}
+	if len(parts[2]) > 1024 {
+		t.Fatalf("event message exceeded 1024 bytes: %d", len(parts[2]))
+	}
+}
+
+func TestReconcileReportsFailedAttemptBeforeCreatingRetry(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{BackoffLimitPerNode: ptr.To(int32(2))},
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames: []string{"node-1"},
+				WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+					Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+				}},
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{{
+				NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateRunning,
+			}},
+		},
+	}
+	failed := mappedWarmupPod("node-1", "attempt-1", corev1.PodFailed, terminatedStatus("custom-0", 17, "Error", "GPU check failed"))
+	failed.Namespace = warmup.Namespace
+	failed.Labels[LabelWarmupName] = warmup.Name
+	failed.Labels[LabelWarmupUID] = string(warmup.UID)
+	failed.Labels[LabelWarmupAttempt] = "1"
+	r := newWarmupReconciler(warmup, failed)
+	recorder := r.Recorder.(*record.FakeRecorder)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	foundFailureEvent := false
+	for len(recorder.Events) > 0 {
+		if event := <-recorder.Events; strings.Contains(event, CustomizedActionReasonContainerExitCode) && strings.Contains(event, "attempt-1") {
+			foundFailureEvent = true
+		}
+	}
+	if !foundFailureEvent {
+		t.Fatal("expected failed attempt to emit a warning event before retry replaces it")
+	}
+}
+
+func TestReconcileReportsDisplacedFailureAfterPartialRetryCreation(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "uid-1"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{BackoffLimitPerNode: ptr.To(int32(2))},
+			TargetNodes: &workloadsv1alpha2.TargetNodes{
+				NodeNames: []string{"node-1", "node-2"},
+				WarmupActions: workloadsv1alpha2.WarmupActions{CustomizedAction: &workloadsv1alpha2.CustomizedAction{
+					Containers: []corev1.Container{{Name: "node-check", Image: "busybox"}},
+				}},
+			},
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase: workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{
+				{NodeName: "node-1", PodName: "attempt-1-node-1", State: workloadsv1alpha2.CustomizedActionStateRunning},
+				{NodeName: "node-2", PodName: "attempt-1-node-2", State: workloadsv1alpha2.CustomizedActionStateRunning},
+			},
+		},
+	}
+	failedPods := make([]runtime.Object, 0, 2)
+	for _, nodeName := range []string{"node-1", "node-2"} {
+		pod := mappedWarmupPod(nodeName, "attempt-1-"+nodeName, corev1.PodFailed, terminatedStatus("custom-0", 17, "Error", "failed"))
+		pod.Namespace = warmup.Namespace
+		pod.Labels[LabelWarmupName] = warmup.Name
+		pod.Labels[LabelWarmupUID] = string(warmup.UID)
+		pod.Labels[LabelWarmupAttempt] = "1"
+		failedPods = append(failedPods, pod)
+	}
+	scheme := newWarmupTestScheme()
+	objects := append([]runtime.Object{warmup}, failedPods...)
+	createCount := 0
+	createErr := errors.New("injected second retry create failure")
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(objects...).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupWarmup{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.Pod); ok {
+					createCount++
+					if createCount == 2 {
+						return createErr
+					}
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(20)
+	r := &RoleBasedGroupWarmupReconciler{Client: fakeClient, Scheme: scheme, Recorder: recorder}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if !errors.Is(err, createErr) {
+		t.Fatalf("expected retry creation error, got %v", err)
+	}
+	foundDisplacedFailure := false
+	for len(recorder.Events) > 0 {
+		if event := <-recorder.Events; strings.Contains(event, CustomizedActionReasonContainerExitCode) && strings.Contains(event, "node=node-1") {
+			foundDisplacedFailure = true
+		}
+	}
+	if !foundDisplacedFailure {
+		t.Fatal("expected successfully displaced failure to emit an event before returning create error")
 	}
 }
 
