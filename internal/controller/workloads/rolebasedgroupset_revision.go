@@ -36,10 +36,13 @@ import (
 )
 
 // systemManagedAnnotationKeys are the annotation keys controllers own on a child RoleBasedGroup.
-// The RoleBasedGroup controller records discovery-config-mode on its own object; treating that as
-// template drift would make the two controllers rewrite each other forever.
+// They are excluded from the revision hash, from drift comparison, and from metadata sync so the
+// set controller does not fight the RBG controller or the conversion webhook.
 var systemManagedAnnotationKeys = map[string]bool{
-	constants.DiscoveryConfigModeAnnotationKey: true,
+	constants.DiscoveryConfigModeAnnotationKey:                 true,
+	constants.ConversionV1alpha1CoordinationAnnotationKey:      true,
+	constants.ConversionV1alpha2RolloutStrategyAnnotationKey:   true,
+	constants.ConversionV1alpha2RolloutStatusAnnotationKey:     true,
 }
 
 type groupSetRevision struct {

@@ -35,7 +35,7 @@ const (
 	annotationV1alpha1PodGroupPolicy = "conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy"
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
-	annotationV1alpha1Coordination = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+	annotationV1alpha1Coordination = constants.ConversionV1alpha1CoordinationAnnotationKey
 )
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
