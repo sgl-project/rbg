@@ -191,8 +191,9 @@ func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 			role: &role,
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg-test-role",
-					Namespace: "default",
+					Name:            "test-rbg-test-role",
+					Namespace:       "default",
+					OwnerReferences: claimTestOwnedBy(rbg),
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: ptr.To[int32](3),
@@ -211,8 +212,9 @@ func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 			role: &role,
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg-test-role",
-					Namespace: "default",
+					Name:            "test-rbg-test-role",
+					Namespace:       "default",
+					OwnerReferences: claimTestOwnedBy(rbg),
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: ptr.To[int32](3),

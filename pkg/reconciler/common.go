@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -120,6 +121,35 @@ func CleanupOrphanedObjs(ctx context.Context, c client.Client, rbg *workloadsv1a
 		}
 	}
 
+	return nil
+}
+
+// ErrWorkloadNotClaimable reports that a role's workload exists under its name but the
+// RoleBasedGroup may not manage it.
+var ErrWorkloadNotClaimable = errors.New("workload is not claimable by this RoleBasedGroup")
+
+// checkWorkloadClaimable rejects only a workload the current rbg genuinely may not manage: one
+// controlled by a different RoleBasedGroup (foreign uid, e.g. left by a same-named RBG deleted in
+// the background), or an orphan that does not carry this group's label. An orphaned workload that
+// still carries the group's label (e.g. left by kubectl delete --cascade=orphan) is claimable: the
+// apply that follows re-attaches the controller reference, adopting it.
+//
+// A terminating workload the rbg itself owns must stay claimable: rejecting it would abort the role
+// reconcile with an error, which propagates out of reconcileRoles and skips the cleanup step, so a
+// role removed from the spec would keep its leftover workload and dependents running.
+func checkWorkloadClaimable(obj v1.Object, rbg *workloadsv1alpha2.RoleBasedGroup) error {
+	ref := v1.GetControllerOfNoCopy(obj)
+	switch {
+	case ref == nil:
+		if obj.GetLabels()[constants.GroupNameLabelKey] != rbg.Name {
+			return fmt.Errorf(
+				"%w: %s has no controller reference and does not carry %s=%s",
+				ErrWorkloadNotClaimable, obj.GetName(), constants.GroupNameLabelKey, rbg.Name,
+			)
+		}
+	case ref.UID != rbg.UID:
+		return fmt.Errorf("%w: %s is controlled by uid %s", ErrWorkloadNotClaimable, obj.GetName(), ref.UID)
+	}
 	return nil
 }
 

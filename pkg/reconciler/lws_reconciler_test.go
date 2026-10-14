@@ -94,8 +94,9 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 	// Create LWS with status
 	lws := &lwsv1.LeaderWorkerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      rbg.GetWorkloadName(&lwsRole),
-			Namespace: rbg.Namespace,
+			Name:            rbg.GetWorkloadName(&lwsRole),
+			Namespace:       rbg.Namespace,
+			OwnerReferences: claimTestOwnedBy(rbg),
 		},
 		Status: lwsv1.LeaderWorkerSetStatus{
 			Replicas:      5,
@@ -183,8 +184,9 @@ func TestLeaderWorkerSetReconciler_CheckWorkloadReady(t *testing.T) {
 				if !tt.expectError || tt.lwsStatus.Replicas > 0 || tt.lwsStatus.ReadyReplicas > 0 {
 					lws := &lwsv1.LeaderWorkerSet{
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      rbg.GetWorkloadName(&lwsRole),
-							Namespace: rbg.Namespace,
+							Name:            rbg.GetWorkloadName(&lwsRole),
+							Namespace:       rbg.Namespace,
+							OwnerReferences: claimTestOwnedBy(rbg),
 						},
 						Status: tt.lwsStatus,
 					}

@@ -737,6 +737,91 @@ func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 	}
 }
 
+// TestRoleBasedGroupReconciler_CleanupRunsWhenOwnedWorkloadTerminating pins the "cleanup must keep
+// running" invariant: when one role's workload is terminating but still owned by the rbg, the
+// reconcile must not abort before the cleanup step, so a role removed from the spec still gets its
+// leftover workload deleted.
+func TestRoleBasedGroupReconciler_CleanupRunsWhenOwnedWorkloadTerminating(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	const rbgUID = types.UID("rbg-test-uid")
+	ownerRef := metav1.OwnerReference{
+		APIVersion: workloadsv1alpha2.GroupVersion.String(),
+		Kind:       "RoleBasedGroup",
+		Name:       "test-rbg",
+		Controller: ptr.To(true),
+		UID:        rbgUID,
+	}
+
+	// Role "keep" stays in the spec; its workload is terminating but still owned by the rbg.
+	// Role "removed" is gone from the spec; its leftover workload must be cleaned up.
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole("keep").WithWorkload("apps/v1", "StatefulSet").Obj(),
+		}).Obj()
+	rbg.UID = rbgUID
+
+	terminatingNow := metav1.Now()
+	ownedTerminatingSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-keep",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "keep",
+			},
+			OwnerReferences:   []metav1.OwnerReference{ownerRef},
+			DeletionTimestamp: &terminatingNow,
+			Finalizers:        []string{"test.finalizer/rbg"},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+		},
+	}
+	orphanedSts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg-removed",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "removed",
+			},
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Template: wrappers.BuildBasicPodTemplateSpec().Obj(),
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(rbg, ownedTerminatingSts, orphanedSts).
+		Build()
+
+	r := &RoleBasedGroupReconciler{
+		client:                        fakeClient,
+		apiReader:                     fakeClient,
+		scheme:                        testScheme,
+		recorder:                      record.NewFakeRecorder(20),
+		workloadReconciler:            make(map[string]reconciler.WorkloadReconciler),
+		enableDeprecatedWorkloadTypes: true,
+	}
+
+	logger := zap.New().WithValues("env", "unit-test")
+	ctx := ctrl.LoggerInto(context.TODO(), logger)
+
+	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-rbg", Namespace: "default"}})
+	require.NoError(t, err, "reconcile must not abort before cleanup: a terminating workload the RBG owns must stay claimable")
+
+	got := &appsv1.StatefulSet{}
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-rbg-removed", Namespace: "default"}, got)
+	assert.True(t, apierrors.IsNotFound(err), "orphaned workload must be deleted by cleanup, got err=%v", err)
+}
+
 func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)

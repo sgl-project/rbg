@@ -247,6 +247,15 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 
+	// The dependency's workload is one the RBG below already controls.
+	ownerRef := metav1.OwnerReference{
+		APIVersion: workloadsv1alpha2.GroupVersion.String(),
+		Kind:       "RoleBasedGroup",
+		Name:       "test-rbg",
+		UID:        "test-rbg-uid",
+		Controller: ptr.To(true),
+	}
+
 	tests := []struct {
 		name        string
 		sts         *appsv1.StatefulSet
@@ -257,8 +266,9 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 			name: "dependency ready",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg-role2",
-					Namespace: "default",
+					Name:            "test-rbg-role2",
+					Namespace:       "default",
+					OwnerReferences: []metav1.OwnerReference{ownerRef},
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: ptr.To(int32(2)),
@@ -275,8 +285,9 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 			name: "dependency not ready",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-rbg-role2",
-					Namespace: "default",
+					Name:            "test-rbg-role2",
+					Namespace:       "default",
+					OwnerReferences: []metav1.OwnerReference{ownerRef},
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Replicas: ptr.To(int32(2)),
@@ -295,6 +306,7 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
+			UID:       "test-rbg-uid",
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 			Roles: []workloadsv1alpha2.RoleSpec{

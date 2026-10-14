@@ -98,6 +98,11 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	if err == nil {
+		if err := checkWorkloadClaimable(oldRoleInstanceSet, rbg); err != nil {
+			return err
+		}
+	}
 
 	roleInstanceSetApplyConfig, err := r.constructRoleInstanceSetApplyConfiguration(ctx, rbg, role, rollingUpdateStrategy, revisionKey, oldRoleInstanceSet)
 	if err != nil {
@@ -505,6 +510,9 @@ func (r *RoleInstanceSetReconciler) ConstructRoleStatus(
 	); err != nil {
 		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
+	if checkWorkloadClaimable(roleInstanceSet, rbg) != nil {
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, nil
+	}
 	return ConstructWorkloadRoleStatus(ctx, rbg, role,
 		roleInstanceSet.Status.Replicas, roleInstanceSet.Status.ReadyReplicas, roleInstanceSet.Status.UpdatedReplicas,
 		roleInstanceSet.Generation, roleInstanceSet.Status.ObservedGeneration), nil
@@ -518,6 +526,9 @@ func (r *RoleInstanceSetReconciler) CheckWorkloadReady(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, roleInstanceSet,
 	); err != nil {
 		return false, err
+	}
+	if checkWorkloadClaimable(roleInstanceSet, rbg) != nil {
+		return false, nil
 	}
 
 	// We don't check ready if workload is rolling update if maxSkew is set.
