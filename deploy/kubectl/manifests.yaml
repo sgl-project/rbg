@@ -91391,6 +91391,65 @@ spec:
                   created.
                 format: int32
                 type: integer
+              rolloutStrategy:
+                description: |-
+                  RolloutStrategy controls updates to child RoleBasedGroups. When unset, legacy
+                  unordered updates apply; an empty strategy defaults to InPlaceUpdate.
+                properties:
+                  maxSurge:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 0
+                    description: |-
+                      MaxSurge is ignored by the controller for InPlaceUpdate; admission only allows
+                      it to be omitted, 0 or 0% in that mode.
+                      For Recreate, it is the maximum number of RoleBasedGroups created above Replicas.
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be a non-negative integer or a percentage from
+                        0% to 100%
+                      rule: 'type(self) == int ? self >= 0 : self.matches(''^[0-9]{1,3}%$'')
+                        && int(self.substring(0, self.size()-1)) <= 100'
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 1
+                    description: |-
+                      MaxUnavailable limits unavailable RoleBasedGroups during updates. It defaults to 1.
+                      InPlaceUpdate rejects 0 and 0%; the controller enforces a resolved minimum of 1.
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be a non-negative integer or a percentage from
+                        0% to 100%
+                      rule: 'type(self) == int ? self >= 0 : self.matches(''^[0-9]{1,3}%$'')
+                        && int(self.substring(0, self.size()-1)) <= 100'
+                  partition:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 0
+                    description: |-
+                      Partition is the number of lowest ordinal RoleBasedGroups that are held back on the
+                      previous template. Only the ordinals in [Partition, Replicas) take part in the
+                      rollout.
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be a non-negative integer or a percentage from
+                        0% to 100%
+                      rule: 'type(self) == int ? self >= 0 : self.matches(''^[0-9]{1,3}%$'')
+                        && int(self.substring(0, self.size()-1)) <= 100'
+                  type:
+                    default: InPlaceUpdate
+                    description: |-
+                      Type indicates how one child RoleBasedGroup is moved onto the new template.
+                      Defaults to InPlaceUpdate when omitted or empty.
+                    enum:
+                    - Recreate
+                    - InPlaceUpdate
+                    type: string
+                type: object
             required:
             - groupTemplate
             type: object
@@ -91452,14 +91511,54 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentReplicas:
+                description: |-
+                  CurrentReplicas is the number of child RoleBasedGroups at ordinals below Replicas
+                  whose spec.roles do not match the current GroupTemplate, i.e.
+                format: int32
+                type: integer
+              currentRevision:
+                description: CurrentRevision is the revision of the last fully completed
+                  rollout.
+                type: string
+              expectedUpdatedReplicas:
+                description: |-
+                  ExpectedUpdatedReplicas is the number of RoleBasedGroups the rollout is expected to
+                  bring onto the current GroupTemplate. It is calculated as Replicas - Partition.
+                format: int32
+                type: integer
               observedGeneration:
                 description: The generation observed by the deployment controller.
                 format: int64
                 type: integer
               readyReplicas:
+                description: |-
+                  ReadyReplicas is the number of child RoleBasedGroups currently serving,
+                  including ready surge groups.
                 format: int32
                 type: integer
               replicas:
+                description: |-
+                  Replicas is the total number of child RoleBasedGroups, including surge groups
+                  created above spec.replicas during a rolling update. It can therefore exceed
+                  spec.replicas while a surge is in flight.
+                format: int32
+                type: integer
+              updateRevision:
+                description: UpdateRevision is the revision of the current GroupTemplate.
+                type: string
+              updatedReadyReplicas:
+                description: |-
+                  UpdatedReadyReplicas is the number of child RoleBasedGroups at ordinals below
+                  Replicas whose spec.roles match the current GroupTemplate and are also ready.
+                  Surge groups are not counted.
+                format: int32
+                type: integer
+              updatedReplicas:
+                description: |-
+                  UpdatedReplicas is the number of child RoleBasedGroups at ordinals below Replicas
+                  whose spec.roles match the current GroupTemplate, whether they are ready or not.
+                  Surge groups are not counted.
                 format: int32
                 type: integer
             type: object

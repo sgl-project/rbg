@@ -83,6 +83,9 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Info("rbgset is deleting, skip reconcile")
 		return ctrl.Result{}, nil
 	}
+	if rbgset.Spec.RolloutStrategy != nil {
+		return r.reconcileRollingGroupSet(ctx, req.NamespacedName)
+	}
 
 	// 2. List all child RoleBasedGroup instances currently associated with this RoleBasedGroupSet.
 	var rbglist workloadsv1alpha2.RoleBasedGroupList
@@ -274,6 +277,14 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 
 	// Create a deep copy of the status to modify.
 	newStatus := *rbgset.Status.DeepCopy()
+	newStatus.ObservedGeneration = rbgset.Generation
+	newStatus.CurrentRevision = ""
+	newStatus.UpdateRevision = ""
+	newStatus.CurrentReplicas = 0
+	newStatus.UpdatedReplicas = 0
+	newStatus.UpdatedReadyReplicas = 0
+	newStatus.ExpectedUpdatedReplicas = 0
+	meta.RemoveStatusCondition(&newStatus.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
 	newStatus.Replicas = int32(len(rbglist.Items))
 
 	// Calculate the number of ready replicas.
@@ -428,6 +439,9 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.GroupTemplate.Spec.Roles) {
 		return true
 	}
+	if !reflect.DeepEqual(rbg.Spec.RoleTemplates, rbgset.Spec.GroupTemplate.Spec.RoleTemplates) {
+		return true
+	}
 
 	// Check if labels from the template need to be propagated
 	if r.needsTemplateLabelUpdate(rbgset, rbg) {
@@ -472,8 +486,13 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 			return true
 		}
 	}
-	// Check if any template annotation was removed from the template but still exists on RBG
+	// Check if any template annotation was removed from the template but still exists on RBG.
+	// Keys the controllers own never count as drift: the RoleBasedGroup controller writes
+	// discovery-config-mode on its own object, and wiping it would loop the two controllers.
 	for k := range rbg.Annotations {
+		if systemManagedAnnotationKeys[k] {
+			continue
+		}
 		if _, exists := templateAnnotations[k]; !exists {
 			return true
 		}
@@ -506,6 +525,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 
 				// Update the spec from template, normalizing legacy update-strategy type
 				// values so a pre-webhook legacy template cannot poison the child.
+				latestRBG.Spec = *rbgset.Spec.GroupTemplate.Spec.DeepCopy()
 				latestRBG.Spec.Roles = normalizedGroupTemplateRoles(rbgset)
 
 				// Sync labels and annotations from the template
@@ -544,14 +564,20 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	newLabels[constants.GroupSetIndexLabelKey] = rbg.Labels[constants.GroupSetIndexLabelKey]
 	rbg.Labels = newLabels
 
-	// Sync annotations: replace with exactly what the template specifies.
-	if len(rbgset.Spec.GroupTemplate.Annotations) == 0 {
-		rbg.Annotations = nil
-	} else {
-		newAnnotations := make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
-		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
+	// Sync annotations: keys the controllers own are carried over from the child, template
+	// annotations are applied over them, and anything else is removed.
+	newAnnotations := make(map[string]string, len(rbg.Annotations)+len(rbgset.Spec.GroupTemplate.Annotations))
+	for k, v := range rbg.Annotations {
+		if systemManagedAnnotationKeys[k] {
 			newAnnotations[k] = v
 		}
+	}
+	for k, v := range rbgset.Spec.GroupTemplate.Annotations {
+		newAnnotations[k] = v
+	}
+	if len(newAnnotations) == 0 {
+		rbg.Annotations = nil
+	} else {
 		rbg.Annotations = newAnnotations
 	}
 }
@@ -576,6 +602,8 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 		}
 	}
 
+	spec := rbgset.Spec.GroupTemplate.Spec.DeepCopy()
+	spec.Roles = normalizedGroupTemplateRoles(rbgset)
 	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   rbgset.Namespace,
@@ -584,11 +612,7 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 			Annotations: rbgAnnotations,
 			// The OwnerReference will be set in the scaleUp function.
 		},
-		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-			// Normalize legacy update-strategy type values the same way updateExistingRBGs
-			// does, so a fresh child never carries a value the CRD enum rejects.
-			Roles: normalizedGroupTemplateRoles(rbgset),
-		},
+		Spec: *spec,
 	}
 }
 
