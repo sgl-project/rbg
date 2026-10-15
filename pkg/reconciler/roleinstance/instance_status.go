@@ -255,6 +255,15 @@ func (r *realStatusUpdater) getExpectOwnedPods(instance *workloadsv1alpha2.RoleI
 			}, pod); err != nil {
 				return nil, err
 			}
+			// A recreated instance can encounter a same-name Pod left behind
+			// by its previous UID while garbage collection is still pending.
+			if !metav1.IsControlledBy(pod, instance) {
+				return nil, fmt.Errorf("pod %s is not controlled by RoleInstance %s (UID %s)",
+					klog.KObj(pod), klog.KObj(instance), instance.UID)
+			}
+			if pod.DeletionTimestamp != nil {
+				return nil, fmt.Errorf("pod %s is terminating", klog.KObj(pod))
+			}
 			pods = append(pods, pod)
 		}
 	}
