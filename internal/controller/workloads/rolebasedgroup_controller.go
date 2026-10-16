@@ -979,6 +979,9 @@ func (r *RoleBasedGroupReconciler) applyRBGSAReplicasOverride(
 			}
 			return fmt.Errorf("get scaling adapter %s/%s: %w", rbg.Namespace, adapterName, err)
 		}
+		if !adapter.ContainsRBGOwner(rbg) {
+			continue
+		}
 		if adapter.Status.Phase != constants.AdapterPhaseBound {
 			continue
 		}
@@ -1020,20 +1023,39 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 	err := r.client.Get(
 		ctx, types.NamespacedName{Name: roleScalingAdapterName, Namespace: rbg.Namespace}, rbgScalingAdapter,
 	)
+	// scalingAdapter exists
 	if err == nil {
-		// scalingAdapter exists
+		// scalingAdapter is disabled, it must be deleted.
 		if !scale.IsScalingAdapterEnable(roleSpec) {
 			logger.Info("delete scalingAdapter", "scalingAdapter", rbgScalingAdapter.Name)
 			return r.client.Delete(ctx, rbgScalingAdapter)
 		}
-		// Ensure labels are up to date.
-		desiredLabels := buildScalingAdapterLabels(roleSpec, rbg.Name, roleName)
-		if !maps.Equal(rbgScalingAdapter.Labels, desiredLabels) {
-			logger.Info("updating scalingAdapter labels", "scalingAdapter", rbgScalingAdapter.Name)
-			rbgScalingAdapter.Labels = desiredLabels
-			return r.client.Update(ctx, rbgScalingAdapter)
+		if scale.IsScalingAdapterManagedByRBG(rbgScalingAdapter, rbg) {
+			// Ensure labels are up to date.
+			desiredLabels := buildScalingAdapterLabels(roleSpec, rbg.Name, roleName)
+			if !maps.Equal(rbgScalingAdapter.Labels, desiredLabels) {
+				logger.Info("updating scalingAdapter labels", "scalingAdapter", rbgScalingAdapter.Name)
+				rbgScalingAdapter.Labels = desiredLabels
+				return r.client.Update(ctx, rbgScalingAdapter)
+			}
+			return nil
 		}
-		return nil
+		// The adapter is an orphan or a leftover of a previous same-named RBG.
+		// Replace it so it carries this RBG's owner reference and starts from a
+		// clean state instead of inheriting the predecessor's replicas.
+		// Use the observed UID as a delete precondition: if the cache is stale and
+		// a newer adapter already lives under this name, the API server will reject
+		// the delete and the reconcile will retry instead of wiping out the live object.
+		logger.Info("recreating scalingAdapter not owned by this RBG", "scalingAdapter", rbgScalingAdapter.Name)
+		if err := r.client.Delete(ctx, rbgScalingAdapter, &client.DeleteOptions{
+			Raw: &metav1.DeleteOptions{
+				Preconditions: &metav1.Preconditions{
+					UID: &rbgScalingAdapter.UID,
+				},
+			},
+		}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
 	} else if !apierrors.IsNotFound(err) {
 		// failed to check scaling adapter exists
 		return err
