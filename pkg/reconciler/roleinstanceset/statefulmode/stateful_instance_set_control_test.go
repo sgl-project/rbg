@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2015,7 +2017,7 @@ func TestPruneInstanceHealth(t *testing.T) {
 			}
 			controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
 
-			controller.pruneInstanceHealth()
+			controller.pruneInstanceHealth(time.Now())
 
 			got, exists := instanceUnhealthySince.Load(key)
 			wantPresent := state == "live" || state == "lookup error"
@@ -2052,7 +2054,7 @@ func TestPruneEarlyRollbackReplacementSignals(t *testing.T) {
 			}
 			controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
 
-			controller.pruneInstanceHealth()
+			controller.pruneInstanceHealth(time.Now())
 
 			_, exists := earlyRollbackReplacementSignals.Load(key)
 			wantPresent := state == "live" || state == "lookup error"
@@ -2061,6 +2063,147 @@ func TestPruneEarlyRollbackReplacementSignals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPruneInstanceHealthInterval(t *testing.T) {
+	for _, state := range []string{"deleted", "recreated"} {
+		t.Run(state, func(t *testing.T) {
+			resetInstanceUnhealthySince()
+			resetEarlyRollbackReplacementSignals()
+			t.Cleanup(resetInstanceUnhealthySince)
+			t.Cleanup(resetEarlyRollbackReplacementSignals)
+
+			set := buildSet("prefill", 1, nil, nil)
+			set.UID = "prefill-set"
+			otherSet := set.DeepCopy()
+			otherSet.Namespace = "other"
+			otherSet.UID = "other-set"
+			instance := buildInst(set.Name, 0, testOldRev, false, true)
+			now := time.Now()
+			firstObserved := now.Add(-2 * stableUnhealthyDuration)
+			indexer := &healthCountingIndexer{Indexer: cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)}
+			for _, liveSet := range []*workloadsv1alpha2.RoleInstanceSet{set, otherSet} {
+				if err := indexer.Add(liveSet); err != nil {
+					t.Fatal(err)
+				}
+				instanceUnhealthySince.Store(getInstanceHealthKey(liveSet, instance), firstObserved)
+				recordEarlyRollbackReplacementSignal(liveSet, 0, testUpdateRev)
+			}
+			controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
+			controller.pruneInstanceHealth(now)
+			if got := indexer.lookups.Load(); got != 4 {
+				t.Fatalf("first sweep made %d lookups, want 4", got)
+			}
+
+			if state == "deleted" {
+				if err := indexer.Delete(set); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				replacement := set.DeepCopy()
+				replacement.UID = "replacement-set"
+				if err := indexer.Update(replacement); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			for _, offset := range []time.Duration{0, instanceHealthPruneInterval - time.Nanosecond} {
+				controller.pruneInstanceHealth(now.Add(offset))
+				if got := indexer.lookups.Load(); got != 4 {
+					t.Fatalf("cleanup before interval elapsed made extra lookups: got %d, want 4", got)
+				}
+			}
+			controller.pruneInstanceHealth(now.Add(instanceHealthPruneInterval))
+			if got := indexer.lookups.Load(); got != 8 {
+				t.Fatalf("cleanup at interval boundary made %d total lookups, want 8", got)
+			}
+			if _, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, instance)); ok {
+				t.Fatal("stale unhealthy timer was not reclaimed")
+			}
+			if _, ok := earlyRollbackReplacementSignals.Load(getInstanceSetKey(set)); ok {
+				t.Fatal("stale rollback signal was not reclaimed")
+			}
+			if got, ok := instanceUnhealthySince.Load(getInstanceHealthKey(otherSet, instance)); !ok || got != firstObserved {
+				t.Fatalf("another set's unhealthy timer changed: got %v, exists=%v", got, ok)
+			}
+			if _, ok := earlyRollbackReplacementSignals.Load(getInstanceSetKey(otherSet)); !ok {
+				t.Fatal("another set's rollback signal was removed")
+			}
+		})
+	}
+}
+
+func TestPruneInstanceHealthConcurrent(t *testing.T) {
+	resetInstanceUnhealthySince()
+	resetEarlyRollbackReplacementSignals()
+	t.Cleanup(resetInstanceUnhealthySince)
+	t.Cleanup(resetEarlyRollbackReplacementSignals)
+	set := buildSet("prefill", 1, nil, nil)
+	set.UID = "prefill-set"
+	indexer := &healthCountingIndexer{Indexer: cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)}
+	if err := indexer.Add(set); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	instanceUnhealthySince.Store(getInstanceHealthKey(set, buildInst(set.Name, 0, testOldRev, false, true)), now)
+	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
+	controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range 32 {
+		workers.Go(func() {
+			<-start
+			controller.pruneInstanceHealth(now)
+		})
+	}
+	close(start)
+	workers.Wait()
+	if got := indexer.lookups.Load(); got != 2 {
+		t.Fatalf("concurrent cleanup made %d lookups, want one sweep with 2 lookups", got)
+	}
+}
+
+func BenchmarkPruneInstanceHealth(b *testing.B) {
+	for _, count := range []int{100, 10000} {
+		b.Run(fmt.Sprintf("instances=%d", count), func(b *testing.B) {
+			resetInstanceUnhealthySince()
+			resetEarlyRollbackReplacementSignals()
+			b.Cleanup(resetInstanceUnhealthySince)
+			set := buildSet("prefill", int32(count), nil, nil)
+			indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+			if err := indexer.Add(set); err != nil {
+				b.Fatal(err)
+			}
+			for i := range count {
+				instanceUnhealthySince.Store(getInstanceHealthKey(set, buildInst(set.Name, i, testOldRev, false, true)), time.Now())
+			}
+			for _, sweep := range []bool{false, true} {
+				b.Run(fmt.Sprintf("sweep=%t", sweep), func(b *testing.B) {
+					controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
+					now := time.Now()
+					controller.pruneInstanceHealth(now)
+					b.ReportAllocs()
+					b.ResetTimer()
+					for range b.N {
+						if sweep {
+							now = now.Add(instanceHealthPruneInterval)
+						}
+						controller.pruneInstanceHealth(now)
+					}
+				})
+			}
+		})
+	}
+}
+
+type healthCountingIndexer struct {
+	cache.Indexer
+	lookups atomic.Int32
+}
+
+func (i *healthCountingIndexer) GetByKey(key string) (interface{}, bool, error) {
+	i.lookups.Add(1)
+	return i.Indexer.GetByKey(key)
 }
 
 type healthErrorIndexer struct {
