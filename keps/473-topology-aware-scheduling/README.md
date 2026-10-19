@@ -17,7 +17,12 @@
     - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
     - [Background: Scheduler Topology Dialects](#background-scheduler-topology-dialects)
-    - [Level Identifiers: Pass-Through Semantics](#level-identifiers-pass-through-semantics)
+    - [Portable Topology Vocabulary: ClusterNetworkTopology CR](#portable-topology-vocabulary-clusternetworktopology-cr)
+        - [API](#api)
+        - [Mode Support Matrix](#mode-support-matrix)
+        - [Validation and Admission](#validation-and-admission)
+        - [Controller Materialization](#controller-materialization)
+        - [Status and Level Contract](#status-and-level-contract)
     - [Core API: TopologyConstraint](#core-api-topologyconstraint)
     - [Attachment Points](#attachment-points)
     - [Mutability and Update Semantics](#mutability-and-update-semantics)
@@ -39,6 +44,12 @@
     - [Graduation Criteria](#graduation-criteria)
     - [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy)
     - [Version Skew Strategy](#version-skew-strategy)
+- [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
+    - [Feature Enablement and Rollback](#feature-enablement-and-rollback)
+    - [Rollout, Upgrade and Rollback Planning](#rollout-upgrade-and-rollback-planning)
+    - [Monitoring Requirements](#monitoring-requirements)
+    - [Dependencies](#dependencies)
+    - [Scalability](#scalability)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
 <!-- /toc -->
@@ -47,11 +58,12 @@
 
 RBG orchestrates role-based, multi-node inference workloads whose pods communicate intensely: tensor/pipeline parallelism spans machines within a single serving instance, and prefill–decode disaggregation streams KV cache across roles. The usable bandwidth and latency of that communication depend strongly on physical network locality — pods inside the same rack/block enjoy far better fabric than pods crossing spine-level, oversubscribed links.
 
-This KEP introduces topology-aware scheduling for RBG with three pieces:
+This KEP introduces topology-aware scheduling for RBG with four pieces:
 
-1. **`TopologyConstraint`** — a group-granularity API (`pack.required` / `pack.preferred`), exposed on RoleSpec as **`InstanceTopologyConstraint`** (pack each RoleInstance's pods) and, for cross-role co-location, in **CoordinatedPolicy** rules that name an explicit set of roles (e.g., the prefill and decode roles of a PD-disaggregated deployment). The values are **level identifiers in the configured scheduler's own vocabulary, passed through verbatim**: a Volcano `tierName`, a Koordinator `topologyLayer`, or a KAI level identifier (`nodeLabel` or `alias`). A `topologyName` field selects the scheduler topology resource on dialects that need one, currently KAI.
-2. **A scheduler-independent placement planner.** Gang (KEP-430) and topology no longer each decide how physical PodGroups are partitioned. The planner first resolves one logical **PlacementGroup tree** from all placement intents; gang and topology are attributes of the same logical group. A pod can therefore have exactly one placement membership, and incompatible scope overlaps are rejected before workloads are created.
-3. **A scheduler compiler.** One compiler per dialect (Volcano, Koordinator, KAI) is the only component that renders physical PodGroups and pod membership. If a dialect cannot compile a valid logical tree without semantic loss, it reports `SchedulerUnsupported` rather than approximating it.
+1. **`ClusterNetworkTopology`** — a scheduler-independent CR that defines the topology vocabulary used by RBG workloads. In **Managed** mode, RBG declares ordered levels and materializes the scheduler-native resources (KAI `Topology`, Volcano `HyperNode` set). In **Imported** mode, RBG binds an existing scheduler topology resource and exposes its levels through status. Workloads never name a backend GVK.
+2. **`TopologyConstraint`** — a group-granularity API (`pack.required` / `pack.preferred`), exposed on RoleSpec as **`InstanceTopologyConstraint`** (pack each RoleInstance's pods) and, for cross-role co-location, in **CoordinatedPolicy** rules that name an explicit set of roles (e.g., the prefill and decode roles of a PD-disaggregated deployment). `topologyName` references the RBG `ClusterNetworkTopology`; `required` and `preferred` reference levels in that CR's `status.levels`.
+3. **A scheduler-independent placement planner.** Gang (KEP-430) and topology no longer each decide how physical PodGroups are partitioned. The planner first resolves one logical **PlacementGroup tree** from all placement intents; gang and topology are attributes of the same logical group. A pod can therefore have exactly one placement membership, and incompatible scope overlaps are rejected before workloads are created.
+4. **A scheduler compiler.** One compiler per dialect (Volcano, Koordinator, KAI) is the only component that renders physical PodGroups and pod membership. If a dialect cannot compile a valid logical tree without semantic loss, it reports `SchedulerUnsupported` rather than approximating it.
 
 ## Motivation
 
@@ -79,7 +91,7 @@ Because a Volcano/Koordinator/KAI pod can belong to only one physical PodGroup, 
 1. **Declarative group–domain affinity.** Express topology intent with group-granularity semantics — the pod group of one RoleInstance, or of an explicit role set, is the atomic placement unit and a common performance domain is selected on the topology tree. Cover both scenarios (RoleInstance packing, cross-role co-location over selected roles) with hard (`required`) and soft (`preferred`) constraint semantics.
 2. **Composability with gang scheduling.** Gang and topology intents with the same scope compose on one placement group. Disjoint scopes remain independent. Containment scopes form a parent/child placement tree when a backend can render it. Partially overlapping scopes are rejected explicitly, before pod creation, because no target scheduler can represent a pod with two parents.
 3. **Propagation along the resource chain.** Constraints are declared at the Role level (instance packing) and in CoordinatedPolicy rules (cross-role co-location), then propagated along RBG → Role → RoleInstanceSet → RoleInstance → Pods, surfacing finally as pod scheduling constraints; users never configure pods individually.
-4. **Uniform API shape, honest about the single scheduler.** One declaration structure translates into the downstream dialect of the configured scheduler (Volcano `networkTopology`, Koordinator `gatherStrategy`, KAI topology constraints); the values are level identifiers in that scheduler's own vocabulary — no abstraction layer pretending cross-scheduler portability. Schedulers without topology capability report "unsupported" explicitly.
+4. **Portable topology vocabulary.** RBG workloads reference `ClusterNetworkTopology` and its status levels, not Volcano `tierName`, Koordinator `topologyLayer`, or KAI `nodeLabel`/`alias` resources. Managed topology definitions are scheduler-independent; imported topology is an explicit compatibility boundary whose levels are surfaced through RBG status. Schedulers without topology capability report "unsupported" explicitly.
 5. **Lifecycle coverage.** Pods created by scale-out, rolling update, or failure recovery still satisfy the declared constraints (no constraint drift).
 6. **Observable and diagnosable.** Placement-plan validity, translation fidelity, constraint satisfaction, and failure reasons (insufficient domain capacity, unsupported level, missing scheduler capability, incompatible scopes) are queryable from the RBG's status and events, which name the declaring CoordinatedPolicy rule, RoleSpec, or RoleInstance.
 
@@ -87,7 +99,7 @@ Because a Volcano/Koordinator/KAI pod can belong to only one physical PodGroup, 
 
 1. **No anti-affinity.** Spreading replicas across topology domains (disaster-tolerance dispersion) is out of scope for this KEP.
 2. **No placement algorithms.** Domain selection, bin-packing, and capacity accounting belong to downstream schedulers; RBG only declares constraints, plans logical membership, and compiles scheduler objects.
-3. **No topology discovery ownership.** The topology tree (HyperNode/Topology/ClusterNetworkTopology CRs and node labels) is maintained by administrators or discovery tools (UFM, topograph); RBG consumes it.
+3. **No topology discovery ownership.** RBG does not discover physical topology or assign node labels. Administrators or discovery tools (UFM, RoCE topology exporters, topograph) maintain node labels and, for Imported mode, the native scheduler CR. In Managed mode RBG owns only the scheduler resources it generates from those labels.
 4. **No native kube-scheduler translation.** Native affinity is a per-pod approximation and cannot preserve group-granularity or gang semantics. A native scheduler receives an explicit `SchedulerUnsupported` condition in this KEP's delivery scope.
 
 ## Proposal
@@ -108,16 +120,23 @@ As an inference application developer, I need the topology constraint to cover e
 
 ### Design Overview
 
-Topology-aware scheduling is built in three layers:
+Topology-aware scheduling is built in four layers:
 
-**User layer — `TopologyConstraint` on Role and CoordinatedPolicy.** Users declare `pack.required` / `pack.preferred` with the level identifiers of the cluster's scheduler — the same strings administrators already maintain on Volcano `tierName`, Koordinator `topologyLayer`, or KAI node-label keys/aliases. All *inter-role* coordination, topology included, lives in CoordinatedPolicy (the object that already carries coordinated rolling update, scaling, and gang); *intra-role* packing stays on the role itself. Attachment points:
+**Topology vocabulary layer — `ClusterNetworkTopology`.** A cluster-scoped RBG CR defines the topology names that workload manifests are allowed to use. It has two mutually exclusive modes:
+
+- **Managed**: the user declares an ordered list of levels (`zone`, `block`, `rack`, `host`) and the label key that partitions nodes at each level. The controller materializes the active scheduler's native resources.
+- **Imported**: the user binds an existing native topology resource by name. The controller reads it, validates the mode/name constraints, and writes the available levels into status.
+
+A mutating webhook stamps the active scheduler into `spec.scheduler` on first create; the field is immutable. This prevents a topology from silently changing meaning when the cluster's active scheduler changes. A validating webhook enforces mode exclusivity and immutability. The controller adds a finalizer, reconciles backend resources or bindings, and publishes `Ready`, `NativeTopologyDrift`, and the level list in status.
+
+**User layer — `TopologyConstraint` on Role and CoordinatedPolicy.** Users declare `pack.required` / `pack.preferred` using names from `status.levels` of the referenced `ClusterNetworkTopology`. All *inter-role* coordination, topology included, lives in CoordinatedPolicy (the object that already carries coordinated rolling update, scaling, and gang); *intra-role* packing stays on the role itself. Attachment points:
 
 - **Role level** (`spec.roles[].instanceTopologyConstraint`): constraint group = one RoleInstance's pods; every instance picks its domain independently (instance packing). The field is pattern-independent and applies equally to `LeaderWorkerPattern` and `CustomComponentsPattern` roles.
 - **Cross-role level** (`spec.policies[].strategy.scheduling.topologyConstraint` on CoordinatedPolicy): constraint group = all pods of the roles named in the rule's `roles` list (cross-role co-location). Roles not listed stay outside the cross-role domain (their own instance-level constraints still apply). Listing every role of the RBG recovers whole-group co-location, so no dedicated RBG-level field exists.
 
 **Placement planning layer.** Before any scheduler object is created, the controller resolves gang intents (KEP-430 semantics are unchanged), topology intents, and role-instance partitioning into one **PlacementPlan**. The planner is the only owner of logical membership: equal scopes merge gang and topology attributes; disjoint scopes produce sibling groups; containment scopes produce a tree; partially overlapping scopes are rejected. This removes order dependence between gang and topology translation and prevents a pod from being assigned two different physical PodGroups.
 
-**Scheduler compiler.** Per scheduler, a compiler consumes the valid PlacementPlan and renders the dialect — Volcano `networkTopology` at PodGroup/subGroup level, Koordinator `gatherStrategy`, KAI topology constraints — while preserving KEP-430 gang behavior when no topology is configured. Levels are validated at reconcile against the scheduler's own topology objects (HyperNode tierName set, ClusterNetworkTopology layers, KAI Topology CR); failures (unknown level, incapable scheduler, incompatible placement scopes) are explicit: status conditions plus events, never silent degradation.
+**Scheduler compiler.** Per scheduler, a compiler consumes the valid PlacementPlan plus the resolved `ClusterNetworkTopology` status and renders the dialect — Volcano `networkTopology` at PodGroup/subGroup level, Koordinator `gatherStrategy`, KAI topology constraints — while preserving KEP-430 gang behavior when no topology is configured. Levels are validated against the RBG topology CR's status and native resource state; failures (unknown level, topology not ready, incapable scheduler, incompatible placement scopes) are explicit: status conditions plus events, never silent degradation.
 
 ### Notes/Constraints/Caveats
 
@@ -126,22 +145,26 @@ Topology-aware scheduling is built in three layers:
 - **Gather-only semantics.** The API models "gather into a common domain" (聚). "Spread across domains" (散) is deliberately excluded.
 - **The constraint group is exactly the rule's role set.** Referenced roles join one common domain; unreferenced roles stay outside it (their own instance-level constraints still apply). A role may appear in at most one topology-bearing rule because placement membership partitions pods; overlap is rejected by the CoordinatedPolicy validating webhook, following the `gang.minReplicas` validation pattern. Gang and topology scopes may additionally be equal, disjoint, or nested, but not partially overlapping.
 - **Soft semantics are approximate on Volcano.** Volcano cannot anchor a soft target at a middle tier. `required: R` plus `preferred: P` renders `mode: hard` with `highestTierName: R`; the preferred target is not represented as a tier threshold. This is an explicit fidelity loss reported as `PreferredAbsorbed`, not a claim that scoring is equivalent to anchoring at `P`.
-- **Volcano requires tier names.** Constraints reference `HyperNode.spec.tierName` only; integer `highestTierAllowed` is never rendered. Clusters whose HyperNodes predate `tierName` must adopt it (otherwise they are unsupported).
-- **KAI uses Topology-backed levels.** A KAI level is identified by its `nodeLabel` or its `TopologyLevel.alias`; RBG passes either form through and resolves it against the selected `Topology` CR. The KAI PodGroup also names that `Topology` CR: RBG takes it from `TopologyConstraint.topologyName`, falling back to controller configuration, and validates that the object exists (see Level Identifiers).
+- **Volcano is materialized, not imported.** RBG Managed mode creates a set of HyperNodes from node labels; Imported mode is unsupported because there is no single topology resource to bind. `HyperNode.spec.tierName` is always the RBG level name, and integer `highestTierAllowed` is never rendered.
+- **Koordinator is import-only.** Koordinator's scheduler reads only the `ClusterNetworkTopology` named `default`; RBG Managed mode could conflict with cluster-administrator ownership, so it is unsupported. A topology binding must reference `default`.
+- **KAI uses Topology-backed levels.** In Managed mode, RBG writes `TopologyLevel.alias = ClusterNetworkTopology.spec.levels[].name`. In Imported mode, RBG reads the external Topology and exposes each level's alias when present, otherwise its `nodeLabel`, through status. KAI alias/nodeLabel drift is surfaced rather than silently remapped.
+- **All topology CRs are pinned to one scheduler.** `spec.scheduler` is stamped on create and immutable. If the active scheduler later differs, the controller skips backend reconcile and reports `SchedulerMismatch`; it does not silently reinterpret the same native resource name under a new scheduler.
 
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Users mistype a level identifier (no schema can catch a wrong string) | Admission checks syntax only; reconcile-time existence validation against the scheduler's topology objects surfaces `TopologyTranslated=False` on the RBG, with the event/message naming the declaring CoordinatedPolicy rule or RoleSpec and the offending value before any pod group is rendered |
+| Users mistype a level identifier (no schema can catch a wrong string) | The workload controller resolves `topologyName` to a Ready `ClusterNetworkTopology` and validates `required`/`preferred` against `status.levels`; failures surface `TopologyTranslated=False` and name the declaring CoordinatedPolicy rule or RoleSpec before any pod group is rendered |
 | Gang and topology rules have partially overlapping scopes, so no backend can preserve both guarantees | Placement planning normalizes scopes before rendering and rejects partial overlap with `TopologyTranslated=False` / `IncompatiblePlacementGroups`; role create/update is gated |
 | Scheduler has no topology capability (including the native kube-scheduler) | Hard constraints report `SchedulerUnsupported` explicitly; always surfaced in status — never silently dropped or approximated by per-pod affinity |
-| Scheduler topology drift (a level renamed/removed while workloads reference it) | No scheduler topology-object watch is added. The next RBG, CoordinatedPolicy, or workload-driven reconcile revalidates the level and flips `TopologyTranslated=False` naming the exact identifier. The trigger is a normal workload event (RBG/RoleInstance generation update, scale, rollout, recovery, or controller resync), which is also the event used by tests |
-| Volcano version too old or tier names unmaintained (no `tierName`, no subGroup-level `networkTopology`) | Runtime CRD schema detection (same pattern as KEP-430's `hasSubGroupPolicy` check) plus HyperNode tierName existence validation; explicit unsupported |
+| Imported topology drift (a level renamed/removed, or a native CR deleted and recreated with the same name) | The ClusterNetworkTopology controller watches its bound resource and UID, updates `status.levels`, and reports `NativeTopologyDrift`/`NativeTopologyNotFound`; workload reconcile gates on `Ready` and names the invalid level |
+| Managed topology resources are externally modified | The controller owns generated resources and restores the desired state; while a mismatch exists it reports `NativeTopologyDrift` and does not mark the topology Ready |
+| Active scheduler changes after a topology CR is created | `spec.scheduler` is immutable and was stamped at create; reconcile reports `SchedulerMismatch` and skips backend reconciliation instead of reinterpreting the topology under a new scheduler |
+| Volcano version too old or its topology CRD is unavailable (no `tierName`, no subGroup-level `networkTopology`) | Runtime CRD schema detection (same pattern as KEP-430's `hasSubGroupPolicy` check); explicit unsupported |
 | Constraints guaranteed only for newly created pods; already-running pods may drift from the constraint after external rescheduling | Placement validation gates role create/update, so new/updated pods never run unconstrained. Reconcile re-renders objects for scale-out/rollout/recovery. Running pods are not evicted; drift of *running* pods is left to the scheduler's own mechanisms and documented |
 | Topology declarations are changed after the workload contract is accepted | V1alpha2 validating admission rejects in-place additions, removals, and changes; changing topology requires deleting and recreating the workload |
 | A user bypasses v1alpha2 validating admission (for example, through a v1alpha1 conversion round trip or by disabling webhooks) | This is outside the controller's enforcement boundary; the user is responsible for using the v1alpha2 API with validating webhooks enabled |
-| KAI topology identity is missing or inconsistent across one RBG | `topologyName` is validated at reconcile; a missing or mismatched name reports `TopologyResourceUnresolved` / `IncompatibleTopologyNames` and blocks rendering |
+| Topology identity is missing, not Ready, or inconsistent across one RBG | `TopologyConstraint.topologyName` must reference one Ready RBG `ClusterNetworkTopology`; missing/not-ready/mismatched names report `TopologyUnresolved` / `TopologyNotReady` / `IncompatibleTopologyNames` and block rendering |
 | A topology rule names a role absent from the RBG, or a role appears in two topology-bearing rules | Admission checks rule-internal syntax (same webhook pattern as `gang.minReplicas`); role existence is verified at reconcile against the RBG (a policy may be written before the RBG exists) and reported as `TopologyTranslated=False` (`RoleUnresolved`) naming the offending role |
 
 ## Design Details
@@ -158,49 +181,307 @@ All target schedulers model the data-center network as a **domain tree** — Clu
 
 Key structural facts the design exploits:
 
-- Every dialect can be keyed by a **string**: Volcano `tierName`, Koordinator `topologyLayer`, and KAI `nodeLabel`/`alias` are names. A single pass-through string field therefore covers all dialects without type branching or a mapping layer.
+- Every dialect can expose an ordered list of **string level names**: Volcano `tierName`, Koordinator `topologyLayer`, and KAI alias/nodeLabel. RBG can therefore define a portable vocabulary in `ClusterNetworkTopology` and map it to each scheduler without exposing backend GVKs in workload manifests.
 - Koordinator and KAI natively support two-tier (required + preferred) declarations. Volcano hard mode has no middle-tier soft anchor; preferred is reported as absorbed rather than translated (see Translation Matrix).
 - Volcano's `subGroupPolicy` (used by KEP-430 gang translation, partitioned per RoleInstance via `matchLabelKeys`) accepts per-subGroup `networkTopology`, giving instance-granularity constraints for this dialect.
 
-### Level Identifiers: Pass-Through Semantics
+### Portable Topology Vocabulary: ClusterNetworkTopology CR
 
-Constraint types `required` and `preferred` are supported:
+RBG workloads must not name Volcano `HyperNode.tierName`, Koordinator `ClusterNetworkTopology.topologyLayer`, or a KAI `nodeLabel`/`alias` as their API contract. Those identifiers are scheduler vocabulary and make the workload API change meaning when the active scheduler changes. The mapping instead lives in a new RBG CR:
 
-| Scheduler | `required`/`preferred` value | Rendered into |
+```text
+RBG workload
+  -> ClusterNetworkTopology topologyName + status.levels
+     -> controller materializes or binds scheduler-native topology resources
+        -> scheduler compiler renders dialect-specific PodGroup constraints
+```
+
+The CR is cluster-scoped. Its kind intentionally has the same name as Koordinator's CR but a different API group (`topology.x-k8s.io`); tools and examples must always display the full `apiVersion` to avoid ambiguity.
+
+#### API
+
+Managed mode — RBG owns the generated scheduler resources:
+
+```yaml
+apiVersion: topology.x-k8s.io/v1alpha1
+kind: ClusterNetworkTopology
+metadata:
+  name: gpu-fabric
+spec:
+  # Written by RBG's mutating webhook from the controller's active-scheduler
+  # configuration on first create; immutable afterwards. Users do not set it.
+  scheduler: KAI
+  levels:
+    - name: zone
+      nodeLabelKey: topology.kubernetes.io/zone
+    - name: block
+      nodeLabelKey: topology.example.com/block
+    - name: rack
+      nodeLabelKey: topology.example.com/rack
+    - name: host
+      nodeLabelKey: kubernetes.io/hostname
+```
+
+`levels` is ordered from broadest to narrowest. The array order is the only depth representation; there is no separate depth field.
+
+Imported mode — RBG binds an externally maintained resource and never modifies it:
+
+```yaml
+apiVersion: topology.x-k8s.io/v1alpha1
+kind: ClusterNetworkTopology
+metadata:
+  name: koordinator-default
+spec:
+  scheduler: Koordinator
+  topologyBinding:
+    topologyReference: default
+```
+
+`topologyReference` is only a name. It does not contain a GVK, so users do not need to understand scheduler resource types. The controller resolves it according to the immutable `spec.scheduler` and records the actual GVK, name, and UID in status.
+
+```go
+type ClusterNetworkTopologySpec struct {
+	// Scheduler is stamped from the controller's active-scheduler
+	// configuration by a mutating webhook on create and is immutable.
+	// +kubebuilder:validation:Enum=KAI;Koordinator;Volcano
+	Scheduler SchedulerType `json:"scheduler"`
+
+	// Levels declares a managed topology. It is mutually exclusive with
+	// TopologyBinding and immutable after create.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Levels []TopologyLevelSpec `json:"levels,omitempty"`
+
+	// TopologyBinding references an externally managed scheduler topology
+	// resource. It is mutually exclusive with Levels and immutable after create.
+	// +optional
+	TopologyBinding *TopologyBindingSpec `json:"topologyBinding,omitempty"`
+}
+
+type TopologyLevelSpec struct {
+	// Name is the portable level name used by RBG workloads.
+	// +required
+	Name string `json:"name"`
+
+	// NodeLabelKey partitions nodes at this level. A node participates in a
+	// domain only when it has a non-empty value for this key.
+	// +required
+	NodeLabelKey string `json:"nodeLabelKey"`
+}
+
+type TopologyBindingSpec struct {
+	// TopologyReference is the native resource name, interpreted according to
+	// spec.scheduler. Koordinator accepts only "default".
+	// +required
+	TopologyReference string `json:"topologyReference"`
+}
+```
+
+#### Mode Support Matrix
+
+| Scheduler | Managed | Imported | Binding name | Reason |
+|---|---|---|---|---|
+| KAI | Yes | Yes | any `Topology` CR name | KAI supports multiple Topology CRs and workload-level topology selection |
+| Koordinator | No | Yes | must be `default` | the scheduler reads only the `ClusterNetworkTopology` named `default`; RBG must not take ownership of an administrator's global resource |
+| Volcano | Yes | No | n/a | topology is a set of HyperNodes, not a single bindable resource |
+
+Managed topology definitions are portable across schedulers as long as the same `levels[].name` values are declared. Imported topology is deliberately an explicit compatibility boundary: its status levels are read from the external CR, but the workload API still references only the RBG CR and status, never a backend GVK.
+
+#### Validation and Admission
+
+A mutating webhook is required for topology CR creation:
+
+1. read the active scheduler from controller configuration;
+2. if `spec.scheduler` is empty, write the active scheduler;
+3. if a user-provided value differs from the active scheduler, reject the create;
+4. reject creation if the active scheduler is unknown.
+
+A validating webhook enforces:
+
+- `spec.levels` and `spec.topologyBinding` are mutually exclusive and exactly one must be set;
+- `spec.scheduler`, `spec.levels`, and `spec.topologyBinding` are immutable;
+- managed level names and node label keys are non-empty and unique;
+- a level name must not equal any node label key in the same topology (KAI alias validation);
+- `kubernetes.io/hostname` may only be the last level;
+- the number of levels is within backend limits (KAI's current limit is 16);
+- Koordinator imported topology must reference exactly `default`;
+- Volcano imported topology is rejected as `ModeUnsupported`.
+
+Validation that requires reading Nodes or backend CRs happens in reconcile, not admission. This keeps admission self-contained and allows topology CRs to be created before all nodes are labeled.
+
+#### Controller Materialization
+
+The controller adds a finalizer to every `ClusterNetworkTopology`. It removes the finalizer only after workload references are gone and, for Managed mode, generated backend resources are deleted.
+
+**KAI Managed** creates or updates one KAI `Topology` CR:
+
+```yaml
+apiVersion: kai.scheduler/v1alpha1
+kind: Topology
+metadata:
+  name: gpu-fabric
+  ownerReferences:
+  - apiVersion: topology.x-k8s.io/v1alpha1
+    kind: ClusterNetworkTopology
+    name: gpu-fabric
+    controller: true
+spec:
+  levels:
+    - nodeLabel: topology.kubernetes.io/zone
+      alias: zone
+    - nodeLabel: topology.example.com/block
+      alias: block
+    - nodeLabel: topology.example.com/rack
+      alias: rack
+    - nodeLabel: kubernetes.io/hostname
+      alias: host
+```
+
+The native resource normally uses the RBG CR name. If that name is already occupied by an unowned resource, reconcile reports `NativeTopologyConflict` and does not overwrite it.
+
+**KAI Imported** reads the referenced `Topology` and reverse-maps each level:
+
+```text
+status.level = alias if non-empty, otherwise nodeLabel
+```
+
+The bound resource is read-only. If an alias changes, `status.levels` changes and the CR reports drift; workloads that reference the old name fail validation instead of being silently remapped. If the native CR is deleted and recreated with the same name, the recorded UID mismatch reports drift/not-found semantics rather than treating it as the same object.
+
+**Koordinator Imported** reads only the `scheduling.koordinator.sh/v1alpha1 ClusterNetworkTopology` named `default` and writes each `networkTopologySpec[].topologyLayer` into `status.levels`. Koordinator's per-layer `labelKey` array is not part of the workload contract. Its any-of semantics remain owned by Koordinator; users who need to diagnose it inspect the native CR. Managed mode is unsupported to avoid contending for the global `default` object.
+
+**Volcano Managed** materializes a forest of HyperNodes from Node labels:
+
+1. list Nodes and read the label value for every non-host level;
+2. a Node participates only when every non-host level label is non-empty; excluded Nodes emit a warning event;
+3. build the domain path from broadest to narrowest, for example `zone-a/block-b/rack-r1`;
+4. create one HyperNode per unique path, with:
+   - `spec.tierName = spec.levels[].name`;
+   - integer `tier` derived from level order (leaf is tier 1, each broader level increments by one);
+   - leaf members of type `Node`;
+   - parent members of type `HyperNode` referencing the child domain;
+   - an ownerReference and RBG labels on the ClusterNetworkTopology;
+5. name HyperNodes deterministically from the topology name, level name, and a hash of the full domain path, so the same rack name under different zones never collapses;
+6. watch Nodes and generated HyperNodes:
+   - label changes update memberships;
+   - stale domains are deleted;
+   - external edits are restored;
+   - tier/tierName collisions with non-owned HyperNodes report `NativeTopologyConflict`.
+
+Volcano Imported mode is unsupported because there is no single resource whose GVK/name/UID can represent the whole tree.
+
+#### Status and Level Contract
+
+`status` is the contract used by workload reconciliation. It is deliberately minimal and has no `phase`; `Ready` plus `reason` is richer and avoids a second source of truth.
+
+```go
+type ClusterNetworkTopologyStatus struct {
+	// ObservedGeneration is the ClusterNetworkTopology generation processed
+	// by the controller.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Mode is Managed or Imported.
+	Mode TopologyMode `json:"mode,omitempty"`
+
+	// ActiveScheduler is the scheduler currently configured in the RBG
+	// controller. It is compared with spec.scheduler during reconcile.
+	ActiveScheduler SchedulerType `json:"activeScheduler,omitempty"`
+
+	// Levels is the ordered workload contract, broadest first.
+	Levels []string `json:"levels,omitempty"`
+
+	// Resources records the bound or generated native resource(s).
+	Resources []NativeTopologyResourceStatus `json:"resources,omitempty"`
+
+	// Conditions includes Ready and NativeTopologyDrift.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+type NativeTopologyResourceStatus struct {
+	APIVersion string `json:"apiVersion,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Name       string `json:"name,omitempty"`
+	UID        types.UID `json:"uid,omitempty"`
+	Managed    bool `json:"managed,omitempty"`
+	NativeGeneration int64 `json:"nativeGeneration,omitempty"`
+
+	// Volcano aggregate fields; unused by single-resource backends.
+	NamePrefix string `json:"namePrefix,omitempty"`
+	Count      int32 `json:"count,omitempty"`
+}
+```
+
+```yaml
+status:
+  observedGeneration: 1
+  mode: Managed
+  activeScheduler: KAI
+
+  # Ordered from broadest to narrowest. Array order is the depth.
+  levels:
+    - zone
+    - block
+    - rack
+    - host
+
+  resources:
+    - apiVersion: kai.scheduler/v1alpha1
+      kind: Topology
+      name: gpu-fabric
+      managed: true
+      nativeGeneration: 1
+
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: TranslationSucceeded
+      message: "Topology has been translated to kai.scheduler/v1alpha1 Topology gpu-fabric"
+      lastTransitionTime: "2026-10-15T08:00:00Z"
+```
+
+Imported resources additionally record `uid` so a same-name recreation cannot be mistaken for the original object. Volcano records an aggregate entry rather than listing every HyperNode:
+
+```yaml
+resources:
+  - apiVersion: topology.volcano.sh/v1alpha1
+    kind: HyperNode
+    managed: true
+    namePrefix: rbg-gpu-fabric-
+    count: 538
+```
+
+`status.levels` contains only strings. It intentionally does not expose `nodeLabelKeys`, backend level types, or domain counts. If diagnostics are needed later, they belong in a separate optional `levelDetails` field rather than in the workload contract.
+
+The controller maintains these conditions:
+
+| Condition | Reason | Meaning |
 |---|---|---|
-| Volcano | HyperNode `spec.tierName` (e.g., `rack`) — **HyperNodes must maintain tierName** | `highestTierName` |
-| Koordinator | `topologyLayer` name (e.g., `BlockLayer`) | gatherStrategy `layer` |
-| KAI | Topology level's `nodeLabel` (e.g., `topology.rack`) or `TopologyLevel.alias` | `requiredTopologyLevel` / `preferredTopologyLevel` |
+| `Ready=True` | `TranslationSucceeded` | managed resources exist and match spec |
+| `Ready=True` | `NativeTopologyBound` | imported resource exists and its levels are valid |
+| `Ready=True` + `NativeTopologyDrift=True` | `NativeResourceModified` | imported resource changed but remains valid; status.levels was remapped, and workloads referencing removed names fail validation |
+| `Ready=False` | `InvalidSpec` | admission contract violated or backend topology is structurally invalid |
+| `Ready=False` | `ModeUnsupported` | scheduler does not support Managed/Imported for this CR |
+| `Ready=False` | `SchedulerMismatch` | immutable `spec.scheduler` differs from active scheduler; backend reconcile is skipped |
+| `Ready=False` | `NativeTopologyNameInvalid` | Koordinator binding is not `default` |
+| `Ready=False` | `NativeTopologyNotFound` | bound native resource does not exist |
+| `Ready=False` | `NativeTopologyConflict` | native name/tierName is owned externally or by another RBG topology |
+| `Ready=False` | `NativeTopologyInvalid` | native levels are empty, duplicated, unordered, or exceed backend limits |
+| `Ready=False` | `NativeTopologyDrift` | generated or imported topology no longer matches the status contract |
+| `Ready=False` | `TopologyInUse` | deletion is blocked while workloads reference the topology |
+| `NativeTopologyDrift=True` | `NativeResourceModified` / `ManagedResourceModified` | imported resource changed or managed resource was externally edited |
 
-`TopologyConstraint.topologyName` selects the scheduler's topology resource when a dialect has one. Today that is KAI's `Topology` CR; Volcano and Koordinator infer topology from their cluster-wide objects and do not consume the field. On KAI, a set `topologyName` wins over the controller default (`--kai-topology-name`); if neither is set, reconciliation reports `TopologyResourceUnresolved`. All topology constraints in one PlacementPlan must resolve to the same topology name, otherwise the plan is rejected as `IncompatibleTopologyNames`.
-
-For KAI, the level string is a `nodeLabel` key or a `TopologyLevel.alias`. Current KAI (including v0.18.3) accepts aliases in `requiredTopologyLevel` and `preferredTopologyLevel`, so RBG treats both identifier forms as valid pass-through values. Reconcile resolves each identifier against the selected `Topology` CR; unresolved identifiers report `LevelUnresolved`. A `nodeLabel` and an alias that resolve to the same level are equivalent for ordering validation.
-
-**Validation runs mostly at reconcile**, following the KEP-430 precedent of keeping admission checks self-contained and avoiding cross-resource reads. All immutability validation, including the RBGSet template guard, compares only the old and new topology declarations on the submitted object; it performs no child lookup and no informer-cache dependency. Scheduler topology objects are read only by the controller during reconcile.
-
-| Check | Source | Notes |
-|---|---|---|
-| Constraint shape | Admission | A non-nil `TopologyConstraint` must set at least one of `pack.required` or `pack.preferred`; `{}`, `topologyName` only, and `pack: {}` are rejected |
-| Generated-name source syntax | Admission | Role names and topology-bearing policy-rule names must be DNS-1123 labels; invalid source names are rejected instead of being sanitized by the compiler |
-| Level existence | Active scheduler's topology objects (HyperNode set / ClusterNetworkTopology / the configured KAI Topology CR) | Unknown identifier → `TopologyTranslated=False` + event, never silent degradation |
-| Required/preferred relative order | Ordering from the same objects, after both identifiers resolve | `preferred` must be the same level as or narrower than `required`; a broader preferred level is rejected as `InvalidLevelOrder` before rendering |
-| Child level equal to or narrower than parent | Ordering from the same objects | A child placement group must not require a broader domain than its parent; reversed nesting is rejected |
-| Dialect capability | Runtime CRD schema inspection (same pattern as KEP-430's `hasSubGroupPolicy`) | Older Volcano without `tierName`/subGroup `networkTopology`, or HyperNodes not maintaining tierName → explicit unsupported; no integer-tier fallback |
-| Topology identity | `TopologyConstraint.topologyName` on the API, with controller default for dialects that need one | KAI: the named `Topology` CR must exist; all constraints in one PlacementPlan must resolve to the same name. Missing or mismatched → `TopologyResourceUnresolved` / `IncompatibleTopologyNames`; no rendering |
-
-**Portability boundary.** RBG manifests are reusable verbatim across clusters running the same scheduler family; migrating to another scheduler rewrites only the `required`/`preferred` strings — the manifest structure is unchanged. Cross-scheduler-transparent manifests would require a vocabulary indirection, which is rejected for now (see Alternatives).
+Workload reconciliation requires `Ready=True` and validates `TopologyConstraint.pack.required` / `preferred` against `status.levels`. The array order is used for required/preferred and parent/child ordering checks. A workload is never rendered against a native scheduler CR directly.
 
 ### Core API: TopologyConstraint
 
 ```go
 // TopologyConstraint defines topology placement requirements.
 type TopologyConstraint struct {
-	// TopologyName names the scheduler's topology resource when the active
-	// dialect has one. Today this is the KAI Topology CR name. Volcano and
-	// Koordinator do not consume the field. If omitted, the controller uses its
-	// configured default for that dialect.
-	// +optional
-	TopologyName *string `json:"topologyName,omitempty"`
+	// TopologyName references the RBG ClusterNetworkTopology CR that owns the
+	// level vocabulary. It is not a KAI/Volcano/Koordinator resource name.
+	// A non-nil TopologyConstraint must set it.
+	// +required
+	TopologyName *string `json:"topologyName"`
 
 	// Pack specifies topology packing constraints for each replica of the resource.
 	// A non-nil TopologyConstraint must set at least one of Pack.required or
@@ -210,21 +491,23 @@ type TopologyConstraint struct {
 }
 
 type TopologyPackConstraint struct {
-	// Required defines a topology constraint that must be satisfied as a hard requirement. The workload will not be
-	// scheduled if this constraint cannot be satisfied. Generally, it is easier for the scheduler to satisfy constraints
-	// on topology domains with larger compute capacity, (e.g., zone or datacenter), than smaller domains, (e.g., host or
-	// numa).
+	// Required names a level in the referenced ClusterNetworkTopology's
+	// status.levels. The workload will not be scheduled if this constraint
+	// cannot be satisfied. Generally, it is easier for the scheduler to satisfy
+	// constraints on topology domains with larger compute capacity (for example
+	// zone or block) than smaller domains (for example rack or host).
 	// +optional
 	Required *string `json:"required,omitempty"`
 
-	// Preferred defines best-effort topology constraint. Topology domains that provide the most optimized performance
-	// with dense packing are typically used as preferred constraints for topology packing. Since it is preferred
-	// constraint, it is therefore not binding on the scheduler to mandatorily satisfy this packing constraint. Scheduler
-	// can fall back to higher topology levels (upto Required constraint) if preferred cannot be satisfied.
+	// Preferred names a best-effort level in the referenced
+	// ClusterNetworkTopology's status.levels. The scheduler may fall back to
+	// Required when the preferred domain cannot be satisfied.
 	// +optional
 	Preferred *string `json:"preferred,omitempty"`
 }
 ```
+
+Admission validates that a non-nil `TopologyConstraint` sets `topologyName` and at least one of `pack.required` or `pack.preferred`; `{}`, `topologyName` only, and `pack: {}` are rejected. `topologyName` is a cluster-scoped RBG CR name and is validated at reconcile against `ClusterNetworkTopology.status`.
 
 Instance-level constraints are pattern-independent:
 
@@ -252,7 +535,7 @@ type SchedulingCoordinationStrategy struct {
 	Gang *GangSchedulingStrategy `json:"gang,omitempty"`
 
 	// TopologyConstraint defines topology co-location for the roles listed in
-	// the enclosing policy rule's `roles` field. Roles not listed are
+	// the enclosing policy rule's roles field. Roles not listed are
 	// unconstrained by this rule; list every role of the RoleBasedGroup for
 	// whole-group co-location.
 	// +optional
@@ -261,6 +544,28 @@ type SchedulingCoordinationStrategy struct {
 ```
 
 ### Attachment Points
+
+First create the topology vocabulary. This example is Managed, so the same `zone/block/rack/host` names can be materialized for KAI or Volcano without changing workload manifests:
+
+```yaml
+apiVersion: topology.x-k8s.io/v1alpha1
+kind: ClusterNetworkTopology
+metadata:
+  name: gpu-fabric
+spec:
+  scheduler: KAI
+  levels:
+    - name: zone
+      nodeLabelKey: topology.kubernetes.io/zone
+    - name: block
+      nodeLabelKey: topology.example.com/block
+    - name: rack
+      nodeLabelKey: topology.example.com/rack
+    - name: host
+      nodeLabelKey: kubernetes.io/hostname
+```
+
+Then reference it from the workload:
 
 ```yaml
 # RoleBasedGroup spec
@@ -273,7 +578,8 @@ spec:
     leaderWorkerPattern:             # each instance spans 4 machines (multi-node deployment)
       size: 4
     instanceTopologyConstraint:      # instance-level, pattern-independent: the pods of each
-      pack:                          # prefill instance converge into a single rack
+      topologyName: gpu-fabric       # prefill instance converge into a single rack
+      pack:
         required: rack
   - name: decode
     replicas: 2
@@ -288,20 +594,38 @@ spec:
     strategy:                        # tightened to one rack when possible; roles outside the
       scheduling:                    # rule are unconstrained by this rule
         topologyConstraint:
+          topologyName: gpu-fabric
           pack:
             preferred: rack
             required: block
 ```
 
-`InstanceTopologyConstraint` attaches to the Role (group = one RoleInstance's pods, each instance choosing its domain independently); `TopologyConstraint` attaches to a CoordinatedPolicy rule (group = all pods of the rule's `roles`; list every role to co-locate the whole RBG). The example values (`rack`, `block`) are shown in the Volcano dialect; on Koordinator write `RackLayer`/`BlockLayer`; on KAI write the level's `nodeLabel` (e.g., `topology.rack`) or alias and set `topologyName` to the `Topology` CR name (e.g., `cluster-topology`). Volcano and Koordinator leave `topologyName` unset.
+`InstanceTopologyConstraint` attaches to the Role (group = one RoleInstance's pods, each instance choosing its domain independently); `TopologyConstraint` attaches to a CoordinatedPolicy rule (group = all pods of the rule's `roles`; list every role to co-locate the whole RBG). The example values (`rack`, `block`) are the level names in `ClusterNetworkTopology.status.levels`, not scheduler dialect fields.
+
+All topology constraints in one PlacementPlan must resolve to the same `ClusterNetworkTopology` name. Mixing multiple topology CRs in one plan is rejected as `IncompatibleTopologyNames` in this KEP.
 
 ### Mutability and Update Semantics
 
-Topology is a launch-time placement contract. The set of topology declarations is immutable for the RBG lifecycle: topology cannot be added, removed, or changed in place on a Role or CoordinatedPolicy rule. Ordinary changes to roles that do not carry topology remain allowed.
+`ClusterNetworkTopology` is also a launch-time contract:
+
+- `spec.scheduler`, `spec.levels`, and `spec.topologyBinding` are immutable;
+- the mutating/validating webhooks enforce that contract;
+- the controller adds a finalizer to every topology CR;
+- while any workload still references the CR, deletion reports `TopologyInUse`;
+- deleting a Managed topology first removes generated backend resources;
+- deleting an Imported topology removes only the RBG CR and never the external native resource.
+
+Changing a topology requires creating a new `ClusterNetworkTopology` and a new workload lifecycle. The active workload cannot be silently moved to a changed topology vocabulary.
+
+The workload topology declaration is immutable for the RBG lifecycle: topology cannot be added, removed, or changed in place on a Role or CoordinatedPolicy rule. Ordinary changes to roles that do not carry topology remain allowed.
 
 Admission compares the old and new topology declarations directly. An RBGSet template likewise compares its old and new topology declarations, so parent validation is self-contained and requires no cross-resource child lookup.
 
-**Contract freeze and late policy creation.** The combined RBG/CoordinatedPolicy topology contract freezes when the controller first accepts a placement plan for the RBG, before it creates or updates Roles. On that first acceptance the controller records the accepted topology contract (a canonical identifier of the topology declarations, including `none`) on the RBG. A CoordinatedPolicy may be created before the RBG; that is a normal launch ordering and the recorded contract is its topology. But if the RBG has already accepted `none` and a topology-bearing policy appears later, or if the recorded topology differs from the currently resolved declarations, reconcile reports `TopologyTranslated=False` with reason `TopologyPolicyLate`, creates no PodGroup, and gates Role create/update. The late policy is not applied to running pods; deleting and recreating the RBG (with the policy already present) starts a new lifecycle. Removing all topology after a non-empty contract is treated the same way. Role-level constraints cannot arrive late because RBG admission makes the Role declaration immutable from create onward.
+**Contract freeze and late policy creation.** The combined RBG/CoordinatedPolicy topology contract freezes when the controller first accepts a placement plan for the RBG, before it creates or updates Roles. On that first acceptance the controller records the accepted topology contract (a canonical identifier of the topology declarations, including `none`) on the RBG.
+
+The freeze-time policy lookup must not rely on the informer cache. Ordinary policy reconciliation may continue to use the cache-backed client, but the first contract resolution performs a direct API-server read with the controller's uncached `apiReader`. A read error prevents the freeze and requeues without creating or updating Roles. If the direct read returns `NotFound` while the RBG is still within a 60-second creation settling window, the controller also requeues and does not record `none`; the RBG reports `TopologyTranslated=False` with reason `TopologyPolicySettling`. Only after the settling window has elapsed and a second direct read still returns `NotFound` may the controller freeze the `none` contract. A policy create event during the window re-enqueues immediately and is resolved through the same uncached path.
+
+With this guard, a CoordinatedPolicy persisted before or during the settling window is normally accepted before the RBG records its contract. The settling window is intentionally bounded: it reduces same-batch GitOps races but is not a global ordering guarantee. If a topology-bearing policy first becomes visible after the RBG has already accepted `none`, or if the recorded topology differs from the currently resolved declarations, reconcile reports `TopologyTranslated=False` with reason `TopologyPolicyLate`, creates no PodGroup, and gates Role create/update. The late policy is not applied to running pods; deleting and recreating the RBG (with the policy already present) starts a new lifecycle. Operators that require strict launch ordering should create and wait for the topology-bearing CoordinatedPolicy before creating the RBG. Removing all topology after a non-empty contract is treated the same way. Role-level constraints cannot arrive late because RBG admission makes the Role declaration immutable from create onward.
 
 Topology immutability is enforced by v1alpha2 validating admission. Delete-and-recreate of a topology-bearing CoordinatedPolicy cannot bypass that contract while its matching RBG is active: the controller protects the active policy with a finalizer. Release is keyed to the matching RBG's **UID**, not merely its name, so a GitOps delete-and-recreate of an RBG with the same name cannot satisfy the release condition for the old lifecycle. A terminating policy whose recorded UID still matches the active RBG remains authoritative because validating admission continues to reject topology changes on update requests (Kubernetes itself permits updates to deleting objects; it only prohibits adding finalizers). If a terminating policy's recorded UID no longer matches the RBG (for example after a same-name recreate), the planner ignores it, the replacement RBG never inherits the old contract, and the controller releases the finalizer once that recorded UID is deleted. The finalizer otherwise remains until the UID-recorded RBG is deleted.
 
@@ -311,7 +635,7 @@ Escape hatch and rollback: the finalizer can be removed manually with `kubectl p
 
 To change topology, delete and recreate the affected workload (and, when needed, its topology-bearing CoordinatedPolicy). Rolling updates that change topology constraints are out of scope for this KEP. Running pods are never migrated or evicted by this controller.
 
-If the referenced topology resource is deleted, the next reconcile reports `TopologyResourceUnresolved`; if a referenced level is removed or renamed, the next reconcile reports `LevelUnresolved`. In both cases new pod creation is gated, and already-running pods are not evicted or migrated. The controller does not watch scheduler topology objects; it relies on the next workload-driven reconcile (a spec change such as a replicas update that leaves topology untouched, rollout, recovery, or controller resync) to discover drift. Tests force this transition with a concrete RBG spec change, not an annotation-only update: the RBG update predicate compares `Spec`, so a metadata-only update does not enqueue the controller. No scheduler-object watch is required.
+If the referenced `ClusterNetworkTopology` is missing, not Ready, or its status level list has changed so that a workload level no longer exists, workload reconcile reports `TopologyUnresolved`, `TopologyNotReady`, or `LevelUnresolved`. In all cases new pod creation is gated, and already-running pods are not evicted or migrated. The topology controller watches its bound/imported resource and generated resources; workload-driven reconcile still revalidates `Ready` and `status.levels` before rendering.
 
 ### Placement Planning
 
@@ -399,21 +723,24 @@ Gang composition rules themselves are unchanged from KEP-430: gang-bearing rules
 
 ```text
 1. Read RBG + CoordinatedPolicy
-2. Resolve gang intents (KEP-430 rules unchanged)
-3. Resolve topology intents and role-instance partitions
-4. Build and validate the PlacementPlan:
+2. Resolve all TopologyConstraint.topologyName values to ClusterNetworkTopology CRs
+3. Require every referenced topology to be Ready
+4. Resolve gang intents (KEP-430 rules unchanged)
+5. Resolve topology intents and role-instance partitions
+6. Build and validate the PlacementPlan:
    - role existence
-   - scope relation over `(Roles, PartitionBy)` (equal/disjoint/containment only)
-   - topology identity consistency (`topologyName` resolves to one resource)
-   - level existence, preferred/required ordering, and parent/child ordering
-5. Compile the plan with the configured scheduler backend
-6. Reconcile the rendered group objects
-7. Only after rendered objects are ready, create/update Roles
-8. Inject the compiler-provided pod bindings
-9. Delete group objects no longer present in the rendered plan
+   - all constraints resolve to one topology name
+   - level existence against status.levels
+   - scope relation over (Roles, PartitionBy) (equal/disjoint/containment only)
+   - preferred/required ordering and parent/child ordering from status.levels order
+7. Compile the plan with the active scheduler backend
+8. Reconcile the rendered group objects
+9. Only after rendered objects are ready, construct the Role templates and inject the compiler-provided pod bindings into those templates
+10. Create/update the already-bound Roles
+11. Delete group objects no longer present in the rendered plan
 ```
 
-If steps 2–5 fail:
+If steps 2–7 fail:
 
 - no PodGroup is created or updated;
 - Role create/update is paused (reusing the KEP-430 `IncompatibleGangConfig` gating path), so new pods cannot schedule without their declared hard constraints;
@@ -423,7 +750,7 @@ If steps 2–5 fail:
 
 ### Scheduler Translation
 
-The scheduler compiler consumes the validated PlacementPlan and renders the downstream dialect. It is the only component that creates physical group objects and emits pod bindings.
+The scheduler compiler consumes the validated PlacementPlan, the referenced `ClusterNetworkTopology.status.levels`, and the native-resource reference recorded in topology status. It is the only component that creates physical group objects and emits pod bindings. The compiler maps portable level names to the active scheduler's dialect; workload objects never contain a backend GVK.
 
 #### Translation Channels
 
@@ -453,9 +780,19 @@ Per-dialect naming rules:
 
 - **Volcano**: a gang-only single PodGroup keeps the KEP-430 name `rbg.Name` (equivalence is golden-tested). A topology-bearing PodGroup uses the placement form above. In the containment case where a gang-bearing parent has topology-bearing subGroups, the gang parent keeps `rbg.Name`; each topology-bearing subGroup uses the placement form.
 - **Koordinator**: there is no rendered root group object. GangGroup members are the existing per-role-instance (or per-role, when `PartitionBy=none`) PodGroups named `<rbg.Name>-<role.Name>-<instance-index>` / `<rbg.Name>-<role.Name>`; the GangGroup identity is the annotation, not a new object name.
-- **KAI**: the root PodGroup is named `rbg.Name`. SubGroup names are unique across the entire subGroup tree, not merely among siblings, and use kind-prefixed namespaces: `policy-<rule-name>` for a cross-role child, `instance-<role.Name>-<instance-index>` for an instance constraint, and `role-<role.Name>` for an uncovered role-level child. The prefixes prevent a rule named `prefill-0` from colliding with the instance subGroup `instance-prefill-0`. Parent references and pod bindings use exactly these generated names; a compiler never emits a raw source name directly. A role is split per instance only when it carries an instance constraint.
+- **KAI**: the root PodGroup is named `rbg.Name`. SubGroup names are unique across the entire subGroup tree, not merely among siblings, and use kind-prefixed, length-bounded namespaces:
+
+  ```text
+  policy-<source[0:20]>-<hash12>
+  instance-<role[0:20]>-<instance-index>-<hash12>
+  role-<source[0:20]>-<hash12>
+  ```
+
+  Each `hash12` is the first six bytes of SHA-256 over the RBG UID, the full `PlacementGroup.ID`, and the KAI subgroup kind. The readable source portion is truncated to 20 characters before concatenation. The resulting names are valid DNS-1123 labels and remain below the 63-character KAI `SubGroup.Name` limit even when the source role or rule name is already 63 characters. The kind prefix and full-identity hash also prevent a rule named `prefill-0` from colliding with an instance subGroup for role `prefill`. Parent references and pod bindings use exactly these generated names; a compiler never emits a raw source name directly. A role is split per instance only when it carries an instance constraint.
 
 #### Translation Matrix
+
+In the matrix below, `R` and `P` are names from `ClusterNetworkTopology.status.levels`. The compiler is responsible for mapping them to Volcano `tierName`, Koordinator `topologyLayer`, or KAI alias/nodeLabel.
 
 | `pack` API (instance-level or cross-role) | Volcano | Koordinator gatherStrategy | KAI |
 |---|---|---|---|
@@ -497,38 +834,40 @@ spec:
         rbg.workloads.x-k8s.io/role-name: prefill
     matchLabelKeys:
     - rbg.workloads.x-k8s.io/role-instance-name
+    subGroupSize: 4              # ComputeSubGroupSize(prefill): one instance contains 4 pods
     networkTopology:             # each subGroup (= each instance) packs independently
       mode: hard
       highestTierName: rack
 ```
 
-The router input declares no topology constraint, so it is not bound to any PodGroup. If a role outside every rule declares an instance constraint, the compiler creates a separate PodGroup for it and uses the same subGroup pattern.
+The router input declares no topology constraint, so it is not bound to any PodGroup. If a role outside every rule declares an instance constraint, the compiler creates a separate PodGroup for it and uses the same subGroup pattern. Every instance-level Volcano subGroup entry sets `subGroupSize` from `ComputeSubGroupSize(role)`; omitting it would let Volcano default to one pod per subGroup even when an instance contains multiple pods. `minSubGroups` remains omitted for topology-only behavior.
 
-Cluster HyperNodes must maintain `spec.tierName`; if the referenced name is found on no HyperNode (including clusters not maintaining tierName at all), validation fails explicitly — there is no integer `highestTierAllowed` fallback.
+RBG-generated HyperNodes always maintain `spec.tierName`; if the referenced portable level is not present in `ClusterNetworkTopology.status.levels`, validation fails explicitly before rendering — there is no integer `highestTierAllowed` fallback.
 
 **Koordinator** — the full example input is **not renderable** on Koordinator: prefill declares an instance-level constraint, `network-topology-spec` has no per-subGroup form (unlike Volcano's `subGroupPolicy`), and divergent member specs are invalid, so translation returns `SchedulerUnsupported` and no PodGroup is created or updated.
 
-For the cross-role-only portion of the input, the rule lands on the GangGroup annotations. Members follow the placement partition: prefill is partitioned per instance, but decode has `PartitionBy=none` and therefore contributes one role-level member, not `decode-0`/`decode-1`. Every member PodGroup carries **identical** `groups` and `network-topology-spec` annotations, and the gather algorithm runs over all member pods of the group:
+For the cross-role-only variant — that is, the input with prefill's unsupported instance constraint removed — no topology intent supplies `PartitionBy=role-instance-name`. The rule has `PartitionBy=none`, so both roles contribute role-level members (`infer-0-prefill` and `infer-0-decode`), not per-instance members. This KEP defines no hidden non-topology partition source. Every member PodGroup carries **identical** `groups` and `network-topology-spec` annotations, and the gather algorithm runs over all member pods of the group:
 
 ```yaml
 apiVersion: scheduling.sigs.k8s.io/v1alpha1
 kind: PodGroup
 metadata:
-  name: infer-0-prefill-0        # one GangGroup member (3 total: prefill-0/1 + decode); all members carry identical annotations
+  name: infer-0-prefill          # one role-level GangGroup member (2 total: prefill + decode); all members carry identical annotations
   annotations:
-    gang.scheduling.koordinator.sh/groups: '["default/infer-0-prefill-0", "default/infer-0-prefill-1", "default/infer-0-decode"]'
-    # required=block → MustGather@BlockLayer; preferred=rack → PreferGather@RackLayer
+    gang.scheduling.koordinator.sh/groups: '["default/infer-0-prefill", "default/infer-0-decode"]'
+    # required=block → MustGather@block; preferred=rack → PreferGather@rack
+    # block/rack are the topologyLayer names exposed in ClusterNetworkTopology.status.levels
     gang.scheduling.koordinator.sh/network-topology-spec: |
       { "gatherStrategy": [
-          {"layer": "BlockLayer", "strategy": "MustGather"},
-          {"layer": "RackLayer",  "strategy": "PreferGather"} ]}
+          {"layer": "block", "strategy": "MustGather"},
+          {"layer": "rack",  "strategy": "PreferGather"} ]}
 spec:
   minMember: 0                   # topology-only: no gang requirement; Koordinator CRD dialect
 ```
 
 The `scheduling.sigs.k8s.io` API group and `minMember: 0` are Koordinator's deployed PodGroup CRD dialect. If the runtime-installed CRD is the upstream scheduler-plugins dialect (`scheduling.x-k8s.io`, `minMember >= 1`), the compiler reports `SchedulerUnsupported` for topology-only groups instead of inventing a threshold.
 
-**KAI** — subGroups nest arbitrarily, so the plan lands in a single PodGroup: the rule becomes a nested subGroup spanning prefill+decode with its own `topologyConstraint`, per-instance subGroups carry instance packing, and uncovered roles only appear as sibling subGroups when they declare their own instance-level constraints. The root PodGroup is named `rbg.Name`; subGroups use the kind-prefixed naming rule so names are unique across the whole tree. Decode has no instance constraint, so it appears as one role-level child of `policy-pd-colocation` and is not split into `decode-0`/`decode-1`. KAI levels are `nodeLabel` keys or aliases, and `topology` names the selected KAI Topology CR (`TopologyConstraint.topologyName`, or the controller default when omitted):
+**KAI** — subGroups nest arbitrarily, so the plan lands in a single PodGroup: the rule becomes a nested subGroup spanning prefill+decode with its own `topologyConstraint`, per-instance subGroups carry instance packing, and uncovered roles only appear as sibling subGroups when they declare their own instance-level constraints. The root PodGroup is named `rbg.Name`; subGroups use the kind-prefixed naming rule so names are unique across the whole tree. Decode has no instance constraint, so it appears as one role-level child of `policy-pd-colocation-<hash12>` and is not split into `decode-0`/`decode-1`. KAI levels are the portable names in `ClusterNetworkTopology.status.levels`; `topology` names the KAI `Topology` CR recorded in `status.resources`, not `TopologyConstraint.topologyName`:
 
 ```yaml
 apiVersion: scheduling.run.ai/v2alpha2
@@ -538,54 +877,61 @@ metadata:
 spec:
   minSubGroup: 0                 # root: topology-only — router never blocks pd-colocation
   subGroups:
-  - name: policy-pd-colocation   # kind-prefixed CoordinatedPolicy rule over prefill+decode
+  - name: policy-pd-colocation-<hash12> # kind-prefixed, length-bounded rule subGroup
     minSubGroup: 0               # topology-only: no gang requirement
     topologyConstraint:          # cross-role
-      topology: cluster-topology    # from TopologyConstraint.topologyName or controller default
-      requiredTopologyLevel: topology.block
-      preferredTopologyLevel: topology.rack
-  - name: instance-prefill-0     # per-instance leaf subGroups carry instance packing
-    parent: policy-pd-colocation
+      topology: gpu-fabric          # native resource from ClusterNetworkTopology.status.resources
+      requiredTopologyLevel: block
+      preferredTopologyLevel: rack
+  - name: instance-prefill-0-<hash12> # per-instance leaf subGroups carry instance packing
+    parent: policy-pd-colocation-<hash12>
     minMember: 0
     topologyConstraint:
-      topology: cluster-topology
-      requiredTopologyLevel: topology.rack
-  - name: instance-prefill-1
-    parent: policy-pd-colocation
+      topology: gpu-fabric
+      requiredTopologyLevel: rack
+  - name: instance-prefill-1-<hash12>
+    parent: policy-pd-colocation-<hash12>
     minMember: 0
     topologyConstraint:
-      topology: cluster-topology
-      requiredTopologyLevel: topology.rack
-  - name: role-decode        # no instance constraint: one role-level child, not per-instance
-    parent: policy-pd-colocation
+      topology: gpu-fabric
+      requiredTopologyLevel: rack
+  - name: role-decode-<hash12>   # no instance constraint: one role-level child, not per-instance
+    parent: policy-pd-colocation-<hash12>
     minMember: 0
 ```
 
-`minMember` / `minSubGroup` render only where gang is configured. With a gang rule on the same scope, its KEP-430 computation fills the corresponding threshold while topology remains an attribute of the same subGroup tree.
+KAI always renders `minMember` and `minSubGroup` on topology-bearing subGroups so topology-only groups remain elastic: their zero values explicitly mean "no gang threshold." Only **nonzero** gang thresholds are conditional on gang configuration. With a gang rule on the same scope, its KEP-430 computation fills the corresponding threshold while topology remains an attribute of the same subGroup tree.
 
 ### Observability
 
+- **ClusterNetworkTopology status**:
+  - `Ready` — whether the topology is usable by workloads. Reasons distinguish `TranslationSucceeded`, `NativeTopologyBound`, `ModeUnsupported`, `SchedulerMismatch`, `NativeTopologyNameInvalid`, `NativeTopologyNotFound`, `NativeTopologyConflict`, `NativeTopologyInvalid`, and `TopologyInUse`.
+  - `NativeTopologyDrift` — imported resource changes or external edits to generated resources.
+  - `status.levels` — the only level vocabulary exposed to workloads.
+  - `status.resources` — the actual native GVK/name/UID or Volcano aggregate; this is diagnostic and not a workload input.
+  - No `phase` field is used; `Ready` plus `reason` avoids duplicate and coarser state.
 - **RBG conditions**:
   - `GangConfigured` — retained from KEP-430 for gang-only failures.
-  - `TopologyTranslated` — present only when topology is configured; `False` with reasons such as `IncompatiblePlacementGroups`, `IncompatibleTopologyNames`, `RoleUnresolved`, `InvalidLevelOrder`, `LevelUnresolved`, `TopologyResourceUnresolved` (KAI), `SchedulerUnsupported`, or `TopologyPolicyLate`. On success it is `True`; when Volcano cannot anchor a preferred level, the reason is `PreferredAbsorbed` and a warning event is emitted.
+  - `TopologyTranslated` — present when topology is configured or while the policy-freeze settling window is active; `False` with reasons such as `TopologyUnresolved`, `TopologyNotReady`, `IncompatiblePlacementGroups`, `IncompatibleTopologyNames`, `RoleUnresolved`, `InvalidLevelOrder`, `LevelUnresolved`, `SchedulerUnsupported`, `TopologyPolicySettling`, `TopologyPolicyLate`, or `FeatureDisabled`. On success it is `True`; when Volcano cannot anchor a preferred level, the reason is `PreferredAbsorbed` and a warning event is emitted.
   - Condition transitions emit warning events (edge-triggered, per the KEP-430 event-spam analysis).
 - **Placement gating is explicit.** While `GangConfigured` or `TopologyTranslated` is false, Role create/update is paused; status explains why no new pod was created.
-- Placement outcomes themselves (which domain a group landed in) remain owned by the scheduler (e.g., Volcano's allocated-HyperNode bookkeeping); RBG status links failure *reasons* back to the declaring object.
+- Placement outcomes themselves (which domain a group landed in) remain owned by the scheduler (for example Volcano's allocated-HyperNode bookkeeping); RBG status links failure *reasons* back to the declaring object.
 
 ### Dependencies
 
-- **A scheduler with topology-aware scheduling support.** Phase 1 targets Volcano with `tierName`/subGroup-level `networkTopology` support; Koordinator and KAI land in later phases. Runtime CRD schema inspection detects field availability (same pattern as KEP-430).
-- **Cluster topology objects and node labels**, maintained by administrators or discovery tools (UFM, RoCE, topograph). For label-backed dialects, nodes must carry the label keys referenced by constraints. These objects are also the reconcile-time validation source for level existence and ordering; on KAI, the selected `Topology` CR also resolves `nodeLabel` and `alias` identifiers.
+- **`ClusterNetworkTopology` CRD and webhooks.** Creation requires the mutating webhook that stamps `spec.scheduler`; the validating webhook enforces mode exclusivity and immutability. If the active scheduler is unknown, topology creation fails rather than guessing.
+- **A scheduler with topology-aware scheduling support.** Phase 1 targets Volcano with `tierName` and subGroup-level `networkTopology`; Koordinator Imported and KAI Managed/Imported land in later phases. Runtime CRD schema inspection detects field availability (same pattern as KEP-430).
+- **Node labels maintained by administrators or discovery tools** (UFM, RoCE topology exporters, topograph). For Managed label-backed modes, nodes must carry the configured label keys. RBG does not discover or assign these labels.
+- **Native topology CRDs** for the selected scheduler: KAI `Topology`, Koordinator `ClusterNetworkTopology` named `default`, or Volcano `HyperNode`. Imported mode additionally requires the external resource to exist before the RBG topology can become Ready.
 - **Koordinator PodGroup CRD dialect**: the Koordinator compiler targets Koordinator's deployed CRD (`scheduling.sigs.k8s.io`, `minMember: 0` allowed) and detects the installed dialect at runtime. The upstream scheduler-plugins CRD (`scheduling.x-k8s.io`, `minMember >= 1`) is not assumed to support topology-only groups.
 - **KEP-430 gang semantics and PodGroup conventions**: the placement planner consumes `ResolveGangStrategy`; the compiler renders the PodGroup/subGroup objects and pod label conventions (`group-name`, `role-name`, `role-instance-name`). No second translator may modify those resources or pod annotations.
 - **CoordinatedPolicy (KEP-30)** as the cross-role coordination surface: the policy binds to its RoleBasedGroup by identical name and namespace, so a topology rule's role set always resolves against exactly one RBG.
-- **KAI controller default topology name** when the KAI backend is enabled; an explicit `TopologyConstraint.topologyName` overrides it.
 
 ### Implementation Phases
 
-- **Phase 1**: `TopologyConstraint` API (Role `instanceTopologyConstraint` + CoordinatedPolicy `scheduling.topologyConstraint`), `PlacementPlan` resolver/planner with KEP-430-equivalence golden tests, scheduler compiler interface + **Volcano** implementation, reconcile-time validation, failure gating, status conditions/events, tests.
-- **Phase 2**: **Koordinator** compiler.
-- **Phase 3**: **KAI** compiler; validation hardening (drift heuristics, richer diagnostics).
+- **Phase 1**: `ClusterNetworkTopology` CRD, mutating/validating webhooks, controller skeleton, finalizer, status contract, `TopologyConstraint` API (Role `instanceTopologyConstraint` + CoordinatedPolicy `scheduling.topologyConstraint`), PlacementPlan resolver/planner with KEP-430-equivalence golden tests, scheduler compiler interface, and **Volcano Managed materialization**.
+- **Phase 2**: **Koordinator Imported binding** plus the Koordinator PodGroup compiler.
+- **Phase 3**: **KAI Managed and Imported bindings** plus the KAI compiler; drift hardening and richer diagnostics.
 
 ### Test Plan
 
@@ -593,42 +939,52 @@ spec:
 
 #### Unit tests
 
-1. Placement planning: equal scopes merge gang and topology; disjoint scopes stay independent; containment builds a tree; partial overlap is rejected with both declaring rules in the message. Scope comparison must include `PartitionBy`, not only `Roles`.
-2. KEP-430 equivalence: gang-only inputs produce byte-for-byte the current single PodGroup rendering before topology features are enabled.
-3. Pass-through rendering: per-dialect rendering of the identifier string; Volcano rejects names found on no HyperNode (no integer fallback); KAI levels accept both `nodeLabel` and `alias` forms and resolve them against the selected Topology CR; `topologyName` selects the Topology CR.
-4. Translation matrix: every API combination (`required`, `required+preferred`, `preferred`-only) × every dialect renders the expected dialect object; Volcano preferred cases report `PreferredAbsorbed`.
-5. Reconcile-time semantic validation: unknown level identifier, a `preferred` level broader than `required` (`InvalidLevelOrder`), reversed parent/child nesting, missing or inconsistent `topologyName` → correct condition reasons; recovery when the topology object or the RBG is fixed.
-6. Topology-only groups: Volcano `minMember: 0`, KAI `minSubGroup: 0`, and gang threshold fields omitted unless gang is configured.
-7. Mutability: adding, removing, or changing topology is rejected for the workload lifecycle; ordinary topology-free role changes remain allowed.
-8. Volcano runtime detection: CRD schema inspection for `tierName` / subGroup `networkTopology`; unmaintained-tierName and unsupported paths.
-9. Generated names: two placement groups in the same RBG whose source names share their first 20 characters produce distinct names because the hash includes the full `PlacementGroup.ID`; per-dialect naming rules (Volcano gang-only vs topology-bearing, Koordinator member names, KAI root/subGroup names) are golden-tested. Admission rejects non-DNS-1123 source names, and KAI cross-kind collisions (a rule named like a role instance) produce distinct kind-prefixed subGroup names with matching parent references and bindings.
-10. Koordinator runtime detection: the installed PodGroup CRD dialect (`scheduling.sigs.k8s.io` vs `scheduling.x-k8s.io`) and the `minMember` schema decide whether topology-only rendering is supported; the upstream CRD reports `SchedulerUnsupported`.
-11. Finalizer lifecycle: release is keyed to the RBG UID; a terminating policy matching the active RBG UID remains authoritative, while one whose recorded UID no longer matches is ignored and released once that UID is deleted; a replacement RBG with the same name never inherits the old contract; manual finalizer removal is the documented escape hatch.
-12. Contract freeze: after an RBG accepts `none`, a newly created topology-bearing policy reports `TopologyPolicyLate`, renders nothing, and gates roles; a policy created before the RBG is accepted normally; a changed contract after a non-empty acceptance is likewise rejected.
+1. ClusterNetworkTopology admission: the mutating webhook stamps the active scheduler; unknown scheduler rejects create; `levels` and `topologyBinding` are mutually exclusive; level names/keys are unique; `kubernetes.io/hostname` is last; Koordinator bindings are `default`; Volcano Imported and Koordinator Managed are rejected.
+2. ClusterNetworkTopology immutability: scheduler, levels, and topologyBinding cannot be updated in place.
+3. Managed KAI translation: `TopologyLevel.alias` equals the RBG level name, nodeLabels come from spec, ownerReferences are set, and external name conflicts report `NativeTopologyConflict`.
+4. Imported KAI reverse mapping: alias is preferred over nodeLabel; missing alias falls back to nodeLabel; alias changes update status and report drift; same-name recreation changes the bound UID.
+5. Imported Koordinator: only `default` is accepted; `networkTopologySpec[].topologyLayer` becomes the ordered `status.levels`; non-default names report `NativeTopologyNameInvalid`.
+6. Volcano materialization: unique domain paths produce distinct HyperNodes even when rack names repeat under different zones; tierName is the RBG level name; integer tiers follow level order; leaf members are Nodes and parents are HyperNodes; stale domains are deleted; external membership edits are restored; non-owned tierName conflicts report `NativeTopologyConflict`.
+7. Placement planning: equal scopes merge gang and topology; disjoint scopes stay independent; containment builds a tree; partial overlap is rejected with both declaring rules in the message. Scope comparison must include `PartitionBy`, not only `Roles`.
+8. KEP-430 equivalence: gang-only inputs produce byte-for-byte the current single PodGroup rendering before topology features are enabled.
+9. Translation matrix: every API combination (`required`, `required+preferred`, `preferred`-only) × every dialect renders the expected dialect object; Volcano preferred cases report `PreferredAbsorbed`.
+10. Workload semantic validation: missing topology CR, topology not Ready, unknown status level, `preferred` broader than `required`, reversed parent/child nesting, and inconsistent topology names produce the documented condition reasons; recovery is tested after fixing the topology or RBG.
+11. Topology-only groups: Volcano `minMember: 0`, KAI `minSubGroup: 0`, and nonzero gang thresholds omitted unless gang is configured. Volcano instance subGroups set `subGroupSize` from `ComputeSubGroupSize(role)` for LeaderWorkerPattern and CustomComponentsPattern.
+12. Generated names: two placement groups in the same RBG whose source names share their first 20 characters produce distinct names because the hash includes the full `PlacementGroup.ID`; per-dialect naming rules (Volcano gang-only vs topology-bearing, Koordinator member names, KAI root/subGroup names) are golden-tested. Admission rejects non-DNS-1123 source names, and KAI cross-kind collisions (a rule named like a role instance) produce distinct kind-prefixed subGroup names with matching parent references and bindings. KAI tests use 63-character role/rule names and assert that every generated subGroup name remains a DNS-1123 label of at most 63 characters.
+13. Runtime detection: Volcano CRD schema inspection for `tierName` / subGroup `networkTopology`; Koordinator PodGroup CRD dialect and `minMember` schema; unsupported paths return `SchedulerUnsupported`.
+14. Finalizer lifecycle: workload references block deletion (`TopologyInUse`); Managed deletion removes generated resources; Imported deletion leaves the native resource untouched; CoordinatedPolicy UID-keyed release behavior remains as documented.
 
 #### Integration tests
 
-1. envtest: create scheduler topology fixtures + RBG with both attachment points, assert the rendered PodGroups (PlacementGroup-derived `spec.networkTopology`, `subGroupPolicy[].networkTopology`, and any PodGroup created for rule-external instance constraints) field-by-field.
-2. Failure gating: an incompatible plan or unknown level prevents Role create/update and Pod creation; cleanup of deleted roles still works; running pods are not evicted.
-3. Topology-object change is discovered by the next workload-driven reconcile, forced in tests with a concrete spec change (for example a replicas update that leaves topology untouched); level removal flips their conditions. The test must go through the controller event path, not a direct `Reconcile` call.
-4. Lifecycle immutability: in-place topology removal or change is rejected by admission; deleting an active topology-bearing CoordinatedPolicy is held by its finalizer until the UID-recorded RBG is deleted; a same-name replacement RBG never inherits the old contract, and the old policy is released once its recorded UID is gone; after delete-and-recreate without topology, the new lifecycle renders no topology dialect fields.
-5. Creation order: a topology-bearing policy created before the RBG is accepted and rendered; the same policy created after the RBG has accepted `none` reports `TopologyPolicyLate` and gates Role create/update without rendering a PodGroup. The test triggers reconcile with an RBG spec change (replicas) rather than a metadata-only update.
+1. envtest ClusterNetworkTopology lifecycle: create the CR through admission, wait for Ready/status.levels/resources, update Nodes for Volcano materialization, and assert the generated scheduler objects field-by-field.
+2. envtest workload rendering: create a Ready topology plus RBG with both attachment points, assert the rendered PodGroups (PlacementGroup-derived topology fields and any PodGroup created for rule-external instance constraints) field-by-field.
+3. Failure gating: a missing/not-ready topology, incompatible plan, or unknown level prevents Role create/update and Pod creation; cleanup of deleted roles still works; running pods are not evicted.
+4. Imported drift: modifying the native resource or deleting/recreating it with the same name updates ClusterNetworkTopology status, reports drift or not-found, and gates workload rendering.
+5. Managed drift: externally edit a generated KAI Topology or Volcano HyperNode and verify the controller restores it while reporting `NativeTopologyDrift`.
+6. Scheduler mismatch: change the controller's active scheduler configuration after a topology is created; reconcile reports `SchedulerMismatch` and does not reinterpret or mutate the old backend resource.
+7. Lifecycle immutability: in-place topology removal or change is rejected by admission; deleting an active topology-bearing CoordinatedPolicy is held by its finalizer until the UID-recorded RBG is deleted; a same-name replacement RBG never inherits the old contract.
+8. Creation order: a topology-bearing policy created before the RBG is accepted and rendered; the same policy created after the RBG has accepted `none` reports `TopologyPolicyLate` and gates Role create/update without rendering a PodGroup. The test triggers reconcile with an RBG spec change (replicas) rather than a metadata-only update. A cache-only policy informer is seeded without the policy while the uncached fake API reader returns it, proving the freeze uses the direct read. A policy appearing inside the settling window is accepted, while a policy appearing after the window reports `TopologyPolicyLate`.
+9. Binding-before-role ordering: a compiler fake fails if Role create/update is called before pod bindings are injected; the integration test asserts every persisted Role pod template contains its placement membership at first create.
 
 #### e2e tests
 
-1. Volcano cluster with labeled HyperNodes (tier names aligned): deploy the example RBG, verify each prefill instance's pods land within one rack-tier HyperNode and the rule's prefill+decode pods within one block-tier HyperNode.
+1. Volcano cluster with labeled Nodes: create a Managed ClusterNetworkTopology, verify generated HyperNodes/tierNames, deploy the example RBG, and verify each prefill instance's pods land within one rack-tier HyperNode and the rule's prefill+decode pods within one block-tier HyperNode.
 2. Insufficient domain capacity: hard constraint → pods stay Pending, condition/event explains; soft constraint → cross-domain placement allowed.
-3. Unknown tier name: explicit error surfaced, roles gated, pods not silently unconstrained.
+3. Node label drift: adding/removing/changing a topology label updates HyperNode membership without silently changing workload constraints.
+4. Unknown status level: explicit error surfaced, roles gated, pods not silently unconstrained.
 
 ### Graduation Criteria
 
-- [ ] `TopologyConstraint` API defined (Role `instanceTopologyConstraint` + CoordinatedPolicy `scheduling.topologyConstraint`)
+- [ ] `ClusterNetworkTopology` CRD defined with Managed/Imported mode, immutable scheduler/levels/binding, and minimal status contract
+- [ ] Mutating webhook stamps the active scheduler; validating webhook enforces mode exclusivity, immutability, and structural level validation
+- [ ] ClusterNetworkTopology controller implemented with finalizer, Ready/NativeTopologyDrift conditions, status.levels, and status.resources
+- [ ] Volcano Managed materialization implemented, including Node/HyperNode watches, path-safe naming, tier/tierName assignment, drift restoration, and conflict handling
+- [ ] `TopologyConstraint` API defined (Role `instanceTopologyConstraint` + CoordinatedPolicy `scheduling.topologyConstraint`) with `topologyName` referencing the RBG topology CR
 - [ ] `PlacementPlan` resolver/planner implemented, including `(Roles, PartitionBy)` scope-composition validation and KEP-430 equivalence golden tests
-- [ ] `TopologyConstraint.topologyName` implemented with KAI topology-resource validation
 - [ ] Topology lifecycle immutability enforced by admission and the controller, including UID-keyed CoordinatedPolicy finalizer release and the documented rollback escape hatch
-- [ ] Scheduler compiler interface + Volcano implementation (PodGroup + subGroup networkTopology, tier-name verification, topology-only `minMember: 0`, collision-safe PlacementGroup-ID hashing)
-- [ ] Failure gating for invalid plans and translations
-- [ ] Admission + reconcile validation (syntax at admission; level existence, preferred/required ordering, and parent/child ordering against scheduler topology objects at reconcile)
+- [ ] Scheduler compiler interface + Volcano implementation (PodGroup + subGroup networkTopology, topology-only `minMember: 0`, collision-safe PlacementGroup-ID hashing)
+- [ ] Failure gating for invalid topology, invalid plans, and translations
+- [ ] Admission + reconcile validation (syntax at admission; Ready/status-level existence, preferred/required ordering, and parent/child ordering at reconcile)
 - [ ] TopologyTranslated status and edge-triggered events on RBG
 - [ ] Unit test coverage
 - [ ] Integration test coverage
@@ -636,12 +992,66 @@ spec:
 
 ### Upgrade / Downgrade Strategy
 
-- **Upgrade**: all new fields are optional; existing RBGs and CoordinatedPolicies without topology configuration produce the same PlacementPlan and the same PodGroup rendering as KEP-430.
-- **Downgrade**: topology fields are immutable in place. A workload that no longer needs topology must be deleted and recreated without topology so its rendered dialect fields are removed for the new lifecycle; already-scheduled pods from the old lifecycle are not migrated. Rolling the controller back to a version without this feature leaves rendered PodGroup fields in place but unmaintained — they remain valid scheduler configuration and can be cleaned up manually. A topology-bearing CoordinatedPolicy may then carry the topology finalizer that the older controller does not know; delete the matching RBG first, or use the documented finalizer-removal escape hatch, before recreating the policy.
+- **Upgrade**: `ClusterNetworkTopology`, `TopologyConstraint`, and their fields are additive. Existing RBGs and CoordinatedPolicies without topology configuration produce the same PlacementPlan and the same PodGroup rendering as KEP-430. No default topology CR is created unless a user explicitly creates one.
+- **Downgrade**: topology fields are immutable in place. A workload that no longer needs topology must be deleted and recreated without topology so its rendered dialect fields are removed for the new lifecycle; already-scheduled pods from the old lifecycle are not migrated.
+- **Topology CR rollback**: rolling the controller back to a version without this feature leaves `ClusterNetworkTopology` CRs, generated backend resources, and finalizers in place. Imported native resources remain valid scheduler configuration and can continue to be used directly. Managed generated resources can be cleaned up manually only after workload references are removed. A topology CR may carry a finalizer that the older controller does not understand; use the documented finalizer-removal escape hatch only after confirming no workload still references it.
+- **CoordinatedPolicy rollback**: a topology-bearing CoordinatedPolicy may carry the topology finalizer that the older controller does not know; delete the matching RBG first, or use the documented finalizer-removal escape hatch, before recreating the policy.
 
 ### Version Skew Strategy
 
-`TopologyConstraint` is an additive, optional API. Older controllers ignore the new fields (constraints simply unenforced); newer controllers reading objects written by older versions see no constraints and render nothing. No control-plane/node coordination is involved beyond the scheduler's own version requirements, which are detected at runtime via CRD schema inspection.
+`ClusterNetworkTopology` and `TopologyConstraint` are additive, optional APIs. Older controllers ignore the new workload fields (constraints simply unenforced) and do not reconcile topology CRs. Newer controllers reading objects written by older versions see no constraints and render nothing. No control-plane/node coordination is involved beyond scheduler CRD versions and webhook availability, which are detected at runtime. Clusters using Managed/Imported topology must run the RBG controller version that owns the corresponding CRD, webhooks, and finalizer.
+
+## Production Readiness Review Questionnaire
+
+### Feature Enablement and Rollback
+
+###### How can this feature be enabled / disabled in a live cluster?
+
+Use the controller feature gate `RBGTopologyAwareScheduling`:
+
+- Gate name: `RBGTopologyAwareScheduling`
+- Component: `rbgs`
+- Alpha default: `false`
+
+Enabling or disabling requires restarting the RBG controller; it does not require API-server downtime, node downtime, or node reprovisioning. The controller must also run with the topology CRD, webhooks, and a topology-capable scheduler backend enabled.
+
+###### Does enabling the feature change any default behavior?
+
+No. RBGs and CoordinatedPolicies without topology declarations continue through the existing KEP-430-compatible path and render the same objects. Existing gang-only behavior is golden-tested for equivalence.
+
+###### Can the feature be disabled once it has been enabled?
+
+Yes. Set `RBGTopologyAwareScheduling=false` and restart `rbgs`. Unconstrained workloads continue normally. For topology-bearing RBGs, the controller stops rendering or updating topology groups, reports `TopologyTranslated=False` with reason `FeatureDisabled`, and gates further Role create/update so new pods are not created without their declared hard placement constraint. Already-running pods are not evicted or migrated. Existing scheduler group objects and topology finalizers are retained; delete the corresponding workloads (or use the documented finalizer escape hatch after confirming no workload still references them) before manually cleaning up generated resources.
+
+###### What happens if we reenable the feature if it was previously rolled back?
+
+The controller revalidates the recorded contract, `ClusterNetworkTopology` readiness and level drift, scheduler capability, and rendered objects. If those checks pass, topology translation and Role updates resume. If drift or a late policy is detected, the existing `TopologyPolicyLate`, `LevelUnresolved`, or `SchedulerUnsupported` paths gate the workload instead of approximating the constraint.
+
+###### Are there any tests for feature enablement/disablement?
+
+Yes. Unit and integration tests cover the gate default, admission with the gate disabled, rendering with the gate enabled, disabling after a plan has been accepted (Role updates gated, running pods unchanged), and reenablement after a rollback. Conversion and API round-trip tests ensure old objects remain readable when the gate is disabled.
+
+### Rollout, Upgrade and Rollback Planning
+
+###### How can a rollout or rollback fail? Can it impact already running workloads?
+
+Rollout can fail if the topology CRD/webhooks are unavailable, the active scheduler differs from a topology's immutable scheduler, or the selected scheduler lacks the required CRD capability. In those cases no topology group is written and topology-bearing Role create/update is gated. Already-running pods are not evicted. Rollback to a controller without the feature leaves topology CRs, finalizers, and generated scheduler objects in place; the operator must remove workload references before cleanup, as described in Upgrade / Downgrade Strategy.
+
+###### What specific metrics should inform a rollback?
+
+Monitor failed topology translation conditions/events, `rbg_topology_translation_duration_seconds`, and `rbg_topology_native_resource_ready` (0/1 by topology CR). A sustained increase in translation failures or a topology that is not Ready supports disabling the feature gate and rolling back.
+
+### Monitoring Requirements
+
+The controller emits edge-triggered events and RBG/`ClusterNetworkTopology` conditions for unresolved topology, invalid levels, unsupported schedulers, drift, policy settling/late arrival, and feature-disabled states. The metrics above expose translation latency and topology readiness. No new node-level metrics are required.
+
+### Dependencies
+
+The alpha feature depends on the RBG controller, its webhooks, the `ClusterNetworkTopology` CRD, and the selected scheduler backend (Volcano, Koordinator, or KAI) including that backend's topology and PodGroup CRDs. Scheduler capability is detected at runtime and unsupported combinations fail explicitly.
+
+### Scalability
+
+Placement planning is bounded by the number of roles, CoordinatedPolicy rules, and RoleInstances, not by the number of nodes. Generated names are bounded and hashed, PodGroup/subGroup ownership is garbage-collected, and watches are scoped to RBG-referenced objects. Managed Volcano mode can create HyperNodes for participating nodes; the controller must respect API list/write limits and batch materialization. No per-pod custom resources are introduced.
 
 ## Drawbacks
 
@@ -649,11 +1059,14 @@ spec:
 - The planning layer is more explicit than letting each translator create resources directly. The compensating benefit is that gang, topology, and other placement intents have one membership owner; composition no longer depends on translator call order.
 - A topology rule over a role set gathers all current and future pods of that scope into one domain. This can become a hard capacity ceiling; the limitation is explicit in this KEP.
 - Volcano cannot express arbitrary nested cross-role placement trees or anchor a preferred middle tier. Those cases are reported as unsupported/degraded rather than approximated.
+- ClusterNetworkTopology adds a new CR and controller lifecycle. The compensating benefit is that workload manifests reference a stable RBG vocabulary instead of a scheduler GVK or dialect field, and imported/managed ownership is explicit.
 
 ## Alternatives
 
 - **Independent gang and topology translators.** Rejected: KEP-430 would create one RBG-level gang PodGroup while topology rules partition their own PodGroups. A pod can carry only one `group-name`, so overlapping scopes either lose the gang guarantee, over-constrain topology, or produce order-dependent results. Placement membership needs one owner.
 - **RBG-level `spec.topologyConstraint` field.** Rejected: the constraint group "all pods of the RBG" is the wrong granularity for the driving scenario — PD-disaggregated deployments need prefill+decode co-located while roles without latency-critical cross-role traffic stay outside the domain, and an over-broad group wastes scarce in-domain capacity and can make the constraint unsatisfiable. Cross-role grouping is by definition inter-role coordination, which is exactly CoordinatedPolicy's domain. Whole-RBG co-location remains expressible by listing every role, so no expressiveness is lost.
 - **Per-role topology with pairwise role references** (prefill declares "co-locate with decode"). Rejected: pairwise declarations create N² relationships, make the constraint group implicit, and complicate conflict validation; a single rule naming the full role set states the group explicitly, once.
-- **Vocabulary indirection for cross-scheduler portability** (abstract level names mapped per scheduler). Rejected for now: the strings are the scheduler's own identifiers and manifests port verbatim within a scheduler family.
+- **Direct pass-through of scheduler level identifiers.** Rejected: the same RBG field would mean a Volcano `tierName`, Koordinator `topologyLayer`, or KAI `nodeLabel`/alias depending on the active scheduler. The schema would be stable but the semantic contract would not be. `ClusterNetworkTopology` makes the vocabulary and backend ownership explicit.
+- **Putting a backend GVK in `topologyBinding`.** Rejected: users would need to understand each scheduler's CRD, and a GVK inconsistent with the active scheduler would require additional conflict semantics. A name plus the immutable scheduler stamp is sufficient; status records the actual GVK, name, and UID.
+- **Koordinator Managed mode.** Rejected: Koordinator reads only the global `default` ClusterNetworkTopology, so RBG ownership could conflict with cluster administrators. Imported `default` makes external ownership explicit.
 - **Approximating unsupported plans** (merging overlapping scopes into the union, dropping one constraint, or rendering native pod affinities). Rejected: silent semantic changes are worse than an explicit `IncompatiblePlacementGroups` or `SchedulerUnsupported` condition.
