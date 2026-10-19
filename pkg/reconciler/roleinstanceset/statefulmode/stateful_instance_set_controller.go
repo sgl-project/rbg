@@ -53,6 +53,8 @@ func init() {
 	flag.IntVar(&concurrentReconciles, "stateful-instanceset-workers", concurrentReconciles, "Max concurrent workers for StatefulInstanceSet controller.")
 }
 
+const instanceHealthPruneInterval = time.Minute
+
 var (
 	// controllerKind contains the schema.GroupVersionKind for this controller type.
 	controllerKind       = workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")
@@ -151,6 +153,9 @@ type ReconcileStatefulInstanceSet struct {
 	roleInstanceLister instancelisters.RoleInstanceLister
 	// roleInstanceSetLister is able to list/get role instance sets from a shared informer's store
 	roleInstanceSetLister instancelisters.RoleInstanceSetLister
+	// healthPruneMutex protects lastHealthPrune and prevents overlapping sweeps.
+	healthPruneMutex sync.Mutex
+	lastHealthPrune  time.Time
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=instances,verbs=get;list;watch;create;update;patch;delete
@@ -181,7 +186,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 		}
 	}()
 
-	ssc.pruneInstanceHealth()
+	ssc.pruneInstanceHealth(startTime)
 
 	set, err := ssc.roleInstanceSetLister.RoleInstanceSets(namespace).Get(name)
 	if errors.IsNotFound(err) {
@@ -219,7 +224,17 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 // for deleted or replaced sets using the informer cache. The outer controller
 // returns early for deleted sets, so reclaim their records when another set
 // reconciles instead of relying on a NotFound request reaching this reconciler.
-func (ssc *ReconcileStatefulInstanceSet) pruneInstanceHealth() {
+// Sweep at most once per minute; other workers skip cleanup while a sweep runs.
+func (ssc *ReconcileStatefulInstanceSet) pruneInstanceHealth(now time.Time) {
+	if !ssc.healthPruneMutex.TryLock() {
+		return
+	}
+	defer ssc.healthPruneMutex.Unlock()
+	if !ssc.lastHealthPrune.IsZero() && now.Sub(ssc.lastHealthPrune) < instanceHealthPruneInterval {
+		return
+	}
+	ssc.lastHealthPrune = now
+
 	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
 		healthKey := key.(instanceHealthKey)
 		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(healthKey.instanceSet.Namespace).Get(healthKey.instanceSet.Name)
