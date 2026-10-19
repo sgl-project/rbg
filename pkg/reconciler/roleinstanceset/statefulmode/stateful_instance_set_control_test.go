@@ -2140,7 +2140,16 @@ func TestPruneInstanceHealthConcurrent(t *testing.T) {
 	t.Cleanup(resetEarlyRollbackReplacementSignals)
 	set := buildSet("prefill", 1, nil, nil)
 	set.UID = "prefill-set"
-	indexer := &healthCountingIndexer{Indexer: cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)}
+	lookupStarted := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseLookup) })
+	indexer := &healthCountingIndexer{
+		Indexer: cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil),
+		beforeLookup: sync.OnceFunc(func() {
+			close(lookupStarted)
+			<-releaseLookup
+		}),
+	}
 	if err := indexer.Add(set); err != nil {
 		t.Fatal(err)
 	}
@@ -2148,15 +2157,39 @@ func TestPruneInstanceHealthConcurrent(t *testing.T) {
 	instanceUnhealthySince.Store(getInstanceHealthKey(set, buildInst(set.Name, 0, testOldRev, false, true)), now)
 	recordEarlyRollbackReplacementSignal(set, 0, testUpdateRev)
 	controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
-	start := make(chan struct{})
 	var workers sync.WaitGroup
-	for range 32 {
-		workers.Go(func() {
-			<-start
-			controller.pruneInstanceHealth(now)
-		})
+	t.Cleanup(func() {
+		release()
+		workers.Wait()
+	})
+	workers.Go(func() { controller.pruneInstanceHealth(now) })
+	select {
+	case <-lookupStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep did not reach the informer lookup")
 	}
-	close(start)
+
+	// Hold the first sweep inside GetByKey and require other workers to
+	// return before releasing it. A blocking Lock would fail this assertion.
+	returned := make(chan struct{})
+	workers.Go(func() {
+		var callers sync.WaitGroup
+		for range 32 {
+			callers.Go(func() { controller.pruneInstanceHealth(now) })
+		}
+		callers.Wait()
+		close(returned)
+	})
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup blocked behind an in-progress sweep")
+	}
+	if got := indexer.lookups.Load(); got != 1 {
+		t.Fatalf("concurrent cleanup made %d lookups while the first sweep was held, want 1", got)
+	}
+
+	release()
 	workers.Wait()
 	if got := indexer.lookups.Load(); got != 2 {
 		t.Fatalf("concurrent cleanup made %d lookups, want one sweep with 2 lookups", got)
@@ -2198,11 +2231,15 @@ func BenchmarkPruneInstanceHealth(b *testing.B) {
 
 type healthCountingIndexer struct {
 	cache.Indexer
-	lookups atomic.Int32
+	lookups      atomic.Int32
+	beforeLookup func()
 }
 
 func (i *healthCountingIndexer) GetByKey(key string) (interface{}, bool, error) {
 	i.lookups.Add(1)
+	if i.beforeLookup != nil {
+		i.beforeLookup()
+	}
 	return i.Indexer.GetByKey(key)
 }
 

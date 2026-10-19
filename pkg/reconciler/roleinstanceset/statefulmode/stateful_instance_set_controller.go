@@ -186,7 +186,7 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 		}
 	}()
 
-	ssc.pruneInstanceHealth(time.Now())
+	ssc.pruneInstanceHealth(startTime)
 
 	set, err := ssc.roleInstanceSetLister.RoleInstanceSets(namespace).Get(name)
 	if errors.IsNotFound(err) {
