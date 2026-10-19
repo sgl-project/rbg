@@ -71,56 +71,68 @@ const (
 	stableUnhealthyDuration = 10 * time.Second
 )
 
-type instanceHealthKey struct {
-	instanceSet    types.NamespacedName
-	instanceSetUID types.UID
-	instanceUID    types.UID
+// instanceHealthState is immutable after publication. Reconciles for the same
+// namespace/name are serialized by the controller workqueue, while pruning and
+// observations for other sets may run concurrently.
+type instanceHealthState struct {
+	setUID types.UID
+	since  map[types.UID]time.Time
 }
 
-func getInstanceHealthKey(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) instanceHealthKey {
-	return instanceHealthKey{
-		instanceSet:    types.NamespacedName{Namespace: set.Namespace, Name: set.Name},
-		instanceSetUID: set.UID,
-		instanceUID:    inst.UID,
-	}
-}
-
-// observeInstanceHealth maintains the instanceUnhealthySince map: for each
-// instance, record the first observation time when unhealthy, and clear the
-// entry when observed healthy. Called once at the top of every reconcile in
-// Phase A so the timestamps reflect the current cache snapshot.
-//
-// Only this set's entries can be removed: the supplied instances slice does
-// not include instances managed by other sets. A recreated set also discards
-// observations made for its previous UID.
+// observeInstanceHealth replaces only this set's health snapshot. Unhealthy
+// instances retain their first observation time; healthy or missing instances
+// are omitted. A recreated set starts fresh even if it adopts the same instances.
 func observeInstanceHealth(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance) {
-	now := time.Now()
-	live := make(map[types.UID]struct{}, len(instances))
-	for _, inst := range instances {
-		if inst == nil || inst.UID == "" {
-			continue
-		}
-		live[inst.UID] = struct{}{}
-		key := getInstanceHealthKey(set, inst)
-		if isHealthy(inst) {
-			instanceUnhealthySince.Delete(key)
-			continue
-		}
-		// Unhealthy: record first-observed time if not already recorded.
-		instanceUnhealthySince.LoadOrStore(key, now)
+	key := types.NamespacedName{Namespace: set.Namespace, Name: set.Name}
+	var previous *instanceHealthState
+	if value, ok := instanceUnhealthySince.Load(key); ok {
+		previous = value.(*instanceHealthState)
 	}
-	// Drop entries for instances that have disappeared (different UID after
-	// recreate, or fully deleted).
-	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
-		healthKey := key.(instanceHealthKey)
-		if healthKey.instanceSet.Namespace != set.Namespace || healthKey.instanceSet.Name != set.Name {
-			return true
+
+	// Size for the previous unhealthy population, not every healthy instance.
+	size := 0
+	if previous != nil && previous.setUID == set.UID {
+		size = min(len(instances), len(previous.since))
+	}
+	now := time.Now()
+	var since map[types.UID]time.Time
+	for _, inst := range instances {
+		if inst == nil || inst.UID == "" || isHealthy(inst) {
+			continue
 		}
-		if _, alive := live[healthKey.instanceUID]; !alive || healthKey.instanceSetUID != set.UID {
-			instanceUnhealthySince.Delete(key)
+		if since == nil {
+			since = make(map[types.UID]time.Time, size)
 		}
-		return true
-	})
+		first := now
+		if previous != nil && previous.setUID == set.UID {
+			if observed, ok := previous.since[inst.UID]; ok {
+				first = observed
+			}
+		}
+		since[inst.UID] = first
+	}
+
+	if len(since) == 0 {
+		instanceUnhealthySince.Delete(key)
+		return
+	}
+	instanceUnhealthySince.Store(key, &instanceHealthState{setUID: set.UID, since: since})
+}
+
+func getUnhealthySince(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) (time.Time, bool) {
+	if set == nil || inst == nil || inst.UID == "" {
+		return time.Time{}, false
+	}
+	value, ok := instanceUnhealthySince.Load(types.NamespacedName{Namespace: set.Namespace, Name: set.Name})
+	if !ok {
+		return time.Time{}, false
+	}
+	state := value.(*instanceHealthState)
+	if state.setUID != set.UID {
+		return time.Time{}, false
+	}
+	first, ok := state.since[inst.UID]
+	return first, ok
 }
 
 // isStablyUnhealthy returns true when the controller has observed `inst` as
@@ -129,14 +141,7 @@ func observeInstanceHealth(set *workloadsv1alpha2.RoleInstanceSet, instances []*
 // "free" to update without consuming maxUnavailable budget. See
 // stableUnhealthyDuration for the rationale.
 func isStablyUnhealthy(set *workloadsv1alpha2.RoleInstanceSet, inst *workloadsv1alpha2.RoleInstance) bool {
-	if inst == nil || inst.UID == "" {
-		return false
-	}
-	v, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, inst))
-	if !ok {
-		return false
-	}
-	first, ok := v.(time.Time)
+	first, ok := getUnhealthySince(set, inst)
 	if !ok {
 		return false
 	}
@@ -150,14 +155,7 @@ func remainingUnhealthyWindow(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	inst *workloadsv1alpha2.RoleInstance,
 ) (time.Duration, bool) {
-	if set == nil || inst == nil || inst.UID == "" {
-		return 0, false
-	}
-	v, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, inst))
-	if !ok {
-		return 0, false
-	}
-	first, ok := v.(time.Time)
+	first, ok := getUnhealthySince(set, inst)
 	if !ok {
 		return 0, false
 	}
@@ -699,13 +697,11 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(set, target)
 
 		if !isFree && initialBaseUnavail+newlyUnavail >= effectiveBudget {
-			if observed, ok := instanceUnhealthySince.Load(getInstanceHealthKey(set, target)); ok {
-				if first, ok := observed.(time.Time); ok {
-					// Retry when this target can pass the health window without
-					// an unrelated instance event. The window may have just expired.
-					wait := max(time.Until(first.Add(stableUnhealthyDuration)), time.Nanosecond)
-					durationStore.Push(getInstanceSetKey(set), wait)
-				}
+			if first, ok := getUnhealthySince(set, target); ok {
+				// Retry when this target can pass the health window without
+				// an unrelated instance event. The window may have just expired.
+				wait := max(time.Until(first.Add(stableUnhealthyDuration)), time.Nanosecond)
+				durationStore.Push(getInstanceSetKey(set), wait)
 			}
 			klog.InfoS("Rolling update budget exhausted",
 				"instanceSet", klog.KObj(set), "instance", klog.KObj(target),

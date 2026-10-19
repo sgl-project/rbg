@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -69,7 +70,7 @@ var (
 
 	// instanceUnhealthySince tracks, per set identity and RoleInstance UID, the timestamp at
 	// which this controller first observed the instance in an unhealthy state.
-	// Reset to zero whenever the controller subsequently observes the same UID
+	// Removed whenever the controller subsequently observes the same UID
 	// as healthy, so the duration only accumulates over CONSECUTIVE unhealthy
 	// observations. This is the input to the "stably unhealthy" gate (see
 	// stableUnhealthyDuration / isStablyUnhealthy in stateful_instance_set_control.go),
@@ -81,7 +82,7 @@ var (
 	// acceptable — the worst case after a restart is that a genuinely-broken
 	// instance takes one extra stableUnhealthyDuration window before it
 	// becomes eligible for cleanup.
-	instanceUnhealthySince sync.Map // map[instanceHealthKey]time.Time
+	instanceUnhealthySince sync.Map // map[types.NamespacedName]*instanceHealthState
 
 	// earlyRollbackReplacementSignals tracks in-memory early-rollback
 	// replacement work. A signal records the set UID, target revision, and the
@@ -235,11 +236,13 @@ func (ssc *ReconcileStatefulInstanceSet) pruneInstanceHealth(now time.Time) {
 	}
 	ssc.lastHealthPrune = now
 
-	instanceUnhealthySince.Range(func(key, _ interface{}) bool {
-		healthKey := key.(instanceHealthKey)
-		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(healthKey.instanceSet.Namespace).Get(healthKey.instanceSet.Name)
-		if errors.IsNotFound(err) || (err == nil && set.UID != healthKey.instanceSetUID) {
-			instanceUnhealthySince.Delete(key)
+	instanceUnhealthySince.Range(func(key, value interface{}) bool {
+		setKey := key.(types.NamespacedName)
+		state := value.(*instanceHealthState)
+		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(setKey.Namespace).Get(setKey.Name)
+		if errors.IsNotFound(err) || (err == nil && set.UID != state.setUID) {
+			// An observation may have replaced this snapshot during the lookup.
+			instanceUnhealthySince.CompareAndDelete(key, state)
 		}
 		return true
 	})
