@@ -62,6 +62,7 @@ var descendantKinds = []schema.GroupVersionKind{
 	corev1.SchemeGroupVersion.WithKind("Service"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
 	appsv1.SchemeGroupVersion.WithKind("ControllerRevision"),
+	workloadsv1alpha2.GroupVersion.WithKind("CoordinatedPolicy"),
 }
 
 // envtest has no garbage collector; dependents must disappear before their owner can be replaced.

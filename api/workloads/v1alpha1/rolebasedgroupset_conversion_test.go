@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -394,4 +395,158 @@ func TestRoleBasedGroupSet_ConvertTo_CorruptStash(t *testing.T) {
 	err := src.ConvertTo(&v2.RoleBasedGroupSet{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), annotationV1alpha2RolloutStrategy)
+}
+
+func TestRoleBasedGroupSet_PodGroupPolicyAnnotations(t *testing.T) {
+	type policyCase struct {
+		name   string
+		policy *PodGroupPolicy
+		gang   map[string]string
+	}
+	cases := []policyCase{
+		{name: "nil"},
+		{name: "empty", policy: &PodGroupPolicy{}},
+		{
+			name: "kube-explicit-timeout",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				KubeScheduling: &KubeSchedulingPodGroupPolicySource{ScheduleTimeoutSeconds: ptr.To(int32(90))},
+			}},
+			gang: map[string]string{
+				constants.GangSchedulingAnnotationKey:             "true",
+				constants.GangSchedulingScheduleTimeoutSecondsKey: "90",
+			},
+		},
+		{
+			name: "kube-default-timeout",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				KubeScheduling: &KubeSchedulingPodGroupPolicySource{},
+			}},
+			gang: map[string]string{constants.GangSchedulingAnnotationKey: "true"},
+		},
+		{
+			name: "kube-zero-timeout",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				KubeScheduling: &KubeSchedulingPodGroupPolicySource{ScheduleTimeoutSeconds: ptr.To(int32(0))},
+			}},
+			gang: map[string]string{
+				constants.GangSchedulingAnnotationKey:             "true",
+				constants.GangSchedulingScheduleTimeoutSecondsKey: "0",
+			},
+		},
+		{
+			name: "volcano-queue-and-priority",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				VolcanoScheduling: &VolcanoSchedulingPodGroupPolicySource{Queue: "training", PriorityClassName: "high"},
+			}},
+			gang: map[string]string{
+				constants.GangSchedulingAnnotationKey:           "true",
+				constants.GangSchedulingVolcanoQueueKey:         "training",
+				constants.GangSchedulingVolcanoPriorityClassKey: "high",
+			},
+		},
+		{
+			name: "volcano-queue-only",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				VolcanoScheduling: &VolcanoSchedulingPodGroupPolicySource{Queue: "batch"},
+			}},
+			gang: map[string]string{
+				constants.GangSchedulingAnnotationKey:   "true",
+				constants.GangSchedulingVolcanoQueueKey: "batch",
+			},
+		},
+		{
+			name: "volcano-priority-only",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				VolcanoScheduling: &VolcanoSchedulingPodGroupPolicySource{PriorityClassName: "low"},
+			}},
+			gang: map[string]string{
+				constants.GangSchedulingAnnotationKey:           "true",
+				constants.GangSchedulingVolcanoPriorityClassKey: "low",
+			},
+		},
+		{
+			name: "volcano-defaults",
+			policy: &PodGroupPolicy{PodGroupPolicySource: PodGroupPolicySource{
+				VolcanoScheduling: &VolcanoSchedulingPodGroupPolicySource{},
+			}},
+			gang: map[string]string{constants.GangSchedulingAnnotationKey: "true"},
+		},
+	}
+
+	coordination := []Coordination{{Name: "workers", Roles: []string{"worker"}}}
+	coordinationJSON, err := json.Marshal(coordination)
+	require.NoError(t, err)
+	wantAnnotations := func(t *testing.T, tc policyCase) map[string]string {
+		t.Helper()
+		want := map[string]string{annotationV1alpha1Coordination: string(coordinationJSON)}
+		for key, value := range tc.gang {
+			want[key] = value
+		}
+		if tc.policy != nil {
+			data, err := json.Marshal(tc.policy)
+			require.NoError(t, err)
+			want[constants.ConversionV1alpha1PodGroupPolicyAnnotationKey] = string(data)
+		}
+		return want
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "rbgs", Namespace: "ns", UID: "set-uid",
+					Labels:      map[string]string{"example.com/parent-only": "label"},
+					Annotations: map[string]string{"example.com/parent-only": "annotation"},
+					Finalizers:  []string{"example.com/parent-only"},
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "v1", Kind: "ConfigMap", Name: "owner", UID: "owner-uid",
+					}},
+				},
+				Spec: RoleBasedGroupSetSpec{
+					Template: RoleBasedGroupSpec{
+						Roles:                    []RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
+						PodGroupPolicy:           tc.policy,
+						CoordinationRequirements: coordination,
+					},
+				},
+			}
+			original := src.DeepCopy()
+			hub := &v2.RoleBasedGroupSet{}
+			require.NoError(t, src.ConvertTo(hub))
+			assert.Equal(t, original, src, "ConvertTo must not mutate its input")
+			assert.Equal(t, wantAnnotations(t, tc), hub.Spec.GroupTemplate.Annotations)
+			assert.Empty(t, hub.Spec.GroupTemplate.Labels, "parent labels must not reach children")
+			wantMeta := original.ObjectMeta.DeepCopy()
+			for key, value := range wantAnnotations(t, tc) {
+				wantMeta.Annotations[key] = value
+			}
+			assert.Equal(t, *wantMeta, hub.ObjectMeta, "parent metadata must remain on the set")
+
+			// Round trips must clear annotations from the previous policy without mutating the hub.
+			for _, next := range cases {
+				t.Run("round-trip-to-"+next.name, func(t *testing.T) {
+					inputHub := hub.DeepCopy()
+					before := inputHub.DeepCopy()
+					view := &RoleBasedGroupSet{}
+					require.NoError(t, view.ConvertFrom(inputHub))
+					assert.Equal(t, before, inputHub, "ConvertFrom must not mutate its input")
+					assert.Equal(t, tc.policy, view.Spec.Template.PodGroupPolicy)
+					assert.Equal(t, coordination, view.Spec.Template.CoordinationRequirements)
+					assert.Equal(t, original.Annotations, view.Annotations, "derived annotations must not survive in the v1alpha1 view")
+
+					view.Spec.Template.PodGroupPolicy = next.policy
+					beforeView := view.DeepCopy()
+					updated := &v2.RoleBasedGroupSet{}
+					require.NoError(t, view.ConvertTo(updated))
+					assert.Equal(t, beforeView, view, "ConvertTo must not mutate the edited view")
+					assert.Equal(t, wantAnnotations(t, next), updated.Spec.GroupTemplate.Annotations,
+						"only the current policy's stash and derived annotations may reach children")
+					assert.Empty(t, updated.Spec.GroupTemplate.Labels)
+					wantParent := wantAnnotations(t, next)
+					wantParent["example.com/parent-only"] = "annotation"
+					assert.Equal(t, wantParent, updated.Annotations, "stale policy annotations must not remain on the set")
+				})
+			}
+		})
+	}
 }

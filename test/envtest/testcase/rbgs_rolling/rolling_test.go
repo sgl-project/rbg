@@ -31,8 +31,10 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
+	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
@@ -48,6 +50,178 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 	AfterEach(func() {
 		testutil.DeleteNamespace(testNs)
 	})
+
+	DescribeTable("converges converted v1alpha1 coordination through real policy SSA",
+		func(strategy workloadsv1alpha2.GroupUpdateStrategyType) {
+			setName := "rbgs-coordination"
+			base := buildRollingSet(setName, testNs, 2, 0, 1, 0, 1)
+			base.Spec.RolloutStrategy.Type = strategy
+			legacy := &workloadsv1alpha1.RoleBasedGroupSet{}
+			Expect(legacy.ConvertFrom(base.DeepCopy())).To(Succeed())
+			roles := []string{legacy.Spec.Template.Roles[0].Name}
+			convert := func(skew string) *workloadsv1alpha2.RoleBasedGroupSet {
+				legacy.Spec.Template.CoordinationRequirements = []workloadsv1alpha1.Coordination{{
+					Name: "rollout-and-scaling", Roles: roles,
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						RollingUpdate: &workloadsv1alpha1.CoordinationRollingUpdate{
+							MaxSkew: ptr.To(skew), Partition: ptr.To("0%"), MaxUnavailable: ptr.To("100%"),
+						},
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To(skew), Progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+						},
+					},
+				}}
+				// No conversion webhook runs in this suite: exercise the real converter explicitly, not webhook E2E.
+				hub := &workloadsv1alpha2.RoleBasedGroupSet{}
+				Expect(legacy.ConvertTo(hub)).To(Succeed())
+				return hub
+			}
+			wantSkew := "10%"
+			set := convert(wantSkew)
+			Expect(set.Spec.RolloutStrategy).To(Equal(base.Spec.RolloutStrategy))
+			coordinationKey := constants.ConversionV1alpha1CoordinationAnnotationKey
+			stashKey := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+			wantCoordination := set.Spec.GroupTemplate.Annotations[coordinationKey]
+			Expect(wantCoordination).NotTo(BeEmpty())
+			set.Spec.GroupTemplate.Labels = map[string]string{"ordinary": "stable"}
+			set.Spec.GroupTemplate.Annotations["ordinary"] = "stable"
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+
+			policyUIDs := map[int]types.UID{}
+			assertPolicies := func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for ordinal, child := range children {
+					g.Expect(child.Annotations).To(HaveKeyWithValue(coordinationKey, wantCoordination))
+					policy := &workloadsv1alpha2.CoordinatedPolicy{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(child), policy)).To(Succeed())
+					g.Expect(policy.Spec.Policies).To(Equal([]workloadsv1alpha2.CoordinatedPolicyRule{{
+						Name: "rollout-and-scaling", Roles: roles,
+						Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+							RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+								MaxSkew: ptr.To(intstr.FromString(wantSkew)), Partition: ptr.To(intstr.FromString("0%")),
+								MaxUnavailable: ptr.To(intstr.FromString("100%")),
+							},
+							Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+								MaxSkew: ptr.To(intstr.FromString(wantSkew)), Progression: workloadsv1alpha2.OrderScheduledProgression,
+							},
+						},
+					}}))
+					g.Expect(policy.OwnerReferences).To(Equal([]metav1.OwnerReference{{
+						APIVersion: workloadsv1alpha2.GroupVersion.String(), Kind: "RoleBasedGroup",
+						Name: child.Name, UID: child.UID, BlockOwnerDeletion: ptr.To(true),
+					}}))
+					g.Expect(policy.ManagedFields).To(ContainElement(And(
+						HaveField("Manager", utils.FieldManager), HaveField("Operation", metav1.ManagedFieldsOperationApply),
+						HaveField("Subresource", ""),
+					)))
+					if uid, ok := policyUIDs[ordinal]; ok {
+						g.Expect(policy.UID).To(Equal(uid))
+					}
+				}
+			}
+			Eventually(assertPolicies, timeout, interval).Should(Succeed())
+			oldRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+			before := fetchChildren(testNs, setName)
+			for ordinal, child := range before {
+				policy := &workloadsv1alpha2.CoordinatedPolicy{}
+				Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(child), policy)).To(Succeed())
+				policyUIDs[ordinal] = policy.UID
+			}
+			patchChild := func(mutate func(*workloadsv1alpha2.RoleBasedGroup)) {
+				Eventually(func() error {
+					child := &workloadsv1alpha2.RoleBasedGroup{}
+					if err := testutil.K8sClient.Get(testutil.Ctx,
+						client.ObjectKey{Namespace: testNs, Name: childName(setName, 0)}, child); err != nil {
+						return err
+					}
+					original := child.DeepCopy()
+					mutate(child)
+					return testutil.K8sClient.Patch(testutil.Ctx, child,
+						client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+				}, timeout, interval).Should(Succeed())
+			}
+			const childOnlyStash = `{"kubeScheduling":{"scheduleTimeoutSeconds":30}}`
+			Expect(set.Spec.GroupTemplate.Annotations).NotTo(HaveKey(stashKey))
+			patchChild(func(child *workloadsv1alpha2.RoleBasedGroup) {
+				child.Annotations[stashKey] = childOnlyStash
+			})
+
+			By("updating only coordination intent, including the child below partition")
+			wantSkew = "20%"
+			wantCoordination = convert(wantSkew).Spec.GroupTemplate.Annotations[coordinationKey]
+			Expect(wantCoordination).NotTo(Equal(set.Spec.GroupTemplate.Annotations[coordinationKey]))
+			updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+				set.Spec.GroupTemplate.Annotations[coordinationKey] = wantCoordination
+			})
+			assertUnchanged := func(g Gomega) {
+				assertPolicies(g)
+				current := mustFetchSet(testNs, setName)
+				g.Expect(current.Status.ObservedGeneration).To(BeNumerically(">=", current.Generation))
+				g.Expect(current.Status.CurrentRevision).To(Equal(oldRevision))
+				g.Expect(current.Status.UpdateRevision).To(Equal(oldRevision))
+				g.Expect(current.Spec.RolloutStrategy.Partition).To(Equal(ptr.To(intstr.FromInt32(1))))
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for ordinal, original := range before {
+					g.Expect(children).To(HaveKey(ordinal))
+					child := children[ordinal]
+					g.Expect(child.UID).To(Equal(original.UID))
+					g.Expect(child.Spec).To(Equal(original.Spec))
+					g.Expect(child.Generation).To(Equal(original.Generation))
+					g.Expect(child.Labels).To(Equal(original.Labels))
+					g.Expect(child.Annotations).To(HaveKeyWithValue("ordinary", "stable"))
+				}
+				g.Expect(children[0].Annotations).To(HaveKeyWithValue(stashKey, childOnlyStash))
+				revisions := &appsv1.ControllerRevisionList{}
+				g.Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(testNs),
+					client.MatchingLabels{constants.GroupSetNameLabelKey: setName})).To(Succeed())
+				g.Expect(revisions.Items).To(HaveLen(1))
+				g.Expect(revisions.Items[0].Name).To(Equal(oldRevision))
+			}
+			Eventually(assertUnchanged, timeout, interval).Should(Succeed())
+			Consistently(assertUnchanged, 3*time.Second, interval).Should(Succeed())
+
+			By("repairing deleted and tampered coordination annotations on a settled child")
+			for _, remove := range []bool{true, false} {
+				patchChild(func(child *workloadsv1alpha2.RoleBasedGroup) {
+					if remove {
+						delete(child.Annotations, coordinationKey)
+					} else {
+						child.Annotations[coordinationKey] = set.Spec.GroupTemplate.Annotations[coordinationKey]
+					}
+				})
+				Eventually(assertUnchanged, timeout, interval).Should(Succeed())
+				Consistently(assertUnchanged, 3*time.Second, interval).Should(Succeed())
+			}
+
+			if strategy == workloadsv1alpha2.RecreateStrategyType {
+				By("retaining current coordination intent and recreating owned policies during a normal spec rollout")
+				oldPolicyUIDs := policyUIDs
+				policyUIDs = nil
+				updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+					setTemplateImage(set, updatedImage)
+					set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+				})
+				newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+				final := waitRollout(testNs, setName, rolloutComplete)
+				Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+				Eventually(assertPolicies, timeout, interval).Should(Succeed())
+				for ordinal, child := range fetchChildren(testNs, setName) {
+					Expect(child.UID).NotTo(Equal(before[ordinal].UID))
+					Expect(child.Labels[constants.GroupSetRevisionLabelKey]).To(Equal(newRevision))
+					Expect(childImage(child)).To(Equal(updatedImage))
+					Expect(child.Labels).To(HaveKeyWithValue("ordinary", "stable"))
+					Expect(child.Annotations).To(HaveKeyWithValue("ordinary", "stable"))
+					policy := &workloadsv1alpha2.CoordinatedPolicy{}
+					Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(child), policy)).To(Succeed())
+					Expect(policy.UID).NotTo(Equal(oldPolicyUIDs[ordinal]))
+				}
+			}
+		},
+		Entry("Recreate", workloadsv1alpha2.RecreateStrategyType),
+		Entry("InPlaceUpdate", workloadsv1alpha2.InPlaceUpdateStrategyType),
+	)
 
 	DescribeTable("falls back to maxUnavailable=1 when both budgets resolve to zero",
 		func(maxUnavailable string) {

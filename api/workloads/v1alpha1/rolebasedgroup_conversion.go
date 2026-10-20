@@ -32,7 +32,7 @@ import (
 const (
 	// annotationV1alpha1PodGroupPolicy stores the serialized v1alpha1 PodGroupPolicy
 	// on the hub (v1alpha2) object so it can be round-tripped back.
-	annotationV1alpha1PodGroupPolicy = "conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy"
+	annotationV1alpha1PodGroupPolicy = constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
 	annotationV1alpha1Coordination = constants.ConversionV1alpha1CoordinationAnnotationKey
