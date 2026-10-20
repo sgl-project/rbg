@@ -99,14 +99,16 @@ test-chart: ## Render the Helm chart with helm template and assert the deprecate
 	go test ./test/chart/ -v
 
 .PHONY: test-e2e-matrix-coverage
-test-e2e-matrix-coverage: ## Verify that the E2E matrix slices cover the legacy default suite. Requires no cluster.
-	go test ./test/e2e/ci -run '^TestMatrixSlicesCoverLegacyDefaultSuite$$' -count=1 -v
+test-e2e-matrix-coverage: ## Verify that the E2E matrix slices cover the legacy default suite and that test-e2e forwards its flags intact. Requires no cluster.
+	go test ./test/e2e/ci -count=1 -v
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-E2E_LABEL_FILTER ?= '!volcano && !scheduler-plugins'
+# No quotes in the value: the recipe already single-quotes it, and nested quotes would let
+# the shell split the go test command at the filter's `&&`.
+E2E_LABEL_FILTER ?= !volcano && !scheduler-plugins
 E2E_TIMEOUT ?= 45m
 E2E_FAIL_FAST ?= true
 
