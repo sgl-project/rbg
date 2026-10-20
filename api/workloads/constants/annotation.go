@@ -122,10 +122,11 @@ const (
 	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
 	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
 
-	// ConversionV1alpha1CoordinationAnnotationKey stores serialized v1alpha1 CoordinationRequirements
-	// on the v1alpha2 view during conversion. It must be excluded from revision hashing and from
-	// metadata sync because it is owned by the conversion machinery, not by the user template.
+	// ConversionV1alpha1CoordinationAnnotationKey carries v1alpha1 coordination intent to child RBGs independently of revisions.
 	ConversionV1alpha1CoordinationAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+
+	// ConversionV1alpha1PodGroupPolicyAnnotationKey preserves v1alpha1 PodGroupPolicy through hub round trips.
+	ConversionV1alpha1PodGroupPolicyAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy"
 
 	// ConversionV1alpha2RolloutStrategyAnnotationKey stores the v1alpha2 rollout strategy on the
 	// v1alpha1 view during conversion.
