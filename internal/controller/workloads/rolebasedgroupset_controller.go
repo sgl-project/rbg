@@ -100,6 +100,9 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	var rbgsToDelete []*workloadsv1alpha2.RoleBasedGroup
 	for i := range rbglist.Items {
 		rbg := &rbglist.Items[i]
+		if !r.isOwnedOrAdoptable(rbgset, rbg) {
+			continue
+		}
 		indexStr, ok := rbg.Labels[constants.GroupSetIndexLabelKey]
 		if !ok {
 			logger.Info("Found RoleBasedGroup with missing index label, marking for deletion", "rbgName", rbg.Name)
@@ -113,6 +116,20 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			)
 			rbgsToDelete = append(rbgsToDelete, rbg)
 			continue
+		}
+		if metav1.GetControllerOfNoCopy(rbg) == nil {
+			// Adopt the orphan (e.g. left behind by a cascade=orphan deletion) so
+			// that it is garbage-collected together with the Set.
+			if err := controllerutil.SetControllerReference(rbgset, rbg, r.scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.client.Update(ctx, rbg); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return ctrl.Result{}, err
+			}
+			logger.Info("Adopted orphaned RoleBasedGroup", "rbgName", rbg.Name)
 		}
 		existingRBGs[index] = rbg
 	}
@@ -196,6 +213,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "Failed to re-list child RoleBasedGroups for status update")
 		return ctrl.Result{}, err
 	}
+	r.filterOwnedItems(&rbglist, rbgset)
 	if err := r.updateStatus(ctx, rbgset, &rbglist); err != nil {
 		logger.Error(err, "Failed to update RoleBasedGroupSet status")
 		return ctrl.Result{}, err
@@ -203,6 +221,36 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	logger.Info("Successfully reconciled rbgset")
 	return ctrl.Result{}, nil
+}
+
+// isOwnedOrAdoptable returns true if the child RBG is controlled by the given
+// RoleBasedGroupSet (matching UID) or is an orphan that carries this set's
+// name label and can be adopted. RBGs controlled by a different UID are
+// ignored to prevent a newly-created set from managing leftovers of a
+// same-named predecessor that has not been garbage-collected yet.
+func (r *RoleBasedGroupSetReconciler) isOwnedOrAdoptable(
+	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
+) bool {
+	ref := metav1.GetControllerOfNoCopy(rbg)
+	if ref == nil {
+		return rbg.Labels[constants.GroupSetNameLabelKey] == rbgset.Name
+	}
+	return ref.UID == rbgset.UID
+}
+
+// filterOwnedItems removes items from the list that are not owned by or
+// adoptable by the given RoleBasedGroupSet.
+func (r *RoleBasedGroupSetReconciler) filterOwnedItems(
+	rbglist *workloadsv1alpha2.RoleBasedGroupList, rbgset *workloadsv1alpha2.RoleBasedGroupSet,
+) {
+	n := 0
+	for i := range rbglist.Items {
+		if r.isOwnedOrAdoptable(rbgset, &rbglist.Items[i]) {
+			rbglist.Items[n] = rbglist.Items[i]
+			n++
+		}
+	}
+	rbglist.Items = rbglist.Items[:n]
 }
 
 // scaleUp concurrently creates a given set of RoleBasedGroup instances.
@@ -225,6 +273,10 @@ func (r *RoleBasedGroupSetReconciler) scaleUp(
 		if err := r.client.Get(
 			ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, got,
 		); err == nil {
+			if ref := metav1.GetControllerOfNoCopy(got); ref != nil && ref.UID != rbgset.UID {
+				logger.Info("Skipping RoleBasedGroup controlled by a different RoleBasedGroupSet",
+					"name", rbg.Name, "foreignUID", ref.UID)
+			}
 			continue
 		}
 

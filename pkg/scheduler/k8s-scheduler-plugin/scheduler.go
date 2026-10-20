@@ -184,21 +184,7 @@ func (m *GangScheduler) createOrUpdate(
 	}
 	desiredTimeout := getScheduleTimeoutSeconds(rbg)
 
-	podGroup := &schedv1alpha1.PodGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      rbg.Name,
-			Namespace: rbg.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(rbg, gvk),
-			},
-			Annotations: desiredAnnotations,
-		},
-		Spec: schedv1alpha1.PodGroupSpec{
-			MinMember:              desiredMinMember,
-			ScheduleTimeoutSeconds: desiredTimeout,
-		},
-	}
-
+	podGroup := &schedv1alpha1.PodGroup{}
 	err = m.client.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "get pod group error")
@@ -206,6 +192,20 @@ func (m *GangScheduler) createOrUpdate(
 	}
 
 	if apierrors.IsNotFound(err) {
+		podGroup = &schedv1alpha1.PodGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      rbg.Name,
+				Namespace: rbg.Namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(rbg, gvk),
+				},
+				Annotations: desiredAnnotations,
+			},
+			Spec: schedv1alpha1.PodGroupSpec{
+				MinMember:              desiredMinMember,
+				ScheduleTimeoutSeconds: desiredTimeout,
+			},
+		}
 		if createErr := m.client.Create(ctx, podGroup); createErr != nil {
 			logger.Error(createErr, "create pod group error")
 			return createErr
@@ -213,7 +213,14 @@ func (m *GangScheduler) createOrUpdate(
 		return nil
 	}
 
-	if podGroup.Spec.MinMember != desiredMinMember ||
+	if ref := metav1.GetControllerOfNoCopy(podGroup); ref != nil && ref.UID != rbg.UID {
+		return fmt.Errorf("PodGroup %s/%s is controlled by uid %s", rbg.Namespace, rbg.Name, ref.UID)
+	}
+
+	// A same-spec orphan must still be adopted, otherwise deletePodGroup, which only
+	// deletes what the RBG controls, would leak it.
+	if !metav1.IsControlledBy(podGroup, rbg) ||
+		podGroup.Spec.MinMember != desiredMinMember ||
 		(podGroup.Spec.ScheduleTimeoutSeconds == nil || *podGroup.Spec.ScheduleTimeoutSeconds != *desiredTimeout) {
 		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if fetchErr := m.client.Get(
@@ -221,7 +228,10 @@ func (m *GangScheduler) createOrUpdate(
 			); fetchErr != nil {
 				return fetchErr
 			}
-			if !utils.CheckOwnerReference(podGroup.OwnerReferences, gvk) {
+			if ref := metav1.GetControllerOfNoCopy(podGroup); ref != nil && ref.UID != rbg.UID {
+				return fmt.Errorf("PodGroup %s/%s is controlled by uid %s", rbg.Namespace, rbg.Name, ref.UID)
+			}
+			if !metav1.IsControlledBy(podGroup, rbg) {
 				podGroup.OwnerReferences = append(podGroup.OwnerReferences, *metav1.NewControllerRef(rbg, gvk))
 			}
 			podGroup.Spec.MinMember = desiredMinMember

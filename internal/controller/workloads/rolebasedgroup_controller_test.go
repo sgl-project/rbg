@@ -1076,6 +1076,12 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter_LabelUpdate(t *testing
 				constants.GroupNameLabelKey: rbg.Name,
 				constants.RoleNameLabelKey:  roleName,
 			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "workloads.x-k8s.io/v1alpha2",
+				Kind:       "RoleBasedGroup",
+				Name:       rbg.Name,
+				UID:        rbg.UID,
+			}},
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
 			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
@@ -1164,7 +1170,7 @@ func TestRoleBasedGroupReconciler_applyRBGSAReplicasOverride(t *testing.T) {
 			role.ScalingAdapter = &workloadsv1alpha2.ScalingAdapter{Enable: true}
 		}
 		return &workloadsv1alpha2.RoleBasedGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: rbgName, Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{Name: rbgName, Namespace: ns, UID: "test-rbg-uid"},
 			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 				Roles: []workloadsv1alpha2.RoleSpec{role},
 			},
@@ -1173,7 +1179,16 @@ func TestRoleBasedGroupReconciler_applyRBGSAReplicasOverride(t *testing.T) {
 
 	makeAdapter := func(phase constants.AdapterPhase, replicas *int32) *workloadsv1alpha2.RoleBasedGroupScalingAdapter {
 		return &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
-			ObjectMeta: metav1.ObjectMeta{Name: adapterName, Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      adapterName,
+				Namespace: ns,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "workloads.x-k8s.io/v1alpha2",
+					Kind:       "RoleBasedGroup",
+					Name:       rbgName,
+					UID:        "test-rbg-uid",
+				}},
+			},
 			Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
 				Replicas: replicas,
 			},

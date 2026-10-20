@@ -418,3 +418,112 @@ func TestSupportsSubGroupPolicyCaching(t *testing.T) {
 		assert.Equal(t, 2, *calls)
 	})
 }
+
+func TestCreateOrUpdateForeignPodGroupRejected(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+
+	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
+	rbg.UID = "new-rbg-uid"
+	oldRBG := rbg.DeepCopy()
+	oldRBG.UID = "old-rbg-uid"
+	strategy := &common.GangStrategy{Roles: sets.New("prefill")}
+
+	tests := []struct {
+		name      string
+		minMember int32
+	}{
+		{name: "same spec", minMember: 2},
+		{name: "different spec", minMember: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pg := &volcanoschedulingv1beta1.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            rbg.Name,
+					Namespace:       rbg.Namespace,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(oldRBG, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))},
+				},
+				Spec: volcanoschedulingv1beta1.PodGroupSpec{MinMember: tt.minMember},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+
+			err := New(c).createOrUpdate(context.Background(), rbg, strategy, c)
+			assert.Error(t, err, "should reject PodGroup owned by a different UID")
+
+			after := &volcanoschedulingv1beta1.PodGroup{}
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
+			assert.Equal(t, tt.minMember, after.Spec.MinMember, "foreign PodGroup should not be modified")
+		})
+	}
+}
+
+func TestCreateOrUpdateOrphanPodGroupAdopted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+
+	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
+	rbg.UID = "new-rbg-uid"
+	strategy := &common.GangStrategy{Roles: sets.New("prefill")}
+
+	pg := &volcanoschedulingv1beta1.PodGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Spec:       volcanoschedulingv1beta1.PodGroupSpec{MinMember: 1},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+
+	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, c))
+
+	after := &volcanoschedulingv1beta1.PodGroup{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
+	assert.Equal(t, int32(2), after.Spec.MinMember, "orphan PodGroup should be updated")
+	assert.True(t, metav1.IsControlledBy(after, rbg), "orphan PodGroup should be adopted so deletePodGroup can clean it up")
+}
+
+// A --cascade=orphan leftover has no controller reference but an identical spec, so the
+// spec-drift condition alone never fires and the orphan leaked past deletePodGroup.
+func TestCreateOrUpdateSameSpecOrphanPodGroupAdopted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+
+	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
+	rbg.UID = "new-rbg-uid"
+	strategy := &common.GangStrategy{Roles: sets.New("prefill")}
+
+	pg := &volcanoschedulingv1beta1.PodGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Spec:       volcanoschedulingv1beta1.PodGroupSpec{MinMember: 2},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+
+	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, c))
+
+	after := &volcanoschedulingv1beta1.PodGroup{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
+	assert.True(t, metav1.IsControlledBy(after, rbg), "same-spec orphan PodGroup should still be adopted")
+}
+
+func TestCreateOrUpdateOwnPodGroupUpdated(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+
+	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
+	rbg.UID = "rbg-uid"
+	strategy := &common.GangStrategy{Roles: sets.New("prefill")}
+
+	pg := &volcanoschedulingv1beta1.PodGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            rbg.Name,
+			Namespace:       rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))},
+		},
+		Spec: volcanoschedulingv1beta1.PodGroupSpec{MinMember: 1},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+
+	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, c))
+
+	after := &volcanoschedulingv1beta1.PodGroup{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
+	assert.Equal(t, int32(2), after.Spec.MinMember, "own PodGroup should be updated")
+}
