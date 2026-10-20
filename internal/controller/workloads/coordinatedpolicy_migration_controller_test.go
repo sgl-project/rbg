@@ -93,6 +93,7 @@ func TestEnsureV1alpha1CoordinatedPolicy_CreatesPolicy(t *testing.T) {
 	policy := &workloadsv1alpha2.CoordinatedPolicy{}
 	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "my-rbg", Namespace: defaultNamespace}, policy))
 	require.Len(t, policy.Spec.Policies, 1)
+	assert.Equal(t, "c1", policy.Spec.Policies[0].Name)
 	assert.Equal(t, []string{"prefill", "decode"}, policy.Spec.Policies[0].Roles)
 
 	// OwnerReference must point to the RBG.

@@ -482,13 +482,11 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 ) bool {
 	templateAnnotations := rbgset.Spec.GroupTemplate.Annotations
 	for k, v := range templateAnnotations {
-		if rbg.Annotations[k] != v {
+		if value, exists := rbg.Annotations[k]; !exists || value != v {
 			return true
 		}
 	}
-	// Check if any template annotation was removed from the template but still exists on RBG.
-	// Keys the controllers own never count as drift: the RoleBasedGroup controller writes
-	// discovery-config-mode on its own object, and wiping it would loop the two controllers.
+	// Absence from the template must not erase child-side compatibility or controller state.
 	for k := range rbg.Annotations {
 		if systemManagedAnnotationKeys[k] {
 			continue

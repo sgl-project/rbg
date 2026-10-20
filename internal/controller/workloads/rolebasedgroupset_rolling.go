@@ -191,7 +191,46 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		return changed, err
 	}
 
-	outdated, outdatedBase, changed, err := r.classifyGroupSetChildrenForRollout(ctx, existing, replicas, limits, update)
+	// Unversioned annotations must converge even on settled or partition-held groups.
+	for i := range children.Items {
+		child := &children.Items[i]
+		if !child.DeletionTimestamp.IsZero() {
+			continue
+		}
+		updated := child.DeepCopy()
+		annotationChanged := false
+		for key, value := range set.Spec.GroupTemplate.Annotations {
+			if !systemManagedAnnotationKeys[key] || key == constants.ConversionV1alpha1PodGroupPolicyAnnotationKey {
+				continue
+			}
+			if old, exists := child.Annotations[key]; exists && old == value {
+				continue
+			}
+			if updated.Annotations == nil {
+				updated.Annotations = make(map[string]string)
+			}
+			updated.Annotations[key] = value
+			annotationChanged = true
+		}
+		if r.groupSetMatchesRevision(child, update) {
+			policyChanged, err := r.syncGroupSetPodGroupPolicy(ctx, set, updated, update.template)
+			if err != nil {
+				return changed, err
+			}
+			annotationChanged = annotationChanged || policyChanged
+		}
+		if annotationChanged {
+			if err := r.client.Update(ctx, updated); err != nil {
+				return changed, err
+			}
+			changed = true
+		}
+	}
+	if changed {
+		return true, nil
+	}
+
+	outdated, outdatedBase, changed, err := r.classifyGroupSetChildrenForRollout(ctx, set, existing, replicas, limits, update)
 	if err != nil || changed {
 		return changed, err
 	}
@@ -294,7 +333,7 @@ func (r *RoleBasedGroupSetReconciler) fillMissingGroupSetBaseOrdinals(
 }
 
 func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
-	ctx context.Context, existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int,
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int,
 	limits groupSetRolloutLimits, update *groupSetRevision,
 ) ([]*workloadsv1alpha2.RoleBasedGroup, int, bool, error) {
 	var outdated []*workloadsv1alpha2.RoleBasedGroup
@@ -307,6 +346,9 @@ func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
 		if !limits.inPlaceUpdate && groupSetOnlyReplicasChanged(child, update.template) {
 			updated := child.DeepCopy()
 			updated.Spec = *update.template.Spec.DeepCopy()
+			if _, err := r.syncGroupSetPodGroupPolicy(ctx, set, updated, update.template); err != nil {
+				return nil, 0, changed, err
+			}
 			updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
 			if err := r.client.Update(ctx, updated); err != nil {
 				return nil, 0, changed, err
@@ -396,6 +438,9 @@ func (r *RoleBasedGroupSetReconciler) updateRollingGroupSetChild(
 ) error {
 	updated := child.DeepCopy()
 	updated.Spec = *update.template.Spec.DeepCopy()
+	if _, err := r.syncGroupSetPodGroupPolicy(ctx, set, updated, update.template); err != nil {
+		return err
+	}
 	r.syncRBGMetadata(set, updated)
 	updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
 	return r.client.Update(ctx, updated)
