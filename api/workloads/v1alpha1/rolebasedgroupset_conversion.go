@@ -74,8 +74,7 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 	}
 
 	// Preserve lossy v1alpha1 fields (PodGroupPolicy, CoordinationRequirements) into
-	// dst.Annotations. dst.Annotations is already populated from dst.ObjectMeta = src.ObjectMeta,
-	// so we pass it directly as the destination annotation map.
+	// a copy of dst.Annotations so the source metadata is not modified.
 	// A synthetic RoleBasedGroup wrapper is used because preserveV1alpha1Fields operates on
 	// RoleBasedGroup types; only the Spec fields are read, so Annotations on the wrapper are unused.
 	syntheticSrc := &RoleBasedGroup{Spec: src.Spec.Template}
@@ -86,14 +85,21 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 	}
 	dst.Annotations = syntheticDst.Annotations
 
-	// Also copy the coordination annotation into GroupTemplate.Annotations so that
-	// newRBGForSet (which copies Spec.GroupTemplate.Annotations) propagates it to
-	// each child RoleBasedGroup, making them visible to EnsureV1alpha1CoordinatedPolicy.
-	if v, ok := dst.Annotations[annotationV1alpha1Coordination]; ok && v != "" {
-		if dst.Spec.GroupTemplate.Annotations == nil {
-			dst.Spec.GroupTemplate.Annotations = make(map[string]string)
+	// Compatibility settings belong to the child template, but unrelated parent metadata does not.
+	for _, key := range []string{
+		annotationV1alpha1Coordination,
+		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey,
+		constants.GangSchedulingAnnotationKey,
+		constants.GangSchedulingScheduleTimeoutSecondsKey,
+		constants.GangSchedulingVolcanoQueueKey,
+		constants.GangSchedulingVolcanoPriorityClassKey,
+	} {
+		if v, ok := dst.Annotations[key]; ok && v != "" {
+			if dst.Spec.GroupTemplate.Annotations == nil {
+				dst.Spec.GroupTemplate.Annotations = make(map[string]string)
+			}
+			dst.Spec.GroupTemplate.Annotations[key] = v
 		}
-		dst.Spec.GroupTemplate.Annotations[annotationV1alpha1Coordination] = v
 	}
 	dst.Status = v2.RoleBasedGroupSetStatus{
 		ObservedGeneration: src.Status.ObservedGeneration,
@@ -137,6 +143,10 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 	}
 
 	dst.ObjectMeta = src.ObjectMeta
+	// Annotation cleanup and stashing below must not mutate the hub's metadata.
+	if dst.Annotations != nil {
+		dst.Annotations = copyAnnotations(dst.Annotations)
+	}
 	dst.Spec.Replicas = src.Spec.Replicas
 
 	if err := convertSpecV2ToV1alpha1(&src.Spec.GroupTemplate.Spec, &dst.Spec.Template); err != nil {

@@ -18,11 +18,13 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -144,6 +146,197 @@ func TestNormalizedGroupSetTemplate_DropsControllerOwnedKeys(t *testing.T) {
 		t, groupSetTemplatesEqual(result, bare),
 		"system-managed metadata must not change the revision identity",
 	)
+}
+
+func TestGroupSetConversionAnnotationsExcludedFromRevision(t *testing.T) {
+	for _, key := range []string{
+		constants.ConversionV1alpha1CoordinationAnnotationKey,
+		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey,
+		constants.ConversionV1alpha2RolloutStrategyAnnotationKey,
+		constants.ConversionV1alpha2RolloutStatusAnnotationKey,
+	} {
+		t.Run(key, func(t *testing.T) {
+			ctx := context.Background()
+			set := revisionTestRollingSet(1, &groupSetRevision{template: revisionTestTemplate(nil)})
+			r, _ := revisionTestRollingReconciler(t, set)
+			require.NoError(t, appsv1.AddToScheme(r.scheme))
+			base, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			for _, value := range []string{"first", "changed", ""} {
+				template := set.Spec.GroupTemplate.DeepCopy()
+				template.Annotations = map[string]string{key: value}
+				revision, err := r.ensureGroupSetRevision(ctx, set, template)
+				require.NoError(t, err)
+				assert.Equal(t, base.name, revision.name)
+				assert.Equal(t, value, template.Annotations[key], "normalization must not mutate the source")
+				child := revisionTestChild(map[string]string{key: value})
+				assert.True(t, r.groupSetMatchesRevision(child, base))
+				assert.True(t, groupSetOnlyReplicasChanged(child, base.template))
+			}
+			revisions := &appsv1.ControllerRevisionList{}
+			require.NoError(t, r.client.List(ctx, revisions))
+			require.Len(t, revisions.Items, 1)
+			assert.NotContains(t, string(revisions.Items[0].Data.Raw), key)
+			set.Spec.GroupTemplate.Annotations = map[string]string{"user.io/version": "new"}
+			userRevision, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			assert.NotEqual(t, base.name, userRevision.name, "ordinary metadata must still change revision identity")
+		})
+	}
+}
+
+func TestGroupSetTemplateAnnotationDirection(t *testing.T) {
+	for _, key := range []string{
+		constants.DiscoveryConfigModeAnnotationKey,
+		constants.ConversionV1alpha1CoordinationAnnotationKey,
+		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey,
+		constants.ConversionV1alpha2RolloutStrategyAnnotationKey,
+		constants.ConversionV1alpha2RolloutStatusAnnotationKey,
+	} {
+		for _, tt := range []struct {
+			name     string
+			template map[string]string
+			child    map[string]string
+			want     map[string]string
+			changed  bool
+		}{
+			{name: "child-only stash", child: map[string]string{key: "child"}, want: map[string]string{key: "child"}},
+			{name: "missing", template: map[string]string{key: "template"}, want: map[string]string{key: "template"}, changed: true},
+			{name: "changed", template: map[string]string{key: "template"}, child: map[string]string{key: "child"}, want: map[string]string{key: "template"}, changed: true},
+			{name: "matching", template: map[string]string{key: "same"}, child: map[string]string{key: "same"}, want: map[string]string{key: "same"}},
+			{name: "explicit empty", template: map[string]string{key: ""}, want: map[string]string{key: ""}, changed: true},
+			{name: "remove user annotation", child: map[string]string{key: "child", "user.io/removed": "old"}, want: map[string]string{key: "child"}, changed: true},
+		} {
+			t.Run(key+"/"+tt.name, func(t *testing.T) {
+				r := &RoleBasedGroupSetReconciler{}
+				set := &workloadsv1alpha2.RoleBasedGroupSet{Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{Annotations: tt.template},
+				}}
+				child := revisionTestChild(tt.child)
+				assert.Equal(t, tt.changed, r.needsTemplateAnnotationUpdate(set, child))
+				r.syncRBGMetadata(set, child)
+				assert.Equal(t, tt.want, child.Annotations)
+				assert.False(t, r.needsTemplateAnnotationUpdate(set, child), "sync must converge")
+			})
+		}
+	}
+}
+
+func TestNewRBGForSetRevision_SystemAnnotations(t *testing.T) {
+	key := constants.ConversionV1alpha1CoordinationAnnotationKey
+	revision := &groupSetRevision{name: "old", template: revisionTestTemplate(map[string]string{"version": "old"})}
+	set := revisionTestRollingSet(1, revision)
+	set.Spec.GroupTemplate.Annotations = map[string]string{"version": "new", key: "latest-coordination"}
+	child := newRBGForSetRevision(set, 0, revision)
+	assert.Equal(t, map[string]string{"version": "old", key: "latest-coordination"}, child.Annotations)
+	assert.Equal(t, revision.template.Spec, child.Spec)
+	assert.Equal(t, revision.name, child.Labels[constants.GroupSetRevisionLabelKey])
+	child.Annotations[key] = "mutated"
+	assert.Equal(t, "latest-coordination", set.Spec.GroupTemplate.Annotations[key])
+	assert.Equal(t, map[string]string{"version": "old"}, revision.template.Annotations)
+}
+
+func TestSyncRollingGroupSet_SystemAnnotations(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{
+		workloadsv1alpha2.InPlaceUpdateStrategyType, workloadsv1alpha2.RecreateStrategyType,
+	} {
+		for _, partition := range []int{0, 1, 2} {
+			t.Run(fmt.Sprintf("%s/partition=%d", strategy, partition), func(t *testing.T) {
+				key := constants.ConversionV1alpha1CoordinationAnnotationKey
+				stash := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+				update := &groupSetRevision{name: "latest", template: revisionTestTemplate(map[string]string{"version": "new"})}
+				current := update
+				if partition > 0 {
+					current = &groupSetRevision{name: "held", template: revisionTestTemplate(map[string]string{"version": "old"})}
+				}
+				set := revisionTestRollingSet(2, update)
+				set.Spec.RolloutStrategy.Type = strategy
+				set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(partition))
+				first, second := revisionTestReadyChild(set, 0, current), revisionTestReadyChild(set, 1, update)
+				first.Annotations[stash] = "child-only-stash"
+				second.Annotations[key] = "stale-coordination"
+				r, updates := revisionTestRollingReconciler(t, set, first, second)
+				for _, value := range []string{"initial-coordination", "changed-coordination", ""} {
+					set.Spec.GroupTemplate.Annotations[key] = value
+					changed, children := revisionTestSync(t, r, set, current, update)
+					require.True(t, changed)
+					require.Len(t, children.Items, 2)
+					for index, original := range []*workloadsv1alpha2.RoleBasedGroup{first, second} {
+						child := revisionTestGetChild(t, r, set, index)
+						assert.Equal(t, value, child.Annotations[key])
+						assert.Contains(t, child.Annotations, key)
+						assert.Equal(t, original.UID, child.UID)
+						assert.Equal(t, original.Spec, child.Spec)
+						assert.Equal(t, original.Labels, child.Labels)
+						assert.Equal(t, original.Generation, child.Generation)
+						assert.Equal(t, original.Status, child.Status)
+						assert.Equal(t, original.Annotations["version"], child.Annotations["version"], "held user metadata must not advance")
+						assert.Equal(t, original.Annotations[stash], child.Annotations[stash])
+					}
+					beforeUpdates := len(*updates)
+					changed, _ = revisionTestSync(t, r, set, current, update)
+					assert.False(t, changed, "annotation-only propagation must converge")
+					assert.Len(t, *updates, beforeUpdates)
+				}
+				delete(set.Spec.GroupTemplate.Annotations, key)
+				changed, _ := revisionTestSync(t, r, set, current, update)
+				assert.False(t, changed, "template absence must not erase child-side compatibility data")
+			})
+		}
+	}
+}
+
+func TestSyncRollingGroupSet_SystemAnnotationsReachRetainedSurge(t *testing.T) {
+	key := constants.ConversionV1alpha1CoordinationAnnotationKey
+	revision := &groupSetRevision{name: "current", template: revisionTestTemplate(nil)}
+	set := revisionTestRollingSet(2, revision)
+	first, second := revisionTestReadyChild(set, 0, revision), revisionTestReadyChild(set, 1, revision)
+	first.Status.Conditions[0].Status = metav1.ConditionFalse
+	second.Status.Conditions[0].Status = metav1.ConditionFalse
+	surge := revisionTestReadyChild(set, 2, revision)
+	terminating := revisionTestReadyChild(set, 3, revision)
+	terminating.DeletionTimestamp = ptr.To(metav1.Now().Rfc3339Copy())
+	terminating.Finalizers = []string{"test.io/hold-deletion"}
+	set.Spec.GroupTemplate.Annotations = map[string]string{key: "latest-coordination"}
+	r, _ := revisionTestRollingReconciler(t, set, first, second, surge, terminating)
+	changed, children := revisionTestSync(t, r, set, revision, revision)
+	require.True(t, changed)
+	require.Len(t, children.Items, 4)
+	for index := 0; index < 3; index++ {
+		child := revisionTestGetChild(t, r, set, index)
+		assert.Equal(t, "latest-coordination", child.Annotations[key])
+		assert.Equal(t, types.UID("original-"+child.Name), child.UID)
+	}
+	assert.NotContains(t, revisionTestGetChild(t, r, set, 3).Annotations, key)
+	changed, _ = revisionTestSync(t, r, set, revision, revision)
+	assert.False(t, changed)
+}
+
+func TestSyncRollingGroupSet_InPlacePreservesConversionStash(t *testing.T) {
+	current := &groupSetRevision{name: "old", template: revisionTestTemplate(map[string]string{"version": "old"})}
+	update := &groupSetRevision{name: "new", template: revisionTestTemplate(map[string]string{"version": "new"})}
+	set := revisionTestRollingSet(1, update)
+	original := revisionTestReadyChild(set, 0, current)
+	stash := map[string]string{
+		constants.ConversionV1alpha1CoordinationAnnotationKey:    "coordination",
+		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:  "pod-group-policy",
+		constants.ConversionV1alpha2RolloutStrategyAnnotationKey: "strategy",
+		constants.ConversionV1alpha2RolloutStatusAnnotationKey:   "status",
+	}
+	for key, value := range stash {
+		original.Annotations[key] = value
+	}
+	r, _ := revisionTestRollingReconciler(t, set, original)
+	changed, _ := revisionTestSync(t, r, set, current, update)
+	require.True(t, changed)
+	child := revisionTestGetChild(t, r, set, 0)
+	assert.Equal(t, original.UID, child.UID)
+	assert.Equal(t, "new", child.Annotations["version"])
+	for key, value := range stash {
+		assert.Equal(t, value, child.Annotations[key])
+	}
+	changed, _ = revisionTestSync(t, r, set, current, update)
+	assert.False(t, changed, "child-only stashes must not cause another rollout")
 }
 
 func TestWarmUpGroupSetSurge_BoundedByRemainingWork(t *testing.T) {
@@ -404,6 +597,7 @@ func revisionTestReadyChild(set *workloadsv1alpha2.RoleBasedGroupSet, index int,
 func revisionTestRollingReconciler(t *testing.T, objects ...client.Object) (*RoleBasedGroupSetReconciler, *[]string) {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 	var updates []string
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
@@ -1030,6 +1224,544 @@ func TestSyncRollingGroupSet_StrategiesRecoverMissingOrdinals(t *testing.T) {
 			changed, _ = revisionTestSync(t, r, set, current, update)
 			assert.False(t, changed)
 			assert.Empty(t, *updates)
+		})
+	}
+}
+
+func revisionTestPodGroupPolicyTemplate(timeout int) *workloadsv1alpha2.RoleBasedGroupTemplateSpec {
+	template := revisionTestTemplate(map[string]string{
+		constants.GangSchedulingAnnotationKey:             "true",
+		constants.GangSchedulingScheduleTimeoutSecondsKey: fmt.Sprint(timeout),
+	})
+	// Add the raw conversion stash after normalization, just as conversion does on the hub template.
+	template.Annotations[constants.ConversionV1alpha1PodGroupPolicyAnnotationKey] =
+		fmt.Sprintf(`{"kubeScheduling":{"scheduleTimeoutSeconds":%d}}`, timeout)
+	return template
+}
+
+func revisionTestPolicySnapshot(t *testing.T, r *RoleBasedGroupSetReconciler,
+	set *workloadsv1alpha2.RoleBasedGroupSet, revision *groupSetRevision,
+) *appsv1.ControllerRevision {
+	t.Helper()
+	snapshot := &appsv1.ControllerRevision{}
+	require.NoError(t, r.client.Get(context.Background(), client.ObjectKey{Namespace: set.Namespace, Name: revision.name}, snapshot))
+	require.True(t, metav1.IsControlledBy(snapshot, set))
+	key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+	want, wantPresent := revision.template.Annotations[key]
+	got, gotPresent := snapshot.Annotations[key]
+	assert.Equal(t, wantPresent, gotPresent)
+	assert.Equal(t, want, got)
+	assert.NotContains(t, string(snapshot.Data.Raw), key, "raw compatibility data must not enter revision identity")
+	data, err := json.Marshal(normalizedGroupSetTemplate(revision.template))
+	require.NoError(t, err)
+	assert.JSONEq(t, string(data), string(snapshot.Data.Raw))
+	return snapshot
+}
+
+// Seed stable child UIDs before attaching revision identities produced by the real persistence path.
+func revisionTestPolicyFixture(t *testing.T, replicas int32, template *workloadsv1alpha2.RoleBasedGroupTemplateSpec,
+) (*RoleBasedGroupSetReconciler, *workloadsv1alpha2.RoleBasedGroupSet, *groupSetRevision) {
+	t.Helper()
+	ctx := context.Background()
+	seed := &groupSetRevision{template: template}
+	set := revisionTestRollingSet(replicas, seed)
+	objects := []client.Object{set}
+	for index := 0; index < int(replicas); index++ {
+		objects = append(objects, revisionTestReadyChild(set, index, seed))
+	}
+	r, _ := revisionTestRollingReconciler(t, objects...)
+	require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+	source := set.Spec.GroupTemplate.DeepCopy()
+	current, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+	require.NoError(t, err)
+	assert.Equal(t, source, &set.Spec.GroupTemplate, "ensure must not normalize the source in place")
+	revisionTestPolicySnapshot(t, r, set, current)
+	for index := 0; index < int(replicas); index++ {
+		child := revisionTestGetChild(t, r, set, index)
+		child.Labels[constants.GroupSetRevisionLabelKey] = current.name
+		require.NoError(t, r.client.Update(ctx, child))
+	}
+	set.Status.CurrentRevision, set.Status.UpdateRevision = current.name, current.name
+	require.NoError(t, r.client.Status().Update(ctx, set))
+	return r, set, current
+}
+
+// Assert the delete/create boundary explicitly so an in-place update cannot hide a replacement.
+func revisionTestRollPolicyChild(t *testing.T, r *RoleBasedGroupSetReconciler,
+	set *workloadsv1alpha2.RoleBasedGroupSet, current, update *groupSetRevision, index int,
+) *workloadsv1alpha2.RoleBasedGroup {
+	t.Helper()
+	before := revisionTestGetChild(t, r, set, index)
+	source, oldTemplate, newTemplate := set.DeepCopy(), current.template.DeepCopy(), update.template.DeepCopy()
+	changed, _ := revisionTestSync(t, r, set, current, update)
+	require.True(t, changed)
+	if set.Spec.RolloutStrategy.Type == workloadsv1alpha2.RecreateStrategyType {
+		require.True(t, apierrors.IsNotFound(r.client.Get(context.Background(), client.ObjectKeyFromObject(before), &workloadsv1alpha2.RoleBasedGroup{})))
+		changed, _ = revisionTestSync(t, r, set, current, update)
+		require.True(t, changed)
+	}
+	child := revisionTestGetChild(t, r, set, index)
+	require.Equal(t, update.name, child.Labels[constants.GroupSetRevisionLabelKey])
+	assert.True(t, r.groupSetMatchesRevision(child, update))
+	for _, key := range []string{
+		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey,
+		constants.GangSchedulingAnnotationKey, constants.GangSchedulingScheduleTimeoutSecondsKey,
+	} {
+		want, wantPresent := update.template.Annotations[key]
+		got, gotPresent := child.Annotations[key]
+		assert.Equal(t, wantPresent, gotPresent, "annotation presence: %s", key)
+		assert.Equal(t, want, got, "annotation value: %s", key)
+	}
+	if set.Spec.RolloutStrategy.Type == workloadsv1alpha2.InPlaceUpdateStrategyType {
+		assert.Equal(t, before.UID, child.UID)
+		assert.Equal(t, before.Generation, child.Generation, "policy annotations alone must not change generation")
+		assert.Equal(t, before.Status, child.Status)
+	} else {
+		assert.Equal(t, int64(1), child.Generation)
+		assert.False(t, groupSetChildReady(child))
+	}
+	assert.Equal(t, before.Spec, child.Spec)
+	assert.True(t, metav1.IsControlledBy(child, set))
+	assert.Equal(t, source, set)
+	assert.Equal(t, oldTemplate, current.template)
+	assert.Equal(t, newTemplate, update.template)
+	revisionTestMarkReady(t, r, child)
+	return revisionTestGetChild(t, r, set, index)
+}
+
+func TestSyncRollingGroupSet_PodGroupPolicyLifecycle(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{
+		workloadsv1alpha2.InPlaceUpdateStrategyType, workloadsv1alpha2.RecreateStrategyType,
+	} {
+		t.Run(string(strategy), func(t *testing.T) {
+			ctx := context.Background()
+			key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+			coordination := constants.ConversionV1alpha1CoordinationAnnotationKey
+			r, set, current := revisionTestPolicyFixture(t, 2, revisionTestPodGroupPolicyTemplate(120))
+			oldSnapshot := revisionTestPolicySnapshot(t, r, set, current).DeepCopy()
+			oldTemplate := current.template.DeepCopy()
+			first, second := revisionTestGetChild(t, r, set, 0), revisionTestGetChild(t, r, set, 1)
+			set.Spec.RolloutStrategy.Type = strategy
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(1))
+			set.Spec.GroupTemplate = *revisionTestPodGroupPolicyTemplate(180)
+			set.Spec.GroupTemplate.Annotations[coordination] = "live-coordination"
+			require.NoError(t, r.client.Update(ctx, set))
+			source := set.DeepCopy()
+			update, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			require.NotEqual(t, current.name, update.name, "the derived timeout is revisioned")
+			assert.Equal(t, source, set)
+			newSnapshot := revisionTestPolicySnapshot(t, r, set, update).DeepCopy()
+			assert.Equal(t, "180", update.template.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+
+			assertHeld := func(before *workloadsv1alpha2.RoleBasedGroup, revision *groupSetRevision) {
+				t.Helper()
+				child := revisionTestGetChild(t, r, set, 0)
+				assert.Equal(t, before.UID, child.UID)
+				assert.Equal(t, before.Generation, child.Generation)
+				assert.Equal(t, before.Spec, child.Spec)
+				assert.Equal(t, before.Status, child.Status)
+				assert.Equal(t, revision.name, child.Labels[constants.GroupSetRevisionLabelKey])
+				assert.Equal(t, revision.template.Annotations[key], child.Annotations[key], "partition must hold the raw policy")
+				assert.Equal(t, revision.template.Annotations[constants.GangSchedulingAnnotationKey], child.Annotations[constants.GangSchedulingAnnotationKey])
+				assert.Equal(t, revision.template.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey], child.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+				assert.Equal(t, "live-coordination", child.Annotations[coordination], "other system metadata remains live")
+			}
+			// The all-child metadata pass may propagate coordination, but neither policy may advance yet.
+			changed, _ := revisionTestSync(t, r, set, current, update)
+			require.True(t, changed)
+			assertHeld(first, current)
+			pending := revisionTestGetChild(t, r, set, 1)
+			assert.Equal(t, second.UID, pending.UID)
+			assert.Equal(t, second.Generation, pending.Generation)
+			assert.Equal(t, current.name, pending.Labels[constants.GroupSetRevisionLabelKey])
+			assert.Equal(t, current.template.Annotations[key], pending.Annotations[key])
+			assert.Equal(t, "120", pending.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+
+			second = revisionTestRollPolicyChild(t, r, set, current, update, 1)
+			assertHeld(first, current)
+			if strategy == workloadsv1alpha2.RecreateStrategyType {
+				assert.NotEqual(t, types.UID("original-test-1"), second.UID)
+			}
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed, "partition completion must not advance ordinal zero")
+
+			// Even Recreate repairs compatibility metadata in place when the effective revision matches.
+			for _, missing := range []bool{true, false} {
+				stale := revisionTestGetChild(t, r, set, 1)
+				if missing {
+					delete(stale.Annotations, key)
+				} else {
+					stale.Annotations[key] = current.template.Annotations[key]
+				}
+				require.NoError(t, r.client.Update(ctx, stale))
+				changed, _ = revisionTestSync(t, r, set, current, update)
+				require.True(t, changed)
+				repaired := revisionTestGetChild(t, r, set, 1)
+				assert.Equal(t, second.UID, repaired.UID)
+				assert.Equal(t, second.Generation, repaired.Generation)
+				assert.Equal(t, second.Spec, repaired.Spec)
+				assert.Equal(t, second.Status, repaired.Status)
+				assert.Equal(t, second.Labels, repaired.Labels)
+				assert.Equal(t, update.template.Annotations[key], repaired.Annotations[key])
+				assertHeld(first, current)
+				changed, _ = revisionTestSync(t, r, set, current, update)
+				assert.False(t, changed)
+			}
+
+			// Lose the last 120 child, then reload revisions from persisted status and snapshots.
+			require.NoError(t, r.client.Delete(ctx, revisionTestGetChild(t, r, set, 0)))
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+			children, err := r.listRollingGroupSetChildren(ctx, set)
+			require.NoError(t, err)
+			require.Len(t, children.Items, 1)
+			current, update, err = r.groupSetRevisions(ctx, set, children)
+			require.NoError(t, err)
+			assert.Equal(t, oldSnapshot.Name, current.name)
+			assert.Equal(t, oldTemplate, current.template)
+			assert.Equal(t, newSnapshot.Name, update.name)
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			require.True(t, changed)
+			rebuilt := revisionTestGetChild(t, r, set, 0)
+			assert.NotEqual(t, first.UID, rebuilt.UID)
+			assert.Equal(t, int64(1), rebuilt.Generation)
+			assertHeld(rebuilt, current)
+			assert.NotEqual(t, update.template.Annotations[key], rebuilt.Annotations[key], "recovery must not borrow live 180 policy")
+			assert.True(t, metav1.IsControlledBy(rebuilt, set))
+			revisionTestMarkReady(t, r, rebuilt)
+			rebuilt = revisionTestGetChild(t, r, set, 0)
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed)
+			assertHeld(rebuilt, current)
+
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(0))
+			require.NoError(t, r.client.Update(ctx, set))
+			settledSecond := revisionTestGetChild(t, r, set, 1)
+			first = revisionTestRollPolicyChild(t, r, set, current, update, 0)
+			assert.Equal(t, settledSecond, revisionTestGetChild(t, r, set, 1), "lifting partition must not rewrite the settled child")
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed)
+
+			// Policy removal must respect partition just like other effective configuration changes.
+			set.Status.CurrentRevision = update.name
+			require.NoError(t, r.client.Status().Update(ctx, set))
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(1))
+			delete(set.Spec.GroupTemplate.Annotations, key)
+			delete(set.Spec.GroupTemplate.Annotations, constants.GangSchedulingAnnotationKey)
+			delete(set.Spec.GroupTemplate.Annotations, constants.GangSchedulingScheduleTimeoutSecondsKey)
+			require.NoError(t, r.client.Update(ctx, set))
+			children, err = r.listRollingGroupSetChildren(ctx, set)
+			require.NoError(t, err)
+			current, update, err = r.groupSetRevisions(ctx, set, children)
+			require.NoError(t, err)
+			require.Equal(t, newSnapshot.Name, current.name)
+			require.NotEqual(t, current.name, update.name)
+			revisionTestPolicySnapshot(t, r, set, update)
+			revisionTestRollPolicyChild(t, r, set, current, update, 1)
+			assertHeld(first, current)
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed)
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(0))
+			require.NoError(t, r.client.Update(ctx, set))
+			revisionTestRollPolicyChild(t, r, set, current, update, 0)
+			changed, children = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed)
+			require.Len(t, children.Items, 2)
+			for _, child := range children.Items {
+				assert.NotContains(t, child.Annotations, key)
+				assert.NotContains(t, child.Annotations, constants.GangSchedulingAnnotationKey)
+				assert.NotContains(t, child.Annotations, constants.GangSchedulingScheduleTimeoutSecondsKey)
+				assert.Equal(t, "live-coordination", child.Annotations[coordination])
+			}
+			assert.Equal(t, oldSnapshot, revisionTestPolicySnapshot(t, r, set, &groupSetRevision{name: oldSnapshot.Name, template: oldTemplate}))
+			assert.Equal(t, newSnapshot, revisionTestPolicySnapshot(t, r, set, current), "removal must not erase historical snapshot policy")
+		})
+	}
+}
+
+func TestEnsureGroupSetRevision_PodGroupPolicyRawFormatting(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{
+		workloadsv1alpha2.InPlaceUpdateStrategyType, workloadsv1alpha2.RecreateStrategyType,
+	} {
+		t.Run(string(strategy), func(t *testing.T) {
+			ctx := context.Background()
+			key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+			r, set, current := revisionTestPolicyFixture(t, 1, revisionTestPodGroupPolicyTemplate(120))
+			before := revisionTestGetChild(t, r, set, 0)
+			snapshot := revisionTestPolicySnapshot(t, r, set, current).DeepCopy()
+			oldTemplate := current.template.DeepCopy()
+			set.Spec.RolloutStrategy.Type = strategy
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(1))
+			set.Spec.GroupTemplate.Annotations[key] = "{\n  \"kubeScheduling\": { \"scheduleTimeoutSeconds\": 120 }\n}"
+			require.NoError(t, r.client.Update(ctx, set))
+			source := set.DeepCopy()
+			update, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			require.Equal(t, current.name, update.name)
+			assert.JSONEq(t, current.template.Annotations[key], update.template.Annotations[key])
+			assert.Equal(t, set.Spec.GroupTemplate.Annotations[key], update.template.Annotations[key])
+			assert.Equal(t, source, set)
+			assert.Equal(t, oldTemplate, current.template)
+			after := revisionTestPolicySnapshot(t, r, set, update)
+			assert.Equal(t, snapshot.Data.Raw, after.Data.Raw)
+			assert.Equal(t, snapshot.UID, after.UID)
+			assert.Equal(t, snapshot.Revision, after.Revision)
+			assert.Equal(t, snapshot.OwnerReferences, after.OwnerReferences)
+			assert.NotEqual(t, snapshot.ResourceVersion, after.ResourceVersion, "same hash still persists the new raw stash")
+			children, err := r.listRollingGroupSetChildren(ctx, set)
+			require.NoError(t, err)
+			loaded, loadedUpdate, err := r.groupSetRevisions(ctx, set, children)
+			require.NoError(t, err)
+			assert.Equal(t, update.template, loaded.template)
+			assert.Equal(t, update.template, loadedUpdate.template)
+			changed, _ := revisionTestSync(t, r, set, loaded, loadedUpdate)
+			require.True(t, changed, "a matching revision can repair raw metadata even below partition")
+			child := revisionTestGetChild(t, r, set, 0)
+			assert.Equal(t, before.UID, child.UID)
+			assert.Equal(t, before.Generation, child.Generation)
+			assert.Equal(t, before.Spec, child.Spec)
+			assert.Equal(t, before.Labels, child.Labels)
+			assert.Equal(t, before.Status, child.Status)
+			assert.Equal(t, set.Spec.GroupTemplate.Annotations[key], child.Annotations[key])
+			changed, _ = revisionTestSync(t, r, set, loaded, loadedUpdate)
+			assert.False(t, changed)
+			revisions := &appsv1.ControllerRevisionList{}
+			require.NoError(t, r.client.List(ctx, revisions))
+			require.Len(t, revisions.Items, 1)
+			for annotation, value := range map[string]string{
+				constants.GangSchedulingAnnotationKey: "false", constants.GangSchedulingScheduleTimeoutSecondsKey: "240",
+			} {
+				template := set.Spec.GroupTemplate.DeepCopy()
+				template.Annotations[annotation] = value
+				original := template.DeepCopy()
+				userRevision, err := r.ensureGroupSetRevision(ctx, set, template)
+				require.NoError(t, err)
+				assert.NotEqual(t, update.name, userRevision.name, "user gang configuration must remain revisioned: %s", annotation)
+				assert.Equal(t, original, template)
+				revisionTestPolicySnapshot(t, r, set, userRevision)
+			}
+			assert.Equal(t, source, set)
+			assert.Equal(t, oldTemplate, current.template)
+		})
+	}
+}
+
+func TestSyncRollingGroupSet_PodGroupPolicyChildOnlyStash(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{
+		workloadsv1alpha2.InPlaceUpdateStrategyType, workloadsv1alpha2.RecreateStrategyType,
+	} {
+		t.Run(string(strategy), func(t *testing.T) {
+			ctx := context.Background()
+			key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+			r, set, revision := revisionTestPolicyFixture(t, 1, revisionTestTemplate(nil))
+			child := revisionTestGetChild(t, r, set, 0)
+			child.Annotations = map[string]string{key: revisionTestPodGroupPolicyTemplate(120).Annotations[key]}
+			require.NoError(t, r.client.Update(ctx, child))
+			before := child.DeepCopy()
+			set.Spec.RolloutStrategy.Type = strategy
+			set.Spec.GroupTemplate.Annotations = map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine"}
+			require.NoError(t, r.client.Update(ctx, set))
+			update, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			require.Equal(t, revision.name, update.name)
+			snapshot := revisionTestPolicySnapshot(t, r, set, update).DeepCopy()
+			assert.NotContains(t, snapshot.Annotations, key, "the parent never declared this child-only policy")
+			changed, _ := revisionTestSync(t, r, set, revision, update)
+			require.True(t, changed, "exercise the all-child metadata pass")
+			child = revisionTestGetChild(t, r, set, 0)
+			assert.Equal(t, before.Annotations[key], child.Annotations[key])
+			assert.Equal(t, "refine", child.Annotations[constants.DiscoveryConfigModeAnnotationKey])
+			assert.Equal(t, before.UID, child.UID)
+			assert.Equal(t, before.Generation, child.Generation)
+			assert.Equal(t, before.Spec, child.Spec)
+			assert.Equal(t, before.Labels, child.Labels)
+			assert.Equal(t, before.Status, child.Status)
+			changed, _ = revisionTestSync(t, r, set, revision, update)
+			assert.False(t, changed)
+			assert.Equal(t, snapshot, revisionTestPolicySnapshot(t, r, set, update))
+		})
+	}
+}
+
+func TestSyncRollingGroupSet_EmptyPodGroupPolicyRemoval(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{
+		workloadsv1alpha2.InPlaceUpdateStrategyType, workloadsv1alpha2.RecreateStrategyType,
+	} {
+		for _, replicasOnly := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replicasOnly=%t", strategy, replicasOnly), func(t *testing.T) {
+				ctx := context.Background()
+				key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+				template := revisionTestTemplate(nil)
+				template.Annotations = map[string]string{key: "{}"}
+				r, set, current := revisionTestPolicyFixture(t, 1, template)
+				before := revisionTestGetChild(t, r, set, 0)
+				set.Spec.RolloutStrategy.Type = strategy
+				delete(set.Spec.GroupTemplate.Annotations, key)
+				if replicasOnly {
+					set.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
+				}
+				require.NoError(t, r.client.Update(ctx, set))
+				update, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+				require.NoError(t, err)
+				assert.Equal(t, !replicasOnly, current.name == update.name)
+				changed, _ := revisionTestSync(t, r, set, current, update)
+				require.True(t, changed)
+				child := revisionTestGetChild(t, r, set, 0)
+				assert.Equal(t, before.UID, child.UID, "Recreate's replicas-only path must still update in place")
+				assert.NotContains(t, child.Annotations, key)
+				assert.Equal(t, update.name, child.Labels[constants.GroupSetRevisionLabelKey])
+				revisionTestMarkReady(t, r, child)
+				update, err = r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+				require.NoError(t, err)
+				revisionTestPolicySnapshot(t, r, set, update)
+				changed, _ = revisionTestSync(t, r, set, current, update)
+				assert.False(t, changed)
+
+				child = revisionTestGetChild(t, r, set, 0)
+				if child.Annotations == nil {
+					child.Annotations = make(map[string]string)
+				}
+				child.Annotations[key] = "child-only"
+				require.NoError(t, r.client.Update(ctx, child))
+				changed, _ = revisionTestSync(t, r, set, current, update)
+				assert.False(t, changed, "a cleared snapshot must not authorize deleting a later child-only stash")
+				assert.Equal(t, "child-only", revisionTestGetChild(t, r, set, 0).Annotations[key])
+
+				set.Status.CurrentRevision = update.name
+				require.NoError(t, r.client.Status().Update(ctx, set))
+				set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(1))
+				set.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(3))
+				require.NoError(t, r.client.Update(ctx, set))
+				require.NoError(t, r.client.Delete(ctx, revisionTestGetChild(t, r, set, 0)))
+				children, err := r.listRollingGroupSetChildren(ctx, set)
+				require.NoError(t, err)
+				loaded, latest, err := r.groupSetRevisions(ctx, set, children)
+				require.NoError(t, err)
+				assert.NotContains(t, loaded.template.Annotations, key, "removed policy must not reappear in a held revision")
+				changed, _ = revisionTestSync(t, r, set, loaded, latest)
+				require.True(t, changed)
+				assert.NotContains(t, revisionTestGetChild(t, r, set, 0).Annotations, key)
+			})
+		}
+	}
+}
+
+func TestGroupSetRevisions_BootstrapPodGroupPolicySnapshot(t *testing.T) {
+	ctx := context.Background()
+	key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+	set := revisionTestRollingSet(1, &groupSetRevision{template: revisionTestPodGroupPolicyTemplate(180)})
+	legacy := revisionTestReadyChild(set, 0, &groupSetRevision{template: revisionTestPodGroupPolicyTemplate(120)})
+	delete(legacy.Labels, constants.GroupSetRevisionLabelKey)
+	r, _ := revisionTestRollingReconciler(t, set, legacy)
+	require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+	children, err := r.listRollingGroupSetChildren(ctx, set)
+	require.NoError(t, err)
+	setSource, childrenSource := set.DeepCopy(), children.DeepCopy()
+	current, update, err := r.groupSetRevisions(ctx, set, children)
+	require.NoError(t, err)
+	require.NotEqual(t, current.name, update.name)
+	assert.Equal(t, legacy.Annotations[key], current.template.Annotations[key])
+	assert.Equal(t, "120", current.template.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+	assert.Equal(t, set.Spec.GroupTemplate.Annotations[key], update.template.Annotations[key])
+	assert.Equal(t, "180", update.template.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+	oldSnapshot := revisionTestPolicySnapshot(t, r, set, current).DeepCopy()
+	revisionTestPolicySnapshot(t, r, set, update)
+	assert.Equal(t, setSource, set)
+	assert.Equal(t, childrenSource, children)
+	assert.Equal(t, legacy.UID, revisionTestGetChild(t, r, set, 0).UID)
+	assert.NotContains(t, revisionTestGetChild(t, r, set, 0).Labels, constants.GroupSetRevisionLabelKey)
+
+	set.Status.CurrentRevision, set.Status.UpdateRevision = current.name, update.name
+	require.NoError(t, r.client.Status().Update(ctx, set))
+	require.NoError(t, r.client.Delete(ctx, revisionTestGetChild(t, r, set, 0)))
+	require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+	children, err = r.listRollingGroupSetChildren(ctx, set)
+	require.NoError(t, err)
+	require.Empty(t, children.Items)
+	loaded, _, err := r.groupSetRevisions(ctx, set, children)
+	require.NoError(t, err)
+	assert.Equal(t, current.name, loaded.name)
+	assert.True(t, groupSetTemplatesEqual(current.template, loaded.template))
+	assert.Equal(t, current.template.Annotations, loaded.template.Annotations)
+	assert.Equal(t, oldSnapshot, revisionTestPolicySnapshot(t, r, set, loaded))
+	set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(1))
+	require.NoError(t, r.client.Update(ctx, set))
+	changed, _ := revisionTestSync(t, r, set, loaded, update)
+	require.True(t, changed)
+	rebuilt := revisionTestGetChild(t, r, set, 0)
+	assert.Equal(t, legacy.Annotations[key], rebuilt.Annotations[key])
+	assert.Equal(t, "120", rebuilt.Annotations[constants.GangSchedulingScheduleTimeoutSecondsKey])
+	assert.Equal(t, loaded.name, rebuilt.Labels[constants.GroupSetRevisionLabelKey])
+	assert.NotEqual(t, legacy.UID, rebuilt.UID)
+	assert.Equal(t, int64(1), rebuilt.Generation)
+}
+
+func TestSyncRollingGroupSet_PodGroupPolicyRemovalUsesPreviousOwnedSnapshot(t *testing.T) {
+	for _, tt := range []struct {
+		name                       string
+		snapshotted, foreign, lost bool
+		wantRemoved                bool
+	}{
+		{name: "parent-owned policy", snapshotted: true, wantRemoved: true},
+		{name: "child-only policy"},
+		{name: "foreign snapshot cannot authorize removal", snapshotted: true, foreign: true},
+		{name: "missing snapshot cannot authorize removal", snapshotted: true, lost: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+			raw := revisionTestPodGroupPolicyTemplate(120).Annotations[key]
+			oldTemplate := revisionTestTemplate(map[string]string{"version": "old"})
+			if tt.snapshotted {
+				oldTemplate.Annotations[key] = raw
+			}
+			set := revisionTestRollingSet(1, &groupSetRevision{template: oldTemplate})
+			r, _ := revisionTestRollingReconciler(t, set)
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+			owner := set.DeepCopy()
+			if tt.foreign {
+				owner.UID = "another-set"
+			}
+			current, err := r.ensureGroupSetRevision(ctx, owner, oldTemplate)
+			require.NoError(t, err)
+			snapshot := revisionTestPolicySnapshot(t, r, owner, current).DeepCopy()
+			child := revisionTestReadyChild(set, 0, current)
+			child.Annotations[key] = raw
+			require.NoError(t, r.client.Create(ctx, child))
+			before := revisionTestGetChild(t, r, set, 0)
+			if tt.lost {
+				require.NoError(t, r.client.Delete(ctx, snapshot))
+			}
+			set.Spec.GroupTemplate = *revisionTestTemplate(map[string]string{"version": "new"})
+			set.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
+			require.NoError(t, r.client.Update(ctx, set))
+			update, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			require.NotEqual(t, current.name, update.name)
+			revisionTestPolicySnapshot(t, r, set, update)
+			source, oldSource, newSource := set.DeepCopy(), current.template.DeepCopy(), update.template.DeepCopy()
+			changed, _ := revisionTestSync(t, r, set, current, update)
+			require.True(t, changed)
+			child = revisionTestGetChild(t, r, set, 0)
+			if tt.wantRemoved {
+				assert.NotContains(t, child.Annotations, key, "remove using the old label, before advancing spec and revision identity")
+			} else {
+				assert.Equal(t, raw, child.Annotations[key])
+			}
+			assert.Equal(t, before.UID, child.UID)
+			assert.Equal(t, before.Generation+1, child.Generation, "only the spec change increments generation")
+			assert.Equal(t, before.Status, child.Status)
+			assert.Equal(t, update.template.Spec, child.Spec)
+			assert.Equal(t, update.name, child.Labels[constants.GroupSetRevisionLabelKey])
+			assert.Equal(t, source, set)
+			assert.Equal(t, oldSource, current.template)
+			assert.Equal(t, newSource, update.template)
+			if !tt.lost {
+				assert.Equal(t, snapshot, revisionTestPolicySnapshot(t, r, owner, current))
+			}
+			revisionTestMarkReady(t, r, child)
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed)
 		})
 	}
 }
