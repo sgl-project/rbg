@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	applyv1alpha2 "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
@@ -45,7 +46,7 @@ const (
 	// RBG reconciler ensures a matching CoordinatedPolicy exists. The annotation is never
 	// removed — it stays until v1alpha1 support is dropped, at which point this file
 	// can be deleted entirely.
-	annotationCoordMigration = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+	annotationCoordMigration = constants.ConversionV1alpha1CoordinationAnnotationKey
 )
 
 // EnsureV1alpha1CoordinatedPolicy inspects the RBG for the v1alpha1 coordination

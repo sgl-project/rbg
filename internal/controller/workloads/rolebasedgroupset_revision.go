@@ -35,14 +35,13 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
-// systemManagedAnnotationKeys are the annotation keys controllers own on a child RoleBasedGroup.
-// They are excluded from the revision hash, from drift comparison, and from metadata sync so the
-// set controller does not fight the RBG controller or the conversion webhook.
+// These keys do not affect revision identity; PodGroupPolicy is still snapshotted with its effective configuration.
 var systemManagedAnnotationKeys = map[string]bool{
-	constants.DiscoveryConfigModeAnnotationKey:                 true,
-	constants.ConversionV1alpha1CoordinationAnnotationKey:      true,
-	constants.ConversionV1alpha2RolloutStrategyAnnotationKey:   true,
-	constants.ConversionV1alpha2RolloutStatusAnnotationKey:     true,
+	constants.DiscoveryConfigModeAnnotationKey:               true,
+	constants.ConversionV1alpha1CoordinationAnnotationKey:    true,
+	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:  true,
+	constants.ConversionV1alpha2RolloutStrategyAnnotationKey: true,
+	constants.ConversionV1alpha2RolloutStatusAnnotationKey:   true,
 }
 
 type groupSetRevision struct {
@@ -101,6 +100,7 @@ func (r *RoleBasedGroupSetReconciler) ensureGroupSetRevision(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet,
 	template *workloadsv1alpha2.RoleBasedGroupTemplateSpec,
 ) (*groupSetRevision, error) {
+	policy, hasPolicy := template.Annotations[constants.ConversionV1alpha1PodGroupPolicyAnnotationKey]
 	template = normalizedGroupSetTemplate(template)
 	data, err := json.Marshal(template)
 	if err != nil {
@@ -118,6 +118,9 @@ func (r *RoleBasedGroupSetReconciler) ensureGroupSetRevision(
 			},
 			Data: runtime.RawExtension{Raw: data}, Revision: set.Generation,
 		}
+		if hasPolicy {
+			revision.Annotations = map[string]string{constants.ConversionV1alpha1PodGroupPolicyAnnotationKey: policy}
+		}
 		if err = controllerutil.SetControllerReference(set, revision, r.scheme); err != nil {
 			return nil, err
 		}
@@ -131,6 +134,44 @@ func (r *RoleBasedGroupSetReconciler) ensureGroupSetRevision(
 	}
 	if !metav1.IsControlledBy(revision, set) || !bytes.Equal(revision.Data.Raw, data) {
 		return nil, fmt.Errorf("ControllerRevision %s does not match RoleBasedGroupSet %s", name, set.Name)
+	}
+	key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+	if _, stored := revision.Annotations[key]; stored && !hasPolicy {
+		children, err := r.listRollingGroupSetChildren(ctx, set)
+		if err != nil {
+			return nil, err
+		}
+		pendingRemoval := false
+		for _, child := range children.Items {
+			if _, present := child.Annotations[key]; present && child.Labels[constants.GroupSetRevisionLabelKey] == name {
+				pendingRemoval = true
+				break
+			}
+		}
+		// Retain removal provenance until every child using this revision has dropped the policy.
+		if !pendingRemoval {
+			base := revision.DeepCopy()
+			delete(revision.Annotations, key)
+			if err := r.client.Patch(ctx, revision, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if hasPolicy {
+		if stored, exists := revision.Annotations[key]; !exists || stored != policy {
+			base := revision.DeepCopy()
+			if revision.Annotations == nil {
+				revision.Annotations = make(map[string]string)
+			}
+			revision.Annotations[key] = policy
+			if err := r.client.Patch(ctx, revision, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return nil, err
+			}
+		}
+		if template.Annotations == nil {
+			template.Annotations = make(map[string]string)
+		}
+		template.Annotations[key] = policy
 	}
 	return &groupSetRevision{name: name, template: template}, nil
 }
@@ -154,6 +195,12 @@ func (r *RoleBasedGroupSetReconciler) groupSetRevisions(
 		if err := json.Unmarshal(revision.Data.Raw, template); err != nil {
 			return nil, nil, err
 		}
+		if policy, exists := revision.Annotations[constants.ConversionV1alpha1PodGroupPolicyAnnotationKey]; exists {
+			if template.Annotations == nil {
+				template.Annotations = make(map[string]string)
+			}
+			template.Annotations[constants.ConversionV1alpha1PodGroupPolicyAnnotationKey] = policy
+		}
 		return &groupSetRevision{name: revision.Name, template: template}, update, nil
 	}
 
@@ -174,7 +221,9 @@ func (r *RoleBasedGroupSetReconciler) groupSetRevisions(
 	if oldest == nil {
 		return update, update, nil
 	}
-	current, err := r.ensureGroupSetRevision(ctx, set, groupSetChildTemplate(oldest))
+	current, err := r.ensureGroupSetRevision(ctx, set, &workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+		Labels: oldest.Labels, Annotations: oldest.Annotations, Spec: oldest.Spec,
+	})
 	return current, update, err
 }
 
@@ -182,8 +231,49 @@ func newRBGForSetRevision(set *workloadsv1alpha2.RoleBasedGroupSet, index int, r
 	templateSet := set.DeepCopy()
 	templateSet.Spec.GroupTemplate = *revision.template.DeepCopy()
 	child := newRBGForSet(templateSet, index)
+	// Only unversioned keys come from the live template; held revisions retain their user metadata.
+	for key, value := range set.Spec.GroupTemplate.Annotations {
+		if systemManagedAnnotationKeys[key] && key != constants.ConversionV1alpha1PodGroupPolicyAnnotationKey {
+			if child.Annotations == nil {
+				child.Annotations = make(map[string]string)
+			}
+			child.Annotations[key] = value
+		}
+	}
 	child.Labels[constants.GroupSetRevisionLabelKey] = revision.name
 	return child
+}
+
+func (r *RoleBasedGroupSetReconciler) syncGroupSetPodGroupPolicy(
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet,
+	child *workloadsv1alpha2.RoleBasedGroup, template *workloadsv1alpha2.RoleBasedGroupTemplateSpec,
+) (bool, error) {
+	key := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+	policy, desired := template.Annotations[key]
+	oldPolicy, present := child.Annotations[key]
+	if desired {
+		if present && oldPolicy == policy {
+			return false, nil
+		}
+		if child.Annotations == nil {
+			child.Annotations = make(map[string]string)
+		}
+		child.Annotations[key] = policy
+		return true, nil
+	}
+	if !present || child.Labels[constants.GroupSetRevisionLabelKey] == "" {
+		return false, nil
+	}
+	previous := &appsv1.ControllerRevision{}
+	if err := r.apiReader.Get(ctx, client.ObjectKey{Namespace: set.Namespace, Name: child.Labels[constants.GroupSetRevisionLabelKey]}, previous); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	// Only a parent-snapshotted policy may be removed; child-only conversion stashes are not ours.
+	if _, managed := previous.Annotations[key]; managed && metav1.IsControlledBy(previous, set) {
+		delete(child.Annotations, key)
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *RoleBasedGroupSetReconciler) pruneGroupSetRevisions(
