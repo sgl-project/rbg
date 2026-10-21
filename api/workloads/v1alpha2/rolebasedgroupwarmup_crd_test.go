@@ -127,6 +127,14 @@ func TestGeneratedWarmupCRDDoesNotValidateContainerImages(t *testing.T) {
 			if containers.Items == nil || containers.Items.Schema == nil {
 				t.Fatalf("version %q path %s: containers item schema is missing", version.Name, targetPath)
 			}
+			// The removed #466 marker is an items-scoped rule: it is generated on the
+			// containers item schema itself, not on its image property. Asserting on
+			// the item schema pins the exact location where reintroducing the marker
+			// would freeze status updates on Kubernetes <= 1.32.
+			if len(containers.Items.Schema.XValidations) != 0 {
+				t.Errorf("version %q path %s: customized action containers item schema must not have CEL validations, got %#v",
+					version.Name, targetPath, containers.Items.Schema.XValidations)
+			}
 			image := schemaProperty(t, containers.Items.Schema.Properties, "image")
 			if len(image.XValidations) != 0 {
 				t.Errorf("version %q path %s: customized action image must not have CEL validations, got %#v",

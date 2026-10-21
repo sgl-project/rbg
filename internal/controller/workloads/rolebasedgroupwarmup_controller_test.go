@@ -1856,3 +1856,336 @@ func TestReconcile_InvalidCustomizedContainerGapIsClosed(t *testing.T) {
 		})
 	}
 }
+
+// A target deleted mid-run while a warmup Pod is still active must not complete:
+// Completed is terminal and only drives TTL cleanup, so completing here would
+// misreport the in-flight job and could GC its still-running Pod.
+func TestReconcile_TargetDeletedMidRunWithActivePodsStaysRunning(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "deleted-active", Namespace: "default", UID: "uid-deleted-active"},
+		Spec:       warmupTargetRBGSpec("deleted-active-rbg"),
+		Status:     workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhaseRunning},
+	}
+	activePod := makeWarmupPod("deleted-active-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodRunning)
+	r := newWarmupReconciler(warmup, activePod)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
+		t.Fatalf("in-flight warmup must stay Running after target deletion, got %q (conditions=%#v)",
+			updated.Status.Phase, updated.Status.Conditions)
+	}
+	if updated.Status.Active != 1 {
+		t.Fatalf("active counter must keep accounting the running Pod, got %d", updated.Status.Active)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "RoleBasedGroupNotFound" {
+		t.Fatalf("expected TargetReady=False/RoleBasedGroupNotFound, got %#v", updated.Status.Conditions)
+	}
+
+	// Once the Pod itself becomes terminal the job completes with its counters.
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(activePod), pod); err != nil {
+		t.Fatalf("get warmup pod: %v", err)
+	}
+	pod.Status.Phase = corev1.PodSucceeded
+	if err := r.Status().Update(ctx, pod); err != nil {
+		t.Fatalf("succeed warmup pod: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("reconcile after pod success: %v", err)
+	}
+	final := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), final); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if final.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("warmup must complete once its Pods are terminal, got %q", final.Status.Phase)
+	}
+	if final.Status.Succeeded != 1 || final.Status.Active != 0 {
+		t.Fatalf("terminal counters must be recorded, got active=%d succeeded=%d",
+			final.Status.Active, final.Status.Succeeded)
+	}
+}
+
+// A mid-run scheduling gap (eviction, node drain, recreate rollout) collapses the
+// desired node set; the warmup must keep waiting for its running Pods instead of
+// reporting Completed/NoNodesMatched.
+func TestReconcile_AllTargetPodsUnscheduledMidRunStaysRunning(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "eviction-gap", Namespace: "default", UID: "uid-eviction-gap"},
+		Spec:       warmupTargetRBGSpec("eviction-gap-rbg"),
+		Status:     workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhaseRunning},
+	}
+	activePod := makeWarmupPod("eviction-gap-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodRunning)
+	unscheduledTarget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "eviction-gap-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "eviction-gap-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: ""},
+	}
+	r := newWarmupReconciler(warmup, activePod, targetRBGWithWorkerRole("eviction-gap-rbg", 1), unscheduledTarget)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("a mid-run scheduling gap must not complete the warmup (conditions=%#v)", updated.Status.Conditions)
+	}
+	if updated.Status.Active != 1 {
+		t.Fatalf("active counter must keep accounting the running Pod, got %d", updated.Status.Active)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "TargetPodsNotScheduled" {
+		t.Fatalf("expected TargetReady=False/TargetPodsNotScheduled, got %#v", updated.Status.Conditions)
+	}
+}
+
+// A stale terminal Pod for a replaced node must not satisfy the current desired
+// set and thereby bypass an expired global timeout.
+func TestReconcile_StaleTerminalNodeDoesNotBypassGlobalTimeout(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "stale-terminal", Namespace: "default", UID: "uid-stale-terminal",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+		},
+		Spec: warmupTargetRBGSpec("stale-terminal-rbg"),
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	// The target rescheduled from node-1 to node-2; only the stale warmup Pod for
+	// node-1 remains, node-2 was never warmed.
+	staleSucceeded := makeWarmupPod("stale-terminal-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodSucceeded)
+	scheduledTarget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "stale-terminal-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "stale-terminal-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-2"},
+	}
+	r := newWarmupReconciler(warmup, staleSucceeded, targetRBGWithWorkerRole("stale-terminal-rbg", 1), scheduledTarget)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expired timeout must fail instead of completing via a stale node, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "GlobalTimeoutExceeded" {
+		t.Fatalf("expected Failed/GlobalTimeoutExceeded, got %#v", updated.Status.Conditions)
+	}
+}
+
+// An active Pod on a node that left the desired set must still trip the global
+// timeout safety net: the Pod is deleted and the job fails, instead of being
+// stranded in Running forever with an orphan Pod.
+func TestReconcile_ActivePodOutsideDesiredSetFailsOnGlobalTimeout(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "orphan-active", Namespace: "default", UID: "uid-orphan-active",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+		},
+		Spec: warmupTargetRBGSpec("orphan-active-rbg"),
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	// node-2 is desired and terminal; node-1 left the desired set but its warmup
+	// Pod is stuck active (e.g. ImagePullBackOff).
+	succeeded := makeWarmupPod("orphan-active-succeeded", "default", warmup.Name, string(warmup.UID), "node-2", corev1.PodSucceeded)
+	stuck := makeWarmupPod("orphan-active-stuck", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodRunning)
+	scheduledTarget := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "orphan-active-worker-0", Namespace: "default",
+			Labels: map[string]string{constants.GroupNameLabelKey: "orphan-active-rbg", constants.RoleNameLabelKey: "worker"},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-2"},
+	}
+	r := newWarmupReconciler(warmup, succeeded, stuck, targetRBGWithWorkerRole("orphan-active-rbg", 1), scheduledTarget)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expired timeout must fail and clean up the orphan Pod, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "GlobalTimeoutExceeded" {
+		t.Fatalf("expected Failed/GlobalTimeoutExceeded, got %#v", updated.Status.Conditions)
+	}
+	err := r.Get(ctx, client.ObjectKeyFromObject(stuck), &corev1.Pod{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("orphan active Pod must be deleted on global timeout, got err=%v", err)
+	}
+}
+
+// boundScalingAdapter returns a bound RoleBasedGroupScalingAdapter owned by rbg
+// with the given effective replicas.
+func boundScalingAdapter(rbg *workloadsv1alpha2.RoleBasedGroup, roleName string, replicas int32) *workloadsv1alpha2.RoleBasedGroupScalingAdapter {
+	return &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workloadsv1alpha2.GenerateScalingAdapterName(rbg.Name, roleName),
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workloadsv1alpha2.GroupVersion.String(),
+				Kind:       "RoleBasedGroup",
+				Name:       rbg.Name,
+				UID:        rbg.UID,
+			}},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			Replicas: ptr.To(replicas),
+		},
+		Status: workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus{
+			Phase: constants.AdapterPhaseBound,
+		},
+	}
+}
+
+func targetRBGWithScalingAdapterWorker(name, namespace string, replicas int32, uid types.UID) *workloadsv1alpha2.RoleBasedGroup {
+	rbg := targetRBGWithWorkerRole(name, replicas)
+	rbg.Namespace = namespace
+	rbg.UID = uid
+	rbg.Spec.Roles[0].ScalingAdapter = &workloadsv1alpha2.ScalingAdapter{Enable: true}
+	return rbg
+}
+
+// The expected target Pod count must honor a bound ScalingAdapter's effective
+// replicas instead of the possibly stale persisted role replicas.
+func TestReconcile_ScalingAdapterReplicasGateExpectedTargetPods(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+
+	t.Run("scaled to zero completes with no expected Pods", func(t *testing.T) {
+		warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+			ObjectMeta: metav1.ObjectMeta{Name: "adapter-zero", Namespace: "default", UID: "uid-adapter-zero"},
+			Spec:       warmupTargetRBGSpec("adapter-zero-rbg"),
+		}
+		rbg := targetRBGWithScalingAdapterWorker("adapter-zero-rbg", "default", 1, "uid-adapter-zero-rbg")
+		r := newWarmupReconciler(warmup, rbg, boundScalingAdapter(rbg, "worker", 0))
+
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+			t.Fatalf("unexpected reconcile error: %v", err)
+		}
+		updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+			t.Fatalf("get warmup: %v", err)
+		}
+		if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
+			t.Fatalf("a scaled-to-zero target has no expected Pods and must complete, got %q (conditions=%#v)",
+				updated.Status.Phase, updated.Status.Conditions)
+		}
+	})
+
+	t.Run("scaled up waits for every expected Pod", func(t *testing.T) {
+		warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+			ObjectMeta: metav1.ObjectMeta{Name: "adapter-up", Namespace: "default", UID: "uid-adapter-up"},
+			Spec:       warmupTargetRBGSpec("adapter-up-rbg"),
+		}
+		rbg := targetRBGWithScalingAdapterWorker("adapter-up-rbg", "default", 1, "uid-adapter-up-rbg")
+		onlyScheduled := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "adapter-up-worker-0", Namespace: "default",
+				Labels: map[string]string{constants.GroupNameLabelKey: "adapter-up-rbg", constants.RoleNameLabelKey: "worker"},
+			},
+			Spec: corev1.PodSpec{NodeName: "node-1"},
+		}
+		r := newWarmupReconciler(warmup, rbg, boundScalingAdapter(rbg, "worker", 2), onlyScheduled)
+
+		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+		if err != nil {
+			t.Fatalf("unexpected reconcile error: %v", err)
+		}
+		updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+			t.Fatalf("get warmup: %v", err)
+		}
+		if updated.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted {
+			t.Fatalf("one of two expected Pods is still missing, must not complete (conditions=%#v)", updated.Status.Conditions)
+		}
+		if result.RequeueAfter == 0 {
+			t.Fatalf("expected a requeue while waiting for the scaled-up target Pod, got %#v", result)
+		}
+		if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+			cond.Status != metav1.ConditionFalse || cond.Reason != "TargetPodsNotScheduled" {
+			t.Fatalf("expected TargetReady=False/TargetPodsNotScheduled, got %#v", updated.Status.Conditions)
+		}
+	})
+
+	t.Run("unbound adapter falls back to persisted replicas", func(t *testing.T) {
+		warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+			ObjectMeta: metav1.ObjectMeta{Name: "adapter-unbound", Namespace: "default", UID: "uid-adapter-unbound"},
+			Spec:       warmupTargetRBGSpec("adapter-unbound-rbg"),
+		}
+		rbg := targetRBGWithScalingAdapterWorker("adapter-unbound-rbg", "default", 1, "uid-adapter-unbound-rbg")
+		adapter := boundScalingAdapter(rbg, "worker", 0)
+		adapter.Status.Phase = constants.AdapterPhaseNotBound
+		r := newWarmupReconciler(warmup, rbg, adapter)
+
+		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+		if err != nil {
+			t.Fatalf("unexpected reconcile error: %v", err)
+		}
+		updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+			t.Fatalf("get warmup: %v", err)
+		}
+		if updated.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted {
+			t.Fatalf("an unbound adapter must not lower the expected Pod count (conditions=%#v)", updated.Status.Conditions)
+		}
+		if result.RequeueAfter == 0 {
+			t.Fatalf("expected a requeue while waiting for the persisted replica count, got %#v", result)
+		}
+	})
+}
+
+// A stuck in-flight Pod together with a vanished target must still trip the
+// global timeout safety net instead of becoming an unkillable Running zombie.
+func TestReconcile_TargetDeletedMidRunWithActivePodsFailsAfterGlobalTimeout(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "deleted-timeout", Namespace: "default", UID: "uid-deleted-timeout",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+		},
+		Spec:   warmupTargetRBGSpec("deleted-timeout-rbg"),
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhaseRunning},
+	}
+	warmup.Spec.Policies = &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(60))}
+	stuck := makeWarmupPod("deleted-timeout-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodRunning)
+	r := newWarmupReconciler(warmup, stuck)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+		t.Fatalf("expired timeout must fail an in-flight warmup with no target, got %q", updated.Status.Phase)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "GlobalTimeoutExceeded" {
+		t.Fatalf("expected Failed/GlobalTimeoutExceeded, got %#v", updated.Status.Conditions)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(stuck), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("running Pod must be deleted when the timeout fails the job, got err=%v", err)
+	}
+}
