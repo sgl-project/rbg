@@ -82,21 +82,11 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 #### 已弃用的 workload 类型
 
-`v1alpha1` API 以及 `Deployment` / `StatefulSet` / `LeaderWorkerSet` 三种 workload 类型正在被弃用，
-由 `v1alpha2` 和 `RoleInstanceSet` 取代。Chart 参数 `controller.deprecatedWorkloadTypes.enabled`
-（对应控制器参数 `--enable-deprecated-workload-types`）决定控制器服务哪一套逻辑：
+`v1alpha1` API 以及 `Deployment` / `StatefulSet` / `LeaderWorkerSet` 三种 workload 类型已进入弃用流程，并将在 `0.10.0` 移除。`0.9.0` 中，写入 `v1alpha1` 会返回 Warning，新的弃用 workload 类型使用会被拒绝；存量 role 继续可 reconcile，并支持逐 role 迁移。
 
-| 取值 | 行为 |
-|:-----|:-----|
-| `true`（默认） | 与此前完全一致：`v1alpha1` 与 `v1alpha2` 的控制逻辑同时生效，所有 workload 类型均受支持。 |
-| `false` | 控制器直接拒绝已弃用的 workload 类型：不授予相关 RBAC、不 watch 这些资源，校验 webhook 拒绝任何使用了它们的创建与更新请求。 |
+Chart 参数 `controller.deprecatedWorkloadTypes.enabled`（对应控制器参数 `--enable-deprecated-workload-types`）默认为 `false`。RBAC、watch 和孤儿清理保持生效，以便迁移工具删除旧工作负载。仅在需要临时回滚窗口时才使用 `true`。
 
-`false` 的目的是让**全新安装**的用户直接使用 `v1alpha2` 并保持在该版本上，且这一约束由控制器强制执行，
-而非依赖约定。由于该模式下控制器完全无法 reconcile 已弃用的 workload 类型，它仅适用于首次安装。
-
-> **如果你已经部署过 RBG 控制器，请保持 `true`。** 目前没有在已有安装上关闭该开关的支持路径——已经在使用
-> 已弃用 workload 类型的对象会变得无法被 reconcile。迁移指引以及迁移到 `RoleInstanceSet` 的更新方式将在
-> 后续版本提供。
+请阅读 [v1alpha1 到 v1alpha2 迁移指南](doc/zh/migration-v1alpha1-to-v2.md)，其中包含影响面报告、逐 role 灰度、回滚步骤和存储版本迁移。
 
 ### 🎮 快速示例
 

@@ -67,7 +67,7 @@ scheduler.
 |-----|-------------|
 | `rbg.workloads.x-k8s.io/role-size` | The size of the role (managed by controller). |
 | `rbg.workloads.x-k8s.io/role-disable-exclusive` | Set to `"true"` to skip exclusive-topology affinity injection for that role. |
-| `rbg.workloads.x-k8s.io/role-workload-type` | Specifies the workload type (primarily for v1alpha1 conversion). |
+| `rbg.workloads.x-k8s.io/role-workload-type` | Deprecated workload-type compatibility annotation. New uses are rejected in 0.9.0; migrate it with `kubectl rbg migrate workload-type`. |
 
 ### RoleInstance Level Annotations
 

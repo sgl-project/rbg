@@ -52,7 +52,7 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 		allErrs = append(allErrs, err)
 	}
 	if !v.EnableDeprecatedWorkloadTypes {
-		if err := validateNoDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		if err := validateNoNewDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
@@ -61,21 +61,26 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 }
 
 // ValidateUpdate validates a RoleBasedGroupSet on update.
-func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, _ runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
+func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
 	rbgs, ok := newObj.(*RoleBasedGroupSet)
 	if !ok {
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", newObj)
 	}
 	klog.V(4).InfoS("validating RoleBasedGroupSet on update", "name", rbgs.Name, "namespace", rbgs.Namespace)
+	oldRBGS, ok := oldObj.(*RoleBasedGroupSet)
+	if !ok {
+		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", oldObj)
+	}
 
 	var allErrs []error
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if !v.EnableDeprecatedWorkloadTypes {
-		if err := validateNoDeprecatedWorkloadTypes(
+		if err := validateNoNewDeprecatedWorkloadTypes(
 			"spec.groupTemplate.spec.roles",
 			rbgs.Spec.GroupTemplate.Spec.Roles,
+			oldRBGS.Spec.GroupTemplate.Spec.Roles,
 		); err != nil {
 			allErrs = append(allErrs, err)
 		}

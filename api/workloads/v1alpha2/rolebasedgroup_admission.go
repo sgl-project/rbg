@@ -61,7 +61,7 @@ func (v *RoleBasedGroupValidator) ValidateCreate(_ context.Context, obj runtime.
 		allErrs = append(allErrs, err)
 	}
 	if !v.EnableDeprecatedWorkloadTypes {
-		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
+		if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, nil); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
@@ -92,7 +92,7 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		allErrs = append(allErrs, err)
 	}
 	if !v.EnableDeprecatedWorkloadTypes {
-		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
+		if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}

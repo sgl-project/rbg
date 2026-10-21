@@ -17,7 +17,7 @@ limitations under the License.
 // Package apicompat is a standalone e2e suite for a cluster where the rbgs chart was
 // installed with controller.deprecatedWorkloadTypes.enabled=false.
 //
-// It cannot live in the main test/e2e suite: most of those specs create Deployment /
+// It cannot live in the main test/e2e suite: most of those specs create new Deployment /
 // StatefulSet / LeaderWorkerSet workloads, which this configuration deliberately
 // rejects. So this is its own go-test entrypoint with its own Kind cluster in CI.
 //
@@ -50,7 +50,7 @@ const (
 	// deprecatedRejectionSubstring is the stable part of the validator's error for a
 	// role that uses a deprecated workload type (see
 	// api/workloads/v1alpha2/rolebasedgroup_validation.go).
-	deprecatedRejectionSubstring = "is deprecated and not enabled on this cluster"
+	deprecatedRejectionSubstring = "is deprecated; new uses are not accepted"
 )
 
 // f is the shared framework for the suite, wired up in TestDeprecatedWorkloadTypesDisabled.
@@ -144,8 +144,9 @@ Prepare the environment before running this suite (adjust names/tags as needed):
 
 If the controller runs in a different namespace, set RBGS_NAMESPACE to it.
 
-NOTE: this is a fresh-install-only configuration. Do NOT flip an existing enabled
-release to disabled just to run this suite — use a throwaway cluster.`,
+NOTE: existing roles that already use a deprecated workload type are exempt, but this
+suite focuses on new writes. Use a throwaway cluster so unrelated legacy objects do not
+affect the assertions.`,
 		reason, controllerNamespace())
 }
 

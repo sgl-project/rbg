@@ -15,14 +15,14 @@ limitations under the License.
 */
 
 // Package chart renders the rbgs Helm chart with `helm template` and asserts that
-// the controller.deprecatedWorkloadTypes.enabled toggle changes exactly what it is
-// meant to and nothing else.
+// the controller.deprecatedWorkloadTypes.enabled toggle changes only the manager flag
+// and nothing else; RBAC remains active for migration cleanup.
 //
 // This complements the pure-function tests in hack/gen-helm-rbac (which never render
 // the chart) and the live e2e suite in test/e2e/apicompat (which needs a cluster).
 // It runs in seconds with no cluster, so it is the fast guard against a chart edit
-// that over-broadens the toggle — e.g. gating a rule that should always be granted,
-// or letting the RBAC and the manager flag disagree.
+// that over-broadens the toggle — e.g. gating a rule that must always be granted for
+// orphan cleanup, or letting the chart value and manager flag disagree.
 package chart
 
 import (
@@ -203,51 +203,43 @@ func managerFlag(t *testing.T, manifest string) string {
 	return ""
 }
 
-// TestManagerFlagReflectsToggle pins the manager's --enable-deprecated-workload-types
-// flag to the toggle. An unset toggle must render as enabled, matching values.yaml.
+// TestManagerFlagReflectsToggle pins the manager's flag to the chart value. An
+// explicitly unset toggle is false, matching the 0.9.0 default.
 func TestManagerFlagReflectsToggle(t *testing.T) {
-	if got := managerFlag(t, renderEnabled(t)); got != "true" {
-		t.Errorf("enabled: manager flag = %q, want true", got)
-	}
-	if got := managerFlag(t, renderUnset(t)); got != "true" {
-		t.Errorf("unset: manager flag = %q, want true (unset counts as enabled)", got)
-	}
-	if got := managerFlag(t, renderDisabled(t)); got != "false" {
-		t.Errorf("disabled: manager flag = %q, want false", got)
-	}
-}
-
-// TestClusterRoleGrantsReflectToggle asserts the deprecated-workload RBAC is present
-// when enabled/unset and fully absent when disabled.
-func TestClusterRoleGrantsReflectToggle(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		manifest string
-		want     bool
+		want     string
 	}{
-		{"enabled", renderEnabled(t), true},
-		{"unset", renderUnset(t), true},
-		{"disabled", renderDisabled(t), false},
+		{"enabled", renderEnabled(t), "true"},
+		{"unset", renderUnset(t), "false"},
+		{"disabled", renderDisabled(t), "false"},
 	} {
-		grants := grantSet(t, tc.manifest)
+		if got := managerFlag(t, tc.manifest); got != tc.want {
+			t.Errorf("%s: manager flag = %q, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestClusterRoleAlwaysIncludesDeprecatedWorkloadRBAC asserts migration cleanup has
+// the permissions it needs regardless of the new-use gate.
+func TestClusterRoleAlwaysIncludesDeprecatedWorkloadRBAC(t *testing.T) {
+	for _, manifest := range []string{renderEnabled(t), renderUnset(t), renderDisabled(t)} {
+		grants := grantSet(t, manifest)
 		for grant := range deprecatedGrants {
-			if got := grants[grant]; got != tc.want {
-				t.Errorf("%s: grant %q present=%v, want %v", tc.name, grant, got, tc.want)
+			if !grants[grant] {
+				t.Errorf("grant %q absent; deprecated workload RBAC must stay active", grant)
 			}
 		}
 	}
 }
 
-// TestToggleDeltaIsScopedToDeprecatedRBACAndFlag renders the chart with the toggle on
-// and off and asserts the two renders differ in exactly two objects — the controller
-// ClusterRole and the manager Deployment — and in no others. This is the guard the
-// gen-helm-rbac unit tests cannot give: it catches a chart edit that flips or removes
-// something else along with the toggle.
-func TestToggleDeltaIsScopedToDeprecatedRBACAndFlag(t *testing.T) {
+// TestToggleDeltaIsScopedToManagerFlag ensures the toggle changes only the manager
+// Deployment, not RBAC or other chart objects.
+func TestToggleDeltaIsScopedToManagerFlag(t *testing.T) {
 	enabled := splitObjects(t, renderEnabled(t))
 	disabled := splitObjects(t, renderDisabled(t))
 
-	// No object may be added or removed by the toggle.
 	if added := keysNotIn(disabled, enabled); len(added) > 0 {
 		t.Errorf("disabling the toggle added objects: %v", added)
 	}
@@ -267,11 +259,7 @@ func TestToggleDeltaIsScopedToDeprecatedRBACAndFlag(t *testing.T) {
 	}
 	sort.Strings(differing)
 
-	want := []string{
-		"ClusterRole/" + controllerClusterRoleName,
-		"Deployment/" + managerDeploymentName,
-	}
-	sort.Strings(want)
+	want := []string{"Deployment/" + managerDeploymentName}
 	if strings.Join(differing, ",") != strings.Join(want, ",") {
 		t.Errorf("toggle changed objects %v, want exactly %v", differing, want)
 	}

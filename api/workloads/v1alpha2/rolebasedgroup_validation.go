@@ -277,24 +277,32 @@ func isDeprecatedWorkloadType(wt string) bool {
 	}
 }
 
-// validateNoDeprecatedWorkloadTypes checks that no role uses a deprecated workload
-// type (Deployment, StatefulSet, or LeaderWorkerSet). fieldPath is the JSON path of
-// the role slice being validated, since roles live under different paths in a
-// RoleBasedGroup and a RoleBasedGroupSet. Returns an aggregated error listing all
-// offending roles, suffixed with deprecatedWorkloadTypeHint.
+// validateNoNewDeprecatedWorkloadTypes checks that a write does not introduce a
+// deprecated workload type (Deployment, StatefulSet, or LeaderWorkerSet) into a
+// role that did not already use one. fieldPath is the JSON path of the role slice
+// being validated, since roles live under different paths in a RoleBasedGroup and a
+// RoleBasedGroupSet. Returns an aggregated error listing all offending roles,
+// suffixed with deprecatedWorkloadTypeHint.
 //
-// The whole object is checked on both create and update. A cluster with the toggle
-// off never reconciles these workload types at all — it grants no RBAC for them and
-// watches none of them — so admitting a write that carries one would leave an object
-// nothing can act on.
-func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error {
+// Existing roles are exempt so they can continue to reconcile while users migrate
+// them one at a time. The controller still watches and cleans up deprecated
+// workloads when the toggle is off.
+func validateNoNewDeprecatedWorkloadTypes(fieldPath string, roles, oldRoles []RoleSpec) error {
+	oldWorkloadTypes := make(map[string]string, len(oldRoles))
+	for i := range oldRoles {
+		oldWorkloadTypes[oldRoles[i].Name] = oldRoles[i].GetWorkloadType()
+	}
+
 	var allErrs []error
 	for i := range roles {
 		role := &roles[i]
 		wt := role.GetWorkloadType()
-		if isDeprecatedWorkloadType(wt) {
+		if !isDeprecatedWorkloadType(wt) {
+			continue
+		}
+		if oldType, existed := oldWorkloadTypes[role.Name]; !existed || !isDeprecatedWorkloadType(oldType) {
 			allErrs = append(allErrs, fmt.Errorf(
-				"%s[%d] (role %q): workload type %q is deprecated and not enabled on this cluster",
+				"%s[%d] (role %q): workload type %q is deprecated; new uses are not accepted",
 				fieldPath, i, role.Name, wt,
 			))
 		}

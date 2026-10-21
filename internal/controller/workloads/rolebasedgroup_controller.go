@@ -101,10 +101,6 @@ type RoleBasedGroupReconciler struct {
 	// the RoleInstance reconciler. Injected at wire-up time so both consumers
 	// operate on the same instance.
 	NodeBindings *instancesync.NodeBindingStore
-	// enableDeprecatedWorkloadTypes reports whether the deprecated workload types are
-	// still enabled. When false, Deployment/StatefulSet/LeaderWorkerSet are skipped
-	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is removed.
-	enableDeprecatedWorkloadTypes bool
 	// revisionEqualityCache caches semantic revision equality results to avoid
 	// expensive ApplyRevision + getRBGPatch reconstruction on every reconcile.
 	revisionEqualityCache *lru.Cache
@@ -734,21 +730,23 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	errs := make([]error, 0)
 
-	if r.enableDeprecatedWorkloadTypes {
-		deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
-		if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-			errs = append(errs, err)
-		}
+	// Orphan cleanup is intentionally independent of enableDeprecatedWorkloadTypes.
+	// The flag only controls whether new deprecated workloads may be introduced;
+	// migration must always be able to remove an old workload after a role switches
+	// to RoleInstanceSet.
+	deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
+	if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+		errs = append(errs, err)
+	}
 
-		stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
-		if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-			errs = append(errs, err)
-		}
+	stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
+	if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+		errs = append(errs, err)
+	}
 
-		lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
-		if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
-			errs = append(errs, err)
-		}
+	lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
+	if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
+		errs = append(errs, err)
 	}
 
 	roleInstanceSetRecon := reconciler.NewRoleInstanceSetReconciler(r.scheme, r.client)
@@ -1149,8 +1147,7 @@ func (r *RoleBasedGroupReconciler) CleanupOrphanedScalingAdapters(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options, enableDeprecatedWorkloadTypes bool) error {
-	r.enableDeprecatedWorkloadTypes = enableDeprecatedWorkloadTypes
+func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	runtimeController = ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
@@ -1186,15 +1183,14 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("workloads-rolebasedgroup")
 
-	if enableDeprecatedWorkloadTypes {
-		runtimeController.Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate()))
-		runtimeController.Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate()))
+	// Watches for deprecated workloads are always registered. Even with the flag
+	// off, existing roles remain reconciled and migration depends on cleanup events.
+	runtimeController.Owns(&appsv1.StatefulSet{}, builder.WithPredicates(WorkloadPredicate()))
+	runtimeController.Owns(&appsv1.Deployment{}, builder.WithPredicates(WorkloadPredicate()))
 
-		err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName)
-		if err == nil {
-			watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
-			runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
-		}
+	if err := utils.CheckCrdExists(r.apiReader, utils.LwsCrdName); err == nil {
+		watchedWorkload.LoadOrStore(utils.LwsCrdName, struct{}{})
+		runtimeController.Owns(&lwsv1.LeaderWorkerSet{}, builder.WithPredicates(WorkloadPredicate()))
 	}
 	err := utils.CheckCrdExists(r.apiReader, scheduler.KubePodGroupCrdName)
 	if err == nil {

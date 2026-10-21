@@ -152,7 +152,7 @@ func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 			if fieldPath == "" {
 				fieldPath = "spec.roles"
 			}
-			err := validateNoDeprecatedWorkloadTypes(fieldPath, tt.roles)
+			err := validateNoNewDeprecatedWorkloadTypes(fieldPath, tt.roles, nil)
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
@@ -467,14 +467,11 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 	})
 }
 
-// TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole pins the strict
-// behaviour: with the toggle off, an object carrying a deprecated workload type is
-// rejected on every update, not just when the update introduces one. A cluster in
-// this mode grants no RBAC for those types and watches none of them, so an admitted
-// write would produce an object nothing can reconcile. These same shapes are how the
-// controllers write the main resource, so a group in this state is deliberately
-// unusable rather than half-working.
-func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing.T) {
+// TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedRoleExemption pins 0.9.0
+// behaviour: with the toggle off, existing deprecated roles may still be updated so
+// users can scale and inspect them while migrating. A role that did not already use
+// a deprecated workload type remains rejected.
+func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedRoleExemption(t *testing.T) {
 	statefulSetRole := func(replicas int32) RoleSpec {
 		return RoleSpec{
 			Name:        "worker",
@@ -491,18 +488,28 @@ func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing
 		EnableDeprecatedWorkloadTypes: false,
 	}
 
-	t.Run("idempotent role rewrite - error", func(t *testing.T) {
+	t.Run("idempotent role rewrite - no error", func(t *testing.T) {
 		newRBG := oldRBG.DeepCopy()
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "controller.deprecatedWorkloadTypes.enabled=true")
+		assert.NoError(t, err)
 	})
 
-	t.Run("scale path - error", func(t *testing.T) {
+	t.Run("scale existing role - no error", func(t *testing.T) {
 		newRBG := oldRBG.DeepCopy()
 		newRBG.Spec.Roles = []RoleSpec{statefulSetRole(5)}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
-		assert.Error(t, err)
+		assert.NoError(t, err)
+	})
+
+	t.Run("introducing a deprecated role - error", func(t *testing.T) {
+		newRBG := oldRBG.DeepCopy()
+		newRBG.Spec.Roles = append(newRBG.Spec.Roles, RoleSpec{
+			Name:        "new-role",
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.DeploymentWorkloadType},
+		})
+		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `role "new-role"`)
 	})
 
 	t.Run("removing the deprecated role - no error", func(t *testing.T) {
@@ -660,7 +667,7 @@ func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabl
 		assert.NoError(t, err)
 	})
 
-	t.Run("deprecated workload types disabled, pre-existing deprecated template - error", func(t *testing.T) {
+	t.Run("deprecated workload types disabled, pre-existing deprecated template - no error", func(t *testing.T) {
 		deprecatedRBGS := &RoleBasedGroupSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
 			Spec: RoleBasedGroupSetSpec{
@@ -678,13 +685,11 @@ func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabl
 				},
 			},
 		}
-		// Scaling is rejected at the parent rather than silently failing on the
-		// child creates it would trigger, which the cluster has no RBAC to reconcile.
 		newRBGS := deprecatedRBGS.DeepCopy()
 		newRBGS.Spec.Replicas = ptr.To(int32(3))
 
 		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: false}
 		_, err := v.ValidateUpdate(context.Background(), deprecatedRBGS, newRBGS)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 }

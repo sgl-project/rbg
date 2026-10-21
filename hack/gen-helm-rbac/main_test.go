@@ -24,110 +24,24 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
-// TestDeprecatedResources pins the gate derived from the workload type constants.
-// Changing or adding a constant, or hitting a kind the naive pluralisation gets
-// wrong, breaks this test rather than silently emitting the rule outside the
-// conditional, where it would stay granted with the toggle off.
-func TestDeprecatedResources(t *testing.T) {
-	assert.Equal(t, map[string]map[string]bool{
-		"apps": {
-			"deployments":  true,
-			"statefulsets": true,
+func TestRenderKeepsDeprecatedWorkloadRBACUnconditional(t *testing.T) {
+	rules := []ruleBlock{{
+		rule: rbacv1.PolicyRule{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments", "statefulsets"},
+			Verbs:     []string{"get"},
 		},
-		"leaderworkerset.x-k8s.io": {
-			"leaderworkersets": true,
-		},
-	}, deprecatedResources)
+	}}
+	out, err := render(rules)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "if $deprecatedEnabled")
+	assert.Contains(t, string(out), "deployments")
+	assert.Contains(t, string(out), "statefulsets")
 }
 
-func TestSplitRules(t *testing.T) {
-	tests := []struct {
-		name  string
-		rules []rbacv1.PolicyRule
-		want  []ruleBlock
-	}{
-		{
-			name: "a rule of only deprecated resources is gated whole",
-			rules: []rbacv1.PolicyRule{{
-				APIGroups: []string{"apps"},
-				Resources: []string{"deployments", "statefulsets"},
-				Verbs:     []string{"get"},
-			}},
-			want: []ruleBlock{{
-				rule: rbacv1.PolicyRule{
-					APIGroups: []string{"apps"},
-					Resources: []string{"deployments", "statefulsets"},
-					Verbs:     []string{"get"},
-				},
-				deprecated: true,
-			}},
-		},
-		{
-			name: "a mixed rule is split, and controllerrevisions stay granted",
-			rules: []rbacv1.PolicyRule{{
-				APIGroups: []string{"apps"},
-				Resources: []string{"controllerrevisions", "statefulsets"},
-				Verbs:     []string{"get"},
-			}},
-			want: []ruleBlock{
-				{rule: rbacv1.PolicyRule{
-					APIGroups: []string{"apps"},
-					Resources: []string{"controllerrevisions"},
-					Verbs:     []string{"get"},
-				}},
-				{
-					rule: rbacv1.PolicyRule{
-						APIGroups: []string{"apps"},
-						Resources: []string{"statefulsets"},
-						Verbs:     []string{"get"},
-					},
-					deprecated: true,
-				},
-			},
-		},
-		{
-			name: "subresources follow their base resource",
-			rules: []rbacv1.PolicyRule{{
-				APIGroups: []string{"apps"},
-				Resources: []string{"deployments/status", "deployments/finalizers"},
-				Verbs:     []string{"update"},
-			}},
-			want: []ruleBlock{{
-				rule: rbacv1.PolicyRule{
-					APIGroups: []string{"apps"},
-					Resources: []string{"deployments/status", "deployments/finalizers"},
-					Verbs:     []string{"update"},
-				},
-				deprecated: true,
-			}},
-		},
-		{
-			name: "a resource outside the gate is granted unconditionally",
-			rules: []rbacv1.PolicyRule{{
-				APIGroups: []string{"workloads.x-k8s.io"},
-				Resources: []string{"roleinstancesets"},
-				Verbs:     []string{"get"},
-			}},
-			want: []ruleBlock{{rule: rbacv1.PolicyRule{
-				APIGroups: []string{"workloads.x-k8s.io"},
-				Resources: []string{"roleinstancesets"},
-				Verbs:     []string{"get"},
-			}}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := splitRules(tt.rules)
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-// TestParseRole covers the inputs that used to be accepted and then silently lose
-// permissions: a misspelled key left its rule empty, a kind other than ClusterRole was
-// rendered as the chart ClusterRole anyway, and both exited 0.
+// TestParseRole covers inputs that used to be accepted and then silently lose
+// permissions: a misspelled key left its rule empty, a kind other than ClusterRole
+// was rendered as the chart ClusterRole anyway, and both exited 0.
 func TestParseRole(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -195,49 +109,4 @@ metadata:
 			assert.Contains(t, err.Error(), tt.errContains)
 		})
 	}
-}
-
-// TestSplitRulesRejectsResourcelessRule covers a rule that yields no block at all:
-// splitRules partitions on .Resources, so without this it would vanish from the
-// generated ClusterRole with no error and exit 0.
-func TestSplitRulesRejectsResourcelessRule(t *testing.T) {
-	_, err := splitRules([]rbacv1.PolicyRule{{
-		NonResourceURLs: []string{"/metrics"},
-		Verbs:           []string{"get"},
-	}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "declares no resources")
-}
-
-// TestSplitRulesRejectsDropMaskedByStraddlingRule pins why the check is per rule
-// rather than on the total. The first rule straddles the gate and emits two blocks,
-// so these two rules produce two blocks in total — enough for a "blocks >= rules"
-// comparison to pass while the second rule is dropped.
-func TestSplitRulesRejectsDropMaskedByStraddlingRule(t *testing.T) {
-	_, err := splitRules([]rbacv1.PolicyRule{
-		{
-			APIGroups: []string{"apps"},
-			Resources: []string{"controllerrevisions", "statefulsets"},
-			Verbs:     []string{"get"},
-		},
-		{
-			NonResourceURLs: []string{"/metrics"},
-			Verbs:           []string{"get"},
-		},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rules[1]")
-}
-
-// TestSplitRulesRejectsAmbiguousGroups covers a rule whose apiGroups disagree on
-// whether a resource is deprecated: it cannot be split by resource alone, so it must
-// error rather than land on one side of the conditional.
-func TestSplitRulesRejectsAmbiguousGroups(t *testing.T) {
-	_, err := splitRules([]rbacv1.PolicyRule{{
-		APIGroups: []string{"apps", "workloads.x-k8s.io"},
-		Resources: []string{"statefulsets"},
-		Verbs:     []string{"get"},
-	}})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "split the kubebuilder marker")
 }
