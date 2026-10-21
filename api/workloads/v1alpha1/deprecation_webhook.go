@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
-const v1alpha1DeprecationWarning = "workloads.x-k8s.io/v1alpha1 is deprecated and will be removed in 0.10.0; migrate to v1alpha2 with 'kubectl rbg migrate'"
+const v1alpha1DeprecationWarning = "workloads.x-k8s.io/v1alpha1 is deprecated and will be removed in 0.10.0; migrate to v1alpha2 using the migration guide"
 
 // DeprecationWarningValidator returns an Admission Warning for every write to a
 // v1alpha1 resource. The API server formats these strings as `Warning: 299 - ...`.

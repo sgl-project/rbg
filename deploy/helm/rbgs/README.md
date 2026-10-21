@@ -31,9 +31,9 @@ of these workload types are rejected in `0.9.0`.
 | `controller.deprecatedWorkloadTypes.enabled` | Temporarily allow new roles to select deprecated workload types. Existing roles remain exempt and continue to reconcile when false. | `false` |
 
 RBAC, watches, and orphan cleanup for the deprecated workloads remain active regardless of this value.
-This is intentional: after a role migrates to `RoleInstanceSet`, cleanup must be able to remove the old
+This is intentional: after an operator migrates a role to `RoleInstanceSet`, cleanup must be able to remove the old
 Deployment, StatefulSet, or LeaderWorkerSet. See the project migration guide for the recommended
-`kubectl rbg migrate plan`, per-role rollout, and storage-version migration.
+manual role inventory, per-role rollout, and storage-version migration.
 
 When `controller.deprecatedWorkloadTypes.enabled=false`, the following writes are rejected:
 
@@ -135,7 +135,7 @@ kubectl delete -f config/crd/bases/
 
 `helm upgrade` is supported. The `0.9.0` default turns new deprecated workload-type use off while
 preserving RBAC, watches, cleanup, and existing-role reconciliation for migration. Review
-[Deprecated workload types](#deprecated-workload-types) and run the project migration guide before
+[Deprecated workload types](#deprecated-workload-types) and follow the project migration guide before
 upgrading beyond `0.9.0`.
 
 ### Breaking change: values regrouped in chart v0.8.0

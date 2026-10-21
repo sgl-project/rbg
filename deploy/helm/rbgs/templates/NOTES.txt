@@ -18,13 +18,13 @@ Check the controller:
 NOTE: new uses of the deprecated workload types are DISABLED
 (controller.deprecatedWorkloadTypes.enabled=false).
 Existing roles continue to reconcile. RBAC, watches, and orphan cleanup remain active so
-`kubectl rbg migrate workload-type` can remove old Deployment/StatefulSet/LeaderWorkerSet
-workloads. Set the value to true only as a temporary rollback window.
+operators following the manual migration guide can remove old Deployment/StatefulSet/LeaderWorkerSet workloads.
+Set the value to true only as a temporary rollback window.
 {{- else }}
 NOTE: the deprecated workload types are ENABLED
 (controller.deprecatedWorkloadTypes.enabled=true).
-This permits new uses and should only be a temporary rollback window while completing
-`kubectl rbg migrate`.
+This permits new uses and should only be a temporary rollback window while operators complete the
+manual migration guide.
 {{- end }}
 
 NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under

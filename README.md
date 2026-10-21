@@ -84,9 +84,9 @@ For detailed instructions, see [Installation Guide](doc/install.md).
 
 The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` workload types are deprecated and will be removed in `0.10.0`. In `0.9.0`, writes to `v1alpha1` return a warning and new uses of the deprecated workload types are rejected. Existing roles continue to reconcile and can be migrated one role at a time.
 
-The chart value `controller.deprecatedWorkloadTypes.enabled` (controller flag `--enable-deprecated-workload-types`) defaults to `false`. RBAC, watches, and orphan cleanup remain active so migration can remove old workloads. Use `true` only as a temporary rollback window.
+The chart value `controller.deprecatedWorkloadTypes.enabled` (controller flag `--enable-deprecated-workload-types`) defaults to `false`. RBAC, watches, and orphan cleanup remain active so operators can remove old workloads. Use `true` only as a temporary rollback window.
 
-See the [v1alpha1 to v1alpha2 migration guide](doc/migration-v1alpha1-to-v2.md) for the impact report, per-role rollout, rollback steps, and storage-version migration.
+See the [v1alpha1 to v1alpha2 migration guide](doc/migration-v1alpha1-to-v2.md) for the manual role inventory, per-role rollout, rollback steps, and storage-version migration.
 
 ### 🎮 Quick Start
 

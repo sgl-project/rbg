@@ -84,9 +84,9 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 `v1alpha1` API 以及 `Deployment` / `StatefulSet` / `LeaderWorkerSet` 三种 workload 类型已进入弃用流程，并将在 `0.10.0` 移除。`0.9.0` 中，写入 `v1alpha1` 会返回 Warning，新的弃用 workload 类型使用会被拒绝；存量 role 继续可 reconcile，并支持逐 role 迁移。
 
-Chart 参数 `controller.deprecatedWorkloadTypes.enabled`（对应控制器参数 `--enable-deprecated-workload-types`）默认为 `false`。RBAC、watch 和孤儿清理保持生效，以便迁移工具删除旧工作负载。仅在需要临时回滚窗口时才使用 `true`。
+Chart 参数 `controller.deprecatedWorkloadTypes.enabled`（对应控制器参数 `--enable-deprecated-workload-types`）默认为 `false`。RBAC、watch 和孤儿清理保持生效，以便操作者删除旧工作负载。仅在需要临时回滚窗口时才使用 `true`。
 
-请阅读 [v1alpha1 到 v1alpha2 迁移指南](doc/zh/migration-v1alpha1-to-v2.md)，其中包含影响面报告、逐 role 灰度、回滚步骤和存储版本迁移。
+请阅读 [v1alpha1 到 v1alpha2 迁移指南](doc/zh/migration-v1alpha1-to-v2.md)，其中包含手工 role 盘点、逐 role 灰度、回滚步骤和存储版本迁移。
 
 ### 🎮 快速示例
 

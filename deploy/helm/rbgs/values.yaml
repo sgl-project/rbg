@@ -76,7 +76,7 @@ controller:
   # RoleInstanceSet. Defaults to false in 0.9.0.
   # Existing roles that already use a deprecated type remain reconciled and can be
   # migrated one role at a time. RBAC, watches, and orphan cleanup remain active so
-  # migration can remove old workloads. Set true only as a temporary rollback while
+  # operators can remove old workloads. Set true only as a temporary rollback while
   # completing migration.
   deprecatedWorkloadTypes:
     enabled: false

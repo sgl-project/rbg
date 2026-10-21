@@ -45,6 +45,8 @@ func TestDeprecationWarningValidatorReturnsAdmissionWarning(t *testing.T) {
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "v1alpha1 is deprecated")
 	assert.Contains(t, warnings[0], "removed in 0.10.0")
+	assert.Contains(t, warnings[0], "migration guide")
+	assert.NotContains(t, warnings[0], "kubectl rbg migrate")
 }
 
 func TestDeprecatedWorkloadValidatorRejectsNewUseButExemptsExisting(t *testing.T) {
