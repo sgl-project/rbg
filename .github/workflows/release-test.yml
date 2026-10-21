@@ -182,6 +182,9 @@ jobs:
             --create-namespace \
             --namespace rbgs-system \
             --set controller.features.portAllocator.enabled=true \
+            # The default false mode is covered by chart and apicompat suites;
+            # this broad compatibility run still creates legacy workloads.
+            --set controller.deprecatedWorkloadTypes.enabled=true \
             --wait
           kubectl get deploy -n rbgs-system
 
@@ -323,9 +326,11 @@ jobs:
           kubectl apply --server-side -f deploy/kubectl/manifests.yaml
           kubectl get deploy -n rbgs-system
 
-      - name: Patch controller deployment to enable portAllocator
+      - name: Patch controller deployment for e2e compatibility features
         run: |
+          # Broad release e2e still covers legacy workload compatibility.
           kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-deprecated-workload-types=true"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-allocate-strategy=random"},
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--start-port=30000"},
