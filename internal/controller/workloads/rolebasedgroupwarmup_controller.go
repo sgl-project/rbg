@@ -1124,80 +1124,27 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 	return pod, hasVolumeConflict
 }
 
-// updateStatus calculates and updates the status based on observed Pod states.
-// Counts are at node level, not Pod level: a node is "succeeded" if any of its
-// Pods succeeded, "failed" if it exhausted its backoffLimit, and "active" if it
-// currently has a running Pod.
-func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
-	activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod,
-	desiredNodes map[string][]workloadsv1alpha2.WarmupActions, permanentlyFailedNodes map[string]bool) error {
+// updateWarmupPhase decides the Warmup phase transition from node-level
+// counters and records the corresponding events and conditions on newStatus.
+//
+// A zero desired set must not complete a Warmup that still has running Pods:
+// the target may have been deleted, or all of its selected Pods may be in an
+// eviction/drain/recreate gap mid-run. Completed is terminal and only routes
+// to TTL cleanup, so completing here would misreport an in-flight job and
+// could GC its still-running Pods. The job stays Running until its own Pods
+// reach a terminal state.
+func (r *RoleBasedGroupWarmupReconciler) updateWarmupPhase(
+	ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	newStatus *workloadsv1alpha2.RoleBasedGroupWarmupStatus,
+	desired, active, succeeded, failed int32,
+) {
 	logger := log.FromContext(ctx)
 
-	// Count nodes at each state (node-level, not pod-level)
-	succeededNodeSet := make(map[string]bool)
-	for _, p := range succeededPods {
-		if nodeName, ok := p.Labels[LabelNodeName]; ok {
-			succeededNodeSet[nodeName] = true
-		}
-	}
-
-	activeNodeSet := make(map[string]bool)
-	for _, p := range activePods {
-		if nodeName, ok := p.Labels[LabelNodeName]; ok {
-			if !succeededNodeSet[nodeName] && !permanentlyFailedNodes[nodeName] {
-				activeNodeSet[nodeName] = true
-			}
-		}
-	}
-
-	desired := int32(len(desiredNodes))
-	active := int32(len(activeNodeSet))
-	succeeded := int32(len(succeededNodeSet))
-	failed := int32(len(permanentlyFailedNodes))
-
-	newStatus := warmup.Status.DeepCopy()
-	newStatus.Desired = desired
-	newStatus.Active = active
-	newStatus.Succeeded = succeeded
-	newStatus.Failed = failed
-	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
-	allPods = append(allPods, activePods...)
-	allPods = append(allPods, succeededPods...)
-	allPods = append(allPods, failedPods...)
-	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResults(
-		desiredNodes,
-		warmup.Status.CustomizedActionResults,
-		observedCustomizedActionResults,
-		allPods,
-	)
-	newStatus.CustomizedActionResults, newStatus.CustomizedActionResultsTruncated =
-		limitCustomizedActionResults(allCustomizedActionResults)
-	if preservedPrevious && warmup.Status.CustomizedActionResultsTruncated {
-		newStatus.CustomizedActionResultsTruncated = true
-	}
-
-	// Set startTime if not already set and Pods exist
-	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {
-		now := metav1.Now()
-		newStatus.StartTime = &now
-		logger.Info("Setting start time", "time", now)
-	}
-
-	// Determine maxFailedNodes tolerance
 	var maxFailedNodes *int32
 	if warmup.Spec.Policies != nil {
 		maxFailedNodes = warmup.Spec.Policies.MaxFailedNodes
 	}
-
-	// Calculate phase
-	//
-	// A zero desired set must not complete a Warmup that still has running Pods:
-	// the target may have been deleted, or all of its selected Pods may be in an
-	// eviction/drain/recreate gap mid-run. Completed is terminal and only routes
-	// to TTL cleanup, so completing here would misreport an in-flight job and
-	// could GC its still-running Pods. The job stays Running until its own Pods
-	// reach a terminal state.
 	if desired == 0 && active == 0 {
 		newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
 		logger.Info("No nodes matched, completing immediately")
@@ -1264,6 +1211,71 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 			}
 		}
 	}
+}
+
+// updateStatus calculates and updates the status based on observed Pod states.
+// Counts are at node level, not Pod level: a node is "succeeded" if any of its
+// Pods succeeded, "failed" if it exhausted its backoffLimit, and "active" if it
+// currently has a running Pod.
+func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod,
+	desiredNodes map[string][]workloadsv1alpha2.WarmupActions, permanentlyFailedNodes map[string]bool) error {
+	logger := log.FromContext(ctx)
+
+	// Count nodes at each state (node-level, not pod-level)
+	succeededNodeSet := make(map[string]bool)
+	for _, p := range succeededPods {
+		if nodeName, ok := p.Labels[LabelNodeName]; ok {
+			succeededNodeSet[nodeName] = true
+		}
+	}
+
+	activeNodeSet := make(map[string]bool)
+	for _, p := range activePods {
+		if nodeName, ok := p.Labels[LabelNodeName]; ok {
+			if !succeededNodeSet[nodeName] && !permanentlyFailedNodes[nodeName] {
+				activeNodeSet[nodeName] = true
+			}
+		}
+	}
+
+	desired := int32(len(desiredNodes))
+	active := int32(len(activeNodeSet))
+	succeeded := int32(len(succeededNodeSet))
+	failed := int32(len(permanentlyFailedNodes))
+
+	newStatus := warmup.Status.DeepCopy()
+	newStatus.Desired = desired
+	newStatus.Active = active
+	newStatus.Succeeded = succeeded
+	newStatus.Failed = failed
+	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
+	allPods = append(allPods, activePods...)
+	allPods = append(allPods, succeededPods...)
+	allPods = append(allPods, failedPods...)
+	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResults(
+		desiredNodes,
+		warmup.Status.CustomizedActionResults,
+		observedCustomizedActionResults,
+		allPods,
+	)
+	newStatus.CustomizedActionResults, newStatus.CustomizedActionResultsTruncated =
+		limitCustomizedActionResults(allCustomizedActionResults)
+	if preservedPrevious && warmup.Status.CustomizedActionResultsTruncated {
+		newStatus.CustomizedActionResultsTruncated = true
+	}
+
+	// Set startTime if not already set and Pods exist
+	if newStatus.StartTime.IsZero() && (len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0) {
+		now := metav1.Now()
+		newStatus.StartTime = &now
+		logger.Info("Setting start time", "time", now)
+	}
+
+	// Calculate phase (events and conditions are recorded by updateWarmupPhase).
+	r.updateWarmupPhase(ctx, warmup, newStatus, desired, active, succeeded, failed)
+
 	updateCustomizedActionConditions(
 		&newStatus.Conditions,
 		warmup.Generation,
