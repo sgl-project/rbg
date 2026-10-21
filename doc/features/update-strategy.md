@@ -92,6 +92,26 @@ rollingUpdate:
   maxSurge: "20%"          # Percentage of replicas
 ```
 
+For stateful RoleInstanceSets, an early rollback (A → B → A before B has
+finished rolling out) retains existing surge while base instances are being
+replaced. The controller records the replacement scope in
+`status.rolloutReplacementState` before replacing an instance when `maxSurge`
+is greater than zero. This protects the surge across controller restarts.
+
+Surge is released once every base instance in the recorded update range is
+Ready at the rollback revision, is not terminating, and has observed its current
+generation. The check covers the whole recorded range, rather than only the
+instances actually replaced. An unrelated instance becoming unhealthy within
+that range can therefore retain surge and its resources longer.
+
+Changing `partition` or `replicas` keeps protection for the overlap between the
+recorded range and the current update range. Merely adding ordinals does not
+extend the recorded scope; starting additional replacements can extend it.
+Ordinals outside the current range no longer delay completion. During
+scale-down, a healthy former base instance can serve as the
+remaining surge. Pausing a rollout retains the protection; an empty overlap or a
+different target revision ends it.
+
 ### partition
 
 Control which pods get updated (StatefulSet-style):

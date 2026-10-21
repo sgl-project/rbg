@@ -20,11 +20,13 @@ package statefulmode
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"time"
 
 	apps "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -231,6 +233,12 @@ func (ssc *defaultStatefulInstanceSetControl) UpdateStatefulInstanceSet(ctx cont
 	history.SortControllerRevisions(revisions)
 
 	currentRevision, updateRevision, err := ssc.performUpdate(ctx, set, instances, revisions)
+	if errors.Is(err, errRolloutSpecChanged) {
+		// The spec event normally queues the next reconcile. Also retry soon
+		// when the write conflict raced with delivery of that event.
+		durationStore.Push(getInstanceSetKey(set), time.Second)
+		return nil
+	}
 	if err != nil {
 		return utilerrors.NewAggregate([]error{err, ssc.truncateHistory(set, instances, revisions, currentRevision, updateRevision)})
 	}
@@ -255,6 +263,9 @@ func (ssc *defaultStatefulInstanceSetControl) performUpdate(
 
 	// perform the main update function and get the status
 	currentStatus, getStatusErr := ssc.updateStatefulInstanceSet(ctx, set, currentRevision, updateRevision, collisionCount, instances, revisions)
+	if errors.Is(getStatusErr, errRolloutSpecChanged) {
+		return currentRevision, updateRevision, getStatusErr
+	}
 	if getStatusErr != nil && currentStatus == nil {
 		return currentRevision, updateRevision, getStatusErr
 	}
@@ -458,7 +469,9 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	minReadySeconds := getMinReadySeconds(set)
 	monotonic := !allowsBurst(set)
 
-	status := workloadsv1alpha2.RoleInstanceSetStatus{}
+	status := workloadsv1alpha2.RoleInstanceSetStatus{
+		RolloutReplacementState: inheritedRolloutReplacementState(set, instances, topo, updateRevision.Name),
+	}
 	status.ObservedGeneration = set.Generation
 	status.CurrentRevision = currentRevision.Name
 	status.UpdateRevision = updateRevision.Name
@@ -499,6 +512,10 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		return &status, nil
 	}
 
+	if err := ssc.persistTerminatingRolloutReplacement(ctx, set, &status, instances, topo, currentRevision.Name, updateRevision.Name); err != nil {
+		return &status, err
+	}
+
 	// Refresh in-place readiness condition for all created instances. Without
 	// this, freshly created instances would carry InPlaceUpdateReady=False
 	// from the instance controller and could deadlock processReplica in
@@ -528,7 +545,7 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		// OrderedReady ordering for other replicas while allowing the rollout
 		// to recover after the unhealthy window instead of waiting forever.
 		if err == nil && shouldExit && monotonic {
-			if updateErr := ssc.progressOrderedReadyUnhealthyTarget(set, &status,
+			if updateErr := ssc.progressOrderedReadyUnhealthyTarget(ctx, set, &status,
 				currentRevision, updateRevision, revisions, instances, replicas,
 				minReadySeconds, topo); updateErr != nil {
 				return &status, updateErr
@@ -547,7 +564,7 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 
 	// ===============  Phase C — progress rolling update  ===========
 	if topo.inRollout {
-		if _, err := ssc.progressUpdate(set, &status, currentRevision, updateRevision, revisions, instances, replicas, minReadySeconds, topo); err != nil {
+		if _, err := ssc.progressUpdate(ctx, set, &status, currentRevision, updateRevision, revisions, instances, replicas, minReadySeconds, topo); err != nil {
 			updateStatus(&status, minReadySeconds, currentRevision, updateRevision, replicas, condemned)
 			return &status, err
 		}
@@ -562,9 +579,50 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	return &status, nil
 }
 
-// computeTopologyForReconcile refreshes the in-memory early-rollback replacement
-// signal, then computes topology with that result. Keeping this outside
-// computeTopology preserves the topology function as side-effect free.
+func inheritedRolloutReplacementState(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instances []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	updateRevision string,
+) *workloadsv1alpha2.RolloutReplacementState {
+	if rolloutReplacementStateActive(set, instances, topo.partition, topo.replicas, updateRevision) {
+		return set.Status.RolloutReplacementState.DeepCopy()
+	}
+	return nil
+}
+
+// Record deletions already started outside this controller before pause or
+// OrderedReady gates can hide their disappearance on the next observation.
+func (ssc *defaultStatefulInstanceSetControl) persistTerminatingRolloutReplacement(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	status *workloadsv1alpha2.RoleInstanceSetStatus,
+	instances []*workloadsv1alpha2.RoleInstance,
+	topo topology,
+	currentRevision, updateRevision string,
+) error {
+	if currentRevision != updateRevision || topo.maxSurge == 0 {
+		return nil
+	}
+	for _, instance := range instances {
+		if !isCreated(instance) || !isTerminating(instance) || getInstanceRevision(instance) == updateRevision {
+			continue
+		}
+		ordinal := getOrdinal(instance)
+		if ordinal < topo.partition || ordinal >= topo.replicas || replacementStateCoversOrdinal(status.RolloutReplacementState, ordinal) {
+			continue
+		}
+		return ssc.persistRolloutReplacementState(ctx, set, status, updateRevision, ordinal)
+	}
+	return nil
+}
+
+func replacementStateCoversOrdinal(state *workloadsv1alpha2.RolloutReplacementState, ordinal int) bool {
+	return state != nil && ordinal >= int(state.Partition) && ordinal < int(state.Replicas)
+}
+
+// computeTopologyForReconcile derives early-rollback work from persisted status
+// and the current observation, so a fresh controller retains surge protection.
 func computeTopologyForReconcile(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instances []*workloadsv1alpha2.RoleInstance,
@@ -578,7 +636,7 @@ func computeTopologyForReconcile(
 	if set.Spec.Replicas != nil {
 		specReplicas = int(*set.Spec.Replicas)
 	}
-	earlyRollbackReplacement := earlyRollbackReplacementSignalActive(set, instances, partition, specReplicas, updateRevision)
+	earlyRollbackReplacement := rolloutReplacementStateActive(set, instances, partition, specReplicas, updateRevision)
 	return computeTopology(set, instances, currentRevision, updateRevision, earlyRollbackReplacement)
 }
 
@@ -645,6 +703,7 @@ func countUnhealthy(replicas, condemned []*workloadsv1alpha2.RoleInstance) (int,
 // than maxUnavailable allows. The "free" path lets us recover from already-
 // degraded states (broken rollout, mid-rollout config change with stale base).
 func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	status *workloadsv1alpha2.RoleInstanceSetStatus,
 	currentRevision *apps.ControllerRevision,
@@ -714,7 +773,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 			continue
 		}
 
-		decrement, err := ssc.applyTargetUpdate(set, target, currentRevision, updateRevision, revisions, isSurgeSlot, isFree)
+		decrement, err := ssc.applyTargetUpdate(ctx, set, status, target, currentRevision, updateRevision, revisions, isSurgeSlot, isFree)
 		if err != nil {
 			return status, err
 		}
@@ -837,7 +896,9 @@ func buildUpdateTargets(
 // `decrementCurrent=true` when the operation actually transitioned the target
 // away from currentRevision (so caller can decrement status.CurrentReplicas).
 func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
+	status *workloadsv1alpha2.RoleInstanceSetStatus,
 	target *workloadsv1alpha2.RoleInstance,
 	currentRevision *apps.ControllerRevision,
 	updateRevision *apps.ControllerRevision,
@@ -848,8 +909,12 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	klog.InfoS("Updating instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(target),
 		"from", getInstanceRevision(target), "to", updateRevision.Name,
 		"isSurge", isSurgeSlot, "free", isFree)
-	if !isSurgeSlot && currentRevision.Name == updateRevision.Name && isTerminating(target) {
-		recordEarlyRollbackReplacementSignal(set, getOrdinal(target), updateRevision.Name)
+	if !isSurgeSlot && currentRevision.Name == updateRevision.Name {
+		// Persist intent before either an in-place update or deletion. A failed
+		// write must leave the target untouched so a restart cannot lose surge.
+		if err := ssc.persistRolloutReplacementState(ctx, set, status, updateRevision.Name, getOrdinal(target)); err != nil {
+			return false, err
+		}
 	}
 	var inplacing bool
 	var err error
@@ -867,10 +932,46 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 		}
 		transitioned = actualDeleting
 	}
-	if transitioned && !isSurgeSlot && currentRevision.Name == updateRevision.Name {
-		recordEarlyRollbackReplacementSignal(set, getOrdinal(target), updateRevision.Name)
-	}
 	return transitioned && getInstanceRevision(target) == currentRevision.Name, nil
+}
+
+func (ssc *defaultStatefulInstanceSetControl) persistRolloutReplacementState(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	status *workloadsv1alpha2.RoleInstanceSetStatus,
+	updateRevision string,
+	ordinal int,
+) error {
+	maxSurge, err := computeMaxSurge(set)
+	if err != nil {
+		return err
+	}
+	if maxSurge == 0 || replacementStateCoversOrdinal(status.RolloutReplacementState, ordinal) {
+		return nil
+	}
+	partition, err := computePartition(set)
+	if err != nil {
+		return err
+	}
+	state := &workloadsv1alpha2.RolloutReplacementState{
+		UpdateRevision: updateRevision,
+		Replicas:       ptr.Deref(set.Spec.Replicas, 0),
+		Partition:      int32(partition),
+	}
+	if previous := status.RolloutReplacementState; previous != nil {
+		// Only an actual additional replacement expands the persisted scope;
+		// changing replicas or partition alone must not add unrelated blockers.
+		state.Partition = min(state.Partition, previous.Partition)
+		state.Replicas = max(state.Replicas, previous.Replicas)
+	}
+	if err := ssc.statusUpdater.PersistRolloutReplacementState(ctx, set, state); err != nil {
+		if ssc.recorder != nil && !errors.Is(err, errRolloutSpecChanged) {
+			ssc.recorder.Eventf(set, corev1.EventTypeWarning, "FailedPersistRolloutReplacementState", "Failed to persist rollout replacement state: %v", err)
+		}
+		return err
+	}
+	status.RolloutReplacementState = state
+	return nil
 }
 
 // shouldAdvanceCurrentRevision decides whether status.CurrentRevision can be
@@ -974,6 +1075,7 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 // may be a base instance or an in-range stale-revision surge instance. It
 // returns nil when the normal readiness gate should remain in control.
 func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarget(
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	status *workloadsv1alpha2.RoleInstanceSetStatus,
 	currentRevision *apps.ControllerRevision,
@@ -996,7 +1098,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarge
 	cleanupTopo.partition = getOrdinal(target)
 	cleanupTopo.endOrdinal = cleanupTopo.partition + 1
 	cleanupTopo.activeSurge = 0
-	_, err := ssc.progressUpdate(set, status, currentRevision, updateRevision,
+	_, err := ssc.progressUpdate(ctx, set, status, currentRevision, updateRevision,
 		revisions, instances, replicas, minReadySeconds, cleanupTopo)
 	return err
 }

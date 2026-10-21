@@ -229,6 +229,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.RollingUpdateApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RollingUpdateCoordinationStrategy"):
 		return &workloadsv1alpha2.RollingUpdateCoordinationStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RolloutReplacementState"):
+		return &workloadsv1alpha2.RolloutReplacementStateApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RolloutStrategy"):
 		return &workloadsv1alpha2.RolloutStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("ScalingAdapter"):

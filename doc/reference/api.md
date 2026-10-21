@@ -250,6 +250,38 @@ Reusable pod template at RBG level:
 | `containers` | []Container — sidecar containers to inject |
 | `volumes` | []Volume — volumes to inject |
 
+## RoleInstanceSet Rollback Recovery
+
+`status.rolloutReplacementState` is managed by the controller during an early
+rollback (A → B → A). It preserves existing surge instances across controller
+restarts while base instances are being replaced.
+
+| Field | Description |
+|-------|-------------|
+| `updateRevision` | Target revision of the replacements |
+| `replicas` | Exclusive upper ordinal of the persisted replacement scope |
+| `partition` | Inclusive lower ordinal of the persisted replacement scope |
+
+When maxSurge is positive, the controller persists this state before replacing
+a base instance and waits for its cache to observe the write before reconciling
+again. It clears the state when all base instances in the replacement range are
+ready at the target revision, are not terminating, and have observed their
+current generation. This can retain surge while an unrelated base instance in
+that range is unhealthy, even after the originally replaced instances recover.
+
+A different target revision invalidates the previous scope. Changes to replicas
+or partition retain protection for the intersection of the original and current
+base ranges; an empty intersection ends protection. Only an additional actual
+replacement outside the persisted scope expands it. Pause and resume preserve
+protection. After scale-down, a former base instance may temporarily act as surge
+until an in-range replacement is ready.
+
+Update the RoleInstanceSet CRD together with the controller. If replacement
+intent cannot be persisted, the controller emits a Warning event and retries
+without replacing the instance; an outdated CRD may have pruned the new field.
+With maxSurge=0 there is no surge to protect, so replacement does not require
+this state and remains possible with the older CRD.
+
 ## Condition Types
 
 | Condition | Description |

@@ -30,6 +30,7 @@ type RoleInstanceSetStatusApplyConfiguration struct {
 	ExpectedUpdatedReplicas *int32                                       `json:"expectedUpdatedReplicas,omitempty"`
 	UpdateRevision          *string                                      `json:"updateRevision,omitempty"`
 	CurrentRevision         *string                                      `json:"currentRevision,omitempty"`
+	RolloutReplacementState *RolloutReplacementStateApplyConfiguration   `json:"rolloutReplacementState,omitempty"`
 	CollisionCount          *int32                                       `json:"collisionCount,omitempty"`
 	Conditions              []RoleInstanceSetConditionApplyConfiguration `json:"conditions,omitempty"`
 	LabelSelector           *string                                      `json:"labelSelector,omitempty"`
@@ -118,6 +119,14 @@ func (b *RoleInstanceSetStatusApplyConfiguration) WithUpdateRevision(value strin
 // If called multiple times, the CurrentRevision field is set to the value of the last call.
 func (b *RoleInstanceSetStatusApplyConfiguration) WithCurrentRevision(value string) *RoleInstanceSetStatusApplyConfiguration {
 	b.CurrentRevision = &value
+	return b
+}
+
+// WithRolloutReplacementState sets the RolloutReplacementState field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RolloutReplacementState field is set to the value of the last call.
+func (b *RoleInstanceSetStatusApplyConfiguration) WithRolloutReplacementState(value *RolloutReplacementStateApplyConfiguration) *RoleInstanceSetStatusApplyConfiguration {
+	b.RolloutReplacementState = value
 	return b
 }
 
