@@ -16510,6 +16510,10 @@ spec:
                 description: The generation observed by the controller
                 format: int64
                 type: integer
+              observedRolloutRequest:
+                description: ObservedRolloutRequest identifies the last completed
+                  controller-requested rollout.
+                type: string
               roleStatuses:
                 description: Status of individual roles
                 items:
@@ -40600,6 +40604,11 @@ spec:
                 description: The generation observed by the controller
                 format: int64
                 type: integer
+              observedRolloutRequest:
+                description: |-
+                  ObservedRolloutRequest is the rbg.workloads.x-k8s.io/rollout-request annotation value of the
+                  object for which every role workload was last verified as rolled out.
+                type: string
               roleStatuses:
                 description: Status of individual roles
                 items:

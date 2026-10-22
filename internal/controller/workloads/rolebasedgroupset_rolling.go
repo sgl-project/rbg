@@ -100,8 +100,26 @@ func groupSetChildReady(child *workloadsv1alpha2.RoleBasedGroup) bool {
 		!meta.IsStatusConditionTrue(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)) {
 		return false
 	}
+	// Metadata-only writes keep the old generation, so only the echoed request proves the child
+	// rolled out the object the set last wrote.
+	if request, ok := child.Annotations[constants.RolloutRequestAnnotationKey]; ok && child.Status.ObservedRolloutRequest != request {
+		return false
+	}
 	rolling := meta.FindStatusCondition(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
 	return rolling == nil || (rolling.ObservedGeneration >= child.Generation && rolling.Status == metav1.ConditionFalse)
+}
+
+// requestGroupSetChildRollout must be applied to every budgeted write of an existing child, so the
+// child keeps consuming budget until its controller acknowledges that write.
+func requestGroupSetChildRollout(child *workloadsv1alpha2.RoleBasedGroup) {
+	next := 1
+	if previous, err := strconv.Atoi(child.Annotations[constants.RolloutRequestAnnotationKey]); err == nil && previous >= 0 {
+		next = previous + 1
+	}
+	if child.Annotations == nil {
+		child.Annotations = make(map[string]string)
+	}
+	child.Annotations[constants.RolloutRequestAnnotationKey] = strconv.Itoa(next)
 }
 
 func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
@@ -200,7 +218,7 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		updated := child.DeepCopy()
 		annotationChanged := false
 		for key, value := range set.Spec.GroupTemplate.Annotations {
-			if !systemManagedAnnotationKeys[key] || key == constants.ConversionV1alpha1PodGroupPolicyAnnotationKey {
+			if !liveTemplateAnnotation(key) {
 				continue
 			}
 			if old, exists := child.Annotations[key]; exists && old == value {
@@ -220,6 +238,8 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 			annotationChanged = annotationChanged || policyChanged
 		}
 		if annotationChanged {
+			// This write is outside the budget and reaches every child at once, so it must not
+			// make them count as unavailable; that would let the next pass update all of them.
 			if err := r.client.Update(ctx, updated); err != nil {
 				return changed, err
 			}
@@ -350,6 +370,7 @@ func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
 				return nil, 0, changed, err
 			}
 			updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
+			requestGroupSetChildRollout(updated)
 			if err := r.client.Update(ctx, updated); err != nil {
 				return nil, 0, changed, err
 			}
@@ -443,6 +464,7 @@ func (r *RoleBasedGroupSetReconciler) updateRollingGroupSetChild(
 	}
 	r.syncRBGMetadata(set, updated)
 	updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
+	requestGroupSetChildRollout(updated)
 	return r.client.Update(ctx, updated)
 }
 

@@ -38,10 +38,19 @@ import (
 // These keys do not affect revision identity; PodGroupPolicy is still snapshotted with its effective configuration.
 var systemManagedAnnotationKeys = map[string]bool{
 	constants.DiscoveryConfigModeAnnotationKey:               true,
+	constants.RolloutRequestAnnotationKey:                    true,
 	constants.ConversionV1alpha1CoordinationAnnotationKey:    true,
 	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:  true,
 	constants.ConversionV1alpha2RolloutStrategyAnnotationKey: true,
 	constants.ConversionV1alpha2RolloutStatusAnnotationKey:   true,
+}
+
+// liveTemplateAnnotation reports whether a key is copied from the live template to every child
+// regardless of the revision the child is pinned to.
+func liveTemplateAnnotation(key string) bool {
+	return systemManagedAnnotationKeys[key] &&
+		key != constants.ConversionV1alpha1PodGroupPolicyAnnotationKey &&
+		key != constants.RolloutRequestAnnotationKey
 }
 
 type groupSetRevision struct {
@@ -233,7 +242,7 @@ func newRBGForSetRevision(set *workloadsv1alpha2.RoleBasedGroupSet, index int, r
 	child := newRBGForSet(templateSet, index)
 	// Only unversioned keys come from the live template; held revisions retain their user metadata.
 	for key, value := range set.Spec.GroupTemplate.Annotations {
-		if systemManagedAnnotationKeys[key] && key != constants.ConversionV1alpha1PodGroupPolicyAnnotationKey {
+		if liveTemplateAnnotation(key) {
 			if child.Annotations == nil {
 				child.Annotations = make(map[string]string)
 			}

@@ -534,6 +534,9 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 ) bool {
 	templateAnnotations := rbgset.Spec.GroupTemplate.Annotations
 	for k, v := range templateAnnotations {
+		if k == constants.RolloutRequestAnnotationKey {
+			continue
+		}
 		if value, exists := rbg.Annotations[k]; !exists || value != v {
 			return true
 		}
@@ -623,7 +626,9 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 		}
 	}
 	for k, v := range rbgset.Spec.GroupTemplate.Annotations {
-		newAnnotations[k] = v
+		if k != constants.RolloutRequestAnnotationKey {
+			newAnnotations[k] = v
+		}
 	}
 	if len(newAnnotations) == 0 {
 		rbg.Annotations = nil
@@ -648,7 +653,9 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 	if len(rbgset.Spec.GroupTemplate.Annotations) > 0 {
 		rbgAnnotations = make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
 		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
-			rbgAnnotations[k] = v
+			if k != constants.RolloutRequestAnnotationKey {
+				rbgAnnotations[k] = v
+			}
 		}
 	}
 
