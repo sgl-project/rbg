@@ -671,7 +671,15 @@ func revisionTestMarkReady(t *testing.T, r *RoleBasedGroupSetReconciler, child *
 }
 
 func TestSyncRollingGroupSet_InPlaceUpdateBudgetAndOrder(t *testing.T) {
-	for _, replicasOnly := range []bool{false, true} {
+	for _, mode := range []struct {
+		strategy     workloadsv1alpha2.GroupUpdateStrategyType
+		replicasOnly bool
+	}{
+		{strategy: workloadsv1alpha2.InPlaceUpdateStrategyType},
+		{strategy: workloadsv1alpha2.InPlaceUpdateStrategyType, replicasOnly: true},
+		{strategy: workloadsv1alpha2.RecreateStrategyType, replicasOnly: true},
+	} {
+		replicasOnly := mode.replicasOnly
 		for _, tt := range []struct {
 			name                                  string
 			unavailable, partition                int
@@ -687,7 +695,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateBudgetAndOrder(t *testing.T) {
 			{name: "stale generation repaired with no remaining budget", unavailable: 1, staleGeneration: true, wantUpdates: []string{"test-1"}},
 			{name: "unready below partition held back", unavailable: 1, partition: 2, unready: true},
 		} {
-			t.Run(fmt.Sprintf("replicasOnly=%t/%s", replicasOnly, tt.name), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/replicasOnly=%t/%s", mode.strategy, replicasOnly, tt.name), func(t *testing.T) {
 				current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
 				update := &groupSetRevision{name: "v2", template: revisionTestTemplate(nil)}
 				update.template.Spec.Roles[0].Replicas = ptr.To(int32(2))
@@ -699,6 +707,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateBudgetAndOrder(t *testing.T) {
 					}
 				}
 				set := revisionTestRollingSet(4, update)
+				set.Spec.RolloutStrategy.Type = mode.strategy
 				set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromInt(tt.unavailable))
 				set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(tt.partition))
 				objects := []client.Object{set}
@@ -844,55 +853,105 @@ func TestSyncRollingGroupSet_MetadataOnlyUpdateHoldsBudgetUntilAcknowledged(t *t
 	assert.Equal(t, []string{"test-2", "test-1", "test-0"}, *updates)
 }
 
-func TestSyncRollingGroupSet_InPlaceUpdateWaitsForObservedGeneration(t *testing.T) {
+func TestSyncRollingGroupSet_ReplicaUpdatesWaitForCompletion(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{
+		workloadsv1alpha2.InPlaceUpdateStrategyType, workloadsv1alpha2.RecreateStrategyType,
+	} {
+		t.Run(string(strategy), func(t *testing.T) {
+			current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+			update := &groupSetRevision{name: "v2", template: revisionTestTemplate(nil)}
+			update.template.Spec.Roles[0].Replicas = ptr.To(int32(2))
+			set := revisionTestRollingSet(2, update)
+			set.Spec.RolloutStrategy.Type = strategy
+			r, updates := revisionTestRollingReconciler(t, set,
+				revisionTestReadyChild(set, 0, current), revisionTestReadyChild(set, 1, current))
+			var wantUpdates []string
+			for index := 1; index >= 0; index-- {
+				changed, children := revisionTestSync(t, r, set, current, update)
+				require.True(t, changed)
+				require.Len(t, children.Items, 2)
+				child := revisionTestGetChild(t, r, set, index)
+				wantUpdates = append(wantUpdates, child.Name)
+				assert.Equal(t, wantUpdates, *updates)
+				assert.Equal(t, types.UID("original-"+child.Name), child.UID)
+				assert.Equal(t, int64(2), child.Generation)
+				assert.Equal(t, int64(1), child.Status.ObservedGeneration)
+				assert.Equal(t, metav1.ConditionTrue, child.Status.Conditions[0].Status)
+				for attempt := 0; attempt < 2; attempt++ {
+					changed, _ = revisionTestSync(t, r, set, current, update)
+					assert.False(t, changed, "old observedGeneration plus Ready must not release the next ordinal")
+					assert.Equal(t, wantUpdates, *updates)
+				}
+				child.Status.ObservedGeneration = child.Generation
+				child.Status.ObservedRolloutRequest = child.Annotations[constants.RolloutRequestAnnotationKey]
+				for _, rolling := range []metav1.Condition{
+					{Status: metav1.ConditionFalse, ObservedGeneration: child.Generation - 1},
+					{Status: metav1.ConditionTrue, ObservedGeneration: child.Generation},
+					{Status: metav1.ConditionUnknown, ObservedGeneration: child.Generation},
+				} {
+					rolling.Type = string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)
+					child.Status.Conditions = append(child.Status.Conditions[:1], rolling)
+					require.NoError(t, r.client.Status().Update(context.Background(), child))
+					changed, _ = revisionTestSync(t, r, set, current, update)
+					assert.False(t, changed)
+					assert.Equal(t, wantUpdates, *updates)
+				}
+				child.Status.Conditions[1].Status = metav1.ConditionFalse
+				child.Status.Conditions[0].Status = metav1.ConditionFalse
+				require.NoError(t, r.client.Status().Update(context.Background(), child))
+				changed, _ = revisionTestSync(t, r, set, current, update)
+				assert.False(t, changed, "the desired capacity must be Ready even after the workload is updated")
+				assert.Equal(t, wantUpdates, *updates)
+				revisionTestMarkReady(t, r, child)
+			}
+			changed, children := revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed)
+			assert.True(t, r.groupSetPartitionReady(set, children, update, 0))
+			assert.Equal(t, []string{"test-1", "test-0"}, *updates)
+		})
+	}
+}
+
+func TestSyncRollingGroupSet_RecreateReplicaUpdateUsesReadySurge(t *testing.T) {
 	current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
 	update := &groupSetRevision{name: "v2", template: revisionTestTemplate(nil)}
-	update.template.Spec.Roles[0].Replicas = ptr.To(int32(3))
-	set := revisionTestRollingSet(3, update)
+	update.template.Spec.Roles[0].Replicas = ptr.To(int32(2))
+	set := revisionTestRollingSet(2, update)
+	set.Spec.RolloutStrategy.Type = workloadsv1alpha2.RecreateStrategyType
+	set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromInt(0))
+	set.Spec.RolloutStrategy.MaxSurge = ptr.To(intstr.FromInt(1))
 	r, updates := revisionTestRollingReconciler(t, set,
-		revisionTestReadyChild(set, 0, current), revisionTestReadyChild(set, 1, current), revisionTestReadyChild(set, 2, current))
-	var wantUpdates []string
-	for index := 2; index >= 0; index-- {
-		changed, children := revisionTestSync(t, r, set, current, update)
+		revisionTestReadyChild(set, 0, current), revisionTestReadyChild(set, 1, current))
+	changed, children := revisionTestSync(t, r, set, current, update)
+	require.True(t, changed)
+	require.Len(t, children.Items, 3)
+	assert.Empty(t, *updates, "unready surge cannot back a zero-unavailable scale update")
+	changed, _ = revisionTestSync(t, r, set, current, update)
+	assert.False(t, changed)
+	revisionTestMarkReady(t, r, revisionTestGetChild(t, r, set, 2))
+
+	for index := 1; index >= 0; index-- {
+		changed, children = revisionTestSync(t, r, set, current, update)
 		require.True(t, changed)
-		require.Len(t, children.Items, 3)
 		child := revisionTestGetChild(t, r, set, index)
-		wantUpdates = append(wantUpdates, child.Name)
-		assert.Equal(t, wantUpdates, *updates)
 		assert.Equal(t, types.UID("original-"+child.Name), child.UID)
-		assert.Equal(t, int64(2), child.Generation)
-		assert.Equal(t, int64(1), child.Status.ObservedGeneration)
-		assert.Equal(t, metav1.ConditionTrue, child.Status.Conditions[0].Status)
-		for attempt := 0; attempt < 2; attempt++ {
-			changed, _ = revisionTestSync(t, r, set, current, update)
-			assert.False(t, changed, "old observedGeneration plus Ready must not release the next ordinal")
-			assert.Equal(t, wantUpdates, *updates)
+		assert.Equal(t, int32(2), *child.Spec.Roles[0].Replicas)
+		ready := 0
+		for i := range children.Items {
+			if groupSetChildReady(&children.Items[i]) {
+				ready++
+			}
 		}
-		// Ready can still describe old Pods while the RBG controller has observed the new spec.
-		child.Status.ObservedGeneration = child.Generation
-		for _, rolling := range []metav1.Condition{
-			{Status: metav1.ConditionFalse, ObservedGeneration: child.Generation - 1},
-			{Status: metav1.ConditionTrue, ObservedGeneration: child.Generation},
-			{Status: metav1.ConditionUnknown, ObservedGeneration: child.Generation},
-		} {
-			rolling.Type = string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)
-			child.Status.Conditions = append(child.Status.Conditions[:1], rolling)
-			require.NoError(t, r.client.Status().Update(context.Background(), child))
-			changed, _ = revisionTestSync(t, r, set, current, update)
-			assert.False(t, changed)
-			assert.Equal(t, wantUpdates, *updates)
-		}
-		child.Status.Conditions[0].Status = metav1.ConditionFalse
-		require.NoError(t, r.client.Status().Update(context.Background(), child))
+		assert.Equal(t, 2, ready, "ready surge must preserve the floor while a base group scales")
 		changed, _ = revisionTestSync(t, r, set, current, update)
 		assert.False(t, changed)
-		assert.Equal(t, wantUpdates, *updates)
 		revisionTestMarkReady(t, r, child)
 	}
-	changed, children := revisionTestSync(t, r, set, current, update)
-	assert.False(t, changed)
+	changed, children = revisionTestSync(t, r, set, current, update)
+	require.True(t, changed, "finished scaling must reclaim surplus surge")
+	assert.Len(t, children.Items, 2)
+	assert.Equal(t, []string{"test-1", "test-0"}, *updates)
 	assert.True(t, r.groupSetPartitionReady(set, children, update, 0))
-	assert.Equal(t, []string{"test-2", "test-1", "test-0"}, *updates)
 }
 
 func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
