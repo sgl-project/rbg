@@ -152,7 +152,7 @@ func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 			if fieldPath == "" {
 				fieldPath = "spec.roles"
 			}
-			err := validateNoNewDeprecatedWorkloadTypes(fieldPath, tt.roles, nil)
+			err := validateNoDeprecatedWorkloadTypes(fieldPath, tt.roles)
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errContains)
@@ -363,7 +363,7 @@ func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(
 			expectError: true,
 		},
 		{
-			name:                          "deprecated workload types enabled, StatefulSet - no error",
+			name:                          "deprecated workload types enabled, StatefulSet - error",
 			enableDeprecatedWorkloadTypes: true,
 			rbg: &RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
@@ -377,7 +377,7 @@ func TestRoleBasedGroupValidator_ValidateCreate_DeprecatedWorkloadTypesDisabled(
 					},
 				},
 			},
-			expectError: false,
+			expectError: true,
 		},
 	}
 
@@ -445,7 +445,7 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 		assert.NoError(t, err)
 	})
 
-	t.Run("deprecated workload types enabled, update to deprecated workload - no error", func(t *testing.T) {
+	t.Run("deprecated workload types enabled, update to deprecated workload - error", func(t *testing.T) {
 		newRBG := &RoleBasedGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
 			Spec: RoleBasedGroupSpec{
@@ -463,15 +463,41 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 			EnableDeprecatedWorkloadTypes: true,
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+		assert.Error(t, err)
+	})
+
+	t.Run("deprecated workload types enabled, existing role remains accepted", func(t *testing.T) {
+		oldDeprecated := &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+			Spec: RoleBasedGroupSpec{
+				Roles: []RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+					},
+				}},
+			},
+		}
+		newDeprecated := oldDeprecated.DeepCopy()
+		newDeprecated.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldDeprecated, newDeprecated)
 		assert.NoError(t, err)
 	})
 }
 
-// TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedRoleExemption pins 0.9.0
-// behaviour: with the toggle off, existing deprecated roles may still be updated so
-// users can scale and inspect them while migrating. A role that did not already use
-// a deprecated workload type remains rejected.
-func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedRoleExemption(t *testing.T) {
+// TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole pins the strict
+// behaviour: with the toggle off, an object carrying a deprecated workload type is
+// rejected on every update, not just when the update introduces one. A cluster in
+// this mode grants no RBAC for those types and watches none of them, so an admitted
+// write would produce an object nothing can reconcile. These same shapes are how the
+// controllers write the main resource, so a group in this state is deliberately
+// unusable rather than half-working.
+func TestRoleBasedGroupValidator_ValidateUpdate_RejectsDeprecatedRole(t *testing.T) {
 	statefulSetRole := func(replicas int32) RoleSpec {
 		return RoleSpec{
 			Name:        "worker",
@@ -488,28 +514,18 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedRoleExemption(t *testi
 		EnableDeprecatedWorkloadTypes: false,
 	}
 
-	t.Run("idempotent role rewrite - no error", func(t *testing.T) {
+	t.Run("idempotent role rewrite - error", func(t *testing.T) {
 		newRBG := oldRBG.DeepCopy()
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
-		assert.NoError(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "controller.deprecatedWorkloadTypes.enabled=true")
 	})
 
-	t.Run("scale existing role - no error", func(t *testing.T) {
+	t.Run("scale path - error", func(t *testing.T) {
 		newRBG := oldRBG.DeepCopy()
 		newRBG.Spec.Roles = []RoleSpec{statefulSetRole(5)}
 		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
-		assert.NoError(t, err)
-	})
-
-	t.Run("introducing a deprecated role - error", func(t *testing.T) {
-		newRBG := oldRBG.DeepCopy()
-		newRBG.Spec.Roles = append(newRBG.Spec.Roles, RoleSpec{
-			Name:        "new-role",
-			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.DeploymentWorkloadType},
-		})
-		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), `role "new-role"`)
+		assert.Error(t, err)
 	})
 
 	t.Run("removing the deprecated role - no error", func(t *testing.T) {
@@ -568,7 +584,7 @@ func TestRoleBasedGroupSetValidator_ValidateCreate_DeprecatedWorkloadTypesDisabl
 			expectError: true,
 		},
 		{
-			name:                          "deprecated workload types enabled, Deployment - no error",
+			name:                          "deprecated workload types enabled, Deployment - error",
 			enableDeprecatedWorkloadTypes: true,
 			rbgs: &RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
@@ -587,7 +603,7 @@ func TestRoleBasedGroupSetValidator_ValidateCreate_DeprecatedWorkloadTypesDisabl
 					},
 				},
 			},
-			expectError: false,
+			expectError: true,
 		},
 	}
 
@@ -644,7 +660,7 @@ func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabl
 		assert.Error(t, err)
 	})
 
-	t.Run("deprecated workload types enabled, update to deprecated workload - no error", func(t *testing.T) {
+	t.Run("deprecated workload types enabled, update to deprecated workload - error", func(t *testing.T) {
 		newRBGS := &RoleBasedGroupSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
 			Spec: RoleBasedGroupSetSpec{
@@ -664,10 +680,35 @@ func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabl
 		}
 		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
 		_, err := v.ValidateUpdate(context.Background(), oldRBGS, newRBGS)
+		assert.Error(t, err)
+	})
+
+	t.Run("deprecated workload types enabled, existing template remains accepted", func(t *testing.T) {
+		oldDeprecated := &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{{
+							Name:     "worker",
+							Replicas: ptr.To(int32(1)),
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType,
+							},
+						}},
+					},
+				},
+			},
+		}
+		newDeprecated := oldDeprecated.DeepCopy()
+		newDeprecated.Spec.Replicas = ptr.To(int32(3))
+		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+		_, err := v.ValidateUpdate(context.Background(), oldDeprecated, newDeprecated)
 		assert.NoError(t, err)
 	})
 
-	t.Run("deprecated workload types disabled, pre-existing deprecated template - no error", func(t *testing.T) {
+	t.Run("deprecated workload types disabled, pre-existing deprecated template - error", func(t *testing.T) {
 		deprecatedRBGS := &RoleBasedGroupSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs"},
 			Spec: RoleBasedGroupSetSpec{
@@ -685,11 +726,13 @@ func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabl
 				},
 			},
 		}
+		// Scaling is rejected at the parent rather than silently failing on the
+		// child creates it would trigger, which the cluster has no RBAC to reconcile.
 		newRBGS := deprecatedRBGS.DeepCopy()
 		newRBGS.Spec.Replicas = ptr.To(int32(3))
 
 		v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: false}
 		_, err := v.ValidateUpdate(context.Background(), deprecatedRBGS, newRBGS)
-		assert.NoError(t, err)
+		assert.Error(t, err)
 	})
 }

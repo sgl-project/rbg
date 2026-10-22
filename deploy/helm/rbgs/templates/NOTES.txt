@@ -13,7 +13,7 @@ Check the controller:
   kubectl -n {{ .Release.Namespace }} get pods -l control-plane=rbgs-controller
 
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
-{{- $deprecatedEnabled := $deprecatedWorkloadTypes.enabled | default false }}
+{{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
 {{- if not $deprecatedEnabled }}
 NOTE: new uses of the deprecated workload types are DISABLED
 (controller.deprecatedWorkloadTypes.enabled=false).
@@ -21,10 +21,10 @@ Existing roles continue to reconcile. RBAC, watches, and orphan cleanup remain a
 operators following the manual migration guide can remove old Deployment/StatefulSet/LeaderWorkerSet workloads.
 Set the value to true only as a temporary rollback window.
 {{- else }}
-NOTE: the deprecated workload types are ENABLED
+NOTE: compatibility for existing deprecated workload types is ENABLED
 (controller.deprecatedWorkloadTypes.enabled=true).
-This permits new uses and should only be a temporary rollback window while operators complete the
-manual migration guide.
+Existing roles continue to reconcile, while new uses are rejected during the migration
+window. Set the value to false only after every role has migrated to RoleInstanceSet.
 {{- end }}
 
 NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under

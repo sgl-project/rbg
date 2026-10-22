@@ -71,14 +71,14 @@ var deprecatedResourceAttrs = []deprecatedResourceAttr{
 
 // RunDeprecatedDisabledTestCases asserts the behaviour of a release installed with
 // controller.deprecatedWorkloadTypes.enabled=false: the manager renders the disabled
-// flag and stays healthy, RBAC for deprecated cleanup remains present (both as written
-// and as enforced by SubjectAccessReview), the validating webhook rejects every new
-// deprecated workload-type use across v1alpha2 RBG/RBGSet and the v1alpha1
-// default-StatefulSet path, and the default RoleInstanceSet path still works.
+// flag and stays healthy, the RBAC for deprecated types is gone (both as written and
+// as enforced by SubjectAccessReview), the validating webhook rejects every create and
+// update that carries a deprecated workload type across v1alpha2 RBG/RBGSet and the
+// v1alpha1 default-StatefulSet path, and the default RoleInstanceSet path still works.
 func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 	ns := controllerNamespace()
 
-	ginkgo.It("keeps the manager healthy with deprecated cleanup RBAC active", func() {
+	ginkgo.It("keeps the manager healthy with the disabled flag and no RBAC-forbidden crashes", func() {
 		deploy, err := f.Clientset.AppsV1().Deployments(ns).Get(ctx(), managerDeploymentName, metav1.GetOptions{})
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 		gomega.Expect(managerHasDisabledFlag(deploy)).Should(gomega.BeTrue(),
@@ -99,8 +99,9 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 		for i := range pods.Items {
 			pod := &pods.Items[i]
 			for _, cs := range pod.Status.ContainerStatuses {
-				// Cleanup and watches remain active by design; restarts or forbidden
-				// log entries would still indicate a startup/watch regression.
+				// A non-zero restart count here is the signature of the failure this
+				// toggle must avoid: RBAC removed but a watch left in place, which
+				// crashloops the controller on an RBAC-forbidden list/watch.
 				gomega.Expect(cs.RestartCount).Should(gomega.BeNumerically("==", 0),
 					"controller container %q in pod %s restarted; check logs for RBAC-forbidden watches", cs.Name, pod.Name)
 			}
@@ -118,7 +119,7 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 		}
 	})
 
-	ginkgo.It("keeps cleanup RBAC for the deprecated workload types in the ClusterRole", func() {
+	ginkgo.It("omits RBAC for the deprecated workload types from the controller ClusterRole", func() {
 		role, err := f.Clientset.RbacV1().ClusterRoles().Get(ctx(), controllerClusterRoleName, metav1.GetOptions{})
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 
@@ -131,14 +132,14 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 			}
 		}
 		for _, a := range deprecatedResourceAttrs {
-			gomega.Expect(granted[a.group+"/"+a.resource]).Should(gomega.BeTrue(),
-				"ClusterRole must grant %s/%s for orphan cleanup", a.group, a.resource)
-			gomega.Expect(granted[a.group+"/"+a.resource+"/status"]).Should(gomega.BeTrue(),
-				"ClusterRole must grant %s/%s/status for orphan cleanup", a.group, a.resource)
+			gomega.Expect(granted[a.group+"/"+a.resource]).Should(gomega.BeFalse(),
+				"ClusterRole must not grant %s/%s when the toggle is off", a.group, a.resource)
+			gomega.Expect(granted[a.group+"/"+a.resource+"/status"]).Should(gomega.BeFalse(),
+				"ClusterRole must not grant %s/%s/status when the toggle is off", a.group, a.resource)
 		}
 	})
 
-	ginkgo.It("allows the controller ServiceAccount create access for deprecated cleanup (SubjectAccessReview)", func() {
+	ginkgo.It("denies the controller ServiceAccount create access to deprecated types (SubjectAccessReview)", func() {
 		user := fmt.Sprintf("system:serviceaccount:%s:%s", ns, controllerServiceAccountName)
 
 		for _, a := range deprecatedResourceAttrs {
@@ -154,8 +155,8 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 			}
 			got, err := f.Clientset.AuthorizationV1().SubjectAccessReviews().Create(ctx(), sar, metav1.CreateOptions{})
 			gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
-			gomega.Expect(got.Status.Allowed).Should(gomega.BeTrue(),
-				"controller SA must retain create access for cleanup on %s/%s", a.group, a.resource)
+			gomega.Expect(got.Status.Allowed).Should(gomega.BeFalse(),
+				"controller SA must be denied create on %s/%s", a.group, a.resource)
 		}
 
 		// Positive control: the SAR itself is meaningful only if a type the controller

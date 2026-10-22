@@ -68,10 +68,12 @@ func warnV1alpha1(obj runtime.Object) admission.Warnings {
 	return admission.Warnings{v1alpha1DeprecationWarning}
 }
 
-// deprecatedWorkloadValidator warns on every write and additionally rejects a
-// newly introduced deprecated workload type. Existing roles remain exempt.
+// deprecatedWorkloadValidator warns on every write. While deprecated workload
+// compatibility is enabled, existing roles are exempt but new uses are rejected.
+// When compatibility is disabled, every remaining use is rejected.
 type deprecatedWorkloadValidator struct {
-	Client client.Client
+	Client                        client.Client
+	EnableDeprecatedWorkloadTypes bool
 }
 
 func (v *deprecatedWorkloadValidator) ValidateCreate(
@@ -82,7 +84,7 @@ func (v *deprecatedWorkloadValidator) ValidateCreate(
 	if err != nil {
 		return warnings, err
 	}
-	return warnings, validateNewV1alpha1Roles(fieldPath, roles, nil)
+	return warnings, validateV1alpha1DeprecatedRoles(fieldPath, roles, nil, v.EnableDeprecatedWorkloadTypes)
 }
 
 func (v *deprecatedWorkloadValidator) ValidateUpdate(
@@ -113,7 +115,7 @@ func (v *deprecatedWorkloadValidator) ValidateUpdate(
 		}
 	}
 
-	return warnings, validateNewV1alpha1Roles(fieldPath, newRoles, oldRoles)
+	return warnings, validateV1alpha1DeprecatedRoles(fieldPath, newRoles, oldRoles, v.EnableDeprecatedWorkloadTypes)
 }
 
 func (v *deprecatedWorkloadValidator) ValidateDelete(
@@ -133,7 +135,11 @@ func deprecatedWorkloadRoles(obj runtime.Object) (roles []RoleSpec, fieldPath st
 	}
 }
 
-func validateNewV1alpha1Roles(fieldPath string, newRoles, oldRoles []RoleSpec) error {
+func validateV1alpha1DeprecatedRoles(
+	fieldPath string,
+	newRoles, oldRoles []RoleSpec,
+	allowExisting bool,
+) error {
 	oldWorkloadTypes := make(map[string]string, len(oldRoles))
 	for i := range oldRoles {
 		oldWorkloadTypes[oldRoles[i].Name] = workloadType(oldRoles[i].Workload)
@@ -146,12 +152,20 @@ func validateNewV1alpha1Roles(fieldPath string, newRoles, oldRoles []RoleSpec) e
 		if !isDeprecatedV1alpha1WorkloadType(workloadType) {
 			continue
 		}
-		if oldType, existed := oldWorkloadTypes[role.Name]; !existed || !isDeprecatedV1alpha1WorkloadType(oldType) {
+		if allowExisting {
+			if oldType, existed := oldWorkloadTypes[role.Name]; existed && isDeprecatedV1alpha1WorkloadType(oldType) {
+				continue
+			}
 			errs = append(errs, fmt.Errorf(
 				"%s[%d] (role %q): workload type %q is deprecated; new uses are not accepted, migrate the role to RoleInstanceSet",
 				fieldPath, i, role.Name, workloadType,
 			))
+			continue
 		}
+		errs = append(errs, fmt.Errorf(
+			"%s[%d] (role %q): workload type %q is deprecated and not enabled on this cluster",
+			fieldPath, i, role.Name, workloadType,
+		))
 	}
 	if len(errs) == 0 {
 		return nil
@@ -185,19 +199,25 @@ func objectKey(obj runtime.Object) (types.NamespacedName, bool) {
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for
 // the v1alpha1 RoleBasedGroup endpoint.
-func (r *RoleBasedGroup) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
+func (r *RoleBasedGroup) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
-		WithValidator(&deprecatedWorkloadValidator{Client: mgr.GetClient()}).
+		WithValidator(&deprecatedWorkloadValidator{
+			Client:                        mgr.GetClient(),
+			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
+		}).
 		Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for
 // the v1alpha1 RoleBasedGroupSet endpoint.
-func (r *RoleBasedGroupSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
+func (r *RoleBasedGroupSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
-		WithValidator(&deprecatedWorkloadValidator{Client: mgr.GetClient()}).
+		WithValidator(&deprecatedWorkloadValidator{
+			Client:                        mgr.GetClient(),
+			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
+		}).
 		Complete()
 }
 

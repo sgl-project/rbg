@@ -29,7 +29,7 @@ import (
 func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("update standalone role replicas & template", ginkgo.Label("smoke", "workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
-			wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").Obj(),
+			wrappersv2.BuildStandaloneRole("role-1").Obj(),
 		}).Obj()
 
 		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
@@ -51,7 +51,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("standalone role with rollingUpdate", ginkgo.Label("workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
-				wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").
+				wrappersv2.BuildStandaloneRole("role-1").
 					WithReplicas(2).
 					WithRollingUpdate(workloadsv1alpha2.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(1)),

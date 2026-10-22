@@ -803,11 +803,12 @@ func TestRoleBasedGroupReconciler_CleanupRunsWhenOwnedWorkloadTerminating(t *tes
 		Build()
 
 	r := &RoleBasedGroupReconciler{
-		client:             fakeClient,
-		apiReader:          fakeClient,
-		scheme:             testScheme,
-		recorder:           record.NewFakeRecorder(20),
-		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+		client:                        fakeClient,
+		apiReader:                     fakeClient,
+		scheme:                        testScheme,
+		recorder:                      record.NewFakeRecorder(20),
+		workloadReconciler:            make(map[string]reconciler.WorkloadReconciler),
+		enableDeprecatedWorkloadTypes: true,
 	}
 
 	logger := zap.New().WithValues("env", "unit-test")

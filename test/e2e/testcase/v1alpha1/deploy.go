@@ -30,7 +30,7 @@ import (
 func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("update deploy role.replicas & role.Template", func() {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
-			wrappers.BuildBasicRole("role-1").WithWorkload(workloadsv1alpha1.DeploymentWorkloadType).Obj(),
+			wrappers.BuildBasicRole("role-1").WithRoleInstanceSet().Obj(),
 		}).Obj()
 
 		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
@@ -54,7 +54,7 @@ func RunDeploymentWorkloadTestCases(f *framework.Framework) {
 			[]workloadsv1alpha1.RoleSpec{
 				wrappers.BuildBasicRole("role-1").
 					WithReplicas(2).
-					WithWorkload(workloadsv1alpha1.DeploymentWorkloadType).
+					WithRoleInstanceSet().
 					WithRollingUpdate(workloadsv1alpha1.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 						MaxSurge:       ptr.To(intstr.FromInt32(1)),

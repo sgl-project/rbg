@@ -28,21 +28,20 @@ of these workload types are rejected in `0.9.0`.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `controller.deprecatedWorkloadTypes.enabled` | Temporarily allow new roles to select deprecated workload types. Existing roles remain exempt and continue to reconcile when false. | `false` |
+| `controller.deprecatedWorkloadTypes.enabled` | Keep compatibility for existing deprecated workloads during migration. New uses are rejected in both modes. Set false only after every role has migrated. | `true` |
 
-RBAC, watches, and orphan cleanup for the deprecated workloads remain active regardless of this value.
-This is intentional: after an operator migrates a role to `RoleInstanceSet`, cleanup must be able to remove the old
-Deployment, StatefulSet, or LeaderWorkerSet. See the project migration guide for the recommended
-manual role inventory, per-role rollout, and storage-version migration.
+While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated. New deprecated workload uses are rejected during this transition.
 
-When `controller.deprecatedWorkloadTypes.enabled=false`, the following writes are rejected:
+When the value is `false`, every remaining deprecated workload use is rejected. This is the final cutoff, not a migration mode: set it only after all roles have moved to `RoleInstanceSet`. In this mode the chart also removes legacy workload RBAC and the controller does not watch those resources.
 
-- creating a RoleBasedGroup or RoleBasedGroupSet whose new roles use a deprecated workload type;
+Rejected writes include:
+
+- creating a RoleBasedGroup or RoleBasedGroupSet whose roles use a deprecated workload type;
 - changing a role that did not already use a deprecated workload type to one;
-- introducing a deprecated workload type through a new RoleBasedGroupSet template role.
+- introducing a deprecated workload type through a new RoleBasedGroupSet template role;
+- while the value is false, updating or re-applying an object that still uses a deprecated workload type.
 
-Existing roles that already use a deprecated workload type may still be updated and scaled while you
-migrate them. Set the value to `true` only as a temporary rollback window.
+See the project migration guide for the manual role inventory, per-role rollout, rollback procedure, and storage-version migration.
 
 ## Installing
 
@@ -105,7 +104,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.features.portAllocator.strategy` | Port allocation strategy (`random`) | `random` |
 | `controller.features.portAllocator.startPort` | Starting port of the allocatable range | `30000` |
 | `controller.features.portAllocator.portRange` | Size of the allocatable port range | `5000` |
-| `controller.deprecatedWorkloadTypes.enabled` | Temporarily permit new deprecated workload types — see [Deprecated workload types](#deprecated-workload-types) | `false` |
+| `controller.deprecatedWorkloadTypes.enabled` | Keep compatibility for existing deprecated workloads during migration — see [Deprecated workload types](#deprecated-workload-types) | `true` |
 
 ### CRD Upgrader
 
@@ -133,10 +132,9 @@ kubectl delete -f config/crd/bases/
 
 ## Upgrading
 
-`helm upgrade` is supported. The `0.9.0` default turns new deprecated workload-type use off while
-preserving RBAC, watches, cleanup, and existing-role reconciliation for migration. Review
-[Deprecated workload types](#deprecated-workload-types) and follow the project migration guide before
-upgrading beyond `0.9.0`.
+`helm upgrade` is supported. The `0.9.0` default keeps compatibility for existing deprecated
+workloads while rejecting new uses. Review [Deprecated workload types](#deprecated-workload-types),
+follow the project migration guide, and set the toggle to false only after all roles have migrated.
 
 ### Breaking change: values regrouped in chart v0.8.0
 

@@ -31,9 +31,10 @@ import (
 // +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=vrolebasedgroupset.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupSetValidator struct {
-	// EnableDeprecatedWorkloadTypes reports whether the deprecated workload types
-	// (Deployment, StatefulSet, LeaderWorkerSet) are still accepted. When false,
-	// RBGSets whose template uses them are rejected.
+	// EnableDeprecatedWorkloadTypes reports whether existing deprecated workload
+	// types (Deployment, StatefulSet, LeaderWorkerSet) remain supported during
+	// migration. New uses are rejected in both modes; when false, existing uses are
+	// rejected as well.
 	EnableDeprecatedWorkloadTypes bool
 }
 
@@ -51,8 +52,12 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
-	if !v.EnableDeprecatedWorkloadTypes {
+	if v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoNewDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	} else {
+		if err := validateNoDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
 	}
@@ -76,11 +81,18 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj ru
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
-	if !v.EnableDeprecatedWorkloadTypes {
+	if v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoNewDeprecatedWorkloadTypes(
 			"spec.groupTemplate.spec.roles",
 			rbgs.Spec.GroupTemplate.Spec.Roles,
 			oldRBGS.Spec.GroupTemplate.Spec.Roles,
+		); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	} else {
+		if err := validateNoDeprecatedWorkloadTypes(
+			"spec.groupTemplate.spec.roles",
+			rbgs.Spec.GroupTemplate.Spec.Roles,
 		); err != nil {
 			allErrs = append(allErrs, err)
 		}

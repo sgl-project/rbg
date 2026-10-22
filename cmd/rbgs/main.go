@@ -220,10 +220,10 @@ func main() {
 	flag.BoolVar(&enablePprof, "enable-pprof", false, "Enable pprof profiling server for performance debugging.")
 	flag.StringVar(&pprofAddr, "pprof-bind-address", ":6060", "The address the pprof endpoint binds to.")
 	flag.BoolVar(
-		&enableDeprecatedWorkloadTypes, "enable-deprecated-workload-types", false,
-		"Enable the deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet). Disabled by default. "+
-			"When false, new uses are rejected, while existing roles that already use one remain reconciled. "+
-			"Orphan cleanup and watches for these resources remain active so workload-type migration can remove old workloads.",
+		&enableDeprecatedWorkloadTypes, "enable-deprecated-workload-types", true,
+		"Enable compatibility for existing deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet). "+
+			"Enabled by default during migration. New uses are rejected in both modes; existing roles are accepted "+
+			"only while this flag is true. Set false after every role has migrated to RoleInstanceSet.",
 	)
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
@@ -384,7 +384,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = rbgReconciler.SetupWithManager(mgr, options); err != nil {
+	if err = rbgReconciler.SetupWithManager(mgr, options, enableDeprecatedWorkloadTypes); err != nil {
 		setupLog.Error(err, "unable to create rbg controller", "controller", "RoleBasedGroup")
 		os.Exit(1)
 	}
@@ -539,11 +539,11 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 	return opts
 }
 
-func setupV1alpha1DeprecationWebhooks(mgr ctrl.Manager) error {
-	if err := (&workloadsv1alpha1.RoleBasedGroup{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
+func setupV1alpha1DeprecationWebhooks(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
+	if err := (&workloadsv1alpha1.RoleBasedGroup{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroup: %w", err)
 	}
-	if err := (&workloadsv1alpha1.RoleBasedGroupSet{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
+	if err := (&workloadsv1alpha1.RoleBasedGroupSet{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupSet: %w", err)
 	}
 	if err := (&workloadsv1alpha1.InstanceSet{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
@@ -620,7 +620,7 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 
 	// v1alpha1 remains readable and writable for existing objects, but every write
 	// returns a deprecation warning and cannot introduce a new deprecated workload type.
-	if err = setupV1alpha1DeprecationWebhooks(mgr); err != nil {
+	if err = setupV1alpha1DeprecationWebhooks(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return nil, fmt.Errorf("unable to create v1alpha1 deprecation webhooks: %w", err)
 	}
 

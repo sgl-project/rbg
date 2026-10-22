@@ -277,6 +277,27 @@ func isDeprecatedWorkloadType(wt string) bool {
 	}
 }
 
+// validateNoDeprecatedWorkloadTypes checks that no role uses a deprecated workload
+// type. This is the final cutoff mode: --enable-deprecated-workload-types=false is
+// set only after every role has migrated to RoleInstanceSet.
+func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error {
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		wt := role.GetWorkloadType()
+		if isDeprecatedWorkloadType(wt) {
+			allErrs = append(allErrs, fmt.Errorf(
+				"%s[%d] (role %q): workload type %q is deprecated and not enabled on this cluster",
+				fieldPath, i, role.Name, wt,
+			))
+		}
+	}
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), deprecatedWorkloadTypeHint)
+}
+
 // validateNoNewDeprecatedWorkloadTypes checks that a write does not introduce a
 // deprecated workload type (Deployment, StatefulSet, or LeaderWorkerSet) into a
 // role that did not already use one. fieldPath is the JSON path of the role slice
@@ -285,8 +306,8 @@ func isDeprecatedWorkloadType(wt string) bool {
 // suffixed with deprecatedWorkloadTypeHint.
 //
 // Existing roles are exempt so they can continue to reconcile while users migrate
-// them one at a time. The controller still watches and cleans up deprecated
-// workloads when the toggle is off.
+// them one at a time while the compatibility flag is true. When the flag is false,
+// the strict validator above rejects every remaining use.
 func validateNoNewDeprecatedWorkloadTypes(fieldPath string, roles, oldRoles []RoleSpec) error {
 	oldWorkloadTypes := make(map[string]string, len(oldRoles))
 	for i := range oldRoles {

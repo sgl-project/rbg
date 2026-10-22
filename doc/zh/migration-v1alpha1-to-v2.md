@@ -28,7 +28,7 @@ RBG 有意**不提供可执行的迁移命令或脚本**。迁移会修改正在
 - 在变更窗口内冻结外部写入。
 - 修改前保存当前对象，并记录 revision。
 
-`controller.deprecatedWorkloadTypes.enabled` 默认为 `false`。已经使用弃用 workload 类型的存量 role 会被豁免并继续 reconcile；新 role，以及原本未使用弃用类型的 role，会被拒绝。开关为 `false` 时，RBAC、watch 和孤儿清理仍保持生效，操作者可以在 role 切换到 `RoleInstanceSet` 后删除旧工作负载。仅在临时回滚窗口使用 `true`。
+`controller.deprecatedWorkloadTypes.enabled` 在迁移窗口默认为 `true`。已经使用弃用 workload 类型的存量 role 会继续 reconcile；新 role，以及原本未使用弃用类型的 role，会被拒绝。该模式下 RBAC、watch 和孤儿清理保持生效，操作者可以迁移 role 并删除旧工作负载。只有在所有 role 迁移完成后才设置为 `false`；这是最终切断点，所有残留使用都会被拒绝。
 
 ## 1. 盘点受影响 role
 
@@ -118,7 +118,7 @@ Role 所在路径：
 
 如果旧工作负载已经被删除，不要手工用同名重建。应让控制器管理替代工作负载。只有在流量停止且业务负责人批准回滚后，才恢复 role 配置。
 
-`controller.deprecatedWorkloadTypes.enabled=true` 是临时兼容窗口，不是已完成迁移。如果事故中使用该值，应记录原因，并在回滚或迁移完成后重新关闭。
+`controller.deprecatedWorkloadTypes.enabled=true` 是迁移兼容窗口，不是已完成迁移。该模式让存量 role 继续可 reconcile，同时拒绝新使用。如果事故中需要恢复保存的弃用 role，应记录原因，并在最终切断前重新完成迁移。
 
 ## 3. 将对象重写为 v1alpha2 存储编码
 
@@ -158,7 +158,7 @@ kubectl get customresourcedefinition \
 
 1. 重新执行 role 盘点，处理所有剩余弃用 workload 类型。
 2. 确认两个 `status.storedVersions` 值均只包含 `v1alpha2`。
-3. 保持 `controller.deprecatedWorkloadTypes.enabled=false`。
+3. 只有在所有 role 迁移完成后，才设置 `controller.deprecatedWorkloadTypes.enabled=false`，并确认没有写入被拒绝。
 4. 将清单、客户端和自动化迁移到 `v1alpha2`。
 5. 只有在与业务负责人约定的回滚窗口结束后，才清理保存的迁移产物。
 

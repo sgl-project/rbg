@@ -49,14 +49,14 @@ func TestDeprecationWarningValidatorReturnsAdmissionWarning(t *testing.T) {
 	assert.NotContains(t, warnings[0], "kubectl rbg migrate")
 }
 
-func TestDeprecatedWorkloadValidatorRejectsNewUseButExemptsExisting(t *testing.T) {
+func TestDeprecatedWorkloadValidatorTransitionalAndFinalModes(t *testing.T) {
 	oldRole := rbgsV1alpha1ForDeprecationTest(WorkloadSpec{
 		APIVersion: "apps/v1",
 		Kind:       "StatefulSet",
 	})
 	sameRole := oldRole.DeepCopy()
 
-	validator := &deprecatedWorkloadValidator{}
+	validator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: true}
 	warnings, err := validator.ValidateCreate(context.Background(), oldRole)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "new uses are not accepted")
@@ -77,6 +77,24 @@ func TestDeprecatedWorkloadValidatorRejectsNewUseButExemptsExisting(t *testing.T
 	}), newRole)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "new uses are not accepted")
+}
+
+func TestDeprecatedWorkloadValidatorFinalModeRejectsExistingUse(t *testing.T) {
+	oldRole := rbgsV1alpha1ForDeprecationTest(WorkloadSpec{
+		APIVersion: "apps/v1",
+		Kind:       "StatefulSet",
+	})
+	sameRole := oldRole.DeepCopy()
+
+	validator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: false}
+	_, err := validator.ValidateCreate(context.Background(), oldRole)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deprecated and not enabled on this cluster")
+
+	warnings, err := validator.ValidateUpdate(context.Background(), oldRole, sameRole)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deprecated and not enabled on this cluster")
+	require.Len(t, warnings, 1)
 }
 
 func TestWorkloadType(t *testing.T) {

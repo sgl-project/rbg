@@ -71,15 +71,14 @@ controller:
       startPort: 30000
       # The size of the allocatable port range.
       portRange: 5000
-  # deprecatedWorkloadTypes controls whether new roles may select the deprecated
+  # deprecatedWorkloadTypes controls compatibility for existing deprecated
   # workload types (Deployment, StatefulSet, LeaderWorkerSet), superseded by
-  # RoleInstanceSet. Defaults to false in 0.9.0.
-  # Existing roles that already use a deprecated type remain reconciled and can be
-  # migrated one role at a time. RBAC, watches, and orphan cleanup remain active so
-  # operators can remove old workloads. Set true only as a temporary rollback while
-  # completing migration.
+  # RoleInstanceSet. Defaults to true for the 0.9.0 migration window.
+  # Existing roles can continue to reconcile and be migrated one role at a time,
+  # while new uses are rejected. Set false only after all roles have migrated;
+  # at that point every remaining use is rejected and legacy RBAC/watches are off.
   deprecatedWorkloadTypes:
-    enabled: false
+    enabled: true
 
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)

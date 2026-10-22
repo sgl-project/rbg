@@ -41,11 +41,11 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				WithRoles(
 					[]workloadsv1alpha2.RoleSpec{
 						wrappersv2.BuildStandaloneRole("role-deployment").
-							WithWorkload("apps/v1", "Deployment").Obj(),
+							Obj(),
 						wrappersv2.BuildStandaloneRole("role-sts").
-							WithWorkload("apps/v1", "StatefulSet").Obj(),
+							Obj(),
 						wrappersv2.BuildLeaderWorkerRole("role-lws").
-							WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").Obj(),
+							Obj(),
 					},
 				).Obj()
 
@@ -119,7 +119,6 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 		ginkgo.It("semantic comparison can reconcile modifications on the workload", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
-					WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 					Obj(),
 			}).Obj()
 

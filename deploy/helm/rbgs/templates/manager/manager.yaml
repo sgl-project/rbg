@@ -52,8 +52,12 @@ spec:
             - --scheduler-profile-name={{ . }}
             {{- end }}
             {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
-            {{- $deprecatedEnabled := $deprecatedWorkloadTypes.enabled | default false }}
-            - --enable-deprecated-workload-types={{ $deprecatedEnabled }}
+            {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
+            {{- if $deprecatedEnabled }}
+            - --enable-deprecated-workload-types=true
+            {{- else }}
+            - --enable-deprecated-workload-types=false
+            {{- end }}
             {{- if $pprof.enabled }}
             - --enable-pprof=true
             - --pprof-bind-address={{ $pprof.bindAddress | default ":6060" }}

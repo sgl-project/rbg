@@ -62,7 +62,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 						return wrappersv2.BuildBasicRoleBasedGroup("e2e-test-orphan", f.Namespace).
 							WithRoles(
 								[]workloadsv1alpha2.RoleSpec{
-									wrappersv2.BuildStandaloneRole("role-1").WithWorkload("apps/v1", "Deployment").Obj(),
+									wrappersv2.BuildStandaloneRole("role-1").Obj(),
 								},
 							).Obj()
 					}
@@ -297,7 +297,6 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 								wrappersv2.BuildStandaloneRole("prefill").
 									WithReplicas(int32(1)).Obj(),
 								wrappersv2.BuildLeaderWorkerRole("decode").
-									WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 									WithReplicas(int32(1)).Obj(),
 							},
 						).Obj()

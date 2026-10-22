@@ -28,7 +28,7 @@ Finishing one track does not imply that the other is complete. Check both before
 - Freeze external writes to the object during the change window.
 - Save the current object and record its revision before editing it.
 
-`controller.deprecatedWorkloadTypes.enabled` defaults to `false`. Existing roles that already use a deprecated workload type are exempt and continue to reconcile. New roles, and roles that did not previously use a deprecated type, are rejected. RBAC, watches, and orphan cleanup remain active while the value is false so an operator can remove old workloads after a role switches to `RoleInstanceSet`. Use `true` only as a temporary rollback window.
+`controller.deprecatedWorkloadTypes.enabled` defaults to `true` during the migration window. Existing roles that already use a deprecated workload type continue to reconcile, while new roles and roles that did not previously use a deprecated type are rejected. RBAC, watches, and orphan cleanup remain active in this mode so operators can migrate roles and remove old workloads. Set the value to `false` only after every role has migrated; that is the final cutoff, and all remaining uses are rejected.
 
 ## 1. Inventory the affected roles
 
@@ -118,7 +118,7 @@ To roll back one role, restore the saved role configuration through the same API
 
 If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload. Restore role configuration only after traffic is stopped and the business owner has approved the rollback.
 
-`controller.deprecatedWorkloadTypes.enabled=true` is a temporary compatibility window, not a completed migration. If it is used during an incident, record the reason and turn it off again after the rollback or migration is complete.
+`controller.deprecatedWorkloadTypes.enabled=true` is the migration compatibility window, not a completed migration. It keeps existing roles reconcilable while new uses remain rejected. If an incident requires restoring a saved deprecated role, record the reason and complete its migration again before the final cutoff.
 
 ## 3. Rewrite objects in the v1alpha2 storage encoding
 
@@ -158,7 +158,7 @@ Each value must contain only `v1alpha2`. If `v1alpha1` remains, identify the obj
 
 1. Repeat the role inventory and resolve every remaining deprecated workload type.
 2. Confirm both `status.storedVersions` values contain only `v1alpha2`.
-3. Leave `controller.deprecatedWorkloadTypes.enabled=false`.
+3. Only after every role has migrated, set `controller.deprecatedWorkloadTypes.enabled=false` and verify that no write is rejected.
 4. Move manifests, clients, and automation to `v1alpha2`.
 5. Retire the saved migration artifacts only after the rollback window agreed with the business owner has elapsed.
 

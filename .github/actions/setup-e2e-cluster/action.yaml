@@ -30,7 +30,7 @@ inputs:
     required: false
     default: "false"
   deprecated_workload_types_disabled:
-    description: Disable deprecated workload types; otherwise compatibility e2e explicitly enables them
+    description: Whether to disable deprecated workload types
     required: false
     default: "false"
   go_version:
@@ -169,12 +169,6 @@ runs:
         ]'
         kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p="$patch"
 
-        if [ "${{ inputs.deprecated_workload_types_disabled }}" != "true" ]; then
-          kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
-            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-deprecated-workload-types=true"}
-          ]'
-        fi
-
         if [ "${{ inputs.port_allocator_enabled }}" = "true" ]; then
           kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
             {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
@@ -197,13 +191,8 @@ runs:
           values+=(--set "controller.features.portAllocator.enabled=true")
         fi
 
-        # 0.9.0 changes the chart default to false. Compatibility e2e creates fresh
-        # deprecated-workload fixtures, so it must explicitly opt in. The dedicated
-        # apicompat suite is the exception and installs with false.
         if [ "${{ inputs.deprecated_workload_types_disabled }}" = "true" ]; then
           values+=(--set "controller.deprecatedWorkloadTypes.enabled=false")
-        else
-          values+=(--set "controller.deprecatedWorkloadTypes.enabled=true")
         fi
 
         if [ "${{ inputs.scheduler }}" = "volcano" ]; then

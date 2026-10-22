@@ -88,12 +88,12 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 							wrappers.BuildBasicRole("role1").
 								WithTemplateRef("base-template").
 								WithTemplatePatch(role1Patch).
-								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								Obj(),
 							wrappers.BuildBasicRole("role2").
 								WithTemplateRef("base-template").
 								WithTemplatePatch(emptyPatch).
-								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								Obj(),
 						}).Obj()
 
@@ -160,7 +160,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 							wrappers.BuildBasicRole("role1").
 								WithTemplateRef("base").
 								WithTemplatePatch(emptyPatch).
-								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								Obj(),
 						}).Obj()
 
@@ -305,11 +305,11 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 							wrappers.BuildBasicRole("templated-role").
 								WithTemplateRef("base").
 								WithTemplatePatch(emptyPatch).
-								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								Obj(),
 							wrappers.BuildBasicRole("traditional-role").
 								WithTemplate(traditionalTemplate).
-								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								Obj(),
 						}).Obj()
 
@@ -372,7 +372,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 							wrappers.BuildBasicRole("role1").
 								WithTemplateRef("base").
 								WithTemplatePatch(emptyPatch).
-								WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								Obj(),
 						}).Obj()
 
