@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	wrappersv1 "sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
@@ -238,7 +239,11 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 		// v1alpha1 defaults spec.roles[].workload to apps/v1 StatefulSet, and the
 		// conversion webhook records that in the role-workload-type annotation the
 		// validator reads. So a v1alpha1 object carrying that default is refused here.
-		rbg := wrappersv1.BuildBasicRoleBasedGroup("dep-v1alpha1-default", f.Namespace).Obj()
+		rbg := wrappersv1.BuildBasicRoleBasedGroup("dep-v1alpha1-default", f.Namespace).
+			WithRoles([]workloadsv1alpha1.RoleSpec{
+				wrappersv1.BuildBasicRole("test-role").
+					WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+			}).Obj()
 		err := f.Client.Create(ctx(), rbg)
 		gomega.Expect(containsRejection(err)).Should(gomega.BeTrue(),
 			"v1alpha1 RBG defaulting to StatefulSet should be rejected, got: %v", err)

@@ -22,7 +22,6 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	testutils "sigs.k8s.io/rbgs/test/utils"
@@ -103,7 +103,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 					f.ExpectRbgEqual(rbg)
 
 					// Verify role1: CPU should be patched to 200m
-					sts1 := &appsv1.StatefulSet{}
+					sts1 := &workloadsv1alpha2.RoleInstanceSet{}
 					gomega.Eventually(func() error {
 						return f.Client.Get(f.Ctx, types.NamespacedName{
 							Name:      fmt.Sprintf("%s-%s", rbg.Name, "role1"),
@@ -111,13 +111,13 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 						}, sts1)
 					}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
 
-					gomega.Expect(sts1.Spec.Template.Spec.Containers).To(gomega.HaveLen(1))
-					container1 := sts1.Spec.Template.Spec.Containers[0]
+					gomega.Expect(roleInstanceSetPodTemplate(sts1).Spec.Containers).To(gomega.HaveLen(1))
+					container1 := roleInstanceSetPodTemplate(sts1).Spec.Containers[0]
 					gomega.Expect(container1.Image).To(gomega.Equal(testutils.DefaultImage))
 					gomega.Expect(container1.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("200m")))
 
 					// Verify role2: empty patch, should use base template CPU 100m
-					sts2 := &appsv1.StatefulSet{}
+					sts2 := &workloadsv1alpha2.RoleInstanceSet{}
 					gomega.Eventually(func() error {
 						return f.Client.Get(f.Ctx, types.NamespacedName{
 							Name:      fmt.Sprintf("%s-%s", rbg.Name, "role2"),
@@ -125,7 +125,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 						}, sts2)
 					}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
 
-					container2 := sts2.Spec.Template.Spec.Containers[0]
+					container2 := roleInstanceSetPodTemplate(sts2).Spec.Containers[0]
 					gomega.Expect(container2.Image).To(gomega.Equal(testutils.DefaultImage))
 					gomega.Expect(container2.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(resource.MustParse("100m")))
 
@@ -170,7 +170,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 					f.ExpectRbgEqual(rbg)
 
 					// Get initial state
-					sts := &appsv1.StatefulSet{}
+					sts := &workloadsv1alpha2.RoleInstanceSet{}
 					gomega.Eventually(func() error {
 						return f.Client.Get(f.Ctx, types.NamespacedName{
 							Name:      fmt.Sprintf("%s-%s", rbg.Name, "role1"),
@@ -243,7 +243,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 						if err != nil {
 							return resource.Quantity{}
 						}
-						return sts.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
+						return roleInstanceSetPodTemplate(sts).Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
 					}, 30*time.Second, 1*time.Second).Should(gomega.Equal(resource.MustParse("200m")))
 
 					// Verify ControllerRevision version incremented
@@ -319,25 +319,25 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 					f.ExpectRbgEqual(rbg)
 
 					// Verify templated role (CPU 100m from templateRef)
-					sts1 := &appsv1.StatefulSet{}
+					sts1 := &workloadsv1alpha2.RoleInstanceSet{}
 					gomega.Eventually(func() error {
 						return f.Client.Get(f.Ctx, types.NamespacedName{
 							Name:      fmt.Sprintf("%s-%s", rbg.Name, "templated-role"),
 							Namespace: f.Namespace,
 						}, sts1)
 					}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
-					gomega.Expect(sts1.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]).To(
+					gomega.Expect(roleInstanceSetPodTemplate(sts1).Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]).To(
 						gomega.Equal(resource.MustParse("100m")))
 
 					// Verify traditional role (CPU 200m from inline template)
-					sts2 := &appsv1.StatefulSet{}
+					sts2 := &workloadsv1alpha2.RoleInstanceSet{}
 					gomega.Eventually(func() error {
 						return f.Client.Get(f.Ctx, types.NamespacedName{
 							Name:      fmt.Sprintf("%s-%s", rbg.Name, "traditional-role"),
 							Namespace: f.Namespace,
 						}, sts2)
 					}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
-					gomega.Expect(sts2.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]).To(
+					gomega.Expect(roleInstanceSetPodTemplate(sts2).Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]).To(
 						gomega.Equal(resource.MustParse("200m")))
 
 					gomega.Expect(f.Client.Delete(f.Ctx, rbg)).Should(gomega.Succeed())
@@ -382,13 +382,13 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 					f.ExpectRbgEqual(rbg)
 
 					// Verify V1 CPU
-					sts := &appsv1.StatefulSet{}
+					sts := &workloadsv1alpha2.RoleInstanceSet{}
 					gomega.Eventually(func() error {
 						return f.Client.Get(f.Ctx, types.NamespacedName{
 							Name: fmt.Sprintf("%s-%s", rbg.Name, "role1"), Namespace: f.Namespace,
 						}, sts)
 					}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
-					gomega.Expect(sts.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]).To(
+					gomega.Expect(roleInstanceSetPodTemplate(sts).Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]).To(
 						gomega.Equal(resource.MustParse("100m")))
 
 					revisionV1 := sts.Status.CurrentRevision
@@ -420,7 +420,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 						}, sts); err != nil {
 							return false
 						}
-						cpu := sts.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
+						cpu := roleInstanceSetPodTemplate(sts).Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
 						if cpu.Equal(resource.MustParse("200m")) && sts.Status.CurrentRevision != revisionV1 {
 							revisionV2 = sts.Status.CurrentRevision
 							return true
@@ -441,7 +441,7 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 						}, sts); err != nil {
 							return false
 						}
-						cpu := sts.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
+						cpu := roleInstanceSetPodTemplate(sts).Spec.Containers[0].Resources.Requests[corev1.ResourceCPU]
 						return cpu.Equal(resource.MustParse("100m")) && sts.Status.CurrentRevision != revisionV2
 					}, 60*time.Second, 2*time.Second).Should(gomega.BeTrue(),
 						"Rollback should restore V1 CPU and create new revision")
@@ -456,4 +456,11 @@ func RunRoleTemplateTestCases(f *framework.Framework) {
 
 func buildTemplatePatch(data map[string]interface{}) runtime.RawExtension {
 	return runtime.RawExtension{Raw: []byte(utils.DumpJSON(data))}
+}
+
+func roleInstanceSetPodTemplate(ris *workloadsv1alpha2.RoleInstanceSet) corev1.PodTemplateSpec {
+	if ris == nil || len(ris.Spec.RoleInstanceTemplate.Components) == 0 {
+		return corev1.PodTemplateSpec{}
+	}
+	return ris.Spec.RoleInstanceTemplate.Components[0].Template
 }

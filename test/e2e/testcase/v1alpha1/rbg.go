@@ -140,8 +140,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -155,8 +155,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -192,8 +192,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "Deployment",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -206,8 +206,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -220,8 +220,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "leaderworkerset.x-k8s.io/v1",
-										Kind:       "LeaderWorkerSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),

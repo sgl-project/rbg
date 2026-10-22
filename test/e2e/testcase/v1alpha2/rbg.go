@@ -19,7 +19,6 @@ package v1alpha2
 import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -74,9 +73,9 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					f.ExpectRbgV2Equal(rbg)
 
 					role := rbg.Spec.Roles[0]
-					deployKey := client.ObjectKey{Name: rbg.GetWorkloadName(&role), Namespace: f.Namespace}
-					oldDeploy := &appsv1.Deployment{}
-					gomega.Expect(f.Client.Get(f.Ctx, deployKey, oldDeploy)).Should(gomega.Succeed())
+					risKey := client.ObjectKey{Name: rbg.GetWorkloadName(&role), Namespace: f.Namespace}
+					oldRIS := &workloadsv1alpha2.RoleInstanceSet{}
+					gomega.Expect(f.Client.Get(f.Ctx, risKey, oldRIS)).Should(gomega.Succeed())
 
 					// Orphan the workload: the GC strips its owner reference but leaves the
 					// healthy, serving workload and its pods running.
@@ -94,11 +93,11 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					).Should(gomega.BeTrue())
 					gomega.Eventually(
 						func() bool {
-							deploy := &appsv1.Deployment{}
-							if err := f.Client.Get(f.Ctx, deployKey, deploy); err != nil {
+							ris := &workloadsv1alpha2.RoleInstanceSet{}
+							if err := f.Client.Get(f.Ctx, risKey, ris); err != nil {
 								return false
 							}
-							return metav1.GetControllerOf(deploy) == nil
+							return metav1.GetControllerOf(ris) == nil
 						}, utils.Timeout, utils.Interval,
 					).Should(gomega.BeTrue(), "timed out waiting for the GC to orphan the workload")
 
@@ -112,10 +111,10 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					gomega.Expect(
 						f.Client.Get(f.Ctx, client.ObjectKey{Name: newRbg.Name, Namespace: f.Namespace}, persisted),
 					).Should(gomega.Succeed())
-					adopted := &appsv1.Deployment{}
-					gomega.Expect(f.Client.Get(f.Ctx, deployKey, adopted)).Should(gomega.Succeed())
+					adopted := &workloadsv1alpha2.RoleInstanceSet{}
+					gomega.Expect(f.Client.Get(f.Ctx, risKey, adopted)).Should(gomega.Succeed())
 					gomega.Expect(adopted.UID).To(
-						gomega.Equal(oldDeploy.UID), "the orphaned workload must be adopted, not recreated",
+						gomega.Equal(oldRIS.UID), "the orphaned workload must be adopted, not recreated",
 					)
 					controller := metav1.GetControllerOf(adopted)
 					gomega.Expect(controller).ToNot(gomega.BeNil())

@@ -23,7 +23,6 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -42,8 +41,8 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 				WithRoles(
 					[]v1alpha1.RoleSpec{
-						wrappers.BuildBasicRole("role-deployment").WithWorkload(v1alpha1.DeploymentWorkloadType).Obj(),
-						wrappers.BuildBasicRole("role-sts").WithWorkload(v1alpha1.StatefulSetWorkloadType).Obj(),
+						wrappers.BuildBasicRole("role-deployment").WithRoleInstanceSet().Obj(),
+						wrappers.BuildBasicRole("role-sts").WithRoleInstanceSet().Obj(),
 						wrappers.BuildLwsRole("role-lws").Obj(),
 					},
 				).Obj()
@@ -100,7 +99,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 					WithRoles(
 						[]v1alpha1.RoleSpec{
 							wrappers.BuildBasicRole("role-1").
-								WithWorkload(v1alpha1.StatefulSetWorkloadType).
+								WithRoleInstanceSet().
 								WithEngineRuntime(
 									[]v1alpha1.EngineRuntime{{ProfileName: utils.DefaultEngineRuntimeProfileName}},
 								).
@@ -115,7 +114,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 
 				f.ExpectRbgEqual(rbg)
-				oldSts := &appsv1.StatefulSet{}
+				oldSts := &workloadsv1alpha2.RoleInstanceSet{}
 				err := f.Client.Get(
 					f.Ctx, client.ObjectKey{
 						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
@@ -130,7 +129,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				})
 				f.ExpectRbgEqual(rbg)
 
-				newSts := &appsv1.StatefulSet{}
+				newSts := &workloadsv1alpha2.RoleInstanceSet{}
 				err = f.Client.Get(
 					f.Ctx, client.ObjectKey{
 						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
@@ -154,7 +153,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgEqual(rbg)
 
-			oldSts := &appsv1.StatefulSet{}
+			oldSts := &workloadsv1alpha2.RoleInstanceSet{}
 			err := f.Client.Get(
 				f.Ctx, client.ObjectKey{
 					Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
@@ -169,7 +168,7 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			time.Sleep(time.Second * 5)
 
 			f.ExpectRbgEqual(rbg)
-			newSts := &appsv1.StatefulSet{}
+			newSts := &workloadsv1alpha2.RoleInstanceSet{}
 			err = f.Client.Get(
 				f.Ctx, client.ObjectKey{
 					Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
