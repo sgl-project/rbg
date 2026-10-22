@@ -24,6 +24,7 @@ Finishing one track does not imply that the other is complete. Check both before
 
 - Upgrade the RBG controller to `0.9.0` or later and confirm the controller and webhooks are healthy.
 - Confirm the roles being migrated are currently ready and have no unrelated rollout in progress.
+- Confirm each role has an existing Pattern and a resolvable `template` or `templateRef`. A role without these is already invalid for reconciliation; repair or remove it through a separate change before migration.
 - Coordinate with autoscaling, traffic management, scheduling, and any business process that can change the role while it is being migrated.
 - Freeze external writes to the object during the change window.
 - Save the current object and record its revision before editing it.
@@ -80,7 +81,7 @@ For each role that uses a deprecated workload type:
    - Deployment and StatefulSet roles use `standalonePattern`.
    - LeaderWorkerSet roles use `leaderWorkerPattern`.
    - Preserve the existing template source, replicas, size, patches, rollout strategy, and restart-policy configuration.
-   - If a role has no Pattern, materialize the Pattern corresponding to its old workload Kind.
+   - A missing Pattern, or a Pattern with no resolvable template source, is a pre-existing object-health problem, not a migration step. Stop and repair or remove that role through a separate change.
    - If the existing Pattern conflicts with the old workload type, stop and design the change with the workload owner. Do not remove the annotation merely to make the object pass validation.
 
 4. Edit only the selected role:

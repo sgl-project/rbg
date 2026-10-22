@@ -24,6 +24,7 @@ RBG 有意**不提供可执行的迁移命令或脚本**。迁移会修改正在
 
 - 将 RBG 控制器升级到 `0.9.0` 或更新版本，并确认控制器与 webhook 健康。
 - 确认待迁移 role 当前 ready，且没有其他 rollout 正在进行。
+- 确认每个 role 已有 Pattern，并且 `template` 或 `templateRef` 可解析。缺少这些内容的 role 本身已无法 reconcile；请先通过独立变更修复或删除该 role，再进行迁移。
 - 与自动扩缩容、流量管理、调度以及可能在迁移期间修改该 role 的业务流程协调。
 - 在变更窗口内冻结外部写入。
 - 修改前保存当前对象，并记录 revision。
@@ -80,7 +81,7 @@ Role 所在路径：
    - Deployment 与 StatefulSet 使用 `standalonePattern`。
    - LeaderWorkerSet 使用 `leaderWorkerPattern`。
    - 保留既有 template source、replicas、size、patch、rollout strategy 和 restart policy 配置。
-   - 如果 role 没有 Pattern，按旧 workload Kind 落地对应 Pattern。
+   - Pattern 缺失，或 Pattern 没有可解析的 template source，属于对象自身的健康问题，不是迁移步骤。请停止迁移，先通过独立变更修复或删除该 role。
    - 如果既有 Pattern 与旧 workload 类型冲突，停止并与工作负载负责人设计变更；不要仅为通过校验而删除注解。
 
 4. 只编辑选中的一个 role：
