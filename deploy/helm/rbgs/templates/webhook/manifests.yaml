@@ -19,6 +19,7 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  matchPolicy: Exact
   clientConfig:
     service:
       name: rbgs-webhook-service
@@ -40,6 +41,7 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  matchPolicy: Exact
   clientConfig:
     service:
       name: rbgs-webhook-service
@@ -61,6 +63,7 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  matchPolicy: Exact
   clientConfig:
     service:
       name: rbgs-webhook-service
@@ -82,6 +85,7 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  matchPolicy: Exact
   clientConfig:
     service:
       name: rbgs-webhook-service
@@ -103,6 +107,7 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  matchPolicy: Exact
   clientConfig:
     service:
       name: rbgs-webhook-service
@@ -124,6 +129,7 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  matchPolicy: Exact
   clientConfig:
     service:
       name: rbgs-webhook-service

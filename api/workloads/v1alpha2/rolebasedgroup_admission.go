@@ -30,7 +30,6 @@ import (
 // RoleBasedGroupValidator implements admission.CustomValidator for RoleBasedGroup.
 // Wired into the manager by SetupWebhookWithManager.
 //
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update,versions=v1alpha2,name=vrolebasedgroup.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupValidator struct {
 	Client client.Client

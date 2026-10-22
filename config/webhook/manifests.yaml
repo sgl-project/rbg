@@ -1,31 +1,145 @@
 ---
-# Admission webhook configurations for the RoleBasedGroup admission webhooks.
-#
-# Service name and namespace below are Kustomize placeholders:
-#   - namespace: system        → replaced with the Kustomize `namespace:` value
-#                                (e.g. rbgs-system) by the namespace transformer.
-#   - name: webhook-service    → prefixed with `namePrefix:` (e.g. rbgs-webhook-service)
-#                                via the built-in nameReference transformer.
-# Do NOT apply this file directly; always render with `kustomize build config/default`.
-#
-# caBundle is intentionally left empty. The in-cluster controller
-# (WebhookCertReconciler) patches it at runtime using the self-signed CA generated
-# by pkg/webhook.CertManager.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
+  failurePolicy: Fail
+  name: mrolebasedgroup.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroups
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
+  failurePolicy: Fail
+  name: mrolebasedgroupset.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset
+  failurePolicy: Fail
+  name: mroleinstanceset.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - roleinstancesets
+  sideEffects: None
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
 webhooks:
-- name: vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
+- admissionReviewVersions:
   - v1
-  sideEffects: None
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy
   failurePolicy: Fail
+  name: vcoordinatedpolicy.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - coordinatedpolicies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
+  failurePolicy: Fail
+  name: vrolebasedgroup.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroups
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
+  failurePolicy: Fail
+  name: vrolebasedgroupset.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: webhook-service
       namespace: system
       path: /validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -37,16 +151,17 @@ webhooks:
     - DELETE
     resources:
     - clusterengineruntimeprofiles
-- name: vinstance-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
   sideEffects: None
-  failurePolicy: Fail
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: webhook-service
       namespace: system
       path: /validate-workloads-x-k8s-io-v1alpha1-instance
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vinstance-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -58,16 +173,17 @@ webhooks:
     - DELETE
     resources:
     - instances
-- name: vinstanceset-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
   sideEffects: None
-  failurePolicy: Fail
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: webhook-service
       namespace: system
       path: /validate-workloads-x-k8s-io-v1alpha1-instanceset
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vinstanceset-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -79,16 +195,17 @@ webhooks:
     - DELETE
     resources:
     - instancesets
-- name: vrolebasedgroup-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
   sideEffects: None
-  failurePolicy: Fail
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: webhook-service
       namespace: system
       path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroup
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vrolebasedgroup-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -100,16 +217,17 @@ webhooks:
     - DELETE
     resources:
     - rolebasedgroups
-- name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
   sideEffects: None
-  failurePolicy: Fail
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: webhook-service
       namespace: system
       path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -121,16 +239,17 @@ webhooks:
     - DELETE
     resources:
     - rolebasedgroupscalingadapters
-- name: vrolebasedgroupset-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
   sideEffects: None
-  failurePolicy: Fail
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: webhook-service
       namespace: system
       path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupset
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vrolebasedgroupset-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -142,129 +261,4 @@ webhooks:
     - DELETE
     resources:
     - rolebasedgroupsets
-- name: vrolebasedgroup.kb.io
-  admissionReviewVersions:
-  - v1
   sideEffects: None
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroups
-- name: vrolebasedgroupset.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroupsets
-- name: vcoordinatedpolicy.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - coordinatedpolicies
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: mutating-webhook-configuration
-webhooks:
-- name: mrolebasedgroup.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroup
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroups
-- name: mroleinstanceset.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - roleinstancesets
-- name: mrolebasedgroupset.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Fail
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroupsets

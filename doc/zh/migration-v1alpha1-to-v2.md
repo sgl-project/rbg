@@ -7,6 +7,7 @@
 RBG 有意**不提供可执行的迁移命令或脚本**。迁移会修改正在运行的工作负载，并可能重建 Pod。操作者必须逐 role 审查、决定灰度顺序、根据业务状态暂停或调整，并通过组织既有的变更管理流程提交修改。
 
 本文中的 Kubernetes 示例仅用于对象检查，或由操作者逐个对象显式执行的对象写入。它们不是自动化迁移。如果组织使用 GitOps、策略引擎或其他部署流程，应使用该流程替代本文示例。
+workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。`v1alpha1` 仅为兼容保留；在该版本中 `spec.roles[].workload` 是权威字段，转换会重新生成兼容注解。不要通过 `v1alpha1` 执行这种只修改注解的迁移编辑。
 
 ## 正在迁移的内容
 
@@ -63,10 +64,10 @@ Role 所在路径：
 
 对每个使用弃用 workload 类型的 role：
 
-1. 通过组织使用的 API 版本和变更管理流程保存对象。普通 Kubernetes 流程可以使用：
+1. 保存当前 `v1alpha2` 表达用于审计和审查。普通 Kubernetes 流程可以使用：
 
    ```bash
-   kubectl get rolebasedgroup RBG_NAME -o yaml > RBG_NAME.pre-migration.yaml
+   kubectl get rolebasedgroups.v1alpha2.workloads.x-k8s.io RBG_NAME -o yaml > RBG_NAME.pre-migration.yaml
    ```
 
 2. 识别当前下游工作负载拥有的 Pod。workload Kind 变化后，这些 Pod 会被重建。例如：
@@ -84,13 +85,13 @@ Role 所在路径：
    - Pattern 缺失，或 Pattern 没有可解析的 template source，属于对象自身的健康问题，不是迁移步骤。请停止迁移，先通过独立变更修复或删除该 role。
    - 如果既有 Pattern 与旧 workload 类型冲突，停止并与工作负载负责人设计变更；不要仅为通过校验而删除注解。
 
-4. 只编辑选中的一个 role：
+4. 在 `v1alpha2` 表达中只编辑选中的一个 role：
    - 从该 role 的 annotations 中删除 `rbg.workloads.x-k8s.io/role-workload-type`。
    - 其他 role 的 annotations 与 spec 保持不变。
    - 保留上述正确 Pattern。
    - 对冗余的 `RoleInstanceSet` 注解，只删除注解，Pattern 保持不变。
 
-5. 通过正常部署流程提交这个单 role 变更。不要把多个 role 合并成一次变更。
+5. 通过正常部署流程提交这个单 role 的 `v1alpha2` 变更。如果配置源仍是 v1alpha1 清单，请先审查并把配置源转换为 v1alpha2。不要把多个 role 合并成一次变更。
 
 6. 观察替换过程：
    - 控制器把旧 Deployment、StatefulSet 或 LeaderWorkerSet 判定为孤儿并删除。
@@ -109,17 +110,17 @@ Role 所在路径：
 
 8. 只要业务状态需要，就停止、暂停或调整 rollout。不要因为对象可写而自动继续下一个 role。
 
-对 `RoleBasedGroupSet`，按同样方式审查模板 role。已生成的 RoleBasedGroup 需逐个迁移；只有在确定未来生成对象的行为后，才更新 set 模板。
+`RoleBasedGroupSet` 不是独立的逐子对象灰度机制。其控制器会比较生成的子对象与 `groupTemplate`，并把模板 role 写回子对象。因此，在 set 模板仍携带旧 workload 类型时迁移某个子对象并不稳定：控制器可能尝试恢复旧 role，而 admission guard 会拒绝这种新引入。
+
+更新 set 模板可能把迁移传播到所有剩余子对象，所以这是 set 级 rollout 决策，而不是单 role 变更。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
 
 ## 回滚
 
-每个 role 迁移前，保留不可变对象副本、resourceVersion，以及部署流程使用的 revision 历史。
+每个 role 迁移前，保留不可变对象副本、resourceVersion，以及部署流程使用的 revision 历史。这些记录仍可用于审计和恢复非 workload 字段，但不能让 workload 类型变更变得可逆。
 
-回滚单个 role 时，通过创建该对象时使用的 API 版本和部署流程恢复保存的 role 配置。回滚本身也是一次工作负载变更：可能重建 Pod，并使 role 回到弃用 workload 类型。
+一旦 role 已切换到 `RoleInstanceSet`，恢复保存的弃用 workload 类型就是一次新的弃用使用。即使 `controller.deprecatedWorkloadTypes.enabled=true`，v1alpha2 和 v1alpha1 validator 也会拒绝该写入；兼容模式只保留存量 role，不会授权在迁移后重新引入弃用类型。在业务负责人批准 RoleInstanceSet rollout 失败后的恢复方案之前，不要开始迁移。
 
-如果旧工作负载已经被删除，不要手工用同名重建。应让控制器管理替代工作负载。只有在流量停止且业务负责人批准回滚后，才恢复 role 配置。
-
-`controller.deprecatedWorkloadTypes.enabled=true` 是迁移兼容窗口，不是已完成迁移。该模式让存量 role 继续可 reconcile，同时拒绝新使用。如果事故中需要恢复保存的弃用 role，应记录原因，并在最终切断前重新完成迁移。
+如果旧工作负载已被删除，不要手工用同名重建。应让控制器管理替代工作负载。提交迁移后的恢复必须使用事先约定的应急方案，而不是简单恢复弃用 workload 类型。
 
 ## 3. 将对象重写为 v1alpha2 存储编码
 
@@ -144,7 +145,21 @@ RoleBasedGroupSet 使用等价的、完整限定的 `v1alpha2` 资源。如果�
 
 不要通过 `v1alpha1` 往返对象：该路径可能重新引入 `role-workload-type` 兼容注解，为后续检查制造噪音。
 
-所有对象重写完成后，检查两个启用转换的 CRD：
+所有对象重写完成后，必须根据迁移清单独立确认重写集合已经完整。`status.storedVersions` 是 CRD 级历史记录，不是逐对象清单；对象重写后它也不会自动丢弃 `v1alpha1`。重复写对象不能移除该列表中的历史条目。
+
+只有在完整重写得到确认后，才通过明确审查过的变更更新每个 CRD status：
+
+```bash
+kubectl patch customresourcedefinition rolebasedgroups.workloads.x-k8s.io \
+  --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1alpha2"]}}'
+
+kubectl patch customresourcedefinition rolebasedgroupsets.workloads.x-k8s.io \
+  --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1alpha2"]}}'
+```
+
+然后检查两个启用转换的 CRD：
 
 ```bash
 kubectl get customresourcedefinition \
@@ -153,12 +168,12 @@ kubectl get customresourcedefinition \
   -o custom-columns=CRD:.metadata.name,STORED_VERSIONS:.status.storedVersions
 ```
 
-每个值都必须只包含 `v1alpha2`。如果仍有 `v1alpha1`，找出尚未重写的对象，审查后重复手工 v1alpha2 写入。
+每个值都必须只包含 `v1alpha2`。如果 status 更新前仍包含 `v1alpha1`，不要直接从该列表推断哪些对象仍是旧编码；应先重新确认重写清单。只要仍有对象按 `v1alpha1` 编码存储，就绝不能移除历史条目。
 
 ## 4. 结束迁移窗口
 
 1. 重新执行 role 盘点，处理所有剩余弃用 workload 类型。
-2. 确认两个 `status.storedVersions` 值均只包含 `v1alpha2`。
+2. 根据迁移清单确认所有对象均已重写，然后按上述说明更新并验证两个 `status.storedVersions` 值。
 3. 只有在所有 role 迁移完成后，才设置 `controller.deprecatedWorkloadTypes.enabled=false`，并确认没有写入被拒绝。
 4. 将清单、客户端和自动化迁移到 `v1alpha2`。
 5. 只有在与业务负责人约定的回滚窗口结束后，才清理保存的迁移产物。
@@ -169,5 +184,5 @@ kubectl get customresourcedefinition \
 - **部分 ready：** 每次只迁移一个 role，不要自动化全部 role。
 - **业务状态：** 仅 ready 可能不足。数据库、缓存、会话状态、流量摘除和调度行为必须由业务负责人审查。
 - **旧工作负载残留：** 在 `controller.deprecatedWorkloadTypes.enabled=true` 时，孤儿清理可以在 role 切换到 `RoleInstanceSet` 后删除旧工作负载。除非控制器无法清理，否则不要手工删除旧工作负载，因为手工删除可能与替代对象创建竞争。所有 role 迁移完成前保持兼容模式开启；过早设置为 `false` 会关闭旧类型 RBAC、watch 和孤儿清理，可能留下旧工作负载。
-- **存储幽灵对象：** 如果启用转换的 CRD 的 `status.storedVersions` 仍包含 `v1alpha1`，后续版本移除该 API 时对象可能无法读取。升级超过 `0.9.0` 前必须完成存储检查。
+- **存储幽灵对象：** `status.storedVersions` 记录曾经使用过的存储版本。必须先确认对象重写完整，再从列表中移除 `v1alpha1`；如果旧编码对象仍在而移除 API 版本，这些对象可能无法读取。升级超过 `0.9.0` 前必须完成存储清单、status 更新和验证。
 - **静默类型回落：** 未完成内容迁移就直接删除 workload-type 注解，会使 role 回落到 RoleInstanceSet。只有在 Pattern 和业务影响都经过审查后，才应执行该变更。

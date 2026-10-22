@@ -28,7 +28,6 @@ import (
 
 // RoleBasedGroupSetValidator implements admission.CustomValidator for RoleBasedGroupSet.
 //
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=vrolebasedgroupset.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupSetValidator struct {
 	// EnableDeprecatedWorkloadTypes reports whether existing deprecated workload

@@ -199,6 +199,8 @@ func objectKey(obj runtime.Object) (types.NamespacedName, bool) {
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for
 // the v1alpha1 RoleBasedGroup endpoint.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update;delete,versions=v1alpha1,name=vrolebasedgroup-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+
 func (r *RoleBasedGroup) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
@@ -211,6 +213,8 @@ func (r *RoleBasedGroup) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, en
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for
 // the v1alpha1 RoleBasedGroupSet endpoint.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update;delete,versions=v1alpha1,name=vrolebasedgroupset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+
 func (r *RoleBasedGroupSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
@@ -222,21 +226,29 @@ func (r *RoleBasedGroupSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager,
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 InstanceSet endpoint.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instanceset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=instancesets,verbs=create;update;delete,versions=v1alpha1,name=vinstanceset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+
 func (r *InstanceSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 Instance endpoint.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instance,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=instances,verbs=create;update;delete,versions=v1alpha1,name=vinstance-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+
 func (r *Instance) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 ScalingAdapter endpoint.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters,verbs=create;update;delete,versions=v1alpha1,name=vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+
 func (r *RoleBasedGroupScalingAdapter) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 ClusterEngineRuntimeProfile endpoint.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=create;update;delete,versions=v1alpha1,name=vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+
 func (r *ClusterEngineRuntimeProfile) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }

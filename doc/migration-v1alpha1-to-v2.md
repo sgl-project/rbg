@@ -7,6 +7,7 @@ This guide applies to RBG `0.9.0`. In this release, `v1alpha1` is still served s
 RBG intentionally does **not** provide an executable migration command or script. A migration changes running workloads and may recreate Pods, so the operator must review each role, decide the rollout order, pause when business conditions require it, and submit changes through the organization's normal change-management process.
 
 The Kubernetes examples in this document are limited to inspection or explicit object writes that an operator performs one object at a time. They are not an automated migration. If your organization uses GitOps, a policy engine, or another deployment workflow, use that workflow instead of the examples.
+Workload-type content migration must use the `v1alpha2` representation and write path. `v1alpha1` remains served for compatibility, but its `spec.roles[].workload` field is authoritative and conversion recreates the compatibility annotation. Do not perform the annotation-only migration edit through `v1alpha1`.
 
 ## What is being migrated
 
@@ -63,10 +64,10 @@ This inventory is an impact report, not a rollout decision. The operator decides
 
 For each role that uses a deprecated workload type:
 
-1. Save the object through the API version and change-management process used by your organization. For a plain Kubernetes workflow, this may be:
+1. Save the current `v1alpha2` representation for audit and review. For a plain Kubernetes workflow:
 
    ```bash
-   kubectl get rolebasedgroup RBG_NAME -o yaml > RBG_NAME.pre-migration.yaml
+   kubectl get rolebasedgroups.v1alpha2.workloads.x-k8s.io RBG_NAME -o yaml > RBG_NAME.pre-migration.yaml
    ```
 
 2. Identify the Pods that the downstream workload currently owns. They will be recreated when the workload Kind changes. For example:
@@ -84,13 +85,13 @@ For each role that uses a deprecated workload type:
    - A missing Pattern, or a Pattern with no resolvable template source, is a pre-existing object-health problem, not a migration step. Stop and repair or remove that role through a separate change.
    - If the existing Pattern conflicts with the old workload type, stop and design the change with the workload owner. Do not remove the annotation merely to make the object pass validation.
 
-4. Edit only the selected role:
+4. Edit only the selected role in the `v1alpha2` representation:
    - Remove `rbg.workloads.x-k8s.io/role-workload-type` from that role's annotations.
    - Leave the annotations and specs of all other roles unchanged.
    - Preserve the correct Pattern described above.
    - For a redundant `RoleInstanceSet` annotation, remove only the annotation and leave the Pattern unchanged.
 
-5. Submit the single-role change through your normal deployment workflow. Do not batch multiple roles in one change.
+5. Submit the single-role `v1alpha2` change through your normal deployment workflow. If the source of truth is still a v1alpha1 manifest, first review and convert that source to v1alpha2. Do not batch multiple roles in one change.
 
 6. Observe the replacement:
    - The controller treats the old Deployment, StatefulSet, or LeaderWorkerSet as an orphan and deletes it.
@@ -109,17 +110,17 @@ For each role that uses a deprecated workload type:
 
 8. Stop, pause, or adjust the rollout whenever business conditions require it. Do not continue to the next role merely because the object is writable.
 
-For a `RoleBasedGroupSet`, apply the same review to its template role. Migrate generated RoleBasedGroups individually, and only update the set template after deciding how future generated groups should behave.
+A `RoleBasedGroupSet` is not an independent per-child staging mechanism. Its controller compares generated children with `groupTemplate` and copies the template roles back into them. Migrating a child while the set template still carries the legacy workload type is therefore unstable: the controller may try to restore the legacy role, and the admission guard rejects that new use.
+
+Updating the set template can propagate the migration to all remaining children, so it is a set-wide rollout decision rather than a one-role change. If per-child staging is required, use an explicit, separately reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume a child can be permanently migrated while its parent template remains unchanged.
 
 ## Rollback
 
-Before each role migration, retain an immutable copy of the object, its resource version, and any revision history used by your deployment process.
+Before each role migration, retain an immutable copy of the object, its resource version, and any revision history used by your deployment process. These records remain useful for audit and for restoring non-workload fields, but they do not make the workload-type change reversible.
 
-To roll back one role, restore the saved role configuration through the same API version and deployment workflow used for the original object. A rollback is another workload change: it can recreate Pods and return the role to a deprecated workload type.
+Once a role has switched to `RoleInstanceSet`, restoring the saved deprecated workload type is a new deprecated use. The v1alpha2 and v1alpha1 validators reject it even while `controller.deprecatedWorkloadTypes.enabled=true`; that compatibility mode preserves existing roles, but does not authorize reintroducing a deprecated type after migration. Do not begin migration until the business owner has approved a recovery plan for a failed RoleInstanceSet rollout.
 
-If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload. Restore role configuration only after traffic is stopped and the business owner has approved the rollback.
-
-`controller.deprecatedWorkloadTypes.enabled=true` is the migration compatibility window, not a completed migration. It keeps existing roles reconcilable while new uses remain rejected. If an incident requires restoring a saved deprecated role, record the reason and complete its migration again before the final cutoff.
+If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload. A recovery after submission must use the pre-agreed emergency plan rather than a simple restore of the deprecated workload type.
 
 ## 3. Rewrite objects in the v1alpha2 storage encoding
 
@@ -144,7 +145,21 @@ Use the equivalent fully qualified `v1alpha2` resource for RoleBasedGroupSets. I
 
 Do not round-trip the object through `v1alpha1`: that path can reintroduce `role-workload-type` compatibility annotations and create noise in later checks.
 
-After every object has been rewritten, verify both conversion-enabled CRDs:
+After every object has been rewritten, independently confirm from the migration inventory that the rewrite set was complete. `status.storedVersions` is a CRD-level historical record, not a per-object inventory, and it does not automatically discard `v1alpha1` after objects are rewritten. Repeating object writes cannot remove an old entry from this list.
+
+Only after the complete rewrite has been confirmed, update each CRD status through an explicitly reviewed change:
+
+```bash
+kubectl patch customresourcedefinition rolebasedgroups.workloads.x-k8s.io \
+  --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1alpha2"]}}'
+
+kubectl patch customresourcedefinition rolebasedgroupsets.workloads.x-k8s.io \
+  --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1alpha2"]}}'
+```
+
+Then verify both conversion-enabled CRDs:
 
 ```bash
 kubectl get customresourcedefinition \
@@ -153,12 +168,12 @@ kubectl get customresourcedefinition \
   -o custom-columns=CRD:.metadata.name,STORED_VERSIONS:.status.storedVersions
 ```
 
-Each value must contain only `v1alpha2`. If `v1alpha1` remains, identify the objects that have not been rewritten, review them, and repeat the manual v1alpha2 write.
+Each value must contain only `v1alpha2`. If `v1alpha1` remains before the status update, do not infer which objects are still old from that list; reconfirm the rewrite inventory first. Never remove the historical entry while objects encoded as `v1alpha1` remain.
 
 ## 4. Complete the migration window
 
 1. Repeat the role inventory and resolve every remaining deprecated workload type.
-2. Confirm both `status.storedVersions` values contain only `v1alpha2`.
+2. Confirm from the migration inventory that every object was rewritten, then update and verify both `status.storedVersions` values as described above.
 3. Only after every role has migrated, set `controller.deprecatedWorkloadTypes.enabled=false` and verify that no write is rejected.
 4. Move manifests, clients, and automation to `v1alpha2`.
 5. Retire the saved migration artifacts only after the rollback window agreed with the business owner has elapsed.
@@ -169,5 +184,5 @@ Each value must contain only `v1alpha2`. If `v1alpha1` remains, identify the obj
 - **Partial readiness:** migrate one role at a time. Do not automate the full set of roles.
 - **Business state:** readiness alone may not be sufficient. Databases, caches, session state, traffic draining, and scheduler behavior must be reviewed by the service owner.
 - **Stale old workloads:** While `controller.deprecatedWorkloadTypes.enabled=true`, orphan cleanup can remove the old workload after a role switches to `RoleInstanceSet`. Do not manually delete it unless the controller cannot, because manual deletion can race with replacement creation. Keep the compatibility mode enabled until every role has migrated; setting it to `false` prematurely disables legacy RBAC, watches, and orphan cleanup and can leave old workloads behind.
-- **Storage ghosts:** if `v1alpha1` remains in `status.storedVersions` for a conversion-enabled CRD, removing the API version in a later release can make objects unreadable. Complete the storage check before upgrading beyond `0.9.0`.
+- **Storage ghosts:** `status.storedVersions` records storage versions that have been used. Confirm a complete object rewrite before removing `v1alpha1` from that list; if old-encoded objects remain when the API version is removed, they can become unreadable. Complete the storage inventory, status update, and verification before upgrading beyond `0.9.0`.
 - **Silent type fallback:** deleting the workload-type annotation without completing the content migration changes the role to RoleInstanceSet. Make that change only after the Pattern and business impact have been reviewed.
