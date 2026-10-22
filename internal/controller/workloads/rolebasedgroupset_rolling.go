@@ -250,10 +250,7 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		return true, nil
 	}
 
-	outdated, outdatedBase, changed, err := r.classifyGroupSetChildrenForRollout(ctx, set, existing, replicas, limits, update)
-	if err != nil || changed {
-		return changed, err
-	}
+	outdated, outdatedBase := r.classifyGroupSetChildrenForRollout(existing, replicas, limits, update)
 
 	if !limits.inPlaceUpdate {
 		changed, err = r.warmUpGroupSetSurge(ctx, set, existing, replicas, limits, update, outdatedBase, capacity)
@@ -353,28 +350,13 @@ func (r *RoleBasedGroupSetReconciler) fillMissingGroupSetBaseOrdinals(
 }
 
 func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
-	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int,
+	existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int,
 	limits groupSetRolloutLimits, update *groupSetRevision,
-) ([]*workloadsv1alpha2.RoleBasedGroup, int, bool, error) {
+) ([]*workloadsv1alpha2.RoleBasedGroup, int) {
 	var outdated []*workloadsv1alpha2.RoleBasedGroup
 	outdatedBase := 0
-	changed := false
 	for index, child := range existing {
 		if index < limits.partition || !child.DeletionTimestamp.IsZero() || r.groupSetMatchesRevision(child, update) {
-			continue
-		}
-		if !limits.inPlaceUpdate && groupSetOnlyReplicasChanged(child, update.template) {
-			updated := child.DeepCopy()
-			updated.Spec = *update.template.Spec.DeepCopy()
-			if _, err := r.syncGroupSetPodGroupPolicy(ctx, set, updated, update.template); err != nil {
-				return nil, 0, changed, err
-			}
-			updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
-			requestGroupSetChildRollout(updated)
-			if err := r.client.Update(ctx, updated); err != nil {
-				return nil, 0, changed, err
-			}
-			changed = true
 			continue
 		}
 		outdated = append(outdated, child)
@@ -382,7 +364,7 @@ func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
 			outdatedBase++
 		}
 	}
-	return outdated, outdatedBase, changed, nil
+	return outdated, outdatedBase
 }
 
 func (r *RoleBasedGroupSetReconciler) warmUpGroupSetSurge(
@@ -390,7 +372,7 @@ func (r *RoleBasedGroupSetReconciler) warmUpGroupSetSurge(
 	existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int, limits groupSetRolloutLimits,
 	update *groupSetRevision, outdatedBase, capacity int,
 ) (bool, error) {
-	// Surge only needs to cover remaining replacements beyond the unavailable budget.
+	// Surge covers remaining updates, including in-place scaling, beyond the unavailable budget.
 	needed := min(limits.maxSurge, max(0, outdatedBase-limits.maxUnavailable))
 	for index := range existing {
 		if index >= replicas {
@@ -438,7 +420,7 @@ func (r *RoleBasedGroupSetReconciler) rolloutGroupSetChildren(
 		if isReady && ready <= minimumReady {
 			continue
 		}
-		if limits.inPlaceUpdate && !reclaimSurge {
+		if !reclaimSurge && (limits.inPlaceUpdate || groupSetOnlyReplicasChanged(child, update.template)) {
 			if err := r.updateRollingGroupSetChild(ctx, set, child, update); err != nil {
 				return changed, err
 			}
