@@ -90,8 +90,8 @@ against the latest template cannot reconstruct an old-version group after deleti
 | Risk | Handling                                                                                                                                                                          |
 |------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Slow foreground deletion occupies an ordinal and consumes capacity | Count terminating children against the capacity limit and wait for deletion; do not reuse their names prematurely.                                                                |
-| Controllers write metadata onto child RBGs | Exclude one enumerated set of controller-owned keys from revision comparison, drift detection, and metadata sync; do not exempt all project-prefixed annotations.                                                                |
-| `InPlaceUpdate` leaves the child Ready while its workloads still run the old revision | RBG publishes `RollingUpdateInProgress=True` in the same reconcile, before it mutates any role workload, so an in-progress child can never lack the barrier. RBGSet requires that barrier to be absent-or-`False` for the current generation before spending another budget slot; an absent barrier is treated as ready only because the producer invariant rules out a missing barrier on a child that is actively rolling. See [Child Rollout Barrier](#child-rollout-barrier). |
+| Controllers write metadata onto child RBGs | Exclude explicitly enumerated system keys from revision identity, preserve child-owned values during sync, and still propagate template-owned compatibility annotations. Do not exempt all project-prefixed annotations. |
+| A metadata-only `InPlaceUpdate` retains old Ready and rollout conditions | Persist a new request with the child update; keep the child unavailable to the rollout budget until its controller acknowledges downstream completion. Include Pod-shaping group annotations in expected role hashes. See [Child Rollout Barrier](#child-rollout-barrier). |
 | Existing children differ when rolling updates are first enabled | Bootstrap one old revision from the lowest existing base ordinal; do not assume every child has that content. Recommend enabling on a converged set before changing its template. |
 | A child RBG's spec was edited directly, or predates `roleTemplates` propagation | Overwriting the whole child spec reconciles the drift back to the template; existing drifted children are rewritten once on upgrade. Bounded by the two fields `RoleBasedGroupSpec` has. Record it in the release notes as a behavior change rather than describing the legacy path as unchanged. |
 | Older clients read or write the set through v1alpha1 | The conversion webhook keeps round-trips lossless: `spec.rolloutStrategy` and the v1alpha2-only rollout status fields are stashed in `conversion.workloads.x-k8s.io/` annotations on the v1alpha1 view and restored on write, so a full-object write through the deprecated version does not drop the strategy or the revision bookkeeping. The rendered CRD manifests configure this webhook; a cluster whose CRD lacks it falls back to structural pruning, in which case v1alpha1 writes are not supported. |
@@ -102,6 +102,11 @@ against the latest template cannot reconstruct an old-version group after deleti
 
 The strategy is a flat, optional field on the **v1alpha2 RBGSet**, separate from
 `groupTemplate.spec.roles[].rolloutStrategy`.
+
+Both RBG API versions also expose the optional string
+`status.observedRolloutRequest`. This acknowledges the controller-owned
+`rbg.workloads.x-k8s.io/rollout-request` annotation on a child RBG; users do not
+set it in the group template. See [Child Rollout Barrier](#child-rollout-barrier).
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -189,11 +194,26 @@ child propagation byte-for-byte identical to the previous release.
 A child RBG is owned by its set, and the template is the source of truth for its
 spec. Editing a child directly is not a supported way to make one group differ.
 
-`syncRBGMetadata` reconciles a child's labels and annotations from the template
-but carries over the same enumerated controller-owned keys (including the
-`conversion.workloads.x-k8s.io/*` keys the v1alpha1 conversion may inject into
-`groupTemplate.annotations`). This prevents a wipe/re-patch oscillation between
-the set controller and the RBG controller or the conversion webhook.
+`syncRBGMetadata` preserves child-side values for the enumerated system keys,
+then applies template annotations over them. Excluding a key from revision
+identity does not exclude it from propagation. The rollout-request key is an
+exception: only the set controller generates it; template values cannot copy,
+reset, or override it.
+
+On the rolling path, creation uses the selected revision's spec and user
+metadata, then copies unversioned system annotations from the live template.
+These live annotations also converge in place on settled, partition-held, and
+retained surge children, independently of revision changes and rollout budgets.
+In particular, `conversion.workloads.x-k8s.io/v1alpha1-coordination` must reach
+every child so the RBG controller can reconcile its `CoordinatedPolicy`. Template
+absence does not erase child-side compatibility data.
+
+`conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy` is handled separately:
+its raw value is stored on the set-owned `ControllerRevision` metadata, while the
+translated gang configuration participates in the normalized template. Creation
+below partition restores the selected revision's policy rather than the live
+policy. Removing a policy only clears a child stash proven to originate from a
+set-owned snapshot; a child-only conversion stash is preserved.
 
 ### Revision Management
 
@@ -206,14 +226,18 @@ snapshot is reused rather than created on every reconcile.
   template and is owned by the set. Its numeric `revision` records the set
   generation at creation; the content-derived name is the template identity.
 - **Normalization:** Sort roles and role templates by name, normalize legacy
-  update-strategy spellings, and exclude set identity/revision labels and
-  controller-owned annotations. The excluded set is enumerated once and reused
-  for revision hashing, drift comparison, and metadata sync:
+  update-strategy spellings, and exclude set identity/revision labels and the
+  following enumerated system annotations from revision hashing and content
+  drift comparison:
   `rbg.workloads.x-k8s.io/discovery-config-mode`,
+  `rbg.workloads.x-k8s.io/rollout-request`,
   `conversion.workloads.x-k8s.io/v1alpha1-coordination`,
+  `conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy`,
   `conversion.workloads.x-k8s.io/v1alpha2-rollout-strategy`,
   `conversion.workloads.x-k8s.io/v1alpha2-rollout-status`.
-  User template metadata and role replica counts remain part of the revision.
+  The same key set identifies values to preserve during metadata sync, not keys
+  to discard from child creation or template propagation. User metadata,
+  translated gang settings, and role replica counts remain part of the revision.
 - **Current versus update:** `updateRevision` represents the desired template.
   On first entry, `currentRevision` is bootstrapped from the lowest existing
   base ordinal, or equals update when no base children exist. Thereafter, it is
@@ -240,8 +264,8 @@ snapshot is reused rather than created on every reconcile.
 | Existing set keeps a grandfathered role scaling adapter | Unsupported configuration: the set and the adapter both own role replicas, so either the set's propagation is rejected and its rollout stalls on that group, or the adapter's value is overwritten. Disable the adapter before opting in and keep it disabled; scale by editing the template instead. Admission does not remove such an adapter. |
 | Opt-in and template change happen together | Preserve the lowest existing base child's template as current; reconcile actual mismatches against update within partition and budgets. |
 | General template change | Update eligible outdated groups in descending ordinal order. `InPlaceUpdate` preserves the child UID and writes the whole target spec/metadata; `Recreate` preserves the name but changes the UID. |
-| Only `roles[].replicas` changes | Under `Recreate`, scale eligible children in place without consuming the recreation budget. Under `InPlaceUpdate`, the change follows the normal in-place budget because every spec change uses the same path. |
-| User template labels or annotations change | They participate in the revision. `InPlaceUpdate` syncs them onto the existing child; `Recreate` follows its group-recreation semantics. Controller-owned metadata remains excluded. |
+| Only `roles[].replicas` changes | Both strategies update eligible children in descending ordinal order under the normal availability budget and wait for downstream completion before advancing. `Recreate` preserves the child UID instead of deleting it; this avoids recreation, not availability accounting. |
+| User template labels or annotations change | They participate in the revision. `InPlaceUpdate` writes a new request with the metadata and keeps its budget slot occupied until downstream completion is acknowledged, even though child generation does not change. `Recreate` follows group-recreation semantics. System keys follow the separate propagation rules above. |
 | Set scales out | Missing new ordinals are created at update revision, even below partition. Existing surge children that become base children are retained and follow partition rules. The internal `groupset-observed-replicas` checkpoint distinguishes scale-out from replacement. |
 | Set scales down during rollout | Re-evaluate base and surge ranges. Remove excess children under the availability budget; children in the new surge range may remain until the partition batch can safely release them. |
 | A base RBG is deleted | Recreate a previously existing ordinal below partition from current revision; otherwise use update revision. Restore capacity without treating recovery alone as a new template rollout. |
@@ -258,10 +282,12 @@ must not lose that reference or the observed-replicas checkpoint.
 
 ### Availability and Surge
 
-A ready child is not terminating, has observed its current generation, and has
-`Ready=True`. For `InPlaceUpdate`, RBG must also report
-`RollingUpdateInProgress=False` for that generation; otherwise stale capacity
-could let the next ordinal start before the real downstream workload finished.
+`groupSetChildReady` is shared by both strategies. A ready child is not
+terminating, has `status.observedGeneration >= metadata.generation`, and has
+`Ready=True`. If a rollout request exists, its value must match
+`status.observedRolloutRequest`. A present `RollingUpdateInProgress` condition
+must be `False` with `observedGeneration >= metadata.generation`; a missing
+condition retains the legacy fallback, but never bypasses a pending request.
 Ready base and surge groups both contribute to serving capacity.
 
 Both strategies use authoritative API reads and an availability floor of
@@ -270,6 +296,15 @@ budget; an already-unready outdated group does not. Skip a budget-blocked
 candidate rather than preventing repair of lower, unready ordinals. `Recreate`
 uses foreground deletion with UID/resource-version preconditions and counts
 terminating objects toward creation capacity.
+
+The same admission check applies to `Recreate` replicas-only in-place updates:
+scaling a role from one to two replicas can make its RBG unready until the new
+replica is ready, even though the old replica continues serving. Updating a
+ready child therefore reserves one availability slot. The request remains
+unacknowledged until the desired workload capacity is updated and ready; only
+then may the next ready child advance. Existing ready surge can back a zero
+`maxUnavailable`, just as for a replacement. In-place scaling is not a separate,
+unbounded update path.
 
 `maxSurge` applies only to `Recreate`. Surge occupies ordinals
 `[replicas, replicas + maxSurge)` and serves like any other RBG. New surge
@@ -287,43 +322,74 @@ they cannot prevent external failures from reducing availability.
 
 ### Child Rollout Barrier
 
-`InPlaceUpdate` must not treat a child RBG as ready merely because the RBG
-object's `Ready` condition is true: the role-level workloads underneath can still
-be rolling their Pods to the new revision. To prevent the set from spending the
-next budget slot on stale capacity, each child RBG publishes a
-`RollingUpdateInProgress` condition that the set consumes as an additional
-readiness gate.
+A child matching the set revision has received the requested template; this is
+not evidence that its workloads have finished updating. In particular, a
+metadata-only child write does not increase `metadata.generation`, so old
+`Ready=True`, `observedGeneration`, and `RollingUpdateInProgress=False` values
+remain current until the child controller runs. Generation checks, expected
+workload identity, and a persistent request/acknowledgement close different parts
+of this asynchronous update window.
 
-**Producer.** During status construction the RBG controller checks every role's
-target workload with uncached (`apiReader`) reads. For each role it verifies that
-the workload is controlled by the RBG, is not terminating, carries the expected
-role-revision label, has observed the current generation (where the workload API
-exposes one), and that the live replicas/pods are at the desired count and on the
-expected revision. While any role has not reached that state,
-`RollingUpdateInProgress=True` is published with `ObservedGeneration` set to the
-RBG's current generation. Once every role is verified, the condition flips to
-`False` with the same `ObservedGeneration`.
+**Expected workload identity.** The RBG controller derives per-role hashes from
+the persisted role revision, then folds in two Pod-shaping group annotations:
+`rbg.workloads.x-k8s.io/group-exclusive-topology` when present and
+`rbg.workloads.x-k8s.io/group-gang-scheduling` only when its value is `"true"`.
+These inputs are combined with each role hash using FNV-32a and safe encoding.
+Without either input, the existing hash is unchanged. PodGroup-only settings,
+such as scheduling timeout, Volcano queue, and priority class, are not added to
+role hashes. A hash-only relabel of an already matching workload does not itself
+change its Pod template or require Pod replacement.
 
-**Ordering invariant.** The status — and therefore the barrier — is written during
-Step 4 of the reconcile, before Step 8 applies workload changes. A child whose
-spec was just changed still has an un-updated workload when the barrier is
-computed, so the barrier is published as `True` in the same reconcile that starts
-the child rolling. The barrier is never missing on a child that is actively
-rolling its own workloads.
+**Rollout condition.** During status construction, before workload application,
+the RBG controller checks every target workload with uncached (`apiReader`)
+reads. Each workload must be controlled by the RBG, not terminating, and carry
+the expected role-revision label. It must also have observed its generation
+where supported, with the desired live replica count, target revisions, and
+readiness. The controller publishes `RollingUpdateInProgress=True` while any
+role fails these checks and `False` when all pass; the condition and
+`status.observedGeneration` refer to the RBG generation being reconciled.
+Changing a Pod-shaping annotation therefore invalidates the old workload label,
+even though the RBG generation is unchanged. Workload template updates then
+increase the downstream generation, which prevents early completion while Pods
+are still rolling.
 
-**Consumer.** `groupSetChildReady` treats a child as ready only when the
-condition is absent, or when its `ObservedGeneration >= child.Generation` and its
-status is `False`; a condition that is `True`, or `False` but stamped with an
-older generation, makes the child not ready. An **absent** condition is treated
-as ready on purpose: it is the bootstrap path for a child that predates this
-feature and has not yet been reconciled by the upgraded RBG controller. Demanding
-the condition's presence instead would stall an existing set, because nothing
-else re-triggers the RBG controller for an already-converged child, so the set
-could wait out the informer resync period before it could spend its first budget
-slot. Treating absence as ready is safe because of the producer invariant above:
-the RBG controller publishes the barrier before it touches any role workload, so
-a child that is actively rolling its own workloads always carries
-`RollingUpdateInProgress=True` and can never be mistaken for ready.
+**Request writer.** In the rolling path, an in-place child template update,
+including the `Recreate` replicas-only fast path, advances
+`rbg.workloads.x-k8s.io/rollout-request` on that child in the same resource-version
+protected `Update` as the spec, metadata, and set revision label. The value is a
+per-child decimal counter, starting at `"1"` when no previous counter exists;
+actual later writes increment it. Reconciles that make no change do not advance
+it. The key is excluded from template identity and preserved during metadata
+sync, but is never copied from the template. Repeated content such as `A -> B -> A`
+therefore receives a new request rather than reusing an old acknowledgement.
+
+New children have no prior completed status to invalidate and receive no request
+on creation. The static path and unversioned compatibility-annotation convergence
+do not issue requests or acquire rolling budget; their existing independent
+propagation semantics are unchanged.
+
+**Acknowledgement writer.** RBG, not RBGSet, writes the optional string
+`status.observedRolloutRequest`, available in both API versions and preserved by
+conversion. For a pending request, it acknowledges only after policy migration,
+PodGroup reconciliation, role workload application, and orphan cleanup succeed.
+It then directly rechecks every role workload for rollout completion. Until all
+pass, the old acknowledgement remains, even if the pre-application status check
+reported `False`. The acknowledgement status patch carries existing conditions
+and role status through the shared SSA serializer; another status write must not
+clear it. Pending requests trigger a two-second requeue even when the condition
+currently reports `False`.
+
+**Consumer and recovery.** `groupSetChildReady` requires a matching
+request/acknowledgement whenever the annotation exists, in addition to generation,
+Ready, and rollout-condition checks. A mismatching request immediately consumes
+availability budget, before RBG has received the watch event. The request and
+acknowledgement persist on the child object, so controller restart or leader
+handover does not release the budget. A legacy child without a request retains
+the existing readiness fallback; a missing condition cannot release an issued
+request. Controller startup enqueues existing RBGs through the informer's initial
+list, so condition population does not depend on a future resync. Conditions
+remain necessary for independent RBGs and changes not initiated by RBGSet;
+request equality alone is not a general readiness guarantee.
 
 ### Status
 
@@ -334,6 +400,13 @@ a child that is actively rolling its own workloads always carries
 | `updatedReplicas`, `updatedReadyReplicas` | Non-terminating base groups matching update, and their ready subset; surge is excluded. |
 | `expectedUpdatedReplicas` | `replicas - partition`, the target batch size; not a cap on updated counters. |
 | `currentRevision`, `updateRevision` | Persisted old/full-completion reference and desired template identity. |
+
+On the child RBG, `status.observedRolloutRequest` identifies the last verified
+request, not the last request merely read by its controller. Pending requests
+exclude the child from `readyReplicas` and `updatedReadyReplicas`, even when its
+old `Ready=True` condition still describes serving Pods. RBGSet revision labels
+identify the applied template, while this acknowledgement and the child rollout
+condition determine when its update has completed.
 
 `Rolling` distinguishes `True/RolloutInProgress`, `False/PartitionComplete`,
 and `False/RolloutComplete`. `Ready` independently reflects serving capacity.
@@ -369,22 +442,38 @@ These are coverage plans, not a claim that every case is already automated.
   template metadata and role replicas do.
 - **Comparison**: an unlabeled child can still match the update revision; a
   matching label never masks content drift.
-- **Scale-only update**: under `Recreate`, a `roles[].replicas`-only change is
-  updated in place and advances the child revision label instead of recreating
-  the group; under `InPlaceUpdate`, the same diff is budget-paced like any other
-  spec change.
+- **Scale-only update**: both strategies pace role-replica changes under the same
+  availability budget; `Recreate` preserves the child UID and updates its revision
+  label rather than deleting it. With two ready groups and `maxUnavailable=1`,
+  an increase from one to two role replicas updates only the upper ordinal until
+  its downstream capacity is ready and its request is acknowledged.
 - **Budget resolution**: percentage rounding (surge up, unavailable down),
   negative values rejected, clamping to replicas, `InPlaceUpdate` ignoring stored
   surge, and resolved-zero budgets falling back to `maxUnavailable = 1`.
 - **Surge accounting**: created surge is bounded by remaining in-scope base
   replacements minus the unavailable budget, never by `maxSurge` alone.
-- **Child rollout barrier**: `RollingUpdateInProgress` is set while any target
-  role workload has not observed the new revision and is cleared only after every
-  role is verified; a stale-generation or `True` condition blocks the set budget,
-  while an absent condition is treated as ready so an existing set can bootstrap.
-- **Controller-owned annotation exclusion**: `discovery-config-mode` and the
-  `conversion.workloads.x-k8s.io/*` keys do not affect revision identity, and
-  `syncRBGMetadata` preserves them instead of wiping them.
+- **Child rollout barrier**: a stale-generation or non-`False` condition blocks
+  readiness; an issued request also blocks until the matching acknowledgement,
+  even when the generation and old conditions are unchanged.
+- **Metadata-only budget**: with multiple ordinals and `maxUnavailable=1`, repeated
+  reconciles cannot update the next child until the current child acknowledges
+  completion; metadata writes preserve UID, owner references, finalizers, and
+  generation.
+- **Request ownership**: template annotations cannot overwrite the request,
+  requests do not affect set revision identity, and repeated writes advance the
+  counter without reusing an old acknowledgement.
+- **Acknowledgement ordering**: status construction before workload application
+  never acknowledges a request; the post-application check requires every role
+  to be complete, and both SSA status writers preserve the acknowledgement.
+- **Role hashes**: topology changes and the enabled gang annotation alter
+  expected role hashes; unrelated metadata and PodGroup-only settings do not,
+  and absent Pod-shaping annotations preserve existing hashes.
+- **Controller-owned annotation exclusion**: enumerate hash-excluded keys while
+  preserving child-side stashes and propagating template-owned compatibility
+  data; PodGroupPolicy snapshots preserve below-partition recovery and distinguish
+  parent-managed policy removal from child-only conversion stashes.
+- **Conversion**: request annotations and acknowledgements round-trip between
+  v1alpha1 and v1alpha2 without loss.
 - **Admission**: create/update validation of both strategy modes, mode switches,
   `0%-100%` ceilings, newly enabled role scaling adapters, and grandfathering of
   already-enabled adapters.
@@ -395,19 +484,26 @@ These are coverage plans, not a claim that every case is already automated.
   surge group being replaced rather than retained.
 - Terminating children counted against creation capacity, and foreground deletion
   with UID/resource-version preconditions.
-- Availability accounting: ready groups consume the delete/update budget, unready
-  outdated groups do not, and a budget-blocked candidate does not block repair of
-  lower unready ordinals.
+- Availability accounting: ready groups consume the delete/update budget, including
+  `Recreate` replicas-only in-place updates; unready outdated groups do not, and a
+  budget-blocked candidate does not block repair of lower unready ordinals.
+- Recreate replica increase: extend the scale path to withhold readiness of each
+  added replica, assert the next child retains its old desired replica count and
+  UID, and release it only after downstream capacity and request acknowledgement
+  converge; ready RBG capacity stays above the configured floor.
 - In-place ordering: a higher ordinal is not released until its downstream
   workload reports completion, for both an environment change that replaces Pods
   and an image-only change that patches them.
-- Child rollout barrier end-to-end: the set does not advance the next ordinal
-  until the current child RBG's `RollingUpdateInProgress` condition is cleared
-  for the current generation.
-- Bootstrap barrier semantics: a converged child that predates the feature and
-  carries no `RollingUpdateInProgress` condition is treated as ready, so an
-  existing set can spend its first budget slot without waiting for a fresh RBG
-  reconcile.
+- Child rollout barrier: advance only after the current child has a matching
+  request acknowledgement and satisfies the current-generation rollout condition.
+- Metadata-only topology rollout: stateful and stateless RIS paths keep the lower
+  ordinal at its old revision while the upper child's new affinity reaches an
+  unready Pod; withhold simulated kubelet readiness before asserting the request
+  remains unacknowledged, then complete each child in descending order.
+- Bootstrap barrier semantics: a never-requested legacy child retains the
+  readiness fallback, but a missing condition cannot bypass an issued request.
+- Compatibility propagation: converted v1alpha1 coordination converges through
+  real policy SSA on settled and partition-held children without revision churn.
 - Scale subresource semantics: `status.replicas` includes surge while a rollout
   is in flight and returns to `spec.replicas` after surge reclamation.
 - Status stickiness: readiness loss after completion does not reopen `Rolling`
@@ -435,17 +531,33 @@ These are coverage plans, not a claim that every case is already automated.
 - **Surge**: surge backs a zero `maxUnavailable`, is released once the in-scope
   batch completes, and is never created when the unavailable budget already
   covers the work.
-- **Role scaling**: under `Recreate`, a `roles[].replicas` change scales groups
-  in place without group recreation; under `InPlaceUpdate`, it preserves the
-  child UID while respecting the normal update budget.
-- **Child rollout barrier**: the set does not start updating the next ordinal
-  until the active child reports `RollingUpdateInProgress=False` for the current
-  generation.
+- **Role scaling**: extend the `Recreate` scale case to increase each role from
+  one to two replicas with two child groups and `maxUnavailable=1`; both strategies
+  preserve child UIDs and respect the normal update budget, and the lower child
+  waits for the upper child's new replica to become ready and be acknowledged.
+- **Metadata-only child rollout**: use native Deployments with two groups and
+  `maxUnavailable=1`; add an unavailable topology key to keep the upper Pod
+  Pending, assert the lower child and Pod remain untouched for 20 seconds, then
+  withdraw the annotation and verify recovery, matching acknowledgement, stable
+  UIDs and generations, and `RolloutComplete`.
+- **Child rollout barrier**: the next ordinal waits for a matching request
+  acknowledgement plus the current-generation rollout condition; keep the existing
+  spec-change, partition, and replicas-only regression coverage.
 - **Scale subresource / HPA**: automated scaling through the scale subresource
   during surge is not a supported configuration; E2E coverage focuses on manual
   scaling and surge accounting.
 - **Admission**: create and update paths validate strategy-specific budgets,
   percentage ceilings, mode switches, and newly enabled role scaling adapters.
+
+Additional kind validation is manual, not additional automated E2E specs:
+verify an in-flight request survives controller restart; verify v1alpha1
+full-object and status-subresource writes preserve the acknowledgement; verify
+gang enable/disable updates PodGroup objects and Pod-template labels before
+acknowledgement. A scheduler-plugins CRD without the coscheduling plugin validates
+controller propagation only, not actual gang scheduling enforcement. The native
+Deployment case requires deprecated workload types enabled. The stateful RIS
+`A -> B -> A` early-rollback stall remains a separate known issue; the metadata
+budget fix does not claim to resolve it.
 
 ## Appendix
 
