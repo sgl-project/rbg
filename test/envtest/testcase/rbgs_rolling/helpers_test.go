@@ -390,6 +390,9 @@ func waitChildReady(ns, name string) {
 		if rolling != nil && (rolling.ObservedGeneration < child.Generation || rolling.Status != metav1.ConditionFalse) {
 			return fmt.Errorf("RoleBasedGroup %s has not finished updating its workloads", name)
 		}
+		if request, ok := child.Annotations[constants.RolloutRequestAnnotationKey]; ok && child.Status.ObservedRolloutRequest != request {
+			return fmt.Errorf("RoleBasedGroup %s has not acknowledged rollout request %s", name, request)
+		}
 		return nil
 	}, timeout, interval).Should(Succeed())
 }
