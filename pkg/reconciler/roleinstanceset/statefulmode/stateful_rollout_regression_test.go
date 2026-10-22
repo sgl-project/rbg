@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,7 +82,10 @@ func newRollbackTestHarness(t *testing.T, name string, replicas, partition, surg
 	}
 	key := getInstanceSetKey(set)
 	durationStore.Pop(key)
-	t.Cleanup(func() { durationStore.Pop(key) })
+	t.Cleanup(func() {
+		durationStore.Pop(key)
+		updateExpectations.DeleteExpectations(key)
+	})
 	return &rollbackTestHarness{set: set, current: current, intermediate: intermediate,
 		control: control, objects: objects, updater: updater}
 }
@@ -105,6 +109,51 @@ func (h *rollbackTestHarness) assertDeleted(t *testing.T, names ...string) {
 	t.Helper()
 	if !sets.New(h.objects.deleted...).Equal(sets.New(names...)) {
 		t.Fatalf("deleted = %v, want %v", h.objects.deleted, names)
+	}
+}
+
+func TestEarlyRollbackPersistsBeforeInPlaceUpdate(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		persistErr error
+	}{
+		{name: "persist before in-place update"},
+		{name: "failed persistence prevents in-place update", persistErr: errors.New("status write failed")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "rollback-in-place", 2, 1, 1)
+			h.set.Spec.UpdateStrategy.Type = workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType
+			h.updater.persistErr = tt.persistErr
+			target := h.instance(1, h.intermediate.Name, true)
+			status := &workloadsv1alpha2.RoleInstanceSetStatus{}
+			expected := &workloadsv1alpha2.RolloutReplacementState{
+				UpdateRevision: h.current.Name, Replicas: 2, Partition: 1,
+			}
+			inplace := &fakeInplaceControl{
+				canUpdateInPlace: true,
+				beforeUpdate: func() {
+					require.Equal(t, 1, h.updater.persistCalls, "intent must be written before the in-place API call")
+					require.Equal(t, expected, h.set.Status.RolloutReplacementState)
+				},
+			}
+			h.control.inplaceControl = inplace
+
+			_, err := h.control.applyTargetUpdate(context.Background(), h.set, status, target,
+				h.current, h.current, []*apps.ControllerRevision{h.current, h.intermediate}, false, false)
+			require.ErrorIs(t, err, tt.persistErr)
+			require.Equal(t, 1, h.updater.persistCalls)
+			h.assertDeleted(t)
+			if tt.persistErr != nil {
+				require.Zero(t, inplace.canUpdateCalls)
+				require.Zero(t, inplace.updateCalls, "failed persistence must leave the instance untouched")
+				require.Nil(t, h.set.Status.RolloutReplacementState)
+				require.Nil(t, status.RolloutReplacementState)
+				return
+			}
+			require.Equal(t, 1, inplace.canUpdateCalls)
+			require.Equal(t, 1, inplace.updateCalls, "the test must execute the in-place update path")
+			require.Equal(t, expected, status.RolloutReplacementState)
+		})
 	}
 }
 
@@ -193,6 +242,60 @@ func TestEarlyRollbackProtectsNewReplacementsAfterPartitionDecreases(t *testing.
 	replacement0.Status.Conditions[0].Status = v1.ConditionTrue
 	h.reconcile(t, replacement0, replacement1, surge2, surge3)
 	h.assertDeleted(t, surge2.Name, surge3.Name)
+}
+
+func TestEarlyRollbackProtectsNewReplacementsAfterScaleUp(t *testing.T) {
+	h := newRollbackTestHarness(t, "rollback-scale-up", 2, 1, 2)
+	// Recover an unfinished ordinal 1 replacement from the previously persisted
+	// scope. Scale-up alone does not extend it; replacing ordinal 2 must do so.
+	h.set.Status.UpdateRevision = h.current.Name
+	h.set.Status.RolloutReplacementState = &workloadsv1alpha2.RolloutReplacementState{
+		UpdateRevision: h.current.Name, Replicas: 2, Partition: 1,
+	}
+	h.set.Spec.Replicas = ptr.To[int32](3)
+	h.set.Generation++
+	base0 := h.instance(0, h.current.Name, true)
+	replacement1 := h.instance(1, h.current.Name, false)
+	base2 := h.instance(2, h.intermediate.Name, true)
+	surge3 := h.instance(3, h.current.Name, true)
+	surge4 := h.instance(4, h.current.Name, true)
+	expected := &workloadsv1alpha2.RolloutReplacementState{
+		UpdateRevision: h.current.Name, Replicas: 3, Partition: 1,
+	}
+	h.objects.beforeDelete = func(instance *workloadsv1alpha2.RoleInstance) error {
+		if instance.Name == base2.Name {
+			require.Equal(t, 1, h.updater.persistCalls)
+			require.Equal(t, expected, h.set.Status.RolloutReplacementState,
+				"the expanded scope must be persisted before replacing the new base ordinal")
+		}
+		return nil
+	}
+	h.reconcile(t, base0, replacement1, base2, surge3, surge4)
+	h.assertDeleted(t, base2.Name)
+	require.Equal(t, 1, h.updater.persistCalls)
+	require.Equal(t, expected, h.set.Status.RolloutReplacementState)
+
+	// Completing the original scope must not release surge while the newly
+	// recorded ordinal 2 is still unready at the rollback revision.
+	replacement1.Status.Conditions[0].Status = v1.ConditionTrue
+	replacement2 := h.instance(2, h.current.Name, false)
+	replacement2.Generation = 1
+	replacement2.Status.ObservedGeneration = 1
+	h.reconcile(t, base0, replacement1, replacement2, surge3, surge4)
+	h.assertDeleted(t)
+	require.Equal(t, expected, h.set.Status.RolloutReplacementState)
+
+	// Ready from an older generation is not completion of the replacement.
+	replacement2.Status.Conditions[0].Status = v1.ConditionTrue
+	replacement2.Generation++
+	h.reconcile(t, base0, replacement1, replacement2, surge3, surge4)
+	h.assertDeleted(t)
+	require.Equal(t, expected, h.set.Status.RolloutReplacementState)
+
+	replacement2.Status.ObservedGeneration = replacement2.Generation
+	h.reconcile(t, base0, replacement1, replacement2, surge3, surge4)
+	h.assertDeleted(t, surge3.Name, surge4.Name)
+	require.Nil(t, h.set.Status.RolloutReplacementState)
 }
 
 func TestEarlyRollbackWithoutSurgeSkipsReplacementStateWrite(t *testing.T) {

@@ -566,17 +566,22 @@ func (f *fakeStatefulStatusUpdater) PersistRolloutReplacementState(_ context.Con
 // fakeInplaceControl returns CanUpdateInPlace=false by default so progressUpdate
 // falls through to delete-and-recreate when the strategy allows fallback.
 type fakeInplaceControl struct {
-	canUpdateCalls int
-	updateCalls    int
+	canUpdateCalls   int
+	updateCalls      int
+	canUpdateInPlace bool
+	beforeUpdate     func()
 }
 
 func (f *fakeInplaceControl) CanUpdateInPlace(_, _ *apps.ControllerRevision, _ *instanceinplace.UpdateOptions) bool {
 	f.canUpdateCalls++
-	return false
+	return f.canUpdateInPlace
 }
 func (f *fakeInplaceControl) Update(_ *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, _ *instanceinplace.UpdateOptions) instanceinplace.UpdateResult {
 	f.updateCalls++
-	return instanceinplace.UpdateResult{InPlaceUpdate: false}
+	if f.beforeUpdate != nil {
+		f.beforeUpdate()
+	}
+	return instanceinplace.UpdateResult{InPlaceUpdate: f.canUpdateInPlace}
 }
 func (f *fakeInplaceControl) Refresh(_ *workloadsv1alpha2.RoleInstance, _ *instanceinplace.UpdateOptions) instanceinplace.RefreshResult {
 	return instanceinplace.RefreshResult{}
