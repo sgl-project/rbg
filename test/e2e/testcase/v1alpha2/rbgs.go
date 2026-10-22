@@ -447,6 +447,102 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 			runRbgSetPartitionRolloutCases(f)
 			runRbgSetPartitionRecoveryCases(f)
 			runRbgSetInPlaceUpdateCases(f)
+			runRbgSetMetadataOnlyCases(f)
+		},
+	)
+}
+
+// A metadata-only template change keeps every child's generation, so only the rollout
+// acknowledgement keeps the next ordinal waiting for the upper group's Pods.
+func runRbgSetMetadataOnlyCases(f *framework.Framework) {
+	ginkgo.It(
+		"InPlaceUpdate holds a metadata-only change on the upper group until its Pods roll out", func() {
+			// No node carries this key, so required affinity built from it can never be satisfied
+			// and the upper group's rollout cannot finish while the annotation is set.
+			const topology = "rbgs-e2e.workloads.x-k8s.io/absent-topology"
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(2).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
+			rbgset.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			role := &rbgset.Spec.GroupTemplate.Spec.Roles[0]
+			role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment"}
+			rollingUpdate := wrappersv2.BuildRollingUpdate(1, 0)
+			role.RolloutStrategy.RollingUpdate = &rollingUpdate
+			role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+			initial := f.ListRbgSetV2Children(rbgset)
+			generations := map[string]int64{}
+			for _, child := range initial {
+				generations[child.Name] = child.Generation
+			}
+
+			updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+				if rs.Spec.GroupTemplate.Annotations == nil {
+					rs.Spec.GroupTemplate.Annotations = map[string]string{}
+				}
+				rs.Spec.GroupTemplate.Annotations[constants.GroupExclusiveTopologyKey] = topology
+			})
+			upperHeld := func(g gomega.Gomega) {
+				children := f.ListRbgSetV2Children(rbgset)
+				g.Expect(framework.RbgSetV2ChildUIDs(children)).To(gomega.Equal(initialUIDs))
+				upper := framework.RbgSetV2ChildByOrdinal(children, 1)
+				g.Expect(upper.Annotations).To(gomega.HaveKeyWithValue(constants.GroupExclusiveTopologyKey, topology))
+				g.Expect(upper.Generation).To(gomega.Equal(generations[upper.Name]), "the change must stay metadata-only")
+				request := upper.Annotations[constants.RolloutRequestAnnotationKey]
+				g.Expect(request).NotTo(gomega.BeEmpty())
+				g.Expect(upper.Status.ObservedRolloutRequest).NotTo(gomega.Equal(request))
+				pod := rbgSetSinglePod(f, upper)
+				g.Expect(pod).NotTo(gomega.BeNil())
+				g.Expect(pod.Spec.Affinity).NotTo(gomega.BeNil())
+				g.Expect(pod.Spec.Affinity.PodAffinity).NotTo(gomega.BeNil())
+				g.Expect(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(
+					gomega.ContainElement(gomega.HaveField("TopologyKey", topology)))
+				g.Expect(rbgSetPodReady(pod)).To(gomega.BeFalse())
+
+				lower := framework.RbgSetV2ChildByOrdinal(children, 0)
+				g.Expect(lower.Annotations).NotTo(gomega.HaveKey(constants.GroupExclusiveTopologyKey),
+					"the lower group must wait for the upper group's Pods, not for one reconcile")
+				g.Expect(lower.Annotations).NotTo(gomega.HaveKey(constants.RolloutRequestAnnotationKey))
+				g.Expect(lower.Generation).To(gomega.Equal(generations[lower.Name]))
+				g.Expect(rbgSetPodReady(rbgSetSinglePod(f, lower))).To(gomega.BeTrue())
+
+				latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+				g.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+				g.Expect(meta.IsStatusConditionTrue(latest.Status.Conditions,
+					string(workloadsv1alpha2.RoleBasedGroupSetRolling))).To(gomega.BeTrue())
+			}
+			gomega.Eventually(upperHeld, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+			gomega.Consistently(upperHeld, 20, 2).Should(gomega.Succeed())
+
+			// Withdrawing the annotation is metadata-only as well; the held group recovers in place.
+			updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+				delete(rs.Spec.GroupTemplate.Annotations, constants.GroupExclusiveTopologyKey)
+			})
+			gomega.Eventually(func(g gomega.Gomega) {
+				children := f.ListRbgSetV2Children(rbgset)
+				g.Expect(framework.RbgSetV2ChildUIDs(children)).To(gomega.Equal(initialUIDs))
+				for i := range children {
+					child := &children[i]
+					g.Expect(child.Annotations).NotTo(gomega.HaveKey(constants.GroupExclusiveTopologyKey))
+					g.Expect(child.Generation).To(gomega.Equal(generations[child.Name]))
+					if request, ok := child.Annotations[constants.RolloutRequestAnnotationKey]; ok {
+						g.Expect(child.Status.ObservedRolloutRequest).To(gomega.Equal(request))
+					}
+					g.Expect(rbgSetPodReady(rbgSetSinglePod(f, child))).To(gomega.BeTrue())
+				}
+				latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+				g.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+				g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(2)))
+				rolling := meta.FindStatusCondition(latest.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+				g.Expect(rolling).NotTo(gomega.BeNil())
+				g.Expect(rolling.Status).To(gomega.Equal(metav1.ConditionFalse))
+				g.Expect(rolling.Reason).To(gomega.Equal("RolloutComplete"))
+			}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
 		},
 	)
 }

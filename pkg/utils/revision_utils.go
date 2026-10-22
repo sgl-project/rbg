@@ -395,6 +395,31 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 	return result, nil
 }
 
+// AddGroupAnnotationsToRoleHashes folds the group annotations that change generated Pod templates
+// into every role hash, so a metadata-only change still moves the workloads to a new revision.
+// Without such annotations the hashes are left unchanged.
+func AddGroupAnnotationsToRoleHashes(rbg *workloadsv1alpha2.RoleBasedGroup, hashes map[string]string) {
+	var inputs []byte
+	if topologyKey, found := rbg.GetExclusiveKey(); found {
+		inputs = fmt.Appendf(inputs, "%s=%s\x00", constants.GroupExclusiveTopologyKey, topologyKey)
+	}
+	// The gang annotation is only honored as "true" and only as a fallback, so absent and any
+	// other value build the same Pods.
+	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" {
+		inputs = fmt.Appendf(inputs, "%s=true\x00", constants.GangSchedulingAnnotationKey)
+	}
+	if len(inputs) == 0 {
+		return
+	}
+	for role, roleHash := range hashes {
+		hf := fnv.New32a()
+		hf.Write([]byte(roleHash))
+		hf.Write([]byte{0})
+		hf.Write(inputs)
+		hashes[role] = rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
+	}
+}
+
 // getRBGPatch returns a strategic merge patch that can be applied to restore a RoleBasedGroup to a
 // previous version.
 // Note: This approach creates a copy of the original RBG object before performing the serialization.

@@ -282,11 +282,16 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.cleanup(ctx, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.acknowledgeRolloutRequest(ctx, rbg, expectedRolesRevisionHash); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
 	// RI or LWS children can finish without changing their parent's aggregate
 	// counts. Recheck the barrier even when no workload status event is emitted.
-	if apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)) {
+	request := rbg.Annotations[constants.RolloutRequestAnnotationKey]
+	if apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)) ||
+		(request != "" && request != rbg.Status.ObservedRolloutRequest) {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -333,6 +338,7 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 		logger.Error(err, "Failed to get roles revision hash")
 		return nil, err
 	}
+	utils.AddGroupAnnotationsToRoleHashes(rbg, expectedRolesRevisionHash)
 
 	return expectedRolesRevisionHash, nil
 }
@@ -927,13 +933,19 @@ func toRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *ap
 		return nil
 	}
 	gvk := utils.GetRbgGVK()
+	status := applyconfiguration.RoleBasedGroupStatus().
+		WithObservedGeneration(rbg.Status.ObservedGeneration).
+		WithRoleStatuses(toRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
+		WithConditions(toConditionApplyConfigurations(rbg.Status.Conditions)...)
+	// Both status writers apply the whole status as one field manager, so omitting the
+	// acknowledgement from either would clear it.
+	if rbg.Status.ObservedRolloutRequest != "" {
+		status.WithObservedRolloutRequest(rbg.Status.ObservedRolloutRequest)
+	}
 	return applyconfiguration.RoleBasedGroup(rbg.Name, rbg.Namespace).
 		WithKind(gvk.Kind).
 		WithAPIVersion(gvk.GroupVersion().String()).
-		WithStatus(applyconfiguration.RoleBasedGroupStatus().
-			WithObservedGeneration(rbg.Status.ObservedGeneration).
-			WithRoleStatuses(toRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
-			WithConditions(toConditionApplyConfigurations(rbg.Status.Conditions)...))
+		WithStatus(status)
 }
 
 func toRoleStatusApplyConfiguration(roleStatus []workloadsv1alpha2.RoleStatus) []*applyconfiguration.RoleStatusApplyConfiguration {

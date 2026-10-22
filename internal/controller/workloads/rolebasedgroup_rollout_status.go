@@ -33,7 +33,27 @@ import (
 	inplaceinstance "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	risutils "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
+
+// Acknowledgement follows workload application, so pre-update capacity cannot satisfy a new request.
+func (r *RoleBasedGroupReconciler) acknowledgeRolloutRequest(
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, expectedHashes map[string]string,
+) error {
+	request := rbg.Annotations[constants.RolloutRequestAnnotationKey]
+	if request == "" || request == rbg.Status.ObservedRolloutRequest {
+		return nil
+	}
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		complete, err := r.roleWorkloadRolloutComplete(ctx, rbg, role, expectedHashes[role.Name])
+		if err != nil || !complete {
+			return err
+		}
+	}
+	rbg.Status.ObservedRolloutRequest = request
+	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
+}
 
 // targetRoleWorkload uses uncached reads: cached capacity counts may describe the
 // previous revision even after the RBG has observed a new generation.
