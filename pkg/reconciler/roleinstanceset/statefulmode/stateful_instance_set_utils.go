@@ -25,7 +25,6 @@ import (
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -275,6 +274,8 @@ type topology struct {
 	// in-flight early-rollback replacement. Used to gate surge allocation and to
 	// decide whether Phase C runs at all.
 	inRollout bool
+	// updatePending 仅供状态展示，保留暂停时尚未完成的更新事实。
+	updatePending bool
 }
 
 // computeMaxSurge resolves spec.UpdateStrategy.MaxSurge against the desired
@@ -596,6 +597,7 @@ func computeTopology(
 
 	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision)
 	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
+	t.updatePending = updatePending
 	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
 	if maxSurge == 0 {
 		return t, nil
@@ -641,13 +643,8 @@ func computeTopology(
 
 // isHealthy returns true if instance is healthy
 func isHealthy(instance *workloadsv1alpha2.RoleInstance) bool {
-	// Check if instance is ready
-	for _, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			return true
-		}
-	}
-	return false
+	ready, _ := inplaceutil.GetRoleInstanceControlReadiness(instance)
+	return ready
 }
 
 // isCreated returns true if instance has been created
@@ -671,16 +668,11 @@ func isInstanceRunningAndAvailable(instance *workloadsv1alpha2.RoleInstance, min
 		return false, 0
 	}
 
-	for _, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			availableFor := metav1.Now().Sub(cond.LastTransitionTime.Time)
-			minDuration := time.Duration(minReadySeconds) * time.Second
-			if availableFor < minDuration {
-				return false, minDuration - availableFor
-			}
-			return true, 0
-		}
+	_, readySince := inplaceutil.GetRoleInstanceControlReadiness(instance)
+	availableFor := metav1.Now().Sub(readySince.Time)
+	minDuration := time.Duration(minReadySeconds) * time.Second
+	if availableFor < minDuration {
+		return false, minDuration - availableFor
 	}
-
-	return false, 0
+	return true, 0
 }

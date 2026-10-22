@@ -23,9 +23,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	setstatus "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -77,13 +80,20 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return reconcile.Result{}, err
 	}
 
+	if set.DeletionTimestamp != nil {
+		if _, err := r.updateWaitingStatus(ctx, set, v1alpha2.RoleInstanceSetPhaseTerminating, v1alpha2.RoleInstanceSetReasonTerminating, corev1.ConditionFalse); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
+
 	// Clean up RoleInstances that belong to a different pattern than the current one.
 	// This handles the case where the pattern annotation is changed (stateful ↔ stateless),
 	// leaving behind instances from the old pattern that the new reconciler won't manage.
 	if requeue, err := r.cleanupStaleInstances(ctx, set); err != nil {
 		return reconcile.Result{}, err
 	} else if requeue {
-		return reconcile.Result{RequeueAfter: time.Second}, nil
+		_, statusErr := r.updateWaitingStatus(ctx, set, v1alpha2.RoleInstanceSetPhaseUpdating, v1alpha2.RoleInstanceSetReasonPatternMigration, corev1.ConditionTrue)
+		return reconcile.Result{RequeueAfter: time.Second}, statusErr
 	}
 
 	// Dispatch based on the role instance pattern annotation
@@ -96,9 +106,56 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return r.statefulMode.Reconcile(ctx, request)
 	default:
 		err := fmt.Errorf("unknown role instance pattern %q", pattern)
-		r.recorder.Event(set, corev1.EventTypeWarning, "UnknownRoleInstancePattern", err.Error())
+		changed, statusErr := r.updateWaitingStatus(ctx, set, set.Status.Phase, v1alpha2.RoleInstanceSetReasonInvalidSpec, corev1.ConditionFalse)
+		if statusErr != nil {
+			return reconcile.Result{}, statusErr
+		}
+		if changed && r.recorder != nil {
+			r.recorder.Event(set, corev1.EventTypeWarning, "UnknownRoleInstancePattern", err.Error())
+		}
 		return reconcile.Result{}, err
 	}
+}
+
+// updateWaitingStatus 不改变原模式分发和清理入口，仅补充已有早退路径的状态。
+func (r *RoleInstanceSetReconciler) updateWaitingStatus(ctx context.Context, set *v1alpha2.RoleInstanceSet, phase v1alpha2.RoleInstanceSetPhase, reason string, progressing corev1.ConditionStatus) (bool, error) {
+	changed := false
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		live := &v1alpha2.RoleInstanceSet{}
+		if err := r.client.Get(ctx, client.ObjectKeyFromObject(set), live); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		status := live.Status.DeepCopy()
+		currentPhase := phase
+		if reason == v1alpha2.RoleInstanceSetReasonInvalidSpec {
+			currentPhase = live.Status.Phase
+		}
+		setstatus.SetWaitingConditions(live, status, currentPhase, reason, progressing)
+		conditionChanged := false
+		for _, next := range status.Conditions {
+			if next.Type != v1alpha2.RoleInstanceSetConditionReady && next.Type != v1alpha2.RoleInstanceSetConditionProgressing {
+				continue
+			}
+			matched := false
+			for _, old := range live.Status.Conditions {
+				if old.Type == next.Type {
+					matched = old.Status == next.Status && old.Reason == next.Reason && old.Message == next.Message
+					break
+				}
+			}
+			conditionChanged = conditionChanged || !matched
+		}
+		if apiequality.Semantic.DeepEqual(live.Status, *status) {
+			return nil
+		}
+		live.Status = *status
+		if err := r.client.Status().Update(ctx, live); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		changed = conditionChanged
+		return nil
+	})
+	return changed, err
 }
 
 // cleanupStaleInstances lists all RoleInstances owned by the set and deletes those
@@ -107,6 +164,9 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, set *v1alpha2.RoleInstanceSet) (bool, error) {
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
+		if _, statusErr := r.updateWaitingStatus(ctx, set, set.Status.Phase, v1alpha2.RoleInstanceSetReasonInvalidSpec, corev1.ConditionFalse); statusErr != nil {
+			return false, statusErr
+		}
 		return false, err
 	}
 

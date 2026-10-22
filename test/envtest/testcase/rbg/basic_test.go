@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
@@ -52,6 +53,130 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 
 	AfterEach(func() {
 		testutil.DeleteNamespace(testNs)
+	})
+
+	Context("资源状态与兼容性", func() {
+		It("依赖等待保持原创建顺序，并在依赖解除后刷新状态", func() {
+			rbg := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Name: "status-dependency", Namespace: testNs}}
+			for _, name := range []string{"primary", "secondary"} {
+				role := workloadsv1alpha2.RoleSpec{
+					Name: name, Replicas: ptr.To[int32](1),
+					Pattern: workloadsv1alpha2.Pattern{StandalonePattern: &workloadsv1alpha2.StandalonePattern{TemplateSource: workloadsv1alpha2.TemplateSource{Template: ptr.To(nginxPodTemplate())}}},
+				}
+				if name == "secondary" {
+					role.Dependencies = []string{"primary"}
+				}
+				rbg.Spec.Roles = append(rbg.Spec.Roles, role)
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+			key := client.ObjectKeyFromObject(rbg)
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
+				progress := apimeta.FindStatusCondition(rbg.Status.Conditions, "Progressing")
+				g.Expect(progress).NotTo(BeNil())
+				g.Expect(progress.Reason).To(Equal(workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies))
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Accepted")).To(BeTrue())
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready")).To(BeFalse())
+			}, timeout, interval).Should(Succeed())
+			secondary := &workloadsv1alpha2.RoleInstanceSet{}
+			Expect(apierrors.IsNotFound(testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{Namespace: testNs, Name: rbg.GetWorkloadName(&rbg.Spec.Roles[1])}, secondary))).To(BeTrue())
+
+			for _, role := range []string{"primary", "secondary"} {
+				Eventually(func(g Gomega) {
+					pods := &corev1.PodList{}
+					g.Expect(testutil.K8sClient.List(testutil.Ctx, pods, client.InNamespace(testNs), client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name, constants.RoleNameLabelKey: role})).To(Succeed())
+					g.Expect(pods.Items).To(HaveLen(1))
+					testutil.SetPodRunningAndReady(&pods.Items[0])
+					g.Expect(testutil.K8sClient.Status().Update(testutil.Ctx, &pods.Items[0])).To(Succeed())
+				}, timeout, interval).Should(Succeed())
+			}
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready")).To(BeTrue())
+				g.Expect(apimeta.FindStatusCondition(rbg.Status.Conditions, "Progressing").Reason).To(Equal(workloadsv1alpha2.RoleBasedGroupReasonConverged))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("通过子状态 watch 刷新 Ready，并保留 phase 与自定义条件 schema", func() {
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "status-watch", Namespace: testNs},
+				Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{{Name: "worker", Replicas: ptr.To[int32](1), Pattern: workloadsv1alpha2.Pattern{StandalonePattern: &workloadsv1alpha2.StandalonePattern{TemplateSource: workloadsv1alpha2.TemplateSource{Template: ptr.To(nginxPodTemplate())}}}}}},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+			key := client.ObjectKeyFromObject(rbg)
+			setKey := types.NamespacedName{Namespace: testNs, Name: rbg.GetWorkloadName(&rbg.Spec.Roles[0])}
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
+				g.Expect(rbg.Status.Phase).To(Equal(workloadsv1alpha2.RoleBasedGroupPhaseRunning))
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready")).To(BeFalse())
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Accepted")).To(BeTrue())
+			}, timeout, interval).Should(Succeed())
+			generation := rbg.Generation
+			pods := &corev1.PodList{}
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.List(testutil.Ctx, pods, client.InNamespace(testNs), client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).To(Succeed())
+				g.Expect(pods.Items).To(HaveLen(1))
+			}, timeout, interval).Should(Succeed())
+			podKey := client.ObjectKeyFromObject(&pods.Items[0])
+			Eventually(func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
+					return err
+				}
+				testutil.SetPodRunningAndReady(pod)
+				return testutil.K8sClient.Status().Update(testutil.Ctx, pod)
+			}, timeout, interval).Should(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
+				g.Expect(rbg.Generation).To(Equal(generation))
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready")).To(BeTrue())
+				g.Expect(rbg.Status.Phase).To(Equal(workloadsv1alpha2.RoleBasedGroupPhaseRunning))
+				set := &workloadsv1alpha2.RoleInstanceSet{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
+				g.Expect(set.Status.Phase).To(Equal(workloadsv1alpha2.RoleInstanceSetPhaseRunning))
+			}, timeout, interval).Should(Succeed())
+
+			// 外部条件不要求新增字段，也不收紧自定义 reason。
+			raw := []byte(`{"status":{"conditions":[{"type":"example.com/External","status":"Unknown","reason":"external reason unchanged"}]}}`)
+			set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: setKey.Name, Namespace: testNs}}
+			Expect(testutil.K8sClient.Status().Patch(testutil.Ctx, set, client.RawPatch(types.MergePatchType, raw))).To(Succeed())
+			instances := &workloadsv1alpha2.RoleInstanceList{}
+			Expect(testutil.K8sClient.List(testutil.Ctx, instances, client.InNamespace(testNs), client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).To(Succeed())
+			Expect(instances.Items).To(HaveLen(1))
+			Expect(testutil.K8sClient.Status().Patch(testutil.Ctx, &instances.Items[0], client.RawPatch(types.MergePatchType, raw))).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
+				found := false
+				for _, c := range set.Status.Conditions {
+					if c.Type == "example.com/External" {
+						found = c.Reason == "external reason unchanged"
+					}
+				}
+				g.Expect(found).To(BeTrue())
+				oldVersion := &workloadsv1alpha1.RoleBasedGroup{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, oldVersion)).To(Succeed())
+				g.Expect(oldVersion.Status.Phase).To(Equal(workloadsv1alpha1.RoleBasedGroupPhaseRunning))
+			}, timeout, interval).Should(Succeed())
+
+			// 仅 Pod 状态下降，父 spec 不变也须重新报告 NotReady。
+			Eventually(func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
+					return err
+				}
+				for i := range pod.Status.Conditions {
+					if pod.Status.Conditions[i].Type == corev1.PodReady {
+						pod.Status.Conditions[i].Status = corev1.ConditionFalse
+					}
+				}
+				return testutil.K8sClient.Status().Update(testutil.Ctx, pod)
+			}, timeout, interval).Should(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, rbg)).To(Succeed())
+				g.Expect(rbg.Generation).To(Equal(generation))
+				g.Expect(apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready")).To(BeFalse())
+			}, timeout, interval).Should(Succeed())
+		})
 	})
 
 	Context("When creating a RoleBasedGroup", func() {

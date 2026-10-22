@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -151,12 +152,11 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
-	// Clear the in-memory restarting cache when instance becomes Ready
-	for _, cond := range newStatus.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			r.syncControl.ClearRestarting(instance)
-			break
-		}
+	// 状态成功持久化后，按原操作性健康条件清理重启缓存。
+	observed := *instance
+	observed.Status = newStatus
+	if ready, _ := inplaceutil.GetRoleInstanceControlReadiness(&observed); ready {
+		r.syncControl.ClearRestarting(instance)
 	}
 
 	if err = r.truncateHistory(filteredPods, revisions, currentRevision, updateRevision); err != nil {
@@ -186,14 +186,6 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 
 	var scaleRequeue time.Duration
 	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
-	if podsScaleErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
-			Status:             v1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Message:            podsScaleErr.Error(),
-		})
-	}
 	if scaling {
 		// Propagate Restarting condition only when scaling is active (restart-policy
 		// triggered deletion or pod creation is still in progress). Once scaling
@@ -230,14 +222,6 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 	}
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
-	if podsUpdateErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceFailedUpdate,
-			Status:             v1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Message:            podsUpdateErr.Error(),
-		})
-	}
 
 	return syncResult{
 		requeue: requeueDuration,

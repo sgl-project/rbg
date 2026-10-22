@@ -17,9 +17,14 @@ limitations under the License.
 
 package v1alpha2
 
+import (
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+)
+
 // RoleInstanceSetStatusApplyConfiguration represents a declarative configuration of the RoleInstanceSetStatus type for use
 // with apply.
 type RoleInstanceSetStatusApplyConfiguration struct {
+	Phase                   *workloadsv1alpha2.RoleInstanceSetPhase      `json:"phase,omitempty"`
 	ObservedGeneration      *int64                                       `json:"observedGeneration,omitempty"`
 	Replicas                *int32                                       `json:"replicas,omitempty"`
 	ReadyReplicas           *int32                                       `json:"readyReplicas,omitempty"`
@@ -40,6 +45,14 @@ type RoleInstanceSetStatusApplyConfiguration struct {
 // apply.
 func RoleInstanceSetStatus() *RoleInstanceSetStatusApplyConfiguration {
 	return &RoleInstanceSetStatusApplyConfiguration{}
+}
+
+// WithPhase sets the Phase field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Phase field is set to the value of the last call.
+func (b *RoleInstanceSetStatusApplyConfiguration) WithPhase(value workloadsv1alpha2.RoleInstanceSetPhase) *RoleInstanceSetStatusApplyConfiguration {
+	b.Phase = &value
+	return b
 }
 
 // WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value

@@ -652,10 +652,11 @@ func TestHasEqualCondition(t *testing.T) {
 				Status: workloadsv1alpha2.RoleInstanceStatus{
 					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
 						{
-							Type:    workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
-							Status:  corev1.ConditionTrue,
-							Reason:  "r",
-							Message: "m",
+							LastTransitionTime: metav1.Now(),
+							Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
+							Status:             corev1.ConditionTrue,
+							Reason:             "r",
+							Message:            "m",
 						},
 					},
 				},

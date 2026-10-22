@@ -24,11 +24,34 @@ import (
 type WarmupJobPhase string
 
 const (
-	WarmupJobPhaseNone      WarmupJobPhase = ""
-	WarmupJobPhaseRunning   WarmupJobPhase = "Running"
-	WarmupJobPhasePaused    WarmupJobPhase = "Paused"
-	WarmupJobPhaseCompleted WarmupJobPhase = "Completed"
-	WarmupJobPhaseFailed    WarmupJobPhase = "Failed"
+	WarmupJobPhaseNone        WarmupJobPhase = ""
+	WarmupJobPhaseRunning     WarmupJobPhase = "Running"
+	WarmupJobPhasePaused      WarmupJobPhase = "Paused"
+	WarmupJobPhaseCompleted   WarmupJobPhase = "Completed"
+	WarmupJobPhaseFailed      WarmupJobPhase = "Failed"
+	WarmupJobPhaseTerminating WarmupJobPhase = "Terminating"
+)
+
+// Warmup 条件及原因是状态输出契约，不改变任务执行策略。
+const (
+	WarmupConditionComplete            = "Complete"
+	WarmupConditionFailed              = "Failed"
+	WarmupConditionSuspended           = "Suspended"
+	WarmupReasonWarming                = "Warming"
+	WarmupReasonSuspended              = "Suspended"
+	WarmupReasonSuspendedBySpec        = "SuspendedBySpec"
+	WarmupReasonNotSuspended           = "NotSuspended"
+	WarmupReasonResumed                = "Resumed"
+	WarmupReasonAllNodesWarmed         = "AllNodesWarmed"
+	WarmupReasonCompletedWithFailures  = "CompletedWithFailures"
+	WarmupReasonNoNodesMatched         = "NoNodesMatched"
+	WarmupReasonComplete               = "Complete"
+	WarmupReasonFailed                 = "Failed"
+	WarmupReasonTerminating            = "Terminating"
+	WarmupReasonGlobalTimeoutExceeded  = "GlobalTimeoutExceeded"
+	WarmupReasonMaxFailedNodesExceeded = "MaxFailedNodesExceeded"
+	WarmupReasonInvalidSpec            = "InvalidWarmupSpec"
+	WarmupReasonInvalidTarget          = "InvalidTarget"
 )
 
 // CustomizedActionCompletionPolicy controls how customized action containers

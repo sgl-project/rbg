@@ -18,12 +18,30 @@ package instance
 
 import (
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+func TestConditionTypeMergeAndTransitionTime(t *testing.T) {
+	oldTime := metav1.NewTime(time.Now().Add(-time.Hour))
+	c := workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady, Status: corev1.ConditionFalse, Reason: "Old", LastTransitionTime: oldTime}
+	instance := &workloadsv1alpha2.RoleInstance{Status: workloadsv1alpha2.RoleInstanceStatus{Conditions: []workloadsv1alpha2.RoleInstanceCondition{c, c}}}
+	c.Reason, c.Message = "New", "changed"
+	c.LastTransitionTime = metav1.Now()
+	SetRoleInstanceCondition(instance, c)
+	require.Len(t, instance.Status.Conditions, 1)
+	require.Equal(t, oldTime, instance.Status.Conditions[0].LastTransitionTime)
+	require.Equal(t, "New", instance.Status.Conditions[0].Reason)
+	c.Status, c.LastTransitionTime = corev1.ConditionTrue, metav1.Time{}
+	SetRoleInstanceCondition(instance, c)
+	require.True(t, instance.Status.Conditions[0].LastTransitionTime.After(oldTime.Time))
+}
 
 func TestIsRoleInstanceReady(t *testing.T) {
 	testCases := []struct {
@@ -77,6 +95,92 @@ func TestIsRoleInstanceReady(t *testing.T) {
 				t.Errorf("expected %v, got %v", tc.expected, ready)
 			}
 		})
+	}
+}
+
+func TestGetRoleInstanceControlReadiness(t *testing.T) {
+	created := metav1.NewTime(time.Now().Add(-3 * time.Minute))
+	podsReadyAt := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	inplaceReadyAt := metav1.NewTime(time.Now().Add(-time.Minute))
+	displayChangedAt := metav1.Now()
+	for _, gateStatus := range []corev1.ConditionStatus{"", corev1.ConditionUnknown, corev1.ConditionFalse, corev1.ConditionTrue} {
+		t.Run("外部gate/"+string(gateStatus), func(t *testing.T) {
+			instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: created}}
+			instance.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "example.com/ready"}}
+			instance.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+				{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse, LastTransitionTime: displayChangedAt},
+				{Type: workloadsv1alpha2.RoleInstanceAllPodsReady, Status: corev1.ConditionTrue, LastTransitionTime: podsReadyAt},
+			}
+			if gateStatus != "" {
+				instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: "example.com/ready", Status: gateStatus})
+			}
+			assertReadiness := func(obj *workloadsv1alpha2.RoleInstance, want bool, since metav1.Time) {
+				t.Helper()
+				before := obj.DeepCopy()
+				ready, gotSince := GetRoleInstanceControlReadiness(obj)
+				require.Equal(t, want, ready)
+				if want {
+					require.Equal(t, since, gotSince)
+				}
+				require.Equal(t, before, obj, "操作判断不能修改展示状态")
+			}
+			assertReadiness(instance, true, podsReadyAt)
+			require.False(t, IsRoleInstanceReady(instance), "展示读取仍以聚合 Ready 为准")
+
+			for _, status := range []corev1.ConditionStatus{"", corev1.ConditionFalse, corev1.ConditionUnknown} {
+				unready := instance.DeepCopy()
+				if status == "" {
+					unready.Status.Conditions = unready.Status.Conditions[:1]
+				} else {
+					GetRoleInstanceCondition(unready, workloadsv1alpha2.RoleInstanceAllPodsReady).Status = status
+				}
+				assertReadiness(unready, false, metav1.Time{})
+			}
+			unreported := instance.DeepCopy()
+			unreported.Status.Conditions = unreported.Status.Conditions[1:]
+			assertReadiness(unreported, false, metav1.Time{})
+
+			for _, none := range []bool{false, true} {
+				for _, status := range []corev1.ConditionStatus{"", corev1.ConditionFalse, corev1.ConditionUnknown, corev1.ConditionTrue} {
+					withInplace := instance.DeepCopy()
+					withInplace.Spec.ReadinessGates = append(withInplace.Spec.ReadinessGates, workloadsv1alpha2.RoleInstanceReadinessGate{ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady})
+					if none {
+						withInplace.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
+						GetRoleInstanceCondition(withInplace, workloadsv1alpha2.RoleInstanceAllPodsReady).Status = corev1.ConditionFalse
+					}
+					if status != "" {
+						withInplace.Status.Conditions = append(withInplace.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady, Status: status, LastTransitionTime: inplaceReadyAt})
+					}
+					assertReadiness(withInplace, status == corev1.ConditionTrue, inplaceReadyAt)
+					// 旧稀疏对象回退 Ready 时，仍不能跳过已声明的原地更新 gate。
+					withInplace.Status.Conditions = append(withInplace.Status.Conditions[:1], withInplace.Status.Conditions[2:]...)
+					withInplace.Status.Conditions[0].Status = corev1.ConditionTrue
+					ready, _ := GetRoleInstanceControlReadiness(withInplace)
+					require.Equal(t, status == corev1.ConditionTrue, ready)
+				}
+			}
+
+			none := instance.DeepCopy()
+			none.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
+			none.Status.Conditions = none.Status.Conditions[:1]
+			assertReadiness(none, true, created)
+			none.Status.Conditions[0].Status = corev1.ConditionTrue
+			none.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(time.Minute))
+			assertReadiness(none, true, created)
+		})
+	}
+
+	for _, status := range []corev1.ConditionStatus{corev1.ConditionTrue, corev1.ConditionFalse, corev1.ConditionUnknown} {
+		legacy := &workloadsv1alpha2.RoleInstance{Status: workloadsv1alpha2.RoleInstanceStatus{Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+			{Type: workloadsv1alpha2.RoleInstanceReady, Status: status, LastTransitionTime: podsReadyAt},
+		}}}
+		ready, since := GetRoleInstanceControlReadiness(legacy)
+		require.Equal(t, status == corev1.ConditionTrue, ready)
+		require.Equal(t, podsReadyAt, since)
+		legacy.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "example.com/ready"}}
+		ready, since = GetRoleInstanceControlReadiness(legacy)
+		require.Equal(t, status == corev1.ConditionTrue, ready)
+		require.Equal(t, podsReadyAt, since)
 	}
 }
 

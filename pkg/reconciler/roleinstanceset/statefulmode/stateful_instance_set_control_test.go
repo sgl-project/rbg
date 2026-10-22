@@ -25,10 +25,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
@@ -36,12 +39,47 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instancelisters "sigs.k8s.io/rbgs/client-go/listers/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 )
+
+func TestStatefulStatusConflictPreservesExternalConditions(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "default"}}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set).WithObjects(set).Build()
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+	writes := 0
+	c := interceptor.NewClient(base, interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cli client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		writes++
+		if writes == 1 {
+			live := &workloadsv1alpha2.RoleInstanceSet{}
+			require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(set), live))
+			live.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{Type: "External", Status: v1.ConditionTrue, Reason: "LatestExternalReason"}}
+			require.NoError(t, cli.Status().Update(ctx, live))
+			require.NoError(t, indexer.Add(live))
+			return apierrors.NewConflict(schema.GroupResource{Resource: "roleinstancesets"}, set.Name, nil)
+		}
+		return cli.SubResource(sub).Update(ctx, obj, opts...)
+	}})
+	updater := NewRealStatefulInstanceSetStatusUpdater(c, instancelisters.NewRoleInstanceSetLister(indexer))
+	status := &workloadsv1alpha2.RoleInstanceSetStatus{Phase: workloadsv1alpha2.RoleInstanceSetPhaseUpdating, CurrentRevision: "old", UpdateRevision: "new", Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{Type: workloadsv1alpha2.RoleInstanceSetConditionReady, Status: v1.ConditionFalse, Reason: workloadsv1alpha2.RoleInstanceSetReasonRollingUpdate}}}
+	require.NoError(t, updater.UpdateInstanceSetStatus(context.Background(), set, status))
+	got := &workloadsv1alpha2.RoleInstanceSet{}
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(set), got))
+	require.Equal(t, 2, writes)
+	require.Equal(t, "old", got.Status.CurrentRevision)
+	require.Len(t, got.Status.Conditions, 2)
+	require.Equal(t, "LatestExternalReason", got.Status.Conditions[0].Reason)
+	require.NoError(t, updater.UpdateInstanceSetStatus(context.Background(), got, got.Status.DeepCopy()))
+	require.Equal(t, 2, writes)
+}
 
 func TestTruncateHistoryKeepsLiveInstanceRevision(t *testing.T) {
 	limit := int32(0)
@@ -1210,6 +1248,45 @@ func TestProgressUpdateRetriesUnhealthyNonTargets(t *testing.T) {
 	}
 }
 
+func TestOrderedReadyWithCustomGateNotReady(t *testing.T) {
+	for _, gateStatus := range []v1.ConditionStatus{"", v1.ConditionUnknown, v1.ConditionFalse} {
+		t.Run(string(gateStatus), func(t *testing.T) {
+			set := buildSet("custom-gate", 2, nil, nil)
+			first := buildInst(set.Name, 0, testUpdateRev, false, true)
+			first.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "example.com/ready"}}
+			oldTime := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+			first.Status.Conditions = append(first.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceAllPodsReady, Status: v1.ConditionTrue, LastTransitionTime: oldTime})
+			if gateStatus != "" {
+				first.Status.Conditions = append(first.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: "example.com/ready", Status: gateStatus})
+			}
+			before := first.DeepCopy()
+			objects := &fakeInstanceObjectManager{}
+			control := &defaultStatefulInstanceSetControl{instanceControl: NewStatefulInstanceControlFromManager(objects, record.NewFakeRecorder(10))}
+			instances := []*workloadsv1alpha2.RoleInstance{first, buildInst(set.Name, 1, testUpdateRev, false, false)}
+			status := &workloadsv1alpha2.RoleInstanceSetStatus{}
+			for i := range instances {
+				exit, _, err := control.processReplica(context.Background(), set, set, true, instances, i, status, 0)
+				require.NoError(t, err)
+				if exit {
+					break
+				}
+			}
+			require.Equal(t, []string{set.Name + "-1"}, objects.created)
+			require.Empty(t, objects.deleted)
+			available, wait := isInstanceRunningAndAvailable(first, 60)
+			require.True(t, available, "自定义 gate 不应重置原健康等待时间")
+			require.Zero(t, wait)
+			require.True(t, isInstanceAvailable(first, 60))
+			require.False(t, isInstanceAvailable(first, 180), "基础条件仍需满足完整等待时间")
+			updateStatus(status, 60, &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testUpdateRev}}, &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testUpdateRev}}, []*workloadsv1alpha2.RoleInstance{first})
+			require.EqualValues(t, 1, status.ReadyReplicas)
+			require.EqualValues(t, 1, status.AvailableReplicas)
+			require.EqualValues(t, 1, status.UpdatedReadyReplicas)
+			require.Equal(t, before, first)
+		})
+	}
+}
+
 func TestUpdateStatefulInstanceSetOrderedReadyRetriesUnhealthyTarget(t *testing.T) {
 	resetInstanceUnhealthySince()
 	t.Cleanup(func() {
@@ -1439,7 +1516,9 @@ func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
 				base := buildInst(set.Name, 0, rolledForwardRev.Name, tt.ready, true)
 				surge := buildInst(set.Name, 1, updateRev.Name, true, true)
 				if !tt.terminating {
-					reconcile(base)
+					status := reconcile(base)
+					require.Equal(t, workloadsv1alpha2.RoleInstanceSetPhaseUpdating, status.Phase)
+					require.Equal(t, v1.ConditionFalse, status.Conditions[0].Status)
 					if len(objects.created) != 1 || objects.created[0] != surge.Name {
 						t.Fatalf("created = %v, want one rollback surge instance", objects.created)
 					}
@@ -1473,7 +1552,9 @@ func TestEarlyRollbackKeepsSurgeUntilReplacementIsReady(t *testing.T) {
 				}
 				replacement := buildInst(set.Name, 0, updateRev.Name, false, true)
 				replacement.Generation = 2
-				reconcile(replacement, surge)
+				status := reconcile(replacement, surge)
+				require.Equal(t, workloadsv1alpha2.RoleInstanceSetPhaseUpdating, status.Phase)
+				require.Equal(t, v1.ConditionFalse, status.Conditions[0].Status)
 				if len(objects.deleted) != 0 {
 					t.Fatalf("deleted surge before replacement was ready: %v", objects.deleted)
 				}

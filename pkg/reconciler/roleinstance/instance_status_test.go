@@ -17,14 +17,197 @@ limitations under the License.
 package roleinstance
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+func TestInstanceReadyGates(t *testing.T) {
+	for _, gateType := range []workloadsv1alpha2.RoleInstanceConditionType{workloadsv1alpha2.RoleInstanceInPlaceUpdateReady, workloadsv1alpha2.RoleInstanceCustomReady, "example.com/ready"} {
+		for _, gateStatus := range []corev1.ConditionStatus{"", corev1.ConditionUnknown, corev1.ConditionFalse, corev1.ConditionTrue} {
+			for _, policy := range []workloadsv1alpha2.RoleInstanceReadyPolicyType{"", workloadsv1alpha2.RoleInstanceReadyOnAllPodReady, workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone} {
+				t.Run(string(gateType)+"/"+string(gateStatus)+"/"+string(policy), func(t *testing.T) {
+					instance := &workloadsv1alpha2.RoleInstance{}
+					instance.Spec.ReadyPolicy = policy
+					instance.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: gateType}}
+					var gate *workloadsv1alpha2.RoleInstanceCondition
+					if gateStatus != "" {
+						gate = &workloadsv1alpha2.RoleInstanceCondition{Type: gateType, Status: gateStatus, Reason: "ExternalReason"}
+						instance.Status.Conditions = append(instance.Status.Conditions, *gate)
+					}
+					for _, podStatus := range []corev1.ConditionStatus{corev1.ConditionUnknown, corev1.ConditionFalse, corev1.ConditionTrue} {
+						pods := &workloadsv1alpha2.RoleInstanceCondition{Status: podStatus}
+						ready := getInstanceReadyCondition(instance, pods, gate)
+						want := gateStatus == corev1.ConditionTrue && (policy == workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone || podStatus == corev1.ConditionTrue)
+						require.Equal(t, want, ready.Status == corev1.ConditionTrue)
+						require.NotEmpty(t, ready.Reason)
+						if gate != nil {
+							require.Equal(t, "ExternalReason", gate.Reason)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestInstanceConditionStabilityAndRestartClear(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{}
+	instance.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
+	oldTime := metav1.NewTime(time.Now().Add(-time.Hour))
+	instance.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
+		{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue, Reason: "OldReady", LastTransitionTime: oldTime},
+		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue, Reason: workloadsv1alpha2.RoleInstanceReasonRestartPolicyTriggered, LastTransitionTime: oldTime},
+		{Type: workloadsv1alpha2.RoleInstanceFailedScale, Status: corev1.ConditionTrue},
+		{Type: workloadsv1alpha2.RoleInstanceFailedUpdate, Status: corev1.ConditionTrue},
+		{Type: "RollingUpdateInProgress", Status: corev1.ConditionTrue},
+		{Type: "External", Status: corev1.ConditionUnknown, Reason: "ExternalReason", LastTransitionTime: oldTime},
+	}
+	updater := &realStatusUpdater{}
+	status := &workloadsv1alpha2.RoleInstanceStatus{}
+	active := instance.Status.Conditions[1]
+	updater.setInstanceConditions(instance, status, []workloadsv1alpha2.RoleInstanceCondition{active})
+	got := instance.DeepCopy()
+	got.Status = *status
+	require.Equal(t, corev1.ConditionTrue, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceRestarting).Status)
+	updater.setInstanceConditions(instance, status, nil)
+	got.Status = *status
+	require.Len(t, status.Conditions, 3)
+	require.Equal(t, oldTime, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceReady).LastTransitionTime)
+	restarting := inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceRestarting)
+	require.Equal(t, corev1.ConditionFalse, restarting.Status)
+	require.Equal(t, workloadsv1alpha2.RoleInstanceReasonNoRestartInProgress, restarting.Reason)
+	before := status.DeepCopy()
+	updater.setInstanceConditions(got, status, nil)
+	require.Equal(t, before, status)
+}
+
+func TestRestartCompletionWithCustomGateNotReady(t *testing.T) {
+	for _, gateStatus := range []corev1.ConditionStatus{"", corev1.ConditionUnknown, corev1.ConditionFalse} {
+		t.Run(string(gateStatus), func(t *testing.T) {
+			instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "default"}}
+			instance.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "example.com/ready"}}
+			instance.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue, Reason: workloadsv1alpha2.RoleInstanceReasonRestartPolicyTriggered}}
+			if gateStatus != "" {
+				instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: "example.com/ready", Status: gateStatus, Reason: "ExternalReason"})
+			}
+			scheme := runtime.NewScheme()
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance).WithObjects(instance).Build()
+			updater := &realStatusUpdater{Client: c}
+			status := &workloadsv1alpha2.RoleInstanceStatus{}
+			updater.setInstanceConditions(instance, status, instance.Status.Conditions[:1])
+			got := instance.DeepCopy()
+			got.Status = *status
+			require.Equal(t, corev1.ConditionTrue, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceRestarting).Status, "活动重启继续保留")
+			updater.setInstanceConditions(instance, status, nil)
+			require.NoError(t, updater.updateStatus(context.Background(), instance, status))
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), got))
+			require.Equal(t, corev1.ConditionFalse, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceReady).Status)
+			require.Equal(t, corev1.ConditionFalse, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceRestarting).Status)
+			if gateStatus != "" {
+				require.Equal(t, "ExternalReason", inplaceutil.GetRoleInstanceCondition(got, "example.com/ready").Reason)
+			}
+		})
+	}
+}
+
+func TestInstanceStatusConflictPreservesLatestGates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"}}
+	instance.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
+	instance.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: workloadsv1alpha2.RoleInstanceCustomReady}}
+	inplaceutil.SetRoleInstanceCondition(instance, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceCustomReady, Status: corev1.ConditionTrue, Reason: "Old"})
+	base := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance).WithObjects(instance).Build()
+	writes := 0
+	c := interceptor.NewClient(base, interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cli client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		writes++
+		if writes == 1 {
+			live := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(instance), live))
+			inplaceutil.SetRoleInstanceCondition(live, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceCustomReady, Status: corev1.ConditionUnknown, Reason: "ConcurrentExternalReason"})
+			inplaceutil.SetRoleInstanceCondition(live, workloadsv1alpha2.RoleInstanceCondition{Type: "External", Status: corev1.ConditionTrue, Reason: "Preserve"})
+			require.NoError(t, cli.Status().Update(ctx, live))
+			return apierrors.NewConflict(schema.GroupResource{Resource: "roleinstances"}, instance.Name, nil)
+		}
+		return cli.SubResource(sub).Update(ctx, obj, opts...)
+	}})
+	updater := &realStatusUpdater{Client: c}
+	status := &workloadsv1alpha2.RoleInstanceStatus{}
+	updater.setInstanceConditions(instance, status, nil)
+	require.NoError(t, updater.updateStatus(context.Background(), instance, status))
+	require.Equal(t, 2, writes)
+	got := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(instance), got))
+	require.Len(t, got.Status.Conditions, 4)
+	require.Equal(t, "ConcurrentExternalReason", inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceCustomReady).Reason)
+	require.Equal(t, corev1.ConditionFalse, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceReady).Status)
+	require.Equal(t, got.Status.Conditions, status.Conditions)
+}
+
+func TestRestartCompletionConflictPreservesInPlaceGate(t *testing.T) {
+	for _, gateStatus := range []corev1.ConditionStatus{"", corev1.ConditionUnknown, corev1.ConditionFalse} {
+		t.Run(string(gateStatus), func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "restart-conflict", Namespace: "default"}}
+			instance.Spec.ReadinessGates = []workloadsv1alpha2.RoleInstanceReadinessGate{
+				{ConditionType: "example.com/ready"}, {ConditionType: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady},
+			}
+			inplaceutil.SetRoleInstanceCondition(instance, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue, Reason: workloadsv1alpha2.RoleInstanceReasonRestartPolicyTriggered})
+			inplaceutil.SetRoleInstanceCondition(instance, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady, Status: corev1.ConditionTrue})
+			base := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance).WithObjects(instance).Build()
+			writes := 0
+			c := interceptor.NewClient(base, interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cli client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				writes++
+				if writes == 1 {
+					live := &workloadsv1alpha2.RoleInstance{}
+					require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(instance), live))
+					live.Status.Conditions = live.Status.Conditions[:1]
+					if gateStatus != "" {
+						inplaceutil.SetRoleInstanceCondition(live, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceInPlaceUpdateReady, Status: gateStatus, Reason: "ConcurrentInPlaceUpdate"})
+					}
+					require.NoError(t, cli.Status().Update(ctx, live))
+					return apierrors.NewConflict(schema.GroupResource{Resource: "roleinstances"}, instance.Name, nil)
+				}
+				return cli.SubResource(sub).Update(ctx, obj, opts...)
+			}})
+			updater := &realStatusUpdater{Client: c}
+			status := &workloadsv1alpha2.RoleInstanceStatus{}
+			updater.setInstanceConditions(instance, status, nil)
+			computed := instance.DeepCopy()
+			computed.Status = *status
+			require.Equal(t, corev1.ConditionFalse, inplaceutil.GetRoleInstanceCondition(computed, workloadsv1alpha2.RoleInstanceRestarting).Status)
+			require.NoError(t, updater.updateStatus(context.Background(), instance, status))
+			require.Equal(t, 2, writes)
+			got := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(instance), got))
+			require.Equal(t, corev1.ConditionFalse, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceReady).Status)
+			require.Equal(t, corev1.ConditionTrue, inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceRestarting).Status)
+			ready, _ := inplaceutil.GetRoleInstanceControlReadiness(got)
+			require.False(t, ready, "冲突后不能绕过最新的原地更新 gate")
+			if gateStatus != "" {
+				require.Equal(t, "ConcurrentInPlaceUpdate", inplaceutil.GetRoleInstanceCondition(got, workloadsv1alpha2.RoleInstanceInPlaceUpdateReady).Reason)
+			}
+			require.Equal(t, got.Status.Conditions, status.Conditions)
+		})
+	}
+}
 
 func TestInconsistentBaselines(t *testing.T) {
 	tests := []struct {

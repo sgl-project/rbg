@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	podinplace "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 
@@ -664,12 +665,8 @@ func hasTriggerPolicyIgnore(pod *v1.Pod) bool {
 
 // wasInstanceReady checks if the Instance was previously in Ready state
 func wasInstanceReady(instance *workloadsv1alpha2.RoleInstance) bool {
-	for _, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			return true
-		}
-	}
-	return false
+	ready, _ := inplaceutil.GetRoleInstanceControlReadiness(instance)
+	return ready
 }
 
 // isInstanceRestarting checks if the Instance is currently in a restart-policy recreation cycle.
@@ -689,20 +686,11 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 	// Write to in-memory cache first for immediate visibility
 	restartingCache.Store(instanceKey(instance), true)
 
-	for i, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
-			instance.Status.Conditions[i].Status = v1.ConditionTrue
-			instance.Status.Conditions[i].LastTransitionTime = metav1.Now()
-			instance.Status.Conditions[i].Reason = "RestartPolicyTriggered"
-			instance.Status.Conditions[i].Message = "Instance is being recreated due to restart policy"
-			return
-		}
-	}
-	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+	inplaceutil.SetRoleInstanceCondition(instance, workloadsv1alpha2.RoleInstanceCondition{
 		Type:               workloadsv1alpha2.RoleInstanceRestarting,
 		Status:             v1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
-		Reason:             "RestartPolicyTriggered",
+		Reason:             workloadsv1alpha2.RoleInstanceReasonRestartPolicyTriggered,
 		Message:            "Instance is being recreated due to restart policy",
 	})
 }

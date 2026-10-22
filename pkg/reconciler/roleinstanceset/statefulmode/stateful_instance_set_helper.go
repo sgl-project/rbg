@@ -25,7 +25,6 @@ import (
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
@@ -37,6 +36,7 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 )
 
 var patchCodec = scheme.Codecs.LegacyCodec(workloadsv1alpha2.SchemeGroupVersion)
@@ -238,7 +238,8 @@ func updateStatus(
 
 // isInstanceAvailable returns true if instance is available (Ready for at least minReadySeconds)
 func isInstanceAvailable(instance *workloadsv1alpha2.RoleInstance, minReadySeconds int32) bool {
-	if !isHealthy(instance) {
+	ready, readySince := inplaceutil.GetRoleInstanceControlReadiness(instance)
+	if !ready {
 		return false
 	}
 
@@ -246,15 +247,8 @@ func isInstanceAvailable(instance *workloadsv1alpha2.RoleInstance, minReadySecon
 		return true
 	}
 
-	// Check if instance has been ready for minReadySeconds
-	for _, cond := range instance.Status.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			readyTime := cond.LastTransitionTime.Time
-			return time.Since(readyTime) >= time.Duration(minReadySeconds)*time.Second
-		}
-	}
-
-	return false
+	// 可用副本统计与原健康等待共用基础条件时间，外部 gate 不参与计时。
+	return time.Since(readySince.Time) >= time.Duration(minReadySeconds)*time.Second
 }
 
 // allowsBurst checks if the RoleInstanceSet allows parallel (burst) instance creation.
