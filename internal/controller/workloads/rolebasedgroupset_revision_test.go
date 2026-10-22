@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -656,9 +658,12 @@ func revisionTestGetChild(t *testing.T, r *RoleBasedGroupSetReconciler, set *wor
 	return child
 }
 
+// revisionTestMarkReady stands in for the RoleBasedGroup controller finishing a rollout, which
+// includes acknowledging the set's last rollout request.
 func revisionTestMarkReady(t *testing.T, r *RoleBasedGroupSetReconciler, child *workloadsv1alpha2.RoleBasedGroup) {
 	t.Helper()
 	child.Status.ObservedGeneration = child.Generation
+	child.Status.ObservedRolloutRequest = child.Annotations[constants.RolloutRequestAnnotationKey]
 	child.Status.Conditions = []metav1.Condition{{
 		Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionTrue, ObservedGeneration: child.Generation,
 	}}
@@ -750,6 +755,93 @@ func TestSyncRollingGroupSet_InPlaceUpdateBudgetAndOrder(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestRolloutRequestCannotBeOverriddenByTemplate(t *testing.T) {
+	revision := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+	set := revisionTestRollingSet(1, revision)
+	set.Spec.GroupTemplate.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: "0"}
+	child := revisionTestReadyChild(set, 0, revision)
+	child.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: "2"}
+	child.Status.ObservedRolloutRequest = "2"
+	r := &RoleBasedGroupSetReconciler{}
+	assert.False(t, r.needsTemplateAnnotationUpdate(set, child))
+	r.syncRBGMetadata(set, child)
+	assert.Equal(t, "2", child.Annotations[constants.RolloutRequestAnnotationKey])
+	requestGroupSetChildRollout(child)
+	assert.Equal(t, "3", child.Annotations[constants.RolloutRequestAnnotationKey])
+	assert.False(t, groupSetChildReady(child))
+	assert.NotContains(t, newRBGForSet(set, 0).Annotations, constants.RolloutRequestAnnotationKey)
+	assert.NotContains(t, normalizedGroupSetTemplate(set.Spec.GroupTemplate.DeepCopy()).Annotations, constants.RolloutRequestAnnotationKey)
+}
+
+func TestGroupSetChildReady_RolloutRequest(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		request, ack     string
+		hasRequest, want bool
+	}{
+		{name: "never requested child bootstraps as ready", want: true},
+		{name: "unacknowledged first request", hasRequest: true, request: "1"},
+		{name: "older acknowledgement", hasRequest: true, request: "2", ack: "1"},
+		{name: "acknowledged request", hasRequest: true, request: "2", ack: "2", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			revision := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+			child := revisionTestReadyChild(revisionTestRollingSet(1, revision), 0, revision)
+			if tt.hasRequest {
+				child.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: tt.request}
+			}
+			child.Status.ObservedRolloutRequest = tt.ack
+			assert.Equal(t, tt.want, groupSetChildReady(child))
+		})
+	}
+}
+
+// A metadata-only write keeps the child's generation, so its old Ready status stays current. The
+// slot it spends must stay spent until the child acknowledges the write, not just for one pass.
+func TestSyncRollingGroupSet_MetadataOnlyUpdateHoldsBudgetUntilAcknowledged(t *testing.T) {
+	current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+	update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{
+		constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname",
+	})}
+	set := revisionTestRollingSet(3, update)
+	r, updates := revisionTestRollingReconciler(t, set,
+		revisionTestReadyChild(set, 0, current), revisionTestReadyChild(set, 1, current), revisionTestReadyChild(set, 2, current))
+	var wantUpdates []string
+	for index := 2; index >= 0; index-- {
+		changed, _ := revisionTestSync(t, r, set, current, update)
+		require.True(t, changed)
+		child := revisionTestGetChild(t, r, set, index)
+		wantUpdates = append(wantUpdates, child.Name)
+		require.Equal(t, wantUpdates, *updates)
+		assert.Equal(t, "kubernetes.io/hostname", child.Annotations[constants.GroupExclusiveTopologyKey])
+		assert.Equal(t, int64(1), child.Generation)
+		assert.Equal(t, child.Generation, child.Status.ObservedGeneration)
+		assert.True(t, meta.IsStatusConditionTrue(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)))
+		assert.False(t, groupSetChildReady(child))
+
+		for attempt := 0; attempt < 2; attempt++ {
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			assert.False(t, changed, "an unacknowledged metadata-only write must keep holding its slot")
+			assert.Equal(t, wantUpdates, *updates)
+		}
+		// The child controller has seen the write and its workloads are still rolling.
+		child.Status.Conditions = append(child.Status.Conditions, metav1.Condition{
+			Type: string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress), Status: metav1.ConditionTrue,
+			ObservedGeneration: child.Generation, Reason: "RolesUpdating", LastTransitionTime: metav1.Now(),
+		})
+		require.NoError(t, r.client.Status().Update(context.Background(), child))
+		changed, _ = revisionTestSync(t, r, set, current, update)
+		assert.False(t, changed)
+		assert.Equal(t, wantUpdates, *updates)
+
+		revisionTestMarkReady(t, r, child)
+	}
+	changed, children := revisionTestSync(t, r, set, current, update)
+	assert.False(t, changed)
+	assert.True(t, r.groupSetPartitionReady(set, children, update, 0))
+	assert.Equal(t, []string{"test-2", "test-1", "test-0"}, *updates)
 }
 
 func TestSyncRollingGroupSet_InPlaceUpdateWaitsForObservedGeneration(t *testing.T) {
@@ -845,6 +937,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	}, child.Labels)
 	assert.Equal(t, map[string]string{
 		"changed": "new", "added": "new", constants.DiscoveryConfigModeAnnotationKey: "refine",
+		constants.RolloutRequestAnnotationKey: "1",
 	}, child.Annotations)
 	assert.Equal(t, original.Name, child.Name)
 	assert.Equal(t, original.Namespace, child.Namespace)
@@ -871,13 +964,20 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		constants.GroupSetNameLabelKey: set.Name, constants.GroupSetIndexLabelKey: "0", constants.GroupSetRevisionLabelKey: cleared.name,
 	}, child.Labels)
-	assert.Equal(t, map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine"}, child.Annotations)
+	assert.Equal(t, map[string]string{
+		constants.DiscoveryConfigModeAnnotationKey: "refine", constants.RolloutRequestAnnotationKey: "2",
+	}, child.Annotations)
 	assert.Equal(t, cleared.template.Spec, child.Spec)
 	assert.Equal(t, original.UID, child.UID)
 	assert.Equal(t, original.OwnerReferences, child.OwnerReferences)
 	assert.Equal(t, original.Finalizers, child.Finalizers)
 	assert.Equal(t, int64(2), child.Generation, "metadata-only Updates must not bump generation")
 	changed, children := revisionTestSync(t, r, set, current, cleared)
+	assert.False(t, changed)
+	assert.False(t, r.groupSetPartitionReady(set, children, cleared, 0),
+		"the unchanged generation must not let the stale Ready status complete a metadata-only update")
+	revisionTestMarkReady(t, r, child)
+	changed, children = revisionTestSync(t, r, set, current, cleared)
 	assert.False(t, changed)
 	assert.True(t, r.groupSetPartitionReady(set, children, cleared, 0))
 	assert.Equal(t, []string{"test-0", "test-0"}, *updates)
@@ -1111,6 +1211,12 @@ func TestSyncRollingGroupSet_RecreateToInPlaceUpdateReclaimsStoredSurgeWithinBud
 	}
 }
 
+func revisionTestUserAnnotations(annotations map[string]string) map[string]string {
+	result := maps.Clone(annotations)
+	delete(result, constants.RolloutRequestAnnotationKey)
+	return result
+}
+
 func TestSyncRollingGroupSet_InPlaceUpdateRapidTemplateChangeAndRollback(t *testing.T) {
 	for _, rollback := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rollback=%t", rollback), func(t *testing.T) {
@@ -1142,7 +1248,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateRapidTemplateChangeAndRollback(t *test
 			inFlight = revisionTestGetChild(t, r, set, 2)
 			assert.Equal(t, latest.template.Spec, inFlight.Spec)
 			assert.Equal(t, latest.name, inFlight.Labels[constants.GroupSetRevisionLabelKey])
-			assert.Equal(t, latest.template.Annotations, inFlight.Annotations)
+			assert.Equal(t, latest.template.Annotations, revisionTestUserAnnotations(inFlight.Annotations))
 			assert.Equal(t, types.UID("original-test-2"), inFlight.UID)
 			assert.Equal(t, int64(3), inFlight.Generation)
 			assert.Equal(t, int64(1), inFlight.Status.ObservedGeneration)
@@ -1175,7 +1281,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateRapidTemplateChangeAndRollback(t *test
 				child := &children.Items[i]
 				assert.Equal(t, types.UID("original-"+child.Name), child.UID)
 				assert.Equal(t, latest.template.Spec, child.Spec)
-				assert.Equal(t, latest.template.Annotations, child.Annotations)
+				assert.Equal(t, latest.template.Annotations, revisionTestUserAnnotations(child.Annotations))
 				assert.Equal(t, latest.name, child.Labels[constants.GroupSetRevisionLabelKey])
 				if rollback && child.Name != "test-2" {
 					assert.Equal(t, int64(1), child.Generation, "already matching groups must not be rewritten during rollback")

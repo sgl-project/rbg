@@ -532,6 +532,11 @@ type RoleBasedGroupStatus struct {
 
 	// Status of individual roles
 	RoleStatuses []RoleStatus `json:"roleStatuses"`
+
+	// ObservedRolloutRequest is the rbg.workloads.x-k8s.io/rollout-request annotation value of the
+	// object for which every role workload was last verified as rolled out.
+	// +optional
+	ObservedRolloutRequest string `json:"observedRolloutRequest,omitempty"`
 }
 
 // RoleStatus shows the current state of a specific role
