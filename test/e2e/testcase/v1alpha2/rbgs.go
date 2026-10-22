@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"time"
+
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -191,51 +193,7 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 
 			ginkgo.It(
 				"role replicas change scales groups in place without recreating them", func() {
-					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
-						WithReplicas(2).
-						WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
-
-					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
-
-					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
-					initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
-					gomega.Expect(initialUIDs).Should(gomega.HaveLen(2))
-					f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
-
-					// A replicas-only diff inside groupTemplate never falls back to recreate:
-					// the rbg groups keep their identity and the extra pods are added in place.
-					updateRbgSetV2(
-						f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
-							rs.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
-						},
-					)
-
-					var scaledUIDs map[string]types.UID
-					gomega.Eventually(
-						func() bool {
-							children := f.ListRbgSetV2Children(rbgset)
-							if len(children) != 2 || framework.CountRbgSetV2ReadyChildren(children) != 2 {
-								return false
-							}
-							uids := framework.RbgSetV2ChildUIDs(children)
-							for name, uid := range initialUIDs {
-								gomega.Expect(uids[name]).To(
-									gomega.Equal(uid),
-									"a replicas-only change must not delete the group %s", name,
-								)
-							}
-							for _, child := range children {
-								if countRbgV2ReadyPods(f, child.Namespace, child.Name) != 2 {
-									return false
-								}
-							}
-							scaledUIDs = uids
-							return true
-						}, utils.Timeout, utils.Interval,
-					).Should(gomega.BeTrue())
-
-					// The scaled-up shape holds: no group is reclaimed afterwards.
-					f.ExpectRbgSetV2ChildrenStable(rbgset, scaledUIDs)
+					testRbgSetRoleReplicasScaleInPlace(f)
 				},
 			)
 
@@ -450,6 +408,138 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 			runRbgSetMetadataOnlyCases(f)
 		},
 	)
+}
+
+// Keep the existing scale spec's closures out of the registrar's gocyclo budget.
+func testRbgSetRoleReplicasScaleInPlace(f *framework.Framework) {
+	rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+		WithReplicas(2).
+		WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
+	container := &rbgset.Spec.GroupTemplate.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0]
+	container.ReadinessProbe = &corev1.Probe{
+		ProbeHandler:        corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/bin/sh", "-c", "true"}}},
+		InitialDelaySeconds: 30,
+		PeriodSeconds:       1,
+	}
+
+	f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+	gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+	initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+	gomega.Expect(initialUIDs).To(gomega.HaveLen(2))
+	f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+	initialChildren := f.ListRbgSetV2Children(rbgset)
+	initialPods := rbgSetSinglePodUIDs(f, initialChildren)
+	initialUpper := framework.RbgSetV2ChildByOrdinal(initialChildren, 1)
+	initialLower := framework.RbgSetV2ChildByOrdinal(initialChildren, 0)
+	gomega.Expect(initialUpper).NotTo(gomega.BeNil())
+	gomega.Expect(initialLower).NotTo(gomega.BeNil())
+	previousRevision := initialLower.Labels[constants.GroupSetRevisionLabelKey]
+	gomega.Expect(previousRevision).NotTo(gomega.BeEmpty())
+	for _, child := range initialChildren {
+		gomega.Expect(child.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(1))))
+		gomega.Expect(countRbgV2ReadyPods(f, child.Namespace, child.Name)).To(gomega.Equal(1))
+	}
+
+	// Only replicas changes after creation: the old Pods are ready, but each new Pod
+	// waits for its own probe delay. Recreate must still honor the rollout budget.
+	updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+		rs.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
+	})
+	observeChildren := func() []workloadsv1alpha2.RoleBasedGroup {
+		children := f.ListRbgSetV2Children(rbgset)
+		gomega.Expect(framework.RbgSetV2ChildUIDs(children)).To(gomega.Equal(initialUIDs),
+			"a replicas-only change must preserve both groups without surge")
+		observed := make([]workloadsv1alpha2.RoleBasedGroup, 0, len(children))
+		for _, child := range children {
+			gomega.Expect(child.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
+			rolling := meta.FindStatusCondition(child.Status.Conditions,
+				string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+			request, requested := child.Annotations[constants.RolloutRequestAnnotationKey]
+			if child.Status.ObservedGeneration >= child.Generation &&
+				(!requested || child.Status.ObservedRolloutRequest == request) &&
+				(rolling == nil || (rolling.ObservedGeneration >= child.Generation && rolling.Status == metav1.ConditionFalse)) {
+				observed = append(observed, child)
+			}
+		}
+		gomega.Expect(framework.CountRbgSetV2ReadyChildren(observed)).To(gomega.BeNumerically(">=", 1),
+			"maxUnavailable=1 must hold on every sample, including generation and rollout acknowledgement")
+
+		upper := framework.RbgSetV2ChildByOrdinal(children, 1)
+		lower := framework.RbgSetV2ChildByOrdinal(children, 0)
+		gomega.Expect(upper).NotTo(gomega.BeNil())
+		gomega.Expect(lower).NotTo(gomega.BeNil())
+		if ptr.Deref(lower.Spec.Roles[0].Replicas, 0) == 2 {
+			// Check ordering throughout the rollout, not just in the held window.
+			gomega.Expect(upper.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+			gomega.Expect(upper.Status.ObservedGeneration).To(gomega.BeNumerically(">=", upper.Generation))
+			request := upper.Annotations[constants.RolloutRequestAnnotationKey]
+			gomega.Expect(request).NotTo(gomega.BeEmpty())
+			gomega.Expect(upper.Status.ObservedRolloutRequest).To(gomega.Equal(request),
+				"ordinal 0 must wait for ordinal 1's acknowledgement")
+			gomega.Expect(countRbgV2ReadyPods(f, upper.Namespace, upper.Name)).To(gomega.Equal(2),
+				"ordinal 0 must wait for ordinal 1's new Pod to become ready")
+		} else {
+			gomega.Expect(lower.Spec).To(gomega.Equal(initialLower.Spec))
+			gomega.Expect(lower.Generation).To(gomega.Equal(initialLower.Generation))
+			gomega.Expect(lower.Labels[constants.GroupSetRevisionLabelKey]).To(gomega.Equal(previousRevision))
+			gomega.Expect(lower.Annotations[constants.RolloutRequestAnnotationKey]).To(
+				gomega.Equal(initialLower.Annotations[constants.RolloutRequestAnnotationKey]))
+		}
+		return children
+	}
+	upperHeld := func(g gomega.Gomega) {
+		children := observeChildren()
+		upper := framework.RbgSetV2ChildByOrdinal(children, 1)
+		lower := framework.RbgSetV2ChildByOrdinal(children, 0)
+		g.Expect(upper.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+		g.Expect(upper.Generation).To(gomega.BeNumerically(">", initialUpper.Generation))
+		g.Expect(upper.Labels[constants.GroupSetRevisionLabelKey]).NotTo(gomega.Equal(previousRevision))
+		request := upper.Annotations[constants.RolloutRequestAnnotationKey]
+		g.Expect(request).NotTo(gomega.BeEmpty())
+		g.Expect(upper.Status.ObservedRolloutRequest).NotTo(gomega.Equal(request))
+		g.Expect(countRbgV2ReadyPods(f, upper.Namespace, upper.Name)).To(gomega.Equal(1))
+		pods := &corev1.PodList{}
+		g.Expect(f.Client.List(f.Ctx, pods, client.InNamespace(upper.Namespace), client.MatchingLabels{
+			constants.GroupNameLabelKey: upper.Name,
+		})).Should(gomega.Succeed())
+		g.Expect(pods.Items).To(gomega.HaveLen(2))
+		pending := 0
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			g.Expect(pod.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
+			if initialPods[upper.Name][pod.Name] == pod.UID {
+				g.Expect(rbgSetPodReady(pod)).To(gomega.BeTrue())
+			} else {
+				g.Expect(rbgSetPodReady(pod)).To(gomega.BeFalse())
+				pending++
+			}
+		}
+		g.Expect(pending).To(gomega.Equal(1), "the new Pod must be present but not ready")
+		g.Expect(lower.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(1))))
+		pod := rbgSetSinglePod(f, lower)
+		g.Expect(pod).NotTo(gomega.BeNil())
+		g.Expect(initialPods[lower.Name]).To(gomega.HaveKeyWithValue(pod.Name, pod.UID))
+		g.Expect(rbgSetPodReady(pod)).To(gomega.BeTrue())
+	}
+	gomega.Eventually(upperHeld, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	gomega.Consistently(upperHeld, 3*time.Second, utils.Interval).Should(gomega.Succeed())
+
+	// The probe becomes ready naturally; no second template change releases the rollout.
+	rolloutComplete := func(g gomega.Gomega) {
+		children := observeChildren()
+		g.Expect(framework.CountRbgSetV2ReadyChildren(children)).To(gomega.Equal(2))
+		for _, child := range children {
+			g.Expect(child.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+			g.Expect(countRbgV2ReadyPods(f, child.Namespace, child.Name)).To(gomega.Equal(2))
+			g.Expect(child.Status.ObservedGeneration).To(gomega.BeNumerically(">=", child.Generation))
+			request := child.Annotations[constants.RolloutRequestAnnotationKey]
+			g.Expect(request).NotTo(gomega.BeEmpty())
+			g.Expect(child.Status.ObservedRolloutRequest).To(gomega.Equal(request))
+		}
+		g.Expect(rbgSetRolloutSettled(f, rbgset, children, 0, previousRevision)).To(gomega.BeTrue())
+	}
+	gomega.Eventually(rolloutComplete, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	gomega.Consistently(rolloutComplete, 15*time.Second, 2*time.Second).Should(gomega.Succeed())
 }
 
 // A metadata-only template change keeps every child's generation, so only the rollout

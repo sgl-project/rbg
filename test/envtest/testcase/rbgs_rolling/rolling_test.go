@@ -320,10 +320,10 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Expect(set.Status.UpdateRevision).To(Equal(revision))
 	})
 
-	DescribeTable("paces InPlaceUpdate role scaling until downstream workloads are ready", func(pattern constants.InstancePatternType) {
-		setName := "rbgs-inplace"
+	DescribeTable("paces role scaling until downstream workloads are ready", func(strategy workloadsv1alpha2.GroupUpdateStrategyType, pattern constants.InstancePatternType) {
+		setName := "rbgs-scaling"
 		set := buildRollingSet(setName, testNs, 3, 1, 1, 0, 1)
-		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		set.Spec.RolloutStrategy.Type = strategy
 		for i := range set.Spec.GroupTemplate.Spec.Roles {
 			role := &set.Spec.GroupTemplate.Spec.Roles[i]
 			role.Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
@@ -343,18 +343,30 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		for ordinal := 2; ordinal >= 1; ordinal-- {
 			child := waitChildRevision(testNs, setName, ordinal, newRevision)
 			Expect(child.UID).To(Equal(initialChildren[ordinal].UID))
-			Consistently(func(g Gomega) {
+			assertBlocked := func(g Gomega) {
 				children := fetchChildren(testNs, setName)
 				g.Expect(children).To(HaveLen(3))
 				for lower := 0; lower < ordinal; lower++ {
 					g.Expect(children).To(HaveKey(lower))
 					g.Expect(children[lower].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+					g.Expect(*children[lower].Spec.Roles[0].Replicas).To(Equal(int32(1)))
 				}
 				for index, initialChild := range initialChildren {
 					g.Expect(children[index].UID).To(Equal(initialChild.UID))
 				}
-				g.Expect(mustFetchSet(testNs, setName).Status.CurrentRevision).To(Equal(oldRevision))
-			}, 3*time.Second, interval).Should(Succeed())
+				current := children[ordinal]
+				g.Expect(current.Status.ObservedRolloutRequest).NotTo(Equal(current.Annotations[constants.RolloutRequestAnnotationKey]))
+				pods := &corev1.PodList{}
+				g.Expect(testutil.K8sClient.List(testutil.Ctx, pods, client.InNamespace(testNs),
+					client.MatchingLabels{constants.GroupNameLabelKey: current.Name})).To(Succeed())
+				g.Expect(pods.Items).To(HaveLen(2))
+				g.Expect(pods.Items).To(ContainElement(HaveField("Status.Phase", corev1.PodPending)))
+				set := mustFetchSet(testNs, setName)
+				g.Expect(set.Status.ReadyReplicas).To(Equal(int32(2)))
+				g.Expect(set.Status.CurrentRevision).To(Equal(oldRevision))
+			}
+			Eventually(assertBlocked, timeout, interval).Should(Succeed())
+			Consistently(assertBlocked, 3*time.Second, interval).Should(Succeed())
 			waitChildReady(testNs, child.Name)
 		}
 		partitioned := waitRollout(testNs, setName, "False=PartitionComplete")
@@ -372,8 +384,10 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 			Expect(child.UID).To(Equal(initialChildren[index].UID))
 		}
 	},
-		Entry("stateful role replica changes", constants.StatefulPattern),
-		Entry("stateless role replica changes", constants.StatelessPattern),
+		Entry("InPlaceUpdate stateful role replica changes", workloadsv1alpha2.InPlaceUpdateStrategyType, constants.StatefulPattern),
+		Entry("InPlaceUpdate stateless role replica changes", workloadsv1alpha2.InPlaceUpdateStrategyType, constants.StatelessPattern),
+		Entry("Recreate stateful role replica changes", workloadsv1alpha2.RecreateStrategyType, constants.StatefulPattern),
+		Entry("Recreate stateless role replica changes", workloadsv1alpha2.RecreateStrategyType, constants.StatelessPattern),
 	)
 
 	DescribeTable("paces real downstream updates before touching a lower RBG", func(imageOnly bool, pattern constants.InstancePatternType) {
