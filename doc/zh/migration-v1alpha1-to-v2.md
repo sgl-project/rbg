@@ -168,6 +168,6 @@ kubectl get customresourcedefinition \
 - **Pod 重建：** workload Kind 变化对选定 role 是破坏性变更，迁移期间该 role 的全部 Pod 可能重建。
 - **部分 ready：** 每次只迁移一个 role，不要自动化全部 role。
 - **业务状态：** 仅 ready 可能不足。数据库、缓存、会话状态、流量摘除和调度行为必须由业务负责人审查。
-- **旧工作负载残留：** RBG `0.9.0` 在弃用类型关闭时仍保留孤儿清理。除非控制器无法清理，否则不要手工删除旧工作负载；手工删除可能与替代对象创建竞争。
+- **旧工作负载残留：** 在 `controller.deprecatedWorkloadTypes.enabled=true` 时，孤儿清理可以在 role 切换到 `RoleInstanceSet` 后删除旧工作负载。除非控制器无法清理，否则不要手工删除旧工作负载，因为手工删除可能与替代对象创建竞争。所有 role 迁移完成前保持兼容模式开启；过早设置为 `false` 会关闭旧类型 RBAC、watch 和孤儿清理，可能留下旧工作负载。
 - **存储幽灵对象：** 如果启用转换的 CRD 的 `status.storedVersions` 仍包含 `v1alpha1`，后续版本移除该 API 时对象可能无法读取。升级超过 `0.9.0` 前必须完成存储检查。
 - **静默类型回落：** 未完成内容迁移就直接删除 workload-type 注解，会使 role 回落到 RoleInstanceSet。只有在 Pattern 和业务影响都经过审查后，才应执行该变更。

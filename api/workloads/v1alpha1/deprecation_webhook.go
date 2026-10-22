@@ -53,9 +53,9 @@ func (DeprecationWarningValidator) ValidateUpdate(
 }
 
 func (DeprecationWarningValidator) ValidateDelete(
-	_ context.Context, _ runtime.Object,
+	_ context.Context, obj runtime.Object,
 ) (admission.Warnings, error) {
-	return nil, nil
+	return warnV1alpha1(obj), nil
 }
 
 func warnV1alpha1(obj runtime.Object) admission.Warnings {

@@ -15,11 +15,11 @@ Check the controller:
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
 {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
 {{- if not $deprecatedEnabled }}
-NOTE: new uses of the deprecated workload types are DISABLED
+NOTE: compatibility for deprecated workload types is DISABLED
 (controller.deprecatedWorkloadTypes.enabled=false).
-Existing roles continue to reconcile. RBAC, watches, and orphan cleanup remain active so
-operators following the manual migration guide can remove old Deployment/StatefulSet/LeaderWorkerSet workloads.
-Set the value to true only as a temporary rollback window.
+This is the final cutoff: all remaining uses are rejected, and legacy RBAC, watches,
+and orphan cleanup are disabled. Set this value only after every role has migrated to
+RoleInstanceSet.
 {{- else }}
 NOTE: compatibility for existing deprecated workload types is ENABLED
 (controller.deprecatedWorkloadTypes.enabled=true).

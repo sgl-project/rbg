@@ -49,6 +49,20 @@ func TestDeprecationWarningValidatorReturnsAdmissionWarning(t *testing.T) {
 	assert.NotContains(t, warnings[0], "kubectl rbg migrate")
 }
 
+func TestDeprecationWarningValidatorReturnsAdmissionWarningOnDelete(t *testing.T) {
+	obj := rbgsV1alpha1ForDeprecationTest(WorkloadSpec{})
+	warnings, err := DeprecationWarningValidator{}.ValidateDelete(context.Background(), obj)
+	require.NoError(t, err)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "v1alpha1 is deprecated")
+
+	deprecatedValidator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: true}
+	warnings, err = deprecatedValidator.ValidateDelete(context.Background(), obj)
+	require.NoError(t, err)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "v1alpha1 is deprecated")
+}
+
 func TestDeprecatedWorkloadValidatorTransitionalAndFinalModes(t *testing.T) {
 	oldRole := rbgsV1alpha1ForDeprecationTest(WorkloadSpec{
 		APIVersion: "apps/v1",

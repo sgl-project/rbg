@@ -99098,6 +99098,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - clusterengineruntimeprofiles
   sideEffects: None
@@ -99118,6 +99119,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - instances
   sideEffects: None
@@ -99138,6 +99140,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - instancesets
   sideEffects: None
@@ -99158,6 +99161,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - rolebasedgroups
   sideEffects: None
@@ -99178,6 +99182,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - rolebasedgroupscalingadapters
   sideEffects: None
@@ -99198,6 +99203,7 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
     - rolebasedgroupsets
   sideEffects: None
