@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
+	gangcommon "sigs.k8s.io/rbgs/pkg/scheduler/common"
 )
 
 func rolloutTestScheme(t *testing.T) *runtime.Scheme {
@@ -355,6 +356,8 @@ func TestConstructRoleStatusesPublishesRolloutBarrier(t *testing.T) {
 		t.Run(test, func(t *testing.T) {
 			ctx := context.Background()
 			rbg, objects := rolloutTestFixture(t, "RoleInstanceSet")
+			rbg.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: "3"}
+			rbg.Status.ObservedRolloutRequest = "2"
 			rbg.Status.RoleStatuses = []workloadsv1alpha2.RoleStatus{{Name: "role", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1}}
 			rbg.Status.Conditions = []metav1.Condition{{
 				Type: string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress), Status: metav1.ConditionFalse,
@@ -394,6 +397,17 @@ func TestConstructRoleStatusesPublishesRolloutBarrier(t *testing.T) {
 			require.NotNil(t, condition)
 			assert.Equal(t, rbg.Generation, condition.ObservedGeneration)
 			assert.Equal(t, test != "complete", condition.Status == metav1.ConditionTrue)
+			assert.Equal(t, "2", got.Status.ObservedRolloutRequest, "status construction must not acknowledge a request before workload application")
+			require.NoError(t, r.acknowledgeRolloutRequest(ctx, rbg, map[string]string{"role": "target"}))
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
+			wantAck := "2"
+			if test == "complete" {
+				wantAck = "3"
+			}
+			assert.Equal(t, wantAck, got.Status.ObservedRolloutRequest)
+			require.NoError(t, r.setGangConfiguredCondition(ctx, rbg, &gangcommon.GangStrategy{}, nil))
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
+			assert.Equal(t, wantAck, got.Status.ObservedRolloutRequest, "the second SSA status writer must preserve acknowledgement")
 		})
 	}
 }

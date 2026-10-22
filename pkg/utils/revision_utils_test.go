@@ -647,6 +647,41 @@ func TestGetRolesRevisionHash(t *testing.T) {
 	})
 }
 
+func TestAddGroupAnnotationsToRoleHashes(t *testing.T) {
+	base := map[string]string{"router": "hash-router", "decode": "hash-decode"}
+	hashesFor := func(annotations map[string]string) map[string]string {
+		hashes := map[string]string{}
+		for role, hash := range base {
+			hashes[role] = hash
+		}
+		AddGroupAnnotationsToRoleHashes(&workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: annotations}}, hashes)
+		return hashes
+	}
+
+	// Existing workloads keep their revision labels unless a Pod-shaping annotation is set.
+	assert.Equal(t, base, hashesFor(nil))
+	assert.Equal(t, base, hashesFor(map[string]string{
+		"unrelated": "value", constants.GangSchedulingAnnotationKey: "false",
+		constants.GangSchedulingVolcanoQueueKey: "queue",
+	}))
+
+	zone := hashesFor(map[string]string{constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone"})
+	host := hashesFor(map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"})
+	gang := hashesFor(map[string]string{constants.GangSchedulingAnnotationKey: "true"})
+	both := hashesFor(map[string]string{
+		constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone", constants.GangSchedulingAnnotationKey: "true",
+	})
+	variants := []map[string]string{zone, host, gang, both}
+	for i, hashes := range variants {
+		assert.NotEqual(t, base["router"], hashes["router"])
+		assert.NotEqual(t, hashes["router"], hashes["decode"], "roles must keep distinct hashes")
+		for _, other := range variants[i+1:] {
+			assert.NotEqual(t, hashes["router"], other["router"])
+		}
+	}
+	assert.Equal(t, zone, hashesFor(map[string]string{constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone"}))
+}
+
 func TestRoleTemplateUpdatesAffectRevisionAndRoleHash(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha2.AddToScheme(scheme)

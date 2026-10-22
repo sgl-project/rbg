@@ -497,6 +497,70 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Entry("stateless image-only updates RI and Pod in place", true, constants.StatelessPattern),
 	)
 
+	// The topology annotation changes no RBG spec, so neither the child generation nor its Ready
+	// status moves when the set writes it; only the downstream Pod template does.
+	DescribeTable("paces a metadata-only topology change by its downstream rollout", func(pattern constants.InstancePatternType) {
+		setName := "rbgs-topology"
+		const topology = "kubernetes.io/hostname"
+		set := buildRollingSet(setName, testNs, 2, 1, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		role := &set.Spec.GroupTemplate.Spec.Roles[0]
+		role.Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
+		role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		oldRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+		before := fetchChildren(testNs, setName)
+
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			if set.Spec.GroupTemplate.Annotations == nil {
+				set.Spec.GroupTemplate.Annotations = map[string]string{}
+			}
+			set.Spec.GroupTemplate.Annotations[constants.GroupExclusiveTopologyKey] = topology
+		})
+		newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+		for ordinal := 1; ordinal >= 0; ordinal-- {
+			child := waitChildRevision(testNs, setName, ordinal, newRevision)
+			Expect(child.Generation).To(Equal(before[ordinal].Generation))
+			assertBlocked := func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for index := 0; index < ordinal; index++ {
+					g.Expect(children[index].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+					g.Expect(children[index].Annotations).NotTo(HaveKey(constants.GroupExclusiveTopologyKey))
+				}
+				current := children[ordinal]
+				g.Expect(current.Annotations).To(HaveKey(constants.RolloutRequestAnnotationKey))
+				g.Expect(current.Status.ObservedRolloutRequest).NotTo(Equal(current.Annotations[constants.RolloutRequestAnnotationKey]),
+					"the request must not be acknowledged before the topology reaches ready Pods")
+				pod := downstreamOf(g, current).pod
+				g.Expect(pod.Spec.Affinity).NotTo(BeNil())
+				g.Expect(pod.Spec.Affinity.PodAntiAffinity).NotTo(BeNil())
+				g.Expect(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution).
+					To(ContainElement(HaveField("TopologyKey", topology)))
+				g.Expect(podConditionStatus(pod, corev1.PodReady)).NotTo(Equal(corev1.ConditionTrue))
+				g.Expect(mustFetchSet(testNs, setName).Status.CurrentRevision).To(Equal(oldRevision))
+				state, err := rollingStateOf(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state).To(Equal(rolloutInProgress))
+			}
+			Eventually(assertBlocked, timeout, interval).Should(Succeed())
+			Consistently(assertBlocked, 3*time.Second, interval).Should(Succeed())
+			waitChildReady(testNs, child.Name)
+		}
+
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+		for ordinal, child := range fetchChildren(testNs, setName) {
+			Expect(child.UID).To(Equal(before[ordinal].UID))
+			Expect(child.Generation).To(Equal(before[ordinal].Generation))
+			Expect(child.Annotations).To(HaveKeyWithValue(constants.GroupExclusiveTopologyKey, topology))
+			Expect(child.Status.ObservedRolloutRequest).To(Equal(child.Annotations[constants.RolloutRequestAnnotationKey]))
+		}
+	},
+		Entry("stateful", constants.StatefulPattern),
+		Entry("stateless", constants.StatelessPattern),
+	)
+
 	It("defaults an empty rollout strategy through the CRD without a webhook", func() {
 		set := buildSet("rbgs-default", testNs, 1, 0, &workloadsv1alpha2.GroupSetRolloutStrategy{})
 		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
