@@ -24,6 +24,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -261,9 +262,19 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 	podsCreationChan := make(chan *v1.Pod, len(newPods))
 	toCreatePodNum := 0
 	for _, p := range newPods {
-		if c.hasOrphanPod(p.Namespace, p.Name) {
-			if isGangSchedulingEnabled(updateInstance) {
-				return false, fmt.Errorf("orphan pod %v has not been gc, fail to create new pod", klog.KObj(p))
+		existingPod, err := c.getExistingPod(ctx, p.Namespace, p.Name)
+		if err != nil {
+			return false, err
+		}
+		if existingPod != nil {
+			if !metav1.IsControlledBy(existingPod, updateInstance) {
+				// Return an error so controller-runtime retries with exponential
+				// backoff. This covers both a Pod awaiting GC and a permanent name
+				// collision without creating a fixed-interval reconcile loop.
+				return false, fmt.Errorf(
+					"pod %s is not controlled by RoleInstance %s (UID %s)",
+					klog.KObj(existingPod), klog.KObj(updateInstance), updateInstance.UID,
+				)
 			}
 			continue
 		}
@@ -299,10 +310,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 		atomic.AddInt64(&created, 1)
 		return nil
 	})
-	if created == 0 {
-		return false, err
-	}
-	return true, err
+	return created > 0, err
 }
 
 func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, podsToDelete []*v1.Pod) (bool, error) {
@@ -319,10 +327,15 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 	return modified, nil
 }
 
-func (c *realControl) hasOrphanPod(namespace, name string) bool {
-	pod := new(v1.Pod)
-	err := c.Get(context.TODO(), client.ObjectKey{Namespace: namespace, Name: name}, pod)
-	return err == nil
+func (c *realControl) getExistingPod(ctx context.Context, namespace, name string) (*v1.Pod, error) {
+	pod := &v1.Pod{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return pod, nil
 }
 
 func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) error {

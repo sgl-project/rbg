@@ -22,10 +22,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -3214,4 +3217,80 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		assert.Equal(t, time.Duration(0), result,
 			"backoff should not freeze rolling updates when CurrentRevision != UpdateRevision")
 	})
+}
+
+func TestScaleErrorsAndCreatesAfterOrphanPodGC(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "role-0",
+			Namespace: "default",
+			UID:       "new-role-instance",
+			Labels: map[string]string{
+				constants.RoleTypeLabelKey: string(constants.PodTemplateTemplateType),
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "role",
+				Size: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "rbg:latest"}},
+					},
+				},
+			}},
+		},
+	}
+
+	// A StatefulSet-to-RoleInstanceSet migration can leave a same-name Pod owned
+	// by the removed legacy workload while the new RoleInstance already exists.
+	oldPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name,
+			Namespace: instance.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1",
+				Kind:       "StatefulSet",
+				Name:       "role",
+				UID:        "old-statefulset",
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(oldPod).
+		Build()
+	ctrl := &realControl{
+		Client:   fakeClient,
+		recorder: record.NewFakeRecorder(10),
+	}
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+
+	scaling, requeue, err := ctrl.Scale(ctx, instance, revision, revision, nil, nil, nil)
+	assert.ErrorContains(t, err, "is not controlled by RoleInstance")
+	assert.False(t, scaling)
+	assert.Zero(t, requeue,
+		"controller-runtime supplies exponential backoff for the returned error; no fixed requeue interval is needed")
+
+	podList := &corev1.PodList{}
+	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
+	assert.Len(t, podList.Items, 1, "the foreign same-name Pod must not be adopted or replaced before GC")
+
+	assert.NoError(t, fakeClient.Delete(ctx, oldPod))
+	scaling, requeue, err = ctrl.Scale(ctx, instance, revision, revision, nil, nil, nil)
+	assert.NoError(t, err)
+	assert.True(t, scaling)
+	assert.Zero(t, requeue)
+
+	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
+	assert.Len(t, podList.Items, 1, "the replacement Pod must be created after the old Pod is removed")
+	assert.Equal(t, instance.Name, podList.Items[0].Name)
+	assert.True(t, metav1.IsControlledBy(&podList.Items[0], instance))
 }
