@@ -23,8 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -40,6 +42,115 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+func TestWarmupConditionUniqueness(t *testing.T) {
+	status := workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhaseRunning, Conditions: []metav1.Condition{
+		{Type: workloadsv1alpha2.WarmupConditionComplete, Status: metav1.ConditionFalse},
+		{Type: workloadsv1alpha2.WarmupConditionComplete, Status: metav1.ConditionFalse},
+		{Type: "VolumeConflict", Status: metav1.ConditionTrue, Reason: "ExternalReason"},
+	}}
+	setWarmupConditions(&status, 3, false)
+	require.Len(t, status.Conditions, 4)
+	for _, c := range status.Conditions {
+		if c.Type != "VolumeConflict" {
+			require.False(t, c.LastTransitionTime.IsZero())
+			require.NotEmpty(t, c.Reason)
+		}
+	}
+	require.Equal(t, "ExternalReason", apimeta.FindStatusCondition(status.Conditions, "VolumeConflict").Reason)
+	before := status.DeepCopy()
+	setWarmupConditions(&status, 3, false)
+	require.Equal(t, before, &status)
+}
+
+func TestWarmupConditionProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		phase                       workloadsv1alpha2.WarmupJobPhase
+		desired, failures           int32
+		resumed                     bool
+		complete, failed, suspended bool
+		reason                      string
+	}{
+		{name: "运行", phase: workloadsv1alpha2.WarmupJobPhaseRunning, desired: 1, reason: "Warming"},
+		{name: "暂停", phase: workloadsv1alpha2.WarmupJobPhasePaused, desired: 1, suspended: true, reason: "Suspended"},
+		{name: "恢复", phase: workloadsv1alpha2.WarmupJobPhaseRunning, desired: 1, resumed: true, reason: "Warming"},
+		{name: "完成", phase: workloadsv1alpha2.WarmupJobPhaseCompleted, desired: 2, complete: true, reason: "AllNodesWarmed"},
+		{name: "容忍失败", phase: workloadsv1alpha2.WarmupJobPhaseCompleted, desired: 2, failures: 1, complete: true, reason: "CompletedWithFailures"},
+		{name: "无目标", phase: workloadsv1alpha2.WarmupJobPhaseCompleted, complete: true, reason: "NoNodesMatched"},
+		{name: "失败", phase: workloadsv1alpha2.WarmupJobPhaseFailed, desired: 1, failed: true, reason: "Failed"},
+		{name: "删除", phase: workloadsv1alpha2.WarmupJobPhaseTerminating, desired: 1, reason: "Terminating"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := metav1.NewTime(time.Unix(100, 0))
+			s := workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: tc.phase, Desired: tc.desired, Failed: tc.failures, StartTime: &now, CompletionTime: &now,
+				Conditions: []metav1.Condition{{Type: "VolumeConflict", Status: metav1.ConditionTrue, Reason: "ConflictingVolumeDefinitions", LastTransitionTime: now}}}
+			setWarmupConditions(&s, 3, tc.resumed)
+			require.Len(t, s.Conditions, 4)
+			require.Equal(t, tc.complete, apimeta.IsStatusConditionTrue(s.Conditions, "Complete"))
+			require.Equal(t, tc.failed, apimeta.IsStatusConditionTrue(s.Conditions, "Failed"))
+			require.Equal(t, tc.suspended, apimeta.IsStatusConditionTrue(s.Conditions, "Suspended"))
+			require.Equal(t, tc.reason, apimeta.FindStatusCondition(s.Conditions, "Complete").Reason)
+			if tc.resumed {
+				require.Equal(t, "Resumed", apimeta.FindStatusCondition(s.Conditions, "Suspended").Reason)
+			}
+			require.Equal(t, tc.phase, s.Phase)
+			require.Equal(t, &now, s.StartTime)
+			require.Equal(t, &now, s.CompletionTime)
+			before := s.DeepCopy()
+			setWarmupConditions(&s, 3, tc.resumed)
+			require.Equal(t, *before, s)
+			for _, c := range s.Conditions {
+				require.NotEmpty(t, c.Reason)
+				require.False(t, c.LastTransitionTime.IsZero())
+			}
+		})
+	}
+}
+
+func TestWarmupPauseConditionsPreserveActionsAndTime(t *testing.T) {
+	ctx := context.Background()
+	started := metav1.NewTime(time.Now().Add(-time.Minute))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "paused", Namespace: "default", UID: "paused", Generation: 1},
+		Spec:       workloadsv1alpha2.RoleBasedGroupWarmupSpec{Paused: ptr.To(true)},
+		Status:     workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhasePaused, StartTime: &started},
+	}
+	pod := makeWarmupPod("existing", "default", "paused", "paused", "node", corev1.PodRunning)
+	r := newWarmupReconciler(warmup, pod)
+	key := client.ObjectKeyFromObject(warmup)
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.NoError(t, r.Get(ctx, key, warmup))
+	require.True(t, apimeta.IsStatusConditionTrue(warmup.Status.Conditions, "Suspended"))
+	require.WithinDuration(t, started.Time, warmup.Status.StartTime.Time, time.Second)
+	before := warmup.Status.DeepCopy()
+	recorder := r.Recorder.(*record.FakeRecorder)
+	for len(recorder.Events) > 0 {
+		<-recorder.Events
+	}
+	_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.NoError(t, r.Get(ctx, key, warmup))
+	require.Equal(t, *before, warmup.Status)
+	require.Empty(t, recorder.Events)
+	pods := &corev1.PodList{}
+	require.NoError(t, r.List(ctx, pods))
+	require.Len(t, pods.Items, 1)
+	require.Equal(t, pod.Name, pods.Items[0].Name)
+}
+
+func TestWarmupConditionWriteFailureEmitsNoEvent(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{ObjectMeta: metav1.ObjectMeta{Name: "paused", Namespace: "default"}, Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{Paused: ptr.To(true)}}
+	r := newWarmupReconciler(warmup)
+	failure := errors.New("status write failed")
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		return failure
+	}})
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	require.ErrorIs(t, err, failure)
+	require.Empty(t, r.Recorder.(*record.FakeRecorder).Events)
+}
 
 func newWarmupTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()

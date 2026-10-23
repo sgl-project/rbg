@@ -94,6 +94,7 @@ func (c *realControl) Refresh(instance *workloadsv1alpha2.RoleInstance, opts *Up
 	newCondition := workloadsv1alpha2.RoleInstanceCondition{
 		Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		Status:             v1.ConditionTrue,
+		Reason:             workloadsv1alpha2.RoleInstanceReasonInPlaceUpdateReady,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
 	err := c.updateCondition(instance, newCondition)
@@ -140,7 +141,7 @@ func (c *realControl) Update(instance *workloadsv1alpha2.RoleInstance, oldRevisi
 			Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 			LastTransitionTime: metav1.NewTime(time.Now()),
 			Status:             v1.ConditionFalse,
-			Reason:             "StartInPlaceUpdate",
+			Reason:             workloadsv1alpha2.RoleInstanceReasonStartInPlaceUpdate,
 		}
 		if err := c.updateCondition(instance, newCondition); err != nil {
 			return UpdateResult{InPlaceUpdate: true, UpdateErr: err}
@@ -237,7 +238,13 @@ func containsReadinessGate(instance *workloadsv1alpha2.RoleInstance) bool {
 
 func hasEqualCondition(instance *workloadsv1alpha2.RoleInstance, newCondition *workloadsv1alpha2.RoleInstanceCondition) bool {
 	oldCondition := inplaceutil.GetRoleInstanceCondition(instance, newCondition.Type)
-	isEqual := oldCondition != nil && oldCondition.Status == newCondition.Status &&
+	count := 0
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type == newCondition.Type {
+			count++
+		}
+	}
+	isEqual := count == 1 && oldCondition != nil && !oldCondition.LastTransitionTime.IsZero() && oldCondition.Status == newCondition.Status &&
 		oldCondition.Reason == newCondition.Reason && oldCondition.Message == newCondition.Message
 	return isEqual
 }

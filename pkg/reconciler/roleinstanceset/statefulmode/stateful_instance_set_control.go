@@ -38,6 +38,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	setstatus "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 )
@@ -456,7 +457,9 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	}
 	topo, err := computeTopologyForReconcile(set, instances, currentRevision.Name, updateRevision.Name)
 	if err != nil {
-		return set.Status.DeepCopy(), err
+		status := set.Status.DeepCopy()
+		setstatus.SetWaitingConditions(set, status, status.Phase, workloadsv1alpha2.RoleInstanceSetReasonInvalidSpec, corev1.ConditionFalse)
+		return status, err
 	}
 
 	// Update the per-UID "first observed unhealthy" timestamps so the time
@@ -479,6 +482,9 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	status.LabelSelector = selector.String()
 	status.ExpectedUpdatedReplicas = int32(topo.replicas - topo.partition)
 	updateStatus(&status, minReadySeconds, currentRevision, updateRevision, instances)
+	defer func() {
+		setstatus.SetStatusConditions(set, &status, instances, topo.updatePending, topo.endOrdinal-len(instances))
+	}()
 
 	// ===============  Phase B — scale & identity  ==================
 	// Partition instances into in-range slots and condemned (out-of-range).

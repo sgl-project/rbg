@@ -20,13 +20,17 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -37,6 +41,53 @@ func newTestScheme() *runtime.Scheme {
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 	return scheme
+}
+
+func TestRISWaitingStatusPaths(t *testing.T) {
+	for _, mode := range []string{"migration", "invalid", "deleting"} {
+		t.Run(mode, func(t *testing.T) {
+			set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "default", UID: "set-uid"}}
+			set.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "set"}}
+			set.Spec.Replicas = ptr.To[int32](1)
+			set.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseRunning
+			wantPhase, wantReason := workloadsv1alpha2.RoleInstanceSetPhaseUpdating, workloadsv1alpha2.RoleInstanceSetReasonPatternMigration
+			objects := []client.Object{set}
+			switch mode {
+			case "migration":
+				objects = append(objects, &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "set-random", Namespace: set.Namespace, Labels: map[string]string{"app": "set"}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet"))}}})
+			case "invalid":
+				set.Annotations = map[string]string{constants.RoleInstancePatternKey: "invalid"}
+				wantPhase, wantReason = workloadsv1alpha2.RoleInstanceSetPhaseRunning, workloadsv1alpha2.RoleInstanceSetReasonInvalidSpec
+			case "deleting":
+				now := metav1.Now()
+				set.DeletionTimestamp, set.Finalizers = &now, []string{"test/hold"}
+				wantPhase, wantReason = workloadsv1alpha2.RoleInstanceSetPhaseTerminating, workloadsv1alpha2.RoleInstanceSetReasonTerminating
+			}
+			c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithStatusSubresource(set).WithObjects(objects...).Build()
+			dispatched := 0
+			r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10), statefulMode: reconcile.Func(func(context.Context, reconcile.Request) (reconcile.Result, error) {
+				dispatched++
+				return reconcile.Result{}, nil
+			})}
+			_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(set)})
+			if mode == "invalid" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			got := &workloadsv1alpha2.RoleInstanceSet{}
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(set), got))
+			require.Equal(t, wantPhase, got.Status.Phase)
+			require.Len(t, got.Status.Conditions, 2)
+			require.Equal(t, corev1.ConditionFalse, got.Status.Conditions[0].Status)
+			require.Equal(t, wantReason, got.Status.Conditions[0].Reason)
+			if mode == "deleting" {
+				require.Equal(t, 1, dispatched)
+			} else {
+				require.Zero(t, dispatched)
+			}
+		})
+	}
 }
 
 func TestInstanceBelongsToPattern(t *testing.T) {

@@ -34,6 +34,7 @@ import (
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	roleinstancelisters "sigs.k8s.io/rbgs/client-go/listers/workloads/v1alpha2"
+	setstatus "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 )
 
 var errRolloutSpecChanged = errors.New("RoleInstanceSet changed while persisting rollout replacement state")
@@ -78,14 +79,22 @@ func (ssu *realStatefulInstanceSetStatusUpdater) UpdateInstanceSetStatus(
 	working := set.DeepCopy()
 	// don't wait due to limited number of clients, but backoff after the default number of steps
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		working.Status = *status.DeepCopy()
-		updateErr := ssu.client.Status().Update(ctx, working)
-		if updateErr == nil {
-			if !equality.Semantic.DeepEqual(expectedReplacementState, working.Status.RolloutReplacementState) {
-				rolloutStatusExpectations.Expect(working)
-			}
-			set.Status = *status.DeepCopy()
+		merged := status.DeepCopy()
+		merged.Conditions = setstatus.MergeConditions(working.Status.Conditions, merged.Conditions)
+		if equality.Semantic.DeepEqual(working.Status, *merged) {
+			set.Status = *working.Status.DeepCopy()
 			set.ResourceVersion = working.ResourceVersion
+			return nil
+		}
+		candidate := working.DeepCopy()
+		candidate.Status = *merged
+		updateErr := ssu.client.Status().Update(ctx, candidate)
+		if updateErr == nil {
+			if !equality.Semantic.DeepEqual(expectedReplacementState, candidate.Status.RolloutReplacementState) {
+				rolloutStatusExpectations.Expect(candidate)
+			}
+			set.Status = *candidate.Status.DeepCopy()
+			set.ResourceVersion = candidate.ResourceVersion
 			return nil
 		}
 		if !apierrors.IsConflict(updateErr) {

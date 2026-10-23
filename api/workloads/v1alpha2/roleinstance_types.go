@@ -241,15 +241,32 @@ const (
 	RoleInstanceAllPodsReady RoleInstanceConditionType = "RoleInstanceAllPodsReady"
 
 	// RoleInstanceFailedScale indicates RoleInstance controller failed to create or delete pods.
+	// Deprecated: 不再持久化瞬态动作错误，使用原有错误返回和重试。
 	RoleInstanceFailedScale RoleInstanceConditionType = "FailedScale"
 
 	// RoleInstanceFailedUpdate indicates RoleInstance controller failed to update pods.
+	// Deprecated: 不再持久化瞬态动作错误，使用原有错误返回和重试。
 	RoleInstanceFailedUpdate RoleInstanceConditionType = "FailedUpdate"
 
 	// RoleInstanceRestarting indicates the instance is being recreated due to restart policy.
 	// While this condition is True, further restart-policy recreations are suppressed to
 	// prevent cascading restart loops.
 	RoleInstanceRestarting RoleInstanceConditionType = "Restarting"
+)
+
+// RI 内置条件原因；外部 readiness gate 的原因由各自 writer 保留。
+const (
+	RoleInstanceReasonReady                  = "Ready"
+	RoleInstanceReasonPodsReady              = "PodsReady"
+	RoleInstanceReasonPodsNotReady           = "PodsNotReady"
+	RoleInstanceReasonPodReadFailed          = "PodReadFailed"
+	RoleInstanceReasonAtLeastOnePodNotReady  = "AtLeastOnePodNotReady"
+	RoleInstanceReasonReadinessGatesNotReady = "ReadinessGatesNotReady"
+	RoleInstanceReasonInPlaceUpdateNotReady  = "InPlaceUpdateNotReady"
+	RoleInstanceReasonInPlaceUpdateReady     = "InPlaceUpdateReady"
+	RoleInstanceReasonStartInPlaceUpdate     = "StartInPlaceUpdate"
+	RoleInstanceReasonRestartPolicyTriggered = "RestartPolicyTriggered"
+	RoleInstanceReasonNoRestartInProgress    = "NoRestartInProgress"
 )
 
 // RoleInstanceCondition describes the state of a RoleInstance at a certain point.

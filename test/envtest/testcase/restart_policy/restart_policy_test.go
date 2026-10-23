@@ -23,11 +23,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
@@ -699,6 +701,84 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 	})
 
 	Context("Container restart (not PodFailed)", func() {
+		It("自定义 gate 未满足时仍能连续重启并清理 Restarting 和缓存", func() {
+			groupName := "custom-gate-restart"
+			labels := map[string]string{constants.GroupNameLabelKey: groupName, constants.RoleNameLabelKey: defaultRoleName}
+			instance := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: groupName, Namespace: testNs, Labels: labels},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "example.com/ready"}},
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+						Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, BaseDelaySeconds: ptr.To[int32](1), MaxDelaySeconds: ptr.To[int32](2),
+					},
+					Components: []workloadsv1alpha2.RoleInstanceComponent{{
+						Name: "worker", Size: ptr.To[int32](1),
+						Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "nginx", Image: "nginx:1.0"}}}},
+					}},
+				},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, instance)).Should(Succeed())
+			waitForPods(groupName, defaultRoleName, 1)
+			waitForCondition := func(conditionType workloadsv1alpha2.RoleInstanceConditionType, status corev1.ConditionStatus) {
+				Eventually(func() corev1.ConditionStatus {
+					ri := getRoleInstance(groupName, defaultRoleName)
+					if ri == nil {
+						return ""
+					}
+					if condition := inplaceutil.GetRoleInstanceCondition(ri, conditionType); condition != nil {
+						return condition.Status
+					}
+					return ""
+				}, timeout, interval).Should(Equal(status))
+			}
+			Eventually(func() error {
+				fresh := &workloadsv1alpha2.RoleInstance{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
+					return err
+				}
+				inplaceutil.SetRoleInstanceCondition(fresh, workloadsv1alpha2.RoleInstanceCondition{Type: "example.com/ready", Status: corev1.ConditionFalse, Reason: "ExternalNotReady"})
+				return testutil.K8sClient.Status().Update(testutil.Ctx, fresh)
+			}, timeout, interval).Should(Succeed())
+			makePodsReady(groupName, defaultRoleName)
+			waitForCondition(workloadsv1alpha2.RoleInstanceAllPodsReady, corev1.ConditionTrue)
+			waitForCondition(workloadsv1alpha2.RoleInstanceReady, corev1.ConditionFalse)
+			Expect(getRoleInstance(groupName, defaultRoleName).Status.LastRestartTime).Should(BeNil())
+
+			for round := int32(1); round <= 2; round++ {
+				podList := listRolePods(groupName, defaultRoleName)
+				Expect(podList.Items).Should(HaveLen(1))
+				originalUID := podList.Items[0].UID
+				Eventually(func() error {
+					fresh := &corev1.Pod{}
+					if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(&podList.Items[0]), fresh); err != nil {
+						return err
+					}
+					testutil.SetPodContainerRestarted(fresh, "nginx", 1)
+					return testutil.K8sClient.Status().Update(testutil.Ctx, fresh)
+				}, timeout, interval).Should(Succeed())
+				Eventually(func() bool {
+					active := getActivePods(listRolePods(groupName, defaultRoleName))
+					return len(active) == 1 && active[0].UID != originalUID
+				}, timeout, interval).Should(BeTrue(), "每轮异常均应触发重建，不能被展示 Ready 或残留缓存阻塞")
+				waitForCondition(workloadsv1alpha2.RoleInstanceRestarting, corev1.ConditionTrue)
+				makePodsReady(groupName, defaultRoleName)
+				waitForCondition(workloadsv1alpha2.RoleInstanceAllPodsReady, corev1.ConditionTrue)
+				waitForCondition(workloadsv1alpha2.RoleInstanceRestarting, corev1.ConditionFalse)
+				fresh := getRoleInstance(groupName, defaultRoleName)
+				Expect(fresh.Status.RestartCount).Should(Equal(round))
+				Expect(inplaceutil.GetRoleInstanceCondition(fresh, workloadsv1alpha2.RoleInstanceReady).Status).Should(Equal(corev1.ConditionFalse))
+				Expect(inplaceutil.GetRoleInstanceCondition(fresh, "example.com/ready").Reason).Should(Equal("ExternalNotReady"))
+				uid := listRolePods(groupName, defaultRoleName).Items[0].UID
+				Consistently(func() types.UID {
+					active := getActivePods(listRolePods(groupName, defaultRoleName))
+					if len(active) != 1 {
+						return ""
+					}
+					return active[0].UID
+				}, 2*time.Second, interval).Should(Equal(uid), "恢复后不能重复触发重建")
+			}
+		})
+
 		It("should recreate all pods when container RestartCount > 0", func() {
 			rbgName := "test-container-restart"
 			roleName := defaultRoleName

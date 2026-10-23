@@ -94,6 +94,15 @@ func (r *RoleBasedGroupWarmupReconciler) Reconcile(ctx context.Context, req ctrl
 
 	// Skip reconciliation if the resource is being deleted
 	if !warmup.DeletionTimestamp.IsZero() {
+		oldStatus := warmup.Status.DeepCopy()
+		warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseTerminating
+		setWarmupConditions(&warmup.Status, warmup.Generation, false)
+		if !apiequality.Semantic.DeepEqual(*oldStatus, warmup.Status) {
+			if err := r.Status().Update(ctx, warmup); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+			r.emitWarmupConditionEvents(warmup, oldStatus.Conditions)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -108,12 +117,14 @@ func (r *RoleBasedGroupWarmupReconciler) Reconcile(ctx context.Context, req ctrl
 	if warmup.Spec.Paused != nil && *warmup.Spec.Paused &&
 		warmup.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed &&
 		warmup.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
-		if warmup.Status.Phase != workloadsv1alpha2.WarmupJobPhasePaused {
-			warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhasePaused
+		oldStatus := warmup.Status.DeepCopy()
+		warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhasePaused
+		setWarmupConditions(&warmup.Status, warmup.Generation, false)
+		if !apiequality.Semantic.DeepEqual(*oldStatus, warmup.Status) {
 			if err := r.Status().Update(ctx, warmup); err != nil {
 				return ctrl.Result{}, err
 			}
-			r.Recorder.Event(warmup, corev1.EventTypeNormal, "Paused", "Warmup job paused")
+			r.emitWarmupConditionEvents(warmup, oldStatus.Conditions)
 			logger.Info("Warmup job paused")
 		}
 		return ctrl.Result{}, nil
@@ -121,13 +132,23 @@ func (r *RoleBasedGroupWarmupReconciler) Reconcile(ctx context.Context, req ctrl
 
 	switch warmup.Status.Phase {
 	case workloadsv1alpha2.WarmupJobPhaseFailed, workloadsv1alpha2.WarmupJobPhaseCompleted:
+		oldStatus := warmup.Status.DeepCopy()
+		setWarmupConditions(&warmup.Status, warmup.Generation, false)
+		if !apiequality.Semantic.DeepEqual(*oldStatus, warmup.Status) {
+			if err := r.Status().Update(ctx, warmup); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.emitWarmupConditionEvents(warmup, oldStatus.Conditions)
+		}
 		return r.reconcileFinished(ctx, warmup)
 	case workloadsv1alpha2.WarmupJobPhasePaused:
+		oldConditions := append([]metav1.Condition(nil), warmup.Status.Conditions...)
 		warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
+		setWarmupConditions(&warmup.Status, warmup.Generation, true)
 		if err := r.Status().Update(ctx, warmup); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.Recorder.Event(warmup, corev1.EventTypeNormal, "Resumed", "Warmup job resumed")
+		r.emitWarmupConditionEvents(warmup, oldConditions)
 		logger.Info("Warmup job resumed")
 		fallthrough
 	case workloadsv1alpha2.WarmupJobPhaseRunning, workloadsv1alpha2.WarmupJobPhaseNone:
@@ -505,6 +526,7 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	succeeded := int32(len(succeededNodeSet))
 	failed := int32(len(failedNodeSet))
 
+	oldConditions := append([]metav1.Condition(nil), warmup.Status.Conditions...)
 	now := metav1.Now()
 	warmup.Status.Phase = workloadsv1alpha2.WarmupJobPhaseFailed
 	warmup.Status.CompletionTime = &now
@@ -579,11 +601,12 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		ObservedGeneration: warmup.Generation,
 	})
 
-	r.Recorder.Eventf(warmup, corev1.EventTypeWarning, reason, message)
-	logger.Info("Warmup job failed", "reason", reason, "succeeded", succeeded, "failed", failed)
+	setWarmupConditions(&warmup.Status, warmup.Generation, false)
 	if err := r.Status().Update(ctx, warmup); err != nil {
 		return err
 	}
+	r.emitWarmupConditionEvents(warmup, oldConditions)
+	logger.Info("Warmup job failed", "reason", reason, "succeeded", succeeded, "failed", failed)
 	recordCustomizedActionEvents(r.Recorder, warmup, oldCustomizedActionResults, warmup.Status.CustomizedActionResults)
 	return nil
 }
@@ -910,8 +933,6 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	if desired == 0 {
 		newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
 		logger.Info("No nodes matched, completing immediately")
-		r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupCompleted",
-			"No nodes matched the target configuration")
 		apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
 			Type:               "Complete",
 			Status:             metav1.ConditionTrue,
@@ -927,9 +948,6 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 			// Permanently failed nodes exceed tolerance
 			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseFailed
 			logger.Info("Warmup job failed", "succeeded", succeeded, "failed", failed)
-			r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "WarmupFailed",
-				"Warmup job failed: %d succeeded, %d permanently failed (max tolerated: %d)",
-				succeeded, failed, *maxFailedNodes)
 			apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
 				Type:               "Failed",
 				Status:             metav1.ConditionTrue,
@@ -941,8 +959,6 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 			// All succeeded, or failures within tolerance
 			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
 			logger.Info("Warmup job completed", "succeeded", succeeded, "failed", failed)
-			r.Recorder.Eventf(warmup, corev1.EventTypeNormal, "WarmupCompleted",
-				"Warmup job completed: %d succeeded, %d failed (within tolerance)", succeeded, failed)
 			apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
 				Type:               "Complete",
 				Status:             metav1.ConditionTrue,
@@ -960,10 +976,6 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 		if newStatus.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
 			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
 			logger.Info("Warmup job running")
-			if warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseNone {
-				r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupStarted",
-					"Warmup job started")
-			}
 		}
 	}
 	updateCustomizedActionConditions(
@@ -975,20 +987,101 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 		countDesiredCustomizedActionNodes(desiredNodes),
 	)
 
+	setWarmupConditions(newStatus, warmup.Generation, false)
 	// Only update if status has changed
 	if !apiequality.Semantic.DeepEqual(warmup.Status, *newStatus) {
 		oldCustomizedActionResults := warmup.Status.CustomizedActionResults
+		oldConditions := warmup.Status.Conditions
 		warmup.Status = *newStatus
 		if err := r.Status().Update(ctx, warmup); err != nil {
 			return err
 		}
 		recordCustomizedActionEvents(r.Recorder, warmup, oldCustomizedActionResults, newStatus.CustomizedActionResults)
+		r.emitWarmupConditionEvents(warmup, oldConditions)
 		logger.Info("Updated status", "phase", newStatus.Phase,
 			"desired", newStatus.Desired, "active", newStatus.Active,
 			"succeeded", newStatus.Succeeded, "failed", newStatus.Failed)
 	}
 
 	return nil
+}
+
+// setWarmupConditions 仅补齐现有 phase 的条件投影，不修改执行状态和时间字段。
+func setWarmupConditions(status *workloadsv1alpha2.RoleBasedGroupWarmupStatus, generation int64, resumed bool) {
+	conditions := make([]metav1.Condition, 0, len(status.Conditions))
+	seen := map[string]bool{}
+	for _, c := range status.Conditions {
+		if c.Type == workloadsv1alpha2.WarmupConditionComplete || c.Type == workloadsv1alpha2.WarmupConditionFailed || c.Type == workloadsv1alpha2.WarmupConditionSuspended {
+			if seen[c.Type] {
+				continue
+			}
+			seen[c.Type] = true
+			if c.LastTransitionTime.IsZero() {
+				c.LastTransitionTime = metav1.Now()
+			}
+		}
+		conditions = append(conditions, c)
+	}
+	status.Conditions = conditions
+	complete, failed, suspended := metav1.ConditionFalse, metav1.ConditionFalse, metav1.ConditionFalse
+	completeReason, failedReason := workloadsv1alpha2.WarmupReasonWarming, workloadsv1alpha2.WarmupReasonWarming
+	suspendReason := workloadsv1alpha2.WarmupReasonNotSuspended
+	failedMessage := ""
+	switch status.Phase {
+	case workloadsv1alpha2.WarmupJobPhasePaused:
+		suspended = metav1.ConditionTrue
+		completeReason, failedReason, suspendReason = workloadsv1alpha2.WarmupReasonSuspended, workloadsv1alpha2.WarmupReasonSuspended, workloadsv1alpha2.WarmupReasonSuspendedBySpec
+	case workloadsv1alpha2.WarmupJobPhaseCompleted:
+		complete, failedReason = metav1.ConditionTrue, workloadsv1alpha2.WarmupReasonComplete
+		completeReason = workloadsv1alpha2.WarmupReasonAllNodesWarmed
+		if status.Desired == 0 {
+			completeReason = workloadsv1alpha2.WarmupReasonNoNodesMatched
+		} else if status.Failed > 0 {
+			completeReason = workloadsv1alpha2.WarmupReasonCompletedWithFailures
+		}
+	case workloadsv1alpha2.WarmupJobPhaseFailed:
+		failed, completeReason, failedReason = metav1.ConditionTrue, workloadsv1alpha2.WarmupReasonFailed, workloadsv1alpha2.WarmupReasonFailed
+		if old := apimeta.FindStatusCondition(status.Conditions, workloadsv1alpha2.WarmupConditionFailed); old != nil && old.Status == metav1.ConditionTrue && old.Reason != "" {
+			failedReason, failedMessage = old.Reason, old.Message
+		}
+	case workloadsv1alpha2.WarmupJobPhaseTerminating:
+		completeReason, failedReason = workloadsv1alpha2.WarmupReasonTerminating, workloadsv1alpha2.WarmupReasonTerminating
+	default:
+		if resumed {
+			suspendReason = workloadsv1alpha2.WarmupReasonResumed
+		}
+	}
+	for _, c := range []metav1.Condition{
+		{Type: workloadsv1alpha2.WarmupConditionFailed, Status: failed, Reason: failedReason, Message: failedMessage},
+		{Type: workloadsv1alpha2.WarmupConditionComplete, Status: complete, Reason: completeReason},
+		{Type: workloadsv1alpha2.WarmupConditionSuspended, Status: suspended, Reason: suspendReason},
+	} {
+		c.ObservedGeneration = generation
+		if c.Message == "" {
+			c.Message = c.Reason
+		}
+		apimeta.SetStatusCondition(&status.Conditions, c)
+	}
+}
+
+func (r *RoleBasedGroupWarmupReconciler) emitWarmupConditionEvents(warmup *workloadsv1alpha2.RoleBasedGroupWarmup, old []metav1.Condition) {
+	if r.Recorder == nil {
+		return
+	}
+	for _, c := range warmup.Status.Conditions {
+		if c.Type != workloadsv1alpha2.WarmupConditionComplete && c.Type != workloadsv1alpha2.WarmupConditionFailed && c.Type != workloadsv1alpha2.WarmupConditionSuspended {
+			continue
+		}
+		previous := apimeta.FindStatusCondition(old, c.Type)
+		if previous != nil && previous.Status == c.Status && previous.Reason == c.Reason && previous.Message == c.Message {
+			continue
+		}
+		eventType := corev1.EventTypeNormal
+		if c.Type == workloadsv1alpha2.WarmupConditionFailed && c.Status == metav1.ConditionTrue {
+			eventType = corev1.EventTypeWarning
+		}
+		r.Recorder.Event(warmup, eventType, c.Reason, c.Message)
+	}
 }
 
 func (r *RoleBasedGroupWarmupReconciler) CheckCrdExists() error {

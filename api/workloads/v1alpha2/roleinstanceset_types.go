@@ -158,8 +158,24 @@ type RoleInstanceSetInPlaceUpdateStrategy struct {
 	GracePeriodSeconds int32 `json:"gracePeriodSeconds,omitempty"`
 }
 
+// RoleInstanceSetPhase 仅展示生命周期，不参与扩缩容和更新决策。
+type RoleInstanceSetPhase string
+
+const (
+	RoleInstanceSetPhaseCreating    RoleInstanceSetPhase = "Creating"
+	RoleInstanceSetPhaseRunning     RoleInstanceSetPhase = "Running"
+	RoleInstanceSetPhaseUpdating    RoleInstanceSetPhase = "Updating"
+	RoleInstanceSetPhaseScalingUp   RoleInstanceSetPhase = "ScalingUp"
+	RoleInstanceSetPhaseScalingDown RoleInstanceSetPhase = "ScalingDown"
+	RoleInstanceSetPhaseTerminating RoleInstanceSetPhase = "Terminating"
+)
+
 // RoleInstanceSetStatus defines the observed state of RoleInstanceSet
 type RoleInstanceSetStatus struct {
+	// Phase 展示当前生命周期；Running 不代表 Ready。
+	// +optional
+	Phase RoleInstanceSetPhase `json:"phase,omitempty"`
+
 	// ObservedGeneration is the most recent generation observed for this RoleInstanceSet. It corresponds to the
 	// RoleInstanceSet's generation, which is updated on mutation by the API Server.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -241,11 +257,30 @@ type RolloutReplacementState struct {
 type RoleInstanceSetConditionType string
 
 const (
+	RoleInstanceSetConditionReady       RoleInstanceSetConditionType = "Ready"
+	RoleInstanceSetConditionProgressing RoleInstanceSetConditionType = "Progressing"
+
 	// RoleInstanceSetConditionFailedScale indicates RoleInstanceSet controller failed to create or delete RoleInstances.
+	// Deprecated: 瞬态动作错误不再持久化。
 	RoleInstanceSetConditionFailedScale RoleInstanceSetConditionType = "FailedScale"
 
 	// RoleInstanceSetConditionFailedUpdate indicates RoleInstanceSet controller failed to update RoleInstances.
+	// Deprecated: 瞬态动作错误不再持久化。
 	RoleInstanceSetConditionFailedUpdate RoleInstanceSetConditionType = "FailedUpdate"
+)
+
+const (
+	RoleInstanceSetReasonCreating          = "Creating"
+	RoleInstanceSetReasonScalingUp         = "ScalingUp"
+	RoleInstanceSetReasonScalingDown       = "ScalingDown"
+	RoleInstanceSetReasonRollingUpdate     = "RollingUpdate"
+	RoleInstanceSetReasonWaitingForPods    = "WaitingForPods"
+	RoleInstanceSetReasonAllInstancesReady = "AllInstancesReady"
+	RoleInstanceSetReasonConverged         = "Converged"
+	RoleInstanceSetReasonPaused            = "Paused"
+	RoleInstanceSetReasonTerminating       = "Terminating"
+	RoleInstanceSetReasonPatternMigration  = "PatternMigration"
+	RoleInstanceSetReasonInvalidSpec       = "InvalidSpec"
 )
 
 // RoleInstanceSetCondition describes the state of a RoleInstanceSet at a certain point.

@@ -174,7 +174,8 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if !rbg.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		_, err := r.updateRBGWaitingStatus(ctx, rbg, "", workloadsv1alpha2.RoleBasedGroupReasonTerminating, "Resource is terminating")
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	logger = logger.WithValues("rbg", klog.KObj(rbg))
@@ -186,7 +187,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}()
 
 	if err := r.applyRBGSAReplicasOverride(ctx, rbg); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, err)
 	}
 
 	// Step 0: Pre-check validations
@@ -197,7 +198,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Step 1: Process revisions
 	expectedRolesRevisionHash, err := r.handleRevisions(ctx, rbg)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, err)
 	}
 
 	// Step 2: Initialize discovery config mode.
@@ -206,35 +207,36 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// this is a new RBG. If roleStatuses is populated first, it will incorrectly
 	// use legacy mode for new RBGs.
 	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, err)
 	} else if needRequeue {
-		return ctrl.Result{RequeueAfter: time.Second}, nil
+		_, statusErr := r.updateRBGWaitingStatus(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonValidSpec, workloadsv1alpha2.RoleBasedGroupReasonPreparing, "Preparing discovery configuration")
+		return ctrl.Result{RequeueAfter: time.Second}, statusErr
 	}
 
 	// Step 3: Reconcile refined discovery ConfigMap.
 	// This must happen before reconcileRoles to ensure ConfigMap exists before workloads are created.
 	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, err)
 	}
 
 	// Step 4: Construct role statuses
-	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
+	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expectedRolesRevisionHash)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonWaitingForInstances, err)
 	}
 
 	// Step 5: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
 	// When v1alpha1 support is removed, delete this step and coordinatedpolicy_migration_controller.go.
 	if err := EnsureV1alpha1CoordinatedPolicy(ctx, r.client, rbg); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, err)
 	}
 
 	// Step 6: Calculate coordination strategies for scaling and rolling update
 	// Coordination configuration is now fetched from CoordinatedPolicy CR with the same name/namespace.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, err)
 	}
 
 	// Step 7: Reconcile PodGroup for gang scheduling.
@@ -246,7 +248,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	if gangErr != nil && !gangcommon.IsIncompatibleGangConfig(gangErr) {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcilePodGroup, gangErr.Error())
-		return ctrl.Result{}, gangErr
+		return ctrl.Result{}, r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonPreparing, gangErr)
 	}
 	if err := r.setGangConfiguredCondition(ctx, rbg, gangStrategy, gangErr); err != nil {
 		return ctrl.Result{}, err
@@ -283,6 +285,13 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// 拒绝或依赖等待解除后，刷新聚合条件；不重复执行角色动作。
+	if c := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing)); c != nil &&
+		(c.Reason == workloadsv1alpha2.RoleBasedGroupReasonIncompatibleGangConfig || c.Reason == workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies) {
+		if err := r.updateRBGStatus(ctx, rbg, roleStatuses, expectedRolesRevisionHash, true); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	r.recorder.Event(rbg, corev1.EventTypeNormal, Succeed, "ReconcileSucceed")
 	return ctrl.Result{}, nil
 }
@@ -347,20 +356,17 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 			constants.GangSchedulingAnnotationKey,
 			constants.RoleInstanceGangSchedulingAnnotationKey,
 		)
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidGangSchedulingAnnotations, err.Error())
-		return err
+		return r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonIncompatibleGangConfig, InvalidGangSchedulingAnnotations, err)
 	}
 
 	// Validate RoleTemplates
 	if err := workloadsv1alpha2.ValidateRoleTemplates(rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleTemplates, err.Error())
-		return errors.Wrap(err, "invalid role templates")
+		return r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonTemplateInvalid, InvalidRoleTemplates, errors.Wrap(err, "invalid role templates"))
 	}
 
 	// Validate template references in roles
 	if err := workloadsv1alpha2.ValidateRoleTemplateReferences(rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidTemplateRef, err.Error())
-		return errors.Wrap(err, "invalid template references")
+		return r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonTemplateInvalid, InvalidTemplateRef, errors.Wrap(err, "invalid template references"))
 	}
 
 	// Validate role workload declarations
@@ -370,25 +376,20 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 		workloadReconciler, err := r.getOrCreateWorkloadReconciler(roleCtx, role.GetWorkloadSpec())
 		if err != nil {
 			logger.Error(err, "Failed to create workload reconciler")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to validate role %s, err: %v", role.Name, err,
-			)
 			errs = append(errs, fmt.Errorf("role %s: %w", role.Name, err))
 			continue
 		}
 
 		if err := workloadReconciler.Validate(roleCtx, &role); err != nil {
 			logger.Error(err, "Failed to validate role declaration")
-			r.recorder.Eventf(
-				rbg, corev1.EventTypeWarning, FailedReconcileWorkload,
-				"Failed to validate role %s declaration, err: %v", role.Name, err,
-			)
 			errs = append(errs, fmt.Errorf("role %s: %w", role.Name, err))
 		}
 	}
 
-	return errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations")
+	if err := errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations"); err != nil {
+		return r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonInvalidSpec, FailedReconcileWorkload, err)
+	}
+	return nil
 }
 
 func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
@@ -522,8 +523,11 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
 	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
 	if err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
-		return err
+		reason := workloadsv1alpha2.RoleBasedGroupReasonInvalidSpec
+		if stderrors.Is(err, dependency.ErrDependencyCycle) {
+			reason = workloadsv1alpha2.RoleBasedGroupReasonDependencyCycle
+		}
+		return r.rejectRBG(ctx, rbg, reason, InvalidRoleDependency, err)
 	}
 
 	// Reconcile roles, do create/update actions for roles.
@@ -538,12 +542,15 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 			ready, err := dependencyManager.CheckDependencyReady(roleCtx, rbg, role)
 			if err != nil {
 				r.recorder.Event(rbg, corev1.EventTypeWarning, FailedCheckRoleDependency, err.Error())
-				return err
+				return r.waitForRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies, err)
 			}
 			if !ready {
 				err := fmt.Errorf("dependencies not met for role '%s'", role.Name)
-				r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
-				return err
+				changed, statusErr := r.updateRBGWaitingStatus(ctx, rbg, "", workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies, err.Error())
+				if statusErr == nil && changed && r.recorder != nil {
+					r.recorder.Event(rbg, corev1.EventTypeWarning, DependencyNotMet, err.Error())
+				}
+				return stderrors.Join(err, statusErr)
 			}
 
 			if err := r.reconcileSingleRole(roleCtx, rbg, role, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
@@ -689,6 +696,7 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	expectedRolesRevisionHash map[string]string,
 ) ([]workloadsv1alpha2.RoleStatus, error) {
 	roleStatuses := make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
 
@@ -720,7 +728,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	}
 
 	// Always update the RBG status via SSA patch.
-	if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+	if err := r.updateRBGStatus(ctx, rbg, roleStatuses, expectedRolesRevisionHash, false); err != nil {
 		r.recorder.Eventf(
 			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
 			"Failed to update status for %s: %v", rbg.Name, err,
@@ -765,78 +773,287 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus,
+	expectedRolesRevisionHash map[string]string, dependenciesResolved bool,
 ) error {
 	// Capture current status before mutation to avoid unnecessary SSA patches.
 	// Since constructAndUpdateRoleStatuses now calls this on every reconcile,
 	// comparing old vs new status lets us skip redundant API calls.
 	oldStatus := *rbg.Status.DeepCopy()
 
-	// update ready condition
-	var rbgReady = true
+	rbgReady, allPendingPaused := true, true
+	phase, reason := workloadsv1alpha2.RoleBasedGroupPhaseRunning, workloadsv1alpha2.RoleBasedGroupReasonWaitingForInstances
+	var readErr error
 	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(roleStatuses))
 	for _, rs := range roleStatuses {
 		statusMap[rs.Name] = rs
 	}
-	for _, role := range rbg.Spec.Roles {
-		if rs, ok := statusMap[role.Name]; !ok ||
-			role.Replicas == nil ||
-			*role.Replicas != rs.Replicas ||
-			rs.Replicas != rs.ReadyReplicas {
-			rbgReady = false
-			break
-		}
-	}
-
-	var readyCondition metav1.Condition
-	if rbgReady {
-		readyCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha2.RoleBasedGroupReady),
-			Status:             metav1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "AllRolesReady",
-			Message:            "All roles are ready",
-		}
-	} else {
-		readyCondition = metav1.Condition{
-			Type:               string(workloadsv1alpha2.RoleBasedGroupReady),
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RoleNotReady",
-			Message:            "Not all role ready",
-		}
-	}
-	readyCondition.ObservedGeneration = rbg.Generation
-
-	apimeta.SetStatusCondition(&rbg.Status.Conditions, readyCondition)
-	rbg.Status.ObservedGeneration = rbg.Generation
-
-	// update role status
-	for i := range roleStatuses {
-		found := false
-		for j, oldStatus := range rbg.Status.RoleStatuses {
-			// if found, update
-			if roleStatuses[i].Name == oldStatus.Name {
-				found = true
-				if roleStatuses[i].Replicas != oldStatus.Replicas || roleStatuses[i].ReadyReplicas != oldStatus.ReadyReplicas {
-					rbg.Status.RoleStatuses[j] = roleStatuses[i]
-				}
-				break
-			}
-		}
+	// 保留原副本统计来源；按当前 spec 重建列表，覆盖 updatedReplicas 单变并移除旧角色。
+	rbg.Status.RoleStatuses = make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		rs, found := statusMap[role.Name]
 		if !found {
-			rbg.Status.RoleStatuses = append(rbg.Status.RoleStatuses, roleStatuses[i])
+			rs.Name = role.Name
+		}
+		rbg.Status.RoleStatuses = append(rbg.Status.RoleStatuses, rs)
+		rolePhase, roleReason, ready, err := r.roleWorkloadStatus(ctx, rbg, role, expectedRolesRevisionHash[role.Name])
+		readErr = stderrors.Join(readErr, err)
+		ready = ready && found && role.Replicas != nil && rs.Replicas == *role.Replicas && rs.ReadyReplicas == *role.Replicas && rs.UpdatedReplicas == *role.Replicas
+		if !ready {
+			rbgReady = false
+			allPendingPaused = allPendingPaused && roleReason == workloadsv1alpha2.RoleBasedGroupReasonPaused
+		}
+		if rbgPhasePriority(rolePhase) > rbgPhasePriority(phase) {
+			phase, reason = rolePhase, roleReason
+		} else if rolePhase == phase && roleReason == workloadsv1alpha2.RoleBasedGroupReasonPatternMigration {
+			reason = roleReason
 		}
 	}
+	progressing, readyStatus := metav1.ConditionTrue, metav1.ConditionFalse
+	readyReason := reason
+	if rbgReady {
+		phase, reason, readyReason = workloadsv1alpha2.RoleBasedGroupPhaseRunning, workloadsv1alpha2.RoleBasedGroupReasonConverged, workloadsv1alpha2.RoleBasedGroupReasonAllRolesReady
+		progressing, readyStatus = metav1.ConditionFalse, metav1.ConditionTrue
+	} else if allPendingPaused {
+		reason, readyReason, progressing = workloadsv1alpha2.RoleBasedGroupReasonPaused, workloadsv1alpha2.RoleBasedGroupReasonPaused, metav1.ConditionFalse
+	} else if reason == workloadsv1alpha2.RoleBasedGroupReasonPaused {
+		// 其他角色仍在执行伸缩时，不能把整个 RBG 标记为暂停。
+		reason, readyReason = workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate, workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate
+	}
+	// 原依赖检查尚未确认解除前，局部统计不能覆盖等待条件并制造重复 Event。
+	pendingDependency := apimeta.FindStatusCondition(oldStatus.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+	if !dependenciesResolved && pendingDependency != nil && pendingDependency.ObservedGeneration == rbg.Generation && pendingDependency.Reason == workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies {
+		reason, readyReason = pendingDependency.Reason, pendingDependency.Reason
+		progressing, readyStatus = metav1.ConditionTrue, metav1.ConditionFalse
+	}
+	accepted := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupAccepted))
+	if accepted != nil && accepted.Status == metav1.ConditionFalse && accepted.ObservedGeneration == rbg.Generation {
+		// 后续 gang/依赖验证尚未确认恢复时，局部统计不能覆盖本 generation 的拒绝。
+		phase, reason, readyReason = oldStatus.Phase, accepted.Reason, accepted.Reason
+		progressing, readyStatus = metav1.ConditionFalse, metav1.ConditionFalse
+	} else {
+		setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupAccepted, metav1.ConditionTrue, workloadsv1alpha2.RoleBasedGroupReasonValidSpec, "Configuration accepted")
+	}
+	if phase == "" {
+		phase = workloadsv1alpha2.RoleBasedGroupPhaseCreating
+	}
+	if rbg.DeletionTimestamp != nil {
+		phase, reason, readyReason = workloadsv1alpha2.RoleBasedGroupPhaseTerminating, workloadsv1alpha2.RoleBasedGroupReasonTerminating, workloadsv1alpha2.RoleBasedGroupReasonTerminating
+		progressing, readyStatus = metav1.ConditionFalse, metav1.ConditionFalse
+	}
+	rbg.Status.Phase = phase
+	readyMessage, progressMessage := readyReason, reason
+	if reason == workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies && pendingDependency != nil {
+		readyMessage, progressMessage = pendingDependency.Message, pendingDependency.Message
+	}
+	if accepted != nil && accepted.Status == metav1.ConditionFalse && accepted.ObservedGeneration == rbg.Generation && rbg.DeletionTimestamp == nil {
+		readyMessage, progressMessage = accepted.Message, accepted.Message
+	}
+	setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupReady, readyStatus, readyReason, readyMessage)
+	setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupProgressing, progressing, reason, progressMessage)
+	rbg.Status.ObservedGeneration = rbg.Generation
 
 	// Skip SSA patch if status hasn't changed.
 	if reflect.DeepEqual(oldStatus, rbg.Status) {
 		log.FromContext(ctx).V(2).Info("RBG status unchanged, skipping SSA patch")
-		return nil
+		return readErr
 	}
 
 	rbgApplyConfig := toRBGApplyConfigurationForStatus(rbg)
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
+	return stderrors.Join(readErr, utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus))
 
+}
+
+// roleWorkloadStatus 只读直接子 workload，不读取 Pod，也不使用协调策略的中间放行结果。
+func (r *RoleBasedGroupReconciler) roleWorkloadStatus(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, revision string) (workloadsv1alpha2.RoleBasedGroupPhase, string, bool, error) {
+	phase, reason := workloadsv1alpha2.RoleBasedGroupPhaseRunning, workloadsv1alpha2.RoleBasedGroupReasonWaitingForInstances
+	var obj client.Object
+	workload := role.GetWorkloadSpec()
+	switch workload.String() {
+	case constants.RoleInstanceSetWorkloadType:
+		obj = &workloadsv1alpha2.RoleInstanceSet{}
+	case constants.DeploymentWorkloadType:
+		obj = &appsv1.Deployment{}
+	case constants.StatefulSetWorkloadType:
+		obj = &appsv1.StatefulSet{}
+	case constants.LeaderWorkerSetWorkloadType:
+		obj = &lwsv1.LeaderWorkerSet{}
+	default:
+		return phase, reason, false, fmt.Errorf("unsupported workload type: %s", workload.String())
+	}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.GetWorkloadName(role)}, obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			return workloadsv1alpha2.RoleBasedGroupPhaseCreating, workloadsv1alpha2.RoleBasedGroupReasonCreating, false, nil
+		}
+		return phase, reason, false, err
+	}
+	if obj.GetDeletionTimestamp() != nil || !metav1.IsControlledBy(obj, rbg) {
+		return phase, reason, false, nil
+	}
+	desired := ptr.Deref(role.Replicas, 1)
+	var target, replicas, readyReplicas, updated int32
+	var fresh, converged, updating, creating, paused bool
+	switch child := obj.(type) {
+	case *workloadsv1alpha2.RoleInstanceSet:
+		s := child.Status
+		target, replicas, readyReplicas, updated = ptr.Deref(child.Spec.Replicas, 1), s.Replicas, s.ReadyReplicas, s.UpdatedReplicas
+		fresh = s.ObservedGeneration >= child.Generation
+		converged = s.CurrentRevision != "" && s.CurrentRevision == s.UpdateRevision && s.UpdatedReadyReplicas == desired
+		childReady := false
+		for _, c := range s.Conditions {
+			if c.Type == workloadsv1alpha2.RoleInstanceSetConditionReady {
+				childReady = c.Status == corev1.ConditionTrue
+			}
+			if c.Type == workloadsv1alpha2.RoleInstanceSetConditionProgressing {
+				if c.Reason == workloadsv1alpha2.RoleInstanceSetReasonPatternMigration {
+					phase, reason = workloadsv1alpha2.RoleBasedGroupPhaseUpdating, workloadsv1alpha2.RoleBasedGroupReasonPatternMigration
+				}
+				paused = c.Status == corev1.ConditionFalse && c.Reason == workloadsv1alpha2.RoleInstanceSetReasonPaused
+			}
+		}
+		converged = converged && childReady && s.Phase == workloadsv1alpha2.RoleInstanceSetPhaseRunning
+		updating = (s.CurrentRevision != "" && s.CurrentRevision != s.UpdateRevision) || s.Phase == workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+		creating = s.CurrentRevision == "" && replicas == 0
+		switch s.Phase {
+		case workloadsv1alpha2.RoleInstanceSetPhaseScalingUp:
+			phase, reason = workloadsv1alpha2.RoleBasedGroupPhaseScaling, workloadsv1alpha2.RoleBasedGroupReasonScalingUp
+		case workloadsv1alpha2.RoleInstanceSetPhaseScalingDown:
+			phase, reason = workloadsv1alpha2.RoleBasedGroupPhaseScaling, workloadsv1alpha2.RoleBasedGroupReasonScalingDown
+		case workloadsv1alpha2.RoleInstanceSetPhaseCreating:
+			creating = true
+		}
+	case *appsv1.Deployment:
+		s := child.Status
+		target, replicas, readyReplicas, updated = ptr.Deref(child.Spec.Replicas, 1), s.Replicas, s.ReadyReplicas, s.UpdatedReplicas
+		fresh, converged = s.ObservedGeneration >= child.Generation, s.UnavailableReplicas == 0 && ptr.Deref(s.TerminatingReplicas, 0) == 0
+		updating, creating, paused = updated < replicas, s.ObservedGeneration == 0 && replicas == 0, child.Spec.Paused
+	case *appsv1.StatefulSet:
+		s := child.Status
+		target, replicas, readyReplicas, updated = ptr.Deref(child.Spec.Replicas, 1), s.Replicas, s.ReadyReplicas, s.UpdatedReplicas
+		fresh, converged = s.ObservedGeneration >= child.Generation, s.CurrentRevision != "" && s.CurrentRevision == s.UpdateRevision
+		updating, creating = s.CurrentRevision != "" && s.CurrentRevision != s.UpdateRevision, s.CurrentRevision == "" && replicas == 0
+	case *lwsv1.LeaderWorkerSet:
+		s := child.Status
+		target, replicas, readyReplicas, updated = ptr.Deref(child.Spec.Replicas, 1), s.Replicas, s.ReadyReplicas, s.UpdatedReplicas
+		available := apimeta.FindStatusCondition(s.Conditions, string(lwsv1.LeaderWorkerSetAvailable))
+		fresh = available != nil && available.ObservedGeneration >= child.Generation
+		converged = available != nil && available.Status == metav1.ConditionTrue
+		updating = updated < replicas || apimeta.IsStatusConditionTrue(s.Conditions, string(lwsv1.LeaderWorkerSetUpdateInProgress))
+		creating = len(s.Conditions) == 0 && replicas == 0
+	}
+	revisionMatches := revision != "" && obj.GetLabels()[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)] == revision
+	ready := fresh && converged && revisionMatches && target == desired && replicas == desired && readyReplicas == desired && updated == desired
+	if !revisionMatches && !creating {
+		updating = true
+	}
+	switch {
+	case updating:
+		phase = workloadsv1alpha2.RoleBasedGroupPhaseUpdating
+		if reason != workloadsv1alpha2.RoleBasedGroupReasonPatternMigration {
+			reason = workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate
+		}
+	case creating:
+		phase, reason = workloadsv1alpha2.RoleBasedGroupPhaseCreating, workloadsv1alpha2.RoleBasedGroupReasonCreating
+	case replicas < desired || target < desired:
+		phase, reason = workloadsv1alpha2.RoleBasedGroupPhaseScaling, workloadsv1alpha2.RoleBasedGroupReasonScalingUp
+	case replicas > desired || target > desired:
+		phase, reason = workloadsv1alpha2.RoleBasedGroupPhaseScaling, workloadsv1alpha2.RoleBasedGroupReasonScalingDown
+	}
+	if !ready && paused && target == desired && replicas == desired {
+		reason = workloadsv1alpha2.RoleBasedGroupReasonPaused
+	}
+	return phase, reason, ready, nil
+}
+
+func rbgPhasePriority(phase workloadsv1alpha2.RoleBasedGroupPhase) int {
+	switch phase {
+	case workloadsv1alpha2.RoleBasedGroupPhaseTerminating:
+		return 4
+	case workloadsv1alpha2.RoleBasedGroupPhaseUpdating:
+		return 3
+	case workloadsv1alpha2.RoleBasedGroupPhaseScaling:
+		return 2
+	case workloadsv1alpha2.RoleBasedGroupPhaseCreating:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// setRBGCondition 保留外部条件及同 status 的非零时间；返回值仅表示可发送 Event 的边沿。
+func setRBGCondition(rbg *workloadsv1alpha2.RoleBasedGroup, typ workloadsv1alpha2.RoleBasedGroupConditionType, status metav1.ConditionStatus, reason, message string) bool {
+	old := apimeta.FindStatusCondition(rbg.Status.Conditions, string(typ))
+	changed := old == nil || old.Status != status || old.Reason != reason || old.Message != message
+	condition := metav1.Condition{Type: string(typ), Status: status, Reason: reason, Message: message, ObservedGeneration: rbg.Generation, LastTransitionTime: metav1.Now()}
+	if old != nil && old.Status == status && !old.LastTransitionTime.IsZero() {
+		condition.LastTransitionTime = old.LastTransitionTime
+	}
+	conditions := make([]metav1.Condition, 0, len(rbg.Status.Conditions)+1)
+	found := false
+	for _, c := range rbg.Status.Conditions {
+		if c.Type == "FailedScale" || c.Type == "FailedUpdate" || c.Type == string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress) {
+			continue
+		}
+		if c.Type == string(typ) {
+			if !found {
+				conditions = append(conditions, condition)
+				found = true
+			}
+			continue
+		}
+		conditions = append(conditions, c)
+	}
+	if !found {
+		conditions = append(conditions, condition)
+	}
+	rbg.Status.Conditions = conditions
+	return changed
+}
+
+// updateRBGWaitingStatus 仅补已有早退路径；不提前填 observedGeneration 或 roleStatuses，以保留 discovery 初始化依据。
+func (r *RoleBasedGroupReconciler) updateRBGWaitingStatus(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, acceptedReason, reason, message string) (bool, error) {
+	oldStatus := rbg.Status.DeepCopy()
+	if rbg.Status.Phase == "" {
+		rbg.Status.Phase = workloadsv1alpha2.RoleBasedGroupPhaseCreating
+	}
+	changed := false
+	if acceptedReason != "" {
+		status := metav1.ConditionFalse
+		if acceptedReason == workloadsv1alpha2.RoleBasedGroupReasonValidSpec {
+			status = metav1.ConditionTrue
+		}
+		changed = setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupAccepted, status, acceptedReason, message)
+	}
+	progressing := metav1.ConditionTrue
+	if c := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupAccepted)); c != nil && c.Status == metav1.ConditionFalse && c.ObservedGeneration == rbg.Generation {
+		reason, message, progressing = c.Reason, c.Message, metav1.ConditionFalse
+	}
+	if rbg.DeletionTimestamp != nil {
+		rbg.Status.Phase = workloadsv1alpha2.RoleBasedGroupPhaseTerminating
+		reason, progressing = workloadsv1alpha2.RoleBasedGroupReasonTerminating, metav1.ConditionFalse
+	}
+	changed = setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupReady, metav1.ConditionFalse, reason, message) || changed
+	changed = setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupProgressing, progressing, reason, message) || changed
+	if reflect.DeepEqual(*oldStatus, rbg.Status) {
+		return false, nil
+	}
+	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus); err != nil {
+		return false, err
+	}
+	return changed, nil
+}
+
+func (r *RoleBasedGroupReconciler) rejectRBG(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, reason, eventReason string, cause error) error {
+	changed, err := r.updateRBGWaitingStatus(ctx, rbg, reason, reason, cause.Error())
+	if err == nil && changed && r.recorder != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, eventReason, cause.Error())
+	}
+	return stderrors.Join(cause, err)
+}
+
+func (r *RoleBasedGroupReconciler) waitForRBG(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, reason string, cause error) error {
+	_, err := r.updateRBGWaitingStatus(ctx, rbg, "", reason, cause.Error())
+	return stderrors.Join(cause, err)
 }
 
 // setGangConfiguredCondition records the outcome of the gang configuration on the RBG
@@ -852,32 +1069,27 @@ func (r *RoleBasedGroupReconciler) setGangConfiguredCondition(
 	cause error,
 ) error {
 	conditionType := string(workloadsv1alpha2.RoleBasedGroupGangConfigured)
+	oldStatus := rbg.Status.DeepCopy()
+	oldGang := apimeta.FindStatusCondition(oldStatus.Conditions, conditionType)
 
 	var changed bool
 	switch {
 	case cause != nil:
-		changed = apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
-			Type:               conditionType,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             IncompatibleGangConfig,
-			Message:            cause.Error(),
-			ObservedGeneration: rbg.Generation,
-		})
+		changed = setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupGangConfigured, metav1.ConditionFalse, IncompatibleGangConfig, cause.Error())
 	case gangStrategy == nil:
 		// Gang scheduling is off for this RBG; a stale condition would be misleading.
 		changed = apimeta.RemoveStatusCondition(&rbg.Status.Conditions, conditionType)
 	default:
-		changed = apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
-			Type:               conditionType,
-			Status:             metav1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "GangConfigured",
-			Message:            "Gang scheduling configuration is satisfiable",
-			ObservedGeneration: rbg.Generation,
-		})
+		changed = setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupGangConfigured, metav1.ConditionTrue, "GangConfigured", "Gang scheduling configuration is satisfiable")
 	}
-	if !changed {
+	if cause != nil {
+		setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupAccepted, metav1.ConditionFalse, workloadsv1alpha2.RoleBasedGroupReasonIncompatibleGangConfig, cause.Error())
+		setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupReady, metav1.ConditionFalse, workloadsv1alpha2.RoleBasedGroupReasonIncompatibleGangConfig, cause.Error())
+		setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupProgressing, metav1.ConditionFalse, workloadsv1alpha2.RoleBasedGroupReasonIncompatibleGangConfig, cause.Error())
+	} else if accepted := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupAccepted)); accepted != nil && accepted.Reason == workloadsv1alpha2.RoleBasedGroupReasonIncompatibleGangConfig {
+		setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupAccepted, metav1.ConditionTrue, workloadsv1alpha2.RoleBasedGroupReasonValidSpec, "Configuration accepted")
+	}
+	if !changed && reflect.DeepEqual(*oldStatus, rbg.Status) {
 		return nil
 	}
 
@@ -887,7 +1099,7 @@ func (r *RoleBasedGroupReconciler) setGangConfiguredCondition(
 	}
 	// Emitted only after the condition is durably recorded, so a failed patch retries
 	// both together rather than leaving a warning whose condition never landed.
-	if cause != nil {
+	if cause != nil && r.recorder != nil && (oldGang == nil || oldGang.Status != metav1.ConditionFalse || oldGang.Reason != IncompatibleGangConfig || oldGang.Message != cause.Error()) {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, IncompatibleGangConfig, cause.Error())
 	}
 	return nil
@@ -902,6 +1114,7 @@ func toRBGApplyConfigurationForStatus(rbg *workloadsv1alpha2.RoleBasedGroup) *ap
 		WithKind(gvk.Kind).
 		WithAPIVersion(gvk.GroupVersion().String()).
 		WithStatus(applyconfiguration.RoleBasedGroupStatus().
+			WithPhase(rbg.Status.Phase).
 			WithObservedGeneration(rbg.Status.ObservedGeneration).
 			WithRoleStatuses(toRoleStatusApplyConfiguration(rbg.Status.RoleStatuses)...).
 			WithConditions(toConditionApplyConfigurations(rbg.Status.Conditions)...))
@@ -1717,7 +1930,7 @@ func RBGPredicate() predicate.Funcs {
 			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
 			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok1 && ok2 {
-				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
+				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) || !reflect.DeepEqual(oldRbg.Annotations, newRbg.Annotations) || !oldRbg.DeletionTimestamp.Equal(newRbg.DeletionTimestamp) {
 					ctrl.Log.Info("enqueue: rbg update event", "rbg", klog.KObj(e.ObjectOld))
 					return true
 				}
@@ -1745,6 +1958,9 @@ func WorkloadPredicate() predicate.Funcs {
 			return false
 		},
 		UpdateFunc: func(e event.TypedUpdateEvent[client.Object]) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
 			ctrl.Log.V(1).Info(
 				fmt.Sprintf(
 					"enter workload.onUpdateFunc, %s/%s, type: %T",
@@ -1763,6 +1979,9 @@ func WorkloadPredicate() predicate.Funcs {
 				return false
 			}
 
+			if !e.ObjectOld.GetDeletionTimestamp().Equal(e.ObjectNew.GetDeletionTimestamp()) {
+				return true
+			}
 			// Check if the workload needs to be reconciled
 			equal, err := reconciler.WorkloadEqual(e.ObjectOld, e.ObjectNew)
 			if err != nil {

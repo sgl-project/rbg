@@ -18,6 +18,7 @@ package dependency
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -28,6 +29,9 @@ import (
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
+
+// ErrDependencyCycle 用于状态映射，保留原拓扑排序与错误消息。
+var ErrDependencyCycle = errors.New("cycle detected")
 
 type DefaultDependencyManager struct {
 	scheme *runtime.Scheme
@@ -71,7 +75,7 @@ func (m *DefaultDependencyManager) SortRoles(
 
 	roleOrder, err := dependencyOrder(ctx, roleDependency)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sort roles by dependency order: %v", err)
+		return nil, fmt.Errorf("failed to sort roles by dependency order: %w", err)
 	}
 	logger.V(1).Info("roleOrder", "roleOrder", roleOrder)
 
@@ -158,7 +162,7 @@ func dependencyOrder(ctx context.Context, dependencies map[string][]string) ([][
 			return role.order, nil
 		}
 		if role.order == -1 {
-			err := fmt.Errorf("cycle detected for role '%s'", role.name)
+			err := fmt.Errorf("%w for role '%s'", ErrDependencyCycle, role.name)
 			logger.Error(err, "cycle detected", "cycle", paths)
 			return -1, err
 		}
