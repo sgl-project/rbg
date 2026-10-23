@@ -1,0 +1,19 @@
+title: Continuous Node-Pool Warmup for RoleBasedGroup
+kep-number: 465
+authors:
+  - "@googs1025"
+status: provisional
+creation-date: 2026-09-23
+reviewers:
+  - "@diw-zw"
+approvers: []
+
+see-also:
+  - "/keps/129-rbg-warmup"
+
+stage: alpha
+
+latest-milestone: "v0.10.0"
+
+milestone:
+  alpha: "v0.10.0"
