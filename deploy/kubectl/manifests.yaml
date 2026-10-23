@@ -98656,6 +98656,35 @@ spec:
                   RoleInstanceSet controller.
                 format: int32
                 type: integer
+              rolloutReplacementState:
+                description: |-
+                  RolloutReplacementState protects existing surge while early-rollback base
+                  replacements are in flight, including across controller restarts.
+                properties:
+                  partition:
+                    description: |-
+                      Partition is the inclusive lower ordinal bound of the recorded scope.
+                      It starts at the resolved partition and can decrease for additional replacements.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  replicas:
+                    description: |-
+                      Replicas is the exclusive upper ordinal bound of the recorded scope.
+                      It starts at the desired replica count and can increase for additional replacements.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  updateRevision:
+                    description: UpdateRevision is the revision that the replacements
+                      must reach.
+                    minLength: 1
+                    type: string
+                required:
+                - partition
+                - replicas
+                - updateRevision
+                type: object
               updateRevision:
                 description: UpdateRevision, if not empty, indicates the latest revision
                   of the RoleInstanceSet.

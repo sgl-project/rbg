@@ -22,7 +22,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +61,9 @@ var (
 	concurrentReconciles = 3
 
 	updateExpectations = expectations.NewUpdateExpectations(revisionadapter.NewDefaultImpl())
+	// A replacement intent write must reach the set informer before another
+	// reconcile can make scale-down decisions using a newer instance snapshot.
+	rolloutStatusExpectations = expectations.NewResourceVersionExpectation()
 	// this is a short cut for any sub-functions to notify the reconcile how long to wait to requeue
 	durationStore = requeueduration.DurationStore{}
 
@@ -83,16 +85,6 @@ var (
 	// instance takes one extra stableUnhealthyDuration window before it
 	// becomes eligible for cleanup.
 	instanceUnhealthySince sync.Map // map[types.NamespacedName]*instanceHealthState
-
-	// earlyRollbackReplacementSignals tracks in-memory early-rollback
-	// replacement work. A signal records the set UID, target revision, and the
-	// base ordinals whose replacements are in flight. It is created only when
-	// the controller actually starts replacing an ordinal, and remains active
-	// until those ordinals are healthy at the target revision, leave the update
-	// range, or the rollout is superseded. This keeps existing surge through
-	// deletion, creation, and readiness without retaining surge after ordinary
-	// scale-downs or cancelled rollouts. The map is keyed by namespace/name.
-	earlyRollbackReplacementSignals sync.Map // map[string]earlyRollbackReplacementSignal
 )
 
 // NewReconciler creates a new reconcile.Reconciler for external usage
@@ -106,6 +98,12 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 	instanceSetInformer, err := cacher.GetInformerForKind(context.TODO(), controllerKind)
 	if err != nil {
 		klog.ErrorS(err, "Failed to get informer for InstanceSet")
+		return nil
+	}
+	if _, err := instanceSetInformer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+		DeleteFunc: forgetRolloutStatusExpectation,
+	}); err != nil {
+		klog.ErrorS(err, "Failed to register InstanceSet expectation cleanup")
 		return nil
 	}
 	instanceInformer, err := cacher.GetInformerForKind(context.TODO(), workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))
@@ -193,12 +191,16 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 	if errors.IsNotFound(err) {
 		klog.InfoS("InstanceSet deleted", "instanceSet", key)
 		updateExpectations.DeleteExpectations(key)
-		earlyRollbackReplacementSignals.Delete(key)
 		return reconcile.Result{}, nil
 	}
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("unable to retrieve InstanceSet %v from store: %v", key, err))
 		return reconcile.Result{}, err
+	}
+	if satisfied, _ := rolloutStatusExpectations.IsSatisfied(set); !satisfied {
+		// Never time out into destructive work: the informer event or this
+		// bounded retry will resume once the successful write is visible.
+		return reconcile.Result{RequeueAfter: time.Second}, nil
 	}
 
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
@@ -221,7 +223,16 @@ func (ssc *ReconcileStatefulInstanceSet) Reconcile(ctx context.Context, request 
 	return reconcile.Result{RequeueAfter: durationStore.Pop(getInstanceSetKey(set))}, err
 }
 
-// pruneInstanceHealth removes health observations and early-rollback signals
+func forgetRolloutStatusExpectation(obj interface{}) {
+	if tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	if set, ok := obj.(*workloadsv1alpha2.RoleInstanceSet); ok {
+		rolloutStatusExpectations.Delete(set)
+	}
+}
+
+// pruneInstanceHealth removes health observations
 // for deleted or replaced sets using the informer cache. The outer controller
 // returns early for deleted sets, so reclaim their records when another set
 // reconciles instead of relying on a NotFound request reaching this reconciler.
@@ -243,25 +254,6 @@ func (ssc *ReconcileStatefulInstanceSet) pruneInstanceHealth(now time.Time) {
 		if errors.IsNotFound(err) || (err == nil && set.UID != state.setUID) {
 			// An observation may have replaced this snapshot during the lookup.
 			instanceUnhealthySince.CompareAndDelete(key, state)
-		}
-		return true
-	})
-
-	earlyRollbackReplacementSignals.Range(func(key, value interface{}) bool {
-		setKey, ok := key.(string)
-		if !ok {
-			earlyRollbackReplacementSignals.Delete(key)
-			return true
-		}
-		namespace, name, ok := strings.Cut(setKey, "/")
-		if !ok {
-			earlyRollbackReplacementSignals.Delete(key)
-			return true
-		}
-		set, err := ssc.roleInstanceSetLister.RoleInstanceSets(namespace).Get(name)
-		signal, signalOK := value.(earlyRollbackReplacementSignal)
-		if errors.IsNotFound(err) || (err == nil && (!signalOK || string(set.UID) != signal.setUID)) {
-			earlyRollbackReplacementSignals.Delete(key)
 		}
 		return true
 	})

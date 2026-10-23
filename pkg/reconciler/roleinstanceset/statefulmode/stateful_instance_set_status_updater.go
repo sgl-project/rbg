@@ -20,8 +20,14 @@ package statefulmode
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/util/retry"
 	sigsclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,12 +36,19 @@ import (
 	roleinstancelisters "sigs.k8s.io/rbgs/client-go/listers/workloads/v1alpha2"
 )
 
+var errRolloutSpecChanged = errors.New("RoleInstanceSet changed while persisting rollout replacement state")
+
 // StatusUpdaterInterface is an interface used to update the RoleInstanceSetStatus associated with a RoleInstanceSet.
 // For any use other than testing, clients should create an instance using NewRealStatefulInstanceSetStatusUpdater.
 type StatusUpdaterInterface interface {
-	// UpdateInstanceSetStatus sets the set's Status to status. Implementations are required to retry on conflicts,
-	// but fail on other errors. If the returned error is nil set's Status has been successfully set to status.
+	// UpdateInstanceSetStatus sets the set's Status to status. Conflicts are retried
+	// only while the set UID, generation, and replacement state are unchanged.
+	// Otherwise the stale status is discarded for the next reconciliation.
+	// Other errors fail without changing the reconcile snapshot.
 	UpdateInstanceSetStatus(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, status *workloadsv1alpha2.RoleInstanceSetStatus) error
+	// PersistRolloutReplacementState writes replacement intent before destructive
+	// work. A stale resource version must fail rather than retry against a new spec.
+	PersistRolloutReplacementState(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, state *workloadsv1alpha2.RolloutReplacementState) error
 }
 
 // NewRealStatefulInstanceSetStatusUpdater returns a StatusUpdaterInterface that updates the Status of a RoleInstanceSet,
@@ -60,18 +73,33 @@ func (ssu *realStatefulInstanceSetStatusUpdater) UpdateInstanceSetStatus(
 	if set.DeletionTimestamp != nil {
 		return nil
 	}
+	expectedUID, expectedGeneration := set.UID, set.Generation
+	expectedReplacementState := set.Status.RolloutReplacementState.DeepCopy()
+	working := set.DeepCopy()
 	// don't wait due to limited number of clients, but backoff after the default number of steps
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		set.Status = *status
-		updateErr := ssu.client.Status().Update(ctx, set)
+		working.Status = *status.DeepCopy()
+		updateErr := ssu.client.Status().Update(ctx, working)
 		if updateErr == nil {
+			if !equality.Semantic.DeepEqual(expectedReplacementState, working.Status.RolloutReplacementState) {
+				rolloutStatusExpectations.Expect(working)
+			}
+			set.Status = *status.DeepCopy()
+			set.ResourceVersion = working.ResourceVersion
 			return nil
 		}
+		if !apierrors.IsConflict(updateErr) {
+			return updateErr
+		}
 		if updated, err := ssu.setLister.RoleInstanceSets(set.Namespace).Get(set.Name); err == nil {
+			if updated.UID != expectedUID || updated.Generation != expectedGeneration ||
+				!equality.Semantic.DeepEqual(updated.Status.RolloutReplacementState, expectedReplacementState) {
+				return nil
+			}
 			// make a copy so we don't mutate the shared cache
-			set = updated.DeepCopy()
+			working = updated.DeepCopy()
 			// Re-check deletion timestamp after refreshing from lister
-			if set.DeletionTimestamp != nil {
+			if working.DeletionTimestamp != nil {
 				return nil
 			}
 		} else {
@@ -80,6 +108,42 @@ func (ssu *realStatefulInstanceSetStatusUpdater) UpdateInstanceSetStatus(
 
 		return updateErr
 	})
+}
+
+func (ssu *realStatefulInstanceSetStatusUpdater) PersistRolloutReplacementState(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	state *workloadsv1alpha2.RolloutReplacementState,
+) error {
+	if set.DeletionTimestamp != nil {
+		return fmt.Errorf("RoleInstanceSet %s/%s is deleting", set.Namespace, set.Name)
+	}
+	patch, err := json.Marshal(map[string]interface{}{
+		"metadata": map[string]interface{}{"uid": set.UID, "resourceVersion": set.ResourceVersion},
+		"status":   map[string]interface{}{"rolloutReplacementState": state},
+	})
+	if err != nil {
+		return err
+	}
+	// Decode into a fresh object so an outdated CRD pruning the field cannot
+	// leave the requested state in memory and masquerade as a successful write.
+	updated := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: set.Name, Namespace: set.Namespace}}
+	if err := ssu.client.Status().Patch(ctx, updated, sigsclient.RawPatch(types.MergePatchType, patch)); err != nil {
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%w: %w", errRolloutSpecChanged, err)
+		}
+		return err
+	}
+	if updated.UID != set.UID || updated.Generation != set.Generation || updated.DeletionTimestamp != nil {
+		return fmt.Errorf("%w: %s/%s", errRolloutSpecChanged, set.Namespace, set.Name)
+	}
+	if !equality.Semantic.DeepEqual(updated.Status.RolloutReplacementState, state) {
+		return fmt.Errorf("RoleInstanceSet %s/%s did not persist rolloutReplacementState; upgrade the RoleInstanceSet CRD to match the controller", set.Namespace, set.Name)
+	}
+	rolloutStatusExpectations.Expect(updated)
+	set.ResourceVersion = updated.ResourceVersion
+	set.Status.RolloutReplacementState = updated.Status.RolloutReplacementState.DeepCopy()
+	return nil
 }
 
 var _ StatusUpdaterInterface = &realStatefulInstanceSetStatusUpdater{}

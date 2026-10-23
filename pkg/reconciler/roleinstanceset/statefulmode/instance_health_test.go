@@ -82,8 +82,6 @@ func TestPruneInstanceHealthPreservesConcurrentObservation(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			resetInstanceUnhealthySince()
 			t.Cleanup(resetInstanceUnhealthySince)
-			resetEarlyRollbackReplacementSignals()
-			t.Cleanup(resetEarlyRollbackReplacementSignals)
 			set := buildSet("recreated", 1, nil, nil)
 			set.UID = "old-set"
 			instance := buildInst(set.Name, 0, testOldRev, false, true)
@@ -147,8 +145,6 @@ func (i *healthSnapshotIndexer) GetByKey(key string) (interface{}, bool, error) 
 func TestInstanceHealthConcurrentSets(t *testing.T) {
 	resetInstanceUnhealthySince()
 	t.Cleanup(resetInstanceUnhealthySince)
-	resetEarlyRollbackReplacementSignals()
-	t.Cleanup(resetEarlyRollbackReplacementSignals)
 	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
 	controller := &ReconcileStatefulInstanceSet{roleInstanceSetLister: instancelisters.NewRoleInstanceSetLister(indexer)}
 	var workers sync.WaitGroup
@@ -181,8 +177,6 @@ func TestInstanceHealthConcurrentSets(t *testing.T) {
 func TestPruneInstanceHealthLooksUpEachSetOnce(t *testing.T) {
 	resetInstanceUnhealthySince()
 	t.Cleanup(resetInstanceUnhealthySince)
-	resetEarlyRollbackReplacementSignals()
-	t.Cleanup(resetEarlyRollbackReplacementSignals)
 	indexer := &healthCountingIndexer{Indexer: cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})}
 	for _, namespace := range []string{"first", "second"} {
 		set := buildSet("shared-name", 3, nil, nil)

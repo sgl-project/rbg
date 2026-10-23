@@ -195,6 +195,11 @@ type RoleInstanceSetStatus struct {
 	// CurrentRevision, if not empty, indicates the current revision version of the RoleInstanceSet.
 	CurrentRevision string `json:"currentRevision,omitempty"`
 
+	// RolloutReplacementState protects existing surge while early-rollback base
+	// replacements are in flight, including across controller restarts.
+	// +optional
+	RolloutReplacementState *RolloutReplacementState `json:"rolloutReplacementState,omitempty"`
+
 	// CollisionCount is the count of hash collisions for the RoleInstanceSet. The RoleInstanceSet controller
 	// uses this field as a collision avoidance mechanism when it needs to create the name for the
 	// newest ControllerRevision.
@@ -205,6 +210,31 @@ type RoleInstanceSetStatus struct {
 
 	// LabelSelector is label selectors for query over RoleInstances that should match the replica count used by HPA.
 	LabelSelector string `json:"labelSelector,omitempty"`
+}
+
+// RolloutReplacementState identifies an early rollback's replacement scope.
+// It is persisted before replacing a base instance when surge is enabled.
+// Existing surge is retained until every base instance in [Partition, Replicas)
+// is ready at UpdateRevision and its generation has been observed, including
+// instances that were not replaced. A non-ready unrelated instance in this
+// scope can therefore retain surge after the actual replacements are ready.
+// Changes to replicas or partition restrict completion checks to the overlap
+// with the current update range; those changes alone do not extend the recorded
+// scope. Starting additional replacement work can extend the recorded scope.
+// The state is cleared when that overlap is empty, every instance in it has
+// converged, or the target revision changes. Pausing retains the protection.
+type RolloutReplacementState struct {
+	// UpdateRevision is the revision that the replacements must reach.
+	// +kubebuilder:validation:MinLength=1
+	UpdateRevision string `json:"updateRevision"`
+	// Replicas is the exclusive upper ordinal bound of the recorded scope.
+	// It starts at the desired replica count and can increase for additional replacements.
+	// +kubebuilder:validation:Minimum=0
+	Replicas int32 `json:"replicas"`
+	// Partition is the inclusive lower ordinal bound of the recorded scope.
+	// It starts at the resolved partition and can decrease for additional replacements.
+	// +kubebuilder:validation:Minimum=0
+	Partition int32 `json:"partition"`
 }
 
 // RoleInstanceSetConditionType is type for RoleInstanceSet conditions.
