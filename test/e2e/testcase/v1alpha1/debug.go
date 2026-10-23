@@ -26,6 +26,7 @@ import (
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 )
 
@@ -68,6 +69,8 @@ func dumpDebugInfo(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup
 			dumpDeploymentWorkload(f, rbg.Namespace, workloadName)
 		case role.Workload.Kind == "InstanceSet":
 			dumpInstanceSetWorkload(f, rbg.Namespace, workloadName, role.Name)
+		case role.Workload.Kind == "RoleInstanceSet":
+			dumpRoleInstanceSetWorkload(f, rbg.Namespace, workloadName)
 		default: // StatefulSet is default
 			dumpStatefulSetWorkload(f, rbg.Namespace, workloadName)
 		}
@@ -330,4 +333,20 @@ func isPodReady(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+func dumpRoleInstanceSetWorkload(f *framework.Framework, namespace, risName string) {
+	ris := &workloadsv1alpha2.RoleInstanceSet{}
+	if err := f.Client.Get(f.Ctx, client.ObjectKey{Name: risName, Namespace: namespace}, ris); err != nil {
+		fmt.Printf("[RoleInstanceSet] Failed to get RoleInstanceSet: %v\n", err)
+		return
+	}
+	fmt.Printf("[RoleInstanceSet] Status: Replicas=%d, ReadyReplicas=%d, CurrentReplicas=%d, UpdatedReplicas=%d\n",
+		ris.Status.Replicas, ris.Status.ReadyReplicas, ris.Status.CurrentReplicas, ris.Status.UpdatedReplicas)
+	fmt.Printf("[RoleInstanceSet] CurrentRevision=%s, UpdateRevision=%s\n",
+		ris.Status.CurrentRevision, ris.Status.UpdateRevision)
+	for _, cond := range ris.Status.Conditions {
+		fmt.Printf("  Condition: Type=%s, Status=%s, Reason=%s, Message=%s\n",
+			cond.Type, cond.Status, cond.Reason, cond.Message)
+	}
 }

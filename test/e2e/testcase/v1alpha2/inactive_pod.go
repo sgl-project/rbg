@@ -46,7 +46,6 @@ func runEvictedPodTest(f *framework.Framework) {
 	ginkgo.It("evicted pod triggers replacement pod creation", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-evicted-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
-				WithWorkload("apps/v1", "Deployment").
 				WithReplicas(2).
 				Obj(),
 		}).Obj()
@@ -408,7 +407,6 @@ func runRestartPolicyNoneTest(f *framework.Framework) {
 	ginkgo.It("inactive pod triggers replacement pod creation with RestartPolicy=None", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-none-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").
-				WithWorkload("apps/v1", "Deployment").
 				WithReplicas(3).
 				Obj(),
 		}).Obj()

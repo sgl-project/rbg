@@ -82,25 +82,11 @@ For detailed instructions, see [Installation Guide](doc/install.md).
 
 #### Deprecated workload types
 
-The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` workload types are on
-their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
-`controller.deprecatedWorkloadTypes.enabled` (controller flag
-`--enable-deprecated-workload-types`) selects which of the two worlds the controller serves:
+The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` workload types are deprecated and will be removed in `0.10.0`. In `0.9.0`, writes to `v1alpha1` return a warning and new uses of the deprecated workload types are rejected. Existing roles continue to reconcile and can be migrated one role at a time.
 
-| Value | Behaviour |
-|:------|:----------|
-| `true` (default) | Unchanged. Both `v1alpha1` and `v1alpha2` control logic stay active, and all workload types are supported. |
-| `false` | The controller refuses the deprecated workload types outright: no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. |
+The chart value `controller.deprecatedWorkloadTypes.enabled` (controller flag `--enable-deprecated-workload-types`) defaults to `true` during the migration window. In that mode, existing deprecated workloads continue to reconcile, but new deprecated workload uses are rejected. Set the value to `false` only after every role has migrated; at that point all remaining uses are rejected and legacy RBAC and watches are disabled.
 
-The point of `false` is to let a **brand-new** installation start on `v1alpha2` and stay there, with
-the constraint enforced by the controller rather than by convention. Because that mode leaves the
-controller unable to reconcile a deprecated workload type at all, it is only for a first-time
-installation.
-
-> **If you already run the RBG controller, keep `true`.** There is currently no supported way to
-> turn the toggle off on an existing installation — objects already using a deprecated workload type
-> would become unreconcilable. A migration guide and an update path to `RoleInstanceSet` will be
-> provided in a later release.
+See the [v1alpha1 to v1alpha2 migration guide](doc/migration-v1alpha1-to-v2.md) for the manual role inventory, per-role rollout, rollback steps, and storage-version migration.
 
 ### 🎮 Quick Start
 

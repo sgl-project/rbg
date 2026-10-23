@@ -22,6 +22,9 @@ import (
 
 // SetupWebhookWithManager sets up the conversion, validating and defaulting
 // webhooks for RoleBasedGroup with the Manager.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update,versions=v1alpha2,name=vrolebasedgroup.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroup,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update,versions=v1alpha2,name=mrolebasedgroup.kb.io,admissionReviewVersions=v1
+
 func (r *RoleBasedGroup) SetupWebhookWithManager(
 	mgr ctrl.Manager,
 	enableDeprecatedWorkloadTypes bool,
@@ -38,6 +41,8 @@ func (r *RoleBasedGroup) SetupWebhookWithManager(
 
 // SetupWebhookWithManager sets up the validating webhook for CoordinatedPolicy
 // with the Manager.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=coordinatedpolicies,verbs=create;update,versions=v1alpha2,name=vcoordinatedpolicy.kb.io,admissionReviewVersions=v1
+
 func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGangMinimumsSupported bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
@@ -49,6 +54,9 @@ func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGan
 
 // SetupWebhookWithManager sets up the conversion, validating and defaulting
 // webhooks for RoleBasedGroupSet with the Manager.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=vrolebasedgroupset.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=mrolebasedgroupset.kb.io,admissionReviewVersions=v1
+
 func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
@@ -61,6 +69,8 @@ func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, enableDepr
 
 // SetupWebhookWithManager sets up the defaulting webhook for RoleInstanceSet
 // with the Manager.
+// +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=roleinstancesets,verbs=create;update,versions=v1alpha2,name=mroleinstanceset.kb.io,admissionReviewVersions=v1
+
 func (r *RoleInstanceSet) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
