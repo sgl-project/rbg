@@ -1,0 +1,14 @@
+title: Stateful Selective Scale-Down with Persistent Ordinal Reservation
+kep-number: 499
+authors:
+  - "@riverzhang"
+status: provisional
+creation-date: 2026-10-23
+reviewers: []
+approvers: []
+stage: alpha
+feature-gates:
+  - name: StatefulReserveOrdinals
+    components:
+      - rbgs-controller
+disable-supported: false
