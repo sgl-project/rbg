@@ -51,6 +51,21 @@ func rawPatch(t *testing.T, v any) runtime.RawExtension {
 
 // ── ConvertTo (v1alpha1 → v1alpha2) ──────────────────────────────────────────
 
+func TestRoleBasedGroup_RolloutAcknowledgementRoundTrip(t *testing.T) {
+	original := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.RolloutRequestAnnotationKey: "3"}},
+		Status:     v2.RoleBasedGroupStatus{ObservedGeneration: 5, ObservedRolloutRequest: "2"},
+	}
+	legacy := &RoleBasedGroup{}
+	require.NoError(t, legacy.ConvertFrom(original.DeepCopy()))
+	assert.Equal(t, "2", legacy.Status.ObservedRolloutRequest)
+	assert.Equal(t, "3", legacy.Annotations[constants.RolloutRequestAnnotationKey])
+	restored := &v2.RoleBasedGroup{}
+	require.NoError(t, legacy.ConvertTo(restored))
+	assert.Equal(t, original.Status, restored.Status)
+	assert.Equal(t, "3", restored.Annotations[constants.RolloutRequestAnnotationKey])
+}
+
 func TestRoleBasedGroup_ConvertTo_StandalonePattern(t *testing.T) {
 	src := &RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},

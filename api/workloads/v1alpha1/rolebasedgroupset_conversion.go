@@ -17,12 +17,47 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+const (
+	// annotationV1alpha2RolloutStrategy stores the serialized v1alpha2 spec.rolloutStrategy on
+	// the v1alpha1 object, so a full-object write through v1alpha1 round-trips it back to the
+	// hub object instead of silently reverting the set to the legacy static path.
+	annotationV1alpha2RolloutStrategy = constants.ConversionV1alpha2RolloutStrategyAnnotationKey
+
+	// annotationV1alpha2RolloutStatus stores the v1alpha2-only rollout status fields on the
+	// v1alpha1 object for the same round trip.
+	annotationV1alpha2RolloutStatus = constants.ConversionV1alpha2RolloutStatusAnnotationKey
+)
+
+// groupSetRolloutStatusFields are the RoleBasedGroupSet status fields that exist only in
+// v1alpha2 and therefore cannot live on the v1alpha1 object itself.
+type groupSetRolloutStatusFields struct {
+	CurrentReplicas         int32  `json:"currentReplicas,omitempty"`
+	UpdatedReplicas         int32  `json:"updatedReplicas,omitempty"`
+	UpdatedReadyReplicas    int32  `json:"updatedReadyReplicas,omitempty"`
+	ExpectedUpdatedReplicas int32  `json:"expectedUpdatedReplicas,omitempty"`
+	CurrentRevision         string `json:"currentRevision,omitempty"`
+	UpdateRevision          string `json:"updateRevision,omitempty"`
+}
+
+func groupSetRolloutStatusFromV2(status *v2.RoleBasedGroupSetStatus) groupSetRolloutStatusFields {
+	return groupSetRolloutStatusFields{
+		CurrentReplicas:         status.CurrentReplicas,
+		UpdatedReplicas:         status.UpdatedReplicas,
+		UpdatedReadyReplicas:    status.UpdatedReadyReplicas,
+		ExpectedUpdatedReplicas: status.ExpectedUpdatedReplicas,
+		CurrentRevision:         status.CurrentRevision,
+		UpdateRevision:          status.UpdateRevision,
+	}
+}
 
 // ConvertTo converts this RoleBasedGroupSet (v1alpha1) to the Hub version (v1alpha2).
 func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
@@ -39,8 +74,7 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 	}
 
 	// Preserve lossy v1alpha1 fields (PodGroupPolicy, CoordinationRequirements) into
-	// dst.Annotations. dst.Annotations is already populated from dst.ObjectMeta = src.ObjectMeta,
-	// so we pass it directly as the destination annotation map.
+	// a copy of dst.Annotations so the source metadata is not modified.
 	// A synthetic RoleBasedGroup wrapper is used because preserveV1alpha1Fields operates on
 	// RoleBasedGroup types; only the Spec fields are read, so Annotations on the wrapper are unused.
 	syntheticSrc := &RoleBasedGroup{Spec: src.Spec.Template}
@@ -51,14 +85,21 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 	}
 	dst.Annotations = syntheticDst.Annotations
 
-	// Also copy the coordination annotation into GroupTemplate.Annotations so that
-	// newRBGForSet (which copies Spec.GroupTemplate.Annotations) propagates it to
-	// each child RoleBasedGroup, making them visible to EnsureV1alpha1CoordinatedPolicy.
-	if v, ok := dst.Annotations[annotationV1alpha1Coordination]; ok && v != "" {
-		if dst.Spec.GroupTemplate.Annotations == nil {
-			dst.Spec.GroupTemplate.Annotations = make(map[string]string)
+	// Compatibility settings belong to the child template, but unrelated parent metadata does not.
+	for _, key := range []string{
+		annotationV1alpha1Coordination,
+		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey,
+		constants.GangSchedulingAnnotationKey,
+		constants.GangSchedulingScheduleTimeoutSecondsKey,
+		constants.GangSchedulingVolcanoQueueKey,
+		constants.GangSchedulingVolcanoPriorityClassKey,
+	} {
+		if v, ok := dst.Annotations[key]; ok && v != "" {
+			if dst.Spec.GroupTemplate.Annotations == nil {
+				dst.Spec.GroupTemplate.Annotations = make(map[string]string)
+			}
+			dst.Spec.GroupTemplate.Annotations[key] = v
 		}
-		dst.Spec.GroupTemplate.Annotations[annotationV1alpha1Coordination] = v
 	}
 	dst.Status = v2.RoleBasedGroupSetStatus{
 		ObservedGeneration: src.Status.ObservedGeneration,
@@ -66,6 +107,30 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 		ReadyReplicas:      src.Status.ReadyReplicas,
 		Conditions:         src.Status.Conditions,
 	}
+
+	if raw := src.Annotations[annotationV1alpha2RolloutStrategy]; raw != "" {
+		strategy := &v2.GroupSetRolloutStrategy{}
+		if err := json.Unmarshal([]byte(raw), strategy); err != nil {
+			return fmt.Errorf("annotation %s: %w", annotationV1alpha2RolloutStrategy, err)
+		}
+		dst.Spec.RolloutStrategy = strategy
+	}
+	if raw := src.Annotations[annotationV1alpha2RolloutStatus]; raw != "" {
+		extras := &groupSetRolloutStatusFields{}
+		if err := json.Unmarshal([]byte(raw), extras); err != nil {
+			return fmt.Errorf("annotation %s: %w", annotationV1alpha2RolloutStatus, err)
+		}
+		dst.Status.CurrentReplicas = extras.CurrentReplicas
+		dst.Status.UpdatedReplicas = extras.UpdatedReplicas
+		dst.Status.UpdatedReadyReplicas = extras.UpdatedReadyReplicas
+		dst.Status.ExpectedUpdatedReplicas = extras.ExpectedUpdatedReplicas
+		dst.Status.CurrentRevision = extras.CurrentRevision
+		dst.Status.UpdateRevision = extras.UpdateRevision
+	}
+	// The stash exists only on the v1alpha1 view; the hub object keeps these values in their
+	// native fields, so the conversion-only keys must not leak into storage.
+	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
+	delete(dst.Annotations, annotationV1alpha2RolloutStatus)
 
 	return nil
 }
@@ -78,6 +143,10 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 	}
 
 	dst.ObjectMeta = src.ObjectMeta
+	// Annotation cleanup and stashing below must not mutate the hub's metadata.
+	if dst.Annotations != nil {
+		dst.Annotations = copyAnnotations(dst.Annotations)
+	}
 	dst.Spec.Replicas = src.Spec.Replicas
 
 	if err := convertSpecV2ToV1alpha1(&src.Spec.GroupTemplate.Spec, &dst.Spec.Template); err != nil {
@@ -102,6 +171,32 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		Replicas:           src.Status.Replicas,
 		ReadyReplicas:      src.Status.ReadyReplicas,
 		Conditions:         src.Status.Conditions,
+	}
+
+	// Stash v1alpha2-only fields on the v1alpha1 view, so a full-object write through
+	// v1alpha1 carries them back instead of dropping them. removeConversionAnnotations only
+	// strips v1alpha1 stash keys, so these must be added after it; clear any stale copies first.
+	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
+	delete(dst.Annotations, annotationV1alpha2RolloutStatus)
+	if src.Spec.RolloutStrategy != nil {
+		data, err := json.Marshal(src.Spec.RolloutStrategy)
+		if err != nil {
+			return err
+		}
+		if dst.Annotations == nil {
+			dst.Annotations = make(map[string]string)
+		}
+		dst.Annotations[annotationV1alpha2RolloutStrategy] = string(data)
+	}
+	if extras := groupSetRolloutStatusFromV2(&src.Status); extras != (groupSetRolloutStatusFields{}) {
+		data, err := json.Marshal(extras)
+		if err != nil {
+			return err
+		}
+		if dst.Annotations == nil {
+			dst.Annotations = make(map[string]string)
+		}
+		dst.Annotations[annotationV1alpha2RolloutStatus] = string(data)
 	}
 
 	return nil
