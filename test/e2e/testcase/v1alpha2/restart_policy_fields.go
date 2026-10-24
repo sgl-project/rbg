@@ -176,8 +176,8 @@ func runRestartPolicyResolutionMatrixTest(f *framework.Framework) {
 
 // runRestartPolicyConfigOverridesLegacyTest is the behavioural half of the matrix:
 // a role that asks for Recreate through the deprecated field but None through
-// restartPolicyConfig must behave as None, i.e. a failed pod is replaced on its own
-// and its siblings survive.
+// restartPolicyConfig must behave as None: the kubelet restarts the container in
+// the existing Pod, and the controller preserves every Pod in the instance.
 func runRestartPolicyConfigOverridesLegacyTest(f *framework.Framework) {
 	ginkgo.It("restartPolicyConfig=None suppresses instance recreation requested by the deprecated field", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-rp-config-wins", f.Namespace).WithRoles(
@@ -196,47 +196,49 @@ func runRestartPolicyConfigOverridesLegacyTest(f *framework.Framework) {
 		f.ExpectRbgV2Equal(rbg)
 
 		instanceName, podUIDs := singleInstancePodUIDs(f, rbg, "role-1", 2)
+		waitForInstanceReady(f, instanceName)
 
 		// Target the worker and keep the leader as the survivor. Picking either one
 		// at random would make the spec non-deterministic, since leader and worker
 		// failures do not necessarily follow the same code path.
 		targetPodName := instancePodNameByRole(f, rbg, instanceName, "worker")
-		leaderPodName := instancePodNameByRole(f, rbg, instanceName, "leader")
-		survivorUIDs := map[string]types.UID{leaderPodName: podUIDs[leaderPodName]}
 
 		targetPod := &corev1.Pod{}
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
 			Namespace: f.Namespace, Name: targetPodName,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		waitForNginxContainerRestart(f, targetPod)
 
-		// This is the discriminator: under Recreate the sibling would be deleted
-		// too. Hold the assertion, because recreation is asynchronous and a single
-		// check could pass before it would have happened.
-		gomega.Consistently(func() map[string]types.UID {
-			current := getInstancePodUIDs(f, rbg, instanceName)
-			filtered := make(map[string]types.UID)
-			for name, uid := range current {
-				if _, ok := survivorUIDs[name]; ok {
-					filtered[name] = uid
+		gomega.Eventually(func() bool {
+			pod := &corev1.Pod{}
+			if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(targetPod), pod); err != nil {
+				return false
+			}
+			if pod.UID != targetPod.UID || pod.Status.Phase != corev1.PodRunning {
+				return false
+			}
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.Name == "nginx" {
+					return status.Ready && status.State.Running != nil
 				}
 			}
-			return filtered
-		}, 30, 3).Should(gomega.Equal(survivorUIDs),
-			"restartPolicyConfig=None must win: sibling pods should not be recreated")
+			return false
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"the restarted nginx container should recover in the original Pod")
+		waitForInstanceFullyRecovered(f, instanceName)
 
-		// The failed pod is still replaced on its own, so the instance returns to
-		// full size.
-		gomega.Eventually(func() int {
-			return len(getInstancePodUIDs(f, rbg, instanceName))
-		}, utils.Timeout, utils.Interval).Should(gomega.Equal(2),
-			"the failed pod should be replaced")
+		// Check after recovery so the instance's readiness gate cannot mask an
+		// incorrect Recreate policy. Include the target UID as well as its sibling.
+		gomega.Consistently(func() map[string]types.UID {
+			return getInstancePodUIDs(f, rbg, instanceName)
+		}, 30, 3).Should(gomega.Equal(podUIDs),
+			"restartPolicyConfig=None must preserve both the restarted Pod and its sibling")
 	})
 }
 
 // runLegacyRestartPolicyRecreatesInstanceTest is the v0.7.0 upgrade path end to end:
 // a role configured the old way, with only the deprecated restartPolicy string, must
-// still recreate the whole instance on pod failure.
+// still recreate the whole instance when a container restarts.
 func runLegacyRestartPolicyRecreatesInstanceTest(f *framework.Framework) {
 	ginkgo.It("deprecated restartPolicy alone still recreates the whole instance", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-rp-legacy", f.Namespace).WithRoles(
@@ -256,43 +258,31 @@ func runLegacyRestartPolicyRecreatesInstanceTest(f *framework.Framework) {
 		instanceName, podUIDs := singleInstancePodUIDs(f, rbg, "role-1", 2)
 
 		// The instance must be Ready before shouldRecreateInstance will act on it.
-		gomega.Eventually(func() bool {
-			ri := &workloadsv1alpha2.RoleInstance{}
-			if err := f.Client.Get(f.Ctx, client.ObjectKey{
-				Namespace: f.Namespace, Name: instanceName,
-			}, ri); err != nil {
-				return false
-			}
-			for _, cond := range ri.Status.Conditions {
-				if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
-					return true
-				}
-			}
-			return false
-		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
-			"RoleInstance should be Ready before triggering failure")
+		waitForInstanceReady(f, instanceName)
 
 		targetPodName := instancePodNameByRole(f, rbg, instanceName, "worker")
 		targetPod := &corev1.Pod{}
 		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
 			Namespace: f.Namespace, Name: targetPodName,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(utils.RestartNginxContainer(f.Ctx, targetPod)).Should(gomega.Succeed())
 
-		// Every pod in the instance, not just the failed one, gets a new UID.
+		// Every pod in the instance, including the healthy sibling, gets a new UID.
 		gomega.Eventually(func() bool {
 			current := getInstancePodUIDs(f, rbg, instanceName)
 			if len(current) != 2 {
 				return false
 			}
-			for name, uid := range current {
-				if podUIDs[name] == uid {
+			for name, oldUID := range podUIDs {
+				uid, exists := current[name]
+				if !exists || oldUID == uid {
 					return false
 				}
 			}
 			return true
 		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
 			"the whole instance should be recreated with new pod UIDs")
+		waitForInstanceFullyRecovered(f, instanceName)
 	})
 }
 

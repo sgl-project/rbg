@@ -17,8 +17,7 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"flag"
-	"os/exec"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -26,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
@@ -122,7 +120,7 @@ func runRestartPolicyRecreateTest(f *framework.Framework) {
 		gomega.Expect(targetPodList.Items).ShouldNot(gomega.BeEmpty())
 		targetPod := findActivePod(targetPodList.Items)
 		gomega.Expect(targetPod).NotTo(gomega.BeNil(), "expected an active Pod before triggering failure")
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(utils.RestartNginxContainer(f.Ctx, targetPod)).Should(gomega.Succeed())
 
 		// Wait for the target instance's pods to be fully recreated (new UIDs)
 		expectedPodCount := len(instancePods[targetInstance])
@@ -178,9 +176,9 @@ func runRestartPolicyRecreateTest(f *framework.Framework) {
 }
 
 // runRestartPolicyNoneReplaceTest verifies that RestartPolicy=None only
-// replaces the failed pod without affecting other pods.
+// replaces a deleted pod without affecting other pods.
 func runRestartPolicyNoneReplaceTest(f *framework.Framework) {
-	ginkgo.It("RestartPolicy=None on RoleInstanceSet replaces only failed pod and is stable after replacement", func() {
+	ginkgo.It("RestartPolicy=None on RoleInstanceSet replaces only deleted pod and is stable after replacement", func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildStandaloneRole("role-1").
@@ -197,7 +195,7 @@ func runRestartPolicyNoneReplaceTest(f *framework.Framework) {
 		initialPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
 		gomega.Expect(initialPodUIDs).Should(gomega.HaveLen(3))
 
-		// Pick one pod to evict
+		// Delete one pod to exercise replacement without patching kubelet-owned status.
 		podList := &corev1.PodList{}
 		gomega.Expect(f.Client.List(f.Ctx, podList,
 			client.InNamespace(f.Namespace),
@@ -206,29 +204,32 @@ func runRestartPolicyNoneReplaceTest(f *framework.Framework) {
 				constants.RoleNameLabelKey:  "role-1",
 			})).Should(gomega.Succeed())
 		targetPod := findActivePod(podList.Items)
-		gomega.Expect(targetPod).NotTo(gomega.BeNil(), "expected an active Pod before eviction")
+		gomega.Expect(targetPod).NotTo(gomega.BeNil(), "expected an active Pod before deletion")
 		targetPodName := targetPod.Name
+		targetPodUID := targetPod.UID
 
-		gomega.Expect(utils.SetPodEvicted(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(f.Client.Delete(f.Ctx, targetPod, client.Preconditions{UID: &targetPodUID})).Should(gomega.Succeed())
 
-		// Wait for active pod count to be restored to 3
-		gomega.Eventually(func() int {
-			count, err := utils.GetActivePodCount(f.Ctx, f.Client, f.Namespace, rbg.Name)
-			if err != nil {
-				return 0
+		// A count alone can still include the original pod before deletion is
+		// observed. Require its UID to disappear and all siblings to survive.
+		gomega.Eventually(func() bool {
+			current := getActivePodUIDsForRole(f, rbg, "role-1")
+			if len(current) != len(initialPodUIDs) {
+				return false
 			}
-			return count
-		}, utils.Timeout, utils.Interval).Should(gomega.Equal(3))
-
-		// Verify unaffected pods kept their UIDs
-		currentPodUIDs := getPodUIDsForRole(f, rbg, "role-1")
-		for name, uid := range initialPodUIDs {
-			if name == targetPodName {
-				continue // skip the evicted pod
+			for _, uid := range current {
+				if uid == targetPodUID {
+					return false
+				}
 			}
-			gomega.Expect(currentPodUIDs).Should(gomega.HaveKeyWithValue(name, uid),
-				"unaffected pod %s should not be recreated", name)
-		}
+			for name, uid := range initialPodUIDs {
+				if name != targetPodName && current[name] != uid {
+					return false
+				}
+			}
+			return true
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+			"only the deleted pod should be replaced with a new UID")
 
 		// Wait for full readiness
 		f.ExpectRbgV2Equal(rbg)
@@ -291,7 +292,7 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstanceName,
 			})).Should(gomega.Succeed())
 		firstUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
+		for _, p := range filterActivePods(podList.Items) {
 			firstUIDs[p.Name] = p.UID
 		}
 
@@ -302,7 +303,7 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 			Namespace: f.Namespace,
 			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(restartNginxContainer(f, targetPod.Name)).Should(gomega.Succeed())
+		gomega.Expect(utils.RestartNginxContainer(f.Ctx, targetPod)).Should(gomega.Succeed())
 
 		// Wait for first recreation (no backoff on first restart)
 		waitForInstancePodsRecreated(f, rbg, targetInstanceName, firstUIDs)
@@ -317,6 +318,7 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 		// the next restart. We must wait for it to be cleared to ensure the
 		// backoff mechanism works correctly for the second restart.
 		waitForInstanceFullyRecovered(f, targetInstanceName)
+		backoffDeadline := firstRestartBackoffDeadline(f, targetInstanceName)
 
 		// --- Second container restart: backoff should delay recreation ---
 		gomega.Expect(f.Client.List(f.Ctx, podList,
@@ -336,17 +338,9 @@ func runRestartBackoffDelayTest(f *framework.Framework) {
 			Namespace: f.Namespace,
 			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(targetPod.Status.ContainerStatuses).ShouldNot(gomega.BeEmpty())
-		previousRestartCount := targetPod.Status.ContainerStatuses[0].RestartCount
-		gomega.Expect(restartNginxContainer(f, targetPod.Name)).Should(gomega.Succeed())
-		gomega.Eventually(func() int32 {
-			if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(targetPod), targetPod); err != nil ||
-				len(targetPod.Status.ContainerStatuses) == 0 {
-				return previousRestartCount
-			}
-			return targetPod.Status.ContainerStatuses[0].RestartCount
-		}, utils.Timeout, utils.Interval).Should(gomega.BeNumerically(">", previousRestartCount),
-			"nginx container should restart before checking the backoff window")
+		waitForNginxContainerRestart(f, targetPod)
+		gomega.Expect(time.Until(backoffDeadline)).Should(gomega.BeNumerically(">", 15*time.Second),
+			"the no-recreation check must fit inside the remaining backoff window")
 
 		// During backoff window (90s), pods should NOT be recreated immediately.
 		// Check for 15 s — much shorter than the remaining window (≥40 s) but
@@ -479,7 +473,7 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstanceName,
 			})).Should(gomega.Succeed())
 		firstUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
+		for _, p := range filterActivePods(podList.Items) {
 			firstUIDs[p.Name] = p.UID
 		}
 
@@ -490,11 +484,12 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 			Namespace: f.Namespace,
 			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		gomega.Expect(utils.RestartNginxContainer(f.Ctx, targetPod)).Should(gomega.Succeed())
 
 		waitForInstancePodsRecreated(f, rbg, targetInstanceName, firstUIDs)
 		f.ExpectRbgV2Equal(rbg)
 		waitForInstanceFullyRecovered(f, targetInstanceName)
+		backoffDeadline := firstRestartBackoffDeadline(f, targetInstanceName)
 
 		// --- Second crash: backoff should be active (120s delay) ---
 		gomega.Expect(f.Client.List(f.Ctx, podList,
@@ -504,7 +499,7 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 				constants.RoleInstanceNameLabelKey: targetInstanceName,
 			})).Should(gomega.Succeed())
 		secondUIDs := make(map[string]types.UID)
-		for _, p := range podList.Items {
+		for _, p := range filterActivePods(podList.Items) {
 			secondUIDs[p.Name] = p.UID
 		}
 
@@ -514,9 +509,12 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 			Namespace: f.Namespace,
 			Name:      selectedPod.Name,
 		}, targetPod)).Should(gomega.Succeed())
-		gomega.Expect(utils.SetPodFailed(f.Ctx, f.Client, targetPod)).Should(gomega.Succeed())
+		waitForNginxContainerRestart(f, targetPod)
+		gomega.Expect(time.Until(backoffDeadline)).Should(gomega.BeNumerically(">", 45*time.Second),
+			"the no-recreation and rolling-update checks must fit inside the remaining backoff window")
 
-		// Verify backoff is active: pods NOT recreated for 15s
+		// The kubelet-owned restart count proves a live trigger exists. Verify
+		// the complete active Pod set stays unchanged for the next 15s.
 		gomega.Consistently(func() bool {
 			pods := &corev1.PodList{}
 			if err := f.Client.List(f.Ctx, pods,
@@ -527,11 +525,12 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 				}); err != nil {
 				return false
 			}
-			for _, p := range pods.Items {
-				if p.DeletionTimestamp != nil {
-					continue
-				}
-				if secondUIDs[p.Name] != p.UID {
+			activePods := filterActivePods(pods.Items)
+			if len(activePods) != len(secondUIDs) {
+				return false
+			}
+			for _, p := range activePods {
+				if uid, ok := secondUIDs[p.Name]; !ok || uid != p.UID {
 					return false
 				}
 			}
@@ -551,6 +550,9 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 		// The backoff window (120s) is much longer than 30s, so if the
 		// backoff froze the update, no new pod would appear in time.
 		gomega.Eventually(func() bool {
+			if !time.Now().Before(backoffDeadline) {
+				return false
+			}
 			pods := &corev1.PodList{}
 			if err := f.Client.List(f.Ctx, pods,
 				client.InNamespace(f.Namespace),
@@ -574,24 +576,51 @@ func runRestartBackoffSpecChangeTest(f *framework.Framework) {
 			}
 			return false
 		}, 30, 2).Should(gomega.BeTrue(),
-			"rolling update should proceed during backoff (new pod with updated env var should be created)")
+			"rolling update should create a pod with the updated env var before backoff expires")
 	})
 }
 
-func restartNginxContainer(f *framework.Framework, podName string) error {
-	kubeconfig := ""
-	if kubeconfigFlag := flag.Lookup(clientconfig.KubeconfigFlagName); kubeconfigFlag != nil {
-		kubeconfig = kubeconfigFlag.Value.String()
-	}
-	return exec.CommandContext(f.Ctx, "kubectl", kubectlRestartArgs(kubeconfig, f.Namespace, podName)...).Run()
+// firstRestartBackoffDeadline anchors the checks to the controller's recorded
+// restart time so natural backoff expiry cannot make a blocked update pass.
+func firstRestartBackoffDeadline(f *framework.Framework, instanceName string) time.Time {
+	ri := &workloadsv1alpha2.RoleInstance{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{
+		Namespace: f.Namespace,
+		Name:      instanceName,
+	}, ri)).Should(gomega.Succeed())
+	gomega.Expect(ri.Status.RestartCount).Should(gomega.Equal(int32(1)), "exactly one instance recreation should have completed")
+	gomega.Expect(ri.Status.LastRestartTime).NotTo(gomega.BeNil())
+	return ri.Status.LastRestartTime.Add(time.Duration(ri.Spec.GetBaseDelaySeconds()) * time.Second)
 }
 
-func kubectlRestartArgs(kubeconfig, namespace, podName string) []string {
-	args := make([]string, 0, 12)
-	if kubeconfig != "" {
-		args = append(args, "--kubeconfig", kubeconfig)
+// waitForNginxContainerRestart confirms the trigger on the original Pod before
+// checking behavior that suppresses recreation (backoff or an ignored component).
+func waitForNginxContainerRestart(f *framework.Framework, pod *corev1.Pod) {
+	var nginxStatus *corev1.ContainerStatus
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].Name == "nginx" {
+			nginxStatus = &pod.Status.ContainerStatuses[i]
+			break
+		}
 	}
-	return append(args, "exec", "-n", namespace, podName, "-c", "nginx", "--", "nginx", "-s", "quit")
+	gomega.Expect(nginxStatus).NotTo(gomega.BeNil(), "nginx container status should exist before restart")
+	previousRestartCount := nginxStatus.RestartCount
+	gomega.Expect(utils.RestartNginxContainer(f.Ctx, pod)).Should(gomega.Succeed())
+	gomega.Eventually(func() bool {
+		current := &corev1.Pod{}
+		if err := f.Client.Get(f.Ctx, client.ObjectKeyFromObject(pod), current); err != nil ||
+			current.UID != pod.UID || current.DeletionTimestamp != nil {
+			return false
+		}
+		for _, status := range current.Status.ContainerStatuses {
+			if status.Name == "nginx" && status.RestartCount > previousRestartCount &&
+				status.Ready && status.State.Running != nil {
+				return true
+			}
+		}
+		return false
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+		"nginx container on the original Pod should restart and recover before checking recreation is suppressed")
 }
 
 // waitForInstanceReady waits until the RoleInstance has a Ready=True condition.
@@ -627,7 +656,7 @@ func waitForInstancePodsRecreated(f *framework.Framework, rbg *workloadsv1alpha2
 			return false
 		}
 		activePods := filterActivePods(pods.Items)
-		if len(activePods) == 0 {
+		if len(activePods) != len(oldUIDs) {
 			return false
 		}
 		for _, p := range activePods {
