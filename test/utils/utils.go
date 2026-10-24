@@ -143,31 +143,6 @@ func MapContains(m map[string]string, key, value string) bool {
 	return false
 }
 
-// SetPodEvicted simulates a Pod being evicted by updating its status subresource.
-// This is used in e2e tests to trigger inactive pod handling.
-func SetPodEvicted(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
-	pod.Status.Phase = v1.PodFailed
-	pod.Status.Reason = "Evicted"
-	pod.Status.Message = "The node was low on resource: ephemeral-storage. Evicted."
-	return rclient.Status().Update(ctx, pod)
-}
-
-// SetPodUnexpectedAdmissionError simulates a Pod with unexpected admission error.
-func SetPodUnexpectedAdmissionError(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
-	pod.Status.Phase = v1.PodFailed
-	pod.Status.Reason = "UnexpectedAdmissionError"
-	pod.Status.Message = "Pod rejected by admission webhook"
-	return rclient.Status().Update(ctx, pod)
-}
-
-// SetPodFailed simulates a Pod in Failed state with generic error.
-func SetPodFailed(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
-	pod.Status.Phase = v1.PodFailed
-	pod.Status.Reason = "Error"
-	pod.Status.Message = "Container exited with error"
-	return rclient.Status().Update(ctx, pod)
-}
-
 // GetActivePodCount returns the count of active pods for a given RBG.
 // Uses the native Kubernetes IsPodActive function for consistency.
 func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rbgName string) (int, error) {
