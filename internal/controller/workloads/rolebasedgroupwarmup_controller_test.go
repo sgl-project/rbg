@@ -1633,6 +1633,11 @@ func TestReconcile_TargetDeletedMidRunCompletes(t *testing.T) {
 		t.Fatalf("terminal counters must be recorded, got active=%d succeeded=%d",
 			updated.Status.Active, updated.Status.Succeeded)
 	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionUnknown || cond.Reason != "RoleBasedGroupNotFound" {
+		t.Fatalf("a terminal job must not pair Complete=True with TargetReady=False, got %#v",
+			updated.Status.Conditions)
+	}
 }
 
 // A newly pending selected target Pod after warmup Pods exist must not block
@@ -1974,8 +1979,9 @@ func TestReconcile_TargetDeletedMidRunWithActivePodsStaysRunning(t *testing.T) {
 		t.Fatalf("active counter must keep accounting the running Pod, got %d", updated.Status.Active)
 	}
 	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
-		cond.Status != metav1.ConditionFalse || cond.Reason != "RoleBasedGroupNotFound" {
-		t.Fatalf("expected TargetReady=False/RoleBasedGroupNotFound, got %#v", updated.Status.Conditions)
+		cond.Status != metav1.ConditionUnknown || cond.Reason != "RoleBasedGroupNotFound" {
+		t.Fatalf("expected TargetReady=Unknown/RoleBasedGroupNotFound after a started target disappears, got %#v",
+			updated.Status.Conditions)
 	}
 
 	// Once the Pod itself becomes terminal the job completes with its counters.
@@ -2281,6 +2287,10 @@ func TestReconcile_TargetDeletedAfterSuccessKeepsStartTimeAndReason(t *testing.T
 	}
 	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Complete"); cond == nil || cond.Reason != "WarmupCompleted" {
 		t.Fatalf("expected Complete/WarmupCompleted, got %#v", updated.Status.Conditions)
+	}
+	if targetReady := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); targetReady == nil ||
+		targetReady.Status != metav1.ConditionUnknown || targetReady.Reason != "RoleBasedGroupNotFound" {
+		t.Fatalf("expected terminal TargetReady=Unknown/RoleBasedGroupNotFound, got %#v", updated.Status.Conditions)
 	}
 	if updated.Status.StartTime == nil || !updated.Status.StartTime.Time.Equal(started.Time) {
 		t.Fatalf("startTime must be preserved, was %v now %v", started, updated.Status.StartTime)

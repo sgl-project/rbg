@@ -237,7 +237,10 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 			targetRBG = nil
 			targetPods = nil
 			target.deleted = true
-			r.setTargetNotReady(warmup, "RoleBasedGroupNotFound", "target RoleBasedGroup no longer exists")
+			// Once the Warmup has started, target readiness no longer gates the
+			// job. Use Unknown rather than False so a terminal Complete condition is
+			// not paired with a claim that a now-deleted target is currently ready.
+			r.setTargetUnknown(warmup, "RoleBasedGroupNotFound", "target RoleBasedGroup no longer exists")
 		}
 	}
 
@@ -552,6 +555,19 @@ func (r *RoleBasedGroupWarmupReconciler) setTargetNotReady(warmup *workloadsv1al
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 		Type:               ConditionTargetReady,
 		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: warmup.Generation,
+	})
+}
+
+// setTargetUnknown records a TargetReady=Unknown condition without returning early.
+// It is used after the Warmup has started and its target disappears: Complete/Failed,
+// not target readiness, is authoritative for the started job.
+func (r *RoleBasedGroupWarmupReconciler) setTargetUnknown(warmup *workloadsv1alpha2.RoleBasedGroupWarmup, reason, message string) {
+	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
+		Type:               ConditionTargetReady,
+		Status:             metav1.ConditionUnknown,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: warmup.Generation,
