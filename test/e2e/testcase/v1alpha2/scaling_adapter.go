@@ -163,7 +163,6 @@ func RunRbgScalingAdapterControllerTestCases(f *framework.Framework) {
 									WithReplicas(int32(1)).
 									WithScalingAdapter(true).Obj(),
 								wrappersv2.BuildLeaderWorkerRole("role-2").
-									WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 									WithReplicas(int32(1)).
 									WithScalingAdapter(true).Obj(),
 							},

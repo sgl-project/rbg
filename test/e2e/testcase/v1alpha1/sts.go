@@ -54,7 +54,7 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 			[]workloadsv1alpha1.RoleSpec{
 				wrappers.BuildBasicRole("role-1").
 					WithReplicas(2).
-					WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+					WithRoleInstanceSet().
 					WithRollingUpdate(workloadsv1alpha1.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(1)),
 						MaxSurge:       ptr.To(intstr.FromInt32(1)),

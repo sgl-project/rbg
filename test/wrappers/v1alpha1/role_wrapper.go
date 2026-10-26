@@ -90,6 +90,14 @@ func (roleWrapper *RoleWrapper) WithLabels(labels map[string]string) *RoleWrappe
 	return roleWrapper
 }
 
+func (roleWrapper *RoleWrapper) WithRoleInstanceSet() *RoleWrapper {
+	roleWrapper.Workload = workloadsv1alpha.WorkloadSpec{
+		APIVersion: "workloads.x-k8s.io/v1alpha2",
+		Kind:       "RoleInstanceSet",
+	}
+	return roleWrapper
+}
+
 func (roleWrapper *RoleWrapper) WithWorkload(workloadType string) *RoleWrapper {
 	switch workloadType {
 	case workloadsv1alpha.DeploymentWorkloadType:
@@ -165,8 +173,8 @@ func BuildBasicRole(name string) *RoleWrapper {
 				Type: workloadsv1alpha.RollingUpdateStrategyType,
 			},
 			Workload: workloadsv1alpha.WorkloadSpec{
-				APIVersion: "apps/v1",
-				Kind:       "StatefulSet",
+				APIVersion: "workloads.x-k8s.io/v1alpha2",
+				Kind:       "RoleInstanceSet",
 			},
 			TemplateSource: workloadsv1alpha.TemplateSource{
 				Template: &template,
@@ -188,8 +196,8 @@ func BuildLwsRole(name string) *RoleWrapper {
 				Type: workloadsv1alpha.RollingUpdateStrategyType,
 			},
 			Workload: workloadsv1alpha.WorkloadSpec{
-				APIVersion: "leaderworkerset.x-k8s.io/v1",
-				Kind:       "LeaderWorkerSet",
+				APIVersion: "workloads.x-k8s.io/v1alpha2",
+				Kind:       "RoleInstanceSet",
 			},
 			TemplateSource: workloadsv1alpha.TemplateSource{
 				Template: &template,
