@@ -104,7 +104,7 @@ func (mgr *RefManager) getOwner() (runtime.Object, error) {
 var getOwner = func(owner metav1.Object, schema *runtime.Scheme, c client.Client) (runtime.Object, error) {
 	runtimeObj, ok := owner.(runtime.Object)
 	if !ok {
-		return nil, fmt.Errorf("fail to convert %s/%s to runtime object", owner.GetNamespace(), owner.GetName())
+		return nil, fmt.Errorf("failed to convert %s/%s to runtime object", owner.GetNamespace(), owner.GetName())
 	}
 
 	kinds, _, err := schema.ObjectKinds(runtimeObj)
@@ -118,7 +118,7 @@ var getOwner = func(owner metav1.Object, schema *runtime.Scheme, c client.Client
 	}
 	clientObj, ok := obj.(client.Object)
 	if !ok {
-		return nil, fmt.Errorf("fail to convert %s/%s to client object", owner.GetNamespace(), owner.GetName())
+		return nil, fmt.Errorf("failed to convert %s/%s to client object", owner.GetNamespace(), owner.GetName())
 	}
 	return clientObj, c.Get(context.TODO(), client.ObjectKey{Namespace: owner.GetNamespace(), Name: owner.GetName()}, clientObj)
 }
@@ -171,7 +171,7 @@ func (mgr *RefManager) adopt(obj metav1.Object) error {
 
 	runtimeObj, ok := obj.(client.Object)
 	if !ok {
-		return fmt.Errorf("can't update Object %v/%v (%v) owner reference: fail to cast to client.Object", obj.GetNamespace(), obj.GetName(), obj.GetUID())
+		return fmt.Errorf("can't update Object %v/%v (%v) owner reference: failed to cast to client.Object", obj.GetNamespace(), obj.GetName(), obj.GetUID())
 	}
 
 	if err := mgr.updateOwnee(runtimeObj); err != nil {
@@ -191,7 +191,7 @@ func (mgr *RefManager) release(obj metav1.Object) error {
 	if idx > -1 {
 		runtimeObj, ok := obj.(client.Object)
 		if !ok {
-			return fmt.Errorf("can't remove Instance %v/%v (%v) owner reference: fail to cast to client.Object", obj.GetNamespace(), obj.GetName(), obj.GetUID())
+			return fmt.Errorf("can't remove Instance %v/%v (%v) owner reference: failed to cast to client.Object", obj.GetNamespace(), obj.GetName(), obj.GetUID())
 		}
 
 		obj.SetOwnerReferences(append(obj.GetOwnerReferences()[:idx], obj.GetOwnerReferences()[idx+1:]...))
