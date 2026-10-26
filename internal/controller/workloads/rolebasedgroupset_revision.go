@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utiljson "k8s.io/apimachinery/pkg/util/json"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -105,13 +106,30 @@ func groupSetOnlyReplicasChanged(rbg *workloadsv1alpha2.RoleBasedGroup, template
 	return groupSetTemplatesEqual(left, right)
 }
 
+// canonicalGroupSetTemplateJSON serializes the template the way the API server re-serializes an
+// object it merges: sorted keys and HTML escaping. ControllerRevision data is immutable and
+// compared byte-wise, so storing any other form makes every strategic-merge patch of the revision
+// fail validation -- including the ones garbage collection uses to orphan dependents.
+func canonicalGroupSetTemplateJSON(template *workloadsv1alpha2.RoleBasedGroupTemplateSpec) ([]byte, error) {
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		return nil, err
+	}
+	var generic interface{}
+	// Preserve integers as int64, exactly like the API server does before re-encoding.
+	if err := utiljson.Unmarshal(encoded, &generic); err != nil {
+		return nil, err
+	}
+	return json.Marshal(generic)
+}
+
 func (r *RoleBasedGroupSetReconciler) ensureGroupSetRevision(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet,
 	template *workloadsv1alpha2.RoleBasedGroupTemplateSpec,
 ) (*groupSetRevision, error) {
 	policy, hasPolicy := template.Annotations[constants.ConversionV1alpha1PodGroupPolicyAnnotationKey]
 	template = normalizedGroupSetTemplate(template)
-	data, err := json.Marshal(template)
+	data, err := canonicalGroupSetTemplateJSON(template)
 	if err != nil {
 		return nil, err
 	}

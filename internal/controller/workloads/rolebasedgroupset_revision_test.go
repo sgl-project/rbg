@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1929,4 +1930,42 @@ func TestSyncRollingGroupSet_PodGroupPolicyRemovalUsesPreviousOwnedSnapshot(t *t
 			assert.False(t, changed)
 		})
 	}
+}
+
+// ControllerRevision data is immutable and compared byte-wise, while a strategic-merge patch
+// re-serializes the whole object with sorted keys. Garbage collection orphans built-in dependents
+// through such a patch, so the stored payload must already be canonical: otherwise the API server
+// rejects the merge and the orphan finalizer never clears.
+func TestEnsureGroupSetRevision_DataSurvivesStrategicMergePatch(t *testing.T) {
+	ctx := context.Background()
+	template := revisionTestTemplate(map[string]string{"user.io/probe": "a<b>&c"})
+	template.Labels = map[string]string{"user.io/tier": "cache"}
+	template.Spec.Roles[0].Pattern = workloadsv1alpha2.Pattern{StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+		TemplateSource: workloadsv1alpha2.TemplateSource{Template: &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "worker", Image: "busybox", Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+			}}},
+		}},
+	}}
+	set := revisionTestRollingSet(1, &groupSetRevision{template: template})
+	r, _ := revisionTestRollingReconciler(t, set)
+	revision, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+	require.NoError(t, err)
+	stored := &appsv1.ControllerRevision{}
+	require.NoError(t, r.client.Get(ctx, client.ObjectKey{Namespace: set.Namespace, Name: revision.name}, stored))
+	assert.Contains(t, string(stored.Data.Raw), `a\u003cb\u003e\u0026c`, "escaping must match what the API server re-emits")
+	typed, err := json.Marshal(normalizedGroupSetTemplate(&set.Spec.GroupTemplate))
+	require.NoError(t, err)
+	assert.NotEqual(t, string(typed), string(stored.Data.Raw),
+		"the fixture must store a payload whose struct field order is not already sorted")
+
+	original, err := json.Marshal(stored)
+	require.NoError(t, err)
+	patched, err := strategicpatch.StrategicMergePatch(original,
+		[]byte(`{"metadata":{"finalizers":["rbg.io/probe"]}}`), &appsv1.ControllerRevision{})
+	require.NoError(t, err)
+	merged := &appsv1.ControllerRevision{}
+	require.NoError(t, json.Unmarshal(patched, merged))
+	assert.Equal(t, string(stored.Data.Raw), string(merged.Data.Raw), "merging must not rewrite the immutable payload")
+	assert.Equal(t, []string{"rbg.io/probe"}, merged.Finalizers)
 }

@@ -127,10 +127,11 @@ func TestValidateGroupSetRolloutStrategy(t *testing.T) {
 			},
 		},
 		{
-			name:     "partition beyond replicas",
+			// The scale subresource bypasses this webhook, so an autoscaler can leave the partition
+			// above replicas. StatefulSet accepts that too and the controller clamps it.
+			name:     "partition beyond replicas is left to the controller's clamp",
 			replicas: 3,
 			strategy: &GroupSetRolloutStrategy{Partition: ptr.To(intstr.FromInt32(4))},
-			wantErr:  "must be between 0 and replicas (3)",
 		},
 		{
 			name:     "partition equal to replicas is the full hold-back",
@@ -349,6 +350,56 @@ func TestRoleBasedGroupSetValidator_RolloutStrategyTransitions(t *testing.T) {
 			})
 		}
 	}
+}
+
+// The scale subresource is not matched by this webhook, so an autoscaler can shrink replicas below
+// an absolute partition. Rejecting that combination would fail every later write of the object --
+// `kubectl label` and the controller's own annotation checkpoint included -- until somebody lowered
+// the partition, so admission does not bound the partition by replicas at all; the controller
+// resolves min(partition, replicas), as StatefulSet does.
+func TestRoleBasedGroupSetValidator_PartitionAboveReplicasIsAdmitted(t *testing.T) {
+	validator := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+	build := func(replicas, partition int32) *RoleBasedGroupSet {
+		return &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs", Namespace: "default"},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(replicas),
+				RolloutStrategy: &GroupSetRolloutStrategy{
+					Type: RecreateStrategyType, Partition: ptr.To(intstr.FromInt32(partition)),
+					MaxUnavailable: ptr.To(intstr.FromInt32(1)), MaxSurge: ptr.To(intstr.FromInt32(1)),
+				},
+				GroupTemplate: RoleBasedGroupTemplateSpec{Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
+				}},
+			},
+		}
+	}
+	// An autoscaler took the set down to one group while the partition still holds four back.
+	scaledDown := build(1, 4)
+
+	_, err := validator.ValidateCreate(context.Background(), scaledDown.DeepCopy())
+	require.NoError(t, err)
+
+	metadataOnly := scaledDown.DeepCopy()
+	metadataOnly.Labels = map[string]string{"team": "serving"}
+	_, err = validator.ValidateUpdate(context.Background(), scaledDown, metadataOnly)
+	require.NoError(t, err)
+
+	widened := scaledDown.DeepCopy()
+	widened.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(5))
+	_, err = validator.ValidateUpdate(context.Background(), scaledDown, widened)
+	require.NoError(t, err)
+
+	// The remaining partition rules still apply.
+	percentage := scaledDown.DeepCopy()
+	percentage.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromString("101%"))
+	_, err = validator.ValidateUpdate(context.Background(), scaledDown, percentage)
+	require.ErrorContains(t, err, "partition: percentage must be between 0% and 100%")
+
+	negative := scaledDown.DeepCopy()
+	negative.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(-1))
+	_, err = validator.ValidateUpdate(context.Background(), scaledDown, negative)
+	require.ErrorContains(t, err, "partition: invalid value")
 }
 
 func TestRoleBasedGroupSetDefaulter_RolloutStrategy(t *testing.T) {

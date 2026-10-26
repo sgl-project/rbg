@@ -173,9 +173,11 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		Conditions:         src.Status.Conditions,
 	}
 
-	// Stash v1alpha2-only fields on the v1alpha1 view, so a full-object write through
-	// v1alpha1 carries them back instead of dropping them. removeConversionAnnotations only
-	// strips v1alpha1 stash keys, so these must be added after it; clear any stale copies first.
+	// Stash v1alpha2-only fields on the v1alpha1 view. The stash covers the strategy and
+	// rollout status only: v1alpha1 has no representation for groupTemplate labels and
+	// annotations, so such a write still drops them and thereby changes revision identity.
+	// removeConversionAnnotations only strips v1alpha1 stash keys, so these must be added
+	// after it; clear any stale copies first.
 	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
 	delete(dst.Annotations, annotationV1alpha2RolloutStatus)
 	if src.Spec.RolloutStrategy != nil {
