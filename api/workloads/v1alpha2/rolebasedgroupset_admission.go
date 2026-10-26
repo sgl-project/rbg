@@ -147,22 +147,10 @@ func validateGroupSetRolloutStrategy(spec *RoleBasedGroupSetSpec) error {
 		}
 	}
 
-	replicas := int64(1)
-	if spec.Replicas != nil {
-		replicas = int64(*spec.Replicas)
-	}
-	partition, partitionPercent, partitionErr := parseGroupSetIntOrPercent(strategy.Partition, 0)
-	if partitionErr != nil {
-		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.partition: %w", partitionErr))
+	if _, _, err := parseGroupSetIntOrPercent(strategy.Partition, 0); err != nil {
+		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.partition: %w", err))
 	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.partition", strategy.Partition); err != nil {
 		allErrs = append(allErrs, err)
-	} else {
-		if partitionPercent {
-			partition = partition * replicas / 100
-		}
-		if partition < 0 || partition > replicas {
-			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.partition: must be between 0 and replicas (%d)", replicas))
-		}
 	}
 	return utilerrors.NewAggregate(allErrs)
 }

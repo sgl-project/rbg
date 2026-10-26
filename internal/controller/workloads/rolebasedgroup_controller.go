@@ -290,8 +290,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// RI or LWS children can finish without changing their parent's aggregate
 	// counts. Recheck the barrier even when no workload status event is emitted.
 	request := rbg.Annotations[constants.RolloutRequestAnnotationKey]
-	if apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)) ||
-		(request != "" && request != rbg.Status.ObservedRolloutRequest) {
+	if request != "" && request != rbg.Status.ObservedRolloutRequest {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
