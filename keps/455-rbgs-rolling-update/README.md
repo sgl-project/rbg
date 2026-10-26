@@ -94,7 +94,7 @@ against the latest template cannot reconstruct an old-version group after deleti
 | A metadata-only `InPlaceUpdate` retains old Ready and rollout conditions | Persist a new request with the child update; keep the child unavailable to the rollout budget until its controller acknowledges downstream completion. Include Pod-shaping group annotations in expected role hashes. See [Child Rollout Barrier](#child-rollout-barrier). |
 | Existing children differ when rolling updates are first enabled | Bootstrap one old revision from the lowest existing base ordinal; do not assume every child has that content. Recommend enabling on a converged set before changing its template. |
 | A child RBG's spec was edited directly, or predates `roleTemplates` propagation | Overwriting the whole child spec reconciles the drift back to the template; existing drifted children are rewritten once on upgrade. Bounded by the two fields `RoleBasedGroupSpec` has. Record it in the release notes as a behavior change rather than describing the legacy path as unchanged. |
-| Older clients read or write the set through v1alpha1 | The conversion webhook keeps round-trips lossless: `spec.rolloutStrategy` and the v1alpha2-only rollout status fields are stashed in `conversion.workloads.x-k8s.io/` annotations on the v1alpha1 view and restored on write, so a full-object write through the deprecated version does not drop the strategy or the revision bookkeeping. The rendered CRD manifests configure this webhook; a cluster whose CRD lacks it falls back to structural pruning, in which case v1alpha1 writes are not supported. |
+| Older clients read or write the set through v1alpha1 | The conversion webhook stashes `spec.rolloutStrategy` and the v1alpha2-only rollout status fields in `conversion.workloads.x-k8s.io/` annotations on the v1alpha1 view and restores them on write. The round-trip is not lossless: v1alpha1 has no representation for `groupTemplate.labels` and `groupTemplate.annotations`, so such a write drops both maps apart from the compatibility keys restored from the set's own annotations, which changes revision identity and rolls every child. Record in the release notes that rolling sets must be written through v1alpha2. The rendered CRD manifests configure this webhook; a cluster whose CRD lacks it falls back to structural pruning, in which case v1alpha1 writes are not supported. |
 
 ## Design Details
 
@@ -136,7 +136,7 @@ spec:
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `type` | `InPlaceUpdate` | Preserve the child RBG's name and UID, overwrite its spec and template metadata, and let the role-level strategy move its Pods. `Recreate` deletes and rebuilds the child instead. |
-| `partition` | `0` | Hold back ordinals in `[0, partition)`; update base ordinals in `[partition, replicas)`. Integer or percentage, rounded down, not greater than replicas. |
+| `partition` | `0` | Hold back ordinals in `[0, partition)`; update base ordinals in `[partition, replicas)`. Integer or percentage, rounded down. Not bounded by `replicas`: the controller resolves `min(partition, replicas)`, matching StatefulSet (see Scenario Handling). |
 | `maxUnavailable` | `1` | Unavailability budget in RBG units. Integer or percentage of replicas, rounded down and capped at replicas. `InPlaceUpdate` requires a positive declared value and enforces a resolved minimum of 1. |
 | `maxSurge` | `0` | `Recreate` only: maximum extra RBGs above replicas, rounded up. This is a ceiling, not a target. `InPlaceUpdate` ignores the field, and admission permits only omitted/`0`/`0%`. |
 
@@ -225,6 +225,15 @@ snapshot is reused rather than created on every reconcile.
   `SHA-256(set UID + NUL + normalized template JSON)`. The snapshot stores the
   template and is owned by the set. Its numeric `revision` records the set
   generation at creation; the content-derived name is the template identity.
+- **Canonical payload:** The hashed bytes and the stored `data` are the same
+  canonical JSON — sorted keys, standard HTML escaping, integers preserved — not
+  Go struct field order. `ControllerRevision.data` is immutable and compared
+  byte-wise, while a strategic-merge patch re-serializes the whole object with
+  sorted keys, so a struct-ordered payload fails validation on any such patch.
+  That includes the patch garbage collection uses to orphan built-in dependents:
+  `kubectl delete --cascade=orphan` then blocks on the orphan finalizer instead of
+  leaving the children behind. Canonicalizing before release avoids renaming every
+  stored revision afterwards.
 - **Normalization:** Sort roles and role templates by name, normalize legacy
   update-strategy spellings, and exclude set identity/revision labels and the
   following enumerated system annotations from revision hashing and content
@@ -268,13 +277,16 @@ snapshot is reused rather than created on every reconcile.
 | User template labels or annotations change | They participate in the revision. `InPlaceUpdate` writes a new request with the metadata and keeps its budget slot occupied until downstream completion is acknowledged, even though child generation does not change. `Recreate` follows group-recreation semantics. System keys follow the separate propagation rules above. |
 | Set scales out | Missing new ordinals are created at update revision, even below partition. Existing surge children that become base children are retained and follow partition rules. The internal `groupset-observed-replicas` checkpoint distinguishes scale-out from replacement. |
 | Set scales down during rollout | Re-evaluate base and surge ranges. Remove excess children under the availability budget; children in the new surge range may remain until the partition batch can safely release them. |
+| An autoscaler scales `replicas` below an absolute `partition` | Accepted: the validating rule does not match `rolebasedgroupsets/scale`, and admission does not bound `partition` by `replicas`, so the object stays writable for every later request. The controller resolves `min(partition, replicas)`, as StatefulSet does. Rationale in the Appendix. |
 | A base RBG is deleted | Recreate a previously existing ordinal below partition from current revision; otherwise use update revision. Restore capacity without treating recovery alone as a new template rollout. |
+| Children were orphaned by a `--cascade=orphan` deletion of the set | The rolling path considers children that are owned **or adoptable** — no controller reference plus this set's name label — and adopts the orphans before any budgeted write, matching the legacy path. A create collision re-reads through the uncached reader and adopts an adoptable orphan rather than failing, so the ordinals above it are still filled. Only an object controlled by a different set UID stays an error, because claiming it would steal another set's child. Adoption transfers ownership only; the child then rolls under the normal budget and order. |
 | A Pod fails but its RBG still exists | Let the downstream controllers recover it; lack of readiness alone is not a reason for RBGSet to recreate a matching group. |
+| A group is already unavailable when a surge rollout starts | Its failure has spent part of `maxUnavailable`, but it must not stall the batch: surge is sized from the headroom the ready base count actually has left, so the serving in-scope groups still get their replacements and capacity stays at the floor. The failed group never becomes an update candidate. |
 | Template changes again during rollout | Re-evaluate both base and surge groups against the latest update revision. An outdated, unready surge group must not permanently occupy the only surge slot. |
 | Partition is lowered | Resume the previously held-back work, even though update revision is unchanged. Increasing partition does not actively roll back already updated children. |
 | Strategy is removed | Return to legacy propagation, without rolling budgets. Removing the strategy is not a pause operation. |
 | Strategy switches between `Recreate` and `InPlaceUpdate` | Validate the target mode. Existing out-of-range surge groups are reclaimed under the availability budget; base groups then follow the new update action. |
-| Full-object write through v1alpha1 (older tooling, GitOps pinned to the deprecated version) | The conversion webhook stashes the strategy and the v1alpha2-only rollout status fields on the v1alpha1 view and restores them on write, so the set stays on the rolling path and children keep their identities. v1alpha1 cannot express the strategy itself: changing or removing it requires v1alpha2. |
+| Full-object write through v1alpha1 (older tooling, GitOps pinned to the deprecated version) | The conversion webhook stashes the strategy and the v1alpha2-only rollout status fields on the v1alpha1 view and restores them on write, so the set stays on the rolling path. v1alpha1 can express neither the strategy nor `groupTemplate.labels`/`groupTemplate.annotations`: changing or removing the strategy requires v1alpha2, and a v1alpha1 write drops both maps apart from the compatibility keys restored from the set's own annotations, which changes revision identity and rolls every child. Write rolling sets through v1alpha2. |
 
 The old-revision recovery rule restores the persisted **current template**, not
 an arbitrary last-seen template of each individual child. Controller restarts
@@ -297,7 +309,7 @@ candidate rather than preventing repair of lower, unready ordinals. `Recreate`
 uses foreground deletion with UID/resource-version preconditions and counts
 terminating objects toward creation capacity.
 
-The same admission check applies to `Recreate` replicas-only in-place updates:
+The same availability gate applies to `Recreate` replicas-only in-place updates:
 scaling a role from one to two replicas can make its RBG unready until the new
 replica is ready, even though the old replica continues serving. Updating a
 ready child therefore reserves one availability slot. The request remains
@@ -307,12 +319,18 @@ then may the next ready child advance. Existing ready surge can back a zero
 unbounded update path.
 
 `maxSurge` applies only to `Recreate`. Surge occupies ordinals
-`[replicas, replicas + maxSurge)` and serves like any other RBG. New surge
-creation is limited by remaining in-scope base replacements not covered by
-`maxUnavailable`, subtracting already existing surge capacity. For
-`replicas=4, maxSurge=5, maxUnavailable=0`, four outdated base groups need at
-most four surge groups, not five. No surge is created just because held-back old
-groups remain after the partition batch completes.
+`[replicas, replicas + maxSurge)` and serves like any other RBG. Surge is sized
+from the live availability budget: only in-scope base groups that are **still
+serving** need cover, the headroom they get is whatever the ready base count
+leaves above the availability floor, and surge groups that already exist are
+subtracted. Sizing it from the declared `maxUnavailable` instead lets an existing
+failure spend the whole allowance, after which no surge is created even where
+`maxSurge` permits it and the rollout waits for that group to recover on its own
+— including a failure in a group held back below the partition, which no rollout
+touches. For `replicas=4, maxSurge=5, maxUnavailable=0`, four serving base groups
+need at most four surge groups, not five, and with `maxUnavailable=1` the same
+batch needs three. No surge is created just because held-back old groups remain
+after the partition batch completes.
 
 Once all in-scope base groups match update and are Ready, reclaim surge rather
 than retain a permanent canary. Reclamation still respects the availability
@@ -353,11 +371,12 @@ even though the RBG generation is unchanged. Workload template updates then
 increase the downstream generation, which prevents early completion while Pods
 are still rolling.
 
-**Request writer.** In the rolling path, an in-place child template update,
-including the `Recreate` replicas-only fast path, advances
+**Request writer.** In the rolling path, every budgeted child write advances
 `rbg.workloads.x-k8s.io/rollout-request` on that child in the same resource-version
-protected `Update` as the spec, metadata, and set revision label. The value is a
-per-child decimal counter, starting at `"1"` when no previous counter exists;
+protected `Update` as the spec, metadata, and set revision label: an in-place template
+update, a user-metadata-only change, and a `Recreate` replicas-only update, which is
+availability-gated and acknowledged like any other rather than a shortcut. The value is
+a per-child decimal counter, starting at `"1"` when no previous counter exists;
 actual later writes increment it. Reconciles that make no change do not advance
 it. The key is excluded from template identity and preserved during metadata
 sync, but is never copied from the template. Repeated content such as `A -> B -> A`
@@ -376,8 +395,11 @@ It then directly rechecks every role workload for rollout completion. Until all
 pass, the old acknowledgement remains, even if the pre-application status check
 reported `False`. The acknowledgement status patch carries existing conditions
 and role status through the shared SSA serializer; another status write must not
-clear it. Pending requests trigger a two-second requeue even when the condition
-currently reports `False`.
+clear it. An unacknowledged request is the barrier's only periodic requeue: it
+fires after two seconds even when the condition currently reports `False`.
+`RollingUpdateInProgress=True` by itself requeues nothing — completion still
+arrives through workload watch events — so children that are merely Pending or
+unready do not put their parent on a polling loop.
 
 **Consumer and recovery.** `groupSetChildReady` requires a matching
 request/acknowledgement whenever the annotation exists, in addition to generation,
@@ -437,11 +459,19 @@ These are coverage plans, not a claim that every case is already automated.
 
 - **Revision identity**: same normalized template reuses one `ControllerRevision`;
   a changed template yields a new name; the set UID separates same-named sets.
+- **Canonical payload**: the stored `data` stays byte-identical when a
+  strategic-merge patch re-serializes it with sorted keys, which is what keeps
+  orphan cascading working. The fixture must store a payload whose struct field
+  order is not already sorted, or the assertion proves nothing.
 - **Normalization**: role ordering, legacy update-strategy spelling, set identity
   labels, and controller-owned annotations do not change the revision; user
   template metadata and role replicas do.
 - **Comparison**: an unlabeled child can still match the update revision; a
   matching label never masks content drift.
+- **Orphan adoption**: a labeled orphan is claimed instead of colliding, the
+  ordinals above it are still filled, and a create collision adopts it after the
+  uncached re-read; a child controlled by another set UID stays an error and keeps
+  its owner.
 - **Scale-only update**: both strategies pace role-replica changes under the same
   availability budget; `Recreate` preserves the child UID and updates its revision
   label rather than deleting it. With two ready groups and `maxUnavailable=1`,
@@ -450,8 +480,10 @@ These are coverage plans, not a claim that every case is already automated.
 - **Budget resolution**: percentage rounding (surge up, unavailable down),
   negative values rejected, clamping to replicas, `InPlaceUpdate` ignoring stored
   surge, and resolved-zero budgets falling back to `maxUnavailable = 1`.
-- **Surge accounting**: created surge is bounded by remaining in-scope base
-  replacements minus the unavailable budget, never by `maxSurge` alone.
+- **Surge accounting**: sized from the live budget — only serving in-scope groups
+  need cover, the ready base count above the availability floor is headroom,
+  existing surge is subtracted, and a failure below the partition must not reduce
+  the batch to no surge; never bounded by `maxSurge` alone.
 - **Child rollout barrier**: a stale-generation or non-`False` condition blocks
   readiness; an issued request also blocks until the matching acknowledgement,
   even when the generation and old conditions are unchanged.
@@ -465,6 +497,10 @@ These are coverage plans, not a claim that every case is already automated.
 - **Acknowledgement ordering**: status construction before workload application
   never acknowledges a request; the post-application check requires every role
   to be complete, and both SSA status writers preserve the acknowledgement.
+- **Requeue scope**: neither controller polls. An RBG requeues only while a rollout
+  request is unacknowledged, not on `RollingUpdateInProgress=True`; an RBGSet
+  requeues only after it wrote something, not while children stay unready or its
+  ready count still differs from `spec.replicas`.
 - **Role hashes**: topology changes and the enabled gang annotation alter
   expected role hashes; unrelated metadata and PodGroup-only settings do not,
   and absent Pod-shaping annotations preserve existing hashes.
@@ -476,7 +512,9 @@ These are coverage plans, not a claim that every case is already automated.
   v1alpha1 and v1alpha2 without loss.
 - **Admission**: create/update validation of both strategy modes, mode switches,
   `0%-100%` ceilings, newly enabled role scaling adapters, and grandfathering of
-  already-enabled adapters.
+  already-enabled adapters. A partition above `replicas` is admitted on both verbs
+  — StatefulSet parity, with the controller clamping — while a malformed or
+  above-`100%` partition is still rejected.
 
 #### Reconcile Tests
 
@@ -510,6 +548,9 @@ These are coverage plans, not a claim that every case is already automated.
   for the same template; lowering the partition does.
 - Revision retention: current, update, and child-referenced revisions are
   preserved; only unused revisions beyond the history limit are deleted.
+- Revision payload immutability: the API server accepts a strategic-merge patch
+  against a stored `ControllerRevision` and the patched `data` is byte-identical,
+  which is the merge garbage collection relies on to orphan dependents.
 - Legacy path propagation: a set without a strategy carries a newly added
   `roleTemplates` entry into its existing children in place, without recreating
   them or adding revision labels.
@@ -530,7 +571,9 @@ These are coverage plans, not a claim that every case is already automated.
   old template, not the current one.
 - **Surge**: surge backs a zero `maxUnavailable`, is released once the in-scope
   batch completes, and is never created when the unavailable budget already
-  covers the work.
+  covers the work. A separate spec covers the opposite case: a group held back
+  below the partition has already spent that budget, and the surge for the
+  in-scope batch still appears.
 - **Role scaling**: extend the `Recreate` scale case to increase each role from
   one to two replicas with two child groups and `maxUnavailable=1`; both strategies
   preserve child UIDs and respect the normal update budget, and the lower child
@@ -553,7 +596,12 @@ Additional kind validation is manual, not additional automated E2E specs:
 verify an in-flight request survives controller restart; verify v1alpha1
 full-object and status-subresource writes preserve the acknowledgement; verify
 gang enable/disable updates PodGroup objects and Pod-template labels before
-acknowledgement. A scheduler-plugins CRD without the coscheduling plugin validates
+acknowledgement; verify `--cascade=orphan` deletion of a rolling set completes
+without a stuck orphan finalizer, and that recreating the set adopts the
+surviving children while still filling the ordinal that was removed; verify a set
+whose two children stay Pending forever issues no controller reads while idle, and
+still completes a rollout on child events alone once the template becomes
+schedulable. A scheduler-plugins CRD without the coscheduling plugin validates
 controller propagation only, not actual gang scheduling enforcement. The native
 Deployment case requires deprecated workload types enabled. The stateful RIS
 `A -> B -> A` early-rollback stall remains a separate known issue; the metadata
@@ -581,7 +629,8 @@ budget fix does not claim to resolve it.
   implement rolling updates leaves `spec.rolloutStrategy` ignored; children
   remain, but template changes revert to legacy ungated updates. The conversion
   webhook preserves the strategy and rollout status fields so an upgrade resumes
-  correctly. A cluster whose CRD lacks the conversion webhook falls back to
+  correctly, but not `groupTemplate` labels and annotations, which v1alpha1 cannot
+  express. A cluster whose CRD lacks the conversion webhook falls back to
   structural pruning, in which case v1alpha1 writes are not supported.
 
 ## Alternatives
