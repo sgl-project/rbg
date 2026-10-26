@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -206,6 +207,50 @@ var _ = Describe("Mutating webhook defaulters", func() {
 			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(MatchError(ContainSubstring("maxUnavailable")))
 			set.Spec.RolloutStrategy.MaxSurge = ptr.To(intstr.FromString("1%"))
 			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(Succeed())
+		})
+
+		// The validating rule matches rolebasedgroupsets, not their scale subresource, so an
+		// autoscaler can shrink replicas below an absolute partition. Admission must not bound the
+		// partition by replicas: rejecting that combination would fail every later write of the
+		// object until somebody lowered the partition. The controller clamps it, as StatefulSet does.
+		It("keeps a set writable after scaling drops replicas below the partition", func() {
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "scaled-partition", Namespace: testNs},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(3)),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: buildRBG("unused", testNs, workloadsv1alpha2.RecreatePodUpdateStrategyType).Spec,
+					},
+					RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{
+						Type:           workloadsv1alpha2.RecreateStrategyType,
+						Partition:      ptr.To(intstr.FromInt(3)),
+						MaxUnavailable: ptr.To(intstr.FromInt(1)),
+						MaxSurge:       ptr.To(intstr.FromInt(1)),
+					},
+				},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+
+			scale := &autoscalingv1.Scale{}
+			Expect(testutil.K8sClient.SubResource("scale").Get(testutil.Ctx, set, scale)).To(Succeed())
+			scale.Spec.Replicas = 1
+			Expect(testutil.K8sClient.SubResource("scale").Update(testutil.Ctx, set,
+				client.WithSubResourceBody(scale))).To(Succeed())
+
+			stored := &workloadsv1alpha2.RoleBasedGroupSet{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(set), stored)).To(Succeed())
+			Expect(*stored.Spec.Replicas).To(Equal(int32(1)))
+			Expect(stored.Spec.RolloutStrategy.Partition.IntValue()).To(Equal(3), "the partition now exceeds replicas")
+
+			stored.Labels = map[string]string{"team": "serving"}
+			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(Succeed())
+
+			stored.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(4))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(Succeed())
+
+			stored.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromString("101%"))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(
+				MatchError(ContainSubstring("spec.rolloutStrategy.partition")), "the remaining partition rules still apply")
 		})
 
 		It("heals the template's legacy Recreate spelling to RecreatePod on create", func() {
