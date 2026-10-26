@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
@@ -134,3 +135,40 @@ type runtimeUnknown struct {
 }
 
 var _ runtime.Object = runtimeUnknown{}
+
+func TestDeprecatedWorkloadValidatorValidateUpdateTrustsAdmissionOldObject(t *testing.T) {
+	// The validator deliberately performs no cache lookup: the admission request's
+	// oldObj is the authoritative persisted state, already defaulted by the
+	// v1alpha1 schema. A validator without a client therefore still honors the
+	// grandfathered role.
+	oldRole := rbgsV1alpha1ForDeprecationTest(WorkloadSpec{
+		APIVersion: "apps/v1",
+		Kind:       "StatefulSet",
+	})
+	validator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: true}
+
+	t.Run("grandfathered role remains accepted without a persisted-object read", func(t *testing.T) {
+		sameRole := oldRole.DeepCopy()
+		sameRole.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		_, err := validator.ValidateUpdate(context.Background(), oldRole, sameRole)
+		require.NoError(t, err)
+	})
+
+	t.Run("switching between deprecated types stays grandfathered by role name", func(t *testing.T) {
+		// Pin the compatibility semantics: an existing role may switch between
+		// deprecated workload types while migration is enabled. Renaming the role
+		// (or introducing a new one) is the new use that gets rejected.
+		switchedRole := oldRole.DeepCopy()
+		switchedRole.Spec.Roles[0].Workload = WorkloadSpec{APIVersion: "apps/v1", Kind: "Deployment"}
+		_, err := validator.ValidateUpdate(context.Background(), oldRole, switchedRole)
+		require.NoError(t, err)
+	})
+
+	t.Run("a renamed role is a new use", func(t *testing.T) {
+		renamedRole := oldRole.DeepCopy()
+		renamedRole.Spec.Roles[0].Name = "renamed-worker"
+		_, err := validator.ValidateUpdate(context.Background(), oldRole, renamedRole)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+}

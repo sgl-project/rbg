@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -735,4 +736,124 @@ func TestRoleBasedGroupSetValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabl
 		_, err := v.ValidateUpdate(context.Background(), deprecatedRBGS, newRBGS)
 		assert.Error(t, err)
 	})
+}
+
+// TestRoleBasedGroupValidator_ValidateCreate_LegacySetReplacement pins the
+// compatibility-mode exemption for the RoleBasedGroupSet controller: a child
+// re-created from a set template that already carried the deprecated workload
+// type is not a new use, while unrelated creates (no owner, a foreign owner, or
+// a mismatched template) stay rejected. The parent lookup verifies the owner
+// reference against the actual RoleBasedGroupSet UID and template.
+func TestRoleBasedGroupValidator_ValidateCreate_LegacySetReplacement(t *testing.T) {
+	statefulRole := func(name string) RoleSpec {
+		return RoleSpec{
+			Name:        name,
+			Replicas:    ptr.To(int32(1)),
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType},
+		}
+	}
+	newSet := func(name string, uid types.UID, roles ...RoleSpec) *RoleBasedGroupSet {
+		return &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: uid},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{Roles: roles},
+				},
+			},
+		}
+	}
+	newChild := func(owner *metav1.OwnerReference, roles ...RoleSpec) *RoleBasedGroup {
+		child := &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "set-1", Namespace: "default"},
+			Spec:       RoleBasedGroupSpec{Roles: roles},
+		}
+		if owner != nil {
+			child.OwnerReferences = []metav1.OwnerReference{*owner}
+		}
+		return child
+	}
+	controllerRef := func(set *RoleBasedGroupSet, uid types.UID) *metav1.OwnerReference {
+		return &metav1.OwnerReference{
+			APIVersion: GroupVersion.String(),
+			Kind:       "RoleBasedGroupSet",
+			Name:       set.Name,
+			UID:        uid,
+			Controller: ptr.To(true),
+		}
+	}
+
+	parent := newSet("legacy-set", "parent-uid", statefulRole("worker"))
+	deploymentParent := newSet("deployment-set", "deployment-uid", func() RoleSpec {
+		role := statefulRole("worker")
+		role.Annotations[constants.RoleWorkloadTypeAnnotationKey] = constants.DeploymentWorkloadType
+		return role
+	}())
+
+	t.Run("replacement child inherits the legacy template role", func(t *testing.T) {
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(parent).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), newChild(controllerRef(parent, "parent-uid"), statefulRole("worker")))
+		require.NoError(t, err)
+	})
+
+	t.Run("create without an owner reference is still rejected", func(t *testing.T) {
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(parent).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), newChild(nil, statefulRole("worker")))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("a forged controller reference does not match the parent UID", func(t *testing.T) {
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(parent).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), newChild(controllerRef(parent, "forged-uid"), statefulRole("worker")))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("a missing parent grants no exemption", func(t *testing.T) {
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), newChild(controllerRef(parent, "parent-uid"), statefulRole("worker")))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("a template role of a different deprecated type does not exempt the child", func(t *testing.T) {
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(deploymentParent).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), newChild(controllerRef(deploymentParent, "deployment-uid"), statefulRole("worker")))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("final cutoff mode rejects even a verified replacement child", func(t *testing.T) {
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(parent).Build(),
+			EnableDeprecatedWorkloadTypes: false,
+		}
+		_, err := v.ValidateCreate(context.Background(), newChild(controllerRef(parent, "parent-uid"), statefulRole("worker")))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "deprecated and not enabled on this cluster")
+	})
+}
+
+// validatorScheme builds the scheme used by the admission validator fake clients.
+func validatorScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+	return scheme
 }

@@ -266,6 +266,17 @@ const deprecatedWorkloadTypeHint = "note: the v1alpha1 schema defaults spec.role
 	"workload types (Helm: controller.deprecatedWorkloadTypes.enabled=true, " +
 	"controller: --enable-deprecated-workload-types=true)"
 
+// deprecatedWorkloadTypeCompatHint is the compatibility-mode counterpart of
+// deprecatedWorkloadTypeHint. The flag is already enabled in this mode, so the
+// remedy is to migrate the offending role; advising the operator to re-enable
+// the flag would be a no-op.
+const deprecatedWorkloadTypeCompatHint = "note: the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet, " +
+	"so a role submitted via the v1alpha1 API carries a deprecated workload type even if you never set one; " +
+	"fix: migrate this role to RoleInstanceSet (set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and " +
+	"workload.kind=RoleInstanceSet, or submit the object as v1alpha2, where RoleInstanceSet is the default); " +
+	"roles that already used the deprecated workload type before the upgrade remain accepted while " +
+	"controller.deprecatedWorkloadTypes.enabled=true"
+
 // isDeprecatedWorkloadType reports whether wt is one of the workload types
 // superseded by RoleInstanceSet.
 func isDeprecatedWorkloadType(wt string) bool {
@@ -303,7 +314,7 @@ func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error
 // role that did not already use one. fieldPath is the JSON path of the role slice
 // being validated, since roles live under different paths in a RoleBasedGroup and a
 // RoleBasedGroupSet. Returns an aggregated error listing all offending roles,
-// suffixed with deprecatedWorkloadTypeHint.
+// suffixed with deprecatedWorkloadTypeCompatHint.
 //
 // Existing roles are exempt so they can continue to reconcile while users migrate
 // them one at a time while the compatibility flag is true. When the flag is false,
@@ -333,5 +344,5 @@ func validateNoNewDeprecatedWorkloadTypes(fieldPath string, roles, oldRoles []Ro
 	}
 	// Wrap once instead of repeating the hint per role: with several offending
 	// roles the hint is identical and would otherwise dominate the message.
-	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), deprecatedWorkloadTypeHint)
+	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), deprecatedWorkloadTypeCompatHint)
 }

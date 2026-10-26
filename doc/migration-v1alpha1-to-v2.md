@@ -32,6 +32,8 @@ Finishing one track does not imply that the other is complete. Check both before
 
 `controller.deprecatedWorkloadTypes.enabled` defaults to `true` during the migration window. Existing roles that already use a deprecated workload type continue to reconcile, while new roles and roles that did not previously use a deprecated type are rejected. RBAC, watches, and orphan cleanup remain active in this mode so operators can migrate roles and remove old workloads. Set the value to `false` only after every role has migrated; that is the final cutoff, and all remaining uses are rejected.
 
+Existing roles are identified by role name. While compatibility is enabled, an existing role may switch between deprecated workload types (for example StatefulSet to Deployment); a renamed role or a newly added role is treated as a new use and rejected.
+
 ## 1. Inventory the affected roles
 
 Review the current objects and their role annotations:

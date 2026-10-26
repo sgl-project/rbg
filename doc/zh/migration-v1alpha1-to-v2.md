@@ -32,6 +32,8 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。`v1al
 
 `controller.deprecatedWorkloadTypes.enabled` 在迁移窗口默认为 `true`。已经使用弃用 workload 类型的存量 role 会继续 reconcile；新 role，以及原本未使用弃用类型的 role，会被拒绝。该模式下 RBAC、watch 和孤儿清理保持生效，操作者可以迁移 role 并删除旧工作负载。只有在所有 role 迁移完成后才设置为 `false`；这是最终切断点，所有残留使用都会被拒绝。
 
+存量 role 按 role 名称识别。兼容模式开启期间，已有 role 可以在弃用 workload 类型之间切换（例如 StatefulSet 切换为 Deployment）；重命名的 role 或新增 role 会被视为新使用并被拒绝。
+
 ## 1. 盘点受影响 role
 
 审查当前对象和 role 注解：

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -64,7 +63,7 @@ func warnV1alpha1(obj runtime.Object) admission.Warnings {
 	if meta, ok := obj.(interface{ GetName() string }); ok && meta.GetName() != "" {
 		kind = fmt.Sprintf("%s %s", kind, meta.GetName())
 	}
-	klog.Warningf("%s: %s", kind, v1alpha1DeprecationWarning)
+	klog.V(4).InfoS(v1alpha1DeprecationWarning, "kind", kind)
 	return admission.Warnings{v1alpha1DeprecationWarning}
 }
 
@@ -72,7 +71,6 @@ func warnV1alpha1(obj runtime.Object) admission.Warnings {
 // compatibility is enabled, existing roles are exempt but new uses are rejected.
 // When compatibility is disabled, every remaining use is rejected.
 type deprecatedWorkloadValidator struct {
-	Client                        client.Client
 	EnableDeprecatedWorkloadTypes bool
 }
 
@@ -88,7 +86,7 @@ func (v *deprecatedWorkloadValidator) ValidateCreate(
 }
 
 func (v *deprecatedWorkloadValidator) ValidateUpdate(
-	ctx context.Context, oldObj, newObj runtime.Object,
+	_ context.Context, oldObj, newObj runtime.Object,
 ) (admission.Warnings, error) {
 	warnings := warnV1alpha1(newObj)
 	newRoles, fieldPath, err := deprecatedWorkloadRoles(newObj)
@@ -96,23 +94,14 @@ func (v *deprecatedWorkloadValidator) ValidateUpdate(
 		return warnings, err
 	}
 
+	// oldObj is the authoritative persisted object captured by the API server and
+	// already carries v1alpha1 schema defaults. Re-reading it from the (eventually
+	// consistent) cache can neither improve the decision nor fail open: a stale
+	// read can wrongly reject a grandfathered update or wrongly extend the
+	// exemption, and any read error would fail-close an otherwise valid write.
 	oldRoles, _, err := deprecatedWorkloadRoles(oldObj)
 	if err != nil {
 		return warnings, err
-	}
-	// Prefer the persisted object because oldObj is decoded from the request and
-	// may not carry v1alpha1 schema defaults.
-	if key, ok := objectKey(newObj); ok && v.Client != nil {
-		persisted := newObj.DeepCopyObject()
-		if persistedObject, canGet := persisted.(client.Object); canGet {
-			if err := v.Client.Get(ctx, key, persistedObject); err == nil {
-				if persistedRoles, _, roleErr := deprecatedWorkloadRoles(persistedObject); roleErr == nil {
-					oldRoles = persistedRoles
-				}
-			} else if !apierrors.IsNotFound(err) {
-				return warnings, err
-			}
-		}
 	}
 
 	return warnings, validateV1alpha1DeprecatedRoles(fieldPath, newRoles, oldRoles, v.EnableDeprecatedWorkloadTypes)
@@ -199,13 +188,12 @@ func objectKey(obj runtime.Object) (types.NamespacedName, bool) {
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for
 // the v1alpha1 RoleBasedGroup endpoint.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update;delete,versions=v1alpha1,name=vrolebasedgroup-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroup,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=create;update,versions=v1alpha1,name=vrolebasedgroup-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
 func (r *RoleBasedGroup) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&deprecatedWorkloadValidator{
-			Client:                        mgr.GetClient(),
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
 		Complete()
@@ -213,41 +201,40 @@ func (r *RoleBasedGroup) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, en
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for
 // the v1alpha1 RoleBasedGroupSet endpoint.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update;delete,versions=v1alpha1,name=vrolebasedgroupset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha1,name=vrolebasedgroupset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
 func (r *RoleBasedGroupSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&deprecatedWorkloadValidator{
-			Client:                        mgr.GetClient(),
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
 		Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 InstanceSet endpoint.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instanceset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=instancesets,verbs=create;update;delete,versions=v1alpha1,name=vinstanceset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instanceset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=instancesets,verbs=create;update,versions=v1alpha1,name=vinstanceset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
 func (r *InstanceSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 Instance endpoint.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instance,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=instances,verbs=create;update;delete,versions=v1alpha1,name=vinstance-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instance,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=instances,verbs=create;update,versions=v1alpha1,name=vinstance-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
 func (r *Instance) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 ScalingAdapter endpoint.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters,verbs=create;update;delete,versions=v1alpha1,name=vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters,verbs=create;update,versions=v1alpha1,name=vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
 func (r *RoleBasedGroupScalingAdapter) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
 }
 
 // SetupDeprecationWebhookWithManager registers the warning-only v1alpha1 ClusterEngineRuntimeProfile endpoint.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=create;update;delete,versions=v1alpha1,name=vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=create;update,versions=v1alpha1,name=vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
 func (r *ClusterEngineRuntimeProfile) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()

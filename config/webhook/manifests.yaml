@@ -1,4 +1,16 @@
 ---
+# Admission webhook configurations for the RoleBasedGroup admission webhooks.
+#
+# Service name and namespace below are Kustomize placeholders:
+#   - namespace: system        -> replaced with the Kustomize `namespace:` value
+#                                (e.g. rbgs-system) by the namespace transformer.
+#   - name: webhook-service    -> prefixed with `namePrefix:` (e.g. rbgs-webhook-service)
+#                                via the built-in nameReference transformer.
+# Do NOT apply this file directly; always render with `kustomize build config/default`.
+#
+# caBundle is intentionally left empty. The in-cluster controller
+# (WebhookCertReconciler) patches it at runtime using the self-signed CA generated
+# by pkg/webhook.CertManager.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -148,7 +160,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - clusterengineruntimeprofiles
   sideEffects: None
@@ -170,7 +181,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - instances
   sideEffects: None
@@ -192,7 +202,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - instancesets
   sideEffects: None
@@ -214,7 +223,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - rolebasedgroups
   sideEffects: None
@@ -236,7 +244,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - rolebasedgroupscalingadapters
   sideEffects: None
@@ -258,7 +265,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - rolebasedgroupsets
   sideEffects: None

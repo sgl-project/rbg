@@ -33,7 +33,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - clusterengineruntimeprofiles
 - name: vinstance-v1alpha1-deprecation.kb.io
@@ -55,7 +54,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - instances
 - name: vinstanceset-v1alpha1-deprecation.kb.io
@@ -77,7 +75,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - instancesets
 - name: vrolebasedgroup-v1alpha1-deprecation.kb.io
@@ -99,7 +96,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - rolebasedgroups
 - name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
@@ -121,7 +117,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - rolebasedgroupscalingadapters
 - name: vrolebasedgroupset-v1alpha1-deprecation.kb.io
@@ -143,7 +138,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - rolebasedgroupsets
 - name: vrolebasedgroup.kb.io
