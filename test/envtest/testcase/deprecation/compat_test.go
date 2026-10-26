@@ -114,11 +114,10 @@ var _ = Describe("Deprecated workload compatibility gate", func() {
 		set := getSeededSet()
 		child := newReplacementChild("legacy-set-1", set.UID)
 
-		// The webhook's parent lookup uses the manager's eventually consistent
-		// cache; retry until the informer has observed the seeded set.
-		Eventually(func() error {
-			return testutil.K8sClient.Create(testutil.Ctx, child.DeepCopy())
-		}, "10s", "250ms").Should(Succeed())
+		// The readiness barrier proved the gate is active, and the webhook reads
+		// the parent through the uncached API reader, so no informer warmup is
+		// needed: this create must succeed deterministically.
+		Expect(testutil.K8sClient.Create(testutil.Ctx, child)).To(Succeed())
 	})
 
 	It("still rejects an unrelated new deprecated workload use", func() {

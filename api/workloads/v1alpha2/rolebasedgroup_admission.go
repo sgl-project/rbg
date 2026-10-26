@@ -36,6 +36,11 @@ import (
 // +kubebuilder:object:generate=false
 type RoleBasedGroupValidator struct {
 	Client client.Client
+	// APIReader reads directly from the API server. The legacy-set parent lookup
+	// uses it instead of the (eventually consistent) cached client: a stale parent
+	// copy could otherwise keep granting the replacement-child exemption after the
+	// live set has already been migrated or replaced.
+	APIReader client.Reader
 	// EnableDeprecatedWorkloadTypes reports whether existing deprecated workload
 	// types (Deployment, StatefulSet, LeaderWorkerSet) remain supported during
 	// migration. New uses are rejected in both modes; when false, existing uses are
@@ -90,14 +95,24 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 // every other create, so unrelated deprecated uses stay rejected.
 //
 // The exemption is owner-reference aware but does not trust the owner reference
-// alone: the parent is fetched by name, its UID must match the reference, and
-// only template roles whose name and workload type match a deprecated role in
-// the new child are returned. A forged or stale owner reference therefore grants
-// nothing.
+// alone: the parent is fetched by name through the uncached API reader, its UID
+// must match the reference, and only template roles whose name and workload
+// type match a deprecated role in the new child are returned. A forged owner
+// reference, or a stale cached copy of a parent that has since been migrated or
+// replaced, therefore grants nothing.
 func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	ctx context.Context, rbg *RoleBasedGroup,
 ) ([]RoleSpec, error) {
-	if v.Client == nil || !containsDeprecatedWorkloadType(rbg.Spec.Roles) {
+	if !containsDeprecatedWorkloadType(rbg.Spec.Roles) {
+		return nil, nil
+	}
+	// Prefer the uncached API reader for the security decision; fall back to the
+	// cached client only for test harnesses that wire a single client.
+	reader := v.APIReader
+	if reader == nil {
+		reader = v.Client
+	}
+	if reader == nil {
 		return nil, nil
 	}
 
@@ -107,7 +122,7 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	}
 
 	parent := &RoleBasedGroupSet{}
-	if err := v.Client.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: owner.Name}, parent); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: owner.Name}, parent); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}

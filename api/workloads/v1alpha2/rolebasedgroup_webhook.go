@@ -33,6 +33,7 @@ func (r *RoleBasedGroup) SetupWebhookWithManager(
 		For(r).
 		WithValidator(&RoleBasedGroupValidator{
 			Client:                        mgr.GetClient(),
+			APIReader:                     mgr.GetAPIReader(),
 			EnableDeprecatedWorkloadTypes: enableDeprecatedWorkloadTypes,
 		}).
 		WithDefaulter(&RoleBasedGroupDefaulter{}).
