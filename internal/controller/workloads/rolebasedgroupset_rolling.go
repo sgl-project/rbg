@@ -131,14 +131,46 @@ func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
 		client.MatchingLabels{constants.GroupSetNameLabelKey: set.Name}); err != nil {
 		return nil, err
 	}
-	owned := children.Items[:0]
-	for _, child := range children.Items {
-		if metav1.IsControlledBy(&child, set) {
-			owned = append(owned, child)
+	managed := children.Items[:0]
+	for i := range children.Items {
+		// Orphans left behind by a cascade=orphan deletion still carry the set label. Hiding them
+		// here would make every create for their ordinal collide with a child this set must adopt.
+		if r.isOwnedOrAdoptable(set, &children.Items[i]) {
+			managed = append(managed, children.Items[i])
 		}
 	}
-	children.Items = owned
+	children.Items = managed
 	return children, nil
+}
+
+// adoptGroupSetOrphans claims the listed orphans so the rolling path manages the same children the
+// legacy path does. Adoption happens before any budgeted write, which must not touch a child this
+// set does not own yet.
+func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children *workloadsv1alpha2.RoleBasedGroupList,
+) (bool, error) {
+	adopted := false
+	for i := range children.Items {
+		child := &children.Items[i]
+		if metav1.GetControllerOfNoCopy(child) != nil || !child.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.adoptGroupSetChild(ctx, set, child); err != nil {
+			return adopted, err
+		}
+		adopted = true
+	}
+	return adopted, nil
+}
+
+func (r *RoleBasedGroupSetReconciler) adoptGroupSetChild(
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	if err := controllerutil.SetControllerReference(set, child, r.scheme); err != nil {
+		return err
+	}
+	// A child that vanished mid-reconcile is simply absent on the next listing.
+	return client.IgnoreNotFound(r.client.Update(ctx, child))
 }
 
 func (r *RoleBasedGroupSetReconciler) reconcileRollingGroupSet(ctx context.Context, key types.NamespacedName) (ctrl.Result, error) {
@@ -157,6 +189,10 @@ func (r *RoleBasedGroupSetReconciler) reconcileRollingGroupSet(ctx context.Conte
 		return ctrl.Result{}, err
 	}
 	children, err := r.listRollingGroupSetChildren(ctx, set)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	adopted, err := r.adoptGroupSetOrphans(ctx, set, children)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -186,8 +222,7 @@ func (r *RoleBasedGroupSetReconciler) reconcileRollingGroupSet(ctx context.Conte
 	if err := r.pruneGroupSetRevisions(ctx, set, children); err != nil {
 		return ctrl.Result{}, err
 	}
-	if changed || set.Status.Replicas != *set.Spec.Replicas || set.Status.ReadyReplicas != *set.Spec.Replicas ||
-		!r.groupSetPartitionReady(set, children, update, limits.partition) {
+	if changed || adopted {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -464,8 +499,12 @@ func (r *RoleBasedGroupSetReconciler) createRollingGroupSetChild(
 		if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(child), existing); err != nil {
 			return err
 		}
-		if !metav1.IsControlledBy(existing, set) {
+		// The re-read, not the possibly stale cache, decides whether this child is ours to claim.
+		if !r.isOwnedOrAdoptable(set, existing) {
 			return fmt.Errorf("RoleBasedGroup %s already exists and is not owned by RoleBasedGroupSet %s", child.Name, set.Name)
+		}
+		if metav1.GetControllerOfNoCopy(existing) == nil {
+			return r.adoptGroupSetChild(ctx, set, existing)
 		}
 	}
 	return nil

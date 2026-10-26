@@ -616,6 +616,29 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		}
 	})
 
+	// Garbage collection orphans built-in dependents with a strategic-merge patch, which
+	// re-serializes ControllerRevision data with sorted keys. A payload stored in struct field
+	// order therefore fails the immutable-data check and the orphan finalizer never clears.
+	It("keeps revision data mergeable so orphan cascading can proceed", func() {
+		setName := "rbgs-orphan-merge"
+		Expect(testutil.K8sClient.Create(testutil.Ctx, buildRollingSet(setName, testNs, 2, 0, 1, 0, 0))).Should(Succeed())
+		final := waitRollout(testNs, setName, rolloutComplete)
+		revision := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{
+			Namespace: testNs, Name: final.Status.CurrentRevision,
+		}, revision)).To(Succeed())
+		stored := string(revision.Data.Raw)
+
+		patched := revision.DeepCopy()
+		patched.Annotations = map[string]string{"test.io/orphan-probe": "true"}
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, patched, client.StrategicMergeFrom(revision))).To(Succeed())
+
+		merged := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(revision), merged)).To(Succeed())
+		Expect(merged.Annotations).To(HaveKeyWithValue("test.io/orphan-probe", "true"))
+		Expect(string(merged.Data.Raw)).To(Equal(stored))
+	})
+
 	It("keeps the legacy in-place path for a set without a rollout strategy", func() {
 		setName := "rbgs-legacy"
 		Expect(testutil.K8sClient.Create(testutil.Ctx, buildSet(setName, testNs, 2, 0, nil))).Should(Succeed())
