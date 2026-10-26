@@ -36,8 +36,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
-								wrappers.BuildBasicRole("role-deploy").WithWorkload(workloadsv1alpha1.DeploymentWorkloadType).Obj(),
-								wrappers.BuildBasicRole("role-sts").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
+								wrappers.BuildBasicRole("role-deploy").WithRoleInstanceSet().Obj(),
+								wrappers.BuildBasicRole("role-sts").WithRoleInstanceSet().Obj(),
 								wrappers.BuildLwsRole("role-lws").Obj(),
 							},
 						).Obj()
@@ -58,8 +58,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
-								wrappers.BuildBasicRole("role-1").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).Obj(),
-								wrappers.BuildBasicRole("role-2").WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+								wrappers.BuildBasicRole("role-1").WithRoleInstanceSet().Obj(),
+								wrappers.BuildBasicRole("role-2").WithRoleInstanceSet().
 									WithDependencies([]string{"role-1"}).Obj(),
 							},
 						).Obj()
@@ -78,7 +78,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 						WithRoles(
 							[]workloadsv1alpha1.RoleSpec{
 								wrappers.BuildBasicRole("role-1").
-									WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+									WithRoleInstanceSet().
 									WithEngineRuntime(
 										[]workloadsv1alpha1.EngineRuntime{{ProfileName: utils.DefaultEngineRuntimeProfileName}},
 									).
@@ -140,8 +140,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -155,8 +155,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -192,8 +192,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "Deployment",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -206,8 +206,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "apps/v1",
-										Kind:       "StatefulSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
@@ -220,8 +220,8 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 										Type: workloadsv1alpha1.RollingUpdateStrategyType,
 									},
 									Workload: workloadsv1alpha1.WorkloadSpec{
-										APIVersion: "leaderworkerset.x-k8s.io/v1",
-										Kind:       "LeaderWorkerSet",
+										APIVersion: "workloads.x-k8s.io/v1alpha2",
+										Kind:       "RoleInstanceSet",
 									},
 									TemplateSource: workloadsv1alpha1.TemplateSource{
 										Template: ptr.To(wrappers.BuildBasicPodTemplateSpec().Obj()),
