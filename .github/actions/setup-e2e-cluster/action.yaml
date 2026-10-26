@@ -115,7 +115,13 @@ runs:
           echo "::error::failed to pull $lws_image"
           exit 1
         fi
-        kind load docker-image "$lws_image" --name "${{ inputs.cluster_name }}"
+        # Docker's containerd image store can retain an index for platforms that
+        # were not pulled. Export only the platform used by these CI Kind nodes
+        # so Kind's --all-platforms import does not require missing manifests.
+        image_archive=$(mktemp "${RUNNER_TEMP}/lws-image.XXXXXX")
+        trap 'rm -f "$image_archive"' EXIT
+        docker image save --platform linux/amd64 --output "$image_archive" "$lws_image"
+        kind load image-archive "$image_archive" --name "${{ inputs.cluster_name }}"
 
         kubectl apply --server-side -f "https://github.com/kubernetes-sigs/lws/releases/download/${{ inputs.lws_version }}/manifests.yaml"
         kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
@@ -147,9 +153,14 @@ runs:
     - name: Load RBGS images
       shell: bash
       run: |
+        set -euo pipefail
         docker load --input "${{ inputs.image_artifact }}"
-        kind load docker-image "docker.io/rolebasedgroup/rbgs-controller:${{ inputs.image_tag }}" --name "${{ inputs.cluster_name }}"
-        kind load docker-image "docker.io/rolebasedgroup/rbgs-upgrade-crd:${{ inputs.image_tag }}" --name "${{ inputs.cluster_name }}"
+        image_archive=$(mktemp "${RUNNER_TEMP}/rbgs-images.XXXXXX")
+        trap 'rm -f "$image_archive"' EXIT
+        docker image save --platform linux/amd64 --output "$image_archive" \
+          "docker.io/rolebasedgroup/rbgs-controller:${{ inputs.image_tag }}" \
+          "docker.io/rolebasedgroup/rbgs-upgrade-crd:${{ inputs.image_tag }}"
+        kind load image-archive "$image_archive" --name "${{ inputs.cluster_name }}"
 
     - name: Validate and install committed manifests
       if: ${{ inputs.install_mode == 'manifest' }}
@@ -298,6 +309,9 @@ runs:
     - name: Pre-load e2e workload images
       shell: bash
       run: |
+        set -euo pipefail
+        image_archive=$(mktemp "${RUNNER_TEMP}/workload-image.XXXXXX")
+        trap 'rm -f "$image_archive"' EXIT
         images=(
           "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
           "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
@@ -316,5 +330,6 @@ runs:
             echo "::error::failed to pull $image"
             exit 1
           fi
-          kind load docker-image "$image" --name "${{ inputs.cluster_name }}"
+          docker image save --platform linux/amd64 --output "$image_archive" "$image"
+          kind load image-archive "$image_archive" --name "${{ inputs.cluster_name }}"
         done
