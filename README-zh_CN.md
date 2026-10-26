@@ -5,6 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/sgl-project/rbg/blob/main/LICENSE)
 [![GitHub release](https://img.shields.io/github/release/sgl-project/rbg.svg)](https://github.com/sgl-project/rbg/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/sgl-project/rbg)](https://goreportcard.com/report/github.com/sgl-project/rbg)
+[![DingTalk](https://img.shields.io/badge/DingTalk-Join%20Group-0089FF?logo=dingtalk&logoColor=white)](https://qr.dingtalk.com/action/joingroup?code=v1,k1,N8bfi1VlGU1QhfnwoF8kR4m7urpRZQuSvoMDTWz+tVxuRVJIwrSsXmL8oFqU5ajJ&_dt_no_comment=1&origin=11)
 
 > 🎯 一个 Kubernetes API，用于编排分布式、有状态的 AI 推理工作负载，支持**多角色协同**和**内置服务发现**。
 
