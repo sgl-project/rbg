@@ -327,6 +327,7 @@ make copyright-fix
 
 | Channel | Link |
 |:--------|:-----|
+| **DingTalk** | [Join the RBG group](https://qr.dingtalk.com/action/joingroup?code=v1,k1,N8bfi1VlGU1QhfnwoF8kR4m7urpRZQuSvoMDTWz+tVxuRVJIwrSsXmL8oFqU5ajJ&_dt_no_comment=1&origin=11) |
 | **Slack** | [#rbg channel](https://sgl-fru7574.slack.com/archives/C098X0LQZV5) |
 | **Issues** | [GitHub Issues](https://github.com/sgl-project/rbg/issues) |
 | **Discussions** | [Community Discussions](https://github.com/sgl-project/rbg/discussions) |

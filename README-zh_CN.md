@@ -323,6 +323,7 @@ make copyright-fix
 
 | 渠道 | 链接 |
 |:-----|:-----|
+| **钉钉** | [加入 RBG 社区群](https://qr.dingtalk.com/action/joingroup?code=v1,k1,N8bfi1VlGU1QhfnwoF8kR4m7urpRZQuSvoMDTWz+tVxuRVJIwrSsXmL8oFqU5ajJ&_dt_no_comment=1&origin=11) |
 | **Slack** | [#rbg 频道](https://sgl-fru7574.slack.com/archives/C098X0LQZV5) |
 | **Issues** | [GitHub Issues](https://github.com/sgl-project/rbg/issues) |
 | **Discussions** | [社区讨论](https://github.com/sgl-project/rbg/discussions) |
