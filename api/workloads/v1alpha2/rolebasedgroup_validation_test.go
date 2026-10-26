@@ -857,3 +857,85 @@ func validatorScheme(t *testing.T) *runtime.Scheme {
 	require.NoError(t, AddToScheme(scheme))
 	return scheme
 }
+
+// TestRoleBasedGroupValidator_ValidateCreate_PrefersLiveParentOverCache pins the
+// security property behind the APIReader wiring: the replacement-child exemption
+// must be decided against the live parent, not a stale cached copy. A parent
+// that has been migrated or replaced can no longer authorize a deprecated child
+// even when the cache still holds the old qualifying object.
+func TestRoleBasedGroupValidator_ValidateCreate_PrefersLiveParentOverCache(t *testing.T) {
+	statefulRole := func() RoleSpec {
+		return RoleSpec{
+			Name:        "worker",
+			Replicas:    ptr.To(int32(1)),
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType},
+		}
+	}
+	migratedRole := func() RoleSpec {
+		role := statefulRole()
+		role.Annotations = nil
+		return role
+	}
+	newSet := func(uid types.UID, roles ...RoleSpec) *RoleBasedGroupSet {
+		return &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "legacy-set", Namespace: "default", UID: uid},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas:      ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{Spec: RoleBasedGroupSpec{Roles: roles}},
+			},
+		}
+	}
+	childOf := func(uid types.UID) *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "legacy-set-1",
+				Namespace: "default",
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: GroupVersion.String(),
+					Kind:       "RoleBasedGroupSet",
+					Name:       "legacy-set",
+					UID:        uid,
+					Controller: ptr.To(true),
+				}},
+			},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{statefulRole()}},
+		}
+	}
+
+	t.Run("a cached legacy parent cannot exempt a child after the live set migrated", func(t *testing.T) {
+		cached := newSet("parent-uid", statefulRole())
+		live := newSet("parent-uid", migratedRole())
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(cached).Build(),
+			APIReader:                     fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(live).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), childOf("parent-uid"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("a cached parent UID cannot exempt a child after the live set was replaced", func(t *testing.T) {
+		cached := newSet("old-uid", statefulRole())
+		live := newSet("new-uid", statefulRole())
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(cached).Build(),
+			APIReader:                     fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(live).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), childOf("old-uid"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("the live parent still grants the replacement-child exemption", func(t *testing.T) {
+		live := newSet("parent-uid", statefulRole())
+		v := &RoleBasedGroupValidator{
+			Client:                        fake.NewClientBuilder().WithScheme(validatorScheme(t)).Build(),
+			APIReader:                     fake.NewClientBuilder().WithScheme(validatorScheme(t)).WithObjects(live).Build(),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateCreate(context.Background(), childOf("parent-uid"))
+		require.NoError(t, err)
+	})
+}
