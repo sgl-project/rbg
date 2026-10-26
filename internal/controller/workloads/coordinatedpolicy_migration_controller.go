@@ -91,6 +91,7 @@ func buildCoordinatedPolicyApplyConfiguration(
 	rules := make([]*applyv1alpha2.CoordinatedPolicyRuleApplyConfiguration, 0, len(coords))
 	for _, c := range coords {
 		rule := applyv1alpha2.CoordinatedPolicyRule().
+			WithName(c.Name).
 			WithRoles(c.Roles...)
 		if strategy := convertCoordinationStrategyApplyConfiguration(c.Strategy); strategy != nil {
 			rule = rule.WithStrategy(strategy)

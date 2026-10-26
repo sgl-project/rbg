@@ -28,6 +28,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
@@ -375,6 +376,79 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 				created.Spec.Roles[0].RolloutStrategy.RollingUpdate.Paused = true
 				return testutil.K8sClient.Update(testutil.Ctx, created)
 			}, timeout, interval).Should(Succeed())
+		})
+	})
+
+	Context("When the RoleBasedGroup was converted from v1alpha1", func() {
+		// The envtest control plane runs no conversion webhook, so the hub object the
+		// webhook would have stored is produced by calling ConvertTo directly.
+		It("Should apply a named CoordinatedPolicy and still create the role workloads", func() {
+			const rbgName = "coord-main"
+			roleNames := []string{"prefill", "decode"}
+
+			src := &workloadsv1alpha1.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rbgName,
+					Namespace: testNs,
+				},
+				Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+					CoordinationRequirements: []workloadsv1alpha1.Coordination{
+						{
+							Name:  "pd-ratio",
+							Roles: roleNames,
+							Strategy: &workloadsv1alpha1.CoordinationStrategy{
+								RollingUpdate: &workloadsv1alpha1.CoordinationRollingUpdate{
+									MaxSkew: ptr.To("50%"),
+								},
+							},
+						},
+					},
+					Roles: []workloadsv1alpha1.RoleSpec{
+						{
+							Name:           roleNames[0],
+							Replicas:       ptr.To(int32(1)),
+							TemplateSource: workloadsv1alpha1.TemplateSource{Template: ptr.To(nginxPodTemplate())},
+						},
+						{
+							Name:           roleNames[1],
+							Replicas:       ptr.To(int32(1)),
+							TemplateSource: workloadsv1alpha1.TemplateSource{Template: ptr.To(nginxPodTemplate())},
+						},
+					},
+				},
+			}
+
+			hub := &workloadsv1alpha2.RoleBasedGroup{}
+			Expect(src.ConvertTo(hub)).To(Succeed())
+			Expect(testutil.K8sClient.Create(testutil.Ctx, hub)).To(Succeed())
+
+			// spec.policies is an associative list keyed by name, so the server-side apply
+			// is rejected outright unless every rule carries one. The fake client does not
+			// enforce list keys, which is why this is asserted against a real apiserver.
+			policy := &workloadsv1alpha2.CoordinatedPolicy{}
+			Eventually(func() error {
+				return testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{Name: rbgName, Namespace: testNs}, policy)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(policy.Spec.Policies).To(HaveLen(1))
+			Expect(policy.Spec.Policies[0].Name).To(Equal("pd-ratio"))
+			Expect(policy.Spec.Policies[0].Roles).To(Equal(roleNames))
+			Expect(policy.Spec.Policies[0].Strategy.RollingUpdate).NotTo(BeNil())
+			Expect(policy.Spec.Policies[0].Strategy.RollingUpdate.MaxSkew).
+				To(Equal(ptr.To(intstr.FromString("50%"))))
+			Expect(policy.OwnerReferences).To(HaveLen(1))
+			Expect(policy.OwnerReferences[0].Name).To(Equal(rbgName))
+
+			// The rejected apply used to abort the reconcile before any workload was created.
+			for i := range hub.Spec.Roles {
+				role := &hub.Spec.Roles[i]
+				ris := &workloadsv1alpha2.RoleInstanceSet{}
+				Eventually(func() error {
+					return testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{
+						Name: hub.GetWorkloadName(role), Namespace: testNs,
+					}, ris)
+				}, timeout, interval).Should(Succeed(), "no workload created for role %s", role.Name)
+			}
 		})
 	})
 })
