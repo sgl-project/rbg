@@ -22,6 +22,12 @@ env:
   VOLCANO_VERSION: v1.15.1
   LWS_VERSION: v0.7.0
   SCHEDULER_PLUGINS_VERSION: v0.32.7
+  # Platform of the Kind nodes. Docker's containerd image store can keep a
+  # multi-platform index whose other platforms were never pulled, and Kind
+  # imports with --all-platforms, so `kind load docker-image` fails with
+  # "content digest ... not found". Export only this platform to an archive and
+  # load it with `kind load image-archive` instead.
+  KIND_IMAGE_PLATFORM: linux/amd64
   # Commit status contexts mirrored onto the PR head commit. Shared by the pending step
   # and the reporting job so the two cannot drift apart.
   STATUS_CONTEXT_HELM: Release Test / e2e-test-helm
@@ -201,6 +207,9 @@ jobs:
 
       - name: Pre-load e2e test images
         run: |
+          set -euo pipefail
+          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
+          trap 'rm -f "${image_archive}"' EXIT
           E2E_IMAGES=(
             "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
             "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
@@ -209,7 +218,8 @@ jobs:
             echo "Pulling image: ${image}"
             docker pull "${image}"
             echo "Loading image into Kind: ${image}"
-            kind load docker-image "${image}" --name rbgs-e2e
+            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
+            kind load image-archive "${image_archive}" --name rbgs-e2e
           done
           echo "All e2e test images loaded successfully"
 
@@ -346,6 +356,9 @@ jobs:
 
       - name: Pre-load e2e test images
         run: |
+          set -euo pipefail
+          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
+          trap 'rm -f "${image_archive}"' EXIT
           E2E_IMAGES=(
             "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
             "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
@@ -354,7 +367,8 @@ jobs:
             echo "Pulling image: ${image}"
             docker pull "${image}"
             echo "Loading image into Kind: ${image}"
-            kind load docker-image "${image}" --name rbgs-manifest-e2e
+            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
+            kind load image-archive "${image_archive}" --name rbgs-manifest-e2e
           done
           echo "All e2e test images loaded successfully"
 
@@ -487,6 +501,9 @@ jobs:
 
       - name: Pre-load e2e test images
         run: |
+          set -euo pipefail
+          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
+          trap 'rm -f "${image_archive}"' EXIT
           E2E_IMAGES=(
             "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
             "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
@@ -495,13 +512,16 @@ jobs:
             echo "Pulling image: ${image}"
             docker pull "${image}"
             echo "Loading image into Kind: ${image}"
-            kind load docker-image "${image}" --name rbgs-upgrade-e2e
+            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
+            kind load image-archive "${image_archive}" --name rbgs-upgrade-e2e
           done
           echo "All e2e test images loaded successfully"
 
       - name: Load the published images of the release being upgraded from
         run: |
           set -euo pipefail
+          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
+          trap 'rm -f "${image_archive}"' EXIT
           for repo in rolebasedgroup/rbgs-controller rolebasedgroup/rbgs-upgrade-crd; do
             image="${repo}:${{ matrix.from.image_tag }}"
             echo "Pulling ${image}"
@@ -510,7 +530,8 @@ jobs:
               echo "::error::release; if the tag no longer exists, update the job's matrix."
               exit 1
             fi
-            kind load docker-image "${image}" --name rbgs-upgrade-e2e
+            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
+            kind load image-archive "${image_archive}" --name rbgs-upgrade-e2e
           done
 
       - name: Load the images the chart ships
@@ -527,6 +548,8 @@ jobs:
             exit 1
           fi
           cat /tmp/chart-images.txt
+          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
+          trap 'rm -f "${image_archive}"' EXIT
           while read -r image; do
             echo "Pulling ${image}"
             if ! docker pull "${image}"; then
@@ -535,7 +558,8 @@ jobs:
               echo "::error::test the upgrade onto them."
               exit 1
             fi
-            kind load docker-image "${image}" --name rbgs-upgrade-e2e
+            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
+            kind load image-archive "${image_archive}" --name rbgs-upgrade-e2e
           done < /tmp/chart-images.txt
 
       - name: Run upgrade-compatibility E2E tests
