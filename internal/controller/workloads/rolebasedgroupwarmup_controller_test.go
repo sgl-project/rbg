@@ -1798,6 +1798,80 @@ func TestReconcile_UnscheduledTargetPodsWaitInsteadOfCompleting(t *testing.T) {
 	}
 }
 
+// Surplus scheduled Pods in one selected role must not satisfy another role's
+// expected Pod count. Readiness deficits are therefore computed per role.
+func TestReconcile_CrossRoleSurplusDoesNotMaskPendingTargetPod(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "cross-role-surplus", Namespace: "default", UID: "uid-cross-role-surplus"},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			TargetRoleBasedGroup: &workloadsv1alpha2.TargetRoleBasedGroup{
+				Name: "cross-role-rbg",
+				Roles: map[string]workloadsv1alpha2.WarmupActions{
+					"router": {ImagePreload: &workloadsv1alpha2.ImagePreloadAction{Images: []string{"busybox:1.36"}}},
+					"worker": {ImagePreload: &workloadsv1alpha2.ImagePreloadAction{Images: []string{"busybox:1.36"}}},
+				},
+			},
+		},
+	}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "cross-role-rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "router", Replicas: ptr.To(int32(1))},
+				{Name: "worker", Replicas: ptr.To(int32(1))},
+			},
+		},
+	}
+	targetPod := func(name, role, nodeName string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{constants.GroupNameLabelKey: "cross-role-rbg", constants.RoleNameLabelKey: role},
+			},
+			Spec: corev1.PodSpec{NodeName: nodeName},
+		}
+	}
+	r := newWarmupReconciler(
+		warmup,
+		rbg,
+		targetPod("cross-role-router-0", "router", "node-1"),
+		targetPod("cross-role-router-1", "router", "node-2"),
+		targetPod("cross-role-worker-0", "worker", ""),
+	)
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get warmup: %v", err)
+	}
+	if updated.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted {
+		t.Fatalf("a Pending worker Pod must not be masked by surplus router Pods (conditions=%#v)",
+			updated.Status.Conditions)
+	}
+	if result.RequeueAfter != TargetWaitRequeuePeriod {
+		t.Fatalf("expected a target-wait requeue, got %#v", result)
+	}
+	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionTargetReady); cond == nil ||
+		cond.Status != metav1.ConditionFalse || cond.Reason != "TargetPodsNotScheduled" {
+		t.Fatalf("expected TargetReady=False/TargetPodsNotScheduled, got %#v", updated.Status.Conditions)
+	}
+
+	warmupPods := &corev1.PodList{}
+	if err := r.List(ctx, warmupPods,
+		client.InNamespace(warmup.Namespace),
+		client.MatchingLabels{LabelWarmupName: warmup.Name}); err != nil {
+		t.Fatalf("list warmup Pods: %v", err)
+	}
+	if len(warmupPods.Items) != 0 {
+		t.Fatalf("no warmup Pod should start while a selected role is not ready, got %d", len(warmupPods.Items))
+	}
+}
+
 // An existing target RBG with no Pods at all for the requested roles still completes
 // immediately with NoNodesMatched (no Pods to wait for).
 func TestReconcile_TargetRBGWithNoPodsCompletesNoNodesMatched(t *testing.T) {
@@ -2090,34 +2164,95 @@ func TestReconcile_MidRunTargetGapWaitsAndWarmsReplacementNode(t *testing.T) {
 	}
 }
 
-// A target deleted after a retryable failure must fail with the failed attempt
-// counted, instead of reporting a false empty success.
-func TestReconcile_TargetDeletedWithRetryableFailedPodFails(t *testing.T) {
+// A collapsed desired set applies the same maxFailedNodes tolerance as a non-empty
+// desired set. Retryable failures are final there because there is no target node on
+// which to retry, but they do not fail the job unless they exceed the tolerance.
+func TestReconcile_CollapsedDesiredSetHonorsMaxFailedNodes(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
-	started := metav1.NewTime(time.Now().Add(-5 * time.Minute))
-	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
-		ObjectMeta: metav1.ObjectMeta{Name: "deleted-failed", Namespace: "default", UID: "uid-deleted-failed"},
-		Spec:       warmupTargetRBGSpec("deleted-failed-rbg"),
-		Status:     workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhaseRunning, StartTime: &started},
-	}
-	failed := makeWarmupPod("deleted-failed-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodFailed)
-	r := newWarmupReconciler(warmup, failed)
 
-	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
-		t.Fatalf("unexpected reconcile error: %v", err)
+	tests := []struct {
+		name            string
+		targetExists    bool
+		policies        *workloadsv1alpha2.WarmupPolicies
+		wantCompleted   bool
+		wantFailedCount int32
+	}{
+		{
+			name:            "unset maxFailedNodes tolerates the failed attempt",
+			policies:        nil,
+			wantCompleted:   true,
+			wantFailedCount: 1,
+		},
+		{
+			name:         "failure within maxFailedNodes tolerates the failed attempt",
+			targetExists: true,
+			policies: &workloadsv1alpha2.WarmupPolicies{
+				BackoffLimitPerNode: ptr.To(int32(2)),
+				MaxFailedNodes:      ptr.To(int32(1)),
+			},
+			wantCompleted:   true,
+			wantFailedCount: 1,
+		},
+		{
+			name: "failure exceeding maxFailedNodes fails",
+			policies: &workloadsv1alpha2.WarmupPolicies{
+				BackoffLimitPerNode: ptr.To(int32(2)),
+				MaxFailedNodes:      ptr.To(int32(0)),
+			},
+			wantCompleted:   false,
+			wantFailedCount: 1,
+		},
 	}
-	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
-		t.Fatalf("get warmup: %v", err)
-	}
-	if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
-		t.Fatalf("expected Failed after target deletion, got %q", updated.Status.Phase)
-	}
-	if cond := apimeta.FindStatusCondition(updated.Status.Conditions, "Failed"); cond == nil || cond.Reason != "InvalidTarget" {
-		t.Fatalf("expected Failed/InvalidTarget, got %#v", updated.Status.Conditions)
-	}
-	if updated.Status.Failed != 1 {
-		t.Fatalf("retryable failed attempt must be counted, got failed=%d", updated.Status.Failed)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			started := metav1.NewTime(time.Now().Add(-5 * time.Minute))
+			warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      strings.ToLower(strings.ReplaceAll(tc.name, " ", "-")),
+					Namespace: "default",
+					UID:       types.UID("uid-" + strings.ToLower(strings.ReplaceAll(tc.name, " ", "-"))),
+				},
+				Spec:   warmupTargetRBGSpec("collapsed-rbg"),
+				Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{Phase: workloadsv1alpha2.WarmupJobPhaseRunning, StartTime: &started},
+			}
+			warmup.Spec.Policies = tc.policies
+			failed := makeWarmupPod("collapsed-pod", "default", warmup.Name, string(warmup.UID), "node-1", corev1.PodFailed)
+			objs := []runtime.Object{warmup, failed}
+			if tc.targetExists {
+				objs = append(objs, targetRBGWithWorkerRole("collapsed-rbg", 0))
+			}
+			r := newWarmupReconciler(objs...)
+
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}); err != nil {
+				t.Fatalf("unexpected reconcile error: %v", err)
+			}
+			updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+			if err := r.Get(ctx, client.ObjectKeyFromObject(warmup), updated); err != nil {
+				t.Fatalf("get warmup: %v", err)
+			}
+			if tc.wantCompleted {
+				if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseCompleted {
+					t.Fatalf("failure within tolerance must complete, got %q (conditions=%#v)",
+						updated.Status.Phase, updated.Status.Conditions)
+				}
+				cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionComplete)
+				if cond == nil || cond.Reason != "WarmupCompleted" {
+					t.Fatalf("expected Complete/WarmupCompleted, got %#v", updated.Status.Conditions)
+				}
+			} else {
+				if updated.Status.Phase != workloadsv1alpha2.WarmupJobPhaseFailed {
+					t.Fatalf("failure beyond tolerance must fail, got %q (conditions=%#v)",
+						updated.Status.Phase, updated.Status.Conditions)
+				}
+				cond := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionFailed)
+				if cond == nil || cond.Reason != "MaxFailedNodesExceeded" {
+					t.Fatalf("expected Failed/MaxFailedNodesExceeded, got %#v", updated.Status.Conditions)
+				}
+			}
+			if updated.Status.Failed != tc.wantFailedCount {
+				t.Fatalf("expected failed=%d, got %d", tc.wantFailedCount, updated.Status.Failed)
+			}
+		})
 	}
 }
 
