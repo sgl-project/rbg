@@ -438,8 +438,23 @@ type ScalingAdapter struct {
 	Enable bool `json:"enable,omitempty"`
 }
 
+// RoleBasedGroupPhase preserves the lifecycle phase across version conversions.
+type RoleBasedGroupPhase string
+
+const (
+	RoleBasedGroupPhaseCreating    RoleBasedGroupPhase = "Creating"
+	RoleBasedGroupPhaseRunning     RoleBasedGroupPhase = "Running"
+	RoleBasedGroupPhaseUpdating    RoleBasedGroupPhase = "Updating"
+	RoleBasedGroupPhaseScaling     RoleBasedGroupPhase = "Scaling"
+	RoleBasedGroupPhaseTerminating RoleBasedGroupPhase = "Terminating"
+)
+
 // RoleBasedGroupStatus defines the observed state of RoleBasedGroup.
 type RoleBasedGroupStatus struct {
+	// Phase describes the current lifecycle; Running does not imply Ready.
+	// +optional
+	Phase RoleBasedGroupPhase `json:"phase,omitempty"`
+
 	// The generation observed by the controller
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -490,6 +505,9 @@ type RoleBasedGroupConditionType string
 
 // These are built-in conditions of a RBG.
 const (
+	// RoleBasedGroupAccepted indicates that the configuration has passed the existing validation.
+	RoleBasedGroupAccepted RoleBasedGroupConditionType = "Accepted"
+
 	// RoleBasedGroupReady means the rbg is available, ie, at least the
 	// minimum available groups are up and running.
 	RoleBasedGroupReady RoleBasedGroupConditionType = "Ready"
@@ -504,6 +522,7 @@ const (
 	// RoleBasedGroupRollingUpdateInProgress means rbg is performing a rolling update. UpdateInProgress
 	// is true when the rbg is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpdateInProgress.
+	// Deprecated: Use the Progressing condition instead.
 	RoleBasedGroupRollingUpdateInProgress RoleBasedGroupConditionType = "RollingUpdateInProgress"
 )
 

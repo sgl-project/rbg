@@ -1841,6 +1841,38 @@ func TestHasRecentRestart(t *testing.T) {
 	}
 }
 
+func TestRestartPolicyWithCustomGateNotReady(t *testing.T) {
+	for _, gateStatus := range []corev1.ConditionStatus{"", corev1.ConditionUnknown, corev1.ConditionFalse} {
+		t.Run(string(gateStatus), func(t *testing.T) {
+			instance := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Spec: workloadsv1alpha2.RoleInstanceSpec{
+					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+					ReadinessGates:      []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "example.com/ready"}},
+				},
+				Status: workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 3, CurrentRevision: "rev", UpdateRevision: "rev", Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+					{Type: workloadsv1alpha2.RoleInstanceAllPodsReady, Status: corev1.ConditionTrue},
+				}},
+			}
+			if gateStatus != "" {
+				instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: "example.com/ready", Status: gateStatus})
+			}
+			pods := []*corev1.Pod{{Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "worker", RestartCount: 1}}}}}
+			assert.True(t, shouldRecreateInstance(instance, pods, nil), "自定义 gate 不能新增重启资格限制")
+			assert.Equal(t, corev1.ConditionFalse, instance.Status.Conditions[0].Status, "不能改写展示 Ready")
+			instance.Generation++
+			assert.False(t, shouldRecreateInstance(instance, pods, nil))
+			instance.Generation--
+			instance.Status.UpdateRevision = "new"
+			assert.False(t, shouldRecreateInstance(instance, pods, nil))
+			instance.Status.UpdateRevision = "rev"
+			instance.Status.Conditions[1].Status = corev1.ConditionFalse
+			assert.False(t, shouldRecreateInstance(instance, pods, nil), "Pod 未就绪时仍保持原保护")
+		})
+	}
+}
+
 // TestWasInstanceReady tests the wasInstanceReady helper function
 func TestWasInstanceReady(t *testing.T) {
 	tests := []struct {

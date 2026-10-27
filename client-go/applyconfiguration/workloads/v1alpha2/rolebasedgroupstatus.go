@@ -19,20 +19,30 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // RoleBasedGroupStatusApplyConfiguration represents a declarative configuration of the RoleBasedGroupStatus type for use
 // with apply.
 type RoleBasedGroupStatusApplyConfiguration struct {
-	ObservedGeneration *int64                           `json:"observedGeneration,omitempty"`
-	Conditions         []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	RoleStatuses       []RoleStatusApplyConfiguration   `json:"roleStatuses,omitempty"`
+	Phase              *workloadsv1alpha2.RoleBasedGroupPhase `json:"phase,omitempty"`
+	ObservedGeneration *int64                                 `json:"observedGeneration,omitempty"`
+	Conditions         []v1.ConditionApplyConfiguration       `json:"conditions,omitempty"`
+	RoleStatuses       []RoleStatusApplyConfiguration         `json:"roleStatuses,omitempty"`
 }
 
 // RoleBasedGroupStatusApplyConfiguration constructs a declarative configuration of the RoleBasedGroupStatus type for use with
 // apply.
 func RoleBasedGroupStatus() *RoleBasedGroupStatusApplyConfiguration {
 	return &RoleBasedGroupStatusApplyConfiguration{}
+}
+
+// WithPhase sets the Phase field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Phase field is set to the value of the last call.
+func (b *RoleBasedGroupStatusApplyConfiguration) WithPhase(value workloadsv1alpha2.RoleBasedGroupPhase) *RoleBasedGroupStatusApplyConfiguration {
+	b.Phase = &value
+	return b
 }
 
 // WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value

@@ -22,7 +22,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/cache"
@@ -120,7 +122,7 @@ func TestPersistRolloutReplacementState(t *testing.T) {
 }
 
 func TestStatusUpdateDoesNotOverwriteChangedRolloutScope(t *testing.T) {
-	for _, change := range []string{"metadata only", "set UID", "generation", "replacement state"} {
+	for _, change := range []string{"metadata only", "external condition", "set UID", "generation", "replacement state"} {
 		t.Run(change, func(t *testing.T) {
 			ctx := context.Background()
 			scheme := runtime.NewScheme()
@@ -132,6 +134,14 @@ func TestStatusUpdateDoesNotOverwriteChangedRolloutScope(t *testing.T) {
 			latest := cached.DeepCopy()
 			latest.ResourceVersion = "2"
 			switch change {
+			case "external condition":
+				cached.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type: "example.com/ready", Status: corev1.ConditionTrue, Reason: "PreviousReason",
+					LastTransitionTime: metav1.NewTime(time.Unix(100, 0)),
+				}}
+				latest.Status.Conditions = append([]workloadsv1alpha2.RoleInstanceSetCondition(nil), cached.Status.Conditions...)
+				latest.Status.Conditions[0].Status = corev1.ConditionFalse
+				latest.Status.Conditions[0].Reason = "ConcurrentReason"
 			case "set UID":
 				latest.UID = "recreated-set"
 			case "generation":
@@ -154,8 +164,14 @@ func TestStatusUpdateDoesNotOverwriteChangedRolloutScope(t *testing.T) {
 			updater := NewRealStatefulInstanceSetStatusUpdater(c, instancelisters.NewRoleInstanceSetLister(indexer))
 			desired := cached.Status.DeepCopy()
 			desired.ReadyReplicas = 1
+			if change == "external condition" {
+				desired.Conditions = append(desired.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
+					Type: workloadsv1alpha2.RoleInstanceSetConditionReady, Status: corev1.ConditionTrue,
+					Reason: workloadsv1alpha2.RoleInstanceSetReasonAllInstancesReady, LastTransitionTime: metav1.NewTime(time.Unix(100, 0)),
+				})
+			}
 			err := updater.UpdateInstanceSetStatus(ctx, cached, desired)
-			if change == "metadata only" {
+			if change == "metadata only" || change == "external condition" {
 				if err != nil || updates != 2 {
 					t.Fatalf("safe conflict retry: error=%v, writes=%d, want success after two writes", err, updates)
 				}
@@ -167,8 +183,17 @@ func TestStatusUpdateDoesNotOverwriteChangedRolloutScope(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantStatus := latest.Status
-			if change == "metadata only" {
-				wantStatus = *desired
+			if change == "metadata only" || change == "external condition" {
+				wantStatus = *desired.DeepCopy()
+				if change == "external condition" {
+					wantStatus.Conditions[0] = latest.Status.Conditions[0]
+				}
+				if !reflect.DeepEqual(cached.Status, wantStatus) || cached.ResourceVersion != stored.ResourceVersion {
+					t.Fatal("successful retry did not refresh the merged reconcile snapshot")
+				}
+				if err := updater.UpdateInstanceSetStatus(ctx, cached, desired); err != nil || updates != 2 {
+					t.Fatalf("unchanged merged status triggered another write: error=%v, writes=%d", err, updates)
+				}
 			} else if cached.Status.ReadyReplicas != 0 {
 				t.Fatal("discarded write mutated the reconcile snapshot")
 			}

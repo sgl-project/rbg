@@ -43,23 +43,21 @@ func addNotReadyKey(adp clientdapter.Adapter, instance *workloadsv1alpha2.RoleIn
 			return err
 		}
 
-		condition := getReadinessCondition(newInstance, condType)
-		if condition == nil {
-			_, messages := addMessage("", msg)
-			newInstance.Status.Conditions = append(newInstance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-				Type:               workloadsv1alpha2.RoleInstanceCustomReady,
-				Message:            messages.dump(),
-				LastTransitionTime: metav1.Now(),
-			})
-		} else {
-			changed, messages := addMessage(condition.Message, msg)
-			if !changed {
-				return nil
-			}
-			condition.Status = v1.ConditionFalse
-			condition.Message = messages.dump()
-			condition.LastTransitionTime = metav1.Now()
+		condition := workloadsv1alpha2.RoleInstanceCondition{Type: condType}
+		if old := getReadinessCondition(newInstance, condType); old != nil {
+			condition = *old
 		}
+		changed, messages := addMessage(condition.Message, msg)
+		if !changed {
+			return nil
+		}
+		condition.Status = v1.ConditionFalse
+		condition.Message = messages.dump()
+		condition.LastTransitionTime = metav1.Now()
+		if condition.Reason == "" {
+			condition.Reason = workloadsv1alpha2.RoleInstanceReasonReadinessGatesNotReady
+		}
+		inplaceutil.SetRoleInstanceCondition(newInstance, condition)
 
 		// set instance ready condition to "False"
 		inplaceutil.SetRoleInstanceNotReadyCondition(newInstance)
@@ -87,11 +85,20 @@ func removeNotReadyKey(adp clientdapter.Adapter, instance *workloadsv1alpha2.Rol
 		if !changed {
 			return nil
 		}
+		updated := *condition
 		if len(messages) == 0 {
-			condition.Status = v1.ConditionTrue
+			updated.Status = v1.ConditionTrue
 		}
-		condition.Message = messages.dump()
-		condition.LastTransitionTime = metav1.Now()
+		updated.Message = messages.dump()
+		updated.LastTransitionTime = metav1.Now()
+		if updated.Reason == "" || updated.Reason == workloadsv1alpha2.RoleInstanceReasonReadinessGatesNotReady {
+			if updated.Status == v1.ConditionTrue {
+				updated.Reason = workloadsv1alpha2.RoleInstanceReasonReady
+			} else {
+				updated.Reason = workloadsv1alpha2.RoleInstanceReasonReadinessGatesNotReady
+			}
+		}
+		inplaceutil.SetRoleInstanceCondition(newInstance, updated)
 		return adp.UpdateRoleInstanceStatus(newInstance)
 	})
 }

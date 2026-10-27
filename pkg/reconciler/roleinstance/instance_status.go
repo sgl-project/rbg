@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	instanceutils "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -66,38 +67,17 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
 }
 
-// controllerOwnedConditionTypes returns the stable set of condition types whose
-// values in newStatus.Conditions take precedence over whatever is in the live object.
-// All other condition types are considered externally-owned and must be carried
-// forward from the freshly-fetched clone on every status update.
-//
-// NOTE: Do NOT derive this set from newStatus.Conditions at call time. By the
-// point this function is called, setInstanceConditions has already appended
-// externally-owned conditions copied from the live object into newStatus.Conditions.
-// Deriving the set dynamically would therefore misclassify those external types as
-// owned, silently clobbering concurrent writes from other controllers.
-//
-// The rule for inclusion is:
-//   - Controller-computed types (Ready, AllPodsReady, FailedScale, FailedUpdate) are
-//     always generated fresh each reconcile and must win over the live object.
-//   - RoleInstanceInPlaceUpdateReady and RoleInstanceCustomReady are written by
-//     external controllers, but setInstanceConditions always copies them from
-//     instance.Status into newStatus (via getInstanceInplaceUpdateReadyCondition and
-//     the custom-condition passthrough). They are therefore already present in
-//     newStatus.Conditions, so they must be listed here to prevent a duplicate entry
-//     being appended from the live clone.
+// controllerOwnedConditionTypes 固定 writer 归属；gate 始终以冲突重试时的最新对象为准。
+// 已废弃的条件也保留在此集合，避免从旧对象重新合入。
 func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
 	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
-		// Computed by this controller on every reconcile.
+		// 聚合条件和重启条件由 RI controller 写入。
 		workloadsv1alpha2.RoleInstanceReady,
 		workloadsv1alpha2.RoleInstanceAllPodsReady,
 		workloadsv1alpha2.RoleInstanceFailedScale,
 		workloadsv1alpha2.RoleInstanceFailedUpdate,
 		workloadsv1alpha2.RoleInstanceRestarting,
-		// Written externally but always copied into newStatus by setInstanceConditions,
-		// so they are already present and must not be appended again from the live clone.
-		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
-		workloadsv1alpha2.RoleInstanceCustomReady,
+		workloadsv1alpha2.RoleInstanceConditionType("RollingUpdateInProgress"),
 	)
 }
 
@@ -163,42 +143,40 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 
 func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
 	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) {
-	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions)+1)
-	conditions = append(conditions, newInnerConditions...)
-	podsReadyCondition := r.getInstancePodsReadyCondition(instance)
-	conditions = append(conditions, getInstanceReadyCondition(
-		instance,
-		podsReadyCondition,
-		r.getInstanceInplaceUpdateReadyCondition(instance),
-	))
-	if instance.Spec.ReadyPolicy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady && podsReadyCondition != nil {
-		conditions = append(conditions, *podsReadyCondition)
-	}
-	// Determine if the instance is now Ready — used to clear the Restarting condition.
-	instanceReady := false
-	for _, c := range conditions {
-		if c.Type == workloadsv1alpha2.RoleInstanceReady && c.Status == v1.ConditionTrue {
-			instanceReady = true
-			break
-		}
-	}
-
-	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
-	for _, c := range conditions {
-		innerConditionTypes.Insert(c.Type)
-	}
-	var customInstanceConditions []workloadsv1alpha2.RoleInstanceCondition
+	clone := instance.DeepCopy()
+	clone.Status.Conditions = nil
 	for _, c := range instance.Status.Conditions {
-		if !innerConditionTypes.Has(c.Type) {
-			// Clear Restarting condition when instance becomes Ready
-			if c.Type == workloadsv1alpha2.RoleInstanceRestarting && instanceReady {
-				continue
-			}
-			customInstanceConditions = append(customInstanceConditions, c)
+		if c.Type == workloadsv1alpha2.RoleInstanceFailedScale || c.Type == workloadsv1alpha2.RoleInstanceFailedUpdate || c.Type == "RollingUpdateInProgress" {
+			continue
+		}
+		if c.Type == workloadsv1alpha2.RoleInstanceAllPodsReady && getInstanceReadyPolicy(instance) == workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone {
+			continue
+		}
+		inplaceutil.SetRoleInstanceCondition(clone, c)
+	}
+	propagatedRestart := false
+	for _, c := range newInnerConditions {
+		if c.Type == workloadsv1alpha2.RoleInstanceRestarting {
+			inplaceutil.SetRoleInstanceCondition(clone, c)
+			propagatedRestart = true
 		}
 	}
-	conditions = append(conditions, customInstanceConditions...)
-	newStatus.Conditions = conditions
+	podsReadyCondition := r.getInstancePodsReadyCondition(instance)
+	if podsReadyCondition != nil {
+		inplaceutil.SetRoleInstanceCondition(clone, *podsReadyCondition)
+	}
+	ready := getInstanceReadyCondition(clone, podsReadyCondition, r.getInstanceInplaceUpdateReadyCondition(clone))
+	inplaceutil.SetRoleInstanceCondition(clone, ready)
+	// 保持原清除时机：本轮没有传播活动重启且原操作性健康条件已满足。
+	controlReady, _ := inplaceutil.GetRoleInstanceControlReadiness(clone)
+	restarting := inplaceutil.GetRoleInstanceCondition(clone, workloadsv1alpha2.RoleInstanceRestarting)
+	if restarting == nil || (!propagatedRestart && controlReady) {
+		inplaceutil.SetRoleInstanceCondition(clone, workloadsv1alpha2.RoleInstanceCondition{
+			Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionFalse,
+			Reason: workloadsv1alpha2.RoleInstanceReasonNoRestartInProgress,
+		})
+	}
+	newStatus.Conditions = clone.Status.Conditions
 }
 
 func (r *realStatusUpdater) getInstancePodsReadyCondition(instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstanceCondition {
@@ -225,6 +203,7 @@ func (r *realStatusUpdater) getAllReadyCondition(instance *workloadsv1alpha2.Rol
 	coreControl := instancecore.New(instance)
 	pods, err := r.getExpectOwnedPods(instance)
 	if err != nil {
+		readyCondition.Reason = workloadsv1alpha2.RoleInstanceReasonPodReadFailed
 		readyCondition.Message = err.Error()
 		return readyCondition
 	}
@@ -232,12 +211,12 @@ func (r *realStatusUpdater) getAllReadyCondition(instance *workloadsv1alpha2.Rol
 		if !coreControl.IsPodUpdateReady(pod, 0) {
 			readyCondition.Message = fmt.Sprintf("instance need all pods to be ready, "+
 				"but %v is in notready condition", klog.KObj(pod))
-			readyCondition.Reason = "AtLeastOnePodNotReady"
+			readyCondition.Reason = workloadsv1alpha2.RoleInstanceReasonAtLeastOnePodNotReady
 			return readyCondition
 		}
 	}
 	readyCondition.Status = v1.ConditionTrue
-	readyCondition.Reason = "PodsReady"
+	readyCondition.Reason = workloadsv1alpha2.RoleInstanceReasonPodsReady
 	readyCondition.Message = "Ready"
 	return readyCondition
 }
@@ -282,6 +261,7 @@ func (r *realStatusUpdater) getInstanceInplaceUpdateReadyCondition(instance *wor
 	return &workloadsv1alpha2.RoleInstanceCondition{
 		Type:               workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		Status:             v1.ConditionFalse,
+		Reason:             workloadsv1alpha2.RoleInstanceReasonReadinessGatesNotReady,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
 }
@@ -301,27 +281,27 @@ func getInstanceReadyCondition(instance *workloadsv1alpha2.RoleInstance, podsRea
 		Status:             v1.ConditionFalse,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
-	if containsInstanceInplaceUpdateReadinessGates(instance) {
-		if inplace != nil {
-			if inplace.Status == v1.ConditionFalse {
-				instanceReady.Reason = "InplaceUpdateNotReady"
-				instanceReady.Message = "NotReady"
-				return instanceReady
+	for _, gate := range instance.Spec.ReadinessGates {
+		condition := inplaceutil.GetRoleInstanceCondition(instance, gate.ConditionType)
+		if gate.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
+			condition = inplace
+		}
+		if condition == nil || condition.Status != v1.ConditionTrue {
+			instanceReady.Reason = workloadsv1alpha2.RoleInstanceReasonReadinessGatesNotReady
+			if gate.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady && condition != nil {
+				instanceReady.Reason = workloadsv1alpha2.RoleInstanceReasonInPlaceUpdateNotReady
 			}
-		} else {
-			instanceReady.Reason = "ReadinessGatesNotReady"
-			instanceReady.Message = fmt.Sprintf("corresponding condition of pod readiness gate \"%s\" does not exist.",
-				workloadsv1alpha2.RoleInstanceInPlaceUpdateReady)
+			instanceReady.Message = fmt.Sprintf("readiness gate %q is not True", gate.ConditionType)
 			return instanceReady
 		}
 	}
-	if podsReady != nil && podsReady.Status == v1.ConditionFalse {
-		instanceReady.Reason = "PodsNotReady"
+	if getInstanceReadyPolicy(instance) != workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone && (podsReady == nil || podsReady.Status != v1.ConditionTrue) {
+		instanceReady.Reason = workloadsv1alpha2.RoleInstanceReasonPodsNotReady
 		instanceReady.Message = "NotReady"
 		return instanceReady
 	}
 	instanceReady.Status = v1.ConditionTrue
-	instanceReady.Reason = "Ready"
+	instanceReady.Reason = workloadsv1alpha2.RoleInstanceReasonReady
 	return instanceReady
 }
 
@@ -416,7 +396,8 @@ func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.Role
 		}
 		if old.Status != c.Status ||
 			old.Message != c.Message ||
-			old.Reason != c.Reason {
+			old.Reason != c.Reason ||
+			(old.LastTransitionTime.IsZero() && !c.LastTransitionTime.IsZero()) {
 			return true
 		}
 	}
@@ -460,8 +441,37 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// live value — so the double-check below correctly identifies that case as
 		// "not changed" and preserves the live (potentially reset) count.
 		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
-		clone.Status = *newStatus
-		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
+		liveConditions := clone.Status.Conditions
+		clone.Status = *newStatus.DeepCopy()
+		clone.Status.Conditions = nil
+		for _, c := range liveCustomConditions {
+			inplaceutil.SetRoleInstanceCondition(clone, c)
+		}
+		for _, c := range newStatus.Conditions {
+			if ownedTypes.Has(c.Type) && c.Type != workloadsv1alpha2.RoleInstanceFailedScale && c.Type != workloadsv1alpha2.RoleInstanceFailedUpdate && c.Type != "RollingUpdateInProgress" {
+				for _, old := range liveConditions {
+					if old.Type == c.Type && old.Status == c.Status && !old.LastTransitionTime.IsZero() {
+						c.LastTransitionTime = old.LastTransitionTime
+						break
+					}
+				}
+				inplaceutil.SetRoleInstanceCondition(clone, c)
+			}
+		}
+		// 合并最新 gate 后重新求 AND，不能持久化与 gate 矛盾的 Ready。
+		ready := getInstanceReadyCondition(clone,
+			inplaceutil.GetRoleInstanceCondition(clone, workloadsv1alpha2.RoleInstanceAllPodsReady),
+			r.getInstanceInplaceUpdateReadyCondition(clone))
+		inplaceutil.SetRoleInstanceCondition(clone, ready)
+		controlReady, _ := inplaceutil.GetRoleInstanceControlReadiness(clone)
+		if !controlReady {
+			for _, c := range liveConditions {
+				if c.Type == workloadsv1alpha2.RoleInstanceRestarting && c.Status == v1.ConditionTrue {
+					inplaceutil.SetRoleInstanceCondition(clone, c)
+					break
+				}
+			}
+		}
 		if restartTrackingModified {
 			// updateRestartTracking ran this reconcile — trust newStatus values.
 			// This covers both increments (count goes up) and resets (count goes
@@ -474,7 +484,11 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 			clone.Status.RestartCount = liveRestartCount
 			clone.Status.LastRestartTime = liveLastRestartTime
 		}
-		return r.Status().Update(ctx, clone)
+		if err := r.Status().Update(ctx, clone); err != nil {
+			return err
+		}
+		newStatus.Conditions = clone.Status.Conditions
+		return nil
 	})
 }
 

@@ -340,6 +340,9 @@ spec:
                   RoleInstanceSet's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              phase:
+                description: Phase 展示当前生命周期；Running 不代表 Ready。
+                type: string
               readyReplicas:
                 description: ReadyReplicas is the number of RoleInstances created
                   by the RoleInstanceSet controller that have a Ready Condition.

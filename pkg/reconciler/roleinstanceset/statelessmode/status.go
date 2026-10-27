@@ -19,6 +19,7 @@ package statelessmode
 import (
 	"context"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	setstatus "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/sync"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
@@ -76,14 +78,21 @@ func (r *realStatusUpdater) updateStatus(set *workloadsv1alpha2.RoleInstanceSet,
 		if clone.DeletionTimestamp != nil {
 			return nil
 		}
-		clone.Status = *newStatus
+		merged := newStatus.DeepCopy()
+		merged.Conditions = setstatus.MergeConditions(clone.Status.Conditions, merged.Conditions)
+		if apiequality.Semantic.DeepEqual(clone.Status, *merged) {
+			return nil
+		}
+		clone.Status = *merged
 		return r.Status().Update(context.TODO(), clone)
 	})
 }
 
 func (r *realStatusUpdater) inconsistentStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus) bool {
 	oldStatus := set.Status
-	return newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
+	return newStatus.Phase != oldStatus.Phase ||
+		!apiequality.Semantic.DeepEqual(newStatus.Conditions, oldStatus.Conditions) ||
+		newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
 		newStatus.Replicas != oldStatus.Replicas ||
 		newStatus.ReadyReplicas != oldStatus.ReadyReplicas ||
 		newStatus.AvailableReplicas != oldStatus.AvailableReplicas ||
@@ -97,6 +106,7 @@ func (r *realStatusUpdater) inconsistentStatus(set *workloadsv1alpha2.RoleInstan
 
 func (r *realStatusUpdater) calculateStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
 	coreControl := core.New(set)
+	updatePending := newStatus.CurrentRevision != newStatus.UpdateRevision
 	for _, instance := range instances {
 		newStatus.Replicas++
 		if coreControl.IsInstanceUpdateReady(instance, 0) {
@@ -124,4 +134,6 @@ func (r *realStatusUpdater) calculateStatus(set *workloadsv1alpha2.RoleInstanceS
 			newStatus.ExpectedUpdatedReplicas = *set.Spec.Replicas - int32(partition)
 		}
 	}
+	updatePending = updatePending || newStatus.UpdatedReplicas != newStatus.Replicas
+	setstatus.SetStatusConditions(set, newStatus, instances, updatePending, int(*set.Spec.Replicas)-len(instances))
 }

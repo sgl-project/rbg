@@ -518,8 +518,23 @@ type ScalingAdapter struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
+// RoleBasedGroupPhase describes the lifecycle only; Running does not imply Ready.
+type RoleBasedGroupPhase string
+
+const (
+	RoleBasedGroupPhaseCreating    RoleBasedGroupPhase = "Creating"
+	RoleBasedGroupPhaseRunning     RoleBasedGroupPhase = "Running"
+	RoleBasedGroupPhaseUpdating    RoleBasedGroupPhase = "Updating"
+	RoleBasedGroupPhaseScaling     RoleBasedGroupPhase = "Scaling"
+	RoleBasedGroupPhaseTerminating RoleBasedGroupPhase = "Terminating"
+)
+
 // RoleBasedGroupStatus defines the observed state of RoleBasedGroup.
 type RoleBasedGroupStatus struct {
+	// Phase describes the current lifecycle and is not used for control decisions.
+	// +optional
+	Phase RoleBasedGroupPhase `json:"phase,omitempty"`
+
 	// The generation observed by the controller
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -570,6 +585,9 @@ type RoleBasedGroupConditionType string
 
 // These are built-in conditions of a RBG.
 const (
+	// RoleBasedGroupAccepted indicates that the existing validation paths have accepted the configuration.
+	RoleBasedGroupAccepted RoleBasedGroupConditionType = "Accepted"
+
 	// RoleBasedGroupReady means the rbg is available.
 	RoleBasedGroupReady RoleBasedGroupConditionType = "Ready"
 
@@ -577,12 +595,33 @@ const (
 	RoleBasedGroupProgressing RoleBasedGroupConditionType = "Progressing"
 
 	// RoleBasedGroupRollingUpdateInProgress means rbg is performing a rolling update.
+	// Deprecated: Use the Progressing condition instead.
 	RoleBasedGroupRollingUpdateInProgress RoleBasedGroupConditionType = "RollingUpdateInProgress"
 
 	// RoleBasedGroupGangConfigured means the gang scheduling configuration resolved
 	// for this rbg can be satisfied by the current roles and scheduler. The condition
 	// is absent when gang scheduling is disabled.
 	RoleBasedGroupGangConfigured RoleBasedGroupConditionType = "GangConfigured"
+)
+
+const (
+	RoleBasedGroupReasonValidSpec              = "ValidSpec"
+	RoleBasedGroupReasonInvalidSpec            = "InvalidSpec"
+	RoleBasedGroupReasonTemplateInvalid        = "TemplateInvalid"
+	RoleBasedGroupReasonDependencyCycle        = "DependencyCycle"
+	RoleBasedGroupReasonIncompatibleGangConfig = "IncompatibleGangConfig"
+	RoleBasedGroupReasonPreparing              = "Preparing"
+	RoleBasedGroupReasonCreating               = "Creating"
+	RoleBasedGroupReasonScalingUp              = "ScalingUp"
+	RoleBasedGroupReasonScalingDown            = "ScalingDown"
+	RoleBasedGroupReasonRollingUpdate          = "RollingUpdate"
+	RoleBasedGroupReasonPatternMigration       = "PatternMigration"
+	RoleBasedGroupReasonWaitingForDependencies = "WaitingForDependencies"
+	RoleBasedGroupReasonWaitingForInstances    = "WaitingForInstances"
+	RoleBasedGroupReasonPaused                 = "Paused"
+	RoleBasedGroupReasonConverged              = "Converged"
+	RoleBasedGroupReasonAllRolesReady          = "AllRolesReady"
+	RoleBasedGroupReasonTerminating            = "Terminating"
 )
 
 // +kubebuilder:object:root=true

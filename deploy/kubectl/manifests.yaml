@@ -25397,6 +25397,10 @@ spec:
                 description: The generation observed by the controller
                 format: int64
                 type: integer
+              phase:
+                description: Phase describes the current lifecycle; Running does not
+                  imply Ready.
+                type: string
               roleStatuses:
                 description: Status of individual roles
                 items:
@@ -49487,6 +49491,10 @@ spec:
                 description: The generation observed by the controller
                 format: int64
                 type: integer
+              phase:
+                description: Phase describes the current lifecycle and is not used
+                  for control decisions.
+                type: string
               roleStatuses:
                 description: Status of individual roles
                 items:
@@ -98646,6 +98654,9 @@ spec:
                   RoleInstanceSet's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              phase:
+                description: Phase 展示当前生命周期；Running 不代表 Ready。
+                type: string
               readyReplicas:
                 description: ReadyReplicas is the number of RoleInstances created
                   by the RoleInstanceSet controller that have a Ready Condition.

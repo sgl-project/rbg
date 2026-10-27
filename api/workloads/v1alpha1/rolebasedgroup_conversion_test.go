@@ -51,6 +51,20 @@ func rawPatch(t *testing.T, v any) runtime.RawExtension {
 
 // ── ConvertTo (v1alpha1 → v1alpha2) ──────────────────────────────────────────
 
+func TestRoleBasedGroupPhaseRoundTrip(t *testing.T) {
+	for _, phase := range []v2.RoleBasedGroupPhase{"", v2.RoleBasedGroupPhaseCreating, v2.RoleBasedGroupPhaseRunning, v2.RoleBasedGroupPhaseUpdating, v2.RoleBasedGroupPhaseScaling, v2.RoleBasedGroupPhaseTerminating} {
+		t.Run(string(phase), func(t *testing.T) {
+			src := &v2.RoleBasedGroup{Status: v2.RoleBasedGroupStatus{Phase: phase, ObservedGeneration: 7, RoleStatuses: []v2.RoleStatus{{Name: "worker", Replicas: 2, UpdatedReplicas: 1}}, Conditions: []metav1.Condition{{Type: "External", Status: metav1.ConditionUnknown, Reason: "ExternalReason"}}}}
+			old := &RoleBasedGroup{}
+			require.NoError(t, old.ConvertFrom(src))
+			require.Equal(t, RoleBasedGroupPhase(phase), old.Status.Phase)
+			got := &v2.RoleBasedGroup{}
+			require.NoError(t, old.ConvertTo(got))
+			require.Equal(t, src.Status, got.Status)
+		})
+	}
+}
+
 func TestRoleBasedGroup_ConvertTo_StandalonePattern(t *testing.T) {
 	src := &RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},

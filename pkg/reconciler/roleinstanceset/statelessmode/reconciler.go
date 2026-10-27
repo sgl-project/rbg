@@ -21,7 +21,6 @@ import (
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -233,12 +232,6 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	scaling, scaleErr = r.syncControl.Scale(currentSet, updateSet, currentRevision.Name, updateRevision.Name, filteredInstances)
 	if scaleErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
-			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedScale,
-			Status:             v1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Message:            scaleErr.Error(),
-		})
 		err = scaleErr
 	}
 	if scaling {
@@ -247,12 +240,6 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	updateErr = r.syncControl.Update(updateSet, currentRevision, updateRevision, revisions, filteredInstances)
 	if updateErr != nil {
-		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
-			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate,
-			Status:             v1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Message:            updateErr.Error(),
-		})
 		if err == nil {
 			err = updateErr
 		}

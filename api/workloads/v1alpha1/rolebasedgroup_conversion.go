@@ -302,6 +302,7 @@ func convertEngineRuntimesV1alpha1ToV2(src []EngineRuntime) []v2.EngineRuntime {
 }
 
 func convertStatusV1alpha1ToV2(src *RoleBasedGroupStatus, dst *v2.RoleBasedGroupStatus) {
+	dst.Phase = v2.RoleBasedGroupPhase(src.Phase)
 	dst.ObservedGeneration = src.ObservedGeneration
 	dst.Conditions = src.Conditions
 	if len(src.RoleStatuses) > 0 {
@@ -483,6 +484,7 @@ func convertEngineRuntimesV2ToV1alpha1(src []v2.EngineRuntime) []EngineRuntime {
 }
 
 func convertStatusV2ToV1alpha1(src *v2.RoleBasedGroupStatus, dst *RoleBasedGroupStatus) {
+	dst.Phase = RoleBasedGroupPhase(src.Phase)
 	dst.ObservedGeneration = src.ObservedGeneration
 	dst.Conditions = src.Conditions
 	if len(src.RoleStatuses) > 0 {

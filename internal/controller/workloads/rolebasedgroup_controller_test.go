@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,8 +51,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 
@@ -63,6 +66,331 @@ import (
 	"sigs.k8s.io/rbgs/test/wrappers"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
+
+func newRBGStatusFixture() (*workloadsv1alpha2.RoleBasedGroup, *workloadsv1alpha2.RoleInstanceSet) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "status", Namespace: "default", UID: "rbg", Generation: 4},
+		Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{{Name: "worker", Replicas: ptr.To[int32](2)}}},
+	}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.GetWorkloadName(&rbg.Spec.Roles[0]), Namespace: rbg.Namespace, Generation: 3,
+			Labels:          map[string]string{fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, "worker"): "role-revision"},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: workloadsv1alpha2.GroupVersion.String(), Kind: "RoleBasedGroup", Name: rbg.Name, UID: rbg.UID, Controller: ptr.To(true)}},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To[int32](2)},
+		Status: workloadsv1alpha2.RoleInstanceSetStatus{Phase: workloadsv1alpha2.RoleInstanceSetPhaseRunning, ObservedGeneration: 3, CurrentRevision: "ri-revision", UpdateRevision: "ri-revision", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2, UpdatedReadyReplicas: 2,
+			Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{Type: workloadsv1alpha2.RoleInstanceSetConditionReady, Status: corev1.ConditionTrue}, {Type: workloadsv1alpha2.RoleInstanceSetConditionProgressing, Status: corev1.ConditionFalse, Reason: workloadsv1alpha2.RoleInstanceSetReasonConverged}},
+		},
+	}
+	return rbg, set
+}
+
+func TestRBGStatusProjection(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*workloadsv1alpha2.RoleBasedGroup, *workloadsv1alpha2.RoleInstanceSet)
+		phase  workloadsv1alpha2.RoleBasedGroupPhase
+		reason string
+		ready  bool
+	}{
+		{name: "就绪", phase: workloadsv1alpha2.RoleBasedGroupPhaseRunning, reason: workloadsv1alpha2.RoleBasedGroupReasonConverged, ready: true},
+		{name: "等待 Pod", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Status.ReadyReplicas = 1
+			s.Status.Conditions[0].Status = corev1.ConditionFalse
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseRunning, reason: workloadsv1alpha2.RoleBasedGroupReasonWaitingForInstances},
+		{name: "初建与 generation 无关", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Status = workloadsv1alpha2.RoleInstanceSetStatus{}
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseCreating, reason: workloadsv1alpha2.RoleBasedGroupReasonCreating},
+		{name: "最终目标扩容", change: func(r *workloadsv1alpha2.RoleBasedGroup, _ *workloadsv1alpha2.RoleInstanceSet) {
+			r.Spec.Roles[0].Replicas = ptr.To[int32](3)
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseScaling, reason: workloadsv1alpha2.RoleBasedGroupReasonScalingUp},
+		{name: "最终目标缩容", change: func(r *workloadsv1alpha2.RoleBasedGroup, _ *workloadsv1alpha2.RoleInstanceSet) {
+			r.Spec.Roles[0].Replicas = ptr.To[int32](1)
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseScaling, reason: workloadsv1alpha2.RoleBasedGroupReasonScalingDown},
+		{name: "surge 更新优先", change: func(r *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			r.Spec.Roles[0].Replicas = ptr.To[int32](1)
+			s.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseUpdating, reason: workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate},
+		{name: "父 revision 尚未下发", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) { s.Labels = nil }, phase: workloadsv1alpha2.RoleBasedGroupPhaseUpdating, reason: workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate},
+		{name: "子 revision 不收敛", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Status.UpdateRevision = "new"
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseUpdating, reason: workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate},
+		{name: "子 generation 过期", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) { s.Generation++ }, phase: workloadsv1alpha2.RoleBasedGroupPhaseRunning, reason: workloadsv1alpha2.RoleBasedGroupReasonWaitingForInstances},
+		{name: "迁移", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+			s.Status.Conditions[1].Reason = workloadsv1alpha2.RoleInstanceSetReasonPatternMigration
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseUpdating, reason: workloadsv1alpha2.RoleBasedGroupReasonPatternMigration},
+		{name: "迁移早退未推进 generation", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Generation++
+			s.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+			s.Status.Conditions[1].Reason = workloadsv1alpha2.RoleInstanceSetReasonPatternMigration
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseUpdating, reason: workloadsv1alpha2.RoleBasedGroupReasonPatternMigration},
+		{name: "暂停未收敛", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+			s.Status.Conditions[1].Reason = workloadsv1alpha2.RoleInstanceSetReasonPaused
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseUpdating, reason: workloadsv1alpha2.RoleBasedGroupReasonPaused},
+		{name: "暂停已收敛", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Spec.UpdateStrategy.Paused = true
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseRunning, reason: workloadsv1alpha2.RoleBasedGroupReasonConverged, ready: true},
+		{name: "子删除不投影顶层删除", change: func(_ *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			s.DeletionTimestamp = ptr.To(metav1.Now())
+			s.Finalizers = []string{"test"}
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseRunning, reason: workloadsv1alpha2.RoleBasedGroupReasonWaitingForInstances},
+		{name: "删除优先", change: func(r *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			r.DeletionTimestamp = ptr.To(metav1.Now())
+			r.Finalizers = []string{"test"}
+			s.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseTerminating, reason: workloadsv1alpha2.RoleBasedGroupReasonTerminating},
+		{name: "零副本", change: func(r *workloadsv1alpha2.RoleBasedGroup, s *workloadsv1alpha2.RoleInstanceSet) {
+			r.Spec.Roles[0].Replicas = ptr.To[int32](0)
+			s.Spec.Replicas = ptr.To[int32](0)
+			s.Status.Replicas = 0
+			s.Status.ReadyReplicas = 0
+			s.Status.UpdatedReplicas = 0
+			s.Status.UpdatedReadyReplicas = 0
+		}, phase: workloadsv1alpha2.RoleBasedGroupPhaseRunning, reason: workloadsv1alpha2.RoleBasedGroupReasonConverged, ready: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rbg, set := newRBGStatusFixture()
+			if tt.change != nil {
+				tt.change(rbg, set)
+			}
+			scheme := runtime.NewScheme()
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			writes := 0
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(rbg).WithObjects(rbg, set).WithInterceptorFuncs(interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, cli client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					writes++
+					return cli.SubResource(sub).Patch(ctx, obj, patch, opts...)
+				},
+				Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+					t.Fatal("状态计算不能创建资源")
+					return nil
+				},
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+					t.Fatal("状态计算不能删除资源")
+					return nil
+				},
+			}).Build()
+			r := &RoleBasedGroupReconciler{client: c}
+			statuses := []workloadsv1alpha2.RoleStatus{{Name: "worker", Replicas: set.Status.Replicas, ReadyReplicas: set.Status.ReadyReplicas, UpdatedReplicas: set.Status.UpdatedReplicas}}
+			require.NoError(t, r.updateRBGStatus(context.Background(), rbg, statuses, map[string]string{"worker": "role-revision"}, false))
+			require.Equal(t, tt.phase, rbg.Status.Phase)
+			require.Equal(t, tt.ready, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready"))
+			require.Equal(t, tt.reason, apimeta.FindStatusCondition(rbg.Status.Conditions, "Progressing").Reason)
+			before := rbg.Status.DeepCopy()
+			require.NoError(t, r.updateRBGStatus(context.Background(), rbg, statuses, map[string]string{"worker": "role-revision"}, false))
+			require.Equal(t, before, &rbg.Status)
+			require.Equal(t, 1, writes)
+			got := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(rbg), got))
+			require.Equal(t, rbg.Status.Phase, got.Status.Phase)
+		})
+	}
+}
+
+func TestRBGStatusMultiRolePriorityAndPausedScaling(t *testing.T) {
+	rbg, first := newRBGStatusFixture()
+	role := *rbg.Spec.Roles[0].DeepCopy()
+	role.Name, role.Replicas = "other", ptr.To[int32](3)
+	rbg.Spec.Roles = append(rbg.Spec.Roles, role)
+	second := first.DeepCopy()
+	second.Name = rbg.GetWorkloadName(&role)
+	second.Labels = map[string]string{fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): "role-revision"}
+	first.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+	first.Status.Conditions[1].Reason = workloadsv1alpha2.RoleInstanceSetReasonPaused
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(rbg).WithObjects(rbg, first, second).Build()
+	r := &RoleBasedGroupReconciler{client: c}
+	statuses := []workloadsv1alpha2.RoleStatus{{Name: "worker", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}, {Name: "other", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}}
+	require.NoError(t, r.updateRBGStatus(context.Background(), rbg, statuses, map[string]string{"worker": "role-revision", "other": "role-revision"}, false))
+	require.Equal(t, workloadsv1alpha2.RoleBasedGroupPhaseUpdating, rbg.Status.Phase)
+	progress := apimeta.FindStatusCondition(rbg.Status.Conditions, "Progressing")
+	require.Equal(t, metav1.ConditionTrue, progress.Status)
+	require.Equal(t, workloadsv1alpha2.RoleBasedGroupReasonRollingUpdate, progress.Reason)
+	require.False(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready"))
+}
+
+func TestRBGRejectedStatusDoesNotOscillate(t *testing.T) {
+	rbg, set := newRBGStatusFixture()
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	writes := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(rbg).WithObjects(rbg, set).WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: func(ctx context.Context, cli client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		writes++
+		return cli.SubResource(sub).Patch(ctx, obj, patch, opts...)
+	}}).Build()
+	r := &RoleBasedGroupReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+	statuses := []workloadsv1alpha2.RoleStatus{{Name: "worker", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}}
+	revisions := map[string]string{"worker": "role-revision"}
+	ctx := context.Background()
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, revisions, false))
+	cause := common.NewIncompatibleGangConfigError("cannot satisfy gang")
+	require.NoError(t, r.setGangConfiguredCondition(ctx, rbg, nil, cause))
+	before := rbg.Status.DeepCopy()
+	beforeWrites := writes
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, revisions, false))
+	require.NoError(t, r.setGangConfiguredCondition(ctx, rbg, nil, cause))
+	require.Equal(t, before, &rbg.Status)
+	require.Equal(t, beforeWrites, writes)
+}
+
+func TestRBGDependencyWaitDoesNotOscillate(t *testing.T) {
+	rbg, set := newRBGStatusFixture()
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	writes := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(rbg).WithObjects(rbg, set).WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: func(ctx context.Context, cli client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		writes++
+		return cli.SubResource(sub).Patch(ctx, obj, patch, opts...)
+	}}).Build()
+	r := &RoleBasedGroupReconciler{client: c}
+	ctx := context.Background()
+	statuses := []workloadsv1alpha2.RoleStatus{{Name: "worker", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}}
+	revisions := map[string]string{"worker": "role-revision"}
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, revisions, false))
+	changed, err := r.updateRBGWaitingStatus(ctx, rbg, "", workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies, "dependencies not met")
+	require.NoError(t, err)
+	require.True(t, changed)
+	before, beforeWrites := rbg.Status.DeepCopy(), writes
+	for i := 0; i < 2; i++ {
+		require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, revisions, false))
+		changed, err = r.updateRBGWaitingStatus(ctx, rbg, "", workloadsv1alpha2.RoleBasedGroupReasonWaitingForDependencies, "dependencies not met")
+		require.NoError(t, err)
+		require.False(t, changed, "相同依赖等待不能重复触发条件 Event")
+		require.Equal(t, before, &rbg.Status)
+		require.Equal(t, beforeWrites, writes)
+	}
+	// 原角色调和已通过依赖检查后，解除等待并持久化新的聚合结果。
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, revisions, true))
+	require.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready"))
+	require.Equal(t, workloadsv1alpha2.RoleBasedGroupReasonConverged, apimeta.FindStatusCondition(rbg.Status.Conditions, "Progressing").Reason)
+	require.Equal(t, beforeWrites+1, writes)
+}
+
+func TestRBGConditionTypeAndTime(t *testing.T) {
+	rbg, _ := newRBGStatusFixture()
+	oldTime := metav1.NewTime(time.Now().Add(-time.Hour))
+	rbg.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, LastTransitionTime: oldTime}, {Type: "Ready", Status: metav1.ConditionFalse}, {Type: "External", Reason: "preserved"}}
+	require.True(t, setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupReady, metav1.ConditionFalse, "WaitingForInstances", "waiting"))
+	require.Len(t, rbg.Status.Conditions, 2)
+	require.Equal(t, oldTime, rbg.Status.Conditions[0].LastTransitionTime)
+	require.Equal(t, "preserved", rbg.Status.Conditions[1].Reason)
+	rbg.Generation++
+	require.False(t, setRBGCondition(rbg, workloadsv1alpha2.RoleBasedGroupReady, metav1.ConditionFalse, "WaitingForInstances", "waiting"))
+	require.Equal(t, oldTime, rbg.Status.Conditions[0].LastTransitionTime)
+}
+
+func TestRBGStatusRoleListAndReadFailure(t *testing.T) {
+	rbg, set := newRBGStatusFixture()
+	rbg.Status.RoleStatuses = []workloadsv1alpha2.RoleStatus{{Name: "removed", Replicas: 5}, {Name: "worker", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1}}
+	oldTime := metav1.NewTime(time.Now().Add(-time.Hour))
+	rbg.Status.Conditions = []metav1.Condition{{Type: "External", Status: metav1.ConditionUnknown, Reason: "ExternalReason", LastTransitionTime: oldTime}, {Type: "FailedUpdate", Status: metav1.ConditionTrue, Reason: "Old", LastTransitionTime: oldTime}}
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	failRead := false
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(rbg).WithObjects(rbg, set).WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(*workloadsv1alpha2.RoleInstanceSet); ok && failRead {
+			return errors.New("read failure")
+		}
+		return cli.Get(ctx, key, obj, opts...)
+	}}).Build()
+	r := &RoleBasedGroupReconciler{client: c}
+	statuses := []workloadsv1alpha2.RoleStatus{{Name: "worker", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}}
+	require.NoError(t, r.updateRBGStatus(context.Background(), rbg, statuses, map[string]string{"worker": "role-revision"}, false))
+	require.Equal(t, statuses, rbg.Status.RoleStatuses)
+	require.Equal(t, "ExternalReason", apimeta.FindStatusCondition(rbg.Status.Conditions, "External").Reason)
+	require.Nil(t, apimeta.FindStatusCondition(rbg.Status.Conditions, "FailedUpdate"))
+	failRead = true
+	require.Error(t, r.updateRBGStatus(context.Background(), rbg, statuses, map[string]string{"worker": "role-revision"}, false))
+	require.False(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Ready"))
+	require.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, "Accepted"))
+}
+
+func TestRBGWaitingStatusEventsAndDiscovery(t *testing.T) {
+	rbg, _ := newRBGStatusFixture()
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	recorder := record.NewFakeRecorder(10)
+	failWrite := false
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(rbg).WithObjects(rbg).WithInterceptorFuncs(interceptor.Funcs{SubResourcePatch: func(ctx context.Context, cli client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		if failWrite {
+			return errors.New("write failure")
+		}
+		return cli.SubResource(sub).Patch(ctx, obj, patch, opts...)
+	}}).Build()
+	r := &RoleBasedGroupReconciler{client: c, recorder: recorder}
+	ctx := context.Background()
+	_, err := r.updateRBGWaitingStatus(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonValidSpec, workloadsv1alpha2.RoleBasedGroupReasonPreparing, "preparing")
+	require.NoError(t, err)
+	require.Zero(t, rbg.Status.ObservedGeneration)
+	require.Empty(t, rbg.Status.RoleStatuses)
+	cause := errors.New("invalid template")
+	rbg.Status.Phase = workloadsv1alpha2.RoleBasedGroupPhaseRunning
+	require.ErrorIs(t, r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonTemplateInvalid, InvalidRoleTemplates, cause), cause)
+	require.Equal(t, workloadsv1alpha2.RoleBasedGroupPhaseRunning, rbg.Status.Phase)
+	require.Len(t, recorder.Events, 1)
+	<-recorder.Events
+	require.ErrorIs(t, r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonTemplateInvalid, InvalidRoleTemplates, cause), cause)
+	require.Empty(t, recorder.Events)
+	failWrite = true
+	require.Error(t, r.rejectRBG(ctx, rbg, workloadsv1alpha2.RoleBasedGroupReasonTemplateInvalid, InvalidRoleTemplates, errors.New("different template error")))
+	require.Empty(t, recorder.Events)
+}
+
+func TestRBGStatusPredicates(t *testing.T) {
+	rbg, set := newRBGStatusFixture()
+	deleted := rbg.DeepCopy()
+	deleted.DeletionTimestamp = ptr.To(metav1.Now())
+	require.True(t, RBGPredicate().Update(event.UpdateEvent{ObjectOld: rbg, ObjectNew: deleted}))
+	for _, change := range []func(*workloadsv1alpha2.RoleInstanceSet){
+		func(s *workloadsv1alpha2.RoleInstanceSet) {
+			s.Status.Phase = workloadsv1alpha2.RoleInstanceSetPhaseUpdating
+		},
+		func(s *workloadsv1alpha2.RoleInstanceSet) { s.Status.Conditions[0].Status = corev1.ConditionFalse },
+		func(s *workloadsv1alpha2.RoleInstanceSet) { s.DeletionTimestamp = ptr.To(metav1.Now()) },
+	} {
+		updated := set.DeepCopy()
+		change(updated)
+		require.True(t, WorkloadPredicate().Update(event.UpdateEvent{ObjectOld: set, ObjectNew: updated}))
+	}
+}
+
+func TestRBGLegacyWorkloadFreshness(t *testing.T) {
+	for _, kind := range []string{"Deployment", "StatefulSet", "LeaderWorkerSet"} {
+		t.Run(kind, func(t *testing.T) {
+			rbg, set := newRBGStatusFixture()
+			role := &rbg.Spec.Roles[0]
+			role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: "apps/v1/" + kind}
+			var obj client.Object
+			switch kind {
+			case "Deployment":
+				obj = &appsv1.Deployment{ObjectMeta: set.ObjectMeta, Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](2)}, Status: appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}}
+			case "StatefulSet":
+				obj = &appsv1.StatefulSet{ObjectMeta: set.ObjectMeta, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](2)}, Status: appsv1.StatefulSetStatus{ObservedGeneration: 3, CurrentRevision: "a", UpdateRevision: "a", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2}}
+			case "LeaderWorkerSet":
+				role.Annotations[constants.RoleWorkloadTypeAnnotationKey] = constants.LeaderWorkerSetWorkloadType
+				obj = &lwsv1.LeaderWorkerSet{ObjectMeta: set.ObjectMeta, Spec: lwsv1.LeaderWorkerSetSpec{Replicas: ptr.To[int32](2)}, Status: lwsv1.LeaderWorkerSetStatus{Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2, Conditions: []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue, ObservedGeneration: 3}}}}
+			}
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, lwsv1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
+			r := &RoleBasedGroupReconciler{client: c}
+			_, _, ready, err := r.roleWorkloadStatus(context.Background(), rbg, role, "role-revision")
+			require.NoError(t, err)
+			require.True(t, ready)
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(obj), obj))
+			obj.SetGeneration(4)
+			require.NoError(t, c.Update(context.Background(), obj))
+			_, _, ready, err = r.roleWorkloadStatus(context.Background(), rbg, role, "role-revision")
+			require.NoError(t, err)
+			require.False(t, ready)
+		})
+	}
+}
 
 func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
 	type testCase struct {
