@@ -3267,9 +3267,10 @@ func TestScaleErrorsAndCreatesAfterOrphanPodGC(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(oldPod).
 		Build()
+	recorder := record.NewFakeRecorder(10)
 	ctrl := &realControl{
 		Client:   fakeClient,
-		recorder: record.NewFakeRecorder(10),
+		recorder: recorder,
 	}
 	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
 
@@ -3278,6 +3279,13 @@ func TestScaleErrorsAndCreatesAfterOrphanPodGC(t *testing.T) {
 	assert.False(t, scaling)
 	assert.Zero(t, requeue,
 		"controller-runtime supplies exponential backoff for the returned error; no fixed requeue interval is needed")
+	select {
+	case event := <-recorder.Events:
+		assert.Contains(t, event, "FailedCreate")
+		assert.Contains(t, event, "is not controlled by RoleInstance")
+	default:
+		assert.Fail(t, "expected a warning event for the blocked pod creation")
+	}
 
 	podList := &corev1.PodList{}
 	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
@@ -3293,4 +3301,85 @@ func TestScaleErrorsAndCreatesAfterOrphanPodGC(t *testing.T) {
 	assert.Len(t, podList.Items, 1, "the replacement Pod must be created after the old Pod is removed")
 	assert.Equal(t, instance.Name, podList.Items[0].Name)
 	assert.True(t, metav1.IsControlledBy(&podList.Items[0], instance))
+}
+
+func TestScaleCreatesNonCollidingSiblingsDuringNameCollision(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "role-0",
+			Namespace: "default",
+			UID:       "new-role-instance",
+			Labels: map[string]string{
+				constants.RoleTypeLabelKey: string(constants.ComponentsTemplateType),
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "role",
+				Size: ptr.To(int32(2)),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "rbg:latest"}},
+					},
+				},
+			}},
+		},
+	}
+
+	oldPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name + "-role-0",
+			Namespace: instance.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1",
+				Kind:       "StatefulSet",
+				Name:       "role",
+				UID:        "old-statefulset",
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(oldPod).
+		Build()
+	ctrl := &realControl{
+		Client:   fakeClient,
+		recorder: record.NewFakeRecorder(10),
+	}
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+
+	scaling, _, err := ctrl.Scale(ctx, instance, revision, revision, nil, nil, nil)
+	assert.ErrorContains(t, err, "is not controlled by RoleInstance")
+	assert.True(t, scaling, "non-colliding sibling pods should still be created")
+
+	podList := &corev1.PodList{}
+	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
+	assert.Len(t, podList.Items, 2)
+	var replacement *corev1.Pod
+	for i := range podList.Items {
+		if podList.Items[i].Name == "role-0-role-1" {
+			replacement = &podList.Items[i]
+		}
+	}
+	if assert.NotNil(t, replacement, "the non-colliding sibling should be created") {
+		assert.True(t, metav1.IsControlledBy(replacement, instance))
+	}
+
+	assert.NoError(t, fakeClient.Delete(ctx, oldPod))
+	_, _, err = ctrl.Scale(ctx, instance, revision, revision, nil, nil, nil)
+	assert.NoError(t, err)
+
+	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
+	assert.Len(t, podList.Items, 2)
+	for i := range podList.Items {
+		assert.True(t, metav1.IsControlledBy(&podList.Items[i], instance),
+			"pod %s should be controlled by the new RoleInstance", podList.Items[i].Name)
+	}
 }

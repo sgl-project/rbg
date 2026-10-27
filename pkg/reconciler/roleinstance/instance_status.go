@@ -78,8 +78,12 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 // owned, silently clobbering concurrent writes from other controllers.
 //
 // The rule for inclusion is:
-//   - Controller-computed types (Ready, AllPodsReady, FailedScale, FailedUpdate) are
-//     always generated fresh each reconcile and must win over the live object.
+//   - Ready and AllPodsReady are generated fresh each reconcile.
+//   - FailedScale and FailedUpdate are generated when the corresponding operation
+//     fails. Their absence in a healthy reconcile means success, and
+//     setInstanceConditions drops stale copies from the live object.
+//   - Restarting has an explicit lifecycle and is cleared by setInstanceConditions
+//     once the instance becomes Ready.
 //   - RoleInstanceInPlaceUpdateReady and RoleInstanceCustomReady are written by
 //     external controllers, but setInstanceConditions always copies them from
 //     instance.Status into newStatus (via getInstanceInplaceUpdateReadyCondition and
@@ -98,6 +102,17 @@ func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceCond
 		// so they are already present and must not be appended again from the live clone.
 		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		workloadsv1alpha2.RoleInstanceCustomReady,
+	)
+}
+
+// controllerFailureConditionTypes returns failure conditions whose absence from
+// the freshly computed conditions means the corresponding operation succeeded.
+// They must not be carried forward from the live object; otherwise a transient
+// FailedScale/FailedUpdate condition would remain True after recovery.
+func controllerFailureConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
+	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
+		workloadsv1alpha2.RoleInstanceFailedScale,
+		workloadsv1alpha2.RoleInstanceFailedUpdate,
 	)
 }
 
@@ -187,8 +202,15 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	for _, c := range conditions {
 		innerConditionTypes.Insert(c.Type)
 	}
+	failureConditionTypes := controllerFailureConditionTypes()
 	var customInstanceConditions []workloadsv1alpha2.RoleInstanceCondition
 	for _, c := range instance.Status.Conditions {
+		if failureConditionTypes.Has(c.Type) {
+			// FailedScale and FailedUpdate are computed by this controller. When
+			// they are absent from this reconcile's conditions, the corresponding
+			// operation succeeded and a stale condition must be dropped.
+			continue
+		}
 		if !innerConditionTypes.Has(c.Type) {
 			// Clear Restarting condition when instance becomes Ready
 			if c.Type == workloadsv1alpha2.RoleInstanceRestarting && instanceReady {
