@@ -344,24 +344,31 @@ func TestSyncRollingGroupSet_InPlacePreservesConversionStash(t *testing.T) {
 
 func TestWarmUpGroupSetSurge_BoundedByRemainingWork(t *testing.T) {
 	tests := []struct {
-		name           string
-		maxSurge       int
-		maxUnavailable int
-		outdatedBase   int
-		existingSurge  []int
-		wantCreated    int
+		name            string
+		maxSurge        int
+		maxUnavailable  int
+		servingOutdated int
+		readyBase       int
+		existingSurge   []int
+		wantCreated     int
 	}{
-		{name: "surge exceeds replicas", maxSurge: 5, outdatedBase: 4, wantCreated: 4},
-		{name: "surge remains the upper bound", maxSurge: 2, outdatedBase: 4, wantCreated: 2},
-		{name: "only partition batch needs surge", maxSurge: 5, outdatedBase: 2, wantCreated: 2},
-		{name: "unavailable budget covers part of batch", maxSurge: 5, maxUnavailable: 1, outdatedBase: 4, wantCreated: 3},
-		{name: "unavailable budget covers whole batch", maxSurge: 5, maxUnavailable: 2, outdatedBase: 2},
-		{name: "no remaining work", maxSurge: 5},
-		{name: "surge disabled", outdatedBase: 4},
-		{name: "existing surge counts toward target", maxSurge: 5, outdatedBase: 4, existingSurge: []int{4, 5}, wantCreated: 2},
-		{name: "higher ordinal surge already covers remaining work", maxSurge: 5, outdatedBase: 1, existingSurge: []int{7}},
-		{name: "surge with gaps only fills shortfall", maxSurge: 5, outdatedBase: 3, existingSurge: []int{6, 8}, wantCreated: 1},
-		{name: "existing surge exceeds remaining work", maxSurge: 5, outdatedBase: 1, existingSurge: []int{4, 5}},
+		{name: "surge exceeds replicas", maxSurge: 5, servingOutdated: 4, readyBase: 4, wantCreated: 4},
+		{name: "surge remains the upper bound", maxSurge: 2, servingOutdated: 4, readyBase: 4, wantCreated: 2},
+		{name: "only partition batch needs surge", maxSurge: 5, servingOutdated: 2, readyBase: 4, wantCreated: 2},
+		{name: "unavailable budget covers part of batch", maxSurge: 5, maxUnavailable: 1, servingOutdated: 4, readyBase: 4, wantCreated: 3},
+		{name: "unavailable budget covers whole batch", maxSurge: 5, maxUnavailable: 2, servingOutdated: 2, readyBase: 4},
+		{name: "no remaining work", maxSurge: 5, readyBase: 4},
+		{name: "surge disabled", servingOutdated: 4, readyBase: 4},
+		{name: "existing surge counts toward target", maxSurge: 5, servingOutdated: 4, readyBase: 4, existingSurge: []int{4, 5}, wantCreated: 2},
+		{name: "higher ordinal surge already covers remaining work", maxSurge: 5, servingOutdated: 1, readyBase: 4, existingSurge: []int{7}},
+		{name: "surge with gaps only fills shortfall", maxSurge: 5, servingOutdated: 3, readyBase: 4, existingSurge: []int{6, 8}, wantCreated: 1},
+		{name: "existing surge exceeds remaining work", maxSurge: 5, servingOutdated: 1, readyBase: 4, existingSurge: []int{4, 5}},
+		// A group that is down has already spent part of the unavailable budget, and a group held
+		// back below the partition is never touched by the rollout. Surge must still be created from
+		// the remaining headroom, otherwise the rollout waits for that group to recover by itself.
+		{name: "failure below partition consumes the unavailable budget", maxSurge: 1, maxUnavailable: 1, servingOutdated: 1, readyBase: 3, wantCreated: 1},
+		{name: "failure leaves partial headroom", maxSurge: 2, maxUnavailable: 2, servingOutdated: 3, readyBase: 3, wantCreated: 2},
+		{name: "failure covers the whole batch", maxSurge: 2, maxUnavailable: 2, servingOutdated: 1, readyBase: 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -383,8 +390,9 @@ func TestWarmUpGroupSetSurge_BoundedByRemainingWork(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 			r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
 			limits := groupSetRolloutLimits{maxSurge: tt.maxSurge, maxUnavailable: tt.maxUnavailable}
+			accounting := groupSetSurgeAccounting{servingOutdated: tt.servingOutdated, readyBase: tt.readyBase}
 			changed, err := r.warmUpGroupSetSurge(ctx, set, existing, 4, limits, update,
-				tt.outdatedBase, tt.maxSurge-len(tt.existingSurge))
+				accounting, tt.maxSurge-len(tt.existingSurge))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCreated > 0, changed)
 			children := &workloadsv1alpha2.RoleBasedGroupList{}
@@ -392,6 +400,60 @@ func TestWarmUpGroupSetSurge_BoundedByRemainingWork(t *testing.T) {
 			assert.Len(t, children.Items, len(tt.existingSurge)+tt.wantCreated)
 		})
 	}
+}
+
+// A failure in a group held back below the partition spends the declared unavailable budget. Surge
+// exists precisely so the rollout does not wait for that group to recover on its own, so surge must
+// still be warmed up; and because the surge is not ready yet, the in-scope group is only replaced
+// after it is, keeping ready capacity at the floor the whole time.
+func TestSyncRollingGroupSet_HeldBackFailureStillWarmsSurge(t *testing.T) {
+	ctx := context.Background()
+	current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+	update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{"user.io/version": "v2"})}
+	set := revisionTestRollingSet(4, update)
+	set.Spec.RolloutStrategy.Type = workloadsv1alpha2.RecreateStrategyType
+	set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(3))
+	set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	set.Spec.RolloutStrategy.MaxSurge = ptr.To(intstr.FromInt32(1))
+
+	objects := []client.Object{set}
+	for index := 0; index < 4; index++ {
+		child := revisionTestReadyChild(set, index, current)
+		if index == 0 {
+			child.Status.Conditions[0].Status = metav1.ConditionFalse
+		}
+		objects = append(objects, child)
+	}
+	r, updates := revisionTestRollingReconciler(t, objects...)
+	require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+
+	// maxUnavailable=1 is already consumed by the held-back ordinal 0, so no base group can be
+	// taken down; the surge slot has to come from maxSurge instead.
+	changed, _ := revisionTestSync(t, r, set, current, update)
+	require.True(t, changed, "the spent unavailable budget must not prevent surge creation")
+	surge := revisionTestGetChild(t, r, set, 4)
+	assert.Equal(t, "v2", surge.Labels[constants.GroupSetRevisionLabelKey], "surge is built at the update revision")
+	assert.Equal(t, "v1", revisionTestGetChild(t, r, set, 3).Labels[constants.GroupSetRevisionLabelKey])
+	assert.Empty(t, *updates, "the in-scope group waits for the surge to become ready")
+
+	// Repeated passes create no second surge and still take no base group down.
+	for pass := 0; pass < 4; pass++ {
+		changed, _ = revisionTestSync(t, r, set, current, update)
+		assert.False(t, changed, "pass %d has no work left", pass)
+		assert.Empty(t, *updates)
+	}
+
+	revisionTestMarkReady(t, r, surge)
+	for pass := 0; pass < 6; pass++ {
+		revisionTestSync(t, r, set, current, update)
+		// Recreate replaces ordinal 3 once the surge covers it; the rebuilt group carries v2.
+		rolled := &workloadsv1alpha2.RoleBasedGroup{}
+		if err := r.client.Get(ctx, client.ObjectKey{Namespace: set.Namespace, Name: "test-3"}, rolled); err == nil &&
+			rolled.Labels[constants.GroupSetRevisionLabelKey] == "v2" {
+			return
+		}
+	}
+	t.Error("ordinal 3 never rolled after the surge became ready")
 }
 
 func TestSyncRollingGroupSet_OversizedSurgeConverges(t *testing.T) {

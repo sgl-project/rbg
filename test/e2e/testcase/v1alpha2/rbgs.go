@@ -406,6 +406,7 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 			runRbgSetPartitionRecoveryCases(f)
 			runRbgSetInPlaceUpdateCases(f)
 			runRbgSetMetadataOnlyCases(f)
+			runRbgSetSurgeBudgetCases(f)
 		},
 	)
 }
@@ -1146,6 +1147,69 @@ func runRbgSetPartitionRecoveryCases(f *framework.Framework) {
 					return framework.RbgSetV2ChildUIDs(children)
 				}, 15, 2,
 			).Should(gomega.Equal(recoveredUIDs))
+		},
+	)
+}
+
+// runRbgSetSurgeBudgetCases registers the spec where an already-unready group has spent the declared
+// unavailable budget: the rollout must reach for maxSurge instead of waiting for that group to
+// recover on its own. Only the correct behavior is asserted here, and it stops as soon as the surge
+// appears, because the completion path is covered by the partition rollout specs.
+func runRbgSetSurgeBudgetCases(f *framework.Framework) {
+	ginkgo.It(
+		"a held-back failure does not stop surge from covering the batch", func() {
+			const replicas, partition, floor = 4, 3, 3
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(replicas).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 1, partition)).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).Should(gomega.HaveLen(replicas))
+			broken := framework.RbgSetV2ChildByOrdinal(f.ListRbgSetV2Children(rbgset), 0)
+			gomega.Expect(broken).NotTo(gomega.BeNil())
+			previousRevision := broken.Labels[constants.GroupSetRevisionLabelKey]
+			gomega.Expect(previousRevision).NotTo(gomega.BeEmpty())
+
+			// Take a held-back group out of service with a readiness probe that always fails, so the
+			// unavailability is independent of scheduling and image-pull timing. The set never
+			// rewrites a group below the partition, so the failure stays in place.
+			drifted := broken.DeepCopy()
+			probeContainer := &drifted.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0]
+			probeContainer.ReadinessProbe = &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+					Command: []string{"/bin/sh", "-c", "exit 1"},
+				}},
+				PeriodSeconds: 1, FailureThreshold: 1,
+			}
+			gomega.Expect(f.Client.Update(f.Ctx, drifted)).Should(gomega.Succeed())
+
+			// The budget is now fully spent: three of four groups serve, exactly the floor, so no
+			// in-scope group can be taken down without surge cover.
+			gomega.Eventually(func() int {
+				return framework.CountRbgSetV2ReadyChildren(f.ListRbgSetV2Children(rbgset))
+			}, utils.Timeout, utils.Interval).Should(gomega.Equal(floor))
+
+			triggerRbgSetRollout(f, rbgset)
+
+			// The regression: sizing surge from the declared maxUnavailable instead of the live
+			// budget yields zero surge, so the batch never moves.
+			var updateRevision string
+			gomega.Eventually(func() bool {
+				latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+				gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+				if latest.Status.UpdateRevision == "" || latest.Status.UpdateRevision == previousRevision {
+					return false
+				}
+				updateRevision = latest.Status.UpdateRevision
+				_, surge := framework.SplitRbgSetV2Children(f.ListRbgSetV2Children(rbgset), replicas)
+				if len(surge) != 1 {
+					return false
+				}
+				return surge[0].Labels[constants.GroupSetRevisionLabelKey] == updateRevision
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+				"maxSurge must cover the batch once an existing failure has spent maxUnavailable")
 		},
 	)
 }

@@ -285,10 +285,10 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		return true, nil
 	}
 
-	outdated, outdatedBase := r.classifyGroupSetChildrenForRollout(existing, replicas, limits, update)
+	outdated, accounting := r.classifyGroupSetChildrenForRollout(existing, replicas, limits, update)
 
 	if !limits.inPlaceUpdate {
-		changed, err = r.warmUpGroupSetSurge(ctx, set, existing, replicas, limits, update, outdatedBase, capacity)
+		changed, err = r.warmUpGroupSetSurge(ctx, set, existing, replicas, limits, update, accounting, capacity)
 		if err != nil {
 			return changed, err
 		}
@@ -384,31 +384,52 @@ func (r *RoleBasedGroupSetReconciler) fillMissingGroupSetBaseOrdinals(
 	return changed, nil
 }
 
+// groupSetSurgeAccounting is the live base-group state that surge creation is sized from.
+type groupSetSurgeAccounting struct {
+	// servingOutdated counts the in-scope base groups that are outdated and still ready. Each one
+	// needs a surge slot to be replaced without downtime.
+	servingOutdated int
+	// readyBase counts the base groups ready now. Every other replica has already spent part of the
+	// unavailable budget, whether it is a failure, a termination or an update in flight.
+	readyBase int
+}
+
 func (r *RoleBasedGroupSetReconciler) classifyGroupSetChildrenForRollout(
 	existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int,
 	limits groupSetRolloutLimits, update *groupSetRevision,
-) ([]*workloadsv1alpha2.RoleBasedGroup, int) {
+) ([]*workloadsv1alpha2.RoleBasedGroup, groupSetSurgeAccounting) {
 	var outdated []*workloadsv1alpha2.RoleBasedGroup
-	outdatedBase := 0
+	accounting := groupSetSurgeAccounting{}
 	for index, child := range existing {
+		isBase := index < replicas
+		if isBase && groupSetChildReady(child) {
+			accounting.readyBase++
+		}
 		if index < limits.partition || !child.DeletionTimestamp.IsZero() || r.groupSetMatchesRevision(child, update) {
 			continue
 		}
 		outdated = append(outdated, child)
-		if index < replicas {
-			outdatedBase++
+		// A group that is already down frees its own slot, so only a serving group needs surge.
+		if isBase && groupSetChildReady(child) {
+			accounting.servingOutdated++
 		}
 	}
-	return outdated, outdatedBase
+	return outdated, accounting
 }
 
 func (r *RoleBasedGroupSetReconciler) warmUpGroupSetSurge(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet,
 	existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int, limits groupSetRolloutLimits,
-	update *groupSetRevision, outdatedBase, capacity int,
+	update *groupSetRevision, accounting groupSetSurgeAccounting, capacity int,
 ) (bool, error) {
-	// Surge covers remaining updates, including in-place scaling, beyond the unavailable budget.
-	needed := min(limits.maxSurge, max(0, outdatedBase-limits.maxUnavailable))
+	// Surge covers the serving groups that a Recreate update would take down, minus whatever
+	// availability headroom the base replicas still provide. Sizing from the declared
+	// maxUnavailable instead lets an existing failure consume the whole allowance, and then no
+	// surge is created even though maxSurge permits it, stalling the rollout until that group
+	// recovers on its own -- including a failure below the partition, which no rollout touches.
+	floor := max(0, replicas-limits.maxUnavailable)
+	headroom := max(0, accounting.readyBase-floor)
+	needed := min(limits.maxSurge, max(0, accounting.servingOutdated-headroom))
 	for index := range existing {
 		if index >= replicas {
 			needed--
