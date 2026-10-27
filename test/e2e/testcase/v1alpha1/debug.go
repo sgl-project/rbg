@@ -61,16 +61,19 @@ func dumpDebugInfo(f *framework.Framework, rbg *workloadsv1alpha1.RoleBasedGroup
 		workloadName := rbg.GetWorkloadName(&role)
 		fmt.Printf("\n--- Role: %s, Workload: %s ---\n", role.Name, workloadName)
 
-		// Determine workload type and dump accordingly
+		// Determine workload type and dump accordingly. Check the explicit
+		// RoleInstanceSet kind first: compat fixtures populate the legacy
+		// LeaderWorkerSet field as their leader/worker shape while selecting the
+		// RoleInstanceSet workload, and the shape-based fallback must not win.
 		switch {
+		case role.Workload.Kind == "RoleInstanceSet":
+			dumpRoleInstanceSetWorkload(f, rbg.Namespace, workloadName)
 		case role.Workload.Kind == "LeaderWorkerSet" || role.LeaderWorkerSet != nil:
 			dumpLWSWorkload(f, rbg.Namespace, workloadName)
 		case role.Workload.Kind == "Deployment":
 			dumpDeploymentWorkload(f, rbg.Namespace, workloadName)
 		case role.Workload.Kind == "InstanceSet":
 			dumpInstanceSetWorkload(f, rbg.Namespace, workloadName, role.Name)
-		case role.Workload.Kind == "RoleInstanceSet":
-			dumpRoleInstanceSetWorkload(f, rbg.Namespace, workloadName)
 		default: // StatefulSet is default
 			dumpStatefulSetWorkload(f, rbg.Namespace, workloadName)
 		}
