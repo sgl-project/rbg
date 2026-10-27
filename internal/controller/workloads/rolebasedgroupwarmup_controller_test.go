@@ -24,6 +24,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +41,7 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 func newWarmupTestScheme() *runtime.Scheme {
@@ -1723,6 +1725,66 @@ func TestReconcile_GlobalTimeoutAnchoredAtCreationDuringRun(t *testing.T) {
 
 // A short global timeout must be enforced by the next requeue, not delayed by the
 // default ten-second target poll.
+func TestTargetWaitRequeueAfterExpiredBudgetSchedulesReconcile(t *testing.T) {
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "expired-requeue",
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Second)),
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupWarmupSpec{
+			Policies: &workloadsv1alpha2.WarmupPolicies{GlobalTimeoutSeconds: ptr.To(int64(1))},
+		},
+	}
+
+	if got := targetWaitRequeueAfter(warmup); got <= 0 {
+		t.Fatalf("expected a positive requeue after the deadline expires, got %v", got)
+	}
+}
+
+func TestShouldWatchTargetRBGsWhenCRDIsMissing(t *testing.T) {
+	scheme := newWarmupTestScheme()
+	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apiextensions scheme: %v", err)
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &RoleBasedGroupWarmupReconciler{Client: fakeClient, apiReader: fakeClient}
+
+	got, err := r.shouldWatchTargetRBGs()
+	if err != nil {
+		t.Fatalf("missing RBG CRD must be tolerated: %v", err)
+	}
+	if got {
+		t.Fatal("expected no RoleBasedGroup watch when the CRD is absent")
+	}
+}
+
+func TestShouldWatchTargetRBGsWhenCRDIsEstablished(t *testing.T) {
+	scheme := newWarmupTestScheme()
+	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apiextensions scheme: %v", err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: utils.RbgCRDName},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{{
+				Type:   apiextensionsv1.Established,
+				Status: apiextensionsv1.ConditionTrue,
+			}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(crd).Build()
+	r := &RoleBasedGroupWarmupReconciler{Client: fakeClient, apiReader: fakeClient}
+
+	got, err := r.shouldWatchTargetRBGs()
+	if err != nil {
+		t.Fatalf("established RBG CRD should allow the watch: %v", err)
+	}
+	if !got {
+		t.Fatal("expected the RoleBasedGroup watch to be enabled")
+	}
+}
+
 func TestReconcile_TargetWaitRequeueHonorsGlobalTimeout(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
 	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
@@ -2173,6 +2235,31 @@ func TestReconcile_MidRunTargetGapWaitsAndWarmsReplacementNode(t *testing.T) {
 // A collapsed desired set applies the same maxFailedNodes tolerance as a non-empty
 // desired set. Retryable failures are final there because there is no target node on
 // which to retry, but they do not fail the job unless they exceed the tolerance.
+func TestUpdateEmptyDesiredPhaseOmitsZeroFailedToleranceMessage(t *testing.T) {
+	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "settle-message", Namespace: "default", UID: "uid-settle-message"},
+	}
+	newStatus := &workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+		Phase:     workloadsv1alpha2.WarmupJobPhaseRunning,
+		Succeeded: 1,
+		Failed:    0,
+	}
+	r := newWarmupReconciler(warmup)
+
+	r.updateEmptyDesiredPhase(ctx, warmup, newStatus, 0, 0, true, targetObservation{})
+	cond := apimeta.FindStatusCondition(newStatus.Conditions, ConditionComplete)
+	if cond == nil {
+		t.Fatalf("expected Complete condition, got %#v", newStatus.Conditions)
+	}
+	if strings.Contains(cond.Message, "0 node(s) failed within tolerance") {
+		t.Fatalf("zero-failure message should omit the tolerance clause: %q", cond.Message)
+	}
+	if !strings.Contains(cond.Message, "1 node(s) warmed up") {
+		t.Fatalf("unexpected completion message: %q", cond.Message)
+	}
+}
+
 func TestReconcile_CollapsedDesiredSetHonorsMaxFailedNodes(t *testing.T) {
 	ctx := ctrl.LoggerInto(context.Background(), zap.New(zap.UseDevMode(true)))
 

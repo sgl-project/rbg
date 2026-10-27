@@ -609,6 +609,94 @@ func TestUpdateStatusPreservesLastCustomizedActionResultBetweenAttempts(t *testi
 	}
 }
 
+func TestUpdateStatusKeepsCustomizedActionDiagnosticsAfterTargetCollapse(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateSucceeded,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "collapse", Namespace: "default", UID: "uid-collapse"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase:                   workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{previous},
+		},
+	}
+	pod := mappedWarmupPod("node-1", "attempt-1", corev1.PodSucceeded, terminatedStatus("custom-0", 0, "Completed", ""))
+	r := newWarmupReconciler(warmup)
+
+	if err := r.updateStatus(
+		context.Background(),
+		warmup,
+		nil,
+		[]*corev1.Pod{pod},
+		nil,
+		map[string][]workloadsv1alpha2.WarmupActions{},
+		map[string]bool{},
+	); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 ||
+		updated.Status.CustomizedActionResults[0].State != workloadsv1alpha2.CustomizedActionStateSucceeded {
+		t.Fatalf("expected collapsed target to retain customized action diagnostics, got %#v",
+			updated.Status.CustomizedActionResults)
+	}
+	complete := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionComplete)
+	if complete == nil || complete.Status != metav1.ConditionTrue {
+		t.Fatalf("expected customized action complete condition to survive collapse, got %#v",
+			updated.Status.Conditions)
+	}
+}
+
+func TestFailWarmupJobKeepsCustomizedActionDiagnosticsAfterTargetCollapse(t *testing.T) {
+	previous := workloadsv1alpha2.CustomizedActionResult{
+		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateRunning,
+	}
+	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "collapse-timeout", Namespace: "default", UID: "uid-collapse-timeout"},
+		Status: workloadsv1alpha2.RoleBasedGroupWarmupStatus{
+			Phase:                   workloadsv1alpha2.WarmupJobPhaseRunning,
+			CustomizedActionResults: []workloadsv1alpha2.CustomizedActionResult{previous},
+		},
+	}
+	pod := mappedWarmupPod(
+		"node-1",
+		"attempt-1",
+		corev1.PodRunning,
+		corev1.ContainerStatus{Name: "custom-0", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+	)
+	r := newWarmupReconciler(warmup, pod)
+
+	if err := r.failWarmupJob(
+		context.Background(),
+		warmup,
+		[]*corev1.Pod{pod},
+		nil,
+		nil,
+		map[string][]workloadsv1alpha2.WarmupActions{},
+		CustomizedActionReasonGlobalTimeout,
+		"global timeout exceeded",
+	); err != nil {
+		t.Fatalf("fail warmup job: %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleBasedGroupWarmup{}
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated); err != nil {
+		t.Fatalf("get updated warmup: %v", err)
+	}
+	if len(updated.Status.CustomizedActionResults) != 1 ||
+		updated.Status.CustomizedActionResults[0].State != workloadsv1alpha2.CustomizedActionStateFailed {
+		t.Fatalf("expected timeout failure to retain customized action diagnostics, got %#v",
+			updated.Status.CustomizedActionResults)
+	}
+	failed := apimeta.FindStatusCondition(updated.Status.Conditions, ConditionCustomizedActionFailed)
+	if failed == nil || failed.Status != metav1.ConditionTrue {
+		t.Fatalf("expected customized action failed condition to survive collapse, got %#v",
+			updated.Status.Conditions)
+	}
+}
+
 func TestUpdateStatusPreservesTruncationFlagWithCompactedResult(t *testing.T) {
 	previous := workloadsv1alpha2.CustomizedActionResult{
 		NodeName: "node-1", PodName: "attempt-1", State: workloadsv1alpha2.CustomizedActionStateFailed,

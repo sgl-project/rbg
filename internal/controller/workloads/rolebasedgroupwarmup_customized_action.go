@@ -267,24 +267,80 @@ func aggregateCustomizedActionState(
 	return workloadsv1alpha2.CustomizedActionStatePending, "", ""
 }
 
-func evaluateCustomizedActionResults(
+func customizedActionNodesFromDesired(
 	desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
-	pods []*corev1.Pod,
-) []workloadsv1alpha2.CustomizedActionResult {
-	customizedNodes := make(map[string]bool)
+) map[string]bool {
+	nodes := make(map[string]bool, len(desiredNodes))
 	for nodeName, actions := range desiredNodes {
 		for i := range actions {
 			if actions[i].CustomizedAction != nil {
-				customizedNodes[nodeName] = true
+				nodes[nodeName] = true
 				break
 			}
 		}
 	}
+	return nodes
+}
 
+// podHasCustomizedAction reports whether an owned warmup Pod carries a customized
+// action. The annotation is authoritative; the generated container-name fallback
+// covers Pods created before annotations were added or with unreadable mappings.
+func podHasCustomizedAction(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if pod.Annotations[AnnotationCustomizedActionContainers] != "" {
+		return true
+	}
+	for i := range pod.Spec.Containers {
+		if strings.HasPrefix(pod.Spec.Containers[i].Name, "custom-") {
+			return true
+		}
+	}
+	return false
+}
+
+// customizedActionDiagnosticNodes returns the nodes for which customized-action
+// diagnostics should be reported. Desired nodes provide the normal scope, while
+// owned Pods and previously recorded results keep diagnostics alive when the target
+// collapses mid-run and the current desired-node map becomes empty.
+func customizedActionDiagnosticNodes(
+	desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
+	pods []*corev1.Pod,
+	previous []workloadsv1alpha2.CustomizedActionResult,
+) map[string]bool {
+	nodes := customizedActionNodesFromDesired(desiredNodes)
+	for _, pod := range pods {
+		if !podHasCustomizedAction(pod) {
+			continue
+		}
+		if nodeName := pod.Labels[LabelNodeName]; nodeName != "" {
+			nodes[nodeName] = true
+		}
+	}
+	for i := range previous {
+		if previous[i].NodeName != "" {
+			nodes[previous[i].NodeName] = true
+		}
+	}
+	return nodes
+}
+
+func evaluateCustomizedActionResults(
+	desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
+	pods []*corev1.Pod,
+) []workloadsv1alpha2.CustomizedActionResult {
+	return evaluateCustomizedActionResultsForNodes(customizedActionNodesFromDesired(desiredNodes), pods)
+}
+
+func evaluateCustomizedActionResultsForNodes(
+	customizedNodes map[string]bool,
+	pods []*corev1.Pod,
+) []workloadsv1alpha2.CustomizedActionResult {
 	latestPods := make(map[string]*corev1.Pod)
 	for _, pod := range pods {
 		nodeName := pod.Labels[LabelNodeName]
-		if !customizedNodes[nodeName] || !pod.DeletionTimestamp.IsZero() {
+		if nodeName == "" || !customizedNodes[nodeName] || !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
 		current := latestPods[nodeName]
@@ -327,21 +383,11 @@ func warmupPodAttempt(pod *corev1.Pod) (int64, bool) {
 	return attempt, err == nil && attempt > 0
 }
 
-func preserveCustomizedActionResults(
-	desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
+func preserveCustomizedActionResultsForNodes(
+	customizedNodes map[string]bool,
 	previous, observed []workloadsv1alpha2.CustomizedActionResult,
 	pods []*corev1.Pod,
 ) ([]workloadsv1alpha2.CustomizedActionResult, bool) {
-	desiredCustomizedNodes := make(map[string]bool)
-	for nodeName, actions := range desiredNodes {
-		for i := range actions {
-			if actions[i].CustomizedAction != nil {
-				desiredCustomizedNodes[nodeName] = true
-				break
-			}
-		}
-	}
-
 	previousByNode := make(map[string]workloadsv1alpha2.CustomizedActionResult, len(previous))
 	for i := range previous {
 		previousByNode[previous[i].NodeName] = previous[i]
@@ -363,7 +409,7 @@ func preserveCustomizedActionResults(
 		results = append(results, result)
 	}
 	for i := range previous {
-		if desiredCustomizedNodes[previous[i].NodeName] && !observedNodes[previous[i].NodeName] {
+		if customizedNodes[previous[i].NodeName] && !observedNodes[previous[i].NodeName] {
 			results = append(results, previous[i])
 			preservedPrevious = true
 		}
@@ -578,19 +624,6 @@ func updateCustomizedActionConditions(
 
 	apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionComplete)
 	apimeta.RemoveStatusCondition(conditions, ConditionCustomizedActionFailed)
-}
-
-func countDesiredCustomizedActionNodes(desiredNodes map[string][]workloadsv1alpha2.WarmupActions) int {
-	count := 0
-	for _, actions := range desiredNodes {
-		for i := range actions {
-			if actions[i].CustomizedAction != nil {
-				count++
-				break
-			}
-		}
-	}
-	return count
 }
 
 func recordCustomizedActionEvents(

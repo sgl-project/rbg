@@ -331,7 +331,9 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 	allPods = append(allPods, activePods...)
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
-	preCreateCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+	customizedActionNodes := customizedActionDiagnosticNodes(
+		desiredNodes, allPods, warmup.Status.CustomizedActionResults)
+	preCreateCustomizedActionResults := evaluateCustomizedActionResultsForNodes(customizedActionNodes, allPods)
 
 	pendingNodes := collectPendingNodes(desiredNodes, activePods, succeededPods, permanentlyFailedNodes)
 	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods, failedPods)
@@ -344,7 +346,7 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		warmup,
 		warmup.Status.CustomizedActionResults,
 		preCreateCustomizedActionResults,
-		evaluateCustomizedActionResults(desiredNodes, postCreatePods),
+		evaluateCustomizedActionResultsForNodes(customizedActionNodes, postCreatePods),
 	)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -872,7 +874,10 @@ func targetWaitRequeueAfter(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) time
 		return TargetWaitRequeuePeriod
 	}
 	if remaining <= 0 {
-		return 0
+		// The deadline can expire after globalTimeoutExpired was checked but before
+		// this requeue is computed. A zero delay would disable the timer, so always
+		// schedule one more reconcile to record the terminal timeout.
+		return time.Millisecond
 	}
 	return min(TargetWaitRequeuePeriod, remaining)
 }
@@ -956,19 +961,15 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		warmup.Status.CustomizedActionResults...,
 	)
 	oldCustomizedActionResultsTruncated := warmup.Status.CustomizedActionResultsTruncated
-	allCustomizedActionResults := warmup.Status.CustomizedActionResults
-	preservedPrevious := false
-	// A nil desiredNodes value means target resolution failed before the desired
-	// state was available. Preserve the last observed diagnostics in that case.
-	if desiredNodes != nil {
-		observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-		allCustomizedActionResults, preservedPrevious = preserveCustomizedActionResults(
-			desiredNodes,
-			warmup.Status.CustomizedActionResults,
-			observedCustomizedActionResults,
-			allPods,
-		)
-	}
+	customizedActionNodes := customizedActionDiagnosticNodes(
+		desiredNodes, allPods, warmup.Status.CustomizedActionResults)
+	observedCustomizedActionResults := evaluateCustomizedActionResultsForNodes(customizedActionNodes, allPods)
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResultsForNodes(
+		customizedActionNodes,
+		warmup.Status.CustomizedActionResults,
+		observedCustomizedActionResults,
+		allPods,
+	)
 	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
 	for i := range allCustomizedActionResults {
 		result := &allCustomizedActionResults[i]
@@ -983,28 +984,24 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 			result.Message = truncateCustomizedActionMessage(message)
 		}
 	}
-	if desiredNodes != nil {
-		warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
-			limitCustomizedActionResults(allCustomizedActionResults)
-		if preservedPrevious && oldCustomizedActionResultsTruncated {
-			warmup.Status.CustomizedActionResultsTruncated = true
-		}
+	warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
+		limitCustomizedActionResults(allCustomizedActionResults)
+	if preservedPrevious && oldCustomizedActionResultsTruncated {
+		warmup.Status.CustomizedActionResultsTruncated = true
 	}
 	var backoffLimit *int32
 	if warmup.Spec.Policies != nil {
 		backoffLimit = warmup.Spec.Policies.BackoffLimitPerNode
 	}
 	permanentlyFailedNodes := r.computePermanentlyFailedNodes(ctx, failedPods, backoffLimit)
-	if desiredNodes != nil {
-		updateCustomizedActionConditions(
-			&warmup.Status.Conditions,
-			warmup.Generation,
-			allCustomizedActionResults,
-			permanentlyFailedNodes,
-			globallyTimedOut,
-			countDesiredCustomizedActionNodes(desiredNodes),
-		)
-	}
+	updateCustomizedActionConditions(
+		&warmup.Status.Conditions,
+		warmup.Generation,
+		allCustomizedActionResults,
+		permanentlyFailedNodes,
+		globallyTimedOut,
+		len(customizedActionNodes),
+	)
 
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
 		Type:               ConditionFailed,
@@ -1294,8 +1291,11 @@ func (r *RoleBasedGroupWarmupReconciler) updateEmptyDesiredPhase(ctx context.Con
 			newStatus.StartTime = &now
 		}
 	} else {
-		message := fmt.Sprintf("%d node(s) warmed up and %d node(s) failed within tolerance; the target no longer selects any node",
-			newStatus.Succeeded, newStatus.Failed)
+		message := fmt.Sprintf("%d node(s) warmed up", newStatus.Succeeded)
+		if newStatus.Failed > 0 {
+			message += fmt.Sprintf(" and %d node(s) failed within tolerance", newStatus.Failed)
+		}
+		message += "; the target no longer selects any node"
 		newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
 		logger.Info("Warmup completed after the target no longer selects any node",
 			"succeeded", newStatus.Succeeded, "failed", newStatus.Failed)
@@ -1438,9 +1438,11 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatusWithTarget(ctx context.Cont
 	allPods = append(allPods, activePods...)
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
-	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResults(
-		desiredNodes,
+	customizedActionNodes := customizedActionDiagnosticNodes(
+		desiredNodes, allPods, warmup.Status.CustomizedActionResults)
+	observedCustomizedActionResults := evaluateCustomizedActionResultsForNodes(customizedActionNodes, allPods)
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResultsForNodes(
+		customizedActionNodes,
 		warmup.Status.CustomizedActionResults,
 		observedCustomizedActionResults,
 		allPods,
@@ -1470,7 +1472,7 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatusWithTarget(ctx context.Cont
 		allCustomizedActionResults,
 		permanentlyFailedNodes,
 		false,
-		countDesiredCustomizedActionNodes(desiredNodes),
+		len(customizedActionNodes),
 	)
 
 	// Compare with the status as fetched. reconcileUnfinished may have changed
@@ -1510,14 +1512,43 @@ func (r *RoleBasedGroupWarmupReconciler) CheckCrdExists() error {
 // SetupWithManager sets up the controller with the Manager. Besides the Warmup and
 // its owned Pods, the controller watches target RoleBasedGroups so a target created
 // after its Warmup is picked up immediately instead of waiting for the next poll.
+// The watch is optional: the Warmup CRD can be installed without the RBG CRD in a
+// partial-CRD deployment, and targetNodes-only Warmups must still reconcile.
 func (r *RoleBasedGroupWarmupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	watchTargetRBGs, err := r.shouldWatchTargetRBGs()
+	if err != nil {
+		return err
+	}
+
+	builder := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroupWarmup{}).
-		Owns(&corev1.Pod{}).
-		Watches(&workloadsv1alpha2.RoleBasedGroup{}, handler.EnqueueRequestsFromMapFunc(r.warmupsForTargetRBG)).
-		Named("rbgwarmup-controller").
-		Complete(r)
+		Owns(&corev1.Pod{})
+	if watchTargetRBGs {
+		builder = builder.Watches(
+			&workloadsv1alpha2.RoleBasedGroup{},
+			handler.EnqueueRequestsFromMapFunc(r.warmupsForTargetRBG),
+		)
+	}
+	return builder.Named("rbgwarmup-controller").Complete(r)
+}
+
+// shouldWatchTargetRBGs reports whether the optional RoleBasedGroup watch can be
+// registered. A missing RBG CRD is not an error: the Warmup poll still discovers a
+// target created later. Other lookup failures, or an installed-but-unestablished
+// CRD, are returned so startup does not silently lose the optimization.
+func (r *RoleBasedGroupWarmupReconciler) shouldWatchTargetRBGs() (bool, error) {
+	if r.apiReader == nil {
+		return false, nil
+	}
+	err := utils.CheckCrdExists(r.apiReader, utils.RbgCRDName)
+	if err == nil {
+		return true, nil
+	}
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // warmupsForTargetRBG maps a target RoleBasedGroup event to the Warmups in the same
