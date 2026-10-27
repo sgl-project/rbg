@@ -4,13 +4,13 @@ authors:
   - "@diw-zw"
 status: provisional
 creation-date: 2026-10-26
-# KEP 评审者和批准者由维护者确认。
+# Reviewers and approvers are confirmed by maintainers.
 reviewers: []
 approvers: []
 see-also:
   - /keps/30-instanceset
   - /keps/31-rbg-controller-revision
   - /keps/430-gang-scheduling
-# alpha 为拟议成熟度，不表示已经实现或纳入某个发布版本。
+# Alpha is the proposed maturity level; it does not imply implementation or inclusion in a release.
 stage: alpha
-# 目标版本、feature gate 和兼容窗口在确定发布目标时补充，暂不声明 milestone 或启停承诺。
+# Target release, feature gate, and compatibility window will be added when release targeting is decided; no milestone or enablement commitment is declared yet.
