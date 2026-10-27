@@ -1790,7 +1790,9 @@ func TestReconcile_TargetWaitRequeueHonorsGlobalTimeout(t *testing.T) {
 	warmup := &workloadsv1alpha2.RoleBasedGroupWarmup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "short-deadline", Namespace: "default", UID: "uid-short-deadline",
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-59 * time.Second)),
+			// Leave a comfortable sub-10s margin so test scheduling or clock rounding
+			// cannot turn the intended "deadline still active" case into an expired one.
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-55 * time.Second)),
 		},
 		Spec: warmupTargetRBGSpec("short-deadline-rbg"),
 	}
