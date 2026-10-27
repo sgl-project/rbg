@@ -129,30 +129,73 @@ func (s *RoleInstanceSetCompatChecker) ExpectPodTemplateAnnotationContains(
 func (s *RoleInstanceSetCompatChecker) expectPodMetadataContains(
 	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec, maps []map[string]string, labels bool,
 ) error {
-	pods, err := s.listPods(rbg, role)
+	obj, err := s.get(rbg, role)
 	if err != nil {
-		return fmt.Errorf("list pods for role %s failed: %w", role.Name, err)
-	}
-	if len(pods.Items) == 0 {
-		return fmt.Errorf("no pods found for role %s", role.Name)
+		return fmt.Errorf("failed to get RoleInstanceSet: %w", err)
 	}
 	if len(maps) == 0 {
 		return fmt.Errorf("metadata maps is empty")
 	}
-	for _, metadataMap := range maps {
+
+	// Leader-worker roles preserve the previous LeaderWorkerSet checker contract:
+	// one map targets the worker component, two maps target the leader and worker
+	// components respectively. Standalone roles check the single component named
+	// after the role, exactly like the former Deployment/StatefulSet checkers.
+	var targetComponents []string
+	if role.LeaderWorkerSet != nil {
+		if len(maps) > 2 {
+			return fmt.Errorf("at most two metadata maps are supported for leader-worker roles, got %d", len(maps))
+		}
+		targetComponents = make([]string, 0, len(maps))
+		if len(maps) == 2 {
+			targetComponents = append(targetComponents, string(constants.LeaderComponentType))
+		}
+		targetComponents = append(targetComponents, string(constants.WorkerComponentType))
+	} else {
+		targetComponents = make([]string, len(maps))
+		for i := range targetComponents {
+			targetComponents[i] = role.Name
+		}
+	}
+
+	for i, metadataMap := range maps {
+		component, err := findRoleInstanceComponent(obj, targetComponents[i])
+		if err != nil {
+			return err
+		}
 		for key, value := range metadataMap {
 			if labels {
-				if !utils.MapContains(pods.Items[0].Labels, key, value) {
-					return fmt.Errorf("pod labels missing key=%s value=%s", key, value)
+				if !utils.MapContains(component.Template.Labels, key, value) {
+					return fmt.Errorf(
+						"component %s template labels missing key=%s value=%s",
+						component.Name, key, value,
+					)
 				}
 				continue
 			}
-			if !utils.MapContains(pods.Items[0].Annotations, key, value) {
-				return fmt.Errorf("pod annotations missing key=%s value=%s", key, value)
+			if !utils.MapContains(component.Template.Annotations, key, value) {
+				return fmt.Errorf(
+					"component %s template annotations missing key=%s value=%s",
+					component.Name, key, value,
+				)
 			}
 		}
 	}
 	return nil
+}
+
+// findRoleInstanceComponent returns the component with the given name from the
+// RoleInstanceSet's role instance template.
+func findRoleInstanceComponent(
+	obj *workloadsv1alpha2.RoleInstanceSet, name string,
+) (*workloadsv1alpha2.RoleInstanceComponent, error) {
+	for i := range obj.Spec.RoleInstanceTemplate.Components {
+		component := &obj.Spec.RoleInstanceTemplate.Components[i]
+		if component.Name == name {
+			return component, nil
+		}
+	}
+	return nil, fmt.Errorf("component %s not found in RoleInstanceSet %s/%s", name, obj.Namespace, obj.Name)
 }
 
 func (s *RoleInstanceSetCompatChecker) ExpectWorkloadNotExist(

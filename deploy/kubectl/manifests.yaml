@@ -99177,7 +99177,7 @@ webhooks:
       name: rbgs-webhook-service
       namespace: rbgs-system
       path: /validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile
-  failurePolicy: Fail
+  failurePolicy: Ignore
   matchPolicy: Exact
   name: vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io
   rules:
@@ -99198,7 +99198,7 @@ webhooks:
       name: rbgs-webhook-service
       namespace: rbgs-system
       path: /validate-workloads-x-k8s-io-v1alpha1-instance
-  failurePolicy: Fail
+  failurePolicy: Ignore
   matchPolicy: Exact
   name: vinstance-v1alpha1-deprecation.kb.io
   rules:
@@ -99219,7 +99219,7 @@ webhooks:
       name: rbgs-webhook-service
       namespace: rbgs-system
       path: /validate-workloads-x-k8s-io-v1alpha1-instanceset
-  failurePolicy: Fail
+  failurePolicy: Ignore
   matchPolicy: Exact
   name: vinstanceset-v1alpha1-deprecation.kb.io
   rules:
@@ -99261,7 +99261,7 @@ webhooks:
       name: rbgs-webhook-service
       namespace: rbgs-system
       path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter
-  failurePolicy: Fail
+  failurePolicy: Ignore
   matchPolicy: Exact
   name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
   rules:

@@ -460,10 +460,21 @@ func buildSetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
 // components pattern has no role-level template to build a pod from. So there are no
 // pods of such a role for this suite to watch across the upgrade.
 func buildV1alpha1Fixture(ns string) *workloadsv1alpha1.RoleBasedGroup {
+	// The shared v1alpha1 wrappers default to RoleInstanceSet since the 0.9.0
+	// admission gate, but this fixture must recreate what a pre-upgrade install
+	// actually stored: deprecated workload types. Select them explicitly so the
+	// upgrade suite keeps covering deprecated-type reconciliation and the
+	// historical conversion branches.
 	return wrappersv1.BuildBasicRoleBasedGroup(fxV1alpha1, ns).
 		WithRoles([]workloadsv1alpha1.RoleSpec{
-			wrappersv1.BuildBasicRole("legacy").WithReplicas(1).Obj(),
-			wrappersv1.BuildLwsRole(v1alpha1LwsRole).WithReplicas(1).Obj(),
+			wrappersv1.BuildBasicRole("legacy").
+				WithReplicas(1).
+				WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+				Obj(),
+			wrappersv1.BuildLwsRole(v1alpha1LwsRole).
+				WithReplicas(1).
+				WithWorkload(workloadsv1alpha1.LeaderWorkerSetWorkloadType).
+				Obj(),
 		}).Obj()
 }
 
@@ -480,7 +491,10 @@ func buildV1alpha1Fixture(ns string) *workloadsv1alpha1.RoleBasedGroup {
 func buildV1alpha1SetFixture(ns string) *workloadsv1alpha1.RoleBasedGroupSet {
 	set := wrappersv1.BuildBasicRoleBasedGroupSet(fxV1alpha1Set, ns).WithReplicas(1).Obj()
 	set.Spec.Template.Roles = []workloadsv1alpha1.RoleSpec{
-		wrappersv1.BuildLwsRole(v1alpha1LwsRole).WithReplicas(1).Obj(),
+		wrappersv1.BuildLwsRole(v1alpha1LwsRole).
+			WithReplicas(1).
+			WithWorkload(workloadsv1alpha1.LeaderWorkerSetWorkloadType).
+			Obj(),
 	}
 	return set
 }
