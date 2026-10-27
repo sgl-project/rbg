@@ -124,9 +124,9 @@ New fields target v1alpha2. Compatibility requirements for older APIs are descri
 Status fields across all three CR types follow these common rules:
 
 - Status describes observed facts. Successfully issuing an API request does not mean that lower-level work has completed.
-- Conditions describe facts that currently hold. FailedScale / FailedUpdate are deprecated; individual operation failures are reported as Warning Events on the corresponding RIS / RI, without mapping them to Accepted or adding replacement failure conditions. Reuse event aggregation to avoid duplicate reports.
+- Conditions describe facts that currently hold. FailedScale / FailedUpdate are deprecated; individual operation attempts are reported as Warning Events on the corresponding RIS / RI. Persistent current blockers are represented by the owning layer's `Progressing` reason and message, not by replacement failure conditions or `Accepted`. Events are diagnostic history and must not be used to infer current status.
 - Phase records the lifecycle stage the object has entered. It does not replace conditions, readiness gates, or recovery fields, and does not directly copy the phase of a parent or child object.
-- Conditions use type as the unique key, with an explicit owner for each type. The aggregation layer does not overwrite externally owned conditions, reasons, or messages.
+- Conditions use type as the unique key, with an explicit owner for each type. The aggregation layer does not overwrite externally owned conditions, reasons, or messages. Reasons are scoped to the object that owns the condition; parents aggregate reason families rather than copying child reasons verbatim.
 - Controller-written reasons must be valid, non-empty, and consistent with status. New, unrecognized reasons must not cause client parsing failures.
 - `lastTransitionTime` changes only when condition.status changes. Changes only to reason, message, or observedGeneration do not reset it.
 - Transitions compare the latest persisted status with the final status being submitted, not intermediate values within a reconciliation. For example, False → temporary True → final False is not a transition.
@@ -135,6 +135,47 @@ Status fields across all three CR types follow these common rules:
 - When observations are insufficient, affected conditions whose facts cannot be determined use Unknown, with `ObservationIncomplete` as a candidate reason. A read failure does not mean zero replicas, and an absent phase does not mean Running.
 - Status must eventually update after changes only to label / revision metadata or after dependencies recover, without requiring an additional manual spec change.
 - Do not add a finalizer solely to display phase, and do not guarantee that clients observe every intermediate phase.
+
+### Reason Taxonomy and Aggregation
+
+RBG, RIS, and RI do not share one flat reason enumeration. They share reason families so parents can aggregate child facts without parsing messages. Reason strings remain scoped to the object that owns the condition.
+
+External blocker families use stable, machine-readable categories. RI may report the operation affected by the blocker, while RIS and RBG map those facts to their canonical reasons:
+
+| Reason family | RI example reason | RIS reason | RBG reason |
+| --- | --- | --- | --- |
+| Permission | `PodCreateForbidden`, `PodUpdateForbidden` | `PermissionDenied` | `PermissionDenied` |
+| Admission | `PodAdmissionRejected` | `AdmissionDenied` | `AdmissionDenied` |
+| Quota | `PodCreateQuotaExceeded`, `PodUpdateQuotaExceeded` | `WaitingForQuota` | `WaitingForQuota` |
+| Resources | `InsufficientResources` | `WaitingForResources` | `WaitingForResources` |
+| Dependencies | `DependencyNotReady` | `WaitingForDependencies` | `WaitingForDependencies` |
+| Gang scheduling | Not owned by RI | `WaitingForGang` | `WaitingForGang` |
+
+Activity and child-readiness reasons are layer-specific:
+
+| Fact | RI reason | RIS reason | RBG reason |
+| --- | --- | --- | --- |
+| Child readiness | `PodsNotReady` | `InstancesNotReady` | `RolesNotReady` |
+| Initial creation | `Creating` | `Creating` | `Creating` |
+| Update | `Updating` | `RollingUpdate` | `ScalingOrUpdating` |
+| Instance-count scaling | Not owned by RI | `ScalingUp`, `ScalingDown` | `ScalingOrUpdating` |
+| Recovery | `Recovering` | `Recovering` | `Recovering` |
+
+`ScalingOrUpdating` is an RBG reporting aggregate, not a distinct lifecycle phase or controller workflow. RIS reports the concrete workflow, and RI does not own instance-count scaling.
+
+Parent controllers must aggregate through the documented reason-family mapping and must not parse condition messages. When multiple facts belong to the same family, the parent uses its canonical reason for that family and describes the details in message. When one `Progressing` condition must summarize multiple facts, select the reason family with the highest reporting priority:
+
+```text
+Permission
+Admission
+Quota
+Resources
+Gang
+Dependencies
+ChildReadiness
+```
+
+A current blocker outranks an activity reason because it explains why the current target is not converging. This reporting precedence does not determine controller execution order.
 
 ### Phase Transition Principles
 
@@ -225,14 +266,14 @@ Ready requires all roles to be ready, retaining existing checks on desired, actu
 Updates, pauses, or partition retaining older revisions do not by themselves make Ready False.
 Ready=False does not mean the service is completely unavailable. Zero replicas retain existing behavior; an empty revision does not add a readiness blocker.
 
-Each condition has one reason. Overall progress for scaling and updates uses ScalingOrUpdating, with message describing each role's activity. Creation, recovery, and waiting use the corresponding reasons below.
+Each condition has one reason. Overall RBG progress for scaling and updates uses `ScalingOrUpdating`, with message describing each role's activity. Creation, recovery, and waiting use the corresponding reasons below. A current blocker takes precedence over an activity reason.
 
 | Condition / Status | Candidate Reasons |
 | --- | --- |
 | Accepted=True | `ValidSpec` |
 | Accepted=False | `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
 | Progressing=True | `Preparing`, `Creating`, `ScalingOrUpdating`, `Recovering` |
-| Progressing=True, waiting | `WaitingForDependencies`, `WaitingForInstances`, `WaitingForGang`, `WaitingForResources`, `WaitingForQuota`, `PermissionDenied`, `AdmissionDenied` |
+| Progressing=True, waiting | `WaitingForDependencies`, `RolesNotReady`, `WaitingForGang`, `WaitingForResources`, `WaitingForQuota`, `PermissionDenied`, `AdmissionDenied` |
 | Progressing=False | `Converged`, `Paused`, `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported`, `Terminating` |
 | Ready=True / False | `AllRolesReady` / `RoleNotReady`, `Terminating` |
 | Unknown | `ObservationIncomplete` |
@@ -277,7 +318,7 @@ RIS phase uses the following six values, distinguishing scale-up from scale-down
 | `ScalingDown` | Removing instances to meet the current effective replica target; scale-down remains incomplete |
 | `Terminating` | The RIS itself has a deletionTimestamp, rather than a child RI being deleted |
 
-Deletion of the RIS takes priority and enters Terminating. When both update and scaling workflows remain incomplete, phase displays Updating, and the Progressing message may describe each workflow. This does not mean updates execute before scaling.
+Deletion of the RIS takes priority and enters Terminating. When both update and scaling workflows remain incomplete, phase displays Updating, `Progressing` uses `RollingUpdate`, and the message describes the scaling workflow. This does not mean updates execute before scaling.
 After the update completes, transition to ScalingUp / ScalingDown if scaling remains incomplete; if scaling completes first, remain Updating. Transition to Running when all relevant workflows are complete.
 Choose ScalingUp / ScalingDown according to the operation direction required by the current effective replica target.
 Initial creation must not be classified as ScalingUp solely because the RI count is below the target; an empty revision during initial creation does not by itself indicate Updating.
@@ -294,7 +335,7 @@ Completion conditions are listed below. Return to Running only after all relevan
 
 Completion checks retain readiness gate and minReadySeconds rules rather than using revision equality as a substitute. Partition may retain older-revision instances; completion is evaluated over the update scope required by the current policy.
 
-RIS Progressing follows RBG rules for progress, pauses, and insufficient observations, scoped to that instance set. Reasons may include ScalingUp / ScalingDown / RollingUpdate.
+RIS Progressing follows RBG rules for progress, pauses, and insufficient observations, scoped to that instance set. Activity reasons may include `ScalingUp`, `ScalingDown`, and `RollingUpdate`; current blockers use the RIS reasons in the reason-family table, and child readiness uses `InstancesNotReady`. RIS maps RI reason families to these canonical reasons without parsing RI messages.
 Ready requires replica counts to meet the target and all RIs to be ready, retaining existing readyPolicy and readiness gate rules.
 RIS retains replicas, readyReplicas, availableReplicas, currentReplicas, updatedReplicas, updatedReadyReplicas,
 expectedUpdatedReplicas, currentRevision, updateRevision, labelSelector, collisionCount, and rolloutReplacementState. The effective partition target must be consistent with expectedUpdatedReplicas.
@@ -304,7 +345,7 @@ Conditions retain the existing Go type for now, adding optional observedGenerati
 
 ### RoleInstance
 
-RI adds optional `status.phase` while retaining existing condition names. In the example, a custom readiness gate becomes unsatisfied again after the RI has completed startup, while phase remains Running.
+RI adds optional `status.phase` while retaining existing readiness condition names. In the example, the RI has completed startup and remains Running while a required Pod recreation is quota-blocked and a custom readiness gate is unsatisfied.
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -316,6 +357,12 @@ status:
   phase: Running # [New] Optional lifecycle field; Running does not mean RoleInstanceReady=True.
   observedGeneration: 2 # [Retained, semantics clarified] Refers to the RI generation, not the parent RIS generation.
   conditions: # [Changed] Standardize ownership, reasons, and transition rules; retain the custom type for now, with future schema changes marked TBD.
+    - type: Progressing # [New type] Current progress or current blocker for this RI; not a readiness gate.
+      status: "True"
+      reason: PodCreateQuotaExceeded # [New] Operation-specific RI reason; RIS maps this family to WaitingForQuota.
+      message: "Recreating a required Pod is blocked by resource quota"
+      lastTransitionTime: "2026-10-26T09:01:00Z" # [Rule clarified] Changes only when status changes.
+      observedGeneration: 2 # [New] Refers to the RI generation.
     - type: RoleInstanceReady
       status: "False"
       reason: ReadinessGatesNotReady
@@ -356,13 +403,14 @@ RI readiness and restart safeguards remain expressed by the following conditions
 
 | RI Condition | Ownership and Compatibility Requirements |
 | --- | --- |
+| `Progressing` | Current target progress or current blocker for this RI; owned by the RI controller and not used as a readiness gate |
 | `RoleInstanceReady` | Aggregated readiness, compatible with existing cooperative writes and gate blocking |
 | `RoleInstanceAllPodsReady` | Pod readiness facts provided by the RI controller, preserving readyPolicy semantics |
 | `RoleInstanceInPlaceUpdateReady` | Maintained by writers involved in in-place updates, preserving existing gate behavior |
 | `RoleInstanceCustomReady` and external gates | Maintained by the corresponding owners, preserving their conditions, reasons, and messages |
 | `Restarting` | Restart safeguard maintained by the RI controller; continues to suppress duplicate restart-policy recreation and does not automatically become a readiness gate |
 
-Candidate reasons for aggregated RI readiness are Ready, PodsNotReady, InPlaceUpdateNotReady, and ReadinessGatesNotReady.
+RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. Candidate reasons for aggregated RI readiness are Ready, PodsNotReady, InPlaceUpdateNotReady, and ReadinessGatesNotReady.
 Multiple blocking gates require a stable priority. If blocking recurs after recovery, a stale `False / Ready` combination must not remain.
 Preserve restartCount, lastRestartTime, inPlaceUpdateContainerBaselines, and their safety-critical persistence ordering.
 
@@ -404,7 +452,10 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Ready may be True when all roles / RIs are ready but the target revision is incomplete. It remains False when gang min is satisfied but not all replicas are ready; other replicas cannot compensate for an unready role / RI.
 - Accepted covers configuration, templates, referenced configuration, and required environmental capabilities. Absent optional configuration does not cause rejection; a required reference confirmed missing and one that cannot be read report False / Unknown respectively, distinguished by reason and message. Confirmed unsupported capabilities are distinct from read failures, and insufficient GPU capacity, quota, or execution permissions are not configuration rejections.
 - Individual RIS / RI scaling or update failures produce Warning Events on the corresponding objects, not new failure conditions, and do not directly change Accepted, Ready, or phase. Legacy writes during the compatibility window follow migration rules.
-- Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors.
+- Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages.
+- When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
+- A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
+- RI phase and `Progressing` remain independent, including `phase=Running` with `Progressing=True` while recovery or a current blocker is unresolved.
 - Cover absent / False / Unknown / True gates, multiple gates, readyPolicy, and reason consistency across blocking, recovery, and repeated blocking.
 - Cover gate and minReadySeconds consumer behavior in stateful / stateless modes, and condition uniqueness, ownership, and transition timestamps.
 - Cover legacy API writes, historically incomplete conditions, and applicability boundaries for v1alpha2 objects using legacy backends and mixed-backend RBGs.
