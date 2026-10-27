@@ -1118,6 +1118,7 @@ k8s.io/client-go/tools/pager
 k8s.io/client-go/tools/record
 k8s.io/client-go/tools/record/util
 k8s.io/client-go/tools/reference
+k8s.io/client-go/tools/watch
 k8s.io/client-go/transport
 k8s.io/client-go/util/apply
 k8s.io/client-go/util/cert
