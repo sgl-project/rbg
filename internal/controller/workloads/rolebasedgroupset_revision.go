@@ -316,20 +316,51 @@ func (r *RoleBasedGroupSetReconciler) pruneGroupSetRevisions(
 		protected[child.Labels[constants.GroupSetRevisionLabelKey]] = true
 	}
 	var unused []*appsv1.ControllerRevision
+	parentChecked := false
 	for i := range revisions.Items {
 		revision := &revisions.Items[i]
+		if !revision.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if metav1.GetControllerOfNoCopy(revision) == nil {
+			if !parentChecked {
+				fresh := &workloadsv1alpha2.RoleBasedGroupSet{}
+				if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(set), fresh); err != nil {
+					return err
+				}
+				if fresh.UID != set.UID || !fresh.DeletionTimestamp.IsZero() || !set.DeletionTimestamp.IsZero() {
+					return fmt.Errorf("cannot adopt ControllerRevisions for RoleBasedGroupSet %s/%s: parent was replaced or is deleting", set.Namespace, set.Name)
+				}
+				parentChecked = true
+			}
+			base := revision.DeepCopy()
+			if err := controllerutil.SetControllerReference(set, revision, r.scheme); err != nil {
+				return err
+			}
+			if err := r.client.Patch(ctx, revision, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return err
+			}
+		}
 		if metav1.IsControlledBy(revision, set) && !protected[revision.Name] {
 			unused = append(unused, revision)
 		}
 	}
+	// Parent generations reset on recreation, so revision numbers cannot order adopted history.
 	sort.Slice(unused, func(i, j int) bool {
+		if !unused[i].CreationTimestamp.Equal(&unused[j].CreationTimestamp) {
+			return unused[i].CreationTimestamp.Before(&unused[j].CreationTimestamp)
+		}
 		if unused[i].Revision == unused[j].Revision {
 			return unused[i].Name < unused[j].Name
 		}
 		return unused[i].Revision < unused[j].Revision
 	})
 	for i := 0; i < len(unused)-utils.DefaultRevisionHistoryLimit; i++ {
-		if err := r.client.Delete(ctx, unused[i]); client.IgnoreNotFound(err) != nil {
+		revision := unused[i]
+		if err := r.client.Delete(ctx, revision, client.Preconditions{UID: &revision.UID, ResourceVersion: &revision.ResourceVersion}); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}

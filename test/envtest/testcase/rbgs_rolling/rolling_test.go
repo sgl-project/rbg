@@ -17,6 +17,8 @@ limitations under the License.
 package rbgs_rolling
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -24,12 +26,15 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -756,6 +761,134 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(revision), merged)).To(Succeed())
 		Expect(merged.Annotations).To(HaveKeyWithValue("test.io/orphan-probe", "true"))
 		Expect(string(merged.Data.Raw)).To(Equal(stored))
+	})
+
+	It("adopts old-UID orphan revisions and prunes only excess unused history", func() {
+		setName := "rbgs-orphan-history"
+		set := buildRollingSet(setName, testNs, 2, 0, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		predecessor := waitRollout(testNs, setName, rolloutComplete)
+		oldRevision := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{
+			Namespace: testNs, Name: predecessor.Status.CurrentRevision,
+		}, oldRevision)).To(Succeed())
+		Expect(metav1.IsControlledBy(oldRevision, predecessor)).To(BeTrue())
+		before := fetchChildren(testNs, setName)
+		Expect(before).To(HaveLen(2))
+
+		Expect(testutil.K8sClient.Delete(testutil.Ctx, predecessor,
+			client.PropagationPolicy(metav1.DeletePropagationOrphan))).To(Succeed())
+		// envtest has no GC: explicitly orphan dependents and remove the parent's orphan finalizer.
+		for _, dependent := range []client.Object{oldRevision.DeepCopy(), before[0].DeepCopy(), before[1].DeepCopy()} {
+			Eventually(func() error {
+				if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(dependent), dependent); err != nil {
+					return err
+				}
+				base := dependent.DeepCopyObject().(client.Object)
+				dependent.SetOwnerReferences(nil)
+				return testutil.K8sClient.Patch(testutil.Ctx, dependent,
+					client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+			}, timeout, interval).Should(Succeed())
+		}
+		Eventually(func() error {
+			terminating, err := fetchSet(testNs, setName)
+			if err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			base := terminating.DeepCopy()
+			controllerutil.RemoveFinalizer(terminating, metav1.FinalizerOrphanDependents)
+			return testutil.K8sClient.Patch(testutil.Ctx, terminating,
+				client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		}, timeout, interval).Should(Succeed())
+		Eventually(func() bool {
+			_, err := fetchSet(testNs, setName)
+			return apierrors.IsNotFound(err)
+		}, timeout, interval).Should(BeTrue())
+
+		By("seeding more old-UID orphan history than the unused retention limit before recreation")
+		history := []*appsv1.ControllerRevision{oldRevision}
+		// Preserve the real controller's canonical payload, changing only a template annotation.
+		template := map[string]json.RawMessage{}
+		Expect(json.Unmarshal(oldRevision.Data.Raw, &template)).To(Succeed())
+		for i := 0; i < utils.DefaultRevisionHistoryLimit+1; i++ {
+			annotations, err := json.Marshal(map[string]string{"test.io/orphan-history": fmt.Sprint(i)})
+			Expect(err).NotTo(HaveOccurred())
+			template["annotations"] = annotations
+			data, err := json.Marshal(template)
+			Expect(err).NotTo(HaveOccurred())
+			hash := sha256.Sum256(append([]byte(string(predecessor.UID)+"\x00"), data...))
+			revision := &appsv1.ControllerRevision{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: fmt.Sprintf("rbgs-%x", hash[:24]), Namespace: testNs,
+					Labels: map[string]string{constants.GroupSetNameLabelKey: setName},
+				},
+				Data: runtime.RawExtension{Raw: data}, Revision: oldRevision.Revision + int64(i) + 1,
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, revision)).To(Succeed())
+			history = append(history, revision.DeepCopy())
+		}
+
+		By("adopting every retained revision, including an old revision referenced only by a held child")
+		replacement := buildRollingSet(setName, testNs, 2, 0, 1, 0, 1)
+		replacement.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		Expect(testutil.K8sClient.Create(testutil.Ctx, replacement)).To(Succeed())
+		Expect(replacement.UID).NotTo(Equal(predecessor.UID))
+		partitioned := waitRollout(testNs, setName, "False=PartitionComplete")
+		Expect(partitioned.Status.CurrentRevision).To(Equal(partitioned.Status.UpdateRevision))
+		Expect(partitioned.Status.UpdateRevision).NotTo(Equal(oldRevision.Name))
+		children := fetchChildren(testNs, setName)
+		Expect(children).To(HaveLen(2))
+		for ordinal, child := range children {
+			Expect(child.UID).To(Equal(before[ordinal].UID))
+			Expect(metav1.IsControlledBy(child, replacement)).To(BeTrue())
+		}
+		Expect(children[0].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision.Name))
+		Expect(children[1].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(partitioned.Status.UpdateRevision))
+		newRevision := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{
+			Namespace: testNs, Name: partitioned.Status.UpdateRevision,
+		}, newRevision)).To(Succeed())
+		history = append(history, newRevision)
+
+		// The oldest revision is child-protected; the next oldest is the excess unused entry.
+		pruned := map[string]bool{history[1].Name: true}
+		assertHistory := func(g Gomega) {
+			revisions := &appsv1.ControllerRevisionList{}
+			g.Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(testNs),
+				client.MatchingLabels{constants.GroupSetNameLabelKey: setName})).To(Succeed())
+			g.Expect(revisions.Items).To(HaveLen(len(history) - len(pruned)))
+			for i := range revisions.Items {
+				g.Expect(metav1.IsControlledBy(&revisions.Items[i], replacement)).To(BeTrue())
+			}
+			for _, snapshot := range history {
+				stored := &appsv1.ControllerRevision{}
+				err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(snapshot), stored)
+				if pruned[snapshot.Name] {
+					g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "excess unused revision %s must be deleted", snapshot.Name)
+					continue
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(metav1.IsControlledBy(stored, replacement)).To(BeTrue())
+				g.Expect(stored.UID).To(Equal(snapshot.UID))
+				g.Expect(stored.Data).To(Equal(snapshot.Data))
+				g.Expect(stored.Revision).To(Equal(snapshot.Revision))
+				g.Expect(stored.Labels).To(Equal(snapshot.Labels))
+				g.Expect(stored.Annotations).To(Equal(snapshot.Annotations))
+			}
+		}
+		Eventually(assertHistory, timeout, interval).Should(Succeed())
+		Consistently(assertHistory, 3*time.Second, interval).Should(Succeed())
+
+		By("finishing the rollout and pruning the old child reference only after it becomes unused")
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+		})
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision.Name))
+		Expect(final.Status.UpdateRevision).To(Equal(newRevision.Name))
+		pruned[oldRevision.Name] = true
+		Eventually(assertHistory, timeout, interval).Should(Succeed())
 	})
 
 	It("keeps the legacy in-place path for a set without a rollout strategy", func() {
