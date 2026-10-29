@@ -280,7 +280,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.acknowledgeRolloutRequest(ctx, rbg, expectedRolesRevisionHash); err != nil {
+	if err := r.finalizeRolloutStatus(ctx, rbg, expectedRolesRevisionHash); err != nil {
 		return ctrl.Result{}, err
 	}
 

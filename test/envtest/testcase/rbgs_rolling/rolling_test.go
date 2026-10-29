@@ -511,6 +511,125 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Entry("stateless image-only updates RI and Pod in place", true, constants.StatelessPattern),
 	)
 
+	Describe("role labels-only updates", func() {
+		assertCompletedChild := func(g Gomega, child, before *workloadsv1alpha2.RoleBasedGroup, old downstream) {
+			g.Expect(child.UID).To(Equal(before.UID))
+			g.Expect(child.Generation).To(BeNumerically(">", before.Generation))
+			want := before.DeepCopy()
+			want.Spec.Roles[0].Labels["tier"] = "b"
+			g.Expect(child.Spec).To(Equal(want.Spec))
+			g.Expect(child.Status.ObservedGeneration).To(BeNumerically(">=", child.Generation))
+			g.Expect(meta.IsStatusConditionTrue(child.Status.Conditions,
+				string(workloadsv1alpha2.RoleBasedGroupReady))).To(BeTrue())
+			rolling := meta.FindStatusCondition(child.Status.Conditions,
+				string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+			g.Expect(rolling).NotTo(BeNil())
+			g.Expect(rolling.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(rolling.ObservedGeneration).To(BeNumerically(">=", child.Generation))
+
+			current := downstreamOf(g, child)
+			g.Expect(current.set.UID).To(Equal(old.set.UID))
+			g.Expect(current.set.Generation).To(Equal(old.set.Generation))
+			g.Expect(current.set.Spec).To(Equal(old.set.Spec))
+			g.Expect(current.set.Labels).To(HaveKeyWithValue("tier", "b"))
+			hashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, child.Spec.Roles[0].Name)
+			g.Expect(old.set.Labels[hashKey]).NotTo(BeEmpty())
+			g.Expect(current.set.Labels[hashKey]).To(And(Not(BeEmpty()), Not(Equal(old.set.Labels[hashKey]))))
+			g.Expect(current.instance.UID).To(Equal(old.instance.UID))
+			g.Expect(current.pod.UID).To(Equal(old.pod.UID))
+			g.Expect(current.pod.Spec).To(Equal(old.pod.Spec))
+			g.Expect(current.pod.Status.ContainerStatuses).To(Equal(old.pod.Status.ContainerStatuses))
+			g.Expect(podConditionStatus(current.pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+		}
+
+		It("completes an InPlaceUpdate set rollout without further workload events", func() {
+			setName := "rbgs-role-labels"
+			set := buildRollingSet(setName, testNs, 2, 1, 1, 0, 0)
+			set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			set.Spec.GroupTemplate.Spec.Roles[0].Labels = map[string]string{"tier": "a"}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+			initialSet := waitRollout(testNs, setName, rolloutComplete)
+			before := fetchChildren(testNs, setName)
+			Expect(before).To(HaveLen(2))
+			initial := map[int]downstream{}
+			for ordinal, child := range before {
+				initial[ordinal] = downstreamOf(Default, child)
+				Expect(initial[ordinal].set.Labels).To(HaveKeyWithValue("tier", "a"))
+				Expect(podConditionStatus(initial[ordinal].pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+			}
+
+			updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+				set.Spec.GroupTemplate.Spec.Roles[0].Labels["tier"] = "b"
+			})
+			// Kubelet status writes here could hide a stall caused by the filtered metadata-only event.
+			assertComplete := func(g Gomega) {
+				current, err := fetchSet(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(current.Generation).To(BeNumerically(">", initialSet.Generation))
+				g.Expect(current.Status.ObservedGeneration).To(BeNumerically(">=", current.Generation))
+				g.Expect(current.Status.UpdateRevision).To(And(Not(BeEmpty()), Not(Equal(initialSet.Status.CurrentRevision))))
+				g.Expect(current.Status.CurrentRevision).To(Equal(current.Status.UpdateRevision))
+				g.Expect(current.Status.Replicas).To(Equal(int32(2)))
+				g.Expect(current.Status.ReadyReplicas).To(Equal(int32(2)))
+				g.Expect(current.Status.UpdatedReplicas).To(Equal(int32(2)))
+				g.Expect(current.Status.UpdatedReadyReplicas).To(Equal(int32(2)))
+				g.Expect(current.Status.ExpectedUpdatedReplicas).To(Equal(int32(2)))
+				rolling := meta.FindStatusCondition(current.Status.Conditions,
+					string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+				g.Expect(rolling).NotTo(BeNil())
+				g.Expect(rolling.ObservedGeneration).To(BeNumerically(">=", current.Generation))
+				state, err := rollingStateOf(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state).To(Equal(rolloutComplete))
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for ordinal, original := range before {
+					g.Expect(children).To(HaveKey(ordinal))
+					child := children[ordinal]
+					g.Expect(child.Labels[constants.GroupSetRevisionLabelKey]).To(Equal(current.Status.UpdateRevision))
+					request := child.Annotations[constants.RolloutRequestAnnotationKey]
+					g.Expect(request).To(And(Not(BeEmpty()), Not(Equal(original.Annotations[constants.RolloutRequestAnnotationKey]))))
+					g.Expect(child.Status.ObservedRolloutRequest).To(Equal(request))
+					assertCompletedChild(g, child, original, initial[ordinal])
+				}
+			}
+			Eventually(assertComplete, timeout, interval).Should(Succeed())
+			Consistently(assertComplete, 3*time.Second, interval).Should(Succeed())
+		})
+
+		It("clears rolling progress on a standalone RBG without a rollout request", func() {
+			groupName := "rbg-role-labels"
+			template := buildSet(groupName, testNs, 1, 1, nil).Spec.GroupTemplate
+			group := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: groupName, Namespace: testNs},
+				Spec:       template.Spec,
+			}
+			group.Spec.Roles[0].Labels = map[string]string{"tier": "a"}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+			waitChildReady(testNs, groupName)
+			before := &workloadsv1alpha2.RoleBasedGroup{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(group), before)).To(Succeed())
+			Expect(before.Annotations).NotTo(HaveKey(constants.RolloutRequestAnnotationKey))
+			old := downstreamOf(Default, before)
+			Expect(old.set.Labels).To(HaveKeyWithValue("tier", "a"))
+			Expect(podConditionStatus(old.pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+
+			updated := before.DeepCopy()
+			updated.Spec.Roles[0].Labels["tier"] = "b"
+			Expect(testutil.K8sClient.Patch(testutil.Ctx, updated, client.MergeFrom(before))).To(Succeed())
+			// Only reads follow, so no extra events or restart can unstick the rollout.
+			assertComplete := func(g Gomega) {
+				current := &workloadsv1alpha2.RoleBasedGroup{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(before), current)).To(Succeed())
+				g.Expect(current.Annotations).NotTo(HaveKey(constants.RolloutRequestAnnotationKey))
+				g.Expect(current.Status.ObservedRolloutRequest).To(BeEmpty())
+				assertCompletedChild(g, current, before, old)
+			}
+			Eventually(assertComplete, timeout, interval).Should(Succeed())
+			Consistently(assertComplete, 3*time.Second, interval).Should(Succeed())
+		})
+	})
+
 	// The topology annotation changes no RBG spec, so neither the child generation nor its Ready
 	// status moves when the set writes it; only the downstream Pod template does.
 	DescribeTable("paces a metadata-only topology change by its downstream rollout", func(pattern constants.InstancePatternType) {
