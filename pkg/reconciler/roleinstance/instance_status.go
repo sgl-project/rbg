@@ -80,7 +80,8 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 // The rule for inclusion is:
 //   - Ready and AllPodsReady are generated fresh each reconcile.
 //   - FailedScale and FailedUpdate are generated when the corresponding operation
-//     fails. Their absence in a healthy reconcile means success, and
+//     reports a failure. Their absence means no failure was reported in this
+//     reconcile: the operation succeeded or was not attempted. Either way,
 //     setInstanceConditions drops stale copies from the live object.
 //   - Restarting has an explicit lifecycle and is cleared by setInstanceConditions
 //     once the instance becomes Ready.
@@ -106,9 +107,11 @@ func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceCond
 }
 
 // controllerFailureConditionTypes returns failure conditions whose absence from
-// the freshly computed conditions means the corresponding operation succeeded.
-// They must not be carried forward from the live object; otherwise a transient
-// FailedScale/FailedUpdate condition would remain True after recovery.
+// the freshly computed conditions means the corresponding operation did not
+// report a failure in this reconcile. The operation may have succeeded or may
+// not have been attempted. These conditions must not be carried forward from
+// the live object; otherwise a transient FailedScale/FailedUpdate condition
+// would remain True after recovery.
 func controllerFailureConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
 	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
 		workloadsv1alpha2.RoleInstanceFailedScale,
@@ -208,7 +211,8 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 		if failureConditionTypes.Has(c.Type) {
 			// FailedScale and FailedUpdate are computed by this controller. When
 			// they are absent from this reconcile's conditions, the corresponding
-			// operation succeeded and a stale condition must be dropped.
+			// operation did not report a failure: it succeeded or was not attempted.
+			// Drop the stale live condition instead of carrying it forward.
 			continue
 		}
 		if !innerConditionTypes.Has(c.Type) {

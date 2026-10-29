@@ -57,6 +57,11 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 		Expect(testutil.K8sClient.Create(testutil.Ctx, oldPod)).To(Succeed())
 		Expect(testutil.K8sClient.Create(testutil.Ctx, instance)).To(Succeed())
 
+		legacyPod := &corev1.Pod{}
+		legacyPodKey := client.ObjectKeyFromObject(oldPod)
+		Expect(testutil.K8sClient.Get(testutil.Ctx, legacyPodKey, legacyPod)).To(Succeed())
+		legacyPodUID := legacyPod.UID
+
 		instanceKey := client.ObjectKeyFromObject(instance)
 		currentInstance := &workloadsv1alpha2.RoleInstance{}
 		Eventually(func() error {
@@ -90,10 +95,18 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 		}, timeout, interval).Should(BeTrue(), "the blocked creation should be reported through FailedScale")
 
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, oldPod)).To(Succeed())
-		Eventually(func() bool {
-			err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(oldPod), &corev1.Pod{})
-			return apierrors.IsNotFound(err)
-		}, timeout, interval).Should(BeTrue(), "the legacy Pod should be garbage collected")
+		Eventually(func() (bool, error) {
+			pod := &corev1.Pod{}
+			err := testutil.K8sClient.Get(testutil.Ctx, legacyPodKey, pod)
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			return pod.UID != legacyPodUID, nil
+		}, timeout, interval).Should(BeTrue(),
+			"the legacy Pod should be gone or replaced by a Pod with a different UID")
 
 		var replacement *corev1.Pod
 		Eventually(func() (bool, error) {
@@ -109,8 +122,10 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 		}, timeout, interval).Should(BeTrue(),
 			"controller-runtime retry should create the replacement Pod without a manual reconcile")
 
-		testutil.SetPodRunningAndReady(replacement)
-		Expect(testutil.K8sClient.Status().Update(testutil.Ctx, replacement)).To(Succeed())
+		replacementKey := types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}
+		Eventually(func() error {
+			return setPodReady(replacementKey, true)
+		}, timeout, interval).Should(Succeed(), "the replacement Pod should become ready")
 
 		Eventually(func() (bool, error) {
 			instance := &workloadsv1alpha2.RoleInstance{}
