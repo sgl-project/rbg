@@ -31,16 +31,21 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -53,6 +58,23 @@ const (
 	// MaxRequeueDelay caps long requeue intervals to avoid workqueue scheduling drift.
 	// Even for multi-day TTLs, the controller wakes up at most every 10 minutes to recheck.
 	MaxRequeueDelay = 10 * time.Minute
+
+	// TargetWaitRequeuePeriod is how often a Warmup re-checks a target that is not
+	// ready yet (missing RoleBasedGroup, or target Pods not scheduled).
+	TargetWaitRequeuePeriod = 10 * time.Second
+
+	// ConditionTargetReady reports whether the target RoleBasedGroup is observable and
+	// its Pods are scheduled, so warmup can proceed.
+	ConditionTargetReady = "TargetReady"
+
+	// ConditionComplete reports whether the Warmup reached a successful terminal state.
+	ConditionComplete = "Complete"
+
+	// ConditionFailed reports whether the Warmup reached an unsuccessful terminal state.
+	ConditionFailed = "Failed"
+
+	// ReasonInvalidTarget reports a target that remains absent after the wait timeout.
+	ReasonInvalidTarget = "InvalidTarget"
 )
 
 // RoleBasedGroupWarmupReconciler reconciles a RoleBasedGroupWarmup object
@@ -79,6 +101,7 @@ func NewRoleBasedGroupWarmupReconciler(mgr ctrl.Manager) *RoleBasedGroupWarmupRe
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupwarmups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupwarmups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -178,6 +201,9 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		logger.Error(err, "failed to list warmup pods")
 		return ctrl.Result{}, err
 	}
+	warmupPodsExist := len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0 ||
+		!warmup.Status.StartTime.IsZero()
+	target := targetObservation{observedStatus: warmup.Status.DeepCopy()}
 
 	if err := validateWarmupSpec(warmup.Spec); err != nil {
 		logger.Error(err, "invalid warmup specification")
@@ -185,33 +211,93 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 			"InvalidWarmupSpec", err.Error())
 	}
 
-	desiredNodes, err := r.getDesiredNodesToWarmup(ctx, *warmup)
-	if err != nil {
-		if apierrors.IsNotFound(err) && warmup.Spec.TargetRoleBasedGroup != nil {
-			return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
-				"InvalidTarget", err.Error())
+	// Fetch the target RoleBasedGroup and its Pods once. Desired nodes and target
+	// readiness are derived from the same snapshot, so a Pod that is created or
+	// scheduled between two observations cannot make the Warmup falsely complete.
+	var targetPods []corev1.Pod
+	var targetRBG *workloadsv1alpha2.RoleBasedGroup
+	if warmup.Spec.TargetRoleBasedGroup != nil {
+		targetRBG, targetPods, err = r.getTargetRoleBasedGroupState(ctx, *warmup)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "failed to get target RoleBasedGroup state")
+				return ctrl.Result{}, err
+			}
+			// A missing target is recoverable before the Warmup has started. Once
+			// warmup Pods exist, however, the target disappearing (teardown,
+			// namespace cleanup) must not suppress terminal-state accounting: the
+			// reconciler continues so updateStatus can complete a fully-warmed job.
+			if !warmupPodsExist {
+				if r.globalTimeoutExpired(warmup) {
+					return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, nil,
+						ReasonInvalidTarget, err.Error())
+				}
+				return r.markTargetNotReady(ctx, warmup, "RoleBasedGroupNotFound", err.Error())
+			}
+			targetRBG = nil
+			targetPods = nil
+			target.deleted = true
+			// Once the Warmup has started, target readiness no longer gates the
+			// job. Use Unknown rather than False so a terminal Complete condition is
+			// not paired with a claim that a now-deleted target is currently ready.
+			r.setTargetUnknown(warmup, "RoleBasedGroupNotFound", "target RoleBasedGroup no longer exists")
 		}
+	}
+
+	desiredNodes, err := r.getDesiredNodesToWarmup(ctx, *warmup, targetPods)
+	if err != nil {
 		logger.Error(err, "failed to get desired nodes to warm up")
 		return ctrl.Result{}, err
 	}
 
-	// Check global timeout
-	if warmup.Spec.Policies != nil && warmup.Spec.Policies.GlobalTimeoutSeconds != nil && !warmup.Status.StartTime.IsZero() {
-		timeout := time.Duration(*warmup.Spec.Policies.GlobalTimeoutSeconds) * time.Second
-		if time.Since(warmup.Status.StartTime.Time) >= timeout {
-			logger.Info("Global timeout exceeded, failing warmup job",
-				"timeout", timeout, "elapsed", time.Since(warmup.Status.StartTime.Time))
-			return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes,
-				"GlobalTimeoutExceeded",
-				fmt.Sprintf("Warmup job timed out after %d seconds", *warmup.Spec.Policies.GlobalTimeoutSeconds))
+	// Check every expected Pod in the selected roles before creating any warmup
+	// Pods. The expected count comes from the target RBG's spec, so a newly created
+	// RBG whose controller has not created Pods yet waits instead of completing as
+	// NoNodesMatched. After the Warmup has started, a new pending target Pod (for
+	// example from a scale-up) does not block completion of already-warmed nodes.
+	if warmup.Spec.TargetRoleBasedGroup != nil && targetRBG != nil {
+		// The RBG controller applies bound ScalingAdapter replicas only in memory,
+		// so the persisted spec read here can be stale. Use the effective replicas
+		// when deriving the expected Pod count, or a scaled-to-zero target would
+		// wait forever and a scaled-up target could be partially warmed.
+		effectiveTargetRBG, adapterErr := r.applyTargetScalingAdapterReplicas(ctx, targetRBG)
+		if adapterErr != nil {
+			logger.Error(adapterErr, "failed to resolve target role replicas from scaling adapters")
+			return ctrl.Result{}, adapterErr
 		}
+		pending := countTargetPodsNotReady(*effectiveTargetRBG, targetPods, warmup.Spec.TargetRoleBasedGroup.Roles)
+		target.pending = pending
+		if pending > 0 {
+			message := fmt.Sprintf("%d selected target RoleBasedGroup Pod(s) are missing or not scheduled yet", pending)
+			if !warmupPodsExist {
+				if r.globalTimeoutExpired(warmup) {
+					return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes,
+						"GlobalTimeoutExceeded",
+						fmt.Sprintf("Warmup job timed out waiting for %d selected target Pod(s) to be created or scheduled", pending))
+				}
+				return r.markTargetNotReady(ctx, warmup, "TargetPodsNotScheduled", message)
+			}
+			r.setTargetNotReady(warmup, "TargetPodsNotScheduled", message)
+		} else {
+			apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
+				Type:               ConditionTargetReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             "RoleBasedGroupReady",
+				Message:            "all expected selected target RoleBasedGroup Pods are created and scheduled",
+				ObservedGeneration: warmup.Generation,
+			})
+		}
+	}
+
+	if failed, err := r.failCollapsedDesiredSet(ctx, warmup, activePods, succeededPods,
+		failedPods, desiredNodes, target); failed {
+		return ctrl.Result{}, err
 	}
 
 	var backoffLimit *int32
 	if warmup.Spec.Policies != nil {
 		backoffLimit = warmup.Spec.Policies.BackoffLimitPerNode
 	}
-
 	permanentlyFailedNodes := r.computePermanentlyFailedNodes(ctx, failedPods, backoffLimit)
 
 	// Check maxFailedNodes — fail the entire job if permanently failed nodes exceed the tolerance
@@ -227,11 +313,27 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		}
 	}
 
+	// The global timeout is anchored at the Warmup's creation, which covers both the
+	// wait phase and the run phase. A job whose nodes have already reached a terminal
+	// state is allowed to complete even if the deadline passed before this reconcile.
+	if warmupReachedTerminalState(desiredNodes, activePods, succeededPods, permanentlyFailedNodes, target.pending) {
+		// updateStatus below will record the terminal phase and counters.
+	} else if r.globalTimeoutExpired(warmup) {
+		timeout := time.Duration(*warmup.Spec.Policies.GlobalTimeoutSeconds) * time.Second
+		logger.Info("Global timeout exceeded, failing warmup job",
+			"timeout", timeout, "elapsed", time.Since(warmup.CreationTimestamp.Time))
+		return ctrl.Result{}, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes,
+			"GlobalTimeoutExceeded",
+			fmt.Sprintf("Warmup job timed out after %d seconds", *warmup.Spec.Policies.GlobalTimeoutSeconds))
+	}
+
 	allPods := make([]*corev1.Pod, 0, len(activePods)+len(succeededPods)+len(failedPods))
 	allPods = append(allPods, activePods...)
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
-	preCreateCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
+	customizedActionNodes := customizedActionDiagnosticNodes(
+		desiredNodes, allPods, warmup.Status.CustomizedActionResults)
+	preCreateCustomizedActionResults := evaluateCustomizedActionResultsForNodes(customizedActionNodes, allPods)
 
 	pendingNodes := collectPendingNodes(desiredNodes, activePods, succeededPods, permanentlyFailedNodes)
 	activePods, err = r.createPodsForNodes(ctx, warmup, pendingNodes, desiredNodes, activePods, failedPods)
@@ -244,20 +346,286 @@ func (r *RoleBasedGroupWarmupReconciler) reconcileUnfinished(ctx context.Context
 		warmup,
 		warmup.Status.CustomizedActionResults,
 		preCreateCustomizedActionResults,
-		evaluateCustomizedActionResults(desiredNodes, postCreatePods),
+		evaluateCustomizedActionResultsForNodes(customizedActionNodes, postCreatePods),
 	)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.updateStatus(ctx, warmup, activePods, succeededPods, failedPods, desiredNodes, permanentlyFailedNodes); err != nil {
+	if err := r.updateStatusWithTarget(ctx, warmup, activePods, succeededPods, failedPods,
+		desiredNodes, permanentlyFailedNodes, target); err != nil {
 		logger.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
 	}
 
-	return r.requeueForTimeout(warmup), nil
+	return r.requeueAfterReconcile(warmup, target, len(desiredNodes)), nil
 }
 
+// targetObservation carries what reconcileUnfinished learned about the target into
+// the status decision. observedStatus is the status as fetched, before in-memory
+// condition updates, so condition-only transitions are still persisted.
+type targetObservation struct {
+	// deleted is true when the target RBG disappeared after the Warmup started.
+	deleted bool
+	// pending counts selected target Pods that are missing or not scheduled.
+	pending int
+	// observedStatus is the status at the start of this reconcile.
+	observedStatus *workloadsv1alpha2.RoleBasedGroupWarmupStatus
+}
+
+// requeueAfterReconcile polls a Warmup whose desired set collapsed mid-run while
+// the target still expects selected Pods. Target Pod scheduling is not watched by
+// this controller, so an RBG event alone is not sufficient to observe replacement.
+func (r *RoleBasedGroupWarmupReconciler) requeueAfterReconcile(warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	target targetObservation, desired int) ctrl.Result {
+	if target.pending > 0 && desired == 0 && warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseRunning {
+		return ctrl.Result{RequeueAfter: targetWaitRequeueAfter(warmup)}
+	}
+	return r.requeueForTimeout(warmup)
+}
+
+// countUnsucceededNodes counts nodes that have a failed attempt and no successful
+// attempt. A later success on the same node means the node ultimately succeeded.
+func countUnsucceededNodes(succeededPods, failedPods []*corev1.Pod) int32 {
+	succeededNodeSet := make(map[string]bool, len(succeededPods))
+	for _, pod := range succeededPods {
+		if nodeName, ok := pod.Labels[LabelNodeName]; ok {
+			succeededNodeSet[nodeName] = true
+		}
+	}
+
+	unsucceededNodeSet := make(map[string]bool, len(failedPods))
+	for _, pod := range failedPods {
+		if nodeName, ok := pod.Labels[LabelNodeName]; ok && !succeededNodeSet[nodeName] {
+			unsucceededNodeSet[nodeName] = true
+		}
+	}
+	return int32(len(unsucceededNodeSet))
+}
+
+// failCollapsedDesiredSet reports whether a Warmup whose desired set became empty
+// must fail because attempted nodes that never succeeded exceed maxFailedNodes.
+// Once the desired set is empty, retryable failures are final: there is no target
+// node left on which to retry. Otherwise the same tolerance semantics as the
+// non-empty desired-set path apply, so the outcome does not depend on whether the
+// set collapsed before or after the settle reconcile.
+func (r *RoleBasedGroupWarmupReconciler) failCollapsedDesiredSet(ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	activePods, succeededPods, failedPods []*corev1.Pod,
+	desiredNodes map[string][]workloadsv1alpha2.WarmupActions, target targetObservation) (bool, error) {
+	unsucceeded := countUnsucceededNodes(succeededPods, failedPods)
+	if len(desiredNodes) != 0 || target.pending > 0 || len(activePods) != 0 || unsucceeded == 0 {
+		return false, nil
+	}
+
+	var maxFailedNodes *int32
+	if warmup.Spec.Policies != nil {
+		maxFailedNodes = warmup.Spec.Policies.MaxFailedNodes
+	}
+	if maxFailedNodes == nil || unsucceeded <= *maxFailedNodes {
+		return false, nil
+	}
+
+	targetState := "target no longer selects any node"
+	if target.deleted {
+		targetState = "target RoleBasedGroup was deleted"
+	}
+	return true, r.failWarmupJob(ctx, warmup, activePods, succeededPods, failedPods,
+		desiredNodes, "MaxFailedNodesExceeded",
+		fmt.Sprintf("%s with %d attempted node(s) not succeeded (max tolerated: %d)",
+			targetState, unsucceeded, *maxFailedNodes))
+}
+
+// getTargetRoleBasedGroupState returns the target RoleBasedGroup and all Pods that
+// belong to it from one read of the RBG and one Pod-list snapshot. The cached client
+// is preferred; the API reader is only consulted when the RBG is absent from the
+// cache, to distinguish informer lag from a target that really does not exist yet.
+func (r *RoleBasedGroupWarmupReconciler) getTargetRoleBasedGroupState(ctx context.Context,
+	warmup workloadsv1alpha2.RoleBasedGroupWarmup) (*workloadsv1alpha2.RoleBasedGroup, []corev1.Pod, error) {
+	logger := log.FromContext(ctx)
+	rbgTarget := warmup.Spec.TargetRoleBasedGroup
+	if rbgTarget == nil {
+		return nil, nil, nil
+	}
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	rbgKey := client.ObjectKey{Name: rbgTarget.Name, Namespace: warmup.Namespace}
+	reader := client.Reader(r.Client)
+	if err := r.Get(ctx, rbgKey, rbg); err != nil {
+		if !apierrors.IsNotFound(err) || r.apiReader == nil {
+			logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
+			return nil, nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+		}
+		if fallbackErr := r.apiReader.Get(ctx, rbgKey, rbg); fallbackErr != nil {
+			return nil, nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, fallbackErr)
+		}
+		reader = r.apiReader
+	}
+
+	podList := &corev1.PodList{}
+	if err := reader.List(ctx, podList,
+		client.InNamespace(warmup.Namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgTarget.Name}); err != nil {
+		logger.Error(err, "Failed to list Pods for RoleBasedGroup", "name", rbgTarget.Name)
+		return nil, nil, fmt.Errorf("failed to list Pods for RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
+	}
+	return rbg, podList.Items, nil
+}
+
+// applyTargetScalingAdapterReplicas returns a copy of the target RoleBasedGroup
+// with each enabled role's replicas replaced by the value of its bound
+// RoleBasedGroupScalingAdapter, mirroring the RBG controller's in-memory override.
+// Roles without an enabled, bound adapter (or whose adapter has no replicas) keep
+// their persisted value.
+func (r *RoleBasedGroupWarmupReconciler) applyTargetScalingAdapterReplicas(
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
+) (*workloadsv1alpha2.RoleBasedGroup, error) {
+	effective := rbg.DeepCopy()
+	for i := range effective.Spec.Roles {
+		role := &effective.Spec.Roles[i]
+		if !scale.IsScalingAdapterEnable(role) {
+			continue
+		}
+		adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+		adapterName := scale.GenerateScalingAdapterName(rbg.Name, role.Name)
+		if err := r.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: adapterName}, adapter); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, fmt.Errorf("get scaling adapter %s/%s: %w", rbg.Namespace, adapterName, err)
+		}
+		if !adapter.ContainsRBGOwner(rbg) || adapter.Status.Phase != constants.AdapterPhaseBound {
+			continue
+		}
+		if adapter.Spec.Replicas == nil {
+			continue
+		}
+		role.Replicas = ptr.To(*adapter.Spec.Replicas)
+	}
+	return effective, nil
+}
+
+// countTargetPodsNotReady returns how many selected-role target Pods are missing or
+// unscheduled. Expected and observed Pods are counted per role, so surplus
+// scheduled Pods in one role cannot mask a missing or Pending Pod in another role.
+// Pods in unselected roles never affect readiness.
+func countTargetPodsNotReady(rbg workloadsv1alpha2.RoleBasedGroup, pods []corev1.Pod, selectedRoles map[string]workloadsv1alpha2.WarmupActions) int {
+	expectedByRole := make(map[string]int, len(rbg.Spec.Roles))
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		if _, selected := selectedRoles[role.Name]; !selected {
+			continue
+		}
+		expectedByRole[role.Name] += int(workloadsv1alpha2.ComputeSubGroupSize(role)) *
+			int(max(ptr.Deref(role.Replicas, 1), 0))
+	}
+
+	scheduledByRole := make(map[string]int, len(expectedByRole))
+	for i := range pods {
+		pod := &pods[i]
+		if !isLiveScheduledTargetPod(pod) {
+			continue
+		}
+		roleName, hasRole := pod.Labels[constants.RoleNameLabelKey]
+		if !hasRole {
+			continue
+		}
+		if _, selected := selectedRoles[roleName]; !selected {
+			continue
+		}
+		scheduledByRole[roleName]++
+	}
+
+	pending := 0
+	for roleName, expected := range expectedByRole {
+		pending += max(expected-scheduledByRole[roleName], 0)
+	}
+	return pending
+}
+
+// isLiveScheduledTargetPod reports whether a target Pod still occupies a node: it
+// is bound, not terminating, and not terminal. Deployment-backed roles can retain
+// evicted Failed Pods with a node assignment while their replacements are Pending.
+func isLiveScheduledTargetPod(pod *corev1.Pod) bool {
+	return pod.DeletionTimestamp == nil && pod.Spec.NodeName != "" &&
+		pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
+}
+
+// setTargetNotReady records a TargetReady=False condition in the in-memory status
+// without returning early. updateStatus persists it together with Pod counters.
+func (r *RoleBasedGroupWarmupReconciler) setTargetNotReady(warmup *workloadsv1alpha2.RoleBasedGroupWarmup, reason, message string) {
+	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
+		Type:               ConditionTargetReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: warmup.Generation,
+	})
+}
+
+// setTargetUnknown records a TargetReady=Unknown condition without returning early.
+// It is used after the Warmup has started and its target disappears: Complete/Failed,
+// not target readiness, is authoritative for the started job.
+func (r *RoleBasedGroupWarmupReconciler) setTargetUnknown(warmup *workloadsv1alpha2.RoleBasedGroupWarmup, reason, message string) {
+	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
+		Type:               ConditionTargetReady,
+		Status:             metav1.ConditionUnknown,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: warmup.Generation,
+	})
+}
+
+// warmupReachedTerminalState reports whether every desired node has a terminal
+// warmup Pod and no Pod is active. It uses the same node-level accounting as
+// updateStatus, so a finished job is never mislabeled as timed out merely because
+// a reconcile observes it after the global deadline.
+//
+// Accounting is deliberately conservative in both directions:
+//   - terminal nodes are intersected with the current desired set, so a stale
+//     terminal Pod for a replaced node cannot stand in for a node that was never
+//     warmed (and thereby bypass an expired global timeout);
+//   - any active Pod blocks the decision, including one on a node that left the
+//     desired set. Otherwise the timeout safety net could be skipped while
+//     updateStatus still refuses to complete, stranding the job in Running with
+//     an orphan Pod that is never cleaned up.
+func warmupReachedTerminalState(desiredNodes map[string][]workloadsv1alpha2.WarmupActions,
+	activePods, succeededPods []*corev1.Pod, permanentlyFailedNodes map[string]bool, targetPending int) bool {
+	if len(desiredNodes) == 0 {
+		// An empty desired set is terminal only when no in-flight Pod remains and the
+		// target expects no more selected Pods; otherwise the global-timeout safety
+		// net must stay armed.
+		return len(activePods) == 0 && targetPending == 0
+	}
+	if len(activePods) > 0 {
+		return false
+	}
+
+	terminalNodes := make(map[string]bool, len(desiredNodes))
+	for _, pod := range succeededPods {
+		if nodeName, ok := pod.Labels[LabelNodeName]; ok {
+			if _, desired := desiredNodes[nodeName]; desired {
+				terminalNodes[nodeName] = true
+			}
+		}
+	}
+	for nodeName := range permanentlyFailedNodes {
+		if _, desired := desiredNodes[nodeName]; desired {
+			terminalNodes[nodeName] = true
+		}
+	}
+	return len(terminalNodes) >= len(desiredNodes)
+}
+
+// validateWarmupActions is the only place a customized action container image is
+// checked. It is intentionally not enforced by the CRD: a customized container is a
+// bare corev1.Container embedded in the Warmup spec, so the Pod API's image
+// validation never runs on it, and a CRD-level rule cannot be used safely. An
+// item-scoped CEL rule is re-evaluated on every write, which on Kubernetes <= 1.32
+// makes the status of an already-stored invalid object unwritable (the status
+// strategy runs CEL without ratcheting there), and controller-gen cannot express
+// "required, non-blank" for a slice item. See
+// TestGeneratedWarmupCRDDoesNotValidateContainerImages and the KEP.
 func validateWarmupActions(target string, action workloadsv1alpha2.WarmupActions) error {
 	if action.ImagePreload != nil {
 		if len(action.ImagePreload.Images) == 0 {
@@ -451,17 +819,43 @@ func nextWarmupAttempts(failedPods []*corev1.Pod) map[string]int64 {
 	return maxAttempts
 }
 
-// requeueForTimeout returns a Result with RequeueAfter set if global timeout is configured and the job is still running.
-func (r *RoleBasedGroupWarmupReconciler) requeueForTimeout(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) ctrl.Result {
+// globalTimeoutDeadline returns the configured deadline. The global timeout is
+// anchored at the Warmup's creation time so it bounds the target wait and the Pod
+// run phase as a single budget.
+func globalTimeoutDeadline(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) (time.Time, bool) {
 	if warmup.Spec.Policies == nil || warmup.Spec.Policies.GlobalTimeoutSeconds == nil ||
-		warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted ||
-		warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseFailed ||
-		warmup.Status.StartTime.IsZero() {
+		warmup.CreationTimestamp.IsZero() {
+		return time.Time{}, false
+	}
+	return warmup.CreationTimestamp.Add(time.Duration(*warmup.Spec.Policies.GlobalTimeoutSeconds) * time.Second), true
+}
+
+// globalTimeoutExpired reports whether the creation-anchored global timeout has
+// elapsed. When no timeout is configured, waiting is unbounded and the Warmup stays
+// Running with a TargetReady=False condition.
+func (r *RoleBasedGroupWarmupReconciler) globalTimeoutExpired(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) bool {
+	deadline, ok := globalTimeoutDeadline(warmup)
+	return ok && !time.Now().Before(deadline)
+}
+
+// globalTimeoutRemaining returns the time left before the global deadline.
+func globalTimeoutRemaining(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) (time.Duration, bool) {
+	deadline, ok := globalTimeoutDeadline(warmup)
+	if !ok {
+		return 0, false
+	}
+	return time.Until(deadline), true
+}
+
+// requeueForTimeout returns a Result with RequeueAfter set if global timeout is
+// configured and the job is still running.
+func (r *RoleBasedGroupWarmupReconciler) requeueForTimeout(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) ctrl.Result {
+	if warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseCompleted ||
+		warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseFailed {
 		return ctrl.Result{}
 	}
-	timeout := time.Duration(*warmup.Spec.Policies.GlobalTimeoutSeconds) * time.Second
-	remaining := timeout - time.Since(warmup.Status.StartTime.Time)
-	if remaining <= 0 {
+	remaining, ok := globalTimeoutRemaining(warmup)
+	if !ok || remaining <= 0 {
 		return ctrl.Result{}
 	}
 	requeueAfter := remaining
@@ -469,6 +863,52 @@ func (r *RoleBasedGroupWarmupReconciler) requeueForTimeout(warmup *workloadsv1al
 		requeueAfter = MaxRequeueDelay
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}
+}
+
+// targetWaitRequeueAfter wakes up at the earlier of the regular target poll and the
+// global deadline. This matters for short timeouts: a one-second timeout must not be
+// enforced only after the default ten-second poll.
+func targetWaitRequeueAfter(warmup *workloadsv1alpha2.RoleBasedGroupWarmup) time.Duration {
+	remaining, ok := globalTimeoutRemaining(warmup)
+	if !ok {
+		return TargetWaitRequeuePeriod
+	}
+	if remaining <= 0 {
+		// The deadline can expire after globalTimeoutExpired was checked but before
+		// this requeue is computed. A zero delay would disable the timer, so always
+		// schedule one more reconcile to record the terminal timeout.
+		return time.Millisecond
+	}
+	return min(TargetWaitRequeuePeriod, remaining)
+}
+
+// markTargetNotReady records a TargetReady=False condition, keeps the job in Running,
+// and requeues without creating any Pods. Unlike a terminal failure this state is
+// recoverable: once the target becomes ready the next reconcile proceeds normally.
+func (r *RoleBasedGroupWarmupReconciler) markTargetNotReady(ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup, reason, message string) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	newStatus := warmup.Status.DeepCopy()
+	newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
+	apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
+		Type:               ConditionTargetReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: warmup.Generation,
+	})
+
+	if !apiequality.Semantic.DeepEqual(warmup.Status, *newStatus) {
+		warmup.Status = *newStatus
+		if err := r.Status().Update(ctx, warmup); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("Target not ready, waiting", "reason", reason, "message", message)
+		r.Recorder.Eventf(warmup, corev1.EventTypeNormal, reason, message)
+	}
+
+	return ctrl.Result{RequeueAfter: targetWaitRequeueAfter(warmup)}, nil
 }
 
 // failWarmupJob deletes all active Pods, sets the status to Failed with a condition, and records an event.
@@ -521,19 +961,15 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 		warmup.Status.CustomizedActionResults...,
 	)
 	oldCustomizedActionResultsTruncated := warmup.Status.CustomizedActionResultsTruncated
-	allCustomizedActionResults := warmup.Status.CustomizedActionResults
-	preservedPrevious := false
-	// A nil desiredNodes value means target resolution failed before the desired
-	// state was available. Preserve the last observed diagnostics in that case.
-	if desiredNodes != nil {
-		observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-		allCustomizedActionResults, preservedPrevious = preserveCustomizedActionResults(
-			desiredNodes,
-			warmup.Status.CustomizedActionResults,
-			observedCustomizedActionResults,
-			allPods,
-		)
-	}
+	customizedActionNodes := customizedActionDiagnosticNodes(
+		desiredNodes, allPods, warmup.Status.CustomizedActionResults)
+	observedCustomizedActionResults := evaluateCustomizedActionResultsForNodes(customizedActionNodes, allPods)
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResultsForNodes(
+		customizedActionNodes,
+		warmup.Status.CustomizedActionResults,
+		observedCustomizedActionResults,
+		allPods,
+	)
 	globallyTimedOut := reason == CustomizedActionReasonGlobalTimeout
 	for i := range allCustomizedActionResults {
 		result := &allCustomizedActionResults[i]
@@ -548,31 +984,27 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 			result.Message = truncateCustomizedActionMessage(message)
 		}
 	}
-	if desiredNodes != nil {
-		warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
-			limitCustomizedActionResults(allCustomizedActionResults)
-		if preservedPrevious && oldCustomizedActionResultsTruncated {
-			warmup.Status.CustomizedActionResultsTruncated = true
-		}
+	warmup.Status.CustomizedActionResults, warmup.Status.CustomizedActionResultsTruncated =
+		limitCustomizedActionResults(allCustomizedActionResults)
+	if preservedPrevious && oldCustomizedActionResultsTruncated {
+		warmup.Status.CustomizedActionResultsTruncated = true
 	}
 	var backoffLimit *int32
 	if warmup.Spec.Policies != nil {
 		backoffLimit = warmup.Spec.Policies.BackoffLimitPerNode
 	}
 	permanentlyFailedNodes := r.computePermanentlyFailedNodes(ctx, failedPods, backoffLimit)
-	if desiredNodes != nil {
-		updateCustomizedActionConditions(
-			&warmup.Status.Conditions,
-			warmup.Generation,
-			allCustomizedActionResults,
-			permanentlyFailedNodes,
-			globallyTimedOut,
-			countDesiredCustomizedActionNodes(desiredNodes),
-		)
-	}
+	updateCustomizedActionConditions(
+		&warmup.Status.Conditions,
+		warmup.Generation,
+		allCustomizedActionResults,
+		permanentlyFailedNodes,
+		globallyTimedOut,
+		len(customizedActionNodes),
+	)
 
 	apimeta.SetStatusCondition(&warmup.Status.Conditions, metav1.Condition{
-		Type:               "Failed",
+		Type:               ConditionFailed,
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,
 		Message:            message,
@@ -588,7 +1020,8 @@ func (r *RoleBasedGroupWarmupReconciler) failWarmupJob(ctx context.Context, warm
 	return nil
 }
 
-func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Context, warmup workloadsv1alpha2.RoleBasedGroupWarmup) (desiredNodesWithActions map[string][]workloadsv1alpha2.WarmupActions, err error) {
+func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Context, warmup workloadsv1alpha2.RoleBasedGroupWarmup,
+	targetPods []corev1.Pod) (desiredNodesWithActions map[string][]workloadsv1alpha2.WarmupActions, err error) {
 	logger := log.FromContext(ctx)
 	desiredNodesWithActions = make(map[string][]workloadsv1alpha2.WarmupActions)
 
@@ -612,44 +1045,18 @@ func (r *RoleBasedGroupWarmupReconciler) getDesiredNodesToWarmup(ctx context.Con
 		}
 	}
 
-	// Handle TargetRoleBasedGroup configuration
+	// Handle TargetRoleBasedGroup configuration. The Pods were fetched by
+	// getTargetRoleBasedGroupState; using that same snapshot here prevents desired
+	// nodes and readiness from disagreeing when the target changes concurrently.
 	if warmup.Spec.TargetRoleBasedGroup != nil {
 		rbgTarget := warmup.Spec.TargetRoleBasedGroup
 
-		// Fetch the RoleBasedGroup resource
-		rbg := &workloadsv1alpha2.RoleBasedGroup{}
-		rbgKey := client.ObjectKey{
-			Name:      rbgTarget.Name,
-			Namespace: warmup.Namespace,
-		}
-		reader := client.Reader(r.Client)
-		if err := r.Get(ctx, rbgKey, rbg); err != nil {
-			if !apierrors.IsNotFound(err) || r.apiReader == nil {
-				logger.Error(err, "Failed to get RoleBasedGroup", "name", rbgTarget.Name, "namespace", warmup.Namespace)
-				return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
-			}
-			if fallbackErr := r.apiReader.Get(ctx, rbgKey, rbg); fallbackErr != nil {
-				logger.Error(fallbackErr, "Failed to confirm RoleBasedGroup with API reader", "name", rbgTarget.Name, "namespace", warmup.Namespace)
-				return nil, fmt.Errorf("failed to get RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, fallbackErr)
-			}
-			reader = r.apiReader
-		}
-
-		// List all Pods belonging to this RoleBasedGroup
-		podList := &corev1.PodList{}
-		if err := reader.List(ctx, podList,
-			client.InNamespace(warmup.Namespace),
-			client.MatchingLabels{constants.GroupNameLabelKey: rbgTarget.Name}); err != nil {
-			logger.Error(err, "Failed to list Pods for RoleBasedGroup", "name", rbgTarget.Name)
-			return nil, fmt.Errorf("failed to list Pods for RoleBasedGroup %s/%s: %w", warmup.Namespace, rbgTarget.Name, err)
-		}
-
-		logger.Info("Found Pods for RoleBasedGroup", "count", len(podList.Items))
+		logger.Info("Found Pods for RoleBasedGroup", "count", len(targetPods))
 
 		// Group Pods by role and extract node names
 		roleToNodes := make(map[string][]string)
-		for _, pod := range podList.Items {
-			if pod.Spec.NodeName == "" || pod.DeletionTimestamp != nil {
+		for _, pod := range targetPods {
+			if !isLiveScheduledTargetPod(&pod) {
 				continue
 			}
 
@@ -840,6 +1247,146 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 	return pod, hasVolumeConflict
 }
 
+// updateEmptyDesiredPhase decides the phase when the current desired node set is
+// empty. NoNodesMatched is reserved for a Warmup that never had anything to do.
+// A started Warmup waits while Pods are active or the target still expects selected
+// Pods; otherwise it records final unsucceeded attempts and completes. Failure
+// beyond maxFailedNodes is settled by failCollapsedDesiredSet before this method
+// runs, so collapsed-set semantics have a single implementation.
+func (r *RoleBasedGroupWarmupReconciler) updateEmptyDesiredPhase(ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup, newStatus *workloadsv1alpha2.RoleBasedGroupWarmupStatus,
+	active, unsucceeded int32, warmupPodsExist bool, target targetObservation) {
+	logger := log.FromContext(ctx)
+	now := metav1.Now()
+
+	if active > 0 || target.pending > 0 {
+		if newStatus.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
+			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
+		}
+		logger.Info("No target nodes are observable, waiting",
+			"active", active, "pendingTargetPods", target.pending)
+		return
+	}
+
+	// With an empty desired set there is no node on which a retryable failure can be
+	// retried, so unsucceeded attempts are final for status accounting. Whether they
+	// exceed maxFailedNodes was already decided by failCollapsedDesiredSet.
+	if warmupPodsExist && unsucceeded > newStatus.Failed {
+		newStatus.Failed = unsucceeded
+	}
+
+	if !warmupPodsExist {
+		newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
+		logger.Info("No nodes matched, completing immediately")
+		r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupCompleted",
+			"No nodes matched the target configuration")
+		apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
+			Type:               ConditionComplete,
+			Status:             metav1.ConditionTrue,
+			Reason:             "NoNodesMatched",
+			Message:            "No nodes matched the target configuration",
+			ObservedGeneration: warmup.Generation,
+		})
+		if newStatus.StartTime.IsZero() {
+			newStatus.StartTime = &now
+		}
+	} else {
+		message := fmt.Sprintf("%d node(s) warmed up", newStatus.Succeeded)
+		if newStatus.Failed > 0 {
+			message += fmt.Sprintf(" and %d node(s) failed within tolerance", newStatus.Failed)
+		}
+		message += "; the target no longer selects any node"
+		newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
+		logger.Info("Warmup completed after the target no longer selects any node",
+			"succeeded", newStatus.Succeeded, "failed", newStatus.Failed)
+		r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupCompleted", message)
+		apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
+			Type:               ConditionComplete,
+			Status:             metav1.ConditionTrue,
+			Reason:             "WarmupCompleted",
+			Message:            message,
+			ObservedGeneration: warmup.Generation,
+		})
+	}
+
+	if newStatus.CompletionTime.IsZero() {
+		newStatus.CompletionTime = &now
+	}
+}
+
+// updateWarmupPhase decides the Warmup phase transition from node-level
+// counters and records the corresponding events and conditions on newStatus.
+//
+// A zero desired set must not complete a Warmup that still has running Pods,
+// still expects target Pods, or has an attempted node that never succeeded. The
+// target may have been deleted, or all of its selected Pods may be in an
+// eviction/drain/recreate gap mid-run. Completed is terminal and only routes
+// to TTL cleanup, so completing here would misreport an in-flight job and
+// could GC its still-running Pods.
+func (r *RoleBasedGroupWarmupReconciler) updateWarmupPhase(
+	ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	newStatus *workloadsv1alpha2.RoleBasedGroupWarmupStatus,
+	desired, active, succeeded, failed, unsucceeded int32,
+	warmupPodsExist bool, target targetObservation,
+) {
+	logger := log.FromContext(ctx)
+
+	var maxFailedNodes *int32
+	if warmup.Spec.Policies != nil {
+		maxFailedNodes = warmup.Spec.Policies.MaxFailedNodes
+	}
+	if desired == 0 {
+		r.updateEmptyDesiredPhase(ctx, warmup, newStatus, active, unsucceeded, warmupPodsExist, target)
+		return
+	}
+
+	if terminalCount := succeeded + failed; terminalCount >= desired && active == 0 {
+		if failed > 0 && maxFailedNodes != nil && failed > *maxFailedNodes {
+			// Permanently failed nodes exceed tolerance
+			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseFailed
+			logger.Info("Warmup job failed", "succeeded", succeeded, "failed", failed)
+			r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "WarmupFailed",
+				"Warmup job failed: %d succeeded, %d permanently failed (max tolerated: %d)",
+				succeeded, failed, *maxFailedNodes)
+			apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
+				Type:               ConditionFailed,
+				Status:             metav1.ConditionTrue,
+				Reason:             "MaxFailedNodesExceeded",
+				Message:            fmt.Sprintf("%d nodes failed (max tolerated: %d)", failed, *maxFailedNodes),
+				ObservedGeneration: warmup.Generation,
+			})
+		} else {
+			// All succeeded, or failures within tolerance
+			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
+			logger.Info("Warmup job completed", "succeeded", succeeded, "failed", failed)
+			r.Recorder.Eventf(warmup, corev1.EventTypeNormal, "WarmupCompleted",
+				"Warmup job completed: %d succeeded, %d failed (within tolerance)", succeeded, failed)
+			apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
+				Type:               ConditionComplete,
+				Status:             metav1.ConditionTrue,
+				Reason:             "WarmupCompleted",
+				Message:            fmt.Sprintf("%d/%d nodes warmed up successfully", succeeded, desired),
+				ObservedGeneration: warmup.Generation,
+			})
+		}
+
+		if newStatus.CompletionTime.IsZero() {
+			now := metav1.Now()
+			newStatus.CompletionTime = &now
+		}
+	} else if desired > 0 && (active > 0 || succeeded > 0 || failed > 0) {
+		if newStatus.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
+			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
+			logger.Info("Warmup job running")
+			if warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseNone {
+				r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupStarted",
+					"Warmup job started")
+			}
+		}
+	}
+}
+
 // updateStatus calculates and updates the status based on observed Pod states.
 // Counts are at node level, not Pod level: a node is "succeeded" if any of its
 // Pods succeeded, "failed" if it exhausted its backoffLimit, and "active" if it
@@ -847,6 +1394,17 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
 	activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod,
 	desiredNodes map[string][]workloadsv1alpha2.WarmupActions, permanentlyFailedNodes map[string]bool) error {
+	return r.updateStatusWithTarget(ctx, warmup, activePods, succeededPods, failedPods,
+		desiredNodes, permanentlyFailedNodes, targetObservation{
+			observedStatus: warmup.Status.DeepCopy(),
+		})
+}
+
+func (r *RoleBasedGroupWarmupReconciler) updateStatusWithTarget(ctx context.Context,
+	warmup *workloadsv1alpha2.RoleBasedGroupWarmup,
+	activePods []*corev1.Pod, succeededPods []*corev1.Pod, failedPods []*corev1.Pod,
+	desiredNodes map[string][]workloadsv1alpha2.WarmupActions, permanentlyFailedNodes map[string]bool,
+	target targetObservation) error {
 	logger := log.FromContext(ctx)
 
 	// Count nodes at each state (node-level, not pod-level)
@@ -880,9 +1438,11 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 	allPods = append(allPods, activePods...)
 	allPods = append(allPods, succeededPods...)
 	allPods = append(allPods, failedPods...)
-	observedCustomizedActionResults := evaluateCustomizedActionResults(desiredNodes, allPods)
-	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResults(
-		desiredNodes,
+	customizedActionNodes := customizedActionDiagnosticNodes(
+		desiredNodes, allPods, warmup.Status.CustomizedActionResults)
+	observedCustomizedActionResults := evaluateCustomizedActionResultsForNodes(customizedActionNodes, allPods)
+	allCustomizedActionResults, preservedPrevious := preserveCustomizedActionResultsForNodes(
+		customizedActionNodes,
 		warmup.Status.CustomizedActionResults,
 		observedCustomizedActionResults,
 		allPods,
@@ -899,85 +1459,30 @@ func (r *RoleBasedGroupWarmupReconciler) updateStatus(ctx context.Context, warmu
 		newStatus.StartTime = &now
 		logger.Info("Setting start time", "time", now)
 	}
+	warmupPodsExist := len(activePods) > 0 || len(succeededPods) > 0 || len(failedPods) > 0 ||
+		!newStatus.StartTime.IsZero()
 
-	// Determine maxFailedNodes tolerance
-	var maxFailedNodes *int32
-	if warmup.Spec.Policies != nil {
-		maxFailedNodes = warmup.Spec.Policies.MaxFailedNodes
-	}
+	// Calculate phase (events and conditions are recorded by updateWarmupPhase).
+	r.updateWarmupPhase(ctx, warmup, newStatus, desired, active, succeeded, failed,
+		countUnsucceededNodes(succeededPods, failedPods), warmupPodsExist, target)
 
-	// Calculate phase
-	if desired == 0 {
-		newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
-		logger.Info("No nodes matched, completing immediately")
-		r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupCompleted",
-			"No nodes matched the target configuration")
-		apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
-			Type:               "Complete",
-			Status:             metav1.ConditionTrue,
-			Reason:             "NoNodesMatched",
-			Message:            "No nodes matched the target configuration",
-			ObservedGeneration: warmup.Generation,
-		})
-		now := metav1.Now()
-		newStatus.StartTime = &now
-		newStatus.CompletionTime = &now
-	} else if terminalCount := succeeded + failed; terminalCount >= desired && active == 0 {
-		if failed > 0 && maxFailedNodes != nil && failed > *maxFailedNodes {
-			// Permanently failed nodes exceed tolerance
-			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseFailed
-			logger.Info("Warmup job failed", "succeeded", succeeded, "failed", failed)
-			r.Recorder.Eventf(warmup, corev1.EventTypeWarning, "WarmupFailed",
-				"Warmup job failed: %d succeeded, %d permanently failed (max tolerated: %d)",
-				succeeded, failed, *maxFailedNodes)
-			apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
-				Type:               "Failed",
-				Status:             metav1.ConditionTrue,
-				Reason:             "MaxFailedNodesExceeded",
-				Message:            fmt.Sprintf("%d nodes failed (max tolerated: %d)", failed, *maxFailedNodes),
-				ObservedGeneration: warmup.Generation,
-			})
-		} else {
-			// All succeeded, or failures within tolerance
-			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseCompleted
-			logger.Info("Warmup job completed", "succeeded", succeeded, "failed", failed)
-			r.Recorder.Eventf(warmup, corev1.EventTypeNormal, "WarmupCompleted",
-				"Warmup job completed: %d succeeded, %d failed (within tolerance)", succeeded, failed)
-			apimeta.SetStatusCondition(&newStatus.Conditions, metav1.Condition{
-				Type:               "Complete",
-				Status:             metav1.ConditionTrue,
-				Reason:             "WarmupCompleted",
-				Message:            fmt.Sprintf("%d/%d nodes warmed up successfully", succeeded, desired),
-				ObservedGeneration: warmup.Generation,
-			})
-		}
-
-		if newStatus.CompletionTime.IsZero() {
-			now := metav1.Now()
-			newStatus.CompletionTime = &now
-		}
-	} else if desired > 0 && (active > 0 || succeeded > 0 || failed > 0) {
-		if newStatus.Phase != workloadsv1alpha2.WarmupJobPhaseRunning {
-			newStatus.Phase = workloadsv1alpha2.WarmupJobPhaseRunning
-			logger.Info("Warmup job running")
-			if warmup.Status.Phase == workloadsv1alpha2.WarmupJobPhaseNone {
-				r.Recorder.Event(warmup, corev1.EventTypeNormal, "WarmupStarted",
-					"Warmup job started")
-			}
-		}
-	}
 	updateCustomizedActionConditions(
 		&newStatus.Conditions,
 		warmup.Generation,
 		allCustomizedActionResults,
 		permanentlyFailedNodes,
 		false,
-		countDesiredCustomizedActionNodes(desiredNodes),
+		len(customizedActionNodes),
 	)
 
-	// Only update if status has changed
-	if !apiequality.Semantic.DeepEqual(warmup.Status, *newStatus) {
-		oldCustomizedActionResults := warmup.Status.CustomizedActionResults
+	// Compare with the status as fetched. reconcileUnfinished may have changed
+	// TargetReady in memory before updateStatusWithTarget builds newStatus.
+	baseline := warmup.Status
+	if target.observedStatus != nil {
+		baseline = *target.observedStatus
+	}
+	if !apiequality.Semantic.DeepEqual(baseline, *newStatus) {
+		oldCustomizedActionResults := baseline.CustomizedActionResults
 		warmup.Status = *newStatus
 		if err := r.Status().Update(ctx, warmup); err != nil {
 			return err
@@ -1004,12 +1509,65 @@ func (r *RoleBasedGroupWarmupReconciler) CheckCrdExists() error {
 	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// SetupWithManager sets up the controller with the Manager. Besides the Warmup and
+// its owned Pods, the controller watches target RoleBasedGroups so a target created
+// after its Warmup is picked up immediately instead of waiting for the next poll.
+// The watch is optional: the Warmup CRD can be installed without the RBG CRD in a
+// partial-CRD deployment, and targetNodes-only Warmups must still reconcile.
 func (r *RoleBasedGroupWarmupReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	watchTargetRBGs, err := r.shouldWatchTargetRBGs()
+	if err != nil {
+		return err
+	}
+
+	builder := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroupWarmup{}).
-		Owns(&corev1.Pod{}).
-		Named("rbgwarmup-controller").
-		Complete(r)
+		Owns(&corev1.Pod{})
+	if watchTargetRBGs {
+		builder = builder.Watches(
+			&workloadsv1alpha2.RoleBasedGroup{},
+			handler.EnqueueRequestsFromMapFunc(r.warmupsForTargetRBG),
+		)
+	}
+	return builder.Named("rbgwarmup-controller").Complete(r)
+}
+
+// shouldWatchTargetRBGs reports whether the optional RoleBasedGroup watch can be
+// registered. A missing RBG CRD is not an error: the Warmup poll still discovers a
+// target created later. Other lookup failures, or an installed-but-unestablished
+// CRD, are returned so startup does not silently lose the optimization.
+func (r *RoleBasedGroupWarmupReconciler) shouldWatchTargetRBGs() (bool, error) {
+	if r.apiReader == nil {
+		return false, nil
+	}
+	err := utils.CheckCrdExists(r.apiReader, utils.RbgCRDName)
+	if err == nil {
+		return true, nil
+	}
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// warmupsForTargetRBG maps a target RoleBasedGroup event to the Warmups in the same
+// namespace that reference it by name.
+func (r *RoleBasedGroupWarmupReconciler) warmupsForTargetRBG(ctx context.Context, obj client.Object) []reconcile.Request {
+	logger := log.FromContext(ctx)
+	warmups := &workloadsv1alpha2.RoleBasedGroupWarmupList{}
+	if err := r.List(ctx, warmups, client.InNamespace(obj.GetNamespace())); err != nil {
+		logger.Error(err, "failed to list Warmups for target RoleBasedGroup", "roleBasedGroup", klog.KObj(obj))
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(warmups.Items))
+	for i := range warmups.Items {
+		warmup := &warmups.Items[i]
+		if warmup.Spec.TargetRoleBasedGroup == nil || warmup.Spec.TargetRoleBasedGroup.Name != obj.GetName() {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	}
+	return requests
 }
