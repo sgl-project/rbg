@@ -475,7 +475,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates -o w
 
 ```bash
 # Verify Leader Pod labels
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,role=leader
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,rbg.workloads.x-k8s.io/component-name=leader
 
 > NAME                                READY   STATUS    RESTARTS   AGE
 > agg-tp-with-templates-backend-0-0   1/1     Running   0          50s
@@ -483,7 +483,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,role
 
 ```bash
 # Verify Worker Pod labels
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,role=worker
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,rbg.workloads.x-k8s.io/component-name=worker
 
 > NAME                                READY   STATUS    RESTARTS   AGE
 > agg-tp-with-templates-backend-0-1   1/1     Running   0          51s
@@ -507,8 +507,8 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates -o j
 **Expected output:**
 
 - Both Pods are Running
-- 1 Pod with `role=leader` label
-- 1 Pod with `role=worker` label
+- 1 Pod with `rbg.workloads.x-k8s.io/component-name=leader` label
+- 1 Pod with `rbg.workloads.x-k8s.io/component-name=worker` label
 - Both Pods' image is `lmsysorg/sglang:v0.5.9`
 - Command includes `--tp-size 2` and other parameters (from patch)
 

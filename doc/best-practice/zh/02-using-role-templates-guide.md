@@ -475,7 +475,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates -o w
 
 ```bash
 # 验证 Leader Pod 标签
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,role=leader
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,rbg.workloads.x-k8s.io/component-name=leader
 
 > NAME                                READY   STATUS    RESTARTS   AGE
 > agg-tp-with-templates-backend-0-0   1/1     Running   0          50s
@@ -483,7 +483,7 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,role
 
 ```bash
 # 验证 Worker Pod 标签
-kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,role=worker
+kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates,rbg.workloads.x-k8s.io/component-name=worker
 
 > NAME                                READY   STATUS    RESTARTS   AGE
 > agg-tp-with-templates-backend-0-1   1/1     Running   0          51s
@@ -507,8 +507,8 @@ kubectl get pods -l rbg.workloads.x-k8s.io/group-name=agg-tp-with-templates -o j
 **预期输出：**
 
 - 2 个 Pod 均为 Running
-- 1 个 Pod 带有 `role=leader` 标签
-- 1 个 Pod 带有 `role=worker` 标签
+- 1 个 Pod 带有 `rbg.workloads.x-k8s.io/component-name=leader` 标签
+- 1 个 Pod 带有 `rbg.workloads.x-k8s.io/component-name=worker` 标签
 - 两个 Pod 镜像均为 `lmsysorg/sglang:v0.5.9`
 - command 包含 `--tp-size 2` 等参数（来自 patch）
 

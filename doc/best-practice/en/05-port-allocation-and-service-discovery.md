@@ -80,6 +80,8 @@ containers:
 
 > **Note**: The `{index}` in the DNS name is the Pod's ordinal index (starting from 0). In StatefulSet and RoleInstanceSet modes, Pod names are stable, and DNS addresses remain unchanged after Pod recreation.
 >
+> **Note**: A RoleInstanceSet role using `leaderWorkerPattern` defaults to `sharedServiceSelection: LeaderOnly`, so only the Leader Pod gets a DNS name. To give Worker Pods DNS names as well, set `sharedServiceSelection: All` explicitly (each component then gets a `serviceName`). Note that switching this policy changes the Pod hostname/subdomain (immutable fields) and triggers a rolling replacement of the role.
+>
 
 ---
 

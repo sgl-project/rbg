@@ -89,6 +89,8 @@ The following in-place update behaviors are also satisfied:
 - Pod does not leave its current node, AGE does not reset
 - Container RESTARTS count increases
 
+> **Note**: The `InPlaceOnly` strategy is deprecated: it is not separately implemented and behaves identically to `InPlaceIfPossible` (falling back to Pod recreation when in-place update is not feasible). Use `InPlaceIfPossible` instead.
+
 ### Verification
 
 ```bash

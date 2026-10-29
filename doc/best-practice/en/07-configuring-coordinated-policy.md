@@ -163,7 +163,7 @@ spec:
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `strategy.scaling.maxSkew` | intOrString | No | `"100%"` | Allowed deployment progress deviation between roles. Only percentage format is supported (e.g., `"10%"`); an integer value (e.g., `2`) fails to parse and blocks creation of all roles |
-| `strategy.scaling.progression` | string | No | None | Creation pace: `OrderScheduled` or `OrderReady`. When omitted, batch gating is not applied and replicas are created without waiting for Pods to be scheduled or ready, so setting it explicitly is recommended |
+| `strategy.scaling.progression` | string | No | `OrderScheduled` | Creation pace: `OrderScheduled` or `OrderReady`. When omitted, it defaults to `OrderScheduled` and batch gating is applied: the next batch of replicas is created only after the current batch of Pods is scheduled |
 
 ### How maxSkew Works
 

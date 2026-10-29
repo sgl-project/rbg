@@ -71,6 +71,8 @@ kubectl patch rbg rolling-update-demo --type='json' \
 - 3 instances always available during the update process
 - `command` is a non-image field, triggering Pod rebuild: the old Pod terminates first, then is recreated with the same ordinal (AGE resets, RESTARTS is 0)
 
+> **Note**: This example does not set `rolloutStrategy.rollingUpdate.type`, which defaults to `InPlaceIfPossible`; the `command` change is outside the in-place update scope, so it automatically falls back to Pod recreation. See [Configuring In-Place Update and In-Place Scheduling Policies](./04-configuring-inplace-update-and-scheduling-policies.md).
+
 ### Verification
 
 ```bash

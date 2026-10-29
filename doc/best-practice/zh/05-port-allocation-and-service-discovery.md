@@ -79,6 +79,8 @@ containers:
 
 > **说明**：DNS 名称中的 `{index}` 是 Pod 的有序索引（从 0 开始），StatefulSet 和 RoleInstanceSet 模式下 Pod 名称稳定，DNS 地址在 Pod 重建后保持不变。
 >
+> **说明**：使用 `leaderWorkerPattern` 的 RoleInstanceSet 角色默认 `sharedServiceSelection: LeaderOnly`，只有 Leader Pod 拥有 DNS 名称；如需 Worker Pod 也拥有 DNS 名称，需显式设置 `sharedServiceSelection: All`（此时每个组件都会获得 `serviceName`）。注意切换该策略会修改 Pod 的 hostname/subdomain（不可变字段），从而触发该角色的滚动重建。
+>
 
 ---
 

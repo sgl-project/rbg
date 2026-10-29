@@ -89,6 +89,8 @@ kubectl patch rbg inplace-update-demo --type='json' \
 - Pod 不离开当前节点，AGE 不会重置
 - 容器的 RESTARTS 计数增加
 
+> **说明**：`InPlaceOnly` 策略已废弃（deprecated）：它未单独实现，行为与 `InPlaceIfPossible` 一致（原地更新不可行时回退到重建 Pod），请使用 `InPlaceIfPossible`。
+
 ### 验证
 
 ```bash

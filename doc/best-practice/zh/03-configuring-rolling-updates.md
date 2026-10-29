@@ -46,6 +46,7 @@ spec:
 | 参数 | 类型 | 是否必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `rolloutStrategy.type` | string | 否 | `RollingUpdate` | 更新策略类型，目前仅支持 `RollingUpdate` |
+| `rolloutStrategy.rollingUpdate.type` | string | 否 | `InPlaceIfPossible` | 实例更新方式：`InPlaceIfPossible`（优先原地更新，不可行时回退重建）或 `RecreatePod`（删除重建）。`InPlaceOnly` 已废弃，行为与 `InPlaceIfPossible` 一致。详见 [配置原地升级与原地调度策略](./04-configuring-inplace-update-and-scheduling-policies.md) |
 | `rolloutStrategy.rollingUpdate.maxUnavailable` | intOrString | 否 | `1` | 更新过程中允许不可用的最大实例数。可以是绝对值（如 `1`）或百分比（如 `"25%"`） |
 | `rolloutStrategy.rollingUpdate.maxSurge` | intOrString | 否 | `0` | 更新过程中允许超出期望副本数的最大实例数。可以是绝对值或百分比 |
 
