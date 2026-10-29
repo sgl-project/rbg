@@ -22,6 +22,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,12 +37,13 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
-// Acknowledgement follows workload application, so pre-update capacity cannot satisfy a new request.
-func (r *RoleBasedGroupReconciler) acknowledgeRolloutRequest(
+// Metadata-only workload updates may emit no event to clear the pre-application rollout barrier.
+func (r *RoleBasedGroupReconciler) finalizeRolloutStatus(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, expectedHashes map[string]string,
 ) error {
 	request := rbg.Annotations[constants.RolloutRequestAnnotationKey]
-	if request == "" || request == rbg.Status.ObservedRolloutRequest {
+	if (request == "" || request == rbg.Status.ObservedRolloutRequest) &&
+		!apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)) {
 		return nil
 	}
 	for i := range rbg.Spec.Roles {
@@ -51,7 +53,16 @@ func (r *RoleBasedGroupReconciler) acknowledgeRolloutRequest(
 			return err
 		}
 	}
-	rbg.Status.ObservedRolloutRequest = request
+	apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress),
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: rbg.Generation,
+		Reason:             "AllRolesUpdated",
+		Message:            "All target role workloads are updated and ready",
+	})
+	if request != "" {
+		rbg.Status.ObservedRolloutRequest = request
+	}
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
 }
 

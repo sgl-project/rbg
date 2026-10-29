@@ -398,7 +398,7 @@ func TestConstructRoleStatusesPublishesRolloutBarrier(t *testing.T) {
 			assert.Equal(t, rbg.Generation, condition.ObservedGeneration)
 			assert.Equal(t, test != "complete", condition.Status == metav1.ConditionTrue)
 			assert.Equal(t, "2", got.Status.ObservedRolloutRequest, "status construction must not acknowledge a request before workload application")
-			require.NoError(t, r.acknowledgeRolloutRequest(ctx, rbg, map[string]string{"role": "target"}))
+			require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, map[string]string{"role": "target"}))
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
 			wantAck := "2"
 			if test == "complete" {
@@ -408,6 +408,66 @@ func TestConstructRoleStatusesPublishesRolloutBarrier(t *testing.T) {
 			require.NoError(t, r.setGangConfiguredCondition(ctx, rbg, &gangcommon.GangStrategy{}, nil))
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
 			assert.Equal(t, wantAck, got.Status.ObservedRolloutRequest, "the second SSA status writer must preserve acknowledgement")
+		})
+	}
+}
+
+func TestPostApplicationRolloutCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		request  string
+		observed string
+	}{
+		{name: "pending request", request: "3", observed: "2"},
+		{name: "acknowledged request", request: "3", observed: "3"},
+		{name: "standalone"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			rbg, objects := rolloutTestFixture(t, "RoleInstanceSet")
+			rbg.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: test.request}
+			rbg.Status.ObservedRolloutRequest = test.observed
+			ris := objects[0].(*workloadsv1alpha2.RoleInstanceSet)
+			hashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, "role")
+			ris.Labels[hashKey] = "old"
+			patches := 0
+			scheme := rolloutTestScheme(t)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(objects, rbg)...).
+				WithStatusSubresource(rbg).WithInterceptorFuncs(interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					patches++
+					return c.SubResource(subresource).Patch(ctx, obj, patch, opts...)
+				},
+			}).Build()
+			r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, recorder: record.NewFakeRecorder(10),
+				workloadReconciler: make(map[string]reconciler.WorkloadReconciler)}
+			expected := map[string]string{"role": "target"}
+			_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expected)
+			require.NoError(t, err)
+			require.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
+			require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, expected))
+			assert.Equal(t, 1, patches, "incomplete workloads must retain the barrier and request")
+			assert.Equal(t, test.observed, rbg.Status.ObservedRolloutRequest)
+
+			updated := &workloadsv1alpha2.RoleInstanceSet{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(ris), updated))
+			updated.Labels[hashKey] = "target"
+			require.NoError(t, c.Update(ctx, updated))
+			assert.Equal(t, ris.Generation, updated.Generation)
+			assert.Equal(t, ris.Spec, updated.Spec)
+			assert.False(t, WorkloadPredicate().Update(event.UpdateEvent{ObjectOld: ris, ObjectNew: updated}))
+			require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, expected))
+			got := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
+			condition := apimeta.FindStatusCondition(got.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, rbg.Generation, condition.ObservedGeneration)
+			assert.Equal(t, "AllRolesUpdated", condition.Reason)
+			assert.Equal(t, test.request, got.Status.ObservedRolloutRequest)
+			assert.Equal(t, 2, patches, "completion and acknowledgement must share one status patch")
+			require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, expected))
+			assert.Equal(t, 2, patches, "completed rollouts must not be patched again")
 		})
 	}
 }
