@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 // revisionTestTemplate builds the template side the way ensureGroupSetRevision stores it.
@@ -69,6 +71,255 @@ func revisionTestChild(annotations map[string]string) *workloadsv1alpha2.RoleBas
 			Roles: []workloadsv1alpha2.RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
 		},
 	}
+}
+
+func TestPruneGroupSetRevisionsAdoptsOrphans(t *testing.T) {
+	ctx := context.Background()
+	set := revisionTestRollingSet(1, &groupSetRevision{template: revisionTestTemplate(nil)})
+	set.Status.CurrentRevision, set.Status.UpdateRevision = "current", "update"
+	data, err := canonicalGroupSetTemplateJSON(&set.Spec.GroupTemplate)
+	require.NoError(t, err)
+	newRevision := func(name string, number int64) *appsv1.ControllerRevision {
+		return &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: set.Namespace, UID: types.UID(name),
+				Labels:          map[string]string{constants.GroupSetNameLabelKey: set.Name},
+				Annotations:     map[string]string{"kept": "value"},
+				OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other"}},
+			},
+			Data: runtime.RawExtension{Raw: data}, Revision: number,
+		}
+	}
+	objects := []client.Object{set}
+	var adopted []*appsv1.ControllerRevision
+	for i := 0; i < utils.DefaultRevisionHistoryLimit+3; i++ {
+		revision := newRevision(fmt.Sprintf("old-%02d", i), int64(i))
+		objects = append(objects, revision)
+		if i >= 3 {
+			adopted = append(adopted, revision)
+		}
+	}
+	for _, name := range []string{"current", "update", "child-held"} {
+		revision := newRevision(name, -1)
+		objects = append(objects, revision)
+		adopted = append(adopted, revision)
+	}
+	foreign := newRevision("foreign", -2)
+	foreign.OwnerReferences = []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "foreign", UID: "foreign", Controller: ptr.To(true)}}
+	predecessor := newRevision("predecessor-owned", -2)
+	predecessor.OwnerReferences = []metav1.OwnerReference{{APIVersion: workloadsv1alpha2.GroupVersion.String(), Kind: "RoleBasedGroupSet", Name: set.Name, UID: "previous-uid", Controller: ptr.To(true)}}
+	mismatch := newRevision("wrong-label", -2)
+	mismatch.Labels[constants.GroupSetNameLabelKey] = "another-set"
+	otherNamespace := newRevision("wrong-namespace", -2)
+	otherNamespace.Namespace = "other"
+	terminating := newRevision("terminating", -2)
+	now := metav1.Now()
+	terminating.DeletionTimestamp, terminating.Finalizers = &now, []string{"test.io/hold"}
+	untouched := []*appsv1.ControllerRevision{foreign, predecessor, mismatch, otherNamespace, terminating}
+	for _, revision := range untouched {
+		objects = append(objects, revision)
+	}
+	r, _ := revisionTestRollingReconciler(t, objects...)
+	children := &workloadsv1alpha2.RoleBasedGroupList{Items: []workloadsv1alpha2.RoleBasedGroup{{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{constants.GroupSetRevisionLabelKey: "child-held"}},
+	}}}
+	require.NoError(t, r.pruneGroupSetRevisions(ctx, set, children))
+	for i := 0; i < 3; i++ {
+		err := r.client.Get(ctx, client.ObjectKey{Namespace: set.Namespace, Name: fmt.Sprintf("old-%02d", i)}, &appsv1.ControllerRevision{})
+		assert.True(t, apierrors.IsNotFound(err), "old unused revision %d should be pruned", i)
+	}
+	for _, original := range adopted {
+		got := &appsv1.ControllerRevision{}
+		require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(original), got))
+		assert.True(t, metav1.IsControlledBy(got, set), got.Name)
+		assert.Contains(t, got.OwnerReferences, original.OwnerReferences[0])
+		assert.Equal(t, original.UID, got.UID)
+		assert.Equal(t, original.Data, got.Data)
+		assert.Equal(t, original.Revision, got.Revision)
+		assert.Equal(t, original.Labels, got.Labels)
+		assert.Equal(t, original.Annotations, got.Annotations)
+	}
+	for _, original := range untouched {
+		got := &appsv1.ControllerRevision{}
+		require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(original), got))
+		assert.Equal(t, original.OwnerReferences, got.OwnerReferences)
+		assert.Equal(t, original.Data, got.Data)
+	}
+	require.NoError(t, r.pruneGroupSetRevisions(ctx, set, children))
+	for _, original := range adopted {
+		require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(original), &appsv1.ControllerRevision{}))
+	}
+}
+
+func TestPruneGroupSetRevisionsRetainsNewestAcrossParents(t *testing.T) {
+	ctx := context.Background()
+	set := revisionTestRollingSet(0, &groupSetRevision{template: revisionTestTemplate(nil)})
+	set.Status.CurrentRevision, set.Status.UpdateRevision = "new-3", "new-3"
+	objects := []client.Object{set}
+	for i := 0; i < utils.DefaultRevisionHistoryLimit; i++ {
+		objects = append(objects, &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("old-%d", i), Namespace: set.Namespace,
+				Labels:            map[string]string{constants.GroupSetNameLabelKey: set.Name},
+				CreationTimestamp: metav1.NewTime(time.Unix(int64(i), 0)),
+			},
+			Revision: int64(96 + i),
+		})
+	}
+	for i := 1; i <= 3; i++ {
+		objects = append(objects, &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("new-%d", i), Namespace: set.Namespace,
+				Labels:            map[string]string{constants.GroupSetNameLabelKey: set.Name},
+				CreationTimestamp: metav1.NewTime(time.Unix(int64(100+i), 0)),
+				OwnerReferences:   []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroupSet"))},
+			},
+			Revision: int64(i),
+		})
+	}
+	r, _ := revisionTestRollingReconciler(t, objects...)
+	require.NoError(t, r.pruneGroupSetRevisions(ctx, set, &workloadsv1alpha2.RoleBasedGroupList{}))
+	for i := 0; i < 2; i++ {
+		err := r.client.Get(ctx, client.ObjectKey{Namespace: set.Namespace, Name: fmt.Sprintf("old-%d", i)}, &appsv1.ControllerRevision{})
+		assert.True(t, apierrors.IsNotFound(err))
+	}
+	for _, original := range objects[3:] {
+		got := &appsv1.ControllerRevision{}
+		require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(original), got))
+		assert.True(t, metav1.IsControlledBy(got, set))
+		assert.Equal(t, original.(*appsv1.ControllerRevision).Revision, got.Revision)
+	}
+}
+
+func TestPruneGroupSetRevisionsChecksLiveParent(t *testing.T) {
+	for _, state := range []string{"missing", "replaced", "deleting", "read error", "already owned"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			set := revisionTestRollingSet(0, &groupSetRevision{template: revisionTestTemplate(nil)})
+			revision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{
+				Name: "old", Namespace: set.Namespace, UID: "old-revision",
+				Labels: map[string]string{constants.GroupSetNameLabelKey: set.Name},
+			}}
+			if state == "already owned" {
+				revision.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroupSet"))}
+			}
+			r, _ := revisionTestRollingReconciler(t, set, revision)
+			objects := []client.Object{revision}
+			live := set.DeepCopy()
+			switch state {
+			case "replaced":
+				live.UID = "new-parent"
+				objects = append(objects, live)
+			case "deleting":
+				now := metav1.Now()
+				live.DeletionTimestamp, live.Finalizers = &now, []string{"test.io/hold"}
+				objects = append(objects, live)
+			}
+			parentReads := 0
+			r.apiReader = fake.NewClientBuilder().WithScheme(r.scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*workloadsv1alpha2.RoleBasedGroupSet); ok {
+						parentReads++
+						if state == "read error" {
+							return fmt.Errorf("live parent read failed")
+						}
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+			err := r.pruneGroupSetRevisions(ctx, set, &workloadsv1alpha2.RoleBasedGroupList{})
+			if state == "already owned" {
+				require.NoError(t, err)
+				assert.Zero(t, parentReads)
+			} else {
+				require.Error(t, err)
+				assert.Equal(t, 1, parentReads)
+			}
+			got := &appsv1.ControllerRevision{}
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(revision), got))
+			assert.Equal(t, revision.OwnerReferences, got.OwnerReferences)
+		})
+	}
+}
+
+func TestPruneGroupSetRevisionsAdoptionRaces(t *testing.T) {
+	for _, state := range []string{"owner changed", "label changed", "deleted"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			set := revisionTestRollingSet(0, &groupSetRevision{template: revisionTestTemplate(nil)})
+			revision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{
+				Name: "old", Namespace: set.Namespace, UID: "old-revision",
+				Labels: map[string]string{constants.GroupSetNameLabelKey: set.Name},
+			}}
+			r, _ := revisionTestRollingReconciler(t, set, revision)
+			r.client = fake.NewClientBuilder().WithScheme(r.scheme).WithObjects(set, revision).WithInterceptorFuncs(interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					live := &appsv1.ControllerRevision{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), live))
+					switch state {
+					case "owner changed":
+						live.OwnerReferences = []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "foreign", UID: "foreign", Controller: ptr.To(true)}}
+					case "label changed":
+						live.Labels[constants.GroupSetNameLabelKey] = "foreign"
+					}
+					if state == "deleted" {
+						require.NoError(t, c.Delete(ctx, live))
+					} else {
+						require.NoError(t, c.Update(ctx, live))
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			}).Build()
+			r.apiReader = r.client
+			err := r.pruneGroupSetRevisions(ctx, set, &workloadsv1alpha2.RoleBasedGroupList{})
+			if state == "deleted" {
+				require.NoError(t, err)
+				return
+			}
+			require.True(t, apierrors.IsConflict(err), "%v", err)
+			got := &appsv1.ControllerRevision{}
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(revision), got))
+			assert.False(t, metav1.IsControlledBy(got, set))
+			if state == "owner changed" {
+				assert.Equal(t, types.UID("foreign"), metav1.GetControllerOf(got).UID)
+			} else {
+				assert.Equal(t, "foreign", got.Labels[constants.GroupSetNameLabelKey])
+			}
+			require.NoError(t, r.pruneGroupSetRevisions(ctx, set, &workloadsv1alpha2.RoleBasedGroupList{}))
+		})
+	}
+}
+
+func TestPruneGroupSetRevisionsRejectsChangedDeleteTarget(t *testing.T) {
+	ctx := context.Background()
+	set := revisionTestRollingSet(0, &groupSetRevision{template: revisionTestTemplate(nil)})
+	objects := []client.Object{set}
+	for i := 0; i <= utils.DefaultRevisionHistoryLimit; i++ {
+		objects = append(objects, &appsv1.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("old-%d", i), Namespace: set.Namespace, UID: types.UID(fmt.Sprintf("revision-%d", i)),
+				Labels:          map[string]string{constants.GroupSetNameLabelKey: set.Name},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroupSet"))},
+			},
+			Revision: int64(i),
+		})
+	}
+	r, _ := revisionTestRollingReconciler(t, objects...)
+	r.client = fake.NewClientBuilder().WithScheme(r.scheme).WithObjects(objects...).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			live := &appsv1.ControllerRevision{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), live))
+			live.OwnerReferences = []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "foreign", UID: "foreign", Controller: ptr.To(true)}}
+			require.NoError(t, c.Update(ctx, live))
+			return c.Delete(ctx, obj, opts...)
+		},
+	}).Build()
+	r.apiReader = r.client
+	err := r.pruneGroupSetRevisions(ctx, set, &workloadsv1alpha2.RoleBasedGroupList{})
+	require.True(t, apierrors.IsConflict(err), "%v", err)
+	got := &appsv1.ControllerRevision{}
+	require.NoError(t, r.client.Get(ctx, client.ObjectKey{Namespace: set.Namespace, Name: "old-0"}, got))
+	assert.Equal(t, types.UID("foreign"), metav1.GetControllerOf(got).UID)
 }
 
 // TestGroupSetMatchesRevision_IgnoresControllerOwnedAnnotations pins the recreate-loop
