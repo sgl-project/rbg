@@ -161,7 +161,42 @@ roles:
           http: 8000
 ```
 
+#### 不同 Pattern 的地址格式
+
+上例使用 `standalonePattern`（每个副本一条地址）。使用多 Pod Pattern 时，Controller 会将每个 Pod 展开为一条独立的 `instances` 条目，`roles.<role>.size` 随之变为地址条目数（而非角色副本数）：
+
+| Pattern | 地址格式 | 说明 |
+| --- | --- | --- |
+| `standalonePattern` | `{rbgName}-{roleName}-{i}.{svcName}` | 每个副本一条地址 |
+| `leaderWorkerPattern`（RoleInstanceSet，默认工作负载） | Leader：`{rbgName}-{roleName}-{i}-0.{svcName}`；Worker：`{rbgName}-{roleName}-{i}-{k}.{svcName}`（`k` = 1 … size-1） | 实例 `i` 的每个 Pod 一条地址，条目数 = `replicas × size` |
+| `leaderWorkerPattern`（LeaderWorkerSet 工作负载） | `{rbgName}-{roleName}-{n}.{svcName}`（`n` = `i × size` … `i × size + size - 1`） | 使用 LWS 的全局 Pod 序号 |
+| `customComponentsPattern` | `{rbgName}-{roleName}-{i}-{component}-{j}.{svcName}` | 每个组件的每个 Pod 一条地址；组件显式设置 `serviceName` 时以该 Service 作为 subdomain |
+
+其中 `{svcName}` 为角色 Headless Service（`s-{rbgName}-{roleName}`），`{i}` 为 RoleInstance 序号，`{k}`/`{j}` 为组件内 Pod 序号。以 `leaderWorkerPattern`（`replicas: 2`、`size: 2`、`servicePorts: http:8000`）为例：
+
+```yaml
+roles:
+  backend:
+    size: 4
+    instances:
+      - address: pd-inference-backend-0-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-0-1.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-1.s-pd-inference-backend
+        ports:
+          http: 8000
+```
+
+> **说明**：`leaderWorkerPattern` 默认 `sharedServiceSelection: LeaderOnly` 时，只有 Leader Pod 拥有 DNS 身份：Worker 地址仍会写入 ConfigMap，但无法通过集群 DNS 解析；将 `sharedServiceSelection` 设置为 `All` 后 Worker 地址才可解析。
+
 #### ConfigMap 挂载方式
+
 | 属性 | 值 | 说明 |
 | --- | --- | --- |
 | Volume 名称 | `rbg-cluster-config` | 自动注入的 Volume |

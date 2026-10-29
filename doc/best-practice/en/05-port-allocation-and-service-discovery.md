@@ -163,7 +163,42 @@ roles:
           http: 8000
 ```
 
+#### Address Formats by Pattern
+
+The example above uses `standalonePattern` (one address per replica). With multi-pod patterns, the Controller expands every Pod into its own `instances` entry, and `roles.<role>.size` becomes the number of address entries (not the role's replica count):
+
+| Pattern | Address Format | Description |
+| --- | --- | --- |
+| `standalonePattern` | `{rbgName}-{roleName}-{i}.{svcName}` | One address per replica |
+| `leaderWorkerPattern` (RoleInstanceSet, the default workload) | Leader: `{rbgName}-{roleName}-{i}-0.{svcName}`; workers: `{rbgName}-{roleName}-{i}-{k}.{svcName}` (`k` = 1 … size-1) | One address per Pod of instance `i`; entry count = `replicas × size` |
+| `leaderWorkerPattern` (LeaderWorkerSet workload) | `{rbgName}-{roleName}-{n}.{svcName}` (`n` = `i × size` … `i × size + size - 1`) | Uses the LWS global Pod ordinals |
+| `customComponentsPattern` | `{rbgName}-{roleName}-{i}-{component}-{j}.{svcName}` | One address per Pod of each component; an explicit component `serviceName` overrides the shared Headless Service as the subdomain |
+
+Here `{svcName}` is the role's Headless Service (`s-{rbgName}-{roleName}`), `{i}` is the RoleInstance ordinal, and `{k}`/`{j}` are Pod ordinals within the component. Example with `leaderWorkerPattern` (`replicas: 2`, `size: 2`, `servicePorts: http:8000`):
+
+```yaml
+roles:
+  backend:
+    size: 4
+    instances:
+      - address: pd-inference-backend-0-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-0-1.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-1.s-pd-inference-backend
+        ports:
+          http: 8000
+```
+
+> **Note**: With the default `sharedServiceSelection: LeaderOnly` for `leaderWorkerPattern`, only the Leader Pod has a DNS identity: worker addresses are still written to the ConfigMap but do not resolve through cluster DNS; set `sharedServiceSelection: All` to make worker addresses resolvable.
+
 #### ConfigMap Mount Configuration
+
 | Property | Value | Description |
 | --- | --- | --- |
 | Volume name | `rbg-cluster-config` | Automatically injected Volume |
