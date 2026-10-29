@@ -24,7 +24,9 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -145,8 +147,8 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		toScaleRoleIDS = make(map[string]sets.Set[int32])
 	)
 
-	// Delete inactive (Failed) pods so that replacements can be created on next reconcile.
-	// Failed pods block replacement creation because hasOrphanPod detects the same-name pod still exists.
+	// Delete inactive (Failed) pods so that replacements can be created on a later
+	// reconcile. Same-name foreign pods are handled separately by createPods.
 	for _, p := range inactivePods {
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
 			toDeleteNum++
@@ -260,10 +262,27 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 
 	podsCreationChan := make(chan *v1.Pod, len(newPods))
 	toCreatePodNum := 0
+	var foreignPodErrs []error
 	for _, p := range newPods {
-		if c.hasOrphanPod(p.Namespace, p.Name) {
-			if isGangSchedulingEnabled(updateInstance) {
-				return false, fmt.Errorf("orphan pod %v has not been gc, fail to create new pod", klog.KObj(p))
+		existingPod, err := c.getExistingPod(ctx, p.Namespace, p.Name)
+		if err != nil {
+			return false, err
+		}
+		if existingPod != nil {
+			if !metav1.IsControlledBy(existingPod, updateInstance) {
+				err := fmt.Errorf(
+					"pod %s is not controlled by RoleInstance %s (UID %s)",
+					klog.KObj(existingPod), klog.KObj(updateInstance), updateInstance.UID,
+				)
+				c.recorder.Eventf(updateInstance, v1.EventTypeWarning, "FailedCreate",
+					"cannot create replacement pod: %v", err)
+				// Gang scheduling requires all Pods to be created together. For
+				// ordinary instances, preserve non-colliding sibling creation and
+				// return the collision after those Pods have been created.
+				if isGangSchedulingEnabled(updateInstance) {
+					return false, err
+				}
+				foreignPodErrs = append(foreignPodErrs, err)
 			}
 			continue
 		}
@@ -299,10 +318,14 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 		atomic.AddInt64(&created, 1)
 		return nil
 	})
-	if created == 0 {
-		return false, err
+	if len(foreignPodErrs) > 0 {
+		errs := append([]error{}, foreignPodErrs...)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return created > 0, utilerrors.NewAggregate(errs)
 	}
-	return true, err
+	return created > 0, err
 }
 
 func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, podsToDelete []*v1.Pod) (bool, error) {
@@ -319,10 +342,15 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 	return modified, nil
 }
 
-func (c *realControl) hasOrphanPod(namespace, name string) bool {
-	pod := new(v1.Pod)
-	err := c.Get(context.TODO(), client.ObjectKey{Namespace: namespace, Name: name}, pod)
-	return err == nil
+func (c *realControl) getExistingPod(ctx context.Context, namespace, name string) (*v1.Pod, error) {
+	pod := &v1.Pod{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return pod, nil
 }
 
 func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) error {
