@@ -174,6 +174,8 @@ The example above uses `standalonePattern` (one address per replica). With multi
 | `leaderWorkerPattern` (LeaderWorkerSet workload) | `{rbgName}-{roleName}-{n}.{svcName}` (`n` = `i × size` … `i × size + size - 1`) | Uses the LWS global Pod ordinals |
 | `customComponentsPattern` | `{rbgName}-{roleName}-{i}-{component}-{j}.{svcName}` | One address per Pod of each component; an explicit component `serviceName` overrides the shared Headless Service as the subdomain |
 
+> **Note**: LeaderWorkerSet workloads follow the upstream LWS Pod naming convention — the leader is `{rbgName}-{roleName}-{leaderIndex}` and workers are `{rbgName}-{roleName}-{leaderIndex}-{workerIndex}` — which does not match the ConfigMap address format in the row above. These ConfigMap entries for LWS roles therefore cannot currently be used for per-Pod DNS discovery; they only reflect the ConfigMap's current output.
+
 Here `{svcName}` is the role's Headless Service (`s-{rbgName}-{roleName}`), `{i}` is the RoleInstance ordinal, and `{k}`/`{j}` are Pod ordinals within the component. Example with `leaderWorkerPattern` (`replicas: 2`, `size: 2`, `servicePorts: http:8000`):
 
 ```yaml
@@ -195,7 +197,7 @@ roles:
           http: 8000
 ```
 
-> **Note**: With the default `sharedServiceSelection: LeaderOnly` for `leaderWorkerPattern`, only the Leader Pod has a DNS identity: worker addresses are still written to the ConfigMap but do not resolve through cluster DNS; set `sharedServiceSelection: All` to make worker addresses resolvable.
+> **Note**: A RoleInstanceSet role using `leaderWorkerPattern` defaults to `sharedServiceSelection: LeaderOnly`, so only the Leader Pod has a DNS identity: worker addresses are still written to the ConfigMap but do not resolve through cluster DNS; set `sharedServiceSelection: All` to make worker addresses resolvable. Other workload types (such as LeaderWorkerSet) resolve `sharedServiceSelection` to `All`, so their Worker Pods have DNS identities by default.
 
 #### ConfigMap Mount Configuration
 
