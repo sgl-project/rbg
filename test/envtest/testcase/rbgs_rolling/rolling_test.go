@@ -1,0 +1,943 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package rbgs_rolling
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
+	"sigs.k8s.io/rbgs/pkg/utils"
+	"sigs.k8s.io/rbgs/test/envtest/testutil"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
+)
+
+var _ = Describe("RoleBasedGroupSet rolling update", func() {
+	var testNs string
+
+	BeforeEach(func() {
+		testNs = fmt.Sprintf("test-rbgs-rolling-%d", time.Now().UnixNano())
+		testutil.CreateNamespace(testNs)
+	})
+
+	AfterEach(func() {
+		testutil.DeleteNamespace(testNs)
+	})
+
+	DescribeTable("converges converted v1alpha1 coordination through real policy SSA",
+		func(strategy workloadsv1alpha2.GroupUpdateStrategyType) {
+			setName := "rbgs-coordination"
+			base := buildRollingSet(setName, testNs, 2, 0, 1, 0, 1)
+			base.Spec.RolloutStrategy.Type = strategy
+			legacy := &workloadsv1alpha1.RoleBasedGroupSet{}
+			Expect(legacy.ConvertFrom(base.DeepCopy())).To(Succeed())
+			roles := []string{legacy.Spec.Template.Roles[0].Name}
+			convert := func(skew string) *workloadsv1alpha2.RoleBasedGroupSet {
+				legacy.Spec.Template.CoordinationRequirements = []workloadsv1alpha1.Coordination{{
+					Name: "rollout-and-scaling", Roles: roles,
+					Strategy: &workloadsv1alpha1.CoordinationStrategy{
+						RollingUpdate: &workloadsv1alpha1.CoordinationRollingUpdate{
+							MaxSkew: ptr.To(skew), Partition: ptr.To("0%"), MaxUnavailable: ptr.To("100%"),
+						},
+						Scaling: &workloadsv1alpha1.CoordinationScaling{
+							MaxSkew: ptr.To(skew), Progression: ptr.To(workloadsv1alpha1.OrderScheduled),
+						},
+					},
+				}}
+				// No conversion webhook runs in this suite: exercise the real converter explicitly, not webhook E2E.
+				hub := &workloadsv1alpha2.RoleBasedGroupSet{}
+				Expect(legacy.ConvertTo(hub)).To(Succeed())
+				return hub
+			}
+			wantSkew := "10%"
+			set := convert(wantSkew)
+			Expect(set.Spec.RolloutStrategy).To(Equal(base.Spec.RolloutStrategy))
+			coordinationKey := constants.ConversionV1alpha1CoordinationAnnotationKey
+			stashKey := constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
+			wantCoordination := set.Spec.GroupTemplate.Annotations[coordinationKey]
+			Expect(wantCoordination).NotTo(BeEmpty())
+			set.Spec.GroupTemplate.Labels = map[string]string{"ordinary": "stable"}
+			set.Spec.GroupTemplate.Annotations["ordinary"] = "stable"
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+
+			policyUIDs := map[int]types.UID{}
+			assertPolicies := func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for ordinal, child := range children {
+					g.Expect(child.Annotations).To(HaveKeyWithValue(coordinationKey, wantCoordination))
+					policy := &workloadsv1alpha2.CoordinatedPolicy{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(child), policy)).To(Succeed())
+					g.Expect(policy.Spec.Policies).To(Equal([]workloadsv1alpha2.CoordinatedPolicyRule{{
+						Name: "rollout-and-scaling", Roles: roles,
+						Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+							RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+								MaxSkew: ptr.To(intstr.FromString(wantSkew)), Partition: ptr.To(intstr.FromString("0%")),
+								MaxUnavailable: ptr.To(intstr.FromString("100%")),
+							},
+							Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+								MaxSkew: ptr.To(intstr.FromString(wantSkew)), Progression: workloadsv1alpha2.OrderScheduledProgression,
+							},
+						},
+					}}))
+					g.Expect(policy.OwnerReferences).To(Equal([]metav1.OwnerReference{{
+						APIVersion: workloadsv1alpha2.GroupVersion.String(), Kind: "RoleBasedGroup",
+						Name: child.Name, UID: child.UID, BlockOwnerDeletion: ptr.To(true),
+					}}))
+					g.Expect(policy.ManagedFields).To(ContainElement(And(
+						HaveField("Manager", utils.FieldManager), HaveField("Operation", metav1.ManagedFieldsOperationApply),
+						HaveField("Subresource", ""),
+					)))
+					if uid, ok := policyUIDs[ordinal]; ok {
+						g.Expect(policy.UID).To(Equal(uid))
+					}
+				}
+			}
+			Eventually(assertPolicies, timeout, interval).Should(Succeed())
+			oldRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+			before := fetchChildren(testNs, setName)
+			for ordinal, child := range before {
+				policy := &workloadsv1alpha2.CoordinatedPolicy{}
+				Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(child), policy)).To(Succeed())
+				policyUIDs[ordinal] = policy.UID
+			}
+			patchChild := func(mutate func(*workloadsv1alpha2.RoleBasedGroup)) {
+				Eventually(func() error {
+					child := &workloadsv1alpha2.RoleBasedGroup{}
+					if err := testutil.K8sClient.Get(testutil.Ctx,
+						client.ObjectKey{Namespace: testNs, Name: childName(setName, 0)}, child); err != nil {
+						return err
+					}
+					original := child.DeepCopy()
+					mutate(child)
+					return testutil.K8sClient.Patch(testutil.Ctx, child,
+						client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+				}, timeout, interval).Should(Succeed())
+			}
+			const childOnlyStash = `{"kubeScheduling":{"scheduleTimeoutSeconds":30}}`
+			Expect(set.Spec.GroupTemplate.Annotations).NotTo(HaveKey(stashKey))
+			patchChild(func(child *workloadsv1alpha2.RoleBasedGroup) {
+				child.Annotations[stashKey] = childOnlyStash
+			})
+
+			By("updating only coordination intent, including the child below partition")
+			wantSkew = "20%"
+			wantCoordination = convert(wantSkew).Spec.GroupTemplate.Annotations[coordinationKey]
+			Expect(wantCoordination).NotTo(Equal(set.Spec.GroupTemplate.Annotations[coordinationKey]))
+			updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+				set.Spec.GroupTemplate.Annotations[coordinationKey] = wantCoordination
+			})
+			assertUnchanged := func(g Gomega) {
+				assertPolicies(g)
+				current := mustFetchSet(testNs, setName)
+				g.Expect(current.Status.ObservedGeneration).To(BeNumerically(">=", current.Generation))
+				g.Expect(current.Status.CurrentRevision).To(Equal(oldRevision))
+				g.Expect(current.Status.UpdateRevision).To(Equal(oldRevision))
+				g.Expect(current.Spec.RolloutStrategy.Partition).To(Equal(ptr.To(intstr.FromInt32(1))))
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for ordinal, original := range before {
+					g.Expect(children).To(HaveKey(ordinal))
+					child := children[ordinal]
+					g.Expect(child.UID).To(Equal(original.UID))
+					g.Expect(child.Spec).To(Equal(original.Spec))
+					g.Expect(child.Generation).To(Equal(original.Generation))
+					g.Expect(child.Labels).To(Equal(original.Labels))
+					g.Expect(child.Annotations).To(HaveKeyWithValue("ordinary", "stable"))
+				}
+				g.Expect(children[0].Annotations).To(HaveKeyWithValue(stashKey, childOnlyStash))
+				revisions := &appsv1.ControllerRevisionList{}
+				g.Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(testNs),
+					client.MatchingLabels{constants.GroupSetNameLabelKey: setName})).To(Succeed())
+				g.Expect(revisions.Items).To(HaveLen(1))
+				g.Expect(revisions.Items[0].Name).To(Equal(oldRevision))
+			}
+			Eventually(assertUnchanged, timeout, interval).Should(Succeed())
+			Consistently(assertUnchanged, 3*time.Second, interval).Should(Succeed())
+
+			By("repairing deleted and tampered coordination annotations on a settled child")
+			for _, remove := range []bool{true, false} {
+				patchChild(func(child *workloadsv1alpha2.RoleBasedGroup) {
+					if remove {
+						delete(child.Annotations, coordinationKey)
+					} else {
+						child.Annotations[coordinationKey] = set.Spec.GroupTemplate.Annotations[coordinationKey]
+					}
+				})
+				Eventually(assertUnchanged, timeout, interval).Should(Succeed())
+				Consistently(assertUnchanged, 3*time.Second, interval).Should(Succeed())
+			}
+
+			if strategy == workloadsv1alpha2.RecreateStrategyType {
+				By("retaining current coordination intent and recreating owned policies during a normal spec rollout")
+				oldPolicyUIDs := policyUIDs
+				policyUIDs = nil
+				updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+					setTemplateImage(set, updatedImage)
+					set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+				})
+				newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+				final := waitRollout(testNs, setName, rolloutComplete)
+				Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+				Eventually(assertPolicies, timeout, interval).Should(Succeed())
+				for ordinal, child := range fetchChildren(testNs, setName) {
+					Expect(child.UID).NotTo(Equal(before[ordinal].UID))
+					Expect(child.Labels[constants.GroupSetRevisionLabelKey]).To(Equal(newRevision))
+					Expect(childImage(child)).To(Equal(updatedImage))
+					Expect(child.Labels).To(HaveKeyWithValue("ordinary", "stable"))
+					Expect(child.Annotations).To(HaveKeyWithValue("ordinary", "stable"))
+					policy := &workloadsv1alpha2.CoordinatedPolicy{}
+					Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(child), policy)).To(Succeed())
+					Expect(policy.UID).NotTo(Equal(oldPolicyUIDs[ordinal]))
+				}
+			}
+		},
+		Entry("Recreate", workloadsv1alpha2.RecreateStrategyType),
+		Entry("InPlaceUpdate", workloadsv1alpha2.InPlaceUpdateStrategyType),
+	)
+
+	DescribeTable("falls back to maxUnavailable=1 when both budgets resolve to zero",
+		func(maxUnavailable string) {
+			setName := "rbgs-zero-budget"
+			set := buildRollingSet(setName, testNs, 3, 1, 0, 0, 0)
+			set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromString(maxUnavailable))
+			set.Spec.RolloutStrategy.MaxSurge = ptr.To(intstr.FromString("0%"))
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).Should(Succeed())
+			initial := waitRollout(testNs, setName, rolloutComplete)
+			oldRevision := initial.Status.CurrentRevision
+			Expect(oldRevision).To(Equal(initial.Status.UpdateRevision))
+			Expect(initial.Status.UpdatedReplicas).To(Equal(int32(3)))
+			Expect(initial.Status.ExpectedUpdatedReplicas).To(Equal(int32(3)))
+			for _, child := range fetchChildren(testNs, setName) {
+				Expect(child.Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+			}
+			revisions := &appsv1.ControllerRevisionList{}
+			Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(testNs),
+				client.MatchingLabels{constants.GroupSetNameLabelKey: setName})).Should(Succeed())
+			Expect(revisions.Items).To(HaveLen(1))
+			Expect(revisions.Items[0].Name).To(Equal(oldRevision))
+
+			updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+				setTemplateImage(set, updatedImage)
+			})
+			newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+
+			// Withhold each replacement's Pod readiness to expose the effective delete budget.
+			for ordinal := 2; ordinal >= 0; ordinal-- {
+				child := waitChildRevision(testNs, setName, ordinal, newRevision)
+				Expect(childImage(child)).To(Equal(updatedImage))
+				Eventually(func(g Gomega) {
+					set := mustFetchSet(testNs, setName)
+					g.Expect(set.Status.ReadyReplicas).To(Equal(int32(2)))
+					g.Expect(set.Status.UpdatedReplicas).To(Equal(int32(3 - ordinal)))
+				}, timeout, interval).Should(Succeed())
+				Consistently(func(g Gomega) {
+					children := fetchChildren(testNs, setName)
+					g.Expect(children).To(HaveLen(3))
+					for lower := 0; lower < ordinal; lower++ {
+						g.Expect(children).To(HaveKey(lower))
+						g.Expect(children[lower].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+					}
+					set := mustFetchSet(testNs, setName)
+					g.Expect(set.Status.CurrentRevision).To(Equal(oldRevision))
+					g.Expect(set.Status.Replicas).To(Equal(int32(3)))
+					g.Expect(set.Status.ReadyReplicas).To(Equal(int32(2)))
+					g.Expect(set.Status.UpdatedReplicas).To(Equal(int32(3 - ordinal)))
+					g.Expect(set.Spec.RolloutStrategy.MaxUnavailable.String()).To(Equal(maxUnavailable))
+					g.Expect(set.Spec.RolloutStrategy.MaxSurge.String()).To(Equal("0%"))
+					state, err := rollingStateOf(testNs, setName)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(state).To(Equal(rolloutInProgress))
+				}, 3*time.Second, interval).Should(Succeed())
+				waitChildReady(testNs, childName(setName, ordinal))
+			}
+
+			final := waitRollout(testNs, setName, rolloutComplete)
+			Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+			Expect(final.Status.UpdatedReadyReplicas).To(Equal(int32(3)))
+		},
+		// This suite has no webhook: explicit zero exercises persisted-object fallback,
+		// not admission acceptance of a newly submitted zero-budget strategy.
+		Entry("legacy explicit zero percentages without admission", "0%"),
+		Entry("a positive unavailable percentage rounds down to zero", "1%"),
+	)
+
+	It("does not reopen a finished rollout when a group is deleted", func() {
+		setName := "rbgs-fault"
+		Expect(testutil.K8sClient.Create(testutil.Ctx,
+			buildRollingSet(setName, testNs, 2, 1, 1, 0, 0))).Should(Succeed())
+		revision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+		deletedUID := deleteChild(testNs, setName, 1)
+
+		Consistently(func() (string, error) {
+			return rollingStateOf(testNs, setName)
+		}, 5*time.Second, interval).Should(Equal(rolloutComplete))
+
+		rebuilt := waitChildRevision(testNs, setName, 1, revision)
+		Expect(rebuilt.UID).NotTo(Equal(deletedUID))
+		Eventually(func() int32 {
+			return mustFetchSet(testNs, setName).Status.ReadyReplicas
+		}, timeout, interval).Should(Equal(int32(1)))
+		Consistently(func(g Gomega) {
+			set := mustFetchSet(testNs, setName)
+			g.Expect(set.Status.ReadyReplicas).To(Equal(int32(1)))
+			g.Expect(set.Status.CurrentRevision).To(Equal(revision))
+			g.Expect(set.Status.UpdateRevision).To(Equal(revision))
+			state, err := rollingStateOf(testNs, setName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(state).To(Equal(rolloutComplete))
+		}, 3*time.Second, interval).Should(Succeed())
+
+		set := waitRollout(testNs, setName, rolloutComplete)
+		Expect(set.Status.CurrentRevision).To(Equal(revision))
+		Expect(set.Status.UpdateRevision).To(Equal(revision))
+	})
+
+	DescribeTable("paces role scaling until downstream workloads are ready", func(strategy workloadsv1alpha2.GroupUpdateStrategyType, pattern constants.InstancePatternType) {
+		setName := "rbgs-scaling"
+		set := buildRollingSet(setName, testNs, 3, 1, 1, 0, 1)
+		set.Spec.RolloutStrategy.Type = strategy
+		for i := range set.Spec.GroupTemplate.Spec.Roles {
+			role := &set.Spec.GroupTemplate.Spec.Roles[i]
+			role.Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
+			role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).Should(Succeed())
+		initial := waitRollout(testNs, setName, rolloutComplete)
+		oldRevision := initial.Status.CurrentRevision
+		initialChildren := fetchChildren(testNs, setName)
+
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			for i := range set.Spec.GroupTemplate.Spec.Roles {
+				set.Spec.GroupTemplate.Spec.Roles[i].Replicas = ptr.To(int32(2))
+			}
+		})
+		newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+		for ordinal := 2; ordinal >= 1; ordinal-- {
+			child := waitChildRevision(testNs, setName, ordinal, newRevision)
+			Expect(child.UID).To(Equal(initialChildren[ordinal].UID))
+			assertBlocked := func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(3))
+				for lower := 0; lower < ordinal; lower++ {
+					g.Expect(children).To(HaveKey(lower))
+					g.Expect(children[lower].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+					g.Expect(*children[lower].Spec.Roles[0].Replicas).To(Equal(int32(1)))
+				}
+				for index, initialChild := range initialChildren {
+					g.Expect(children[index].UID).To(Equal(initialChild.UID))
+				}
+				current := children[ordinal]
+				g.Expect(current.Status.ObservedRolloutRequest).NotTo(Equal(current.Annotations[constants.RolloutRequestAnnotationKey]))
+				pods := &corev1.PodList{}
+				g.Expect(testutil.K8sClient.List(testutil.Ctx, pods, client.InNamespace(testNs),
+					client.MatchingLabels{constants.GroupNameLabelKey: current.Name})).To(Succeed())
+				g.Expect(pods.Items).To(HaveLen(2))
+				g.Expect(pods.Items).To(ContainElement(HaveField("Status.Phase", corev1.PodPending)))
+				set := mustFetchSet(testNs, setName)
+				g.Expect(set.Status.ReadyReplicas).To(Equal(int32(2)))
+				g.Expect(set.Status.CurrentRevision).To(Equal(oldRevision))
+			}
+			Eventually(assertBlocked, timeout, interval).Should(Succeed())
+			Consistently(assertBlocked, 3*time.Second, interval).Should(Succeed())
+			waitChildReady(testNs, child.Name)
+		}
+		partitioned := waitRollout(testNs, setName, "False=PartitionComplete")
+		Expect(partitioned.Status.UpdatedReadyReplicas).To(Equal(int32(2)))
+		Expect(partitioned.Status.CurrentRevision).To(Equal(oldRevision))
+
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+		})
+		waitChildRevision(testNs, setName, 0, newRevision)
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+		Expect(final.Status.UpdatedReadyReplicas).To(Equal(int32(3)))
+		for index, child := range fetchChildren(testNs, setName) {
+			Expect(child.UID).To(Equal(initialChildren[index].UID))
+		}
+	},
+		Entry("InPlaceUpdate stateful role replica changes", workloadsv1alpha2.InPlaceUpdateStrategyType, constants.StatefulPattern),
+		Entry("InPlaceUpdate stateless role replica changes", workloadsv1alpha2.InPlaceUpdateStrategyType, constants.StatelessPattern),
+		Entry("Recreate stateful role replica changes", workloadsv1alpha2.RecreateStrategyType, constants.StatefulPattern),
+		Entry("Recreate stateless role replica changes", workloadsv1alpha2.RecreateStrategyType, constants.StatelessPattern),
+	)
+
+	DescribeTable("paces real downstream updates before touching a lower RBG", func(imageOnly bool, pattern constants.InstancePatternType) {
+		setName := "rbgs-downstream"
+		set := buildRollingSet(setName, testNs, 2, 1, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		role := &set.Spec.GroupTemplate.Spec.Roles[0]
+		role.Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
+		role.RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+			Type: workloadsv1alpha2.RollingUpdateStrategyType,
+			RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+				Type: workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+			},
+		}
+		role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		oldRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+		before := fetchChildren(testNs, setName)
+		initial := map[int]downstream{}
+		for ordinal, child := range before {
+			initial[ordinal] = downstreamOf(Default, child)
+			Expect(initial[ordinal].pod.Status.ContainerStatuses).To(HaveLen(1))
+			Expect(initial[ordinal].pod.Status.ContainerStatuses[0].ImageID).NotTo(BeEmpty())
+			Expect(initial[ordinal].pod.Status.ContainerStatuses[0].ContainerID).NotTo(BeEmpty())
+		}
+
+		updatedEnv := []corev1.EnvVar{{Name: "ROLLED", Value: "true"}}
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			if imageOnly {
+				setTemplateImage(set, updatedImage)
+			} else {
+				set.Spec.GroupTemplate.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Env = updatedEnv
+			}
+		})
+		newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+		for ordinal := 1; ordinal >= 0; ordinal-- {
+			child := waitChildRevision(testNs, setName, ordinal, newRevision)
+			old := initial[ordinal]
+			// Wait for the real RIS -> RI -> Pod update, not merely an RBG template patch.
+			assertBlocked := func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for index, original := range before {
+					g.Expect(children).To(HaveKey(index))
+					g.Expect(children[index].UID).To(Equal(original.UID))
+					if index < ordinal {
+						g.Expect(children[index].Spec).To(Equal(original.Spec))
+						g.Expect(children[index].Generation).To(Equal(original.Generation))
+						g.Expect(children[index].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+					}
+				}
+				current := downstreamOf(g, children[ordinal])
+				g.Expect(current.set.UID).To(Equal(old.set.UID))
+				g.Expect(current.set.Spec.UpdateStrategy.Type).To(Equal(workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType))
+				g.Expect(current.instance.UID).To(Equal(old.instance.UID))
+				if imageOnly {
+					g.Expect(current.pod.UID).To(Equal(old.pod.UID))
+					g.Expect(current.pod.Spec.Containers[0].Image).To(Equal(updatedImage))
+					g.Expect(current.pod.Status.ContainerStatuses).To(Equal(old.pod.Status.ContainerStatuses))
+					g.Expect(current.pod.Annotations).To(HaveKey(constants.InPlaceUpdateStateKey))
+					g.Expect(inplaceupdate.DefaultCheckInPlaceUpdateCompleted(current.pod)).To(HaveOccurred())
+					g.Expect(podConditionStatus(current.pod, constants.InPlaceUpdateReady)).To(Equal(corev1.ConditionFalse))
+				} else {
+					// InPlaceIfPossible preserves RI but env cannot be patched into a Pod.
+					g.Expect(current.pod.UID).NotTo(Equal(old.pod.UID))
+					// The controller also injects component/group identity environment variables.
+					g.Expect(current.pod.Spec.Containers[0].Env).To(ContainElements(updatedEnv))
+					g.Expect(current.pod.Spec.Containers[0].Image).To(Equal(old.pod.Spec.Containers[0].Image))
+				}
+				g.Expect(podConditionStatus(current.pod, corev1.PodReady)).NotTo(Equal(corev1.ConditionTrue))
+				g.Expect(meta.IsStatusConditionTrue(children[ordinal].Status.Conditions,
+					string(workloadsv1alpha2.RoleBasedGroupReady))).To(BeFalse())
+				g.Expect(mustFetchSet(testNs, setName).Status.CurrentRevision).To(Equal(oldRevision))
+				state, err := rollingStateOf(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state).To(Equal(rolloutInProgress))
+			}
+			Eventually(assertBlocked, timeout, interval).Should(Succeed())
+			Consistently(assertBlocked, 3*time.Second, interval).Should(Succeed())
+
+			// Only now simulate kubelet observing the new image. Gates remain controller-owned;
+			// waitChildReady recomputes PodReady after those gates become true.
+			if imageOnly {
+				current := downstreamOf(Default, child)
+				GinkgoWriter.Printf("Before kubelet completion pattern=%s ordinal=%d RI=%s baselines=%v\n",
+					pattern, ordinal, current.instance.Name, current.instance.Status.InPlaceUpdateContainerBaselines)
+				Eventually(func() error { return simulateChildKubelet(testNs, child.Name, true) }, timeout, interval).Should(Succeed())
+			}
+			waitChildReady(testNs, child.Name)
+			current := downstreamOf(Default, child)
+			if imageOnly {
+				status := current.pod.Status.ContainerStatuses[0]
+				Expect(status.Image).To(Equal(updatedImage))
+				Expect(status.ImageID).NotTo(Equal(old.pod.Status.ContainerStatuses[0].ImageID))
+				Expect(status.ContainerID).NotTo(Equal(old.pod.Status.ContainerStatuses[0].ContainerID))
+				Expect(status.RestartCount).To(Equal(old.pod.Status.ContainerStatuses[0].RestartCount + 1))
+				Expect(inplaceupdate.DefaultCheckInPlaceUpdateCompleted(current.pod)).To(Succeed())
+			}
+			GinkgoWriter.Printf("UID evidence pattern=%s imageOnly=%t ordinal=%d RBG=%s->%s RIS=%s->%s RI=%s->%s Pod=%s->%s\n",
+				pattern, imageOnly, ordinal, before[ordinal].UID, child.UID, old.set.UID, current.set.UID,
+				old.instance.UID, current.instance.UID, old.pod.UID, current.pod.UID)
+		}
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+		Expect(final.Status.UpdatedReadyReplicas).To(Equal(int32(2)))
+		for ordinal, child := range fetchChildren(testNs, setName) {
+			current := downstreamOf(Default, child)
+			Expect(child.UID).To(Equal(before[ordinal].UID))
+			Expect(current.set.UID).To(Equal(initial[ordinal].set.UID))
+			Expect(current.instance.UID).To(Equal(initial[ordinal].instance.UID))
+			if imageOnly {
+				Expect(current.pod.UID).To(Equal(initial[ordinal].pod.UID))
+			} else {
+				Expect(current.pod.UID).NotTo(Equal(initial[ordinal].pod.UID))
+			}
+		}
+	},
+		Entry("stateful env rolls Pods while retaining RI", false, constants.StatefulPattern),
+		Entry("stateless env rolls Pods while retaining RI", false, constants.StatelessPattern),
+		Entry("stateful image-only updates RI and Pod in place", true, constants.StatefulPattern),
+		Entry("stateless image-only updates RI and Pod in place", true, constants.StatelessPattern),
+	)
+
+	Describe("role labels-only updates", func() {
+		assertCompletedChild := func(g Gomega, child, before *workloadsv1alpha2.RoleBasedGroup, old downstream) {
+			g.Expect(child.UID).To(Equal(before.UID))
+			g.Expect(child.Generation).To(BeNumerically(">", before.Generation))
+			want := before.DeepCopy()
+			want.Spec.Roles[0].Labels["tier"] = "b"
+			g.Expect(child.Spec).To(Equal(want.Spec))
+			g.Expect(child.Status.ObservedGeneration).To(BeNumerically(">=", child.Generation))
+			g.Expect(meta.IsStatusConditionTrue(child.Status.Conditions,
+				string(workloadsv1alpha2.RoleBasedGroupReady))).To(BeTrue())
+			rolling := meta.FindStatusCondition(child.Status.Conditions,
+				string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+			g.Expect(rolling).NotTo(BeNil())
+			g.Expect(rolling.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(rolling.ObservedGeneration).To(BeNumerically(">=", child.Generation))
+
+			current := downstreamOf(g, child)
+			g.Expect(current.set.UID).To(Equal(old.set.UID))
+			g.Expect(current.set.Generation).To(Equal(old.set.Generation))
+			g.Expect(current.set.Spec).To(Equal(old.set.Spec))
+			g.Expect(current.set.Labels).To(HaveKeyWithValue("tier", "b"))
+			hashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, child.Spec.Roles[0].Name)
+			g.Expect(old.set.Labels[hashKey]).NotTo(BeEmpty())
+			g.Expect(current.set.Labels[hashKey]).To(And(Not(BeEmpty()), Not(Equal(old.set.Labels[hashKey]))))
+			g.Expect(current.instance.UID).To(Equal(old.instance.UID))
+			g.Expect(current.pod.UID).To(Equal(old.pod.UID))
+			g.Expect(current.pod.Spec).To(Equal(old.pod.Spec))
+			g.Expect(current.pod.Status.ContainerStatuses).To(Equal(old.pod.Status.ContainerStatuses))
+			g.Expect(podConditionStatus(current.pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+		}
+
+		It("completes an InPlaceUpdate set rollout without further workload events", func() {
+			setName := "rbgs-role-labels"
+			set := buildRollingSet(setName, testNs, 2, 1, 1, 0, 0)
+			set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			set.Spec.GroupTemplate.Spec.Roles[0].Labels = map[string]string{"tier": "a"}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+			initialSet := waitRollout(testNs, setName, rolloutComplete)
+			before := fetchChildren(testNs, setName)
+			Expect(before).To(HaveLen(2))
+			initial := map[int]downstream{}
+			for ordinal, child := range before {
+				initial[ordinal] = downstreamOf(Default, child)
+				Expect(initial[ordinal].set.Labels).To(HaveKeyWithValue("tier", "a"))
+				Expect(podConditionStatus(initial[ordinal].pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+			}
+
+			updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+				set.Spec.GroupTemplate.Spec.Roles[0].Labels["tier"] = "b"
+			})
+			// Kubelet status writes here could hide a stall caused by the filtered metadata-only event.
+			assertComplete := func(g Gomega) {
+				current, err := fetchSet(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(current.Generation).To(BeNumerically(">", initialSet.Generation))
+				g.Expect(current.Status.ObservedGeneration).To(BeNumerically(">=", current.Generation))
+				g.Expect(current.Status.UpdateRevision).To(And(Not(BeEmpty()), Not(Equal(initialSet.Status.CurrentRevision))))
+				g.Expect(current.Status.CurrentRevision).To(Equal(current.Status.UpdateRevision))
+				g.Expect(current.Status.Replicas).To(Equal(int32(2)))
+				g.Expect(current.Status.ReadyReplicas).To(Equal(int32(2)))
+				g.Expect(current.Status.UpdatedReplicas).To(Equal(int32(2)))
+				g.Expect(current.Status.UpdatedReadyReplicas).To(Equal(int32(2)))
+				g.Expect(current.Status.ExpectedUpdatedReplicas).To(Equal(int32(2)))
+				rolling := meta.FindStatusCondition(current.Status.Conditions,
+					string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+				g.Expect(rolling).NotTo(BeNil())
+				g.Expect(rolling.ObservedGeneration).To(BeNumerically(">=", current.Generation))
+				state, err := rollingStateOf(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state).To(Equal(rolloutComplete))
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for ordinal, original := range before {
+					g.Expect(children).To(HaveKey(ordinal))
+					child := children[ordinal]
+					g.Expect(child.Labels[constants.GroupSetRevisionLabelKey]).To(Equal(current.Status.UpdateRevision))
+					request := child.Annotations[constants.RolloutRequestAnnotationKey]
+					g.Expect(request).To(And(Not(BeEmpty()), Not(Equal(original.Annotations[constants.RolloutRequestAnnotationKey]))))
+					g.Expect(child.Status.ObservedRolloutRequest).To(Equal(request))
+					assertCompletedChild(g, child, original, initial[ordinal])
+				}
+			}
+			Eventually(assertComplete, timeout, interval).Should(Succeed())
+			Consistently(assertComplete, 3*time.Second, interval).Should(Succeed())
+		})
+
+		It("clears rolling progress on a standalone RBG without a rollout request", func() {
+			groupName := "rbg-role-labels"
+			template := buildSet(groupName, testNs, 1, 1, nil).Spec.GroupTemplate
+			group := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: groupName, Namespace: testNs},
+				Spec:       template.Spec,
+			}
+			group.Spec.Roles[0].Labels = map[string]string{"tier": "a"}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+			waitChildReady(testNs, groupName)
+			before := &workloadsv1alpha2.RoleBasedGroup{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(group), before)).To(Succeed())
+			Expect(before.Annotations).NotTo(HaveKey(constants.RolloutRequestAnnotationKey))
+			old := downstreamOf(Default, before)
+			Expect(old.set.Labels).To(HaveKeyWithValue("tier", "a"))
+			Expect(podConditionStatus(old.pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+
+			updated := before.DeepCopy()
+			updated.Spec.Roles[0].Labels["tier"] = "b"
+			Expect(testutil.K8sClient.Patch(testutil.Ctx, updated, client.MergeFrom(before))).To(Succeed())
+			// Only reads follow, so no extra events or restart can unstick the rollout.
+			assertComplete := func(g Gomega) {
+				current := &workloadsv1alpha2.RoleBasedGroup{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(before), current)).To(Succeed())
+				g.Expect(current.Annotations).NotTo(HaveKey(constants.RolloutRequestAnnotationKey))
+				g.Expect(current.Status.ObservedRolloutRequest).To(BeEmpty())
+				assertCompletedChild(g, current, before, old)
+			}
+			Eventually(assertComplete, timeout, interval).Should(Succeed())
+			Consistently(assertComplete, 3*time.Second, interval).Should(Succeed())
+		})
+	})
+
+	// The topology annotation changes no RBG spec, so neither the child generation nor its Ready
+	// status moves when the set writes it; only the downstream Pod template does.
+	DescribeTable("paces a metadata-only topology change by its downstream rollout", func(pattern constants.InstancePatternType) {
+		setName := "rbgs-topology"
+		const topology = "kubernetes.io/hostname"
+		set := buildRollingSet(setName, testNs, 2, 1, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		role := &set.Spec.GroupTemplate.Spec.Roles[0]
+		role.Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
+		role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		oldRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+		before := fetchChildren(testNs, setName)
+
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			if set.Spec.GroupTemplate.Annotations == nil {
+				set.Spec.GroupTemplate.Annotations = map[string]string{}
+			}
+			set.Spec.GroupTemplate.Annotations[constants.GroupExclusiveTopologyKey] = topology
+		})
+		newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+		for ordinal := 1; ordinal >= 0; ordinal-- {
+			child := waitChildRevision(testNs, setName, ordinal, newRevision)
+			Expect(child.Generation).To(Equal(before[ordinal].Generation))
+			assertBlocked := func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(2))
+				for index := 0; index < ordinal; index++ {
+					g.Expect(children[index].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision))
+					g.Expect(children[index].Annotations).NotTo(HaveKey(constants.GroupExclusiveTopologyKey))
+				}
+				current := children[ordinal]
+				g.Expect(current.Annotations).To(HaveKey(constants.RolloutRequestAnnotationKey))
+				g.Expect(current.Status.ObservedRolloutRequest).NotTo(Equal(current.Annotations[constants.RolloutRequestAnnotationKey]),
+					"the request must not be acknowledged before the topology reaches ready Pods")
+				pod := downstreamOf(g, current).pod
+				g.Expect(pod.Spec.Affinity).NotTo(BeNil())
+				g.Expect(pod.Spec.Affinity.PodAntiAffinity).NotTo(BeNil())
+				g.Expect(pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution).
+					To(ContainElement(HaveField("TopologyKey", topology)))
+				g.Expect(podConditionStatus(pod, corev1.PodReady)).NotTo(Equal(corev1.ConditionTrue))
+				g.Expect(mustFetchSet(testNs, setName).Status.CurrentRevision).To(Equal(oldRevision))
+				state, err := rollingStateOf(testNs, setName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state).To(Equal(rolloutInProgress))
+			}
+			Eventually(assertBlocked, timeout, interval).Should(Succeed())
+			Consistently(assertBlocked, 3*time.Second, interval).Should(Succeed())
+			waitChildReady(testNs, child.Name)
+		}
+
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+		for ordinal, child := range fetchChildren(testNs, setName) {
+			Expect(child.UID).To(Equal(before[ordinal].UID))
+			Expect(child.Generation).To(Equal(before[ordinal].Generation))
+			Expect(child.Annotations).To(HaveKeyWithValue(constants.GroupExclusiveTopologyKey, topology))
+			Expect(child.Status.ObservedRolloutRequest).To(Equal(child.Annotations[constants.RolloutRequestAnnotationKey]))
+		}
+	},
+		Entry("stateful", constants.StatefulPattern),
+		Entry("stateless", constants.StatelessPattern),
+	)
+
+	It("defaults an empty rollout strategy through the CRD without a webhook", func() {
+		set := buildSet("rbgs-default", testNs, 1, 0, &workloadsv1alpha2.GroupSetRolloutStrategy{})
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		stored := mustFetchSet(testNs, set.Name)
+		Expect(stored.Spec.RolloutStrategy.Type).To(Equal(workloadsv1alpha2.InPlaceUpdateStrategyType))
+		Expect(stored.Spec.RolloutStrategy.MaxUnavailable).To(Equal(ptr.To(intstr.FromInt32(1))))
+		Expect(stored.Spec.RolloutStrategy.MaxSurge).To(Equal(ptr.To(intstr.FromInt32(0))))
+		Expect(stored.Spec.RolloutStrategy.Partition).To(Equal(ptr.To(intstr.FromInt32(0))))
+		final := waitRollout(testNs, set.Name, rolloutComplete)
+		Expect(meta.FindStatusCondition(final.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling)).Status).
+			To(Equal(metav1.ConditionFalse))
+	})
+
+	It("updates metadata in place without relying on a child generation change", func() {
+		setName := "rbgs-inplace-metadata"
+		set := buildRollingSet(setName, testNs, 2, 0, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		set.Spec.GroupTemplate.Labels = map[string]string{"remove": "old", "version": "old"}
+		set.Spec.GroupTemplate.Annotations = map[string]string{"remove": "old", "version": "old"}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).Should(Succeed())
+		oldRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+		before := fetchChildren(testNs, setName)
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			set.Spec.GroupTemplate.Labels = map[string]string{"add": "new", "version": "new"}
+			set.Spec.GroupTemplate.Annotations = map[string]string{"add": "new", "version": "new"}
+		})
+		newRevision := waitUpdateRevision(testNs, setName, oldRevision)
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision))
+		for index, child := range fetchChildren(testNs, setName) {
+			Expect(child.UID).To(Equal(before[index].UID))
+			Expect(child.Generation).To(Equal(before[index].Generation))
+			Expect(child.Labels[constants.GroupSetRevisionLabelKey]).To(Equal(newRevision))
+			for _, metadata := range []map[string]string{child.Labels, child.Annotations} {
+				Expect(metadata).To(HaveKeyWithValue("add", "new"))
+				Expect(metadata).To(HaveKeyWithValue("version", "new"))
+				Expect(metadata).NotTo(HaveKey("remove"))
+			}
+		}
+	})
+
+	// Garbage collection orphans built-in dependents with a strategic-merge patch, which
+	// re-serializes ControllerRevision data with sorted keys. A payload stored in struct field
+	// order therefore fails the immutable-data check and the orphan finalizer never clears.
+	It("keeps revision data mergeable so orphan cascading can proceed", func() {
+		setName := "rbgs-orphan-merge"
+		Expect(testutil.K8sClient.Create(testutil.Ctx, buildRollingSet(setName, testNs, 2, 0, 1, 0, 0))).Should(Succeed())
+		final := waitRollout(testNs, setName, rolloutComplete)
+		revision := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{
+			Namespace: testNs, Name: final.Status.CurrentRevision,
+		}, revision)).To(Succeed())
+		stored := string(revision.Data.Raw)
+
+		patched := revision.DeepCopy()
+		patched.Annotations = map[string]string{"test.io/orphan-probe": "true"}
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, patched, client.StrategicMergeFrom(revision))).To(Succeed())
+
+		merged := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(revision), merged)).To(Succeed())
+		Expect(merged.Annotations).To(HaveKeyWithValue("test.io/orphan-probe", "true"))
+		Expect(string(merged.Data.Raw)).To(Equal(stored))
+	})
+
+	It("adopts old-UID orphan revisions and prunes only excess unused history", func() {
+		setName := "rbgs-orphan-history"
+		set := buildRollingSet(setName, testNs, 2, 0, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		predecessor := waitRollout(testNs, setName, rolloutComplete)
+		oldRevision := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{
+			Namespace: testNs, Name: predecessor.Status.CurrentRevision,
+		}, oldRevision)).To(Succeed())
+		Expect(metav1.IsControlledBy(oldRevision, predecessor)).To(BeTrue())
+		before := fetchChildren(testNs, setName)
+		Expect(before).To(HaveLen(2))
+
+		Expect(testutil.K8sClient.Delete(testutil.Ctx, predecessor,
+			client.PropagationPolicy(metav1.DeletePropagationOrphan))).To(Succeed())
+		// envtest has no GC: explicitly orphan dependents and remove the parent's orphan finalizer.
+		for _, dependent := range []client.Object{oldRevision.DeepCopy(), before[0].DeepCopy(), before[1].DeepCopy()} {
+			Eventually(func() error {
+				if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(dependent), dependent); err != nil {
+					return err
+				}
+				base := dependent.DeepCopyObject().(client.Object)
+				dependent.SetOwnerReferences(nil)
+				return testutil.K8sClient.Patch(testutil.Ctx, dependent,
+					client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+			}, timeout, interval).Should(Succeed())
+		}
+		Eventually(func() error {
+			terminating, err := fetchSet(testNs, setName)
+			if err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			base := terminating.DeepCopy()
+			controllerutil.RemoveFinalizer(terminating, metav1.FinalizerOrphanDependents)
+			return testutil.K8sClient.Patch(testutil.Ctx, terminating,
+				client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		}, timeout, interval).Should(Succeed())
+		Eventually(func() bool {
+			_, err := fetchSet(testNs, setName)
+			return apierrors.IsNotFound(err)
+		}, timeout, interval).Should(BeTrue())
+
+		By("seeding more old-UID orphan history than the unused retention limit before recreation")
+		history := []*appsv1.ControllerRevision{oldRevision}
+		// Preserve the real controller's canonical payload, changing only a template annotation.
+		template := map[string]json.RawMessage{}
+		Expect(json.Unmarshal(oldRevision.Data.Raw, &template)).To(Succeed())
+		for i := 0; i < utils.DefaultRevisionHistoryLimit+1; i++ {
+			annotations, err := json.Marshal(map[string]string{"test.io/orphan-history": fmt.Sprint(i)})
+			Expect(err).NotTo(HaveOccurred())
+			template["annotations"] = annotations
+			data, err := json.Marshal(template)
+			Expect(err).NotTo(HaveOccurred())
+			hash := sha256.Sum256(append([]byte(string(predecessor.UID)+"\x00"), data...))
+			revision := &appsv1.ControllerRevision{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: fmt.Sprintf("rbgs-%x", hash[:24]), Namespace: testNs,
+					Labels: map[string]string{constants.GroupSetNameLabelKey: setName},
+				},
+				Data: runtime.RawExtension{Raw: data}, Revision: oldRevision.Revision + int64(i) + 1,
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, revision)).To(Succeed())
+			history = append(history, revision.DeepCopy())
+		}
+
+		By("adopting every retained revision, including an old revision referenced only by a held child")
+		replacement := buildRollingSet(setName, testNs, 2, 0, 1, 0, 1)
+		replacement.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		Expect(testutil.K8sClient.Create(testutil.Ctx, replacement)).To(Succeed())
+		Expect(replacement.UID).NotTo(Equal(predecessor.UID))
+		partitioned := waitRollout(testNs, setName, "False=PartitionComplete")
+		Expect(partitioned.Status.CurrentRevision).To(Equal(partitioned.Status.UpdateRevision))
+		Expect(partitioned.Status.UpdateRevision).NotTo(Equal(oldRevision.Name))
+		children := fetchChildren(testNs, setName)
+		Expect(children).To(HaveLen(2))
+		for ordinal, child := range children {
+			Expect(child.UID).To(Equal(before[ordinal].UID))
+			Expect(metav1.IsControlledBy(child, replacement)).To(BeTrue())
+		}
+		Expect(children[0].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(oldRevision.Name))
+		Expect(children[1].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(partitioned.Status.UpdateRevision))
+		newRevision := &appsv1.ControllerRevision{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{
+			Namespace: testNs, Name: partitioned.Status.UpdateRevision,
+		}, newRevision)).To(Succeed())
+		history = append(history, newRevision)
+
+		// The oldest revision is child-protected; the next oldest is the excess unused entry.
+		pruned := map[string]bool{history[1].Name: true}
+		assertHistory := func(g Gomega) {
+			revisions := &appsv1.ControllerRevisionList{}
+			g.Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(testNs),
+				client.MatchingLabels{constants.GroupSetNameLabelKey: setName})).To(Succeed())
+			g.Expect(revisions.Items).To(HaveLen(len(history) - len(pruned)))
+			for i := range revisions.Items {
+				g.Expect(metav1.IsControlledBy(&revisions.Items[i], replacement)).To(BeTrue())
+			}
+			for _, snapshot := range history {
+				stored := &appsv1.ControllerRevision{}
+				err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(snapshot), stored)
+				if pruned[snapshot.Name] {
+					g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "excess unused revision %s must be deleted", snapshot.Name)
+					continue
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(metav1.IsControlledBy(stored, replacement)).To(BeTrue())
+				g.Expect(stored.UID).To(Equal(snapshot.UID))
+				g.Expect(stored.Data).To(Equal(snapshot.Data))
+				g.Expect(stored.Revision).To(Equal(snapshot.Revision))
+				g.Expect(stored.Labels).To(Equal(snapshot.Labels))
+				g.Expect(stored.Annotations).To(Equal(snapshot.Annotations))
+			}
+		}
+		Eventually(assertHistory, timeout, interval).Should(Succeed())
+		Consistently(assertHistory, 3*time.Second, interval).Should(Succeed())
+
+		By("finishing the rollout and pruning the old child reference only after it becomes unused")
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			set.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+		})
+		final := waitRollout(testNs, setName, rolloutComplete)
+		Expect(final.Status.CurrentRevision).To(Equal(newRevision.Name))
+		Expect(final.Status.UpdateRevision).To(Equal(newRevision.Name))
+		pruned[oldRevision.Name] = true
+		Eventually(assertHistory, timeout, interval).Should(Succeed())
+	})
+
+	It("keeps the legacy in-place path for a set without a rollout strategy", func() {
+		setName := "rbgs-legacy"
+		Expect(testutil.K8sClient.Create(testutil.Ctx, buildSet(setName, testNs, 2, 0, nil))).Should(Succeed())
+
+		uids := map[int]types.UID{}
+		Eventually(func() error {
+			children := fetchChildren(testNs, setName)
+			if len(children) != 2 {
+				return fmt.Errorf("%d children exist, want 2", len(children))
+			}
+			for ordinal, child := range children {
+				if _, ok := child.Labels[constants.GroupSetRevisionLabelKey]; ok {
+					return fmt.Errorf("ordinal %d carries a revision label without a rollout strategy", ordinal)
+				}
+				uids[ordinal] = child.UID
+			}
+			return nil
+		}, timeout, interval).Should(Succeed())
+
+		set := mustFetchSet(testNs, setName)
+		Expect(set.Status.CurrentRevision).To(BeEmpty())
+		Expect(set.Status.UpdateRevision).To(BeEmpty())
+		Expect(meta.FindStatusCondition(set.Status.Conditions,
+			string(workloadsv1alpha2.RoleBasedGroupSetRolling))).To(BeNil())
+
+		updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+			set.Spec.GroupTemplate.Spec.RoleTemplates = []workloadsv1alpha2.RoleTemplate{{
+				Name:     "shared",
+				Template: wrappersv2.BuildBasicPodTemplateSpec(),
+			}}
+		})
+
+		Eventually(func() error {
+			children := fetchChildren(testNs, setName)
+			if len(children) != 2 {
+				return fmt.Errorf("%d children exist, want 2", len(children))
+			}
+			for ordinal, child := range children {
+				if child.UID != uids[ordinal] {
+					return fmt.Errorf("ordinal %d was recreated", ordinal)
+				}
+				if len(child.Spec.RoleTemplates) != 1 || child.Spec.RoleTemplates[0].Name != "shared" {
+					return fmt.Errorf("ordinal %d has roleTemplates %v, want the shared template",
+						ordinal, child.Spec.RoleTemplates)
+				}
+			}
+			return nil
+		}, timeout, interval).Should(Succeed())
+	})
+})

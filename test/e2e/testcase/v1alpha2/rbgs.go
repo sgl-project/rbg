@@ -17,14 +17,134 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"time"
+
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
+	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
+
+// rolloutMarker is added to the container env of the group template to drive a rolling
+// update that replaces Pods, even when the set strategy preserves the RBG objects.
+const (
+	rolloutMarkerName  = "RBGSET_ROLLOUT_MARKER"
+	rolloutMarkerValue = "rolled"
+)
+
+// hasRolloutMarker reports whether the role carries the marker env var, i.e. whether it has
+// been moved onto the updated group template.
+func hasRolloutMarker(role workloadsv1alpha2.RoleSpec) bool {
+	if role.StandalonePattern == nil || role.StandalonePattern.Template == nil {
+		return false
+	}
+	return containersHaveRolloutMarker(role.StandalonePattern.Template.Spec.Containers)
+}
+
+func containersHaveRolloutMarker(containers []corev1.Container) bool {
+	for _, container := range containers {
+		for _, env := range container.Env {
+			if env.Name == rolloutMarkerName && env.Value == rolloutMarkerValue {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// triggerRbgSetRollout adds the marker env var to the group template, which is the change every
+// rolling update case below rolls out.
+func triggerRbgSetRollout(f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet) {
+	updateRbgSetV2(
+		f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+			container := &rs.Spec.GroupTemplate.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0]
+			container.Env = append(
+				container.Env,
+				corev1.EnvVar{Name: rolloutMarkerName, Value: rolloutMarkerValue},
+			)
+		},
+	)
+}
+
+// baseRolloutComplete reports whether the rollout has reached its end state: every base ordinal
+// exists, carries the new template and is serving, and the surge groups have been reclaimed. It
+// returns the base UIDs so a caller can show that they replaced the original ones.
+func baseRolloutComplete(
+	children []workloadsv1alpha2.RoleBasedGroup, replicas int,
+) (map[string]types.UID, bool) {
+	base, surge := framework.SplitRbgSetV2Children(children, replicas)
+	if len(base) != replicas || len(surge) != 0 {
+		return nil, false
+	}
+	if framework.CountRbgSetV2ReadyChildren(base) != replicas {
+		return nil, false
+	}
+	for i := range base {
+		if !hasRolloutMarker(base[i].Spec.Roles[0]) {
+			return nil, false
+		}
+	}
+	return framework.RbgSetV2ChildUIDs(base), true
+}
+
+// expectGroupsRecreated asserts that the named groups kept their deterministic names but changed
+// UID, which is what a recreate rollout leaves behind.
+func expectGroupsRecreated(before, after map[string]types.UID, names ...string) {
+	for _, name := range names {
+		gomega.Expect(after).To(gomega.HaveKey(name))
+		gomega.Expect(after[name]).NotTo(
+			gomega.Equal(before[name]), "group %s should have been deleted and recreated", name,
+		)
+	}
+}
+
+// expectGroupsUntouched asserts that the named groups were neither recreated nor updated in
+// place, which is how a held-back ordinal proves the controller left it alone.
+func expectGroupsUntouched(before, after map[string]types.UID, names ...string) {
+	for _, name := range names {
+		gomega.Expect(after).To(gomega.HaveKey(name))
+		gomega.Expect(after[name]).To(
+			gomega.Equal(before[name]), "group %s should not have been touched", name,
+		)
+	}
+}
+
+// countRbgV2ReadyPods counts the ready, non-terminating Pods of the named child RoleBasedGroup.
+// The DeletionTimestamp filter is what makes an in-place scale distinguishable from a
+// delete-recreate: a recreated group's old Pods linger as terminating for a while.
+func countRbgV2ReadyPods(f *framework.Framework, namespace, rbgName string) int {
+	podList := &corev1.PodList{}
+	gomega.Expect(f.Client.List(
+		f.Ctx, podList, client.InNamespace(namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgName},
+	)).Should(gomega.Succeed())
+
+	ready := 0
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				ready++
+				break
+			}
+		}
+	}
+	return ready
+}
 
 func RunRbgSetControllerTestCases(f *framework.Framework) {
 	ginkgo.Describe(
@@ -72,21 +192,1024 @@ func RunRbgSetControllerTestCases(f *framework.Framework) {
 			)
 
 			ginkgo.It(
-				"exclusive-topology", func() {
+				"role replicas change scales groups in place without recreating them", func() {
+					testRbgSetRoleReplicasScaleInPlace(f)
+				},
+			)
+
+			ginkgo.It(
+				"exclusive-topology annotation propagates from groupTemplate and is removed with it", func() {
 					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
-						WithReplicas(1).
-						WithAnnotations(
-							map[string]string{constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone"},
-						).Obj()
+						WithReplicas(1).Obj()
+					rbgset.Spec.GroupTemplate.Annotations = map[string]string{
+						constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone",
+					}
 
 					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
 
 					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
-					f.ExpectRbgV2AnnotationFromSet(
-						rbgset, map[string]string{constants.GroupExclusiveTopologyKey: "topology.kubernetes.io/zone"},
+
+					// The user-facing rbg.* annotation propagates from groupTemplate to the child.
+					gomega.Eventually(
+						func() bool {
+							children := f.ListRbgSetV2Children(rbgset)
+							return len(children) == 1 &&
+								children[0].Annotations[constants.GroupExclusiveTopologyKey] == "topology.kubernetes.io/zone"
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+
+					// Removing it from the template removes it from the child too: the key is
+					// user-facing, not controller-owned, so the sync must not keep it behind.
+					updateRbgSetV2(
+						f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+							delete(rs.Spec.GroupTemplate.Annotations, constants.GroupExclusiveTopologyKey)
+						},
 					)
+					gomega.Eventually(
+						func() bool {
+							children := f.ListRbgSetV2Children(rbgset)
+							if len(children) != 1 {
+								return false
+							}
+							_, exists := children[0].Annotations[constants.GroupExclusiveTopologyKey]
+							return !exists
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
 				},
 			)
+
+			ginkgo.It(
+				"recreate rolling update replaces one group at a time", func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+						WithReplicas(2).
+						WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
+
+					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+
+					// Creation settles: both groups come up and then hold still, so the
+					// steady state is recorded before anything is changed.
+					initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+					gomega.Expect(initialUIDs).Should(gomega.HaveLen(2))
+					f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+					// The marker env var is not a replicas-only diff, so it drives a recreate.
+					triggerRbgSetRollout(f, rbgset)
+
+					// The pacing invariant is asserted on every poll, so it covers the whole
+					// rollout rather than a fixed window. maxSurge=0 means never more groups than
+					// replicas, and maxUnavailable=1 out of 2 means never fewer than one ready
+					// group. Together those are exactly what "delete one, then create one" looks
+					// like from the outside, and a violation fails the spec immediately.
+					var rolledUIDs map[string]types.UID
+					gomega.Eventually(
+						func() bool {
+							children := f.ListRbgSetV2Children(rbgset)
+							gomega.Expect(len(children)).To(
+								gomega.BeNumerically("<=", 2),
+								"maxSurge is 0, so no group beyond spec.replicas may appear",
+							)
+							ready := framework.CountRbgSetV2ReadyChildren(children)
+							gomega.Expect(ready).To(
+								gomega.BeNumerically(">=", 1),
+								"maxUnavailable is 1 of 2, so one group must keep serving",
+							)
+
+							if len(children) != 2 || ready != 2 {
+								return false
+							}
+							uids := framework.RbgSetV2ChildUIDs(children)
+							for name, uid := range initialUIDs {
+								if uids[name] == uid {
+									return false
+								}
+							}
+							rolledUIDs = uids
+							return true
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+
+					// Both groups were recreated: the deterministic names are kept, the UIDs are not.
+					expectGroupsRecreated(initialUIDs, rolledUIDs, "test-0", "test-1")
+
+					// The set settles again on the new template and stays there.
+					f.ExpectRbgSetV2ChildrenStable(rbgset, rolledUIDs)
+				},
+			)
+
+			ginkgo.It(
+				"surge backs a zero maxUnavailable so ready groups never drop below replicas", func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+						WithReplicas(2).
+						WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(0, 1, 0)).Obj()
+
+					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+					initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+					f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+					triggerRbgSetRollout(f, rbgset)
+
+					// maxUnavailable is 0, so the entire delete budget comes from the surge group:
+					// a base group may only be recreated once the surge group is serving. Two groups
+					// therefore have to be ready at every point of the rollout. Both invariants are
+					// asserted on every poll, which covers the whole window rather than a sample.
+					var rolledUIDs map[string]types.UID
+					gomega.Eventually(
+						func() bool {
+							children := f.ListRbgSetV2Children(rbgset)
+							gomega.Expect(framework.CountRbgSetV2ReadyChildren(children)).To(
+								gomega.BeNumerically(">=", 2),
+								"maxUnavailable is 0, so both groups must keep serving throughout",
+							)
+							gomega.Expect(len(children)).To(
+								gomega.BeNumerically("<=", 3),
+								"maxSurge is 1, so at most one group above spec.replicas may exist",
+							)
+
+							uids, complete := baseRolloutComplete(children, 2)
+							if !complete {
+								return false
+							}
+							rolledUIDs = uids
+							return true
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+
+					expectGroupsRecreated(initialUIDs, rolledUIDs, "test-0", "test-1")
+					f.ExpectRbgSetV2ChildrenStable(rbgset, rolledUIDs)
+				},
+			)
+
+			ginkgo.It(
+				"surge group survives until the rollout completes", func() {
+					rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+						WithReplicas(2).
+						WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 1, 0)).Obj()
+
+					f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+					gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+					initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+					f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+					triggerRbgSetRollout(f, rbgset)
+
+					// one group should keep serving on its own and one surge group is extra capacity on top.
+					var rolledUIDs map[string]types.UID
+					sawSurge := false
+					gomega.Eventually(
+						func() bool {
+							children := f.ListRbgSetV2Children(rbgset)
+							gomega.Expect(framework.CountRbgSetV2ReadyChildren(children)).To(
+								gomega.BeNumerically(">=", 1),
+								"maxUnavailable is 1 of 2, so one group must keep serving",
+							)
+							gomega.Expect(len(children)).To(
+								gomega.BeNumerically("<=", 3),
+								"maxSurge is 1, so at most one group above spec.replicas may exist",
+							)
+
+							_, surge := framework.SplitRbgSetV2Children(children, 2)
+							if len(surge) > 0 {
+								sawSurge = true
+							}
+
+							uids, complete := baseRolloutComplete(children, 2)
+							if !complete {
+								// Only enforced once the surge group has been sighted, so the poll
+								// that lands before the first reconcile does not fail the case.
+								if sawSurge {
+									gomega.Expect(surge).To(
+										gomega.HaveLen(1),
+										"the surge group must not be reclaimed before the rollout completes",
+									)
+								}
+								return false
+							}
+							rolledUIDs = uids
+							return true
+						}, utils.Timeout, utils.Interval,
+					).Should(gomega.BeTrue())
+
+					gomega.Expect(sawSurge).To(
+						gomega.BeTrue(), "no surge group ever appeared, so the case proved nothing",
+					)
+					expectGroupsRecreated(initialUIDs, rolledUIDs, "test-0", "test-1")
+					f.ExpectRbgSetV2ChildrenStable(rbgset, rolledUIDs)
+				},
+			)
+
+			runRbgSetPartitionRolloutCases(f)
+			runRbgSetPartitionRecoveryCases(f)
+			runRbgSetInPlaceUpdateCases(f)
+			runRbgSetMetadataOnlyCases(f)
+			runRbgSetSurgeBudgetCases(f)
+		},
+	)
+}
+
+// Keep the existing scale spec's closures out of the registrar's gocyclo budget.
+func testRbgSetRoleReplicasScaleInPlace(f *framework.Framework) {
+	rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+		WithReplicas(2).
+		WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
+	container := &rbgset.Spec.GroupTemplate.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0]
+	container.ReadinessProbe = &corev1.Probe{
+		ProbeHandler:        corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/bin/sh", "-c", "true"}}},
+		InitialDelaySeconds: 30,
+		PeriodSeconds:       1,
+	}
+
+	f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+	gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+	initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+	gomega.Expect(initialUIDs).To(gomega.HaveLen(2))
+	f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+	initialChildren := f.ListRbgSetV2Children(rbgset)
+	initialPods := rbgSetSinglePodUIDs(f, initialChildren)
+	initialUpper := framework.RbgSetV2ChildByOrdinal(initialChildren, 1)
+	initialLower := framework.RbgSetV2ChildByOrdinal(initialChildren, 0)
+	gomega.Expect(initialUpper).NotTo(gomega.BeNil())
+	gomega.Expect(initialLower).NotTo(gomega.BeNil())
+	previousRevision := initialLower.Labels[constants.GroupSetRevisionLabelKey]
+	gomega.Expect(previousRevision).NotTo(gomega.BeEmpty())
+	for _, child := range initialChildren {
+		gomega.Expect(child.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(1))))
+		gomega.Expect(countRbgV2ReadyPods(f, child.Namespace, child.Name)).To(gomega.Equal(1))
+	}
+
+	// Only replicas changes after creation: the old Pods are ready, but each new Pod
+	// waits for its own probe delay. Recreate must still honor the rollout budget.
+	updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+		rs.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
+	})
+	observeChildren := func() []workloadsv1alpha2.RoleBasedGroup {
+		children := f.ListRbgSetV2Children(rbgset)
+		gomega.Expect(framework.RbgSetV2ChildUIDs(children)).To(gomega.Equal(initialUIDs),
+			"a replicas-only change must preserve both groups without surge")
+		observed := make([]workloadsv1alpha2.RoleBasedGroup, 0, len(children))
+		for _, child := range children {
+			gomega.Expect(child.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
+			rolling := meta.FindStatusCondition(child.Status.Conditions,
+				string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+			request, requested := child.Annotations[constants.RolloutRequestAnnotationKey]
+			if child.Status.ObservedGeneration >= child.Generation &&
+				(!requested || child.Status.ObservedRolloutRequest == request) &&
+				(rolling == nil || (rolling.ObservedGeneration >= child.Generation && rolling.Status == metav1.ConditionFalse)) {
+				observed = append(observed, child)
+			}
+		}
+		gomega.Expect(framework.CountRbgSetV2ReadyChildren(observed)).To(gomega.BeNumerically(">=", 1),
+			"maxUnavailable=1 must hold on every sample, including generation and rollout acknowledgement")
+
+		upper := framework.RbgSetV2ChildByOrdinal(children, 1)
+		lower := framework.RbgSetV2ChildByOrdinal(children, 0)
+		gomega.Expect(upper).NotTo(gomega.BeNil())
+		gomega.Expect(lower).NotTo(gomega.BeNil())
+		if ptr.Deref(lower.Spec.Roles[0].Replicas, 0) == 2 {
+			// Check ordering throughout the rollout, not just in the held window.
+			gomega.Expect(upper.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+			gomega.Expect(upper.Status.ObservedGeneration).To(gomega.BeNumerically(">=", upper.Generation))
+			request := upper.Annotations[constants.RolloutRequestAnnotationKey]
+			gomega.Expect(request).NotTo(gomega.BeEmpty())
+			gomega.Expect(upper.Status.ObservedRolloutRequest).To(gomega.Equal(request),
+				"ordinal 0 must wait for ordinal 1's acknowledgement")
+			gomega.Expect(countRbgV2ReadyPods(f, upper.Namespace, upper.Name)).To(gomega.Equal(2),
+				"ordinal 0 must wait for ordinal 1's new Pod to become ready")
+		} else {
+			gomega.Expect(lower.Spec).To(gomega.Equal(initialLower.Spec))
+			gomega.Expect(lower.Generation).To(gomega.Equal(initialLower.Generation))
+			gomega.Expect(lower.Labels[constants.GroupSetRevisionLabelKey]).To(gomega.Equal(previousRevision))
+			gomega.Expect(lower.Annotations[constants.RolloutRequestAnnotationKey]).To(
+				gomega.Equal(initialLower.Annotations[constants.RolloutRequestAnnotationKey]))
+		}
+		return children
+	}
+	upperHeld := func(g gomega.Gomega) {
+		children := observeChildren()
+		upper := framework.RbgSetV2ChildByOrdinal(children, 1)
+		lower := framework.RbgSetV2ChildByOrdinal(children, 0)
+		g.Expect(upper.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+		g.Expect(upper.Generation).To(gomega.BeNumerically(">", initialUpper.Generation))
+		g.Expect(upper.Labels[constants.GroupSetRevisionLabelKey]).NotTo(gomega.Equal(previousRevision))
+		request := upper.Annotations[constants.RolloutRequestAnnotationKey]
+		g.Expect(request).NotTo(gomega.BeEmpty())
+		g.Expect(upper.Status.ObservedRolloutRequest).NotTo(gomega.Equal(request))
+		g.Expect(countRbgV2ReadyPods(f, upper.Namespace, upper.Name)).To(gomega.Equal(1))
+		pods := &corev1.PodList{}
+		g.Expect(f.Client.List(f.Ctx, pods, client.InNamespace(upper.Namespace), client.MatchingLabels{
+			constants.GroupNameLabelKey: upper.Name,
+		})).Should(gomega.Succeed())
+		g.Expect(pods.Items).To(gomega.HaveLen(2))
+		pending := 0
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			g.Expect(pod.DeletionTimestamp.IsZero()).To(gomega.BeTrue())
+			if initialPods[upper.Name][pod.Name] == pod.UID {
+				g.Expect(rbgSetPodReady(pod)).To(gomega.BeTrue())
+			} else {
+				g.Expect(rbgSetPodReady(pod)).To(gomega.BeFalse())
+				pending++
+			}
+		}
+		g.Expect(pending).To(gomega.Equal(1), "the new Pod must be present but not ready")
+		g.Expect(lower.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(1))))
+		pod := rbgSetSinglePod(f, lower)
+		g.Expect(pod).NotTo(gomega.BeNil())
+		g.Expect(initialPods[lower.Name]).To(gomega.HaveKeyWithValue(pod.Name, pod.UID))
+		g.Expect(rbgSetPodReady(pod)).To(gomega.BeTrue())
+	}
+	gomega.Eventually(upperHeld, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	gomega.Consistently(upperHeld, 3*time.Second, utils.Interval).Should(gomega.Succeed())
+
+	// The probe becomes ready naturally; no second template change releases the rollout.
+	rolloutComplete := func(g gomega.Gomega) {
+		children := observeChildren()
+		g.Expect(framework.CountRbgSetV2ReadyChildren(children)).To(gomega.Equal(2))
+		for _, child := range children {
+			g.Expect(child.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+			g.Expect(countRbgV2ReadyPods(f, child.Namespace, child.Name)).To(gomega.Equal(2))
+			g.Expect(child.Status.ObservedGeneration).To(gomega.BeNumerically(">=", child.Generation))
+			request := child.Annotations[constants.RolloutRequestAnnotationKey]
+			g.Expect(request).NotTo(gomega.BeEmpty())
+			g.Expect(child.Status.ObservedRolloutRequest).To(gomega.Equal(request))
+		}
+		g.Expect(rbgSetRolloutSettled(f, rbgset, children, 0, previousRevision)).To(gomega.BeTrue())
+	}
+	gomega.Eventually(rolloutComplete, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	gomega.Consistently(rolloutComplete, 15*time.Second, 2*time.Second).Should(gomega.Succeed())
+}
+
+// A metadata-only template change keeps every child's generation, so only the rollout
+// acknowledgement keeps the next ordinal waiting for the upper group's Pods.
+func runRbgSetMetadataOnlyCases(f *framework.Framework) {
+	ginkgo.It(
+		"InPlaceUpdate holds a metadata-only change on the upper group until its Pods roll out", func() {
+			// No node carries this key, so required affinity built from it can never be satisfied
+			// and the upper group's rollout cannot finish while the annotation is set.
+			const topology = "rbgs-e2e.workloads.x-k8s.io/absent-topology"
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(2).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
+			rbgset.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			role := &rbgset.Spec.GroupTemplate.Spec.Roles[0]
+			role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment"}
+			rollingUpdate := wrappersv2.BuildRollingUpdate(1, 0)
+			role.RolloutStrategy.RollingUpdate = &rollingUpdate
+			role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+			initial := f.ListRbgSetV2Children(rbgset)
+			generations := map[string]int64{}
+			for _, child := range initial {
+				generations[child.Name] = child.Generation
+			}
+
+			updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+				if rs.Spec.GroupTemplate.Annotations == nil {
+					rs.Spec.GroupTemplate.Annotations = map[string]string{}
+				}
+				rs.Spec.GroupTemplate.Annotations[constants.GroupExclusiveTopologyKey] = topology
+			})
+			upperHeld := func(g gomega.Gomega) {
+				children := f.ListRbgSetV2Children(rbgset)
+				g.Expect(framework.RbgSetV2ChildUIDs(children)).To(gomega.Equal(initialUIDs))
+				upper := framework.RbgSetV2ChildByOrdinal(children, 1)
+				g.Expect(upper.Annotations).To(gomega.HaveKeyWithValue(constants.GroupExclusiveTopologyKey, topology))
+				g.Expect(upper.Generation).To(gomega.Equal(generations[upper.Name]), "the change must stay metadata-only")
+				request := upper.Annotations[constants.RolloutRequestAnnotationKey]
+				g.Expect(request).NotTo(gomega.BeEmpty())
+				g.Expect(upper.Status.ObservedRolloutRequest).NotTo(gomega.Equal(request))
+				pod := rbgSetSinglePod(f, upper)
+				g.Expect(pod).NotTo(gomega.BeNil())
+				g.Expect(pod.Spec.Affinity).NotTo(gomega.BeNil())
+				g.Expect(pod.Spec.Affinity.PodAffinity).NotTo(gomega.BeNil())
+				g.Expect(pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(
+					gomega.ContainElement(gomega.HaveField("TopologyKey", topology)))
+				g.Expect(rbgSetPodReady(pod)).To(gomega.BeFalse())
+
+				lower := framework.RbgSetV2ChildByOrdinal(children, 0)
+				g.Expect(lower.Annotations).NotTo(gomega.HaveKey(constants.GroupExclusiveTopologyKey),
+					"the lower group must wait for the upper group's Pods, not for one reconcile")
+				g.Expect(lower.Annotations).NotTo(gomega.HaveKey(constants.RolloutRequestAnnotationKey))
+				g.Expect(lower.Generation).To(gomega.Equal(generations[lower.Name]))
+				g.Expect(rbgSetPodReady(rbgSetSinglePod(f, lower))).To(gomega.BeTrue())
+
+				latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+				g.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+				g.Expect(meta.IsStatusConditionTrue(latest.Status.Conditions,
+					string(workloadsv1alpha2.RoleBasedGroupSetRolling))).To(gomega.BeTrue())
+			}
+			gomega.Eventually(upperHeld, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+			gomega.Consistently(upperHeld, 20, 2).Should(gomega.Succeed())
+
+			// Withdrawing the annotation is metadata-only as well; the held group recovers in place.
+			updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+				delete(rs.Spec.GroupTemplate.Annotations, constants.GroupExclusiveTopologyKey)
+			})
+			gomega.Eventually(func(g gomega.Gomega) {
+				children := f.ListRbgSetV2Children(rbgset)
+				g.Expect(framework.RbgSetV2ChildUIDs(children)).To(gomega.Equal(initialUIDs))
+				for i := range children {
+					child := &children[i]
+					g.Expect(child.Annotations).NotTo(gomega.HaveKey(constants.GroupExclusiveTopologyKey))
+					g.Expect(child.Generation).To(gomega.Equal(generations[child.Name]))
+					if request, ok := child.Annotations[constants.RolloutRequestAnnotationKey]; ok {
+						g.Expect(child.Status.ObservedRolloutRequest).To(gomega.Equal(request))
+					}
+					g.Expect(rbgSetPodReady(rbgSetSinglePod(f, child))).To(gomega.BeTrue())
+				}
+				latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+				g.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+				g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(2)))
+				rolling := meta.FindStatusCondition(latest.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+				g.Expect(rolling).NotTo(gomega.BeNil())
+				g.Expect(rolling.Status).To(gomega.Equal(metav1.ConditionFalse))
+				g.Expect(rolling.Reason).To(gomega.Equal("RolloutComplete"))
+			}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+		},
+	)
+}
+
+// Keep these specs separate: gocyclo counts nested closures in the registrar.
+func runRbgSetInPlaceUpdateCases(f *framework.Framework) {
+	ginkgo.It(
+		"InPlaceUpdate preserves group UIDs while RecreatePod rolls within partition and availability budgets", func() {
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(3).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 1)).Obj()
+			rbgset.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			rollingUpdate := wrappersv2.BuildRollingUpdate(1, 0)
+			rollingUpdate.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+			rbgset.Spec.GroupTemplate.Spec.Roles[0].RolloutStrategy.RollingUpdate = &rollingUpdate
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).To(gomega.HaveLen(3))
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+			initialChildren := f.ListRbgSetV2Children(rbgset)
+			initialPods := rbgSetSinglePodUIDs(f, initialChildren)
+
+			// This changes an immutable Pod field: the role must replace Pods, not RBGs.
+			triggerRbgSetRollout(f, rbgset)
+			partitionComplete := func() bool {
+				return rbgSetInPlacePartitionComplete(f, rbgset, initialChildren, initialPods, 1)
+			}
+			gomega.Eventually(partitionComplete, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+			phase1Pods := rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))
+			gomega.Consistently(func() bool {
+				complete := partitionComplete()
+				gomega.Expect(rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))).To(gomega.Equal(phase1Pods))
+				return complete
+			}, 15, 2).Should(gomega.BeTrue())
+
+			updateRbgSetV2(f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+				rs.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+			})
+			rolloutComplete := func() bool {
+				complete := rbgSetInPlacePartitionComplete(f, rbgset, initialChildren, initialPods, 0)
+				// Releasing test-0 must not restart the already updated upper ordinals.
+				for _, child := range initialChildren[1:] {
+					gomega.Expect(getPodUIDsForRole(f, &child, child.Spec.Roles[0].Name)).To(
+						gomega.Equal(phase1Pods[child.Name]),
+					)
+				}
+				return complete
+			}
+			gomega.Eventually(rolloutComplete, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+			finalPods := rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))
+			gomega.Consistently(func() bool {
+				complete := rolloutComplete()
+				gomega.Expect(rbgSetSinglePodUIDs(f, f.ListRbgSetV2Children(rbgset))).To(gomega.Equal(finalPods))
+				return complete
+			}, 15, 2).Should(gomega.BeTrue())
+		},
+	)
+}
+
+// Assert invariants on every poll, including while waiting for Pods and status to converge.
+func observeRbgSetInPlaceChildren(
+	f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet, initialUIDs map[string]types.UID,
+) []workloadsv1alpha2.RoleBasedGroup {
+	children := f.ListRbgSetV2Children(rbgset)
+	base, surge := framework.SplitRbgSetV2Children(children, len(initialUIDs))
+	gomega.Expect(surge).To(gomega.BeEmpty(), "maxSurge=0 forbids surge throughout the rollout")
+	gomega.Expect(framework.RbgSetV2ChildUIDs(base)).To(
+		gomega.Equal(initialUIDs), "InPlaceUpdate must preserve every base group name and UID",
+	)
+	observed := make([]workloadsv1alpha2.RoleBasedGroup, 0, len(base))
+	for _, child := range base {
+		gomega.Expect(child.DeletionTimestamp.IsZero()).To(gomega.BeTrue(), "group %s must not be deleted", child.Name)
+		rolling := meta.FindStatusCondition(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
+		if child.Status.ObservedGeneration >= child.Generation &&
+			(rolling == nil || (rolling.ObservedGeneration >= child.Generation && rolling.Status == metav1.ConditionFalse)) {
+			observed = append(observed, child)
+		}
+	}
+	gomega.Expect(framework.CountRbgSetV2ReadyChildren(observed)).To(
+		gomega.BeNumerically(">=", len(initialUIDs)-1), "maxUnavailable=1 must hold throughout the rollout",
+	)
+	return base
+}
+
+func rbgSetSinglePodUIDs(
+	f *framework.Framework, children []workloadsv1alpha2.RoleBasedGroup,
+) map[string]map[string]types.UID {
+	result := make(map[string]map[string]types.UID, len(children))
+	for _, child := range children {
+		uids := getPodUIDsForRole(f, &child, child.Spec.Roles[0].Name)
+		gomega.Expect(uids).To(gomega.HaveLen(1), "group %s must have one non-terminating Pod", child.Name)
+		result[child.Name] = uids
+	}
+	return result
+}
+
+// Do not mistake an updated RBG spec or stale Ready condition for a completed Pod rollout.
+func rbgSetSinglePod(f *framework.Framework, child *workloadsv1alpha2.RoleBasedGroup) *corev1.Pod {
+	pods := &corev1.PodList{}
+	gomega.Expect(f.Client.List(f.Ctx, pods, client.InNamespace(child.Namespace), client.MatchingLabels{
+		constants.GroupNameLabelKey: child.Name,
+		constants.RoleNameLabelKey:  child.Spec.Roles[0].Name,
+	})).Should(gomega.Succeed())
+	if len(pods.Items) != 1 || !pods.Items[0].DeletionTimestamp.IsZero() {
+		return nil
+	}
+	return &pods.Items[0]
+}
+
+func rbgSetPodReady(pod *corev1.Pod) bool {
+	if pod == nil || !pod.DeletionTimestamp.IsZero() {
+		return false
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func rbgSetInPlacePartitionComplete(
+	f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet,
+	initialChildren []workloadsv1alpha2.RoleBasedGroup, initialPods map[string]map[string]types.UID, partition int,
+) bool {
+	children := observeRbgSetInPlaceChildren(f, rbgset, framework.RbgSetV2ChildUIDs(initialChildren))
+	complete := framework.CountRbgSetV2ReadyChildren(children) == len(initialChildren)
+	for i := range children {
+		child := &children[i]
+		ordinal := framework.RbgSetV2ChildOrdinal(*child)
+		pod := rbgSetSinglePod(f, child)
+		if ordinal < partition {
+			original := framework.RbgSetV2ChildByOrdinal(initialChildren, ordinal)
+			gomega.Expect(original).NotTo(gomega.BeNil())
+			gomega.Expect(child.Spec).To(gomega.Equal(original.Spec), "partition must hold the entire child spec back")
+			gomega.Expect(pod).NotTo(gomega.BeNil(), "the held-back Pod must not disappear or terminate")
+			gomega.Expect(initialPods[child.Name]).To(gomega.HaveKeyWithValue(pod.Name, pod.UID))
+			gomega.Expect(containersHaveRolloutMarker(pod.Spec.Containers)).To(gomega.BeFalse())
+		} else if pod == nil {
+			complete = false
+			continue
+		} else {
+			// The name may or may not change; no original UID may survive RecreatePod.
+			complete = complete && hasRolloutMarker(child.Spec.Roles[0]) &&
+				containersHaveRolloutMarker(pod.Spec.Containers) && initialPods[child.Name][pod.Name] != pod.UID
+		}
+		complete = complete && rbgSetPodReady(pod) && child.Status.ObservedGeneration >= child.Generation
+	}
+	previousRevision := initialChildren[0].Labels[constants.GroupSetRevisionLabelKey]
+	gomega.Expect(previousRevision).NotTo(gomega.BeEmpty())
+	return complete && rbgSetRolloutSettled(f, rbgset, children, partition, previousRevision)
+}
+
+// Match the latest generation, revision labels and terminal status, not a prior rollout's condition.
+func rbgSetRolloutSettled(
+	f *framework.Framework, rbgset *workloadsv1alpha2.RoleBasedGroupSet,
+	children []workloadsv1alpha2.RoleBasedGroup, partition int, previousRevision string,
+) bool {
+	latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+	expected := *latest.Spec.Replicas - int32(partition)
+	status := latest.Status
+	if latest.Generation != rbgset.Generation || status.ObservedGeneration != latest.Generation ||
+		status.UpdateRevision == "" || status.UpdateRevision == previousRevision ||
+		status.Replicas != *latest.Spec.Replicas || status.ReadyReplicas != *latest.Spec.Replicas ||
+		status.CurrentReplicas != int32(partition) || status.UpdatedReplicas != expected ||
+		status.UpdatedReadyReplicas != expected || status.ExpectedUpdatedReplicas != expected {
+		return false
+	}
+	reason := "RolloutComplete"
+	currentRevision := status.UpdateRevision
+	if partition > 0 {
+		reason = "PartitionComplete"
+		currentRevision = previousRevision
+	}
+	rolling := meta.FindStatusCondition(status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+	if rolling == nil || rolling.Status != metav1.ConditionFalse || rolling.Reason != reason ||
+		rolling.ObservedGeneration != latest.Generation || status.CurrentRevision != currentRevision {
+		return false
+	}
+	for _, child := range children {
+		revision := status.UpdateRevision
+		if framework.RbgSetV2ChildOrdinal(child) < partition {
+			revision = previousRevision
+		}
+		if child.Labels[constants.GroupSetRevisionLabelKey] != revision {
+			return false
+		}
+	}
+	return true
+}
+
+// runRbgSetPartitionRolloutCases registers the partition-scoped rollout specs. gocyclo
+// attributes nested closures to the enclosing function, so the partition specs live in
+// their own registrar to keep RunRbgSetControllerTestCases under the complexity limit.
+func runRbgSetPartitionRolloutCases(f *framework.Framework) {
+	ginkgo.It(
+		"partition rolls the upper ordinals first and releases the rest when lowered", func() {
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(4).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(2, 0, 2)).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).Should(gomega.HaveLen(4))
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+			triggerRbgSetRollout(f, rbgset)
+
+			// partition is 2, so only ordinals 2 and 3 take part, and maxUnavailable is 2,
+			// so both of them may be rebuilt in parallel rather than one at a time.
+			var phase1UIDs map[string]types.UID
+			gomega.Eventually(
+				func() bool {
+					children := f.ListRbgSetV2Children(rbgset)
+					if len(children) != 4 || framework.CountRbgSetV2ReadyChildren(children) != 4 {
+						return false
+					}
+					for _, ordinal := range []int{2, 3} {
+						rbg := framework.RbgSetV2ChildByOrdinal(children, ordinal)
+						if rbg == nil || !hasRolloutMarker(rbg.Spec.Roles[0]) {
+							return false
+						}
+					}
+					for _, ordinal := range []int{0, 1} {
+						rbg := framework.RbgSetV2ChildByOrdinal(children, ordinal)
+						if rbg == nil || hasRolloutMarker(rbg.Spec.Roles[0]) {
+							return false
+						}
+					}
+					phase1UIDs = framework.RbgSetV2ChildUIDs(children)
+					return true
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.BeTrue())
+
+			expectGroupsRecreated(initialUIDs, phase1UIDs, "test-2", "test-3")
+			expectGroupsUntouched(initialUIDs, phase1UIDs, "test-0", "test-1")
+
+			// The held-back ordinals stay held: with nothing left above partition the
+			// controller has no work, so it must not churn them.
+			f.ExpectRbgSetV2ChildrenStable(rbgset, phase1UIDs)
+
+			updateRbgSetV2(
+				f, rbgset, func(rs *workloadsv1alpha2.RoleBasedGroupSet) {
+					rs.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt32(0))
+				},
+			)
+
+			var finalUIDs map[string]types.UID
+			gomega.Eventually(
+				func() bool {
+					uids, complete := baseRolloutComplete(f.ListRbgSetV2Children(rbgset), 4)
+					if !complete {
+						return false
+					}
+					finalUIDs = uids
+					return true
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.BeTrue())
+
+			expectGroupsRecreated(phase1UIDs, finalUIDs, "test-0", "test-1")
+			expectGroupsUntouched(phase1UIDs, finalUIDs, "test-2", "test-3")
+			f.ExpectRbgSetV2ChildrenStable(rbgset, finalUIDs)
+		},
+	)
+
+	ginkgo.It(
+		"surge-backed partition rollout releases surge when the batch completes", func() {
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(4).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(0, 2, 2)).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).Should(gomega.HaveLen(4))
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+			triggerRbgSetRollout(f, rbgset)
+
+			// maxUnavailable is 0, so every delete must be backed by ready surge capacity:
+			// ready groups (surge included, surge serves exactly like base) may never drop
+			// below replicas, and no more than replicas+maxSurge groups may exist. The
+			// held-back ordinals must keep their identity throughout. All three are
+			// invariants, asserted on every poll so a violation fails at first sighting.
+			sawSurge := false
+			var rolledUIDs map[string]types.UID
+			gomega.Eventually(
+				func() bool {
+					children := f.ListRbgSetV2Children(rbgset)
+					gomega.Expect(len(children)).To(
+						gomega.BeNumerically("<=", 6),
+						"maxSurge is 2, so at most 4+2 groups may exist",
+					)
+					gomega.Expect(framework.CountRbgSetV2ReadyChildren(children)).To(
+						gomega.BeNumerically(">=", 4),
+						"maxUnavailable is 0, so ready groups (surge included) must stay at replicas",
+					)
+					uids := framework.RbgSetV2ChildUIDs(children)
+					for _, name := range []string{"test-0", "test-1"} {
+						gomega.Expect(uids[name]).To(
+							gomega.Equal(initialUIDs[name]),
+							"partition holds %s back, so it must never be recreated", name,
+						)
+					}
+
+					base, surge := framework.SplitRbgSetV2Children(children, 4)
+					if len(surge) > 0 {
+						sawSurge = true
+					}
+					if len(base) != 4 || len(surge) != 0 || framework.CountRbgSetV2ReadyChildren(base) != 4 {
+						return false
+					}
+					for _, ordinal := range []int{2, 3} {
+						rbg := framework.RbgSetV2ChildByOrdinal(children, ordinal)
+						if rbg == nil || !hasRolloutMarker(rbg.Spec.Roles[0]) {
+							return false
+						}
+					}
+					rolledUIDs = uids
+					return true
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.BeTrue())
+
+			gomega.Expect(sawSurge).To(
+				gomega.BeTrue(), "maxUnavailable is 0, so the rollout could only advance on surge capacity",
+			)
+			expectGroupsRecreated(initialUIDs, rolledUIDs, "test-2", "test-3")
+			expectGroupsUntouched(initialUIDs, rolledUIDs, "test-0", "test-1")
+
+			// The batch is done, so the surge groups are gone for good: this window fails
+			// if a re-warmed surge group or a churned UID ever shows up.
+			f.ExpectRbgSetV2ChildrenStable(rbgset, rolledUIDs)
+		},
+	)
+
+	ginkgo.It(
+		"maxUnavailable covering the batch rolls without ever creating surge", func() {
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(4).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(2, 2, 2)).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).Should(gomega.HaveLen(4))
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+			triggerRbgSetRollout(f, rbgset)
+
+			// maxUnavailable alone covers the two in-scope ordinals, so the delete budget
+			// never needs surge capacity: a surge group appearing at any point is the
+			// create-then-reclaim waste this case exists to forbid. Ready groups may dip
+			// by at most maxUnavailable.
+			var rolledUIDs map[string]types.UID
+			gomega.Eventually(
+				func() bool {
+					children := f.ListRbgSetV2Children(rbgset)
+					gomega.Expect(len(children)).To(
+						gomega.BeNumerically("<=", 4),
+						"maxUnavailable covers the in-scope work, so no surge group may ever be created",
+					)
+					gomega.Expect(framework.CountRbgSetV2ReadyChildren(children)).To(
+						gomega.BeNumerically(">=", 2),
+						"maxUnavailable is 2 of 4, so at least two groups must keep serving",
+					)
+					uids := framework.RbgSetV2ChildUIDs(children)
+					for _, name := range []string{"test-0", "test-1"} {
+						gomega.Expect(uids[name]).To(
+							gomega.Equal(initialUIDs[name]),
+							"partition holds %s back, so it must never be recreated", name,
+						)
+					}
+
+					if len(children) != 4 || framework.CountRbgSetV2ReadyChildren(children) != 4 {
+						return false
+					}
+					for _, ordinal := range []int{2, 3} {
+						rbg := framework.RbgSetV2ChildByOrdinal(children, ordinal)
+						if rbg == nil || !hasRolloutMarker(rbg.Spec.Roles[0]) {
+							return false
+						}
+					}
+					rolledUIDs = uids
+					return true
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.BeTrue())
+
+			expectGroupsRecreated(initialUIDs, rolledUIDs, "test-2", "test-3")
+			expectGroupsUntouched(initialUIDs, rolledUIDs, "test-0", "test-1")
+			f.ExpectRbgSetV2ChildrenStable(rbgset, rolledUIDs)
+		},
+	)
+}
+
+// runRbgSetPartitionRecoveryCases registers the spec that deletes a group held back below the
+// partition. gocyclo attributes nested closures to the enclosing function, so it needs its own
+// registrar to keep the partition cases under the complexity limit.
+func runRbgSetPartitionRecoveryCases(f *framework.Framework) {
+	ginkgo.It(
+		"a group deleted below the partition is rebuilt from the old template", func() {
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(3).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 2)).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).Should(gomega.HaveLen(3))
+			f.ExpectRbgSetV2ChildrenStable(rbgset, initialUIDs)
+
+			triggerRbgSetRollout(f, rbgset)
+
+			// partition is 2, so only test-2 rolls. The revision pair is captured here because it
+			// is what the rebuilt group below the partition must be pinned to: currentRevision
+			// stays readable for as long as any group is held back.
+			var currentRevision, updateRevision string
+			gomega.Eventually(
+				func() bool {
+					children := f.ListRbgSetV2Children(rbgset)
+					gomega.Expect(len(children)).To(
+						gomega.BeNumerically("<=", 3),
+						"maxSurge is 0, so no group beyond spec.replicas may appear",
+					)
+					if len(children) != 3 || framework.CountRbgSetV2ReadyChildren(children) != 3 {
+						return false
+					}
+					rolled := framework.RbgSetV2ChildByOrdinal(children, 2)
+					if rolled == nil || !hasRolloutMarker(rolled.Spec.Roles[0]) {
+						return false
+					}
+					for _, ordinal := range []int{0, 1} {
+						held := framework.RbgSetV2ChildByOrdinal(children, ordinal)
+						if held == nil || hasRolloutMarker(held.Spec.Roles[0]) {
+							return false
+						}
+					}
+
+					latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+					gomega.Expect(f.Client.Get(
+						f.Ctx, client.ObjectKeyFromObject(rbgset), latest,
+					)).Should(gomega.Succeed())
+					if latest.Status.CurrentRevision == "" ||
+						latest.Status.CurrentRevision == latest.Status.UpdateRevision {
+						return false
+					}
+					currentRevision, updateRevision = latest.Status.CurrentRevision, latest.Status.UpdateRevision
+					return true
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.BeTrue())
+
+			// A held-back group that disappears — user deletion, node loss, anything — must come
+			// back on the version the partition pinned it to, not on the version the rollout is
+			// carrying. Restoring it from the new template would silently widen the batch.
+			held := framework.RbgSetV2ChildByOrdinal(f.ListRbgSetV2Children(rbgset), 0)
+			gomega.Expect(held).NotTo(gomega.BeNil())
+			gomega.Expect(f.Client.Delete(f.Ctx, held,
+				client.PropagationPolicy(metav1.DeletePropagationForeground))).Should(gomega.Succeed())
+
+			var recoveredUIDs map[string]types.UID
+			gomega.Eventually(
+				func() bool {
+					children := f.ListRbgSetV2Children(rbgset)
+					if len(children) != 3 || framework.CountRbgSetV2ReadyChildren(children) != 3 {
+						return false
+					}
+					rebuilt := framework.RbgSetV2ChildByOrdinal(children, 0)
+					if rebuilt == nil || rebuilt.UID == initialUIDs["test-0"] {
+						return false
+					}
+					gomega.Expect(hasRolloutMarker(rebuilt.Spec.Roles[0])).To(
+						gomega.BeFalse(),
+						"a group below the partition must never be rebuilt from the new template",
+					)
+					gomega.Expect(rebuilt.Labels[constants.GroupSetRevisionLabelKey]).To(
+						gomega.Equal(currentRevision),
+						"the rebuilt group must carry the old revision, not the update revision",
+					)
+					recoveredUIDs = framework.RbgSetV2ChildUIDs(children)
+					return true
+				}, utils.Timeout, utils.Interval,
+			).Should(gomega.BeTrue())
+
+			expectGroupsRecreated(initialUIDs, recoveredUIDs, "test-0", "test-2")
+			expectGroupsUntouched(initialUIDs, recoveredUIDs, "test-1")
+
+			// Recovery is not a rollout: the rebuilt group stays on the old template instead of
+			// drifting onto it in a later reconcile.
+			gomega.Consistently(
+				func() map[string]types.UID {
+					children := f.ListRbgSetV2Children(rbgset)
+					if framework.CountRbgSetV2ReadyChildren(children) != 3 {
+						return nil
+					}
+					rebuilt := framework.RbgSetV2ChildByOrdinal(children, 0)
+					if rebuilt == nil || hasRolloutMarker(rebuilt.Spec.Roles[0]) ||
+						rebuilt.Labels[constants.GroupSetRevisionLabelKey] != currentRevision {
+						return nil
+					}
+					rolled := framework.RbgSetV2ChildByOrdinal(children, 2)
+					if rolled == nil || rolled.Labels[constants.GroupSetRevisionLabelKey] != updateRevision {
+						return nil
+					}
+					return framework.RbgSetV2ChildUIDs(children)
+				}, 15, 2,
+			).Should(gomega.Equal(recoveredUIDs))
+		},
+	)
+}
+
+// runRbgSetSurgeBudgetCases registers the spec where an already-unready group has spent the declared
+// unavailable budget: the rollout must reach for maxSurge instead of waiting for that group to
+// recover on its own. Only the correct behavior is asserted here, and it stops as soon as the surge
+// appears, because the completion path is covered by the partition rollout specs.
+func runRbgSetSurgeBudgetCases(f *framework.Framework) {
+	ginkgo.It(
+		"a held-back failure does not stop surge from covering the batch", func() {
+			const replicas, partition, floor = 4, 3, 3
+			rbgset := wrappersv2.BuildBasicRoleBasedGroupSet("test", f.Namespace).
+				WithReplicas(replicas).
+				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 1, partition)).Obj()
+
+			f.RegisterDebugFn(func() { dumpDebugInfoForRBGSet(f, rbgset) })
+			gomega.Expect(f.Client.Create(f.Ctx, rbgset)).Should(gomega.Succeed())
+			initialUIDs := f.ExpectRbgSetV2AllReady(rbgset)
+			gomega.Expect(initialUIDs).Should(gomega.HaveLen(replicas))
+			broken := framework.RbgSetV2ChildByOrdinal(f.ListRbgSetV2Children(rbgset), 0)
+			gomega.Expect(broken).NotTo(gomega.BeNil())
+			previousRevision := broken.Labels[constants.GroupSetRevisionLabelKey]
+			gomega.Expect(previousRevision).NotTo(gomega.BeEmpty())
+
+			// Take a held-back group out of service with a readiness probe that always fails, so the
+			// unavailability is independent of scheduling and image-pull timing. The set never
+			// rewrites a group below the partition, so the failure stays in place.
+			drifted := broken.DeepCopy()
+			probeContainer := &drifted.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0]
+			probeContainer.ReadinessProbe = &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+					Command: []string{"/bin/sh", "-c", "exit 1"},
+				}},
+				PeriodSeconds: 1, FailureThreshold: 1,
+			}
+			gomega.Expect(f.Client.Update(f.Ctx, drifted)).Should(gomega.Succeed())
+
+			// The budget is now fully spent: three of four groups serve, exactly the floor, so no
+			// in-scope group can be taken down without surge cover.
+			gomega.Eventually(func() int {
+				return framework.CountRbgSetV2ReadyChildren(f.ListRbgSetV2Children(rbgset))
+			}, utils.Timeout, utils.Interval).Should(gomega.Equal(floor))
+
+			triggerRbgSetRollout(f, rbgset)
+
+			// The regression: sizing surge from the declared maxUnavailable instead of the live
+			// budget yields zero surge, so the batch never moves.
+			var updateRevision string
+			gomega.Eventually(func() bool {
+				latest := &workloadsv1alpha2.RoleBasedGroupSet{}
+				gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKeyFromObject(rbgset), latest)).Should(gomega.Succeed())
+				if latest.Status.UpdateRevision == "" || latest.Status.UpdateRevision == previousRevision {
+					return false
+				}
+				updateRevision = latest.Status.UpdateRevision
+				_, surge := framework.SplitRbgSetV2Children(f.ListRbgSetV2Children(rbgset), replicas)
+				if len(surge) != 1 {
+					return false
+				}
+				return surge[0].Labels[constants.GroupSetRevisionLabelKey] == updateRevision
+			}, utils.Timeout, utils.Interval).Should(gomega.BeTrue(),
+				"maxSurge must cover the batch once an existing failure has spent maxUnavailable")
 		},
 	)
 }

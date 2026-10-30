@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2464,6 +2465,8 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	stub.err = nil
 	result, err = r.Reconcile(ctx, request)
 	require.NoError(t, err)
+	// Gang configuration is valid, but the new workloads still need to finish
+	// rolling out; their watch events, not a fixed-interval poll, trigger completion.
 	assert.Zero(t, result.RequeueAfter)
 	condition = gangConfigured()
 	require.NotNil(t, condition)
@@ -2489,6 +2492,39 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.Zero(t, result.RequeueAfter)
 	assert.Contains(t, drainEvents(), "Warning FailedReconcilePodGroup podgroup apiserver hiccup")
+}
+
+func TestReconcileOnlyRequeuesPendingRolloutRequest(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(testScheme))
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(rbg).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroup{}).Build()
+	r := &RoleBasedGroupReconciler{
+		client:             fakeClient,
+		apiReader:          fakeClient,
+		scheme:             testScheme,
+		recorder:           record.NewFakeRecorder(20),
+		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+		gangScheduler:      &stubGangScheduler{},
+	}
+	ctx := ctrl.LoggerInto(context.Background(), zap.New().WithValues("env", "unit-test"))
+	request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(rbg)}
+
+	result, err := r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	current := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
+	require.True(t, apimeta.IsStatusConditionTrue(current.Status.Conditions,
+		string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
+	assert.Zero(t, result.RequeueAfter, "readiness changes must arrive through workload watches, not a 2s poll")
+
+	current.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: "1"}
+	require.NoError(t, fakeClient.Update(ctx, current))
+	result, err = r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Second, result.RequeueAfter, "an unacknowledged request needs a recheck")
 }
 
 // OrderScheduled must wait for every Pod in the current replica batch, including

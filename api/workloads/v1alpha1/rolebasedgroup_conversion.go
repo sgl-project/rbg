@@ -32,10 +32,10 @@ import (
 const (
 	// annotationV1alpha1PodGroupPolicy stores the serialized v1alpha1 PodGroupPolicy
 	// on the hub (v1alpha2) object so it can be round-tripped back.
-	annotationV1alpha1PodGroupPolicy = "conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy"
+	annotationV1alpha1PodGroupPolicy = constants.ConversionV1alpha1PodGroupPolicyAnnotationKey
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
-	annotationV1alpha1Coordination = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+	annotationV1alpha1Coordination = constants.ConversionV1alpha1CoordinationAnnotationKey
 )
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
@@ -303,6 +303,7 @@ func convertEngineRuntimesV1alpha1ToV2(src []EngineRuntime) []v2.EngineRuntime {
 
 func convertStatusV1alpha1ToV2(src *RoleBasedGroupStatus, dst *v2.RoleBasedGroupStatus) {
 	dst.ObservedGeneration = src.ObservedGeneration
+	dst.ObservedRolloutRequest = src.ObservedRolloutRequest
 	dst.Conditions = src.Conditions
 	if len(src.RoleStatuses) > 0 {
 		dst.RoleStatuses = make([]v2.RoleStatus, len(src.RoleStatuses))
@@ -484,6 +485,7 @@ func convertEngineRuntimesV2ToV1alpha1(src []v2.EngineRuntime) []EngineRuntime {
 
 func convertStatusV2ToV1alpha1(src *v2.RoleBasedGroupStatus, dst *RoleBasedGroupStatus) {
 	dst.ObservedGeneration = src.ObservedGeneration
+	dst.ObservedRolloutRequest = src.ObservedRolloutRequest
 	dst.Conditions = src.Conditions
 	if len(src.RoleStatuses) > 0 {
 		dst.RoleStatuses = make([]RoleStatus, len(src.RoleStatuses))

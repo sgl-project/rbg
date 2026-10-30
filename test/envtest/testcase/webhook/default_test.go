@@ -22,9 +22,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
@@ -98,6 +100,159 @@ var _ = Describe("Mutating webhook defaulters", func() {
 	})
 
 	Context("RoleBasedGroupSet", func() {
+		DescribeTable("validates rollout budgets on create and update through admission",
+			func(strategy workloadsv1alpha2.GroupUpdateStrategyType, unavailable, surge intstr.IntOrString, wantErr string) {
+				set := &workloadsv1alpha2.RoleBasedGroupSet{
+					ObjectMeta: metav1.ObjectMeta{Name: "budgets", Namespace: testNs},
+					Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+						Replicas: ptr.To(int32(3)),
+						GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+							Spec: buildRBG("unused", testNs, workloadsv1alpha2.RecreatePodUpdateStrategyType).Spec,
+						},
+					},
+				}
+				Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+				Expect(set.Spec.RolloutStrategy).To(BeNil())
+				set.Spec.RolloutStrategy = &workloadsv1alpha2.GroupSetRolloutStrategy{
+					Type: strategy, MaxUnavailable: &unavailable, MaxSurge: &surge,
+				}
+				fresh := set.DeepCopy()
+				fresh.Name = "budgets-create"
+				fresh.ResourceVersion, fresh.UID = "", ""
+				for _, err := range []error{
+					testutil.K8sClient.Create(testutil.Ctx, fresh),
+					testutil.K8sClient.Update(testutil.Ctx, set),
+				} {
+					if wantErr != "" {
+						Expect(err).To(HaveOccurred())
+						Expect(err.Error()).To(ContainSubstring(wantErr))
+					} else {
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+				if wantErr == "" && strategy == "" {
+					Expect(fresh.Spec.RolloutStrategy.Type).To(Equal(workloadsv1alpha2.InPlaceUpdateStrategyType))
+					Expect(set.Spec.RolloutStrategy.Type).To(Equal(workloadsv1alpha2.InPlaceUpdateStrategyType))
+				}
+			},
+			Entry("default strategy allows positive rounding-to-zero percentage", workloadsv1alpha2.GroupUpdateStrategyType(""), intstr.FromString("1%"), intstr.FromString("0%"), ""),
+			Entry("default strategy rejects surge", workloadsv1alpha2.GroupUpdateStrategyType(""), intstr.FromInt(1), intstr.FromInt(1), "maxSurge"),
+			Entry("in-place rejects zero percent unavailable", workloadsv1alpha2.InPlaceUpdateStrategyType, intstr.FromString("0%"), intstr.FromInt(0), "maxUnavailable"),
+			Entry("in-place rejects integer zero unavailable", workloadsv1alpha2.InPlaceUpdateStrategyType, intstr.FromInt(0), intstr.FromString("0%"), "maxUnavailable"),
+			Entry("in-place rejects positive percentage surge", workloadsv1alpha2.InPlaceUpdateStrategyType, intstr.FromInt(1), intstr.FromString("1%"), "maxSurge"),
+			Entry("recreate rejects mixed zero budgets", workloadsv1alpha2.RecreateStrategyType, intstr.FromInt(0), intstr.FromString("0%"), "maxUnavailable"),
+			Entry("recreate rejects zero percent budgets", workloadsv1alpha2.RecreateStrategyType, intstr.FromString("0%"), intstr.FromString("0%"), "maxUnavailable"),
+			Entry("recreate allows zero unavailable with surge", workloadsv1alpha2.RecreateStrategyType, intstr.FromInt(0), intstr.FromInt(1), ""),
+		)
+
+		It("enforces the CRD percentage ceiling through the API server", func() {
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "percentages", Namespace: testNs},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(3)),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: buildRBG("unused", testNs, workloadsv1alpha2.RecreatePodUpdateStrategyType).Spec,
+					},
+					RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{
+						Type:           workloadsv1alpha2.RecreateStrategyType,
+						Partition:      ptr.To(intstr.FromString("100%")),
+						MaxUnavailable: ptr.To(intstr.FromString("100%")),
+						MaxSurge:       ptr.To(intstr.FromString("100%")),
+					},
+				},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+			Expect(set.Spec.RolloutStrategy.Partition.String()).To(Equal("100%"))
+
+			fields := []*intstr.IntOrString{
+				set.Spec.RolloutStrategy.Partition,
+				set.Spec.RolloutStrategy.MaxUnavailable,
+				set.Spec.RolloutStrategy.MaxSurge,
+			}
+			for i, value := range []*intstr.IntOrString{
+				ptr.To(intstr.FromString("101%")),
+				ptr.To(intstr.FromInt(-1)),
+			} {
+				for _, field := range fields {
+					*field = *value
+				}
+				Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(MatchError(ContainSubstring("spec.rolloutStrategy")), "update %d", i)
+				for _, field := range fields {
+					*field = intstr.FromString("100%")
+				}
+			}
+			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(Succeed())
+		})
+
+		It("validates switches by the target rollout strategy", func() {
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "switch", Namespace: testNs},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(3)),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: buildRBG("unused", testNs, workloadsv1alpha2.RecreatePodUpdateStrategyType).Spec,
+					},
+					RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{
+						Type: workloadsv1alpha2.RecreateStrategyType, MaxUnavailable: ptr.To(intstr.FromInt(1)), MaxSurge: ptr.To(intstr.FromInt(1)),
+					},
+				},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+			set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(MatchError(ContainSubstring("maxSurge")))
+			set.Spec.RolloutStrategy.MaxSurge = ptr.To(intstr.FromString("0%"))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(Succeed())
+			set.Spec.RolloutStrategy.Type = workloadsv1alpha2.RecreateStrategyType
+			set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromString("0%"))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(MatchError(ContainSubstring("maxUnavailable")))
+			set.Spec.RolloutStrategy.MaxSurge = ptr.To(intstr.FromString("1%"))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, set)).To(Succeed())
+		})
+
+		// The validating rule matches rolebasedgroupsets, not their scale subresource, so an
+		// autoscaler can shrink replicas below an absolute partition. Admission must not bound the
+		// partition by replicas: rejecting that combination would fail every later write of the
+		// object until somebody lowered the partition. The controller clamps it, as StatefulSet does.
+		It("keeps a set writable after scaling drops replicas below the partition", func() {
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "scaled-partition", Namespace: testNs},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(3)),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Spec: buildRBG("unused", testNs, workloadsv1alpha2.RecreatePodUpdateStrategyType).Spec,
+					},
+					RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{
+						Type:           workloadsv1alpha2.RecreateStrategyType,
+						Partition:      ptr.To(intstr.FromInt(3)),
+						MaxUnavailable: ptr.To(intstr.FromInt(1)),
+						MaxSurge:       ptr.To(intstr.FromInt(1)),
+					},
+				},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+
+			scale := &autoscalingv1.Scale{}
+			Expect(testutil.K8sClient.SubResource("scale").Get(testutil.Ctx, set, scale)).To(Succeed())
+			scale.Spec.Replicas = 1
+			Expect(testutil.K8sClient.SubResource("scale").Update(testutil.Ctx, set,
+				client.WithSubResourceBody(scale))).To(Succeed())
+
+			stored := &workloadsv1alpha2.RoleBasedGroupSet{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(set), stored)).To(Succeed())
+			Expect(*stored.Spec.Replicas).To(Equal(int32(1)))
+			Expect(stored.Spec.RolloutStrategy.Partition.IntValue()).To(Equal(3), "the partition now exceeds replicas")
+
+			stored.Labels = map[string]string{"team": "serving"}
+			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(Succeed())
+
+			stored.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromInt(4))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(Succeed())
+
+			stored.Spec.RolloutStrategy.Partition = ptr.To(intstr.FromString("101%"))
+			Expect(testutil.K8sClient.Update(testutil.Ctx, stored)).To(
+				MatchError(ContainSubstring("spec.rolloutStrategy.partition")), "the remaining partition rules still apply")
+		})
+
 		It("heals the template's legacy Recreate spelling to RecreatePod on create", func() {
 			rbgset := &workloadsv1alpha2.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "heal-set", Namespace: testNs},
