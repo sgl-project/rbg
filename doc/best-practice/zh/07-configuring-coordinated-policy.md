@@ -156,7 +156,7 @@ spec:
 | 参数 | 类型 | 是否必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `strategy.scaling.maxSkew` | intOrString | 否 | `"100%"` | 允许的角色间部署进度偏差。仅支持百分比格式（如 `"10%"`）；不支持整数（如 `2`），设置整数会导致解析失败，所有角色的副本都不会被创建 |
-| `strategy.scaling.progression` | string | 否 | 无 | 创建节奏：`OrderScheduled` 或 `OrderReady`。省略时批次门控不生效，副本创建不会等待 Pod 调度或就绪，建议显式设置 |
+| `strategy.scaling.progression` | string | 否 | `OrderScheduled` | 创建节奏：`OrderScheduled` 或 `OrderReady`。省略时默认为 `OrderScheduled`，批次门控生效：当前批次的 Pod 完成调度后才会继续创建下一批副本 |
 
 
 ### maxSkew 的工作原理

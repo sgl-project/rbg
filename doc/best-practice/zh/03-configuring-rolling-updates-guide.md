@@ -71,6 +71,8 @@ kubectl patch rbg rolling-update-demo --type='json' \
 - 更新过程中始终有 3 个实例可用
 - `command` 属于非镜像字段，触发 Pod 重建：旧 Pod 先终止，再按相同序号重建（AGE 归零，RESTARTS 为 0）
 
+> **说明**：示例未设置 `rolloutStrategy.rollingUpdate.type`，默认为 `InPlaceIfPossible`；`command` 变更超出原地更新支持范围，因此自动回退为 Pod 重建。详见 [配置原地升级与原地调度策略](./04-configuring-inplace-update-and-scheduling-policies.md)。
+
 ### 验证
 
 ```bash

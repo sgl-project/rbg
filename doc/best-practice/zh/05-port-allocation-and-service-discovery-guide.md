@@ -69,6 +69,8 @@ EOF
 - Controller 自动创建两个 Headless Service：`s-pd-inference-prefill`、`s-pd-inference-decode`
 - 每个 Pod 获得稳定的 DNS 名称：`{rbgName}-{roleName}-{index}.{svcName}.{namespace}.svc.cluster.local`
 
+> **说明**：本示例使用 `standalonePattern`，每个 Pod 都会获得 DNS 名称。使用 `leaderWorkerPattern` 的 RoleInstanceSet 角色默认 `sharedServiceSelection: LeaderOnly`，仅 Leader Pod 拥有 DNS 名称；需为 Worker Pod 启用 DNS 时显式设置 `sharedServiceSelection: All`（其他工作负载类型默认即为 `All`）。
+
 ### 验证
 
 ```bash

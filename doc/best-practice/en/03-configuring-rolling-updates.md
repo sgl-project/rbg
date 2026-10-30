@@ -46,6 +46,7 @@ spec:
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `rolloutStrategy.type` | string | No | `RollingUpdate` | Update strategy type, currently only supports `RollingUpdate` |
+| `rolloutStrategy.rollingUpdate.type` | string | No | `InPlaceIfPossible` | Instance update method: `InPlaceIfPossible` (prefer in-place update, fall back to recreation when not feasible) or `RecreatePod` (delete and recreate). `InPlaceOnly` is deprecated and behaves identically to `InPlaceIfPossible`. See [Configuring In-Place Update and In-Place Scheduling Policies](./04-configuring-inplace-update-and-scheduling-policies.md) |
 | `rolloutStrategy.rollingUpdate.maxUnavailable` | intOrString | No | `1` | Maximum number of unavailable instances during update. Can be an absolute value (e.g., `1`) or a percentage (e.g., `"25%"`) |
 | `rolloutStrategy.rollingUpdate.maxSurge` | intOrString | No | `0` | Maximum number of instances allowed beyond the desired replica count during update. Can be an absolute value or a percentage |
 

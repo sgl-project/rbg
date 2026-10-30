@@ -80,6 +80,8 @@ containers:
 
 > **Note**: The `{index}` in the DNS name is the Pod's ordinal index (starting from 0). In StatefulSet and RoleInstanceSet modes, Pod names are stable, and DNS addresses remain unchanged after Pod recreation.
 >
+> **Note**: A RoleInstanceSet role using `leaderWorkerPattern` defaults to `sharedServiceSelection: LeaderOnly`, so only the Leader Pod gets a DNS name. To give Worker Pods DNS names as well, set `sharedServiceSelection: All` explicitly (each component then gets a `serviceName`). Note that switching this policy changes the Pod hostname/subdomain (immutable fields) and triggers a rolling replacement of the role.
+>
 
 ---
 
@@ -161,7 +163,44 @@ roles:
           http: 8000
 ```
 
+#### Address Formats by Pattern
+
+The example above uses `standalonePattern` (one address per replica). With multi-pod patterns, the Controller expands every Pod into its own `instances` entry, and `roles.<role>.size` becomes the number of address entries (not the role's replica count):
+
+| Pattern | Address Format | Description |
+| --- | --- | --- |
+| `standalonePattern` | `{rbgName}-{roleName}-{i}.{svcName}` | One address per replica |
+| `leaderWorkerPattern` (RoleInstanceSet, the default workload) | Leader: `{rbgName}-{roleName}-{i}-0.{svcName}`; workers: `{rbgName}-{roleName}-{i}-{k}.{svcName}` (`k` = 1 … size-1) | One address per Pod of instance `i`; entry count = `replicas × size` |
+| `leaderWorkerPattern` (LeaderWorkerSet workload) | `{rbgName}-{roleName}-{n}.{svcName}` (`n` = `i × size` … `i × size + size - 1`) | Uses the LWS global Pod ordinals |
+| `customComponentsPattern` | `{rbgName}-{roleName}-{i}-{component}-{j}.{svcName}` | One address per Pod of each component; an explicit component `serviceName` overrides the shared Headless Service as the subdomain |
+
+> **Note**: LeaderWorkerSet workloads follow the upstream LWS Pod naming convention — the leader is `{rbgName}-{roleName}-{leaderIndex}` and workers are `{rbgName}-{roleName}-{leaderIndex}-{workerIndex}` — which does not match the ConfigMap address format in the row above. These ConfigMap entries for LWS roles therefore cannot currently be used for per-Pod DNS discovery; they only reflect the ConfigMap's current output.
+
+Here `{svcName}` is the role's Headless Service (`s-{rbgName}-{roleName}`), `{i}` is the RoleInstance ordinal, and `{k}`/`{j}` are Pod ordinals within the component. Example with `leaderWorkerPattern` (`replicas: 2`, `size: 2`, `servicePorts: http:8000`):
+
+```yaml
+roles:
+  backend:
+    size: 4
+    instances:
+      - address: pd-inference-backend-0-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-0-1.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-1.s-pd-inference-backend
+        ports:
+          http: 8000
+```
+
+> **Note**: A RoleInstanceSet role using `leaderWorkerPattern` defaults to `sharedServiceSelection: LeaderOnly`, so only the Leader Pod has a DNS identity: worker addresses are still written to the ConfigMap but do not resolve through cluster DNS; set `sharedServiceSelection: All` to make worker addresses resolvable. Other workload types (such as LeaderWorkerSet) resolve `sharedServiceSelection` to `All`, so their Worker Pods have DNS identities by default.
+
 #### ConfigMap Mount Configuration
+
 | Property | Value | Description |
 | --- | --- | --- |
 | Volume name | `rbg-cluster-config` | Automatically injected Volume |

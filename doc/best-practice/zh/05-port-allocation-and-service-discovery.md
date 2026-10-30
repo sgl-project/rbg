@@ -79,6 +79,8 @@ containers:
 
 > **说明**：DNS 名称中的 `{index}` 是 Pod 的有序索引（从 0 开始），StatefulSet 和 RoleInstanceSet 模式下 Pod 名称稳定，DNS 地址在 Pod 重建后保持不变。
 >
+> **说明**：使用 `leaderWorkerPattern` 的 RoleInstanceSet 角色默认 `sharedServiceSelection: LeaderOnly`，只有 Leader Pod 拥有 DNS 名称；如需 Worker Pod 也拥有 DNS 名称，需显式设置 `sharedServiceSelection: All`（此时每个组件都会获得 `serviceName`）。注意切换该策略会修改 Pod 的 hostname/subdomain（不可变字段），从而触发该角色的滚动重建。
+>
 
 ---
 
@@ -159,7 +161,44 @@ roles:
           http: 8000
 ```
 
+#### 不同 Pattern 的地址格式
+
+上例使用 `standalonePattern`（每个副本一条地址）。使用多 Pod Pattern 时，Controller 会将每个 Pod 展开为一条独立的 `instances` 条目，`roles.<role>.size` 随之变为地址条目数（而非角色副本数）：
+
+| Pattern | 地址格式 | 说明 |
+| --- | --- | --- |
+| `standalonePattern` | `{rbgName}-{roleName}-{i}.{svcName}` | 每个副本一条地址 |
+| `leaderWorkerPattern`（RoleInstanceSet，默认工作负载） | Leader：`{rbgName}-{roleName}-{i}-0.{svcName}`；Worker：`{rbgName}-{roleName}-{i}-{k}.{svcName}`（`k` = 1 … size-1） | 实例 `i` 的每个 Pod 一条地址，条目数 = `replicas × size` |
+| `leaderWorkerPattern`（LeaderWorkerSet 工作负载） | `{rbgName}-{roleName}-{n}.{svcName}`（`n` = `i × size` … `i × size + size - 1`） | 使用 LWS 的全局 Pod 序号 |
+| `customComponentsPattern` | `{rbgName}-{roleName}-{i}-{component}-{j}.{svcName}` | 每个组件的每个 Pod 一条地址；组件显式设置 `serviceName` 时以该 Service 作为 subdomain |
+
+> **注意**：LeaderWorkerSet 工作负载的实际 Pod 命名遵循上游 LWS 规则——Leader 为 `{rbgName}-{roleName}-{leaderIndex}`，Worker 为 `{rbgName}-{roleName}-{leaderIndex}-{workerIndex}`——与上表中该行的 ConfigMap 地址格式不一致。因此 LWS 角色的这些 ConfigMap 条目目前不能用于按 Pod 的 DNS 发现，仅反映 ConfigMap 的当前输出。
+
+其中 `{svcName}` 为角色 Headless Service（`s-{rbgName}-{roleName}`），`{i}` 为 RoleInstance 序号，`{k}`/`{j}` 为组件内 Pod 序号。以 `leaderWorkerPattern`（`replicas: 2`、`size: 2`、`servicePorts: http:8000`）为例：
+
+```yaml
+roles:
+  backend:
+    size: 4
+    instances:
+      - address: pd-inference-backend-0-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-0-1.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-0.s-pd-inference-backend
+        ports:
+          http: 8000
+      - address: pd-inference-backend-1-1.s-pd-inference-backend
+        ports:
+          http: 8000
+```
+
+> **说明**：使用 `leaderWorkerPattern` 的 RoleInstanceSet 角色默认 `sharedServiceSelection: LeaderOnly`，只有 Leader Pod 拥有 DNS 身份：Worker 地址仍会写入 ConfigMap，但无法通过集群 DNS 解析；将 `sharedServiceSelection` 设置为 `All` 后 Worker 地址才可解析。其他工作负载类型（如 LeaderWorkerSet）的 `sharedServiceSelection` 解析结果为 `All`，Worker Pod 默认即拥有 DNS 身份。
+
 #### ConfigMap 挂载方式
+
 | 属性 | 值 | 说明 |
 | --- | --- | --- |
 | Volume 名称 | `rbg-cluster-config` | 自动注入的 Volume |
