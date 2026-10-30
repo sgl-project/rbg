@@ -342,7 +342,7 @@ Via the `references` field, a component can obtain allocated ports from other co
 
 #### Host Port Scheduling
 
-For every allocation, the controller also declares the allocated value as both `containerPort` and `hostPort` on the first container. This lets the default scheduler's NodePorts plugin account for the port and avoid placing multiple Pods with the same randomly allocated host port on one node.
+For every allocation in a Pod with `hostNetwork: true`, the controller also declares the allocated value as both `containerPort` and `hostPort` on the first container. This lets the default scheduler's NodePorts plugin account for the port and avoid placing multiple host-network Pods with the same randomly allocated port on one node. Pods that do not use host networking only receive environment variables because their Pod IP addresses already isolate the ports.
 
 #### references Parameter Reference
 | Parameter | Type | Required | Description |

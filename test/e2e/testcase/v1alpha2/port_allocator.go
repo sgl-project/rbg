@@ -93,6 +93,7 @@ func buildPortAllocatorTestRBG(namespace string) *workloadsv1alpha2.RoleBasedGro
 func buildLeaderComponent() workloadsv1alpha2.InstanceComponent {
 	template := wrappersv2.BuildBasicPodTemplateSpec()
 	template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
+	template.Spec.HostNetwork = true
 	template.Annotations = map[string]string{
 		portAllocatorAnnotationKey: `{
 			"allocations": [

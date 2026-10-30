@@ -127,6 +127,7 @@ func TestInjectPortsIntoPod(t *testing.T) {
 			Name: "test-instance-leader-0",
 		},
 		Spec: corev1.PodSpec{
+			HostNetwork: true,
 			Containers: []corev1.Container{
 				{Name: "nginx", Image: "nginx:1.28.0"},
 			},
@@ -177,13 +178,46 @@ func TestInjectPortsIntoPod(t *testing.T) {
 	assert.Equal(t, corev1.ProtocolTCP, pod.Spec.Containers[0].Ports[1].Protocol)
 }
 
-func TestInjectPortsIntoPodUsesConfiguredProtocol(t *testing.T) {
+func TestInjectPortsIntoPodWithoutHostNetworkDoesNotDeclareHostPorts(t *testing.T) {
 	portAllocator = newTestAllocator(30000, 2768)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}},
+		},
+	}
+	config := &PortAllocatorConfig{
+		Allocations: []PortAllocation{
+			{Name: "metrics", Env: "METRICS_PORT", Scope: PodScoped, Protocol: corev1.ProtocolUDP},
+		},
+	}
+	annotations, err := AllocatePodScopedPorts(config, pod.Name)
+	require.NoError(t, err)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-instance",
+			Labels:      map[string]string{constants.RoleTypeLabelKey: string(constants.ComponentsTemplateType)},
+			Annotations: annotations,
+		},
+	}
+
+	err = InjectPortsIntoPod(pod, instance, config, "worker")
+	require.NoError(t, err)
+
+	assert.Empty(t, pod.Spec.Containers[0].Ports)
+	assert.Len(t, pod.Spec.Containers[0].Env, 1)
+}
+
+func TestInjectPortsIntoPodUsesConfiguredProtocol(t *testing.T) {
+	portAllocator = newTestAllocator(30000, 2768)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},
+		Spec: corev1.PodSpec{
+			HostNetwork: true,
+			Containers:  []corev1.Container{{Name: "worker", Image: "worker:latest"}},
 		},
 	}
 	config := &PortAllocatorConfig{

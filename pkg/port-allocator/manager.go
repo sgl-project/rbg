@@ -111,13 +111,17 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 			return fmt.Errorf("port not found for allocation %s (key: %s)", alloc.Name, key)
 		}
 
-		port, err := strconv.ParseUint(portValue, 10, 16)
-		if err != nil || port == 0 {
-			return fmt.Errorf("invalid port value for allocation %s (key: %s): %q", alloc.Name, key, portValue)
-		}
+		// Host ports are meaningful only for host-network Pods. Regular Pods use
+		// their own network namespace, so no node-level port reservation is needed.
+		if pod.Spec.HostNetwork {
+			port, err := strconv.ParseUint(portValue, 10, 16)
+			if err != nil || port == 0 {
+				return fmt.Errorf("invalid port value for allocation %s (key: %s): %q", alloc.Name, key, portValue)
+			}
 
-		if err := injectContainerPort(pod, int32(port), alloc.Protocol); err != nil {
-			return fmt.Errorf("failed to inject port for allocation %s into pod %s: %w", alloc.Name, pod.Name, err)
+			if err := injectContainerPort(pod, int32(port), alloc.Protocol); err != nil {
+				return fmt.Errorf("failed to inject port for allocation %s into pod %s: %w", alloc.Name, pod.Name, err)
+			}
 		}
 
 		injectEnvVar(pod, alloc.Env, portValue)
@@ -154,9 +158,10 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 	return nil
 }
 
-// injectContainerPort declares the allocated port on the first regular container so
-// the scheduler's NodePorts plugin can account for the host port. The port is added
-// only once because duplicate host ports across containers are invalid in Kubernetes.
+// injectContainerPort declares the allocated port on the first regular container of
+// a host-network Pod. Kubernetes requires hostPort to equal containerPort in that
+// mode, and the declaration makes the scheduler's NodePorts plugin account for it.
+// The port is added only once because duplicate host ports are invalid in Kubernetes.
 func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) error {
 	if len(pod.Spec.Containers) == 0 {
 		return fmt.Errorf("pod has no regular containers")
