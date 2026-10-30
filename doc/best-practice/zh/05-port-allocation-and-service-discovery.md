@@ -339,7 +339,7 @@ customComponentsPattern:
 
 #### Host Port 调度
 
-对设置了 `hostNetwork: true` 的 Pod，Controller 会在第一个容器上把分配到的值同时声明为 `containerPort` 和 `hostPort`。这样默认调度器的 NodePorts 插件可以感知该端口，并避免把随机分配到相同端口的多个 hostNetwork Pod 调度到同一个节点。未使用 hostNetwork 的 Pod 只会注入环境变量，因为 Pod IP 已经隔离了端口。
+对每个端口分配，Controller 会在第一个容器上把分配到的值声明为 `containerPort`。如果 Pod 设置了 `hostNetwork: true`，还会同时设置相同的 `hostPort`，让默认调度器的 NodePorts 插件感知该端口，并避免把随机分配到相同端口的多个 Pod 调度到同一个节点。未使用 hostNetwork 的 Pod 不设置 `hostPort`；`containerPort` 只是声明性字段，不会占用节点端口。
 
 #### references 参数说明
 | 参数 | 类型 | 是否必填 | 说明 |

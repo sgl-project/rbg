@@ -111,17 +111,13 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 			return fmt.Errorf("port not found for allocation %s (key: %s)", alloc.Name, key)
 		}
 
-		// Host ports are meaningful only for host-network Pods. Regular Pods use
-		// their own network namespace, so no node-level port reservation is needed.
-		if pod.Spec.HostNetwork {
-			port, err := strconv.ParseUint(portValue, 10, 16)
-			if err != nil || port == 0 {
-				return fmt.Errorf("invalid port value for allocation %s (key: %s): %q", alloc.Name, key, portValue)
-			}
+		port, err := strconv.ParseUint(portValue, 10, 16)
+		if err != nil || port == 0 {
+			return fmt.Errorf("invalid port value for allocation %s (key: %s): %q", alloc.Name, key, portValue)
+		}
 
-			if err := injectContainerPort(pod, int32(port), alloc.Protocol); err != nil {
-				return fmt.Errorf("failed to inject port for allocation %s into pod %s: %w", alloc.Name, pod.Name, err)
-			}
+		if err := injectContainerPort(pod, int32(port), alloc.Protocol); err != nil {
+			return fmt.Errorf("failed to inject port for allocation %s into pod %s: %w", alloc.Name, pod.Name, err)
 		}
 
 		injectEnvVar(pod, alloc.Env, portValue)
@@ -158,10 +154,10 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 	return nil
 }
 
-// injectContainerPort declares the allocated port on the first regular container of
-// a host-network Pod. Kubernetes requires hostPort to equal containerPort in that
-// mode, and the declaration makes the scheduler's NodePorts plugin account for it.
-// The port is added only once because duplicate host ports are invalid in Kubernetes.
+// injectContainerPort declares the allocated port on the first regular container.
+// For host-network Pods, hostPort is set to the allocated port so the scheduler's
+// NodePorts plugin can account for it. For regular Pods, hostPort remains unset;
+// containerPort is declarative and does not reserve a port on the node.
 func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) error {
 	if len(pod.Spec.Containers) == 0 {
 		return fmt.Errorf("pod has no regular containers")
@@ -173,23 +169,40 @@ func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) 
 
 	container := &pod.Spec.Containers[0]
 	for i := range container.Ports {
-		if container.Ports[i].Protocol == protocol && container.Ports[i].ContainerPort == port {
-			container.Ports[i].HostPort = port
+		if container.Ports[i].Protocol != protocol || container.Ports[i].ContainerPort != port {
+			continue
+		}
+
+		if !pod.Spec.HostNetwork {
 			return nil
 		}
-	}
 
-	for i := range container.Ports {
-		if container.Ports[i].Protocol == protocol && container.Ports[i].HostPort == port {
-			return fmt.Errorf("host port %d with protocol %s already exists", port, protocol)
+		switch existingHostPort := container.Ports[i].HostPort; existingHostPort {
+		case 0, port:
+			container.Ports[i].HostPort = port
+			return nil
+		default:
+			return fmt.Errorf("host port %d does not match container port %d", existingHostPort, port)
 		}
 	}
 
-	container.Ports = append(container.Ports, corev1.ContainerPort{
+	if pod.Spec.HostNetwork {
+		for i := range container.Ports {
+			if container.Ports[i].Protocol == protocol && container.Ports[i].HostPort == port {
+				return fmt.Errorf("host port %d with protocol %s already exists", port, protocol)
+			}
+		}
+	}
+
+	containerPort := corev1.ContainerPort{
 		ContainerPort: port,
-		HostPort:      port,
 		Protocol:      protocol,
-	})
+	}
+	if pod.Spec.HostNetwork {
+		containerPort.HostPort = port
+	}
+
+	container.Ports = append(container.Ports, containerPort)
 	return nil
 }
 

@@ -178,7 +178,7 @@ func TestInjectPortsIntoPod(t *testing.T) {
 	assert.Equal(t, corev1.ProtocolTCP, pod.Spec.Containers[0].Ports[1].Protocol)
 }
 
-func TestInjectPortsIntoPodWithoutHostNetworkDoesNotDeclareHostPorts(t *testing.T) {
+func TestInjectPortsIntoPodWithoutHostNetworkOmitsHostPort(t *testing.T) {
 	portAllocator = newTestAllocator(30000, 2768)
 
 	pod := &corev1.Pod{
@@ -206,7 +206,11 @@ func TestInjectPortsIntoPodWithoutHostNetworkDoesNotDeclareHostPorts(t *testing.
 	err = InjectPortsIntoPod(pod, instance, config, "worker")
 	require.NoError(t, err)
 
-	assert.Empty(t, pod.Spec.Containers[0].Ports)
+	require.Len(t, pod.Spec.Containers[0].Ports, 1)
+	port := pod.Spec.Containers[0].Ports[0]
+	assert.Equal(t, corev1.ProtocolUDP, port.Protocol)
+	assert.Zero(t, port.HostPort)
+	assert.NotZero(t, port.ContainerPort)
 	assert.Len(t, pod.Spec.Containers[0].Env, 1)
 }
 
