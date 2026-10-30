@@ -52,7 +52,6 @@ type PortAllocation struct {
 	// Protocol specifies the protocol of the injected container port.
 	// Defaults to TCP.
 	// +optional
-	// +default=TCP
 	Protocol corev1.Protocol `json:"protocol,omitempty"`
 }
 
