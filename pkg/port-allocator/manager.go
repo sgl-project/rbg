@@ -163,33 +163,41 @@ func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) 
 		return fmt.Errorf("pod has no regular containers")
 	}
 
-	if protocol == "" {
-		protocol = corev1.ProtocolTCP
-	}
+	protocol = normalizeProtocol(protocol)
 
-	container := &pod.Spec.Containers[0]
-	for i := range container.Ports {
-		if container.Ports[i].Protocol != protocol || container.Ports[i].ContainerPort != port {
-			continue
-		}
+	// Reuse an existing declaration in any regular container. This avoids adding
+	// a duplicate declaration to the first container when the port already exists
+	// in a later container.
+	for ci := range pod.Spec.Containers {
+		ports := pod.Spec.Containers[ci].Ports
+		for pi := range ports {
+			existing := &ports[pi]
+			if normalizeProtocol(existing.Protocol) != protocol || existing.ContainerPort != port {
+				continue
+			}
 
-		if !pod.Spec.HostNetwork {
-			return nil
-		}
+			if !pod.Spec.HostNetwork {
+				return nil
+			}
 
-		switch existingHostPort := container.Ports[i].HostPort; existingHostPort {
-		case 0, port:
-			container.Ports[i].HostPort = port
-			return nil
-		default:
-			return fmt.Errorf("host port %d does not match container port %d", existingHostPort, port)
+			switch existingHostPort := existing.HostPort; existingHostPort {
+			case 0, port:
+				existing.HostPort = port
+				return nil
+			default:
+				return fmt.Errorf("host port %d does not match container port %d", existingHostPort, port)
+			}
 		}
 	}
 
 	if pod.Spec.HostNetwork {
-		for i := range container.Ports {
-			if container.Ports[i].Protocol == protocol && container.Ports[i].HostPort == port {
-				return fmt.Errorf("host port %d with protocol %s already exists", port, protocol)
+		for ci := range pod.Spec.Containers {
+			ports := pod.Spec.Containers[ci].Ports
+			for pi := range ports {
+				existing := &ports[pi]
+				if normalizeProtocol(existing.Protocol) == protocol && existing.HostPort == port {
+					return fmt.Errorf("host port %d with protocol %s already exists", port, protocol)
+				}
 			}
 		}
 	}
@@ -202,8 +210,15 @@ func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) 
 		containerPort.HostPort = port
 	}
 
-	container.Ports = append(container.Ports, containerPort)
+	pod.Spec.Containers[0].Ports = append(pod.Spec.Containers[0].Ports, containerPort)
 	return nil
+}
+
+func normalizeProtocol(protocol corev1.Protocol) corev1.Protocol {
+	if protocol == "" {
+		return corev1.ProtocolTCP
+	}
+	return protocol
 }
 
 // injectEnvVar injects an environment variable with a direct value

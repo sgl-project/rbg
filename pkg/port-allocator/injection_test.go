@@ -168,6 +168,123 @@ func TestInjectPortsIntoPodHandlesExistingPortDeclarations(t *testing.T) {
 	}
 }
 
+func TestInjectPortsIntoPodReusesPortWithOmittedProtocol(t *testing.T) {
+	tests := []struct {
+		name        string
+		hostNetwork bool
+	}{
+		{name: "non-host-network pod", hostNetwork: false},
+		{name: "host-network pod", hostNetwork: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},
+				Spec: corev1.PodSpec{
+					HostNetwork: tt.hostNetwork,
+					Containers: []corev1.Container{{
+						Name:  "worker",
+						Image: "worker:latest",
+						Ports: []corev1.ContainerPort{{ContainerPort: 30000}},
+					}},
+				},
+			}
+			config := &PortAllocatorConfig{
+				Allocations: []PortAllocation{
+					{Name: "metrics", Env: "METRICS_PORT", Scope: PodScoped, Protocol: corev1.ProtocolTCP},
+				},
+			}
+
+			err := InjectPortsIntoPod(pod, injectionTestInstance(pod.Name, "30000"), config, "worker")
+			require.NoError(t, err)
+
+			require.Len(t, pod.Spec.Containers[0].Ports, 1)
+			port := pod.Spec.Containers[0].Ports[0]
+			assert.Equal(t, int32(30000), port.ContainerPort)
+			assert.Equal(t, corev1.ProtocolTCP, normalizeProtocol(port.Protocol))
+			if tt.hostNetwork {
+				assert.Equal(t, int32(30000), port.HostPort)
+			} else {
+				assert.Zero(t, port.HostPort)
+			}
+		})
+	}
+}
+
+func TestInjectPortsIntoPodReusesPortDeclaredInLaterContainer(t *testing.T) {
+	tests := []struct {
+		name        string
+		hostNetwork bool
+	}{
+		{name: "non-host-network pod", hostNetwork: false},
+		{name: "host-network pod", hostNetwork: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},
+				Spec: corev1.PodSpec{
+					HostNetwork: tt.hostNetwork,
+					Containers: []corev1.Container{
+						{Name: "engine", Image: "engine:latest"},
+						{
+							Name:  "sidecar",
+							Image: "sidecar:latest",
+							Ports: []corev1.ContainerPort{{ContainerPort: 30000, Protocol: corev1.ProtocolTCP}},
+						},
+					},
+				},
+			}
+			config := &PortAllocatorConfig{
+				Allocations: []PortAllocation{
+					{Name: "metrics", Env: "METRICS_PORT", Scope: PodScoped, Protocol: corev1.ProtocolTCP},
+				},
+			}
+
+			err := InjectPortsIntoPod(pod, injectionTestInstance(pod.Name, "30000"), config, "worker")
+			require.NoError(t, err)
+
+			assert.Empty(t, pod.Spec.Containers[0].Ports)
+			require.Len(t, pod.Spec.Containers[1].Ports, 1)
+			port := pod.Spec.Containers[1].Ports[0]
+			assert.Equal(t, int32(30000), port.ContainerPort)
+			if tt.hostNetwork {
+				assert.Equal(t, int32(30000), port.HostPort)
+			} else {
+				assert.Zero(t, port.HostPort)
+			}
+		})
+	}
+}
+
+func TestInjectPortsIntoPodRejectsLaterContainerHostPortConflict(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},
+		Spec: corev1.PodSpec{
+			HostNetwork: true,
+			Containers: []corev1.Container{
+				{Name: "engine", Image: "engine:latest"},
+				{
+					Name:  "sidecar",
+					Image: "sidecar:latest",
+					Ports: []corev1.ContainerPort{{ContainerPort: 29999, HostPort: 30000, Protocol: corev1.ProtocolTCP}},
+				},
+			},
+		},
+	}
+	config := &PortAllocatorConfig{
+		Allocations: []PortAllocation{
+			{Name: "metrics", Env: "METRICS_PORT", Scope: PodScoped, Protocol: corev1.ProtocolTCP},
+		},
+	}
+
+	err := InjectPortsIntoPod(pod, injectionTestInstance(pod.Name, "30000"), config, "worker")
+	require.ErrorContains(t, err, "host port 30000 with protocol TCP already exists")
+	assert.Empty(t, pod.Spec.Containers[0].Ports)
+}
+
 func TestInjectPortsIntoPodOnlyDeclaresPortsOnFirstRegularContainer(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},

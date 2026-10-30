@@ -541,7 +541,6 @@ func verifyHostPortSpread(f *framework.Framework, rbg *workloadsv1alpha2.RoleBas
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 
 	nodeNames := make(map[string]struct{})
-	hostPorts := make(map[int32]struct{})
 	expectedPort := int32(-1)
 	for _, pod := range podList.Items {
 		nodeNames[pod.Spec.NodeName] = struct{}{}
@@ -556,19 +555,23 @@ func verifyHostPortSpread(f *framework.Framework, rbg *workloadsv1alpha2.RoleBas
 				"RoleScoped host-network pods must share one allocated port")
 		}
 
+		foundAllocatedHostPort := false
 		for _, container := range pod.Spec.Containers {
 			for _, port := range container.Ports {
-				if port.HostPort != 0 && port.Protocol == corev1.ProtocolTCP {
-					hostPorts[port.HostPort] = struct{}{}
+				if port.ContainerPort == expectedPort &&
+					port.HostPort == expectedPort &&
+					port.Protocol == corev1.ProtocolTCP {
+					foundAllocatedHostPort = true
 				}
 			}
 		}
+
+		gomega.Expect(foundAllocatedHostPort).To(gomega.BeTrue(),
+			fmt.Sprintf("host-network pod %s must declare the allocated host port", pod.Name))
 	}
 
 	gomega.Expect(nodeNames).To(gomega.HaveLen(2),
 		"pods sharing the same hostPort must be scheduled on different nodes")
-	gomega.Expect(hostPorts).To(gomega.Equal(map[int32]struct{}{expectedPort: {}}),
-		"RoleScoped host-network pods must share one hostPort")
 }
 
 func dumpPortAllocatorDebugInfo(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
