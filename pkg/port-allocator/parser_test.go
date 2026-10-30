@@ -253,6 +253,29 @@ func TestParsePortAllocatorConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "valid SCTP protocol",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+					Annotations: map[string]string{
+						"rolebasedgroup.workloads.x-k8s.io/port-allocator": `{
+							"allocations": [
+								{
+									"name": "metrics",
+									"env": "METRICS_PORT",
+									"protocol": "SCTP"
+								}
+							]
+						}`,
+					},
+				},
+			},
+			checkResult: func(t *testing.T, config *PortAllocatorConfig) {
+				assert.NotNil(t, config)
+				assert.Equal(t, corev1.ProtocolSCTP, config.Allocations[0].Protocol)
+			},
+		},
+		{
 			name: "invalid scope value",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{

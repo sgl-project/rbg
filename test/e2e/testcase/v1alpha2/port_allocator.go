@@ -65,11 +65,85 @@ func RunPortAllocatorTestCases(f *framework.Framework) {
 			ginkgo.By("Verifying leader pod has env vars and annotations")
 			verifyLeaderPodHasPorts(f, rbg)
 
-			// Step 4: Verify worker pod has reference env var
-			ginkgo.By("Verifying worker pod has reference env var")
-			verifyWorkerPodHasReferencePort(f, rbg)
+			// Step 4: Verify worker pod has reference and allocated env vars
+			ginkgo.By("Verifying worker pod has reference and allocated env vars")
+			verifyWorkerPodHasPorts(f, rbg)
+
+			// Step 5: Verify non-host-network worker declares containerPort without hostPort
+			ginkgo.By("Verifying non-host-network worker pod omits hostPort")
+			verifyWorkerPodOmitsHostPort(f, rbg)
+		})
+
+		ginkgo.It("should spread host-network pods sharing a role-scoped host port", func() {
+			ginkgo.By("Checking that the cluster has at least two schedulable nodes")
+			if countAvailableNodes(f) < 2 {
+				ginkgo.Skip("requires at least two Ready and schedulable nodes")
+			}
+
+			ginkgo.By("Creating RBG with a RoleScoped host-network port")
+			rbg := buildHostPortSpreadTestRBG(f.Namespace)
+
+			f.RegisterDebugFn(func() {
+				dumpDebugInfo(f, rbg)
+				dumpPortAllocatorDebugInfo(f, rbg)
+			})
+
+			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+			f.ExpectRbgV2Equal(rbg)
+
+			ginkgo.By("Verifying pods with the same hostPort are scheduled on different nodes")
+			verifyHostPortSpread(f, rbg)
 		})
 	})
+}
+
+func countAvailableNodes(f *framework.Framework) int {
+	nodeList := &corev1.NodeList{}
+	gomega.Expect(f.Client.List(f.Ctx, nodeList)).Should(gomega.Succeed())
+
+	availableNodes := 0
+	for i := range nodeList.Items {
+		if isNodeAvailable(&nodeList.Items[i]) {
+			availableNodes++
+		}
+	}
+	return availableNodes
+}
+
+func buildHostPortSpreadTestRBG(namespace string) *workloadsv1alpha2.RoleBasedGroup {
+	template := wrappersv2.BuildBasicPodTemplateSpec()
+	template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
+	template.Spec.HostNetwork = true
+	template.Annotations = map[string]string{
+		portAllocatorAnnotationKey: `{
+			"allocations": [
+				{
+					"name": "shared-port",
+					"env": "SHARED_PORT",
+					"annotationKey": "test/shared-port",
+					"scope": "RoleScoped"
+				}
+			]
+		}`,
+	}
+
+	return wrappersv2.BuildBasicRoleBasedGroup("port-allocator-spread-test", namespace).
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			{
+				Name: "prefill",
+				Pattern: workloadsv1alpha2.Pattern{
+					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+						Components: []workloadsv1alpha2.InstanceComponent{
+							{
+								Name:     "worker",
+								Size:     ptr.To(int32(2)),
+								Template: template,
+							},
+						},
+					},
+				},
+			},
+		}).Obj()
 }
 
 func buildPortAllocatorTestRBG(namespace string) *workloadsv1alpha2.RoleBasedGroup {
@@ -125,6 +199,13 @@ func buildWorkerComponent() workloadsv1alpha2.InstanceComponent {
 	template.Spec.Containers[0].ImagePullPolicy = corev1.PullIfNotPresent
 	template.Annotations = map[string]string{
 		portAllocatorAnnotationKey: `{
+			"allocations": [
+				{
+					"name": "worker-port",
+					"env": "WORKER_PORT",
+					"scope": "PodScoped"
+				}
+			],
 			"references": [
 				{
 					"env": "LEADER_ADDR_PORT",
@@ -304,7 +385,7 @@ func verifyLeaderPodHasPorts(f *framework.Framework, rbg *workloadsv1alpha2.Role
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
 }
 
-func verifyWorkerPodHasReferencePort(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
+func verifyWorkerPodHasPorts(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
 	logger := log.FromContext(f.Ctx)
 
 	gomega.Eventually(func() bool {
@@ -321,27 +402,173 @@ func verifyWorkerPodHasReferencePort(f *framework.Framework, rbg *workloadsv1alp
 		}
 
 		for _, pod := range podList.Items {
-			if containsWorker(pod.Name) {
-				// Check env var for reference
-				for _, container := range pod.Spec.Containers {
-					for _, envVar := range container.Env {
-						if envVar.Name == "LEADER_ADDR_PORT" && envVar.Value != "" {
-							logger.V(1).Info("Found LEADER_ADDR_PORT env var in worker pod",
-								"pod", pod.Name,
-								"value", envVar.Value)
-							return true
-						}
+			if !containsWorker(pod.Name) {
+				continue
+			}
+
+			foundReferencePort := false
+			foundWorkerPort := false
+			for _, container := range pod.Spec.Containers {
+				for _, envVar := range container.Env {
+					if envVar.Name == "LEADER_ADDR_PORT" && envVar.Value != "" {
+						foundReferencePort = true
+						logger.V(1).Info("Found LEADER_ADDR_PORT env var in worker pod",
+							"pod", pod.Name,
+							"value", envVar.Value)
+					}
+					if envVar.Name == "WORKER_PORT" && envVar.Value != "" {
+						foundWorkerPort = true
+						logger.V(1).Info("Found WORKER_PORT env var in worker pod",
+							"pod", pod.Name,
+							"value", envVar.Value)
 					}
 				}
+			}
 
-				logger.V(1).Info("Worker pod missing LEADER_ADDR_PORT env var", "pod", pod.Name)
+			if !foundReferencePort || !foundWorkerPort {
+				logger.V(1).Info("Worker pod missing port env vars",
+					"pod", pod.Name,
+					"foundReferencePort", foundReferencePort,
+					"foundWorkerPort", foundWorkerPort)
 				return false
 			}
+
+			logger.V(1).Info("Worker pod has all expected port env vars", "pod", pod.Name)
+			return true
 		}
 
 		logger.V(1).Info("Worker pod not found")
 		return false
 	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+}
+
+func verifyWorkerPodOmitsHostPort(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
+	logger := log.FromContext(f.Ctx)
+
+	gomega.Eventually(func() bool {
+		podList := &corev1.PodList{}
+		err := f.Client.List(f.Ctx, podList,
+			client.InNamespace(rbg.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey: rbg.Name,
+			},
+		)
+		if err != nil {
+			logger.Error(err, "Failed to list pods")
+			return false
+		}
+
+		for _, pod := range podList.Items {
+			if !containsWorker(pod.Name) {
+				continue
+			}
+
+			workerPort := ""
+			for _, container := range pod.Spec.Containers {
+				for _, envVar := range container.Env {
+					if envVar.Name == "WORKER_PORT" {
+						workerPort = envVar.Value
+					}
+				}
+			}
+			if workerPort == "" {
+				logger.V(1).Info("Worker pod missing WORKER_PORT env var", "pod", pod.Name)
+				return false
+			}
+
+			expectedPort, err := strconv.ParseInt(workerPort, 10, 32)
+			if err != nil {
+				logger.Error(err, "Worker pod has an invalid WORKER_PORT env var", "pod", pod.Name)
+				return false
+			}
+
+			foundContainerPort := false
+			for _, container := range pod.Spec.Containers {
+				for _, port := range container.Ports {
+					if int32(expectedPort) == port.ContainerPort &&
+						port.HostPort == 0 &&
+						port.Protocol == corev1.ProtocolTCP {
+						foundContainerPort = true
+					}
+				}
+			}
+
+			if !foundContainerPort {
+				logger.V(1).Info("Worker pod missing containerPort without hostPort",
+					"pod", pod.Name,
+					"expectedContainerPort", expectedPort)
+				return false
+			}
+
+			logger.V(1).Info("Worker pod declares containerPort without hostPort",
+				"pod", pod.Name,
+				"containerPort", expectedPort)
+			return true
+		}
+
+		logger.V(1).Info("Worker pod not found")
+		return false
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+}
+
+func verifyHostPortSpread(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
+	logger := log.FromContext(f.Ctx)
+
+	podList := &corev1.PodList{}
+	gomega.Eventually(func() bool {
+		err := f.Client.List(f.Ctx, podList,
+			client.InNamespace(rbg.Namespace),
+			client.MatchingLabels{
+				constants.GroupNameLabelKey: rbg.Name,
+			},
+		)
+		if err != nil {
+			logger.Error(err, "Failed to list pods")
+			return false
+		}
+		if len(podList.Items) != 2 {
+			logger.V(1).Info("Waiting for two host-network pods", "count", len(podList.Items))
+			return false
+		}
+
+		for _, pod := range podList.Items {
+			if pod.Spec.NodeName == "" {
+				logger.V(1).Info("Waiting for host-network pod to be scheduled", "pod", pod.Name)
+				return false
+			}
+		}
+		return true
+	}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+
+	nodeNames := make(map[string]struct{})
+	hostPorts := make(map[int32]struct{})
+	expectedPort := int32(-1)
+	for _, pod := range podList.Items {
+		nodeNames[pod.Spec.NodeName] = struct{}{}
+
+		sharedPort, err := strconv.ParseInt(pod.Annotations["test/shared-port"], 10, 32)
+		gomega.Expect(err).ToNot(gomega.HaveOccurred(), "invalid shared port annotation")
+		gomega.Expect(int32(sharedPort)).To(gomega.BeNumerically(">", 0))
+		if expectedPort == -1 {
+			expectedPort = int32(sharedPort)
+		} else {
+			gomega.Expect(int32(sharedPort)).To(gomega.Equal(expectedPort),
+				"RoleScoped host-network pods must share one allocated port")
+		}
+
+		for _, container := range pod.Spec.Containers {
+			for _, port := range container.Ports {
+				if port.HostPort != 0 && port.Protocol == corev1.ProtocolTCP {
+					hostPorts[port.HostPort] = struct{}{}
+				}
+			}
+		}
+	}
+
+	gomega.Expect(nodeNames).To(gomega.HaveLen(2),
+		"pods sharing the same hostPort must be scheduled on different nodes")
+	gomega.Expect(hostPorts).To(gomega.Equal(map[int32]struct{}{expectedPort: {}}),
+		"RoleScoped host-network pods must share one hostPort")
 }
 
 func dumpPortAllocatorDebugInfo(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
