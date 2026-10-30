@@ -167,6 +167,48 @@ func TestInjectPortsIntoPod(t *testing.T) {
 	// Verify annotations were injected
 	assert.NotEmpty(t, pod.Annotations["test/grpc-port"])
 	assert.NotEmpty(t, pod.Annotations["test/http-port"])
+
+	// Verify allocated ports are declared as host ports for the scheduler.
+	require.Len(t, pod.Spec.Containers[0].Ports, 2)
+	for _, containerPort := range pod.Spec.Containers[0].Ports {
+		assert.Equal(t, containerPort.ContainerPort, containerPort.HostPort)
+	}
+	assert.Equal(t, corev1.ProtocolTCP, pod.Spec.Containers[0].Ports[0].Protocol)
+	assert.Equal(t, corev1.ProtocolTCP, pod.Spec.Containers[0].Ports[1].Protocol)
+}
+
+func TestInjectPortsIntoPodUsesConfiguredProtocol(t *testing.T) {
+	portAllocator = newTestAllocator(30000, 2768)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance-worker-0"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "worker", Image: "worker:latest"}},
+		},
+	}
+	config := &PortAllocatorConfig{
+		Allocations: []PortAllocation{
+			{Name: "metrics", Env: "METRICS_PORT", Scope: PodScoped, Protocol: corev1.ProtocolUDP},
+		},
+	}
+	annotations, err := AllocatePodScopedPorts(config, pod.Name)
+	require.NoError(t, err)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-instance",
+			Labels:      map[string]string{constants.RoleTypeLabelKey: string(constants.ComponentsTemplateType)},
+			Annotations: annotations,
+		},
+	}
+
+	err = InjectPortsIntoPod(pod, instance, config, "worker")
+	require.NoError(t, err)
+
+	require.Len(t, pod.Spec.Containers[0].Ports, 1)
+	port := pod.Spec.Containers[0].Ports[0]
+	assert.Equal(t, corev1.ProtocolUDP, port.Protocol)
+	assert.Equal(t, port.ContainerPort, port.HostPort)
 }
 
 func TestGetReferencePodName(t *testing.T) {

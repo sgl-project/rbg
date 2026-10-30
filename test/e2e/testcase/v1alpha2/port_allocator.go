@@ -18,6 +18,7 @@ package v1alpha2
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -252,9 +253,16 @@ func verifyLeaderPodHasPorts(f *framework.Framework, rbg *workloadsv1alpha2.Role
 					return false
 				}
 
-				// Check env vars
+				allocatedPort, err := strconv.ParseInt(grpcPort, 10, 32)
+				if err != nil {
+					logger.Error(err, "Leader pod has an invalid allocated port annotation", "pod", pod.Name)
+					return false
+				}
+
+				// Check env vars and scheduler-visible host port
 				foundLeaderPort := false
 				foundLeaderPortStatic := false
+				foundContainerPort := false
 				for _, container := range pod.Spec.Containers {
 					for _, envVar := range container.Env {
 						if envVar.Name == "LEADER_PORT" && envVar.Value != "" {
@@ -266,13 +274,22 @@ func verifyLeaderPodHasPorts(f *framework.Framework, rbg *workloadsv1alpha2.Role
 							logger.V(1).Info("Found LEADER_PORT_STATIC env var", "pod", pod.Name, "value", envVar.Value)
 						}
 					}
+					for _, port := range container.Ports {
+						if int32(allocatedPort) == port.HostPort &&
+							port.HostPort == port.ContainerPort &&
+							port.Protocol == corev1.ProtocolTCP {
+							foundContainerPort = true
+							logger.V(1).Info("Found allocated host port", "pod", pod.Name, "port", port.HostPort)
+						}
+					}
 				}
 
-				if !foundLeaderPort || !foundLeaderPortStatic {
-					logger.V(1).Info("Leader pod missing env vars",
+				if !foundLeaderPort || !foundLeaderPortStatic || !foundContainerPort {
+					logger.V(1).Info("Leader pod missing env vars or container port",
 						"pod", pod.Name,
 						"foundLeaderPort", foundLeaderPort,
-						"foundLeaderPortStatic", foundLeaderPortStatic)
+						"foundLeaderPortStatic", foundLeaderPortStatic,
+						"foundContainerPort", foundContainerPort)
 					return false
 				}
 

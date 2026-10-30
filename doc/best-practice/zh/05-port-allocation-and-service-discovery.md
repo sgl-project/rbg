@@ -307,6 +307,7 @@ customComponentsPattern:
 | `name` | string | 是 | 端口逻辑名称，用于被其他组件引用 |
 | `env` | string | 是 | 注入到容器的环境变量名 |
 | `scope` | string | 否 | 作用域：`PodScoped`（默认）或 `RoleScoped` |
+| `protocol` | string | 否 | 容器端口协议：`TCP`（默认）、`UDP` 或 `SCTP` |
 | `annotationKey` | string | 否 | 同时注入到 Pod 注解的 key（可选） |
 
 
@@ -335,6 +336,10 @@ customComponentsPattern:
         ]
       }
 ```
+
+#### Host Port 调度
+
+对每个端口分配，Controller 还会在第一个容器上把分配到的值同时声明为 `containerPort` 和 `hostPort`。这样默认调度器的 NodePorts 插件可以感知该端口，并避免把随机分配到相同 Host Port 的多个 Pod 调度到同一个节点。
 
 #### references 参数说明
 | 参数 | 类型 | 是否必填 | 说明 |

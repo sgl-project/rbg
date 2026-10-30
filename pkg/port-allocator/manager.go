@@ -111,6 +111,15 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 			return fmt.Errorf("port not found for allocation %s (key: %s)", alloc.Name, key)
 		}
 
+		port, err := strconv.ParseUint(portValue, 10, 16)
+		if err != nil || port == 0 {
+			return fmt.Errorf("invalid port value for allocation %s (key: %s): %q", alloc.Name, key, portValue)
+		}
+
+		if err := injectContainerPort(pod, int32(port), alloc.Protocol); err != nil {
+			return fmt.Errorf("failed to inject port for allocation %s into pod %s: %w", alloc.Name, pod.Name, err)
+		}
+
 		injectEnvVar(pod, alloc.Env, portValue)
 
 		if alloc.AnnotationKey != "" {
@@ -142,6 +151,40 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 		injectEnvVar(pod, ref.Env, portValue)
 	}
 
+	return nil
+}
+
+// injectContainerPort declares the allocated port on the first regular container so
+// the scheduler's NodePorts plugin can account for the host port. The port is added
+// only once because duplicate host ports across containers are invalid in Kubernetes.
+func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) error {
+	if len(pod.Spec.Containers) == 0 {
+		return fmt.Errorf("pod has no regular containers")
+	}
+
+	if protocol == "" {
+		protocol = corev1.ProtocolTCP
+	}
+
+	container := &pod.Spec.Containers[0]
+	for i := range container.Ports {
+		if container.Ports[i].Protocol == protocol && container.Ports[i].ContainerPort == port {
+			container.Ports[i].HostPort = port
+			return nil
+		}
+	}
+
+	for i := range container.Ports {
+		if container.Ports[i].Protocol == protocol && container.Ports[i].HostPort == port {
+			return fmt.Errorf("host port %d with protocol %s already exists", port, protocol)
+		}
+	}
+
+	container.Ports = append(container.Ports, corev1.ContainerPort{
+		ContainerPort: port,
+		HostPort:      port,
+		Protocol:      protocol,
+	})
 	return nil
 }
 
