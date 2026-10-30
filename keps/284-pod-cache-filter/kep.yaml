@@ -1,0 +1,22 @@
+title: "Pod Cache Filtering: Label Union and Asynchronous Backfill"
+kep-number: 284
+authors:
+  - "@QIW9"
+status: provisional
+creation-date: 2026-10-28
+reviewers:
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.9.0"
+
+milestone:
+  alpha: "v0.9.0"
+
+disable-supported: true
+
+see-also:
+  - "https://github.com/sgl-project/rbg/issues/284"
