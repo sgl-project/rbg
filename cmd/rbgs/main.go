@@ -221,13 +221,9 @@ func main() {
 	flag.StringVar(&pprofAddr, "pprof-bind-address", ":6060", "The address the pprof endpoint binds to.")
 	flag.BoolVar(
 		&enableDeprecatedWorkloadTypes, "enable-deprecated-workload-types", true,
-		"Enable the deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet). Enabled by default. "+
-			"When false, the controller stops watching these resources and the validating webhook rejects any "+
-			"create or update whose roles use one, with no exemption for objects that already do. Such a cluster "+
-			"grants no RBAC for these types, so this setting is only for a fresh installation; an installation that "+
-			"already has objects using them must keep it true. "+
-			"Note: because the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet, a v1alpha1 object is "+
-			"rejected unless every role names RoleInstanceSet explicitly; v1alpha2 objects use RoleInstanceSet by default.",
+		"Enable compatibility for existing deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet). "+
+			"Enabled by default during migration. New uses are rejected in both modes; existing roles are accepted "+
+			"only while this flag is true. Set false after every role has migrated to RoleInstanceSet.",
 	)
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
@@ -543,6 +539,28 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 	return opts
 }
 
+func setupV1alpha1DeprecationWebhooks(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
+	if err := (&workloadsv1alpha1.RoleBasedGroup{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroup: %w", err)
+	}
+	if err := (&workloadsv1alpha1.RoleBasedGroupSet{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupSet: %w", err)
+	}
+	if err := (&workloadsv1alpha1.InstanceSet{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for InstanceSet: %w", err)
+	}
+	if err := (&workloadsv1alpha1.Instance{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for Instance: %w", err)
+	}
+	if err := (&workloadsv1alpha1.RoleBasedGroupScalingAdapter{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupScalingAdapter: %w", err)
+	}
+	if err := (&workloadsv1alpha1.ClusterEngineRuntimeProfile{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for ClusterEngineRuntimeProfile: %w", err)
+	}
+	return nil
+}
+
 // bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
 // conversion webhook, patches the caBundle on CRDs, and registers conversion
 // webhooks with the manager. This should only be called when webhook is enabled.
@@ -598,6 +616,12 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	}
 	if err = (&workloadsv1alpha2.RoleInstanceSet{}).SetupWebhookWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for RoleInstanceSet: %w", err)
+	}
+
+	// v1alpha1 remains readable and writable for existing objects, but every write
+	// returns a deprecation warning and cannot introduce a new deprecated workload type.
+	if err = setupV1alpha1DeprecationWebhooks(mgr, enableDeprecatedWorkloadTypes); err != nil {
+		return nil, fmt.Errorf("unable to create v1alpha1 deprecation webhooks: %w", err)
 	}
 
 	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil

@@ -28,7 +28,6 @@ import (
 // CoordinatedPolicyValidator implements admission.CustomValidator for CoordinatedPolicy.
 // Wired into the manager by SetupWebhookWithManager.
 //
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=coordinatedpolicies,verbs=create;update,versions=v1alpha2,name=vcoordinatedpolicy.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type CoordinatedPolicyValidator struct {
 	// PerRoleGangMinimumsSupported reports whether the configured scheduler can honor

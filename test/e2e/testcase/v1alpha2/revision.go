@@ -26,7 +26,6 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
@@ -41,11 +40,11 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 				WithRoles(
 					[]workloadsv1alpha2.RoleSpec{
 						wrappersv2.BuildStandaloneRole("role-deployment").
-							WithWorkload("apps/v1", "Deployment").Obj(),
+							Obj(),
 						wrappersv2.BuildStandaloneRole("role-sts").
-							WithWorkload("apps/v1", "StatefulSet").Obj(),
+							Obj(),
 						wrappersv2.BuildLeaderWorkerRole("role-lws").
-							WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").Obj(),
+							Obj(),
 					},
 				).Obj()
 
@@ -119,7 +118,6 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 		ginkgo.It("semantic comparison can reconcile modifications on the workload", func() {
 			rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").
-					WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").
 					Obj(),
 			}).Obj()
 
@@ -128,36 +126,36 @@ func RunControllerRevisionTestCases(f *framework.Framework) {
 			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 			f.ExpectRbgV2Equal(rbg)
 
-			// With LeaderWorkerSet workload type, the controller creates a LWS resource.
-			// Use retry on conflict since the controller may reconcile the LWS concurrently.
+			// The controller creates a RoleInstanceSet for the default workload type.
+			// Use retry on conflict since the controller may reconcile it concurrently.
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				lws := &lwsv1.LeaderWorkerSet{}
+				ris := &workloadsv1alpha2.RoleInstanceSet{}
 				if err := f.Client.Get(
 					f.Ctx, client.ObjectKey{
 						Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
 						Namespace: rbg.Namespace,
-					}, lws,
+					}, ris,
 				); err != nil {
 					return err
 				}
-				// Drift the replica count on the underlying LWS
-				lws.Spec.Replicas = ptr.To(int32(2))
-				return f.Client.Update(f.Ctx, lws)
+				// Drift the replica count on the underlying RoleInstanceSet
+				ris.Spec.Replicas = ptr.To(int32(2))
+				return f.Client.Update(f.Ctx, ris)
 			})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 			// wait for controller reconcile
 			time.Sleep(time.Second * 5)
 
 			f.ExpectRbgV2Equal(rbg)
-			newLws := &lwsv1.LeaderWorkerSet{}
+			newRIS := &workloadsv1alpha2.RoleInstanceSet{}
 			err = f.Client.Get(
 				f.Ctx, client.ObjectKey{
 					Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
 					Namespace: rbg.Namespace,
-				}, newLws,
+				}, newRIS,
 			)
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-			gomega.Expect(int32(1)).Should(gomega.Equal(*newLws.Spec.Replicas))
+			gomega.Expect(int32(1)).Should(gomega.Equal(*newRIS.Spec.Replicas))
 		})
 
 	})

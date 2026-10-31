@@ -99062,26 +99062,6 @@ webhooks:
     service:
       name: rbgs-webhook-service
       namespace: rbgs-system
-      path: /mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset
-  failurePolicy: Fail
-  name: mroleinstanceset.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - roleinstancesets
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
       path: /mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
   failurePolicy: Fail
   name: mrolebasedgroupset.kb.io
@@ -99096,12 +99076,52 @@ webhooks:
     resources:
     - rolebasedgroupsets
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset
+  failurePolicy: Fail
+  name: mroleinstanceset.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - roleinstancesets
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: rbgs-validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy
+  failurePolicy: Fail
+  name: vcoordinatedpolicy.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - coordinatedpolicies
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:
@@ -99148,17 +99168,123 @@ webhooks:
     service:
       name: rbgs-webhook-service
       namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha2-coordinatedpolicy
-  failurePolicy: Fail
-  name: vcoordinatedpolicy.kb.io
+      path: /validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile
+  failurePolicy: Ignore
+  matchPolicy: Exact
+  name: vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io
   rules:
   - apiGroups:
     - workloads.x-k8s.io
     apiVersions:
-    - v1alpha2
+    - v1alpha1
     operations:
     - CREATE
     - UPDATE
     resources:
-    - coordinatedpolicies
+    - clusterengineruntimeprofiles
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha1-instance
+  failurePolicy: Ignore
+  matchPolicy: Exact
+  name: vinstance-v1alpha1-deprecation.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - instances
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha1-instanceset
+  failurePolicy: Ignore
+  matchPolicy: Exact
+  name: vinstanceset-v1alpha1-deprecation.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - instancesets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroup
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vrolebasedgroup-v1alpha1-deprecation.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroups
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter
+  failurePolicy: Ignore
+  matchPolicy: Exact
+  name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupscalingadapters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupset
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: vrolebasedgroupset-v1alpha1-deprecation.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets
   sideEffects: None
