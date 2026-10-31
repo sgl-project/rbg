@@ -111,6 +111,15 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 			return fmt.Errorf("port not found for allocation %s (key: %s)", alloc.Name, key)
 		}
 
+		port, err := strconv.ParseUint(portValue, 10, 16)
+		if err != nil || port == 0 {
+			return fmt.Errorf("invalid port value for allocation %s (key: %s): %q", alloc.Name, key, portValue)
+		}
+
+		if err := injectContainerPort(pod, int32(port), alloc.Protocol); err != nil {
+			return fmt.Errorf("failed to inject port for allocation %s into pod %s: %w", alloc.Name, pod.Name, err)
+		}
+
 		injectEnvVar(pod, alloc.Env, portValue)
 
 		if alloc.AnnotationKey != "" {
@@ -143,6 +152,73 @@ func InjectPortsIntoPod(pod *corev1.Pod, instance *workloadsv1alpha2.RoleInstanc
 	}
 
 	return nil
+}
+
+// injectContainerPort declares the allocated port on the first regular container.
+// For host-network Pods, hostPort is set to the allocated port so the scheduler's
+// NodePorts plugin can account for it. For regular Pods, hostPort remains unset;
+// containerPort is declarative and does not reserve a port on the node.
+func injectContainerPort(pod *corev1.Pod, port int32, protocol corev1.Protocol) error {
+	if len(pod.Spec.Containers) == 0 {
+		return fmt.Errorf("pod has no regular containers")
+	}
+
+	protocol = normalizeProtocol(protocol)
+
+	// Reuse an existing declaration in any regular container. This avoids adding
+	// a duplicate declaration to the first container when the port already exists
+	// in a later container.
+	for ci := range pod.Spec.Containers {
+		ports := pod.Spec.Containers[ci].Ports
+		for pi := range ports {
+			existing := &ports[pi]
+			if normalizeProtocol(existing.Protocol) != protocol || existing.ContainerPort != port {
+				continue
+			}
+
+			if !pod.Spec.HostNetwork {
+				return nil
+			}
+
+			switch existingHostPort := existing.HostPort; existingHostPort {
+			case 0, port:
+				existing.HostPort = port
+				return nil
+			default:
+				return fmt.Errorf("host port %d does not match container port %d", existingHostPort, port)
+			}
+		}
+	}
+
+	if pod.Spec.HostNetwork {
+		for ci := range pod.Spec.Containers {
+			ports := pod.Spec.Containers[ci].Ports
+			for pi := range ports {
+				existing := &ports[pi]
+				if normalizeProtocol(existing.Protocol) == protocol && existing.HostPort == port {
+					return fmt.Errorf("host port %d with protocol %s already exists", port, protocol)
+				}
+			}
+		}
+	}
+
+	containerPort := corev1.ContainerPort{
+		ContainerPort: port,
+		Protocol:      protocol,
+	}
+	if pod.Spec.HostNetwork {
+		containerPort.HostPort = port
+	}
+
+	pod.Spec.Containers[0].Ports = append(pod.Spec.Containers[0].Ports, containerPort)
+	return nil
+}
+
+func normalizeProtocol(protocol corev1.Protocol) corev1.Protocol {
+	if protocol == "" {
+		return corev1.ProtocolTCP
+	}
+	return protocol
 }
 
 // injectEnvVar injects an environment variable with a direct value

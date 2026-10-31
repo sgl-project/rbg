@@ -349,6 +349,7 @@ customComponentsPattern:
 | `name` | string | Yes | Logical port name, used for reference by other components |
 | `env` | string | Yes | Environment variable name injected into containers |
 | `scope` | string | No | Scope: `PodScoped` (default) or `RoleScoped` |
+| `protocol` | string | No | Container port protocol: `TCP` (default), `UDP`, or `SCTP` |
 | `annotationKey` | string | No | Additionally inject into Pod annotation with this key (optional) |
 
 
@@ -377,6 +378,10 @@ Via the `references` field, a component can obtain allocated ports from other co
         ]
       }
 ```
+
+#### Host Port Scheduling
+
+For every allocation, the controller declares the allocated value as `containerPort` on the first container. For Pods with `hostNetwork: true`, it also sets `hostPort` to the same value so the default scheduler's NodePorts plugin can avoid placing multiple Pods with the same randomly allocated port on one node. Pods that do not use host networking keep `hostPort` unset; `containerPort` is declarative and does not reserve a node port.
 
 #### references Parameter Reference
 | Parameter | Type | Required | Description |
