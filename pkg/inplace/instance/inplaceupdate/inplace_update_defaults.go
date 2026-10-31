@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
+	"sigs.k8s.io/rbgs/pkg/inplace/instance/readiness"
 	util "sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -64,8 +65,16 @@ func defaultPatchUpdateSpecToRoleInstance(instance *workloadsv1alpha2.RoleInstan
 		return nil, err
 	}
 
+	// CustomReady is lifecycle state on the live instance, not part of the
+	// replacement template. Keep it until the lifecycle owner releases its key.
+	customReady := readiness.ContainsReadinessGate(instance)
 	instance.Spec = *newRoleInstanceSpec
 	InjectVersionedRoleInstanceSpec(instance)
+	if customReady && !readiness.ContainsReadinessGate(instance) {
+		instance.Spec.ReadinessGates = append(instance.Spec.ReadinessGates, workloadsv1alpha2.RoleInstanceReadinessGate{
+			ConditionType: workloadsv1alpha2.RoleInstanceCustomReady,
+		})
+	}
 
 	klog.V(5).Infof("Decide to in-place update role instance %s/%s with state %v", instance.Namespace, instance.Name, util.DumpJSON(state))
 

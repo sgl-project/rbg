@@ -760,3 +760,26 @@ func TestPatchUpdateSpecKeepsIdentity(t *testing.T) {
 		t.Errorf("the update did not take: image is %q, expected %q", got, "nginx:2.0")
 	}
 }
+
+func TestInPlaceUpdatePreservesLifecycleReadinessGate(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{}},
+		Spec:       workloadsv1alpha2.RoleInstanceSpec{ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: workloadsv1alpha2.RoleInstanceCustomReady}}},
+	}
+	spec := &UpdateSpec{NewTemplate: &workloadsv1alpha2.RoleInstanceTemplate{
+		RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{ReadinessGates: []workloadsv1alpha2.RoleInstanceReadinessGate{{ConditionType: "TemplateReady"}}},
+	}}
+	got, err := defaultPatchUpdateSpecToRoleInstance(instance, spec, &inplaceapi.InPlaceUpdateState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[workloadsv1alpha2.RoleInstanceConditionType]int{}
+	for _, gate := range got.Spec.ReadinessGates {
+		counts[gate.ConditionType]++
+	}
+	for _, conditionType := range []workloadsv1alpha2.RoleInstanceConditionType{workloadsv1alpha2.RoleInstanceCustomReady, workloadsv1alpha2.RoleInstanceInPlaceUpdateReady, "TemplateReady"} {
+		if counts[conditionType] != 1 {
+			t.Errorf("gate %s count=%d, want 1", conditionType, counts[conditionType])
+		}
+	}
+}

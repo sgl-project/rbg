@@ -21,6 +21,7 @@ package statefulmode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -35,9 +36,11 @@ import (
 	"k8s.io/kubernetes/pkg/controller/history"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	instanceutils "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 )
@@ -540,8 +543,8 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	}
 	if shouldExit, err := runForAllWithBreak(replicas, processReplicaFn, monotonic); shouldExit || err != nil {
 		// OrderedReady normally stops before Phase C when an instance is not
-		// ready. If that first blocker is itself a stably-unhealthy update
-		// target, run a restricted update for only that ordinal. This keeps
+		// ready. If that first blocker is an admitted PreparingUpdate target
+		// or a stably-unhealthy update target, resume only that ordinal. This keeps
 		// OrderedReady ordering for other replicas while allowing the rollout
 		// to recover after the unhealthy window instead of waiting forever.
 		if err == nil && shouldExit && monotonic {
@@ -752,8 +755,13 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		//     millisecond-level mislabeling cannot accumulate enough continuous
 		//     unhealthy time to satisfy it, while a genuinely broken instance
 		//     accrues quickly.
+		//   - an unavailable PreparingUpdate target: its hook already consumed
+		//     the slot when the operation was admitted in an earlier reconcile.
 		isSurgeSlot := getOrdinal(target) >= topo.replicas
-		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(set, target)
+		// A PreparingUpdate target was already admitted by this budget. If its
+		// hook made it unavailable, continuing that operation costs no new slot.
+		preparingUpdate := isPreparingInPlaceUpdate(set, target) && baseUnavail.Has(target.Name)
+		isFree := isSurgeSlot || isTerminating(target) || preparingUpdate || isStablyUnhealthy(set, target)
 
 		if !isFree && initialBaseUnavail+newlyUnavail >= effectiveBudget {
 			if first, ok := getUnhealthySince(set, target); ok {
@@ -916,23 +924,20 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 			return false, err
 		}
 	}
-	var inplacing bool
-	var err error
 	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
-		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
+		handled, transitioned, err := ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
 		if err != nil {
 			return false, err
 		}
-	}
-	transitioned := inplacing
-	if !inplacing {
-		_, actualDeleting, err := ssc.deleteInstance(set, target)
-		if err != nil {
-			return false, err
+		if handled {
+			return transitioned && getInstanceRevision(target) == currentRevision.Name, nil
 		}
-		transitioned = actualDeleting
 	}
-	return transitioned && getInstanceRevision(target) == currentRevision.Name, nil
+	_, actualDeleting, err := ssc.deleteInstance(set, target)
+	if err != nil {
+		return false, err
+	}
+	return actualDeleting && getInstanceRevision(target) == currentRevision.Name, nil
 }
 
 func (ssc *defaultStatefulInstanceSetControl) persistRolloutReplacementState(
@@ -1071,7 +1076,8 @@ func (ssc *defaultStatefulInstanceSetControl) refreshAllInstanceStates(
 }
 
 // progressOrderedReadyUnhealthyTarget updates only the first unhealthy
-// OrderedReady target that has passed the stable-unhealthy window. The target
+// OrderedReady target that is awaiting its in-place hook or has passed the
+// stable-unhealthy window. The target
 // may be a base instance or an in-range stale-revision surge instance. It
 // returns nil when the normal readiness gate should remain in control.
 func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarget(
@@ -1106,7 +1112,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarge
 // orderedReadyCleanupTarget returns the first unhealthy in-range instance that
 // may be updated despite OrderedReady's readiness gate. The instance must be
 // the first ordinal that blocks the monotonic loop, be an update target, and
-// have been continuously unhealthy for stableUnhealthyDuration. In-range
+// either be PreparingUpdate or continuously unhealthy for stableUnhealthyDuration. In-range
 // includes stale-revision surge slots, which otherwise cannot be recycled when
 // OrderedReady stops before Phase C. Returning nil keeps the normal OrderedReady
 // behavior.
@@ -1128,7 +1134,8 @@ func orderedReadyCleanupTarget(
 		if isHealthy(inst) {
 			continue
 		}
-		if ord < topo.partition || getInstanceRevision(inst) == updateRev || !isStablyUnhealthy(set, inst) {
+		if ord < topo.partition || getInstanceRevision(inst) == updateRev ||
+			(!isPreparingInPlaceUpdate(set, inst) && !isStablyUnhealthy(set, inst)) {
 			return nil
 		}
 		return inst
@@ -1257,17 +1264,54 @@ func (ssc *defaultStatefulInstanceSetControl) refreshInstanceState(
 				"delayDuration", result.DelayDuration)
 			return true, result.DelayDuration, nil
 		}
+
+		var hook *workloadsv1alpha2.RoleInstanceSetLifecycleHook
+		if set.Spec.Lifecycle != nil {
+			hook = set.Spec.Lifecycle.InPlaceUpdate
+		}
+		var state constants.RoleInstanceLifecycleStateType
+		switch instancelifecycle.GetRoleInstanceLifecycleState(instance) {
+		case constants.RoleInstanceLifecycleStateUpdating:
+			if hook != nil && !instancelifecycle.IsRoleInstanceAllHooked(hook, instance) {
+				state = constants.RoleInstanceLifecycleStateUpdated
+			} else {
+				state = constants.RoleInstanceLifecycleStateNormal
+			}
+		case constants.RoleInstanceLifecycleStateUpdated:
+			if hook == nil || instancelifecycle.IsRoleInstanceAllHooked(hook, instance) {
+				state = constants.RoleInstanceLifecycleStateNormal
+			}
+		}
+		if state != "" {
+			// Always release our readiness key on Normal, including when the
+			// hook was disabled or removed while the update was in progress.
+			markNotReady := state == constants.RoleInstanceLifecycleStateNormal || instancelifecycle.IsHookMarkGroupNotReady(hook)
+			updated, got, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, state, markNotReady)
+			if err != nil {
+				return false, 0, err
+			}
+			if updated {
+				instanceutils.ResourceVersionExpectations.Expect(got)
+			}
+			return updated, 0, nil
+		}
 	}
 	return false, 0, nil
 }
 
-// inPlaceUpdateInstance performs in-place update on an instance
+func isPreparingInPlaceUpdate(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) bool {
+	return set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType &&
+		instancelifecycle.GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingUpdate
+}
+
+// inPlaceUpdateInstance distinguishes a handled operation (including hook
+// waiting) from an actual revision transition. Waiting must never fall back to deletion.
 func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instance *workloadsv1alpha2.RoleInstance,
 	updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision,
-) (bool, error) {
+) (handled, transitioned bool, err error) {
 	opts := &instanceinplace.UpdateOptions{}
 	opts = instanceinplace.SetOptionsDefaults(opts)
 
@@ -1286,18 +1330,49 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	}
 	if currentRevision == nil {
 		// If no current revision found, cannot perform in-place update
-		return false, nil
+		return false, false, nil
 	}
 
 	// Check if can update in place
 	if !ssc.inplaceControl.CanUpdateInPlace(currentRevision, updateRevision, opts) {
-		return false, nil
+		return false, false, nil
 	}
+
+	var hook *workloadsv1alpha2.RoleInstanceSetLifecycleHook
+	if set.Spec.Lifecycle != nil {
+		hook = set.Spec.Lifecycle.InPlaceUpdate
+	}
+	switch state := instancelifecycle.GetRoleInstanceLifecycleState(instance); state {
+	case "", constants.RoleInstanceLifecycleStateNormal:
+		if instancelifecycle.IsRoleInstanceHooked(hook, instance) {
+			updated, got, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance,
+				constants.RoleInstanceLifecycleStatePreparingUpdate, hook.MarkNotReady)
+			if err == nil && updated {
+				instanceutils.ResourceVersionExpectations.Expect(got)
+			}
+			return true, false, err
+		}
+	case constants.RoleInstanceLifecycleStateUpdated:
+		if hook != nil {
+			// Finish the previous update's hook handshake before starting
+			// another revision. refreshInstanceState returns it to Normal
+			// once the external owner has restored every handler.
+			return true, false, nil
+		}
+	case constants.RoleInstanceLifecycleStatePreparingUpdate:
+		if instancelifecycle.IsRoleInstanceHooked(hook, instance) {
+			return true, false, nil
+		}
+	case constants.RoleInstanceLifecycleStateUpdating:
+	default:
+		return true, false, fmt.Errorf("not allowed to in-place update instance %s in state %s", instance.Name, state)
+	}
+	opts.AdditionalFuncs = append(opts.AdditionalFuncs, instancelifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceLifecycleStateUpdating))
 
 	// Perform in-place update
 	result := ssc.inplaceControl.Update(instance, currentRevision, updateRevision, opts)
 	if result.UpdateErr != nil {
-		return false, result.UpdateErr
+		return true, false, result.UpdateErr
 	}
 
 	if result.InPlaceUpdate {
@@ -1316,7 +1391,7 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 		// updated condition, at which point advance can fire safely.
 	}
 
-	return result.InPlaceUpdate, nil
+	return result.InPlaceUpdate, result.InPlaceUpdate, nil
 }
 
 // deleteInstance deletes an instance and returns if it was actually deleted
