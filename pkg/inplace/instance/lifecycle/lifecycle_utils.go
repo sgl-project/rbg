@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -92,7 +93,46 @@ func SetRoleInstanceLifecycle(state constants.RoleInstanceLifecycleStateType) fu
 	}
 }
 
-func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType) (err error) {
+// ensureReadinessGate also handles instances created before markPodNotReady was enabled.
+// Use an optimistic-lock patch because readinessGates is an array shared with other writers.
+func (c *realControl) ensureReadinessGate(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
+	if readiness.ContainsReadinessGate(instance) {
+		return instance, nil
+	}
+	var updated *workloadsv1alpha2.RoleInstance
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		latest, err := c.adp.GetRoleInstance(instance.Namespace, instance.Name)
+		if err != nil {
+			return err
+		}
+		if latest.UID != instance.UID {
+			return fmt.Errorf("role instance %s/%s was replaced", instance.Namespace, instance.Name)
+		}
+		updated = latest.DeepCopy()
+		if readiness.ContainsReadinessGate(updated) {
+			return nil
+		}
+		updated.Spec.ReadinessGates = append(updated.Spec.ReadinessGates, workloadsv1alpha2.RoleInstanceReadinessGate{
+			ConditionType: workloadsv1alpha2.RoleInstanceCustomReady,
+		})
+		if adp, ok := c.adp.(clientdapter.AdapterWithPatch); ok {
+			updated, err = adp.PatchRoleInstance(updated, client.MergeFromWithOptions(latest, client.MergeFromWithOptimisticLock{}))
+		} else {
+			updated, err = c.adp.UpdateRoleInstance(updated)
+		}
+		return err
+	})
+	return updated, err
+}
+
+func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType) (*workloadsv1alpha2.RoleInstance, error) {
+	var err error
+	if state == constants.RoleInstanceLifecycleStatePreparingDelete || state == constants.RoleInstanceLifecycleStatePreparingUpdate {
+		instance, err = c.ensureReadinessGate(instance)
+		if err != nil {
+			return nil, err
+		}
+	}
 	switch state {
 	case constants.RoleInstanceLifecycleStatePreparingDelete:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingDeleteHookKey))
@@ -104,13 +144,16 @@ func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alp
 
 	if err != nil {
 		klog.Errorf("Failed to set role instance(%v) Ready/NotReady at %s lifecycle state, error: %v", klog.KObj(instance), state, err)
+		return nil, err
 	}
-	return
+	// The status write also advances resourceVersion. Return a fresh object for
+	// adapters whose subsequent lifecycle update uses a full-object Update.
+	return c.adp.GetRoleInstance(instance.Namespace, instance.Name)
 }
 
 func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.RoleInstance, state constants.RoleInstanceLifecycleStateType, markPodNotReady bool) (updated bool, gotPod *workloadsv1alpha2.RoleInstance, err error) {
 	if markPodNotReady {
-		if err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
+		if instance, err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
 			return false, nil, err
 		}
 	}
@@ -143,7 +186,7 @@ func (c *realControl) UpdateRoleInstanceLifecycleWithHandler(instance *workloads
 	}
 
 	if inPlaceUpdateHandler.MarkNotReady {
-		if err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
+		if instance, err = c.executeRoleInstanceNotReadyPolicy(instance, state); err != nil {
 			return false, nil, err
 		}
 	}

@@ -48,12 +48,13 @@ func addNotReadyKey(adp clientdapter.Adapter, instance *workloadsv1alpha2.RoleIn
 			_, messages := addMessage("", msg)
 			newInstance.Status.Conditions = append(newInstance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 				Type:               workloadsv1alpha2.RoleInstanceCustomReady,
+				Status:             v1.ConditionFalse,
 				Message:            messages.dump(),
 				LastTransitionTime: metav1.Now(),
 			})
 		} else {
 			changed, messages := addMessage(condition.Message, msg)
-			if !changed {
+			if !changed && condition.Status == v1.ConditionFalse {
 				return nil
 			}
 			condition.Status = v1.ConditionFalse
@@ -162,7 +163,7 @@ func alreadyHasKey(instance *workloadsv1alpha2.RoleInstance, msg Message, condTy
 	if condition == nil {
 		return false
 	}
-	if condition.Status == v1.ConditionTrue || condition.Message == "" {
+	if condition.Status != v1.ConditionFalse || condition.Message == "" {
 		return false
 	}
 	messages := messageList{}

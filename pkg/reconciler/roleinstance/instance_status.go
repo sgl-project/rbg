@@ -22,10 +22,10 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	instancereadiness "sigs.k8s.io/rbgs/pkg/inplace/instance/readiness"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	instanceutils "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -58,12 +59,12 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(newStatus.Conditions))
 	conditions = append(conditions, newStatus.Conditions...)
 	r.calculateStatus(instance, newStatus, conditions, pods)
-	var updateStatusErr error
 	if r.inconsistentStatus(instance, newStatus) {
-		updateStatusErr = r.updateStatus(ctx, instance, newStatus)
+		if err := r.updateStatus(ctx, instance, newStatus); err != nil {
+			return err
+		}
 	}
-	updatePodsConditionErr := r.updatePodsLifeCycle(ctx, instance, pods)
-	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
+	return r.updatePodsLifeCycle(ctx, instance, pods)
 }
 
 // controllerOwnedConditionTypes returns the stable set of condition types whose
@@ -327,6 +328,11 @@ func getInstanceReadyCondition(instance *workloadsv1alpha2.RoleInstance, podsRea
 		Status:             v1.ConditionFalse,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
+	if customReadinessBlocked(instance) {
+		instanceReady.Reason = "ReadinessGatesNotReady"
+		instanceReady.Message = "One or more custom readiness gates are not True"
+		return instanceReady
+	}
 	if containsInstanceInplaceUpdateReadinessGates(instance) {
 		if inplace != nil {
 			if inplace.Status == v1.ConditionFalse {
@@ -460,6 +466,12 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 			}
 			return err
 		}
+		// The lifecycle writer may have changed readiness since this reconcile
+		// calculated Ready. Requeue with a fresh snapshot instead of restoring
+		// the old custom condition or propagating it to the Pods.
+		if !equality.Semantic.DeepEqual(instancereadiness.GetReadinessCondition(instance), instancereadiness.GetReadinessCondition(clone)) {
+			return fmt.Errorf("role instance %s/%s custom readiness changed during status calculation", instance.Namespace, instance.Name)
+		}
 		// Snapshot the live custom conditions before overwriting clone.Status.
 		// These are conditions not owned by this controller (e.g. RoleInstanceCustomReady
 		// written by readiness/*, RoleInstanceInPlaceUpdateReady written by inplaceupdate/*).
@@ -510,10 +522,10 @@ func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *w
 		podsChan <- p
 	}
 	inInplaceUpdating := isInstanceInInplaceUpdatingPhase(instance)
-	markPodNotReady := inInplaceUpdating
+	markPodNotReady := inInplaceUpdating || customReadinessBlocked(instance)
 	if getInstanceReadyPolicy(instance) == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
 		allPodRuntimeReady := r.allPodsRuntimeReady(ctx, instance, pods)
-		markPodNotReady = inInplaceUpdating || !allPodRuntimeReady
+		markPodNotReady = markPodNotReady || !allPodRuntimeReady
 	}
 	_, err := instanceutils.DoItSlowly(len(pods), initialBatchSize, func() error {
 		pod := <-podsChan
@@ -525,6 +537,27 @@ func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *w
 		return nil
 	})
 	return err
+}
+
+// Custom gates remain effective independently of the Pod aggregation policy.
+// Missing and Unknown conditions block readiness until their owner reports True.
+func customReadinessBlocked(instance *workloadsv1alpha2.RoleInstance) bool {
+	for _, gate := range instance.Spec.ReadinessGates {
+		if gate.ConditionType == workloadsv1alpha2.RoleInstanceInPlaceUpdateReady {
+			continue
+		}
+		ready := false
+		for _, condition := range instance.Status.Conditions {
+			if condition.Type == gate.ConditionType && condition.Status == v1.ConditionTrue {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return true
+		}
+	}
+	return false
 }
 
 func isInstanceInInplaceUpdatingPhase(instance *workloadsv1alpha2.RoleInstance) bool {
