@@ -58,6 +58,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	}
 	klog.V(4).InfoS("validating RoleBasedGroup on create", "name", rbg.Name, "namespace", rbg.Namespace)
 
+	if err := ValidateExcludedOrdinals(rbg); err != nil {
+		return nil, err
+	}
 	var allErrs []error
 	if err := ValidateRoleBasedGroupName(rbg); err != nil {
 		allErrs = append(allErrs, err)
@@ -192,6 +195,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	}
 	klog.V(4).InfoS("validating RoleBasedGroup on update", "name", rbg.Name, "namespace", rbg.Namespace)
 
+	if err := ValidateExcludedOrdinals(rbg); err != nil {
+		return nil, err
+	}
 	var allErrs []error
 	if err := ValidateRollingUpdate(rbg); err != nil {
 		allErrs = append(allErrs, err)

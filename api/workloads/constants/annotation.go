@@ -77,17 +77,25 @@ const (
 	RoleWorkloadTypeAnnotationKey = RBGPrefix + "role-workload-type"
 )
 
-// SystemManagedRoleAnnotations is the set of role-level annotations that are
-// managed by the control plane and must not be propagated to downstream
-// workload/Pod metadata or overridden by user-provided values.
+// SystemManagedRoleAnnotations lists annotations consumed at the role boundary,
+// including controller-managed values and user operational inputs. They must
+// not propagate to downstream metadata; this set is not an admission denylist.
 var SystemManagedRoleAnnotations = map[string]struct{}{
-	RoleSizeAnnotationKey:         {},
-	RoleWorkloadTypeAnnotationKey: {},
+	RoleSizeAnnotationKey:              {},
+	RoleWorkloadTypeAnnotationKey:      {},
+	ExcludedOrdinalsAnnotationKey:      {},
+	CommittedSkipOrdinalsAnnotationKey: {},
 }
 
+const (
+	// ExcludedOrdinalsAnnotationKey is user input for stateful scaling only.
+	ExcludedOrdinalsAnnotationKey = RBGPrefix + "excluded-ordinals"
+	// CommittedSkipOrdinalsAnnotationKey is controller-owned membership on a child RIS.
+	CommittedSkipOrdinalsAnnotationKey = RBGPrefix + "committed-skip-ordinals"
+)
+
 // IsSystemManagedRoleAnnotation reports whether the given annotation key is
-// a system-managed role annotation that should be filtered out when copying
-// role annotations to downstream resources.
+// excluded from propagation when copying role annotations downstream.
 func IsSystemManagedRoleAnnotation(key string) bool {
 	_, ok := SystemManagedRoleAnnotations[key]
 	return ok

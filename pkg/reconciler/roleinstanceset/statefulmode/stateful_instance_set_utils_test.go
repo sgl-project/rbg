@@ -42,7 +42,7 @@ func TestNewVersionedInstanceIdentityIsPerOrdinal(t *testing.T) {
 	const replicas = 2
 	instances := make([]*workloadsv1alpha2.RoleInstance, replicas)
 	for ordinal := range instances {
-		instances[ordinal] = newVersionedInstance(set, set, "current-rev", "update-rev", ordinal, nil)
+		instances[ordinal] = newVersionedInstance(set, set, "current-rev", "update-rev", ordinal, ordinal)
 	}
 
 	for ordinal, instance := range instances {

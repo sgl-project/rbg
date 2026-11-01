@@ -334,6 +334,19 @@ func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *wor
 
 func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) error {
 	logger := log.FromContext(ctx)
+	if err := workloadsv1alpha2.ValidateExcludedOrdinals(rbg); err != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, "InvalidExcludedOrdinals", err.Error())
+		updated := rbg.DeepCopy()
+		if apimeta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionFalse,
+			Reason: "InvalidExcludedOrdinals", Message: err.Error(), ObservedGeneration: rbg.Generation,
+		}) {
+			if statusErr := r.client.Status().Patch(ctx, updated, client.MergeFromWithOptions(rbg, client.MergeFromWithOptimisticLock{})); statusErr != nil {
+				return kerrors.NewAggregate([]error{err, statusErr})
+			}
+		}
+		return err
+	}
 
 	// Validate that group-gang-scheduling and role-instance-gang-scheduling are not both set
 	// on the RBG metadata.annotations, as they are mutually exclusive at the RBG level.
@@ -679,6 +692,10 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 	// Inject GangScheduler if the reconciler supports it (GangSchedulerSetter).
 	if setter, ok := rec.(reconciler.GangSchedulerSetter); ok {
 		setter.SetGangScheduler(r.gangScheduler)
+	}
+
+	if ris, ok := rec.(*reconciler.RoleInstanceSetReconciler); ok {
+		ris.SetAPIReader(r.apiReader)
 	}
 
 	// Cache the reconciler

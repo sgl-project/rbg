@@ -21,6 +21,7 @@ package statefulmode
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
@@ -63,12 +65,6 @@ func getParentName(instance *workloadsv1alpha2.RoleInstance) string {
 func getOrdinal(instance *workloadsv1alpha2.RoleInstance) int {
 	_, ordinal := getParentNameAndOrdinal(instance)
 	return ordinal
-}
-
-func instanceInOrdinalRangeWithParams(instance *workloadsv1alpha2.RoleInstance, startOrdinal, endOrdinal int, reserveOrdinals sets.Set[int]) bool {
-	ordinal := getOrdinal(instance)
-	return ordinal >= startOrdinal && ordinal < endOrdinal &&
-		!reserveOrdinals.Has(ordinal)
 }
 
 // getInstanceName gets the name of set's child Instance with an ordinal index of ordinal
@@ -123,11 +119,7 @@ func getInstanceRevision(instance *workloadsv1alpha2.RoleInstance) string {
 }
 
 // newVersionedInstance creates a new Instance for set with specific revision
-func newVersionedInstance(
-	currentSet, updateSet *workloadsv1alpha2.RoleInstanceSet,
-	currentRevision, updateRevision string,
-	ordinal int,
-	_ []*workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
+func newVersionedInstance(currentSet, updateSet *workloadsv1alpha2.RoleInstanceSet, currentRevision, updateRevision string, ordinal, position int) *workloadsv1alpha2.RoleInstance {
 
 	// Determine which set to use based on ordinal and update strategy
 	useUpdateRevision := false
@@ -145,8 +137,8 @@ func newVersionedInstance(
 			partition = int32(partitionValue)
 		}
 	}
-	// If ordinal >= partition, use update revision
-	if ordinal >= int(partition) {
+	// Partition selects positions in committed membership, not numeric ordinals.
+	if position >= int(partition) {
 		useUpdateRevision = true
 		setToUse = updateSet
 	}
@@ -234,16 +226,15 @@ func newVersionedInstance(
 // and consulted by every later phase, so there is exactly one place that
 // decides the in-range ordinal window.
 type topology struct {
-	// startOrdinal, endOrdinal define the [start, end) ordinal range that is
-	// considered "in-range" this reconcile. Anything outside is condemned.
+	// All range fields below are compact slot positions. ordinals maps each
+	// position to its real identity; memory never depends on the largest ordinal.
+	ordinals []int
+	// startOrdinal, endOrdinal define the [start, end) slot positions that are
+	// considered in range this reconcile. Unlisted identities are condemned.
 	// During a rollout endOrdinal may exceed replicas to provide a surge
 	// buffer; outside of a rollout it equals replicas.
 	startOrdinal int
 	endOrdinal   int
-	// reserveOrdinals are ordinals within [start, end) that should be skipped
-	// when allocating slots. Always empty in the current implementation but
-	// kept for future support of ordinal reservation.
-	reserveOrdinals sets.Set[int]
 
 	// replicas is the desired replica count from spec.
 	replicas int
@@ -374,6 +365,7 @@ func countHealthyOldInBase(
 	partition int,
 	replicas int,
 	updateRevision string,
+	members []int,
 ) int {
 	if replicas <= partition {
 		return 0
@@ -383,7 +375,7 @@ func countHealthyOldInBase(
 		if inst == nil {
 			continue
 		}
-		ord := getOrdinal(inst)
+		ord := memberPosition(getOrdinal(inst), members)
 		if ord < partition || ord >= replicas {
 			continue
 		}
@@ -414,6 +406,7 @@ func countExistingValidSurge(
 	replicas int,
 	maxSurge int,
 	updateRevision string,
+	members []int,
 ) int {
 	if maxSurge <= 0 {
 		return 0
@@ -423,7 +416,7 @@ func countExistingValidSurge(
 		if inst == nil {
 			continue
 		}
-		ord := getOrdinal(inst)
+		ord := memberPosition(getOrdinal(inst), members)
 		if ord < replicas || ord >= replicas+maxSurge {
 			continue
 		}
@@ -448,6 +441,7 @@ func allBaseAtUpdateRevHealthy(
 	instances []*workloadsv1alpha2.RoleInstance,
 	partition, replicas int,
 	updateRevision string,
+	members []int,
 ) bool {
 	if replicas <= partition {
 		return true
@@ -457,7 +451,7 @@ func allBaseAtUpdateRevHealthy(
 		if inst == nil {
 			continue
 		}
-		ord := getOrdinal(inst)
+		ord := memberPosition(getOrdinal(inst), members)
 		if ord < partition || ord >= replicas {
 			continue
 		}
@@ -485,6 +479,7 @@ func hasStaleBaseInstance(
 	instances []*workloadsv1alpha2.RoleInstance,
 	partition, replicas int,
 	updateRevision string,
+	members []int,
 ) bool {
 	if replicas <= partition {
 		return false
@@ -493,7 +488,7 @@ func hasStaleBaseInstance(
 		if inst == nil || !isCreated(inst) {
 			continue
 		}
-		ord := getOrdinal(inst)
+		ord := memberPosition(getOrdinal(inst), members)
 		if ord < partition || ord >= replicas {
 			continue
 		}
@@ -524,7 +519,11 @@ func rolloutReplacementStateActive(
 	}
 	partition = max(partition, int(state.Partition))
 	replicas = min(replicas, int(state.Replicas))
-	return !allBaseAtUpdateRevHealthy(instances, partition, replicas, updateRevision)
+	members, err := set.CommittedOrdinals()
+	if err != nil {
+		return true
+	} // computeTopology reports the invalid record before acting.
+	return !allBaseAtUpdateRevHealthy(instances, partition, replicas, updateRevision, members)
 }
 
 // computeTopology is the single source of truth for ordinal range sizing
@@ -566,15 +565,20 @@ func computeTopology(
 	currentRevision, updateRevision string,
 	earlyRollbackReplacement bool,
 ) (topology, error) {
-	t := topology{
-		startOrdinal:    0,
-		reserveOrdinals: sets.New[int](),
-	}
+	t := topology{}
 	if set.Spec.Replicas != nil {
 		t.replicas = int(*set.Spec.Replicas)
 	}
 	t.surgeStart = t.replicas
 	t.endOrdinal = t.replicas
+	skips, err := ordinals.Parse(set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+	if err != nil {
+		return t, fmt.Errorf("invalid committed skip ordinals: %w", err)
+	}
+	t.ordinals, err = skips.Members(t.replicas)
+	if err != nil {
+		return t, err
+	}
 
 	maxSurge, err := computeMaxSurge(set)
 	if err != nil {
@@ -594,28 +598,47 @@ func computeTopology(
 	}
 	t.partition = partition
 
-	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision)
+	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision, t.ordinals)
 	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
 	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
-	if maxSurge == 0 {
+	if maxSurge == 0 || !updatePending {
 		return t, nil
+	}
+	if int64(t.replicas)+int64(maxSurge) > int64(ordinals.MaxOrdinal)+1 {
+		return t, fmt.Errorf("replica and surge count exceeds ordinal space")
+	}
+	t.ordinals, err = skips.Members(t.replicas + maxSurge)
+	if err != nil {
+		return t, err
 	}
 	// Paused mid-rollout: preserve existing surge slots so Phase B does not
 	// condemn them. We do NOT allocate new surge here — surgeNeeded is only
 	// considered when actively rolling.
 	if !t.inRollout {
 		if set.Spec.UpdateStrategy.Paused && updatePending {
-			existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision)
+			existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision, t.ordinals)
 			if existing > maxSurge {
 				existing = maxSurge
 			}
 			t.activeSurge = existing
 			t.endOrdinal = t.replicas + existing
+			frozen := append([]int(nil), t.ordinals[:t.replicas]...)
+			for _, inst := range instances {
+				if inst == nil {
+					continue
+				}
+				position := t.position(getOrdinal(inst))
+				if position >= t.replicas && position < t.replicas+maxSurge && getInstanceRevision(inst) == updateRevision && !isTerminating(inst) {
+					frozen = append(frozen, getOrdinal(inst))
+				}
+			}
+			sort.Ints(frozen[t.replicas:])
+			t.ordinals = frozen
 		}
 		return t, nil
 	}
 
-	healthyOld := countHealthyOldInBase(instances, partition, t.replicas, updateRevision)
+	healthyOld := countHealthyOldInBase(instances, partition, t.replicas, updateRevision, t.ordinals)
 	surgeNeeded := healthyOld - maxUnav
 	if surgeNeeded < 0 {
 		surgeNeeded = 0
@@ -625,8 +648,8 @@ func computeTopology(
 	// Stickiness only applies while there is still work to do in
 	// [partition, replicas). Once that range is fully at updateRev healthy,
 	// drop the existing-surge floor so surge ramps back down.
-	if !allBaseAtUpdateRevHealthy(instances, partition, t.replicas, updateRevision) {
-		existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision)
+	if !allBaseAtUpdateRevHealthy(instances, partition, t.replicas, updateRevision, t.ordinals) {
+		existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision, t.ordinals)
 		if existing > active {
 			active = existing
 		}
@@ -683,4 +706,25 @@ func isInstanceRunningAndAvailable(instance *workloadsv1alpha2.RoleInstance, min
 	}
 
 	return false, 0
+}
+
+// memberPosition returns -1 for identities not in a supplied layout. Dense
+// helpers can use a nil layout; production topology supplies it explicitly.
+func memberPosition(ordinal int, members []int) int {
+	if members == nil {
+		return ordinal
+	}
+	i := sort.SearchInts(members, ordinal)
+	if i < len(members) && members[i] == ordinal {
+		return i
+	}
+	return -1
+}
+
+func (t topology) position(ordinal int) int { return memberPosition(ordinal, t.ordinals) }
+func (t topology) ordinal(position int) int {
+	if t.ordinals == nil {
+		return position
+	}
+	return t.ordinals[position]
 }

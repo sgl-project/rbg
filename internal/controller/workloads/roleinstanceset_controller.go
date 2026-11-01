@@ -76,6 +76,11 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		}
 		return reconcile.Result{}, err
 	}
+	// Validate the only persisted membership record before any cleanup or
+	// pattern dispatch can create/delete instances using a dense fallback.
+	if err := r.validateCommittedMembership(ctx, set); err != nil {
+		return reconcile.Result{}, err
+	}
 
 	// Clean up RoleInstances that belong to a different pattern than the current one.
 	// This handles the case where the pattern annotation is changed (stateful ↔ stateless),
@@ -99,6 +104,42 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		r.recorder.Event(set, corev1.EventTypeWarning, "UnknownRoleInstancePattern", err.Error())
 		return reconcile.Result{}, err
 	}
+}
+
+func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
+	var validationErr error
+	if set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
+		if set.Annotations[constants.RoleInstancePatternKey] == string(constants.StatelessPattern) {
+			validationErr = fmt.Errorf("committed skip ordinals require Stateful mode")
+		} else {
+			_, validationErr = set.CommittedOrdinals()
+		}
+	}
+	updated := set.DeepCopy()
+	conditions := updated.Status.Conditions[:0]
+	for _, condition := range updated.Status.Conditions {
+		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && (validationErr != nil || condition.Reason == "InvalidCommittedOrdinals") {
+			if validationErr != nil && condition.Reason == "InvalidCommittedOrdinals" && condition.Status == corev1.ConditionTrue && condition.Message == validationErr.Error() {
+				return validationErr
+			}
+			continue
+		}
+		conditions = append(conditions, condition)
+	}
+	updated.Status.Conditions = conditions
+	if validationErr != nil {
+		r.recorder.Event(set, corev1.EventTypeWarning, "InvalidCommittedOrdinals", validationErr.Error())
+		updated.Status.Conditions = append(updated.Status.Conditions, v1alpha2.RoleInstanceSetCondition{
+			Type: v1alpha2.RoleInstanceSetConditionFailedScale, Status: corev1.ConditionTrue,
+			Reason: "InvalidCommittedOrdinals", Message: validationErr.Error(), LastTransitionTime: metav1.Now(),
+		})
+	}
+	if len(updated.Status.Conditions) != len(set.Status.Conditions) || validationErr != nil {
+		if err := r.client.Status().Patch(ctx, updated, client.MergeFromWithOptions(set, client.MergeFromWithOptimisticLock{})); err != nil {
+			return err
+		}
+	}
+	return validationErr
 }
 
 // cleanupStaleInstances lists all RoleInstances owned by the set and deletes those
