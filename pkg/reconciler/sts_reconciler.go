@@ -210,14 +210,17 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	roleReplicas := *role.Replicas
 
 	defer func() {
-		// Limit the replicas with less than partition will not be updated.
-		var partition int
-		partition, err = intstr.GetScaledValueFromIntOrPercent(role.RolloutStrategy.RollingUpdate.Partition, int(*role.Replicas), true)
 		if err != nil {
 			return
 		}
+		// Limit the replicas with less than partition will not be updated.
+		partition, partitionErr := intstr.GetScaledValueFromIntOrPercent(
+			role.RolloutStrategy.RollingUpdate.Partition, int(*role.Replicas), true)
+		if partitionErr != nil {
+			err = partitionErr
+			return
+		}
 		stsPartition = max(stsPartition, int32(partition))
-
 	}()
 
 	// Case 1:

@@ -18,19 +18,24 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -891,6 +896,183 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 			},
 		)
 	}
+}
+
+var errInjectedRead = errors.New("injected read failure")
+
+func newRolloutErrScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
+	require.NoError(t, appsv1.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
+	return s
+}
+
+func newRolloutErrRBG(partition intstr.IntOrString) (*workloadsv1alpha2.RoleBasedGroup, *workloadsv1alpha2.RoleSpec) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(4))
+	rbg.Spec.Roles[0].RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+		Type: workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+			MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+			MaxSurge:       ptr.To(intstr.FromInt32(1)),
+			Partition:      ptr.To(partition),
+		},
+	}
+	return rbg, &rbg.Spec.Roles[0]
+}
+
+func failListOf[T client.ObjectList]() *interceptor.Funcs {
+	return &interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(T); ok {
+				return errInjectedRead
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}
+}
+
+func TestRollingUpdateParameters_PreservesReadErrors(t *testing.T) {
+	scheme := newRolloutErrScheme(t)
+	rbg, role := newRolloutErrRBG(intstr.FromInt32(0))
+	selector := rbg.GetCommonLabelsFromRole(role)
+	revision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "rev-1", Namespace: "default", Labels: selector},
+		Revision:   1,
+	}
+	surgedSts := func(roleSize *string) *appsv1.StatefulSet {
+		annotations := map[string]string{}
+		if roleSize != nil {
+			annotations[constants.RoleSizeAnnotationKey] = *roleSize
+		}
+		return &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rbg.GetWorkloadName(role), Namespace: "default", UID: "sts-uid", Annotations: annotations,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(5)),
+				Selector: &metav1.LabelSelector{MatchLabels: selector},
+				UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+					Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+					RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(0))},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		sts       *appsv1.StatefulSet
+		objs      []client.Object
+		funcs     *interceptor.Funcs
+		wantErrIs error
+	}{
+		{
+			name:      "pod list failure",
+			sts:       surgedSts(ptr.To("4")),
+			objs:      []client.Object{revision},
+			funcs:     failListOf[*corev1.PodList](),
+			wantErrIs: errInjectedRead,
+		},
+		{
+			name:      "controllerrevision list failure",
+			sts:       surgedSts(ptr.To("4")),
+			objs:      []client.Object{revision},
+			funcs:     failListOf[*appsv1.ControllerRevisionList](),
+			wantErrIs: errInjectedRead,
+		},
+		{name: "missing controllerrevision", sts: surgedSts(ptr.To("4"))},
+		{name: "malformed role-size annotation", sts: surgedSts(ptr.To("four")), objs: []client.Object{revision}},
+		{name: "missing role-size annotation", sts: surgedSts(nil), objs: []client.Object{revision}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(tt.objs, tt.sts)...)
+			if tt.funcs != nil {
+				b = b.WithInterceptorFuncs(*tt.funcs)
+			}
+			r := NewStatefulSetReconciler(scheme, b.Build())
+
+			_, replicas, err := r.rollingUpdateParameters(context.Background(), role, tt.sts, false, nil)
+			require.Error(t, err, "error was swallowed; caller would apply replicas=%d", replicas)
+			if tt.wantErrIs != nil {
+				assert.ErrorIs(t, err, tt.wantErrIs)
+			}
+		})
+	}
+}
+
+func TestRollingUpdateParameters_PropagatesPartitionConversionError(t *testing.T) {
+	scheme := newRolloutErrScheme(t)
+	rbg, role := newRolloutErrRBG(intstr.FromString("not-a-percent"))
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.GetWorkloadName(role), Namespace: "default", UID: "sts-uid"},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(4)),
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(0))},
+			},
+		},
+	}
+	r := NewStatefulSetReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+
+	_, _, err := r.rollingUpdateParameters(context.Background(), role, sts, false, nil)
+	require.Error(t, err)
+}
+
+func TestReconcileStatefulSet_ReadFailureDoesNotScaleToZero(t *testing.T) {
+	scheme := newRolloutErrScheme(t)
+	rbg, role := newRolloutErrRBG(intstr.FromInt32(0))
+	ctx := context.Background()
+	const revisionKey = "rev-1"
+
+	seeder := NewStatefulSetReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+	applyCfg, err := seeder.constructStatefulSetApplyConfiguration(ctx, rbg, role, &appsv1.StatefulSet{}, revisionKey)
+	require.NoError(t, err)
+	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(applyCfg)
+	require.NoError(t, err)
+	live := &appsv1.StatefulSet{}
+	require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(u, live))
+	live.UID = "sts-uid"
+	live.Spec.Replicas = ptr.To(int32(5))
+	live.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{
+		Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(0))},
+	}
+	revision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: revisionKey, Namespace: "default", Labels: live.Spec.Selector.MatchLabels},
+		Revision:   1,
+	}
+
+	var writes []string
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(live, revision).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.PodList); ok {
+				return apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("pods is forbidden"))
+			}
+			return c.List(ctx, list, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			data, _ := patch.Data(obj)
+			writes = append(writes, string(data))
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			writes = append(writes, "update")
+			return c.Update(ctx, obj, opts...)
+		},
+	}).Build()
+
+	err = NewStatefulSetReconciler(scheme, c).reconcileStatefulSet(ctx, rbg, role, nil, revisionKey)
+	assert.True(t, apierrors.IsForbidden(err), "expected the Pod List error to propagate, got %v", err)
+	assert.Empty(t, writes, "StatefulSet must not be written when a rollout read fails")
+
+	got := &appsv1.StatefulSet{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: live.Name, Namespace: live.Namespace}, got))
+	assert.Equal(t, int32(5), *got.Spec.Replicas, "live replicas must be unchanged")
 }
 
 func Test_calculateRoleUnreadyReplicas(t *testing.T) {
