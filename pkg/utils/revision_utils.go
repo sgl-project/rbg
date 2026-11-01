@@ -168,8 +168,12 @@ func ApplyRevision(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	revision *appsv1.ControllerRevision) (*workloadsv1alpha2.RoleBasedGroup, error) {
 	currentRolesReplicas := make(map[string]int32)
+	currentExclusions := make(map[string]string)
 	for _, role := range rbg.Spec.Roles {
 		currentRolesReplicas[role.Name] = *role.Replicas
+		if value, ok := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]; ok {
+			currentExclusions[role.Name] = value
+		}
 	}
 	str := &bytes.Buffer{}
 	err := unstructured.UnstructuredJSONScheme.Encode(rbg, str)
@@ -185,6 +189,17 @@ func ApplyRevision(
 		return nil, err
 	}
 	for i := range restoredRbg.Spec.Roles {
+		role := &restoredRbg.Spec.Roles[i]
+		delete(role.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+		if value, ok := currentExclusions[role.Name]; ok {
+			if role.Annotations == nil {
+				role.Annotations = map[string]string{}
+			}
+			role.Annotations[constants.ExcludedOrdinalsAnnotationKey] = value
+		}
+		if len(role.Annotations) == 0 {
+			role.Annotations = nil
+		}
 		currentNum, exist := currentRolesReplicas[restoredRbg.Spec.Roles[i].Name]
 		if exist {
 			restoredRbg.Spec.Roles[i].Replicas = &currentNum
@@ -403,6 +418,11 @@ func getRBGPatch(rbg *workloadsv1alpha2.RoleBasedGroup) ([]byte, error) {
 	clone := rbg.DeepCopy()
 	for i := range clone.Spec.Roles {
 		clone.Spec.Roles[i].Replicas = nil
+		delete(clone.Spec.Roles[i].Annotations, constants.ExcludedOrdinalsAnnotationKey)
+		delete(clone.Spec.Roles[i].Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
+		if len(clone.Spec.Roles[i].Annotations) == 0 {
+			clone.Spec.Roles[i].Annotations = nil
+		}
 	}
 
 	str := &bytes.Buffer{}

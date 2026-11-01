@@ -43,6 +43,7 @@ import (
 type RoleInstanceSetReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
+	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
 }
 
@@ -50,8 +51,16 @@ var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
 
 func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) *RoleInstanceSetReconciler {
 	return &RoleInstanceSetReconciler{
-		scheme: scheme,
-		client: client,
+		scheme:    scheme,
+		client:    client,
+		apiReader: client,
+	}
+}
+
+// SetAPIReader supplies uncached reads for conditional membership commitment.
+func (r *RoleInstanceSetReconciler) SetAPIReader(reader client.Reader) {
+	if reader != nil {
+		r.apiReader = reader
 	}
 }
 
@@ -85,6 +94,9 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling roleinstanceset workload")
+	if err := workloadsv1alpha2.ValidateExcludedOrdinals(rbg); err != nil {
+		return err
+	}
 
 	rollingStrategy, err := validateRolloutStrategy(role.RolloutStrategy, int(*role.Replicas))
 	if err != nil {
@@ -94,7 +106,9 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	role.RolloutStrategy = rollingStrategy
 
 	oldRoleInstanceSet := &workloadsv1alpha2.RoleInstanceSet{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldRoleInstanceSet)
+	// E may already have been removed while a sparse target is still stored.
+	// Choose the writer from an uncached read of the committed child record.
+	err = r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldRoleInstanceSet)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -102,6 +116,12 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 		if err := checkWorkloadClaimable(oldRoleInstanceSet, rbg); err != nil {
 			return err
 		}
+	}
+	// Feature roles use one conditional writer for the complete child target.
+	// They never pass through forced apply: omitting previously owned fields
+	// there could remove the committed record or reset replicas to a default.
+	if usesSelectiveScaleDown(role, oldRoleInstanceSet) {
+		return r.reconcileSelectiveMembership(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
 	}
 
 	roleInstanceSetApplyConfig, err := r.constructRoleInstanceSetApplyConfiguration(ctx, rbg, role, rollingUpdateStrategy, revisionKey, oldRoleInstanceSet)
@@ -119,6 +139,13 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newRoleInstanceSet); err != nil {
 		return fmt.Errorf("convert roleInstanceSet ApplyConfig to roleInstanceSet error: %s", err.Error())
 	}
+	if oldRoleInstanceSet.ResourceVersion == "" {
+		// Create-only cannot overwrite a concurrently created sparse target.
+		return r.client.Create(ctx, newRoleInstanceSet, client.FieldOwner(utils.FieldManager))
+	}
+	// A concurrent membership commit must invalidate this ordinary update.
+	// Force apply alone could let replicas move ahead of the committed record.
+	roleInstanceSetApplyConfig.WithResourceVersion(oldRoleInstanceSet.ResourceVersion)
 
 	roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
 	revisionHashEqual := oldRoleInstanceSet.Labels[roleHashKey] == newRoleInstanceSet.Labels[roleHashKey]
@@ -244,7 +271,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 				WithMinReadySeconds(role.MinReadySeconds).
 				WithPodManagementPolicy(role.PodManagementPolicy),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), roleInstanceSetAnnotation)).
+		WithAnnotations(labels.Merge(filteredRoleAnnotations(role.Annotations), roleInstanceSetAnnotation)).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), roleInstanceSetLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

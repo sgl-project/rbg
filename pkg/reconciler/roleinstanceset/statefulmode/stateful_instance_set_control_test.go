@@ -2297,7 +2297,7 @@ func TestNewVersionedInstanceDoesNotShareComponentTemplateLabels(t *testing.T) {
 	// later instance has overwritten the shared map of an earlier one.
 	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 3)
 	for ord := 0; ord < 3; ord++ {
-		instances = append(instances, newVersionedInstance(set, set, "rev-1", "rev-1", ord, nil))
+		instances = append(instances, newVersionedInstance(set, set, "rev-1", "rev-1", ord, ord))
 	}
 
 	for ord, inst := range instances {
