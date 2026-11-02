@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -119,22 +118,6 @@ func TestWorkloadType(t *testing.T) {
 	}))
 	assert.Empty(t, workloadType(WorkloadSpec{}))
 }
-
-func TestObjectKey(t *testing.T) {
-	key, ok := objectKey(rbgsV1alpha1ForDeprecationTest(WorkloadSpec{}))
-	require.True(t, ok)
-	assert.Equal(t, "default", key.Namespace)
-	assert.Equal(t, "rbg", key.Name)
-
-	_, ok = objectKey(&runtimeUnknown{})
-	assert.False(t, ok)
-}
-
-type runtimeUnknown struct {
-	runtime.Object
-}
-
-var _ runtime.Object = runtimeUnknown{}
 
 func TestDeprecatedWorkloadValidatorValidateUpdateTrustsAdmissionOldObject(t *testing.T) {
 	// The validator deliberately performs no cache lookup: the admission request's

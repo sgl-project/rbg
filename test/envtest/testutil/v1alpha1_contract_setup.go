@@ -115,22 +115,27 @@ func SetupV1alpha1ContractTestEnv() {
 	crdPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "..", "config", "crd", "bases")
 	webhookManifestPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "..", "config", "webhook", "manifests.yaml")
 
-	TestEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{crdPath},
-		ErrorIfCRDPathMissing: true,
-	}
-
-	var err error
-	Cfg, err = TestEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(Cfg).NotTo(BeNil())
-
-	err = workloadsv1alpha1.AddToScheme(scheme.Scheme)
+	// Register every type the suite serves before starting the environment.
+	// envtest decides at startup -- from this scheme -- which CRDs get
+	// conversion enabled, and strips conversion for GroupKinds that are not
+	// registered yet. Registering afterwards would leave the suite on
+	// version-only conversion instead of exercising the production
+	// v1alpha1 -> v1alpha2 translation the manager serves.
+	err := workloadsv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = workloadsv1alpha2.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = admissionregistrationv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+
+	TestEnv = &envtest.Environment{
+		CRDDirectoryPaths:     []string{crdPath},
+		ErrorIfCRDPathMissing: true,
+	}
+
+	Cfg, err = TestEnv.Start()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(Cfg).NotTo(BeNil())
 
 	// Route the suite client through the warning recorder so the specs can
 	// assert the warnings the API server actually returned.
@@ -185,7 +190,7 @@ func SetupV1alpha1ContractTestEnv() {
 
 	// The readiness probe (and every spec) submits objects into the contract
 	// namespace, so it must exist before the gate is probed.
-	CreateNamespace(contractNamespace)
+	CreateNamespace(ContractNamespace)
 	waitForV1alpha1Gate()
 }
 
@@ -267,7 +272,7 @@ func rewriteClientConfigV1(cc *admissionregistrationv1.WebhookClientConfig, host
 func waitForV1alpha1Gate() {
 	Eventually(func() bool {
 		rbg := &workloadsv1alpha1.RoleBasedGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: "gate-readiness-v1a1", Namespace: contractNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "gate-readiness-v1a1", Namespace: ContractNamespace},
 			Spec: workloadsv1alpha1.RoleBasedGroupSpec{
 				Roles: []workloadsv1alpha1.RoleSpec{{
 					Name:     "worker",
@@ -291,4 +296,6 @@ func waitForV1alpha1Gate() {
 	}, 10*time.Second, 250*time.Millisecond).Should(BeTrue(), "the shipped v1alpha1 gate did not become active")
 }
 
-const contractNamespace = "deprecation-v1a1-contract"
+// ContractNamespace is the single namespace declaration shared by the contract
+// suite's setup and specs.
+const ContractNamespace = "deprecation-v1a1-contract"

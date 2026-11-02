@@ -274,8 +274,9 @@ const deprecatedWorkloadTypeCompatHint = "note: the v1alpha1 schema defaults spe
 	"so a role submitted via the v1alpha1 API carries a deprecated workload type even if you never set one; " +
 	"fix: migrate this role to RoleInstanceSet (set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and " +
 	"workload.kind=RoleInstanceSet, or submit the object as v1alpha2, where RoleInstanceSet is the default); " +
-	"roles that already used the deprecated workload type before the upgrade remain accepted while " +
-	"controller.deprecatedWorkloadTypes.enabled=true"
+	"roles that already used the deprecated workload type before the upgrade remain accepted while the " +
+	"compatibility flag is enabled (Helm: controller.deprecatedWorkloadTypes.enabled=true, " +
+	"controller: --enable-deprecated-workload-types=true)"
 
 // isDeprecatedWorkloadType reports whether wt is one of the workload types
 // superseded by RoleInstanceSet.

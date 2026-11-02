@@ -27,15 +27,15 @@ import (
 	wrappers "sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
 )
 
-// RunLeaderWorkerSetWorkloadTestCases exercises the leader-worker RoleSpec shape
+// RunLeaderWorkerRoleInstanceSetTestCases exercises the leader-worker RoleSpec shape
 // through the v1alpha1 API. Since 0.9.0 the shared wrappers default these roles to
 // RoleInstanceSet, so the deprecated Deployment/StatefulSet/LeaderWorkerSet
 // reconciliation coverage lives in the upgrade suite (test/e2e/upgrade), which
 // creates legacy objects before upgrading the controller.
-func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
+func RunLeaderWorkerRoleInstanceSetTestCases(f *framework.Framework) {
 	ginkgo.It("create a leader-worker RoleInstanceSet role with engine runtime and without leaderTemplate", func() {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
-			wrappers.BuildLwsRole("role-1").
+			wrappers.BuildLeaderWorkerRole("role-1").
 				WithEngineRuntime([]workloadsv1alpha1.EngineRuntime{{ProfileName: testutils.DefaultEngineRuntimeProfileName}}).
 				Obj(),
 		}).Obj()
@@ -49,7 +49,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 
 	ginkgo.It("update a leader-worker RoleInstanceSet role.replicas & role.Template", func() {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
-			wrappers.BuildLwsRole("role-1").Obj(),
+			wrappers.BuildLeaderWorkerRole("role-1").Obj(),
 		}).Obj()
 
 		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
@@ -70,7 +70,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 
 	ginkgo.It("update a leader-worker RoleInstanceSet role.leaderTemplate & workerTemplate", func() {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha1.RoleSpec{
-			wrappers.BuildLwsRole("role-1").Obj(),
+			wrappers.BuildLeaderWorkerRole("role-1").Obj(),
 		}).Obj()
 
 		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
@@ -92,7 +92,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 	ginkgo.It("leader-worker RoleInstanceSet role with rollingUpdate", func() {
 		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha1.RoleSpec{
-				wrappers.BuildLwsRole("role-1").
+				wrappers.BuildLeaderWorkerRole("role-1").
 					WithReplicas(2).
 					WithRollingUpdate(workloadsv1alpha1.RollingUpdate{
 						MaxUnavailable: ptr.To(intstr.FromInt32(1)),

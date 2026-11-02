@@ -61,9 +61,9 @@ func TestE2E(t *testing.T) {
 			testcasev1alpha1.RunRbgControllerTestCases(f)
 			testcasev1alpha1.RunControllerRevisionTestCases(f)
 			testcasev1alpha1.RunRbgScalingAdapterControllerTestCases(f)
-			testcasev1alpha1.RunDeploymentWorkloadTestCases(f)
-			testcasev1alpha1.RunStatefulSetWorkloadTestCases(f)
-			testcasev1alpha1.RunLeaderWorkerSetWorkloadTestCases(f)
+			testcasev1alpha1.RunStandaloneRoleInstanceSetTestCases(f)
+			testcasev1alpha1.RunStandaloneRoleInstanceSetDefaultTestCases(f)
+			testcasev1alpha1.RunLeaderWorkerRoleInstanceSetTestCases(f)
 			testcasev1alpha1.RunRbgSetControllerTestCases(f)
 			testcasev1alpha1.RunRoleTemplateTestCases(f)
 		},

@@ -38,7 +38,7 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 							[]workloadsv1alpha1.RoleSpec{
 								wrappers.BuildBasicRole("role-deploy").WithRoleInstanceSet().Obj(),
 								wrappers.BuildBasicRole("role-sts").WithRoleInstanceSet().Obj(),
-								wrappers.BuildLwsRole("role-lws").Obj(),
+								wrappers.BuildLeaderWorkerRole("role-lws").Obj(),
 							},
 						).Obj()
 

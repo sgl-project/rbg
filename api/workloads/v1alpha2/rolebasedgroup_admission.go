@@ -97,9 +97,18 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 // The exemption is owner-reference aware but does not trust the owner reference
 // alone: the parent is fetched by name through the uncached API reader, its UID
 // must match the reference, and only template roles whose name and workload
-// type match a deprecated role in the new child are returned. A forged owner
-// reference, or a stale cached copy of a parent that has since been migrated or
-// replaced, therefore grants nothing.
+// type match a deprecated role in the new child are returned. A reference with
+// an unknown UID, or a stale cached copy of a parent that has since been
+// migrated or replaced, grants nothing.
+//
+// The check does not authenticate the writer. A user who can read the parent
+// set (its name and UID are ordinary readable metadata) and create
+// RoleBasedGroups in its namespace can mint a controller-shaped reference and
+// claim the same exemption the set controller gets; the set controller then
+// adopts the child and reconciles it. In compatibility mode this is bounded —
+// deprecated types still reconcile and garbage collection ties the child to
+// the parent — but it is a known boundary of the exemption, not a proof of
+// controller identity.
 func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	ctx context.Context, rbg *RoleBasedGroup,
 ) ([]RoleSpec, error) {

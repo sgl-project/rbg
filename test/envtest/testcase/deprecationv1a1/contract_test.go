@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
@@ -51,28 +52,67 @@ var _ = Describe("v1alpha1 deprecation contract", Ordered, func() {
 		Expect(testutil.ContractWarnings.Containing("v1alpha1 is deprecated")).NotTo(BeEmpty())
 	})
 
-	It("returns the on-the-wire warning for a warning-only kind create", func() {
-		instanceSet := &workloadsv1alpha1.InstanceSet{
-			ObjectMeta: metav1.ObjectMeta{Name: "contract-instanceset", Namespace: contractNamespace},
-			Spec: workloadsv1alpha1.InstanceSetSpec{
-				Replicas: ptr.To(int32(1)),
-				InstanceTemplate: workloadsv1alpha1.InstanceTemplate{
-					InstanceSpec: workloadsv1alpha1.InstanceSpec{
-						Components: []workloadsv1alpha1.InstanceComponent{{
-							Name: "worker",
-							Size: ptr.To(int32(1)),
-							Template: corev1.PodTemplateSpec{
-								Spec: corev1.PodSpec{
-									Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
-								},
-							},
-						}},
+	It("returns the on-the-wire warning for every warning-only kind", func() {
+		// All four warning-only kinds share DeprecationWarningValidator, but
+		// each kind's wiring is distinct shipped bytes (marker path, manifest
+		// entry, served path). Their failurePolicy is Ignore, so a path typo on
+		// any one of them fails silently unless a spec asserts its warning.
+		basicTemplate := corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+			},
+		}
+		warningOnlyObjects := []client.Object{
+			&workloadsv1alpha1.InstanceSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "contract-instanceset", Namespace: testutil.ContractNamespace},
+				Spec: workloadsv1alpha1.InstanceSetSpec{
+					Replicas: ptr.To(int32(1)),
+					InstanceTemplate: workloadsv1alpha1.InstanceTemplate{
+						InstanceSpec: workloadsv1alpha1.InstanceSpec{
+							Components: []workloadsv1alpha1.InstanceComponent{{
+								Name:     "worker",
+								Size:     ptr.To(int32(1)),
+								Template: basicTemplate,
+							}},
+						},
 					},
 				},
 			},
+			&workloadsv1alpha1.Instance{
+				ObjectMeta: metav1.ObjectMeta{Name: "contract-instance", Namespace: testutil.ContractNamespace},
+				Spec: workloadsv1alpha1.InstanceSpec{
+					Components: []workloadsv1alpha1.InstanceComponent{{
+						Name:     "worker",
+						Size:     ptr.To(int32(1)),
+						Template: basicTemplate,
+					}},
+				},
+			},
+			&workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+				ObjectMeta: metav1.ObjectMeta{Name: "contract-adapter", Namespace: testutil.ContractNamespace},
+				Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
+					Replicas: ptr.To(int32(1)),
+					ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+						Name: "contract-rbg",
+						Role: "worker",
+					},
+				},
+			},
+			&workloadsv1alpha1.ClusterEngineRuntimeProfile{
+				ObjectMeta: metav1.ObjectMeta{Name: "contract-runtime-profile"},
+				Spec: workloadsv1alpha1.ClusterEngineRuntimeProfileSpec{
+					UpdateStrategy: "NoUpdate",
+				},
+			},
 		}
-		Expect(testutil.K8sClient.Create(testutil.Ctx, instanceSet)).To(Succeed())
-		Expect(testutil.ContractWarnings.Containing("v1alpha1 is deprecated")).NotTo(BeEmpty())
+
+		for _, obj := range warningOnlyObjects {
+			testutil.ContractWarnings.Reset()
+			Expect(testutil.K8sClient.Create(testutil.Ctx, obj)).To(Succeed())
+			Expect(testutil.ContractWarnings.Containing("v1alpha1 is deprecated")).NotTo(BeEmpty(),
+				"warning-only kind %s must return the on-the-wire deprecation warning",
+				obj.GetObjectKind().GroupVersionKind().Kind)
+		}
 	})
 
 	It("rejects a new deprecated workload use through the v1alpha1 API", func() {
@@ -87,7 +127,7 @@ var _ = Describe("v1alpha1 deprecation contract", Ordered, func() {
 	})
 
 	It("rejects a new deprecated workload use in a v1alpha1 set template", func() {
-		set := wrappersv1.BuildBasicRoleBasedGroupSet("contract-set", contractNamespace).Obj()
+		set := wrappersv1.BuildBasicRoleBasedGroupSet("contract-set", testutil.ContractNamespace).Obj()
 		set.Spec.Template.Roles = []workloadsv1alpha1.RoleSpec{
 			func() workloadsv1alpha1.RoleSpec {
 				role := wrappersv1.BuildBasicRole("member").Obj()
@@ -105,7 +145,7 @@ var _ = Describe("v1alpha1 deprecation contract", Ordered, func() {
 
 	It("does not warn on v1alpha2 writes through Exact match policy", func() {
 		rbg := &workloadsv1alpha2.RoleBasedGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: "contract-v1a2", Namespace: contractNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "contract-v1a2", Namespace: testutil.ContractNamespace},
 			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
 				Roles: []workloadsv1alpha2.RoleSpec{{
 					Name:     "worker",
@@ -135,14 +175,14 @@ var _ = Describe("v1alpha1 deprecation contract", Ordered, func() {
 
 		stored := &workloadsv1alpha1.RoleBasedGroup{}
 		Expect(testutil.K8sClient.Get(
-			testutil.Ctx, types.NamespacedName{Name: rbg.Name, Namespace: contractNamespace}, stored,
+			testutil.Ctx, types.NamespacedName{Name: rbg.Name, Namespace: testutil.ContractNamespace}, stored,
 		)).To(Succeed())
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, stored)).To(Succeed())
 	})
 })
 
 func buildV1alpha1RBG(name string) *workloadsv1alpha1.RoleBasedGroup {
-	return wrappersv1.BuildBasicRoleBasedGroup(name, contractNamespace).
+	return wrappersv1.BuildBasicRoleBasedGroup(name, testutil.ContractNamespace).
 		WithRoles([]workloadsv1alpha1.RoleSpec{
 			wrappersv1.BuildBasicRole("worker").Obj(),
 		}).Obj()

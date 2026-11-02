@@ -183,7 +183,7 @@ func BuildBasicRole(name string) *RoleWrapper {
 	}
 }
 
-func BuildLwsRole(name string) *RoleWrapper {
+func BuildLeaderWorkerRole(name string) *RoleWrapper {
 	leaderPatch := BuildLWSTemplatePatch(map[string]string{"role": "leader"})
 	workerPatch := BuildLWSTemplatePatch(map[string]string{"role": "worker"})
 	template := wrappers.BuildBasicPodTemplateSpec().Obj()

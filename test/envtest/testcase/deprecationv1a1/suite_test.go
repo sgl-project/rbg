@@ -43,5 +43,3 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	testutil.TeardownTestEnv()
 })
-
-const contractNamespace = "deprecation-v1a1-contract"

@@ -22,10 +22,8 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -176,14 +174,6 @@ func isDeprecatedV1alpha1WorkloadType(workloadType string) bool {
 	default:
 		return false
 	}
-}
-
-func objectKey(obj runtime.Object) (types.NamespacedName, bool) {
-	meta, ok := obj.(client.Object)
-	if !ok {
-		return types.NamespacedName{}, false
-	}
-	return types.NamespacedName{Namespace: meta.GetNamespace(), Name: meta.GetName()}, true
 }
 
 // SetupDeprecationWebhookWithManager registers the warning and new-use guard for

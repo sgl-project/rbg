@@ -471,7 +471,7 @@ func buildV1alpha1Fixture(ns string) *workloadsv1alpha1.RoleBasedGroup {
 				WithReplicas(1).
 				WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
 				Obj(),
-			wrappersv1.BuildLwsRole(v1alpha1LwsRole).
+			wrappersv1.BuildLeaderWorkerRole(v1alpha1LwsRole).
 				WithReplicas(1).
 				WithWorkload(workloadsv1alpha1.LeaderWorkerSetWorkloadType).
 				Obj(),
@@ -491,7 +491,7 @@ func buildV1alpha1Fixture(ns string) *workloadsv1alpha1.RoleBasedGroup {
 func buildV1alpha1SetFixture(ns string) *workloadsv1alpha1.RoleBasedGroupSet {
 	set := wrappersv1.BuildBasicRoleBasedGroupSet(fxV1alpha1Set, ns).WithReplicas(1).Obj()
 	set.Spec.Template.Roles = []workloadsv1alpha1.RoleSpec{
-		wrappersv1.BuildLwsRole(v1alpha1LwsRole).
+		wrappersv1.BuildLeaderWorkerRole(v1alpha1LwsRole).
 			WithReplicas(1).
 			WithWorkload(workloadsv1alpha1.LeaderWorkerSetWorkloadType).
 			Obj(),
