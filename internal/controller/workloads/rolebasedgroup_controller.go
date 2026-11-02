@@ -817,9 +817,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 			// if found, update
 			if roleStatuses[i].Name == oldStatus.Name {
 				found = true
-				if roleStatuses[i].Replicas != oldStatus.Replicas || roleStatuses[i].ReadyReplicas != oldStatus.ReadyReplicas {
-					rbg.Status.RoleStatuses[j] = roleStatuses[i]
-				}
+				rbg.Status.RoleStatuses[j] = roleStatuses[i]
 				break
 			}
 		}

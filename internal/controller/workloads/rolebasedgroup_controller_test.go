@@ -19,6 +19,7 @@ package workloads
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -2708,6 +2709,101 @@ func TestCalculateScalingForAllCoordination_MissingRole(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, desiredReplicas, targets[role.Name])
 			assert.Zero(t, targets[missingRole])
+		})
+	}
+}
+
+func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		replicas    int32
+		oldUpdated  int32
+		newUpdated  int32
+		wantPatches int
+	}{
+		{name: "updated replicas reset after scale to zero", oldUpdated: 1, newUpdated: 0, wantPatches: 1},
+		{name: "rollout progresses with stable ready replicas", replicas: 2, oldUpdated: 1, newUpdated: 2, wantPatches: 1},
+		{name: "new revision resets updated replicas", replicas: 2, oldUpdated: 2, newUpdated: 0, wantPatches: 1},
+		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default", Generation: 1},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{
+					{Name: "prefill", Replicas: ptr.To(tc.replicas)},
+					{Name: "decode", Replicas: ptr.To(int32(1))},
+				}},
+				Status: workloadsv1alpha2.RoleBasedGroupStatus{
+					ObservedGeneration: 1,
+					Conditions: []metav1.Condition{{
+						Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionTrue,
+						ObservedGeneration: 1, LastTransitionTime: metav1.Now(),
+						Reason: "AllRolesReady", Message: "All roles are ready",
+					}},
+					RoleStatuses: []workloadsv1alpha2.RoleStatus{
+						{Name: "prefill", Replicas: tc.replicas, ReadyReplicas: tc.replicas, UpdatedReplicas: tc.oldUpdated},
+						{Name: "decode", Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1},
+					},
+				},
+			}
+			want := append([]workloadsv1alpha2.RoleStatus(nil), rbg.Status.RoleStatuses...)
+			want[0].UpdatedReplicas = tc.newUpdated
+			// Match roles by name even when the observed order differs.
+			observed := []workloadsv1alpha2.RoleStatus{want[1], want[0]}
+			patches := 0
+			scheme := runtime.NewScheme()
+			if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				SubResourcePatch: func(_ context.Context, _ client.Client, subresource string, obj client.Object, patch client.Patch, _ ...client.SubResourcePatchOption) error {
+					patches++
+					if subresource != "status" || patch.Type() != types.ApplyPatchType {
+						t.Fatalf("expected status SSA, got %s %s", subresource, patch.Type())
+					}
+					data, err := patch.Data(obj)
+					if err != nil {
+						return err
+					}
+					var applied workloadsv1alpha2.RoleBasedGroup
+					if err := json.Unmarshal(data, &applied); err != nil {
+						return err
+					}
+					if !reflect.DeepEqual(applied.Status.RoleStatuses, want) {
+						t.Errorf("applied role statuses = %+v, want %+v", applied.Status.RoleStatuses, want)
+					}
+					// A zero must be explicitly sent to clear a previously nonzero value.
+					var payload struct {
+						Status struct {
+							RoleStatuses []struct {
+								UpdatedReplicas *int32 `json:"updatedReplicas"`
+							} `json:"roleStatuses"`
+						} `json:"status"`
+					}
+					if err := json.Unmarshal(data, &payload); err != nil {
+						return err
+					}
+					for _, rs := range payload.Status.RoleStatuses {
+						if rs.UpdatedReplicas == nil {
+							t.Error("status patch omitted updatedReplicas")
+						}
+					}
+					return nil
+				},
+			}).Build()
+			r := &RoleBasedGroupReconciler{client: c}
+			for i := 0; i < 2; i++ {
+				if err := r.updateRBGStatus(ctx, rbg, observed); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
+					t.Errorf("reconcile %d: role statuses = %+v, want %+v", i, rbg.Status.RoleStatuses, want)
+				}
+			}
+			if patches != tc.wantPatches {
+				t.Errorf("status patches = %d, want %d", patches, tc.wantPatches)
+			}
 		})
 	}
 }
