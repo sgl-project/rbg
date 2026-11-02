@@ -319,7 +319,7 @@ RIS phase uses the following six values, distinguishing scale-up from scale-down
 | `ScalingDown` | Removing instances to meet the current effective replica target; scale-down remains incomplete |
 | `Terminating` | The RIS itself has a deletionTimestamp, rather than a child RI being deleted |
 
-Deletion of the RIS takes priority and enters Terminating. When both update and scaling workflows remain incomplete, phase displays Updating, `Progressing` uses `RollingUpdate`, and the message describes the scaling workflow. This does not mean updates execute before scaling.
+Deletion of the RIS takes priority and enters Terminating. When both update and scaling workflows remain incomplete, phase displays Updating. Phase display priority is independent of condition reason selection: a current blocker uses the corresponding blocker-family reason, fully paused progress uses `Progressing=False(reason=Paused)`, and an active update without a higher-priority blocker uses `RollingUpdate` with message describing concurrent scaling. If only scaling remains active, use `ScalingUp` or `ScalingDown`. This does not mean updates execute before scaling.
 After the update completes, transition to ScalingUp / ScalingDown if scaling remains incomplete; if scaling completes first, remain Updating. Transition to Running when all relevant workflows are complete.
 Choose ScalingUp / ScalingDown according to the operation direction required by the current effective replica target.
 Initial creation must not be classified as ScalingUp solely because the RI count is below the target; an empty revision during initial creation does not by itself indicate Updating.
@@ -441,6 +441,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 
 - Cover transition conditions for creation, recreation, updates, scaling, pattern migration, pauses, deletion, and insufficient observations for RBG, RIS, and RI individually.
 - When different RISs are updating and scaling, RBG phase is Progressing, the condition of the same name uses ScalingOrUpdating, and message describes each role's activity. When all relevant progress is paused, phase remains Progressing and the condition is False.
+- When RIS update and scaling workflows overlap, phase is Updating. A current blocker determines the `Progressing` reason, fully paused progress reports `False(reason=Paused)`, and an active update without a higher-priority blocker reports `RollingUpdate` while message describes the scaling workflow.
 - Propagate initial readiness and creation completion signals upward. RBG transitions from Progressing to Running, and RIS / RI from Creating to Running. Recreating a child with a new UID does not return its RIS / RI parent to Creating.
 - During normal operation, RBG transitions to Progressing when missing Pods / RIs / RISs are confirmed and recovery begins, then returns to Running after recovery. A readiness drop alone, without recovery, leaves it Running.
 - Recovery completion requires all target Pods to be present and readyPolicy and configured gates to be satisfied, with completion facts aggregated upward. Cover AllPodReady waiting for Pod readiness and None skipping that wait.
