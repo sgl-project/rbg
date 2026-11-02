@@ -23,14 +23,15 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	toolscache "k8s.io/client-go/tools/cache"
 )
 
-// WatchStreamTransformInformer returns a cache.Options.NewInformer that also
-// applies the transform to watch events before the reflector sees them.
+// WatchStreamTransformInformer wraps only Pod informers, applying the transform
+// to watch events before the reflector sees them.
 //
 // client-go v0.34.2 passes a store's transform to the reflector's streaming-list
 // temporary store only if the store implements the full Store interface
@@ -41,7 +42,10 @@ import (
 // wrapper changes nothing without a streaming list.
 func WatchStreamTransformInformer(transform toolscache.TransformFunc) func(toolscache.ListerWatcher, runtime.Object, time.Duration, toolscache.Indexers) toolscache.SharedIndexInformer {
 	return func(lw toolscache.ListerWatcher, obj runtime.Object, resync time.Duration, indexers toolscache.Indexers) toolscache.SharedIndexInformer {
-		return toolscache.NewSharedIndexInformer(&streamTransformLW{inner: toolscache.ToListerWatcherWithContext(lw), transform: transform}, obj, resync, indexers)
+		if _, isPod := obj.(*corev1.Pod); isPod {
+			lw = &streamTransformLW{inner: toolscache.ToListerWatcherWithContext(lw), transform: transform}
+		}
+		return toolscache.NewSharedIndexInformer(lw, obj, resync, indexers)
 	}
 }
 
@@ -133,8 +137,11 @@ var _ watch.Interface = (*transformingWatch)(nil)
 // streamTransformRelistInformer composes the comparison's relist probe with the
 // watch-stream transform, so the stream-transform mode is measured like the rest.
 func streamTransformRelistInformer(probe *relistProbe, transform toolscache.TransformFunc) func(toolscache.ListerWatcher, runtime.Object, time.Duration, toolscache.Indexers) toolscache.SharedIndexInformer {
+	newInformer := WatchStreamTransformInformer(transform)
 	return func(lw toolscache.ListerWatcher, obj runtime.Object, resync time.Duration, indexers toolscache.Indexers) toolscache.SharedIndexInformer {
-		probed := &relistLW{inner: toolscache.ToListerWatcherWithContext(lw), probe: probe}
-		return toolscache.NewSharedIndexInformer(&streamTransformLW{inner: probed, transform: transform}, obj, resync, indexers)
+		if _, isPod := obj.(*corev1.Pod); isPod {
+			lw = &relistLW{inner: toolscache.ToListerWatcherWithContext(lw), probe: probe}
+		}
+		return newInformer(lw, obj, resync, indexers)
 	}
 }

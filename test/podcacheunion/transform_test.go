@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,13 +42,67 @@ import (
 
 func newTransformCache(t *testing.T, ns string, stub StubFields, wrap bool) (cache.Cache, toolscache.SharedIndexInformer, context.Context, context.CancelFunc) {
 	t.Helper()
+	transform := PodCacheTransform(stub)
 	options := cache.Options{Scheme: probeScheme, ByObject: map[client.Object]cache.ByObject{
-		&corev1.Pod{}: {Field: fields.OneTermEqualSelector("metadata.namespace", ns), Transform: PodCacheTransform(stub)},
+		&corev1.Pod{}: {Field: fields.OneTermEqualSelector("metadata.namespace", ns), Transform: transform},
 	}}
 	if wrap {
-		options.NewInformer = WatchStreamTransformInformer(PodCacheTransform(stub))
+		options.NewInformer = WatchStreamTransformInformer(transform)
 	}
 	return newCacheWithOptions(t, options)
+}
+
+func TestAPITransformInformerScope(t *testing.T) {
+	for _, mode := range []string{"watch", "relist"} {
+		t.Run(mode, func(t *testing.T) {
+			ns := namespace(t)
+			unrelated := pod(ns, "unrelated", nil)
+			create(t, unrelated)
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "unchanged"},
+				Spec:       corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Port: 80}}},
+			}
+			create(t, service)
+			var nonPodCalls atomic.Int64
+			podTransform := PodCacheTransform(StubIdentityLabelsOwners)
+			transform := func(obj interface{}) (interface{}, error) {
+				if _, isPod := obj.(*corev1.Pod); !isPod {
+					nonPodCalls.Add(1)
+				}
+				return podTransform(obj)
+			}
+			selector := fields.OneTermEqualSelector("metadata.namespace", ns)
+			options := cache.Options{Scheme: probeScheme, ByObject: map[client.Object]cache.ByObject{
+				&corev1.Pod{}:     {Field: selector, Transform: transform},
+				&corev1.Service{}: {Field: selector},
+			}, NewInformer: WatchStreamTransformInformer(transform)}
+			if mode == "relist" {
+				options.NewInformer = streamTransformRelistInformer(newRelistProbe(), transform)
+			}
+			cch, _, ctx, cancel := newCacheWithOptions(t, options)
+			defer cancel()
+			if _, err := cch.GetInformer(ctx, &corev1.Service{}, cache.BlockUntilSynced(false)); err != nil {
+				t.Fatal(err)
+			}
+			runCache(t, cch, ctx, cancel)
+			waitSync(t, cch, ctx)
+			cachedPod := &corev1.Pod{}
+			if err := cch.Get(ctx, client.ObjectKeyFromObject(unrelated), cachedPod); err != nil || !isStub(cachedPod) {
+				t.Fatalf("Pod was not transformed: %+v, %v", cachedPod, err)
+			}
+			service.Spec.Ports[0].Port = 81
+			if err := apiClient.Update(ctx, service); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, "Service update through the default informer", func() bool {
+				got := &corev1.Service{}
+				return cch.Get(ctx, client.ObjectKeyFromObject(service), got) == nil && len(got.Spec.Ports) == 1 && got.Spec.Ports[0].Port == 81
+			})
+			if got := nonPodCalls.Load(); got != 0 {
+				t.Fatalf("Pod watch transform called %d times for non-Pod objects", got)
+			}
+		})
+	}
 }
 
 func TestTransformIsIdempotent(t *testing.T) {

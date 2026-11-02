@@ -11,6 +11,7 @@
 #   ROUNDS   round numbers (each rotates the mode order), default "0 1 2"
 #   MODES    comma-separated modes for every batch instead of each batch's default
 set -euo pipefail
+export USE_EXISTING_CLUSTER=false
 
 if [ $# -ne 1 ]; then
   echo "usage: $0 OUTPUT_DIR" >&2

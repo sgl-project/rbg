@@ -86,12 +86,15 @@ would be cached as a stub that keeps the reference, and the owner-index List wou
 ### Cache Implementation
 
 When `--pod-cache-scope=filtered`, `cacheOptions()` sets a transform on the Pod entry, and
-`cache.Options.NewInformer` wraps the Pod informer's ListerWatcher so that watch events pass
-through the same transform before the reflector sees them (see item 6):
+`cache.Options.NewInformer` wraps only the `*corev1.Pod` informer's ListerWatcher; every other
+type keeps the default constructor. Watch events pass through the same transform instance
+before the reflector sees them (see item 6):
 
 ```go
 &corev1.Pod{}: {Transform: podCacheTransform}
 ```
+
+The `all` mode installs neither override.
 
 ```mermaid
 flowchart LR
@@ -121,8 +124,10 @@ flowchart LR
    `rolebasedgroupwarmup_controller.go` (group-name; warmup name and UID), and
    `rolebasedgroup_controller.go` (group-name and role-name). Each of them requires an admission
    label or an ownerReference to an RBG object, and a stub has neither, or it would have been
-   admitted, so no stub matches. No code reads Pods by `spec.nodeName`. Both Pod event sources map a
-   Pod through an ownerReference to an RBG kind (the RoleInstance Pod handler and Warmup's `Owns`),
+   admitted, so no stub matches. Node-name reads in `RecordNodeBindings`, Warmup and RBG
+   reconciliation consume Pods from these scoped Lists; none uses a `spec.nodeName` field selector.
+   Both Pod event sources map a Pod through an ownerReference to an RBG kind
+   (the RoleInstance Pod handler and Warmup's `Owns`),
    so a stub enqueues nothing. Only an unscoped List would see stubs, which is why the read-path
    audit is an alpha criterion.
 5. **Named existence checks stay in the cache.** `getExistingPod` finds an unrelated Pod's stub,
@@ -381,11 +386,14 @@ reproduction commands and coverage limits are in [Performance](performance.md).
   response bytes match the full cache. Compressed wire bytes and steady event throughput were not measured.
 - **Startup:** one full List, or a streaming list with explicit WatchListClient enablement and a
   supporting server. Ordinary List keeps the full-decode memory cost; streaming needs the early wrapper.
-- **Sync budget:** the slowest selected-transform sample here was 1.14 seconds for at most
-  5,000 synthetic Pods on a local API server. This does not establish target-scale latency or a
-  linear forecast for 100,000 Pods. Keep the cache sync timeout and validate against the real cluster.
+- **Sync budget:** selected-wrapper sync was 344–807 ms in the published
+  [200 / 4,800 runs](performance.md#startup-detail-200-related--4800-unrelated).
+  These local tests do not establish target-scale latency or a linear forecast for 100,000 Pods.
+  Keep the cache sync timeout and validate against the real cluster.
 - **Memory:** whole admitted Pods plus a metadata stub per unrelated Pod; labels and ownerReferences
   affect stub size. Container memory / working-set and OOM behavior remain beta measurements.
+  For memory-bound `filtered` deployments, set the soft `GOMEMLIMIT` below the container limit to
+  leave room for non-Go memory, then validate startup and relist peaks.
 - **CPU:** one transform per List item, and two per watched object with the early wrapper. Startup
   and relist results vary by platform; sustained event churn still needs measurement.
 - **Writes:** controllers stamp labels only on creation; the rate-limited CLI patches existing Pods.

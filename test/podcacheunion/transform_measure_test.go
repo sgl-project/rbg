@@ -155,10 +155,10 @@ func TestTransformProbeChild(t *testing.T) {
 		// Also transform watch events before the reflector's streaming-list
 		// temporary store sees them; see WatchStreamTransformInformer.
 		podOptions.Transform = PodCacheTransform(StubIdentity)
-		options.NewInformer = streamTransformRelistInformer(relist, PodCacheTransform(StubIdentity))
+		options.NewInformer = streamTransformRelistInformer(relist, podOptions.Transform)
 	case "transform-labels-owners-stream":
 		podOptions.Transform = PodCacheTransform(StubIdentityLabelsOwners)
-		options.NewInformer = streamTransformRelistInformer(relist, PodCacheTransform(StubIdentityLabelsOwners))
+		options.NewInformer = streamTransformRelistInformer(relist, podOptions.Transform)
 	default:
 		t.Fatalf("unknown transform comparison mode %q", mode)
 	}
@@ -484,7 +484,29 @@ func deriveTransformMetrics(r transformResult) transformMetrics {
 func medianRange(values []float64) (float64, float64, float64) {
 	sorted := append([]float64(nil), values...)
 	sort.Float64s(sorted)
-	return sorted[len(sorted)/2], sorted[0], sorted[len(sorted)-1]
+	middle := len(sorted) / 2
+	median := sorted[middle]
+	if len(sorted)%2 == 0 {
+		median = (sorted[middle-1] + sorted[middle]) / 2
+	}
+	return median, sorted[0], sorted[len(sorted)-1]
+}
+
+func TestMedianRange(t *testing.T) {
+	for _, tc := range []struct {
+		values []float64
+		want   [3]float64
+	}{
+		{[]float64{7}, [3]float64{7, 7, 7}},
+		{[]float64{30, 10}, [3]float64{20, 10, 30}},
+		{[]float64{30, 10, 20}, [3]float64{20, 10, 30}},
+		{[]float64{40, 10, 20, 30}, [3]float64{25, 10, 40}},
+	} {
+		median, low, high := medianRange(tc.values)
+		if got := [3]float64{median, low, high}; got != tc.want {
+			t.Errorf("medianRange(%v) = %v, want %v", tc.values, got, tc.want)
+		}
+	}
 }
 
 // TestTransformComparisonSummary reads every results.json below a directory and

@@ -9,7 +9,8 @@ CLI / Helm migration and full operator e2e remain integration work.
 
 The selected design keeps one Pod informer. Admitted Pods stay whole except
 `managedFields`; other Pods become identity/label/ownerReference stubs.
-`WatchStreamTransformInformer` transforms watch objects before the reflector's
+`WatchStreamTransformInformer` wraps only the Pod informer; other types keep the
+default constructor. It transforms watch objects before the reflector's
 streaming-list temporary store. With client-go v0.34.2, the ordinary FIFO
 transform alone runs too late to reduce that store's peak. The transform is
 idempotent because the FIFO transforms watched objects again.
@@ -36,8 +37,9 @@ export USE_EXISTING_CLUSTER=false
 export KUBEBUILDER_ASSETS="$(bin/setup-envtest use 1.31.0 --bin-dir "$PWD/bin" -p path)"
 ```
 
-The tests start an isolated Kubernetes v1.31.0 API server and etcd 3.5.15 from
-the downloaded binaries. The fixture loads the RoleInstance CRD and binds its advertise address to loopback,
+The fixture always starts an isolated Kubernetes v1.31.0 API server and etcd 3.5.15
+from the downloaded binaries, even if the shell sets `USE_EXISTING_CLUSTER=true`.
+It loads the RoleInstance CRD and binds its advertise address to loopback,
 so it also runs in a container with networking disabled. There is no kubelet or
 running workload controller.
 
@@ -72,6 +74,8 @@ opt-in diagnostics and performance probes skip themselves.
 - `TestAPITransformProductionReadPaths`: the production owner-list utility and
   cached Get/ownership checks for foreign-name collisions. Complete reconciler
   outcomes still need production-integration tests.
+- `TestAPITransformInformerScope`: Pods are transformed while Service updates use
+  the default informer, with and without the relist probe.
 - `TestWatchStreamWrapperTransformsEvents` and
   `TestWatchStreamWrapperStopDoesNotLeak`: Add/Modify/Delete, bookmarks/errors,
   natural closure, and deterministic idle/pending-send loop exit without draining
@@ -79,6 +83,7 @@ opt-in diagnostics and performance probes skip themselves.
 - `TestFeatureGateSetOverridesProductionImport`: the production import chain
   makes the environment variable ineffective; setting the effective gate works
   and the test restores its initial value.
+- `TestMedianRange`: one to four samples, including averaging even-sized groups.
 
 **The test environment variable is a harness control.** `TestMain` explicitly
 sets and verifies the effective WatchListClient gate in every process, including
@@ -167,7 +172,8 @@ go test -mod=vendor -tags=podcacheunion ./test/podcacheunion \
   -run '^TestTransformComparisonSummary$' -count=1 -v
 ```
 
-`summary.md` contains medians and ranges. Per-mode JSON and native CSV plus
+`summary.md` contains medians and ranges; even-sized groups average the two middle values.
+Per-mode JSON and native CSV plus
 `results.json` preserve the raw observations in the campaign output directory;
 these generated files are not committed. Temporary test kubeconfigs stay outside
 saved reports and are deleted by the fixture.

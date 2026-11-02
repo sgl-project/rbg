@@ -89,7 +89,13 @@ func TestMain(m *testing.M) {
 	if err := yaml.Unmarshal(data, crd); err != nil {
 		panic(err)
 	}
-	env := &envtest.Environment{BinaryAssetsDirectory: assets, CRDs: []*apiextensionsv1.CustomResourceDefinition{crd}, ControlPlaneStartTimeout: 45 * time.Second, ControlPlaneStopTimeout: 30 * time.Second}
+	env := &envtest.Environment{
+		UseExistingCluster:       ptr.To(false),
+		BinaryAssetsDirectory:    assets,
+		CRDs:                     []*apiextensionsv1.CustomResourceDefinition{crd},
+		ControlPlaneStartTimeout: 45 * time.Second,
+		ControlPlaneStopTimeout:  30 * time.Second,
+	}
 	// A network-isolated container has no default route to auto-detect.
 	env.ControlPlane.GetAPIServer().Configure().Set("advertise-address", "127.0.0.1")
 	// For example WatchList=true, which v1.31.0 ships as an alpha gate that is
