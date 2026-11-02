@@ -2776,6 +2776,10 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 						Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionTrue,
 						ObservedGeneration: 1, LastTransitionTime: metav1.Now(),
 						Reason: "AllRolesReady", Message: "All roles are ready",
+					}, {
+						Type: string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress), Status: metav1.ConditionTrue,
+						ObservedGeneration: 1, LastTransitionTime: metav1.Now(),
+						Reason: "RolesUpdating", Message: "Waiting for all target role workloads to be updated and ready",
 					}},
 					RoleStatuses: []workloadsv1alpha2.RoleStatus{
 						{Name: "prefill", Replicas: tc.replicas, ReadyReplicas: tc.replicas, UpdatedReplicas: tc.oldUpdated},
@@ -2830,7 +2834,7 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 			}).Build()
 			r := &RoleBasedGroupReconciler{client: c}
 			for i := 0; i < 2; i++ {
-				if err := r.updateRBGStatus(ctx, rbg, observed); err != nil {
+				if err := r.updateRBGStatus(ctx, rbg, observed, false); err != nil {
 					t.Fatal(err)
 				}
 				if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
