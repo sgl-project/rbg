@@ -12,6 +12,7 @@
     - [Notes/Constraints/Caveats](#notesconstraintscaveats)
     - [Risks and Mitigations](#risks-and-mitigations)
   - [Design Details](#design-details)
+    - [Reason Taxonomy and Aggregation](#reason-taxonomy-and-aggregation)
     - [Phase Transition Principles](#phase-transition-principles)
     - [RoleBasedGroup](#rolebasedgroup)
     - [RoleInstanceSet](#roleinstanceset)
@@ -345,7 +346,7 @@ Conditions retain the existing Go type for now, adding optional observedGenerati
 
 ### RoleInstance
 
-RI adds optional `status.phase` while retaining existing readiness condition names. In the example, the RI has completed startup and remains Running while a required Pod recreation is quota-blocked and a custom readiness gate is unsatisfied.
+RI adds optional `status.phase` while retaining existing readiness condition names. In the example, the RI has completed startup and enters Recovering while a required Pod recreation is quota-blocked and a custom readiness gate is unsatisfied.
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -354,7 +355,7 @@ metadata:
   name: inference-decode-0
   generation: 2
 status:
-  phase: Running # [New] Optional lifecycle field; Running does not mean RoleInstanceReady=True.
+  phase: Recovering # [New] Optional lifecycle field; recovery is independent of RoleInstanceReady.
   observedGeneration: 2 # [Retained, semantics clarified] Refers to the RI generation, not the parent RIS generation.
   conditions: # [Changed] Standardize ownership, reasons, and transition rules; retain the custom type for now, with future schema changes marked TBD.
     - type: Progressing # [New type] Current progress or current blocker for this RI; not a readiness gate.
@@ -382,20 +383,24 @@ The proposed RI phase values and boundaries are:
 | Phase | Meaning |
 | --- | --- |
 | `Creating` | Initially establishing the target Pods for each component, waiting for readyPolicy and configured readiness gates to be satisfied |
-| `Running` | Normal operation after startup or an update completes; Pod recreation or a readiness drop does not return it to Creating |
+| `Running` | Normal operation after startup, an update, or recovery completes; a readiness drop alone does not return it to Creating |
 | `Updating` | An identified component spec, template, or revision update is in progress, including in-place updates and Pod replacements required by the update |
+| `Recovering` | Independent recreation or replacement of required Pods is in progress outside an update, until recreation, cleanup, and effective readiness conditions complete |
 | `Terminating` | The RI itself has a deletionTimestamp, rather than a child Pod being deleted |
 
 Deletion of the RI takes priority and enters Terminating. Identifying an update target enters Updating; an empty revision during initial creation is not evidence of an update.
+Confirming independent recovery of required Pods outside an update enters Recovering. Pod recreation that is already part of an update remains Updating rather than entering a separate Recovering phase.
 Scaling the number of RIs belongs to RIS; component spec changes within an RI are expressed as Updating.
 
 To leave Updating, the RI must have all components / Pods required by the current target present, the target configuration must have taken effect, in-place updates or replacement must have completed, and the effective readiness conditions for this update must be satisfied. Revision equality alone does not prove completion.
+To leave Recovering, all target Pods must be present, the relevant recreation / replacement / cleanup work must be complete, and readyPolicy and configured readiness gates must be satisfied. The RI then returns to Running.
 
 | Situation | Phase Handling |
 | --- | --- |
 | An update remains incomplete, and target Pods are missing or being recreated | Remain Updating until the current update target and its recovery work are complete |
-| An independent failure and recreation occur after an update completes | Remain Running; existing readiness and recovery conditions report current facts |
-| Observations are insufficient to confirm update completion | Retain the phase and handle affected conditions as having insufficient observations |
+| An independent failure and recreation occur after an update completes | Enter Recovering; return to Running only after recovery and its effective readiness conditions complete |
+| A readiness drop occurs without confirmed resource recreation or replacement | Remain Running; readiness conditions report the current facts |
+| Observations are insufficient to confirm update or recovery completion | Retain the phase and handle affected conditions as having insufficient observations |
 
 `inPlaceUpdateContainerBaselines` may remain after an in-place update completes to identify expected container restarts. A non-empty field does not mean the RI is still Updating.
 
@@ -447,7 +452,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Lowering the target during scale-up while still requiring more instances keeps ScalingUp. A target requiring fewer instances transitions to ScalingDown without first completing the old target or bypassing observation waits, OrderedReady, budgets, or hooks because of a phase transition.
 - Scale-up requires new instances to complete startup and satisfy effective readiness conditions; scale-down requires actual completion of target deletions; updates require target configuration to take effect and related replacement / surge cleanup to finish. Request success is not completion.
 - Partition may retain older revisions while the current update target completes. A paused, incomplete target must not return to Running early; counts or revision equality alone are not completion signals.
-- Missing Pods during an RI update keep it Updating; independent failures after completion leave it Running. Updates may complete while inPlaceUpdateContainerBaselines remains populated.
+- Missing Pods during an RI update keep it Updating; independent failures after completion enter Recovering and return to Running only after recovery completes. Updates may complete while inPlaceUpdateContainerBaselines remains populated.
 - Cover readiness / convergence truth tables for partition, surge, zero replicas, terminating instances, revisions, and stale observations.
 - Ready may be True when all roles / RIs are ready but the target revision is incomplete. It remains False when gang min is satisfied but not all replicas are ready; other replicas cannot compensate for an unready role / RI.
 - Accepted covers configuration, templates, referenced configuration, and required environmental capabilities. Absent optional configuration does not cause rejection; a required reference confirmed missing and one that cannot be read report False / Unknown respectively, distinguished by reason and message. Confirmed unsupported capabilities are distinct from read failures, and insufficient GPU capacity, quota, or execution permissions are not configuration rejections.
@@ -455,7 +460,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
 - A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
-- RI phase and `Progressing` remain independent, including `phase=Running` with `Progressing=True` while recovery or a current blocker is unresolved.
+- RI phase and `Progressing` remain independent, including `phase=Recovering` with `Progressing=True` while recovery is blocked, and `phase=Running` with `Progressing=True` for a blocker that does not involve recovery.
 - Cover absent / False / Unknown / True gates, multiple gates, readyPolicy, and reason consistency across blocking, recovery, and repeated blocking.
 - Cover gate and minReadySeconds consumer behavior in stateful / stateless modes, and condition uniqueness, ownership, and transition timestamps.
 - Cover legacy API writes, historically incomplete conditions, and applicability boundaries for v1alpha2 objects using legacy backends and mixed-backend RBGs.
@@ -472,7 +477,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Preserve restart / rollout recovery fields across status migration and controller restarts. Healthy workloads are not recreated because of status field migration.
 - RI phase changes do not overwrite external conditions, reset readiness timing, or bypass Restarting safeguards. Initialization of existing objects does not fabricate initial creation; re-upgrade after rollback revalidates current facts rather than reusing a phase that stopped being updated.
 - RIS phase transitions use valid observations of the current target. Display priority does not change existing Stateless / Stateful execution order, budgets, or gates. RBG transitions use lower-level phases and recovery facts; Running for an old target or an absent phase must not trigger completion.
-- Missing resources and recreation can still trigger RBG recovery when RBG generation is unchanged and RIS / RI remain Running. After controller restart, completion still requires all target Pods to be present and effective readiness conditions to hold; recovery waits must not return to Running early, and read failures must not be treated as missing resources.
+- Missing resources and recreation can still trigger RBG recovery when RBG generation is unchanged; RI enters Recovering while RIS retains its own phase semantics. After controller restart, completion still requires all target Pods to be present and effective readiness conditions to hold; recovery waits must not return to Running early, and read failures must not be treated as missing resources.
 - RBGs containing legacy backends retain existing status. Clean up controller-owned new-model output when applicability changes, and initialize from fresh observations after migration to all-RIS roles, without recreating workloads.
 
 #### e2e tests
