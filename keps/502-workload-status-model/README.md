@@ -51,7 +51,7 @@ The following checklist applies to releases in the RBG project.
 
 This KEP defines a workload status model for RoleBasedGroup (RBG), RoleInstanceSet (RIS), and RoleInstance (RI).
 Lifecycle phases, conditions, and stable reasons distinguish lifecycle stages, readiness, configuration rejection, and resource waits.
-An optional, persisted `status.phase` field is added. RBG uses three phases: Progressing / Running / Terminating. Progressing summarizes creation, updates, scaling, and resource recovery, while RIS / RI retain their specific phases.
+An optional, persisted `status.phase` field is added. RBG uses three phases: Progressing / Running / Terminating. Progressing summarizes incomplete aggregate workflows, including confirmed recovery, while RIS / RI retain their specific phases. Running means that layer's own target is steady; it is not a rollup of child Running and does not imply current readiness.
 The scope is limited to state machines, phase / condition fields and values, compatibility migration, and contract tests. It does not include controller refactoring or extensions to the role status schema.
 
 ## Motivation
@@ -196,11 +196,12 @@ When `Accepted=False`, `Progressing=False` uses the matching rejection reason, a
 ### Phase Transition Principles
 
 Phase transitions start from the last persisted phase and occur only when the corresponding transition conditions are met. Phase is not reselected from current Ready, replica counts, or child phases; the same phase, target, and observations must produce consistent transition results.
+Running is not a rollup of child Running. Each CR enters or remains Running based on its own target; child recovery changes the parent phase only when it invalidates that parent target. Otherwise, the child fact is reported through conditions.
 Child readiness is a transition condition, not an invariant required to remain Running. Conditions continuously report current readiness, progress, and blockers.
 
 - Initial creation transitions to Running once the target structure is established and the effective readiness policy is satisfied. RBG transitions from Progressing; RIS / RI transition from Creating. RI retains readyPolicy (AllPodReady by default) and configured readiness gates, with completion signals propagating through RI → RIS → RBG.
 - Recreating missing resources after RIS / RI have entered normal operation does not trigger a return to Creating; a child object with a new UID goes through creation independently. RBG transitions from Running to Progressing when it confirms missing resources and enters recovery. A readiness drop alone, without entering recovery, leaves it Running.
-- Recovery completes when the target Pods are all present, the relevant recreation / replacement / cleanup work is complete, and readyPolicy and configured readiness gates are satisfied. Completion facts propagate upward according to each layer's target.
+- Recovery completes when the target Pods are all present, the relevant recreation / replacement / cleanup work is complete, and readyPolicy and configured readiness gates are satisfied. Completion facts propagate upward according to each layer's target; a child phase is not copied directly.
 - When observations are insufficient to confirm a transition condition, retain the last phase; if it was absent, leave it absent. Related conditions may still change. A confirmed deletionTimestamp on the object allows it to enter Terminating without complete observations of child resources.
 - When multiple workflows remain incomplete, select the phase using the display priority defined for each CR. Display priority does not determine execution order. Completion requires confirming the current effective target and the corresponding completion conditions; child Ready alone is not a substitute.
 - When a target changes or is withdrawn, evaluate remaining work against the current target, accounting for operations already issued and required cleanup. Target changes during initial creation do not waive structural completeness or effective readiness requirements; pausing does not mean completion.
@@ -245,12 +246,12 @@ RBG phase uses the following three values:
 
 | Phase | Meaning |
 | --- | --- |
-| `Progressing` | Creation, updates (including deployment pattern migration), scaling, or resource recovery remains incomplete |
-| `Running` | Relevant workflows have completed; the object is in normal operation, without guaranteeing current readiness |
+| `Progressing` | The aggregate target is not steady because creation, update, scaling, or confirmed recovery remains incomplete |
+| `Running` | The RBG aggregate target is steady and no group-level workflow or confirmed recovery remains; it does not imply that every child is Running or Ready |
 | `Terminating` | The RBG itself has a deletionTimestamp |
 
-Initial creation enters Progressing. During normal operation, starting an update or scaling, or confirming missing Pods / RIs / RISs and entering recovery, re-enters Progressing.
-Enter Running after all relevant workflows are complete and no work remains to be issued. Deletion of the object takes priority and enters Terminating.
+Initial creation enters Progressing. During normal operation, starting an update or scaling, or confirming missing Pods / RIs / RISs that invalidates the aggregate target, re-enters Progressing.
+Enter Running after the aggregate target is steady and no work remains to be issued. Deletion of the object takes priority and enters Terminating.
 phase=Progressing means a workflow remains incomplete; it is not equivalent to the condition of the same name being True. When all relevant progress is paused, the condition may report Progressing=False(reason=Paused).
 
 ```mermaid
@@ -329,7 +330,7 @@ RIS phase uses the following six values, distinguishing scale-up from scale-down
 | Phase | Meaning |
 | --- | --- |
 | `Creating` | Initially establishing the target RIs, waiting for creation and effective readiness conditions to be satisfied |
-| `Running` | Normal operation after startup or subsequent operations complete; RI recreation or a readiness drop does not return it to Creating |
+| `Running` | The set-level target is steady and RIS-owned create / update / scale workflows have completed; RI recovery or a readiness drop does not by itself change this phase |
 | `Updating` | An instance-set template, revision, or configuration update is in progress |
 | `ScalingUp` | Adding instances to meet the current effective replica target; scale-up remains incomplete |
 | `ScalingDown` | Removing instances to meet the current effective replica target; scale-down remains incomplete |
@@ -341,7 +342,7 @@ Concurrent RIS update and scaling is represented by one dominant phase and one `
 Choose ScalingUp / ScalingDown according to the operation direction required by the current effective replica target.
 Initial creation must not be classified as ScalingUp solely because the RI count is below the target; an empty revision during initial creation does not by itself indicate Updating.
 Scaling cannot be identified solely from the difference between actual and desired replica counts: update surge, terminating instances, fault recovery, and pattern migration also affect counts.
-RIS does not define a `Recovering` phase. Independent recreation or replacement is RI-level recovery: RIS remains in its current workflow phase, or Running when no update or scaling workflow remains. RIS propagates recovery through `Progressing` and `Ready` conditions rather than copying an RI phase. This keeps RIS phase scoped to workflows owned by the RIS controller.
+RIS does not define a `Recovering` phase. Independent recreation or replacement is RI-level recovery: RIS remains in its current workflow phase, or Running when no update or scaling workflow remains. RIS propagates recovery through `Progressing` and `Ready` conditions rather than copying an RI phase. This is intentional: RIS Running describes the set-level target, while RI recovery is a condition fact and does not by itself invalidate that target.
 If the target changes during scaling, for example from 10 toward 20 with 15 instances already present (excluding surge), changing the target to 18 keeps ScalingUp, while changing it to 12 transitions to ScalingDown. The old target need not complete first, and creation requests already issued are not revoked.
 
 Completion conditions are listed below. Return to Running only after all relevant workflows complete:
@@ -401,7 +402,7 @@ The proposed RI phase values and boundaries are:
 | Phase | Meaning |
 | --- | --- |
 | `Creating` | Initially establishing the target Pods for each component, waiting for readyPolicy and configured readiness gates to be satisfied |
-| `Running` | Normal operation after startup, an update, or recovery completes; a readiness drop alone does not return it to Creating |
+| `Running` | The RI target is steady after startup, an update, or recovery completes; readiness may still be False and a readiness drop alone does not change the phase |
 | `Updating` | An identified component spec, template, or revision update is in progress, including in-place updates and Pod replacements required by the update |
 | `Recovering` | Independent recreation or replacement of required Pods is in progress outside an update, until recreation, cleanup, and effective readiness conditions complete |
 | `Terminating` | The RI itself has a deletionTimestamp, rather than a child Pod being deleted |
@@ -459,12 +460,12 @@ after support is removed, tests verify rejection and migration guidance instead.
 
 - Cover transition conditions for creation, recreation, updates, scaling, pattern migration, pauses, deletion, and insufficient observations for RBG, RIS, and RI individually.
 - Validation ownership is split between admission and controller status: deterministic static errors are rejected by the webhook, while semantic, referenced-resource, scheduler, and capability rejections use `Accepted=False` with `Progressing=False` and do not introduce a `Failed` phase.
-- RIS does not enter a recovery phase when an RI recovers independently. RIS remains Running or its current update / scaling phase and propagates recovery through `Progressing` and `Ready`; RBG derives recovery facts from lower-level conditions, not a RIS `Recovering` phase.
+- RIS does not enter a recovery phase when an RI recovers independently. RIS remains Running or its current update / scaling phase and propagates recovery through `Progressing` and `Ready`; RBG derives recovery facts from lower-level conditions, not a RIS `Recovering` phase. Verify that Running is not computed as a child-phase rollup.
 - A previously Ready RBG transitions to `Ready=False(reason=Terminating)` when deletion begins, and consumers are checked for unintended release, dependency, or alert behavior during migration.
 - When different RISs are updating and scaling, RBG phase is Progressing, the condition of the same name uses ScalingOrUpdating, and message describes each role's activity. When all relevant progress is paused, phase remains Progressing and the condition is False.
 - When RIS update and scaling workflows overlap, phase is Updating. A current blocker determines the `Progressing` reason, fully paused progress reports `False(reason=Paused)`, and an active update without a higher-priority blocker reports `RollingUpdate` while message describes the scaling workflow. Verify that programs do not parse that message to detect concurrent scaling; structured multi-workflow reporting is intentionally out of scope for v1alpha2.
 - Propagate initial readiness and creation completion signals upward. RBG transitions from Progressing to Running, and RIS / RI from Creating to Running. Recreating a child with a new UID does not return its RIS / RI parent to Creating.
-- During normal operation, RBG transitions to Progressing when missing Pods / RIs / RISs are confirmed and recovery begins, then returns to Running after recovery. A readiness drop alone, without recovery, leaves it Running.
+- During normal operation, RBG transitions to Progressing when missing Pods / RIs / RISs invalidate the aggregate target and recovery begins, then returns to Running after recovery. A readiness drop alone, without recovery, leaves it Running. RIS may remain Running while an RI is Recovering; RBG changes phase only when its aggregate target is invalidated.
 - Recovery completion requires all target Pods to be present and readyPolicy and configured gates to be satisfied, with completion facts aggregated upward. Cover AllPodReady waiting for Pod readiness and None skipping that wait.
 - Insufficient observations retain the current phase or leave it absent; related conditions may change. Deletion of the object does not require complete child observations.
 - Cover RI deletion taking priority to enter Terminating, empty revisions during initial creation, child Pod deletion versus RI deletion, and readiness gates becoming unsatisfied again after Running.
