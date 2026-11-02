@@ -16,6 +16,10 @@ limitations under the License.
 
 package port_allocator
 
+import (
+	corev1 "k8s.io/api/core/v1"
+)
+
 type PortScope string
 
 const (
@@ -45,6 +49,10 @@ type PortAllocation struct {
 	// Default is PodScoped
 	// Scope specifies the scope of the port
 	Scope PortScope `json:"scope"`
+	// Protocol specifies the protocol of the injected container port.
+	// Defaults to TCP.
+	// +optional
+	Protocol corev1.Protocol `json:"protocol,omitempty"`
 }
 
 type PortReference struct {

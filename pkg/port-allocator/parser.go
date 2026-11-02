@@ -90,6 +90,12 @@ func validatePortAllocatorConfig(config *PortAllocatorConfig) error {
 		if config.Allocations[i].Scope != PodScoped && config.Allocations[i].Scope != RoleScoped {
 			return fmt.Errorf("allocations[%d].scope must be 'PodScoped' or 'RoleScoped', got '%s'", i, config.Allocations[i].Scope)
 		}
+		if config.Allocations[i].Protocol == "" {
+			config.Allocations[i].Protocol = corev1.ProtocolTCP
+		}
+		if !isValidProtocol(config.Allocations[i].Protocol) {
+			return fmt.Errorf("allocations[%d].protocol must be 'TCP', 'UDP', or 'SCTP', got '%s'", i, config.Allocations[i].Protocol)
+		}
 	}
 
 	// Validate references
@@ -211,4 +217,10 @@ func splitReference(from string) []string {
 		parts = append(parts, from[start:])
 	}
 	return parts
+}
+
+func isValidProtocol(protocol corev1.Protocol) bool {
+	return protocol == corev1.ProtocolTCP ||
+		protocol == corev1.ProtocolUDP ||
+		protocol == corev1.ProtocolSCTP
 }
