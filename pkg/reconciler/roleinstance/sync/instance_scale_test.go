@@ -278,7 +278,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 		},
 		{
 			name: "Pod being deleted - should NOT recreate",
-			desc: "Pod being deleted (with DeletionTimestamp) is not counted as Failed",
+			desc: "A Failed Pod being deleted is not counted as Failed, and without a valid component ID it is not a member slot either",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -1621,7 +1621,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 }
 
 // TestRestartingCachePreventsRecreation tests that the in-memory restarting cache
-// prevents shouldRecreateInstanceGuarded from triggering when the instance is already restarting.
+// prevents recreateTriggerGuarded from triggering when the instance is already restarting.
 func TestRestartingCachePreventsRecreation(t *testing.T) {
 	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1665,7 +1665,7 @@ func TestRestartingCachePreventsRecreation(t *testing.T) {
 
 	// The guarded version with a nil apiReader (cache hit means no API call needed)
 	ctrl := &realControl{}
-	result := ctrl.shouldRecreateInstanceGuarded(context.Background(), instance, pods, nil)
+	_, result := ctrl.recreateTriggerGuarded(context.Background(), instance, pods, nil)
 	assert.False(t, result, "should not recreate when instance is in restarting cache")
 }
 
@@ -2890,6 +2890,29 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(3), instance.Status.RestartCount)
 		assertTimeEqual(t, &later, instance.Status.LastRestartTime, "should adopt newer timestamp even if count is same")
+	})
+
+	t.Run("readiness latch: adopt a newer fresh value, never roll back", func(t *testing.T) {
+		freshOnAPI := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status:     workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 4},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(freshOnAPI).Build()
+		ctrl := &realControl{apiReader: fakeClient}
+
+		stale := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status:     workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 3},
+		}
+		assert.NotNil(t, ctrl.syncRestartTrackingFromAPI(context.Background(), stale))
+		assert.Equal(t, int64(4), stale.Status.LastReadyGeneration, "should adopt the newer latch")
+
+		ahead := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+			Status:     workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 5},
+		}
+		assert.NotNil(t, ctrl.syncRestartTrackingFromAPI(context.Background(), ahead))
+		assert.Equal(t, int64(5), ahead.Status.LastReadyGeneration, "should not roll the latch back")
 	})
 }
 

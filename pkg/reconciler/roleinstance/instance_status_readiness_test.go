@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -149,6 +150,72 @@ func TestRecreatedInstanceReadyAfterOldPodIsReplaced(t *testing.T) {
 	// Repeated status updates must preserve readiness once the replacement
 	// really has an active, ready Pod controlled by its own UID.
 	checkReady(v1.ConditionTrue)
+}
+
+func TestLastReadyGenerationLatch(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name        string
+		podRevision string
+		podReady    bool
+		cached      int64
+		live        int64
+		wantLatched bool
+		want        int64
+	}{
+		{
+			name:        "ready on the update revision latches the current generation",
+			podRevision: "rev-2", podReady: true, cached: 1, live: 1, wantLatched: true,
+		},
+		{
+			name:        "not ready keeps the previous latch",
+			podRevision: "rev-2", podReady: false, cached: 1, live: 1, want: 1,
+		},
+		{
+			name:        "ready old-revision pods during a rollout do not latch",
+			podRevision: "rev-1", podReady: true, cached: 1, live: 1, want: 1,
+		},
+		{
+			name:        "stale informer copy does not roll back the live latch",
+			podRevision: "rev-2", podReady: false, cached: 0, live: 2, want: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance := newReadinessTestInstance()
+			instance.Generation = 3
+			instance.Spec.Components = instance.Spec.Components[:1]
+			instance.Status.LastReadyGeneration = tt.live
+			pod := newReadinessTestPod(instance, "router")
+			pod.Labels = map[string]string{apps.ControllerRevisionHashLabelKey: tt.podRevision}
+			if !tt.podReady {
+				pod.Status.Conditions[0].Status = v1.ConditionFalse
+			}
+			c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+				WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}, &v1.Pod{}).
+				WithObjects(instance, pod).Build()
+
+			current := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), current))
+			require.Equal(t, int64(3), current.Generation)
+			cached := current.DeepCopy()
+			cached.Status.LastReadyGeneration = tt.cached
+			newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+				ObservedGeneration:  cached.Generation,
+				CurrentRevision:     "rev-1",
+				UpdateRevision:      "rev-2",
+				LastReadyGeneration: cached.Status.LastReadyGeneration,
+			}
+			require.NoError(t, newStatusUpdater(c).UpdateInstanceStatus(ctx, cached, newStatus, []*v1.Pod{pod}))
+
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), current))
+			want := tt.want
+			if tt.wantLatched {
+				want = current.Generation
+			}
+			require.Equal(t, want, current.Status.LastReadyGeneration)
+		})
+	}
 }
 
 func readinessTestScheme(t *testing.T) *runtime.Scheme {

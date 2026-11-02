@@ -284,6 +284,12 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastReadyGeneration:
+                description: |-
+                  LastReadyGeneration is the most recent metadata.generation at which the
+                  RoleInstance was observed Ready.
+                format: int64
+                type: integer
               lastRestartTime:
                 description: |-
                   LastRestartTime is the timestamp of the most recent restart-policy-triggered

@@ -177,6 +177,20 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 		}
 	}
 	r.setInstanceConditions(instance, newStatus, conditions)
+	// Latch the generation only once every Pod runs the update revision, so a
+	// Ready observation of old Pods during a rollout cannot open the restart gate.
+	if newStatus.CurrentRevision == newStatus.UpdateRevision && isInstanceReadyCondition(newStatus.Conditions) {
+		newStatus.LastReadyGeneration = instance.Generation
+	}
+}
+
+func isInstanceReadyCondition(conditions []workloadsv1alpha2.RoleInstanceCondition) bool {
+	for _, c := range conditions {
+		if c.Type == workloadsv1alpha2.RoleInstanceReady {
+			return c.Status == v1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
@@ -358,6 +372,7 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
 		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
 		newStatus.RestartCount != oldStatus.RestartCount ||
+		newStatus.LastReadyGeneration != oldStatus.LastReadyGeneration ||
 		inconsistentRestartTime(oldStatus.LastRestartTime, newStatus.LastRestartTime) {
 		return true
 	}
@@ -486,8 +501,14 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// live value — so the double-check below correctly identifies that case as
 		// "not changed" and preserves the live (potentially reset) count.
 		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
+		liveLastReadyGeneration := clone.Status.LastReadyGeneration
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
+		// Generations only grow, so a lower value can only come from a stale
+		// informer copy and must not roll back the live latch.
+		if liveLastReadyGeneration > clone.Status.LastReadyGeneration {
+			clone.Status.LastReadyGeneration = liveLastReadyGeneration
+		}
 		if restartTrackingModified {
 			// updateRestartTracking ran this reconcile — trust newStatus values.
 			// This covers both increments (count goes up) and resets (count goes

@@ -9,7 +9,7 @@ RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanc
 | Policy | Description |
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails or a container restarts. Default for `leaderWorkerPattern` and `customComponentsPattern`. |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails, a container restarts, or a member pod is lost (see [Recreation Triggers](#recreation-triggers)). Default for `leaderWorkerPattern` and `customComponentsPattern`. |
 
 ## Configuration
 
@@ -84,6 +84,52 @@ spec:
               - name: monitor
                 image: nginx:latest
 ```
+
+## Recreation Triggers
+
+With `RecreateRoleInstanceOnPodRestart`, all pods of a role instance are deleted and recreated together when one of its member pods:
+
+- enters the `Failed` phase, for example when the kubelet evicts it under node pressure;
+- has a container restart (`restartCount > 0`), except restarts caused by an in-place update;
+- is being deleted: taint-based eviction after a node failure, preemption, a drain, or a manual `kubectl delete pod`;
+- is missing after the role instance had been Ready on its current spec, for example after a force deletion.
+
+A member pod is a pod whose ordinal is below its component's `size`, so pods removed by scale-in never trigger a recreation.
+
+> **Note**: Deleting a single member pod rebuilds the whole role instance, the same as `RecreateGroupOnPodRestart` in
+> LeaderWorkerSet. Use `type: None` if pods should be replaced one at a time.
+
+A recreation is only triggered once the role instance has been Ready with all pods on its current spec, so it is not triggered
+during initial creation, scale-up, or a rolling or in-place update. After that, the role instance stays eligible even if it
+becomes NotReady, which is usually the first visible effect of the fault that needs handling. Any spec change requires
+the role instance to become Ready again before a recreation can be triggered.
+
+### Node Failures
+
+When a node becomes unreachable, its pods are first marked NotReady and then evicted once the
+`node.kubernetes.io/unreachable` / `node.kubernetes.io/not-ready` toleration expires (300 seconds by default). The eviction
+triggers the recreation, so the surviving members leave the old process group right away. The evicted pod stays
+`Terminating` until the node comes back, the Node object is deleted, or the `node.kubernetes.io/out-of-service` taint is
+applied, and its replacement is created after that.
+
+To react faster, lower `tolerationSeconds` for these taints in the pod template:
+
+```yaml
+template:
+  spec:
+    tolerations:
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 60
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 60
+```
+
+A member that hangs without crashing or being deleted, for example blocked in a collective, does not trigger a recreation by
+itself. A liveness probe that exercises the serving path turns such a hang into a container restart, which does.
 
 ## Exponential Backoff
 
@@ -169,13 +215,13 @@ spec:
 ```
 
 When this annotation is set to "Ignore" on a component's pod template:
-- Pod failure and container restart events from this component will NOT trigger the role's restart policy
+- Pod failure, container restart, and pod deletion events from this component will NOT trigger the role's restart policy
 - The restart policy (RecreateRoleInstanceOnPodRestart) remains unaffected for other components
 - Only pods from components WITHOUT this annotation (or with annotation set to "Inherit") will trigger the restart policy
 
 ## Use Cases
 
-- **RecreateRoleInstanceOnPodRestart**: Worker roles where pod failure or container restart should recreate the affected instance.
+- **RecreateRoleInstanceOnPodRestart**: Worker roles where pod failure, container restart, or the loss of a member pod should recreate the affected instance.
 - **None**: Monitoring/logging sidecars that don't affect the main workload. Failed pods are replaced individually.
 - **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components within a multi-component instance whose pod failures should not trigger the role's restart policy for the entire instance.
 

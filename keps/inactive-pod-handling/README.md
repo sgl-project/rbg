@@ -358,6 +358,8 @@ func (c *realControl) Scale(...) (bool, error) {
 | Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance |
 | Container restart + `None` | None (K8s default) | Let container restart |
 | Container restart + `RecreateRoleInstanceOnPodRestart` | LWS Controller | Recreate RoleInstance |
+| Member Pod deleted or missing + `None` | RoleInstance Controller | Create replacement |
+| Member Pod deleted or missing + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance (see Implementation History, 2026-11-02) |
 
 ### Test Plan
 
@@ -453,6 +455,14 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
   - Removed `RecreateRBGOnPodRestart` references (deprecated by upstream #340)
   - Simplified handling matrix to two policies: None and RecreateRoleInstanceOnPodRestart
   - Updated test plan to reference actual existing tests
+
+- 2026-11-02: Member loss after a node failure (#542)
+  - `RecreateRoleInstanceOnPodRestart` also recreates the Instance when a member Pod is being deleted (eviction,
+    preemption, drain or a manual delete), or is missing after the Instance was Ready at its current generation.
+    Such a member is otherwise replaced on its own, with `RestartCount == 0`, and cannot rejoin the surviving members.
+  - The `wasInstanceReady` gate no longer depends only on the current `RoleInstanceReady` condition, which the fault
+    itself usually turns False first. `status.lastReadyGeneration` records the generation at which the Instance was last
+    Ready with all Pods on the update revision; a spec change still closes the gate until the Instance is Ready again.
 
 ## Key Files Changed
 

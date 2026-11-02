@@ -141,6 +141,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		InPlaceUpdateContainerBaselines: deepCopyBaselines(instance.Status.InPlaceUpdateContainerBaselines),
 		RestartCount:                    instance.Status.RestartCount,
 		LastRestartTime:                 instance.Status.LastRestartTime,
+		LastReadyGeneration:             instance.Status.LastReadyGeneration,
 	}
 	*newStatus.CollisionCount = collisionCount
 

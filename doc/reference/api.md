@@ -124,7 +124,7 @@ Reusable pod template at RBG level:
 | Value | Description |
 |-------|-------------|
 | `None` | No automatic restart |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance when one of its pods fails, restarts a container, or is lost (evicted, deleted, or missing) |
 
 ## ScalingAdapter
 
