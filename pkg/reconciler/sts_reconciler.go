@@ -375,7 +375,7 @@ func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv
 
 	highestRevision, err := r.getHighestRevision(ctx, sts, podSelector)
 	if err != nil {
-		logger.Error(fmt.Errorf("get sts highest controller revision error"), "sts", sts.Name)
+		logger.Error(err, "failed to get highest controller revision", "sts", sts.Name)
 		return nil, err
 	}
 	if highestRevision == nil {
