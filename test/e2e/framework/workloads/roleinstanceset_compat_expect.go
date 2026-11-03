@@ -91,7 +91,43 @@ func (s *RoleInstanceSetCompatChecker) ExpectWorkloadEqual(
 	if roleStatus.ReadyReplicas != desired {
 		return fmt.Errorf("role %s not ready: readyReplicas=%d, desired=%d", role.Name, roleStatus.ReadyReplicas, desired)
 	}
-	return nil
+	return s.expectEngineRuntimeContainer(rbg, role)
+}
+
+// expectEngineRuntimeContainer preserves the assertion the StatefulSet and
+// LeaderWorkerSet checkers carried: a role that requests an engine runtime
+// must get the profile-named container injected into the workload template.
+// For leader-worker roles the reconciler injects it into the leader component
+// only, so that is the template checked here.
+func (s *RoleInstanceSetCompatChecker) expectEngineRuntimeContainer(
+	rbg *v1alpha1.RoleBasedGroup, role v1alpha1.RoleSpec,
+) error {
+	if len(role.EngineRuntimes) == 0 {
+		return nil
+	}
+
+	obj, err := s.get(rbg, role)
+	if err != nil {
+		return fmt.Errorf("failed to get RoleInstanceSet: %w", err)
+	}
+	componentName := role.Name
+	if role.LeaderWorkerSet != nil {
+		componentName = string(constants.LeaderComponentType)
+	}
+	component, err := findRoleInstanceComponent(obj, componentName)
+	if err != nil {
+		return err
+	}
+	profileName := role.EngineRuntimes[0].ProfileName
+	for _, container := range component.Template.Spec.Containers {
+		if container.Name == profileName {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"component %s of RoleInstanceSet %s has no engine runtime container %s",
+		componentName, obj.Name, profileName,
+	)
 }
 
 func (s *RoleInstanceSetCompatChecker) ExpectLabelContains(

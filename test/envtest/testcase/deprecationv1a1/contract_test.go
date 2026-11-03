@@ -62,56 +62,73 @@ var _ = Describe("v1alpha1 deprecation contract", Ordered, func() {
 				Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
 			},
 		}
-		warningOnlyObjects := []client.Object{
-			&workloadsv1alpha1.InstanceSet{
-				ObjectMeta: metav1.ObjectMeta{Name: "contract-instanceset", Namespace: testutil.ContractNamespace},
-				Spec: workloadsv1alpha1.InstanceSetSpec{
-					Replicas: ptr.To(int32(1)),
-					InstanceTemplate: workloadsv1alpha1.InstanceTemplate{
-						InstanceSpec: workloadsv1alpha1.InstanceSpec{
-							Components: []workloadsv1alpha1.InstanceComponent{{
-								Name:     "worker",
-								Size:     ptr.To(int32(1)),
-								Template: basicTemplate,
-							}},
+		// The kind is tracked separately: the objects are plain struct
+		// literals without TypeMeta, so GetObjectKind would render empty in a
+		// failure message.
+		warningOnlyObjects := []struct {
+			kind string
+			obj  client.Object
+		}{
+			{
+				kind: "InstanceSet",
+				obj: &workloadsv1alpha1.InstanceSet{
+					ObjectMeta: metav1.ObjectMeta{Name: "contract-instanceset", Namespace: testutil.ContractNamespace},
+					Spec: workloadsv1alpha1.InstanceSetSpec{
+						Replicas: ptr.To(int32(1)),
+						InstanceTemplate: workloadsv1alpha1.InstanceTemplate{
+							InstanceSpec: workloadsv1alpha1.InstanceSpec{
+								Components: []workloadsv1alpha1.InstanceComponent{{
+									Name:     "worker",
+									Size:     ptr.To(int32(1)),
+									Template: basicTemplate,
+								}},
+							},
 						},
 					},
 				},
 			},
-			&workloadsv1alpha1.Instance{
-				ObjectMeta: metav1.ObjectMeta{Name: "contract-instance", Namespace: testutil.ContractNamespace},
-				Spec: workloadsv1alpha1.InstanceSpec{
-					Components: []workloadsv1alpha1.InstanceComponent{{
-						Name:     "worker",
-						Size:     ptr.To(int32(1)),
-						Template: basicTemplate,
-					}},
-				},
-			},
-			&workloadsv1alpha1.RoleBasedGroupScalingAdapter{
-				ObjectMeta: metav1.ObjectMeta{Name: "contract-adapter", Namespace: testutil.ContractNamespace},
-				Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-					Replicas: ptr.To(int32(1)),
-					ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
-						Name: "contract-rbg",
-						Role: "worker",
+			{
+				kind: "Instance",
+				obj: &workloadsv1alpha1.Instance{
+					ObjectMeta: metav1.ObjectMeta{Name: "contract-instance", Namespace: testutil.ContractNamespace},
+					Spec: workloadsv1alpha1.InstanceSpec{
+						Components: []workloadsv1alpha1.InstanceComponent{{
+							Name:     "worker",
+							Size:     ptr.To(int32(1)),
+							Template: basicTemplate,
+						}},
 					},
 				},
 			},
-			&workloadsv1alpha1.ClusterEngineRuntimeProfile{
-				ObjectMeta: metav1.ObjectMeta{Name: "contract-runtime-profile"},
-				Spec: workloadsv1alpha1.ClusterEngineRuntimeProfileSpec{
-					UpdateStrategy: "NoUpdate",
+			{
+				kind: "RoleBasedGroupScalingAdapter",
+				obj: &workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+					ObjectMeta: metav1.ObjectMeta{Name: "contract-adapter", Namespace: testutil.ContractNamespace},
+					Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
+						Replicas: ptr.To(int32(1)),
+						ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+							Name: "contract-rbg",
+							Role: "worker",
+						},
+					},
+				},
+			},
+			{
+				kind: "ClusterEngineRuntimeProfile",
+				obj: &workloadsv1alpha1.ClusterEngineRuntimeProfile{
+					ObjectMeta: metav1.ObjectMeta{Name: "contract-runtime-profile"},
+					Spec: workloadsv1alpha1.ClusterEngineRuntimeProfileSpec{
+						UpdateStrategy: "NoUpdate",
+					},
 				},
 			},
 		}
 
-		for _, obj := range warningOnlyObjects {
+		for _, entry := range warningOnlyObjects {
 			testutil.ContractWarnings.Reset()
-			Expect(testutil.K8sClient.Create(testutil.Ctx, obj)).To(Succeed())
+			Expect(testutil.K8sClient.Create(testutil.Ctx, entry.obj)).To(Succeed())
 			Expect(testutil.ContractWarnings.Containing("v1alpha1 is deprecated")).NotTo(BeEmpty(),
-				"warning-only kind %s must return the on-the-wire deprecation warning",
-				obj.GetObjectKind().GroupVersionKind().Kind)
+				"warning-only kind %s must return the on-the-wire deprecation warning", entry.kind)
 		}
 	})
 

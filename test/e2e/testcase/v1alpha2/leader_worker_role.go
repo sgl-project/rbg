@@ -34,7 +34,7 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
-func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
+func RunLeaderWorkerRoleInstanceSetTestCases(f *framework.Framework) {
 	ginkgo.It("create leader-worker role with engine runtime", ginkgo.Label("smoke", "workload"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
@@ -71,7 +71,7 @@ func RunLeaderWorkerSetWorkloadTestCases(f *framework.Framework) {
 		f.ExpectWorkloadV2PodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
 	})
 
-	ginkgo.It("lws with rollingUpdate", ginkgo.Label("workload", "update", "rollout"), func() {
+	ginkgo.It("leader-worker RoleInstanceSet role with rollingUpdate", ginkgo.Label("workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildLeaderWorkerRole("role-1").

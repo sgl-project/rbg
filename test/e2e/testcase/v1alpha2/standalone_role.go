@@ -26,8 +26,8 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
-func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
-	ginkgo.It("update standalone role replicas & template (stateful)", ginkgo.Label("smoke", "workload", "update", "rollout"), func() {
+func RunStandaloneRoleInstanceSetTestCases(f *framework.Framework) {
+	ginkgo.It("update standalone role replicas & template", ginkgo.Label("smoke", "workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole("role-1").Obj(),
 		}).Obj()
@@ -37,7 +37,6 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
 		f.ExpectRbgV2Equal(rbg)
 
-		// update
 		updateLabel := map[string]string{"update-label": "new"}
 		updateRbgV2(f, rbg, func(rbg *workloadsv1alpha2.RoleBasedGroup) {
 			rbg.Spec.Roles[0].Replicas = ptr.To(*rbg.Spec.Roles[0].Replicas + 1)
@@ -49,7 +48,7 @@ func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
 	})
 
 	//nolint:dupl
-	ginkgo.It("standalone role with rollingUpdate (stateful)", ginkgo.Label("workload", "update", "rollout"), func() {
+	ginkgo.It("standalone role with rollingUpdate", ginkgo.Label("workload", "update", "rollout"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
 			[]workloadsv1alpha2.RoleSpec{
 				wrappersv2.BuildStandaloneRole("role-1").
