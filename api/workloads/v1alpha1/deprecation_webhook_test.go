@@ -137,14 +137,16 @@ func TestDeprecatedWorkloadValidatorValidateUpdateTrustsAdmissionOldObject(t *te
 		require.NoError(t, err)
 	})
 
-	t.Run("switching between deprecated types stays grandfathered by role name", func(t *testing.T) {
-		// Pin the compatibility semantics: an existing role may switch between
-		// deprecated workload types while migration is enabled. Renaming the role
-		// (or introducing a new one) is the new use that gets rejected.
+	t.Run("switching between deprecated types is a new use", func(t *testing.T) {
+		// Pin the type-exact compatibility semantics: an existing role keeps its
+		// own deprecated workload type, but switching to another deprecated type
+		// provisions a new deprecated workload and is rejected. Migrate the role
+		// to RoleInstanceSet instead.
 		switchedRole := oldRole.DeepCopy()
 		switchedRole.Spec.Roles[0].Workload = WorkloadSpec{APIVersion: "apps/v1", Kind: "Deployment"}
 		_, err := validator.ValidateUpdate(context.Background(), oldRole, switchedRole)
-		require.NoError(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
 	})
 
 	t.Run("a renamed role is a new use", func(t *testing.T) {

@@ -317,9 +317,13 @@ func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error
 // RoleBasedGroupSet. Returns an aggregated error listing all offending roles,
 // suffixed with deprecatedWorkloadTypeCompatHint.
 //
-// Existing roles are exempt so they can continue to reconcile while users migrate
-// them one at a time while the compatibility flag is true. When the flag is false,
-// the strict validator above rejects every remaining use.
+// An existing role keeps its exact deprecated workload type: the exemption is
+// keyed on both the role name and the type. Switching between deprecated types
+// is a new use -- the reconciler is chosen per type, so a switch provisions a
+// brand-new Deployment or LeaderWorkerSet (and, for LWS, a new dependency on
+// the LWS CRD) while the old workload is deleted. That grows deprecated usage
+// during a window meant to stop it. Migrate the role to RoleInstanceSet instead.
+// When the flag is false, the strict validator above rejects every remaining use.
 func validateNoNewDeprecatedWorkloadTypes(fieldPath string, roles, oldRoles []RoleSpec) error {
 	oldWorkloadTypes := make(map[string]string, len(oldRoles))
 	for i := range oldRoles {
@@ -333,7 +337,7 @@ func validateNoNewDeprecatedWorkloadTypes(fieldPath string, roles, oldRoles []Ro
 		if !isDeprecatedWorkloadType(wt) {
 			continue
 		}
-		if oldType, existed := oldWorkloadTypes[role.Name]; !existed || !isDeprecatedWorkloadType(oldType) {
+		if oldType, existed := oldWorkloadTypes[role.Name]; !existed || oldType != wt {
 			allErrs = append(allErrs, fmt.Errorf(
 				"%s[%d] (role %q): workload type %q is deprecated; new uses are not accepted",
 				fieldPath, i, role.Name, wt,

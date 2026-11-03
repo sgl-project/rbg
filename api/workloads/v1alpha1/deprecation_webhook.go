@@ -140,7 +140,11 @@ func validateV1alpha1DeprecatedRoles(
 			continue
 		}
 		if allowExisting {
-			if oldType, existed := oldWorkloadTypes[role.Name]; existed && isDeprecatedV1alpha1WorkloadType(oldType) {
+			// Type-exact grandfathering, matching the v1alpha2 validator: an
+			// existing role keeps its own deprecated type, but switching between
+			// deprecated types provisions a new deprecated workload and counts
+			// as a new use.
+			if oldType, existed := oldWorkloadTypes[role.Name]; existed && oldType == workloadType {
 				continue
 			}
 			errs = append(errs, fmt.Errorf(

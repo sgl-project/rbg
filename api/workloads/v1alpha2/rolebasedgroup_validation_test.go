@@ -939,3 +939,49 @@ func TestRoleBasedGroupValidator_ValidateCreate_PrefersLiveParentOverCache(t *te
 		require.NoError(t, err)
 	})
 }
+
+// TestRoleBasedGroupValidator_ValidateUpdate_TypeExactGrandfathering pins the
+// compatibility-mode semantics on the v1alpha2 path: an existing role keeps its
+// own deprecated workload type, but switching between deprecated types is a new
+// use -- the reconciler is chosen per type, so a switch provisions a new
+// deprecated workload while the old one is deleted.
+func TestRoleBasedGroupValidator_ValidateUpdate_TypeExactGrandfathering(t *testing.T) {
+	deprecatedRole := func(kind string) RoleSpec {
+		return RoleSpec{
+			Name:        "worker",
+			Replicas:    ptr.To(int32(1)),
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: "apps/v1/" + kind},
+		}
+	}
+	oldRBG := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{deprecatedRole("StatefulSet")}},
+	}
+	v := &RoleBasedGroupValidator{
+		Client:                        newFakeValidatorClient(t),
+		EnableDeprecatedWorkloadTypes: true,
+	}
+
+	t.Run("same deprecated type stays grandfathered", func(t *testing.T) {
+		newRBG := oldRBG.DeepCopy()
+		newRBG.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+		require.NoError(t, err)
+	})
+
+	t.Run("switching StatefulSet to Deployment is a new use", func(t *testing.T) {
+		newRBG := oldRBG.DeepCopy()
+		newRBG.Spec.Roles[0].Annotations[constants.RoleWorkloadTypeAnnotationKey] = constants.DeploymentWorkloadType
+		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("switching StatefulSet to LeaderWorkerSet is a new use", func(t *testing.T) {
+		newRBG := oldRBG.DeepCopy()
+		newRBG.Spec.Roles[0].Annotations[constants.RoleWorkloadTypeAnnotationKey] = constants.LeaderWorkerSetWorkloadType
+		_, err := v.ValidateUpdate(context.Background(), oldRBG, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+}
