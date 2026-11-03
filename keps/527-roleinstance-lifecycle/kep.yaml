@@ -1,16 +1,16 @@
 title: RoleInstance Lifecycle Hooks
-# 正式提交时替换为关联 issue 的编号，并同步修改目录名和 README 标题。
 kep-number: 527
 authors:
   - TBD
 status: provisional
 creation-date: 2026-10-26
-# 作者、评审者和批准者在提交与评审时确认。
 reviewers: []
 approvers: []
 see-also:
   - /keps/30-instanceset
   - /keps/502-workload-status-model
-# alpha 为拟议成熟度，不表示已经实现或纳入发布计划。
 stage: alpha
-# 目标版本、feature gate、启停承诺及 metrics 待具体设计确认后补充。
+feature-gates: []
+# Segment is data-driven: it activates only when a policy rule carries segment.
+# Safe disablement removes the rule or field; existing labels are inert.
+disable-supported: true
