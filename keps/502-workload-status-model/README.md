@@ -67,7 +67,7 @@ The current status model has the following limitations:
 ### Goals
 
 1. Define the relationship between lifecycle, readiness, progress toward the target, and observation freshness.
-2. Define how lower-level phases and recovery facts trigger RBG phase transitions, and how operations across roles are summarized.
+2. Define how lower-level phases, conditions, and recovery facts trigger RBG phase transitions, and how operations across roles are summarized.
 3. Define condition ownership, reasons, transition timestamps, and compatibility migration rules.
 4. Preserve readiness gates, availability timing, and safeguards for restarts and rolling updates.
 
@@ -208,7 +208,7 @@ Child readiness is a transition condition, not an invariant required to remain R
 
 ### RoleBasedGroup
 
-RBG adds `status.phase`, with transitions based on the current target, lower-level phases, and recovery facts, and uses Accepted / Progressing / Ready conditions.
+RBG adds `status.phase`, with transitions based on the current target, lower-level phases, conditions, and recovery facts, and uses Accepted / Progressing / Ready conditions.
 In the example below, all roles use RIS. Prefill is scaling up and decode is updating; decode has a target of 3 replicas, of which 2 are ready.
 
 ```yaml
@@ -355,7 +355,7 @@ Completion conditions are listed below. Return to Running only after all relevan
 
 Completion checks retain readiness gate and minReadySeconds rules rather than using revision equality as a substitute. Partition may retain older-revision instances; completion is evaluated over the update scope required by the current policy.
 
-RIS Progressing follows RBG rules for progress, pauses, and insufficient observations, scoped to that instance set. Activity reasons may include `ScalingUp`, `ScalingDown`, and `RollingUpdate`; current blockers use the RIS reasons in the reason-family table, and child readiness uses `InstancesNotReady`. RIS maps RI reason families to these canonical reasons without parsing RI messages.
+RIS Progressing follows RBG rules for progress, pauses, and insufficient observations, scoped to that instance set. Activity reasons are `Creating`, `ScalingUp`, `ScalingDown`, `RollingUpdate`, and `Recovering`; current blockers use the RIS reasons in the reason-family table, and child readiness uses `InstancesNotReady`. RIS maps RI reason families to these canonical reasons without parsing RI messages.
 Ready requires replica counts to meet the target and all RIs to be ready, retaining existing readyPolicy and readiness gate rules.
 RIS retains replicas, readyReplicas, availableReplicas, currentReplicas, updatedReplicas, updatedReadyReplicas,
 expectedUpdatedReplicas, currentRevision, updateRevision, labelSelector, collisionCount, and rolloutReplacementState. The effective partition target must be consistent with expectedUpdatedReplicas.
