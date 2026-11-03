@@ -205,7 +205,9 @@ local instance is not sufficient evidence that it is safe to exit.
 | --- | --- |
 | Repeated marker writes | Write on phase entry only |
 | Metadata overwrites markers | Exclude markers from declarative labels |
-| Stale marker cleanup | Consumers coordinate; no generations |
+| Stale marker cleanup within one hook | Consumers coordinate; no generations |
+| Marker keys reused by different hooks | Reject in admission |
+| Handler key overwrites controller state | Reject reserved keys in admission |
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
 | Ready/postReady circular wait | Exclude postReady from RI Ready |
 | GC deletes Pod early | Add finalizer; verify container stop timing |
@@ -322,6 +324,13 @@ labels on a pre-operation hook represent multiple coordination conditions;
 the controller proceeds only after none of them match. Ordinary metadata
 synchronization must not modify runtime markers.
 
+Marker keys are scoped to a hook point. Admission must reject a key used by
+more than one configured hook, including `postReady` and `preDelete`, because
+delayed cancellation cleanup from one hook can otherwise remove the marker
+belonging to another hook. Handler keys must also be rejected when they equal
+`lifecycle-state` or another controller-managed RI label key; hook marker keys
+are runtime labels, but they must not collide with controller-reserved state.
+
 Changing `labelsHandler` while an operation is in flight has no migration or
 compatibility support. The controller evaluates the latest effective
 configuration on the RI. For example, after changing markerA to markerB, it
@@ -387,11 +396,12 @@ of marker consumers. The controller evaluates marker presence only through
 `labelsHandler`. It does not identify consumers or manage consumer leader
 election, membership aggregation, or result arbitration.
 
-Application owners decide how multiple consumers coordinate and when a shared
-marker is safe to remove. Removing a shared marker too early is a consumer
-coordination problem and does not change the RBG protocol. Multiple labels
-still represent independent matching conditions: a pre-operation hook waits
-until none of them match.
+Application owners decide how multiple consumers coordinate and when a marker
+shared within one hook is safe to remove. Removing such a marker too early is
+a consumer coordination problem and does not change the RBG protocol. Marker
+keys still may not be shared between hook points. Multiple labels represent
+independent matching conditions: a pre-operation hook waits until none of them
+match.
 
 ### Update Interaction Flow
 
@@ -552,6 +562,16 @@ finalizer only when the RI is stable and has no unfinished deletion.
 Disabling or modifying `preDelete` during deletion is an in-flight
 configuration change, not a supported rollback or hook-skip mechanism.
 
+Removing a hook from the effective configuration is a supported disable only
+at a stable boundary. Once the RI has no unfinished lifecycle operation, the
+controller stops triggering that hook, removes stale runtime labels owned by
+the protocol, and, for `preDelete`, removes the RBG-owned Pod finalizers.
+Removing a hook while its marker or state is in flight is an in-flight
+configuration change. It must not be interpreted as marker release, operation
+completion, finalizer release, or permission to skip the hook; wait for the
+operation to finish under a compatible controller or restore a compatible
+configuration before disabling it.
+
 When Update or Recovery replaces a Pod, the controller removes the old Pod's
 finalizer after the corresponding pre-operation hook is released, then
 performs the internal deletion without triggering `preDelete`. New Pods are
@@ -603,7 +623,7 @@ The operation rules are:
 
 | Current operation | New operation | Rule |
 | --- | --- | --- |
-| `creating` | Update, Recovery | Ignore; continue Create only |
+| `creating` | Update, Recovery | Fold target into Create; no separate hooks |
 | `updating` | Update | Merge; preUpdate only from non-updating |
 | `updating` | Recovery | Fold into Update; no preRecover |
 | `recovering` | Recovery | Continue; do not re-enter or repeat preRecover |
@@ -611,6 +631,11 @@ The operation rules are:
 | Any non-terminating phase | Delete | Preempt with terminating and preDelete |
 | `terminating` | Update, Recovery | Skip at reconcile start |
 | Background postReady | Update, Recovery, Delete | Start; executor uses state |
+
+For `creating`, a target change is folded into Create convergence rather than
+ignored. A corrected initial image may replace a member that has not reached
+workload Ready, but the controller does not enter separate Update or Recovery
+operations and does not invoke their hooks.
 
 `recovering` means that the current Recovery has not yet completed
 successfully. Repeated reconciliations or another observation of the same
@@ -635,9 +660,10 @@ application iterations: delayed cleanup from the first iteration may remove
 the same marker just written for the second, causing the controller to treat
 the second `postReady` as complete prematurely.
 
-This design explicitly accepts that shared-marker risk. Consumers must
-coordinate cleanup timing and use idempotency and application-side fencing
-for delayed external side effects. RBG provides no generation isolation.
+This design explicitly accepts that shared-marker risk within `postReady`.
+Consumers must coordinate cleanup timing and use idempotency and
+application-side fencing for delayed external side effects. RBG provides no
+generation isolation.
 
 ### Permissions and Field Ownership
 
@@ -689,10 +715,12 @@ nor enabling the feature on an existing `running` RI replays the hook.
 
 The continuous-operation rules are also settled. Update merges subsequent
 Update and Recovery targets; Update can interrupt Recovery; Delete preempts
-other operations. `creating` ignores Update and Recovery, `recovering` does
-not re-enter Recovery, and `terminating` skips Update and Recovery at the
-start of reconciliation. `postReady` blocks no subsequent operation and adds
-no operation generation.
+other operations. `creating` folds target changes into Create convergence,
+including correcting a failed initial image, but does not enter separate
+Update or Recovery operations or invoke their hooks; `recovering` does not
+re-enter Recovery; and `terminating` skips Update and Recovery at the start of
+reconciliation. `postReady` blocks no subsequent operation and adds no
+operation generation.
 
 The consumer boundary is settled: RBG evaluates only marker presence and is
 agnostic to consumer identity, count, election, and aggregation. The
@@ -754,13 +782,16 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Update merges while `updating` without repeating preUpdate, and Recovery
   folds into the current Update. Update while `recovering` enters preUpdate;
   repeated Recovery neither re-enters the phase nor repeats preRecover.
-- `creating` ignores Update and Recovery; `terminating` skips both at the
+- `creating` folds Update and Recovery target changes into Create
+  convergence, allowing a corrected image to replace a not-yet-Ready member
+  without invoking preUpdate or preRecover; `terminating` skips both at the
   start of reconciliation.
 - Delete preempts Update, Recovery, and background postReady; new operations
   do not wait for an old `postReady`.
-- Multiple marker conditions, admission rejection of empty handlers, restart
-  recovery, behavior with no configured hooks, and controller agnosticism to
-  consumer identity.
+- Multiple marker conditions, admission rejection of empty handlers and
+  illegal marker keys (keys shared between hooks or colliding with
+  controller-managed labels), restart recovery, behavior with no configured
+  hooks, and controller agnosticism to consumer identity.
 - `lifecycle-state` and marker writes occur together. After a pre-operation
   marker is removed, the controller transitions to the actual operation
   state, and a restart does not repeat the released hook. `postReady` enters
@@ -772,6 +803,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Repeated Ready transitions idempotently write the same `postReady` marker
   without generations. Delayed cleanup can remove a newer marker, and
   consumers own coordination of that risk.
+- Disabling a hook after an RI is stable prevents future invocations, while
+  deleting the configuration during an unfinished hook is not treated as
+  marker release or operation completion.
 
 #### Integration Tests
 
@@ -795,6 +829,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Update and Recovery remove the old Pod finalizer during internal
   replacement without executing `preDelete`, and new Pods receive the
   finalizer again.
+- Stable hook disablement removes stale runtime labels and all RBG-owned
+  `preDelete` finalizers; disablement during an unfinished operation does not
+  skip the marker, release the finalizer, or advance the phase.
 
 #### E2E Tests
 
@@ -860,11 +897,14 @@ change its trigger conditions, blocking behavior, marker direction, or
 operation boundaries. New lifecycle behavior requires a new hook rather than
 reusing an existing name with different semantics.
 
-Do not downgrade directly while an operation is unfinished. Before rollback,
-wait for operations to complete or hand them over to a compatible controller
-that understands the protocol. A downgrade could otherwise ignore phases,
-bypass hooks, or stall deletion. Clearing labels, gates, or finalizers is not
-a general rollback procedure.
+Before an incompatible downgrade, disable the hooks while a controller that
+understands the protocol still owns the RIs. Wait until every RI is stable,
+has no `lifecycle-state` or marker, and has no RBG-owned `preDelete` finalizer
+remaining. Verify those conditions before replacing the controller; otherwise,
+retain a compatible controller to finish operations and remove finalizers. Do
+not downgrade directly while an operation is unfinished. A downgrade could
+otherwise ignore phases, bypass hooks, or stall deletion. Clearing labels,
+gates, or finalizers manually is not a general rollback procedure.
 
 ### Version Skew Strategy
 
@@ -893,6 +933,12 @@ skip an unfinished phase. A version that does not understand the current
 protocol must not take over an unfinished operation. `preDelete` requires an
 executor that is available before application Pod deletion and validation of
 the barrier across all supported deletion paths.
+
+For an incompatible rollback, disable the hook configuration before removing
+the compatible controller. The disablement is complete only after the RIs are
+stable and the compatible controller has removed all `preDelete` Pod
+finalizers. A feature-gate change or configuration deletion is not a substitute
+for that convergence.
 
 ### Rollout, Upgrade, and Rollback Planning
 
