@@ -456,13 +456,16 @@ present, are alpha criteria.
 - 2026-10-31: Revised after review. The design is now a single informer with a transform stub,
   behind `--pod-cache-scope`; backfill moved to an admin CLI; the marker stays out of workload
   templates. The union design moved to [Alternatives](#alternatives), and both designs were measured
-  with the same harness (`test/podcacheunion`).
+  with the same harness
+  ([`test/podcacheunion`](https://github.com/sgl-project/rbg/tree/d7c487138ee89b746c4b92a88b6704fa8b1eb25f/test/podcacheunion)
+  on the `kep-284-e2e-test` branch).
 - 2026-11-01: Alpha defaults set: `--pod-cache-scope=all`, becoming `filtered` at beta, and
   `WatchListClient` off. The stub keeps labels and ownerReferences, and the ownerReference admission
   condition covers any reference to an RBG object.
 - 2026-11-01: Validated the selected watch wrapper on macOS and an offline Linux container;
   240 cache processes passed. Updated measured ranges and platform-specific CPU results, and
   changed proposed WatchList enablement to an explicit effective-gate setting.
+- 2026-11-03: Moved the prototype harness to the `kep-284-e2e-test` branch (#545).
 - TBD: implementation PR.
 
 ## Drawbacks

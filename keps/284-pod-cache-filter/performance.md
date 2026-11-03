@@ -1,6 +1,6 @@
 # KEP-284: Pod cache measurements
 
-[KEP](README.md) · [Harness and commands](../../test/podcacheunion/README.md)
+[KEP](README.md) · [Harness and commands](https://github.com/sgl-project/rbg/blob/d7c487138ee89b746c4b92a88b6704fa8b1eb25f/test/podcacheunion/README.md)
 
 Measured on **2026-11-01**, with the same prototype sources on macOS and a local Linux container.
 All 60 comparison rounds and 240 cache processes passed. Source hashes, summary values,
@@ -170,8 +170,9 @@ remain `all`, with WatchListClient independently off.
 
 ## Reproduction and provenance
 
-Run the [harness commands](../../test/podcacheunion/README.md) with a fresh output directory
-outside the checkout:
+The harness lives on the `kep-284-e2e-test` branch. From a checkout of that branch, run the
+[harness commands](https://github.com/sgl-project/rbg/blob/d7c487138ee89b746c4b92a88b6704fa8b1eb25f/test/podcacheunion/README.md)
+with a fresh output directory outside the checkout:
 
 ```sh
 GOMAXPROCS=4 bash test/podcacheunion/scripts/transform-campaign.sh /path/to/new-campaign
@@ -182,7 +183,9 @@ and streaming enabled, with the store-only transform as the streaming control. S
 platform/campaign separately; the summary groups by shape and mode and does not label platforms.
 
 - The recorded campaign used base main `4a0765f78b0930114a4b73a64433ee8f27c34372` and the
-  prototype in `test/podcacheunion`; environment and resource settings are listed above.
+  prototype now kept in
+  [`test/podcacheunion`](https://github.com/sgl-project/rbg/tree/d7c487138ee89b746c4b92a88b6704fa8b1eb25f/test/podcacheunion)
+  on the `kep-284-e2e-test` branch; environment and resource settings are listed above.
 - Each new campaign writes source/binary SHA-256 values, version information, load averages,
   summaries and per-round raw JSON, CSV and logs to its output directory. These generated files
   stay outside version control. Temporary kubeconfigs stay outside the results and are removed.
