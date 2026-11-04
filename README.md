@@ -90,8 +90,8 @@ their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
 
 | Value | Behaviour |
 |:------|:----------|
-| `true` (default) | Unchanged. Both `v1alpha1` and `v1alpha2` control logic stay active, and all workload types are supported. |
-| `false` | The controller refuses the deprecated workload types outright: no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. |
+| `true` (default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling, while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. Every `v1alpha1` write returns a deprecation warning. |
+| `false` | The final cutoff: the controller refuses the deprecated workload types outright — no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. Set it only after every role has migrated. |
 
 The point of `false` is to let a **brand-new** installation start on `v1alpha2` and stay there, with
 the constraint enforced by the controller rather than by convention. Because that mode leaves the

@@ -89,8 +89,8 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 | 取值 | 行为 |
 |:-----|:-----|
-| `true`（默认） | 与此前完全一致：`v1alpha1` 与 `v1alpha2` 的控制逻辑同时生效，所有 workload 类型均受支持。 |
-| `false` | 控制器直接拒绝已弃用的 workload 类型：不授予相关 RBAC、不 watch 这些资源，校验 webhook 拒绝任何使用了它们的创建与更新请求。 |
+| `true`（默认） | 兼容模式：`v1alpha1` 与 `v1alpha2` 的控制逻辑同时生效。已使用弃用 workload 类型的 role 继续可 reconcile，但**新增使用会被拒绝**（包括在弃用类型之间切换）——请将这些 role 迁移到 `RoleInstanceSet`。每次 `v1alpha1` 写入都会返回弃用警告。 |
+| `false` | 最终切断：控制器直接拒绝已弃用的 workload 类型——不授予相关 RBAC、不 watch 这些资源，校验 webhook 拒绝任何使用了它们的创建与更新请求。仅在所有 role 迁移完成后设置。 |
 
 `false` 的目的是让**全新安装**的用户直接使用 `v1alpha2` 并保持在该版本上，且这一约束由控制器强制执行，
 而非依赖约定。由于该模式下控制器完全无法 reconcile 已弃用的 workload 类型，它仅适用于首次安装。
