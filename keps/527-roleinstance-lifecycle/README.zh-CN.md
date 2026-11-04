@@ -150,7 +150,7 @@ RI 可以在 postReady 尚未完成时进入 `running` 和 Ready；
 | handler key 覆盖 controller 状态 | 准入校验拒绝保留 key |
 | 重试造成重复副作用 | executor 使用可恢复记录或业务幂等去重，不承诺恰好一次 |
 | Ready 与 postReady 相互等待 | postReady 不参与 RI Ready 计算 |
-| preDelete 前 Pod 已被 GC 删除 | 创建时注入 Pod finalizer，并验证实际容器终止时序 |
+| foreground 级联或直接删除 Pod 绕过存活引擎屏障 | 准入拒绝 foreground 传播；直接删除 Pod 归入 Recovery |
 | executor 故障导致长期等待 | 暴露阶段、marker 和 executor 诊断；Alpha 不静默跳过 |
 | metadata 回写权限过宽 | 限定命名空间、资源和身份；字段级限制需要 admission 或受限代理 |
 
@@ -390,7 +390,7 @@ sequenceDiagram
     participant R as RI 对象
     participant P as 业务 Pod
     participant E as Hook executor
-    R-->>C: 观察到 RI 删除意图
+    R-->>C: 保留 finalizer 的 RI 收到删除意图
     C->>R: 同批写入 lifecycle-state=preDelete 和 delete-block=true
     C->>R: 切换 phase=terminating，按配置建立 NotReady 门控
     R-->>E: 观察到 preDelete 且 marker 匹配
@@ -401,34 +401,42 @@ sequenceDiagram
     E->>R: 成功后移除 delete-block
     R-->>C: 所有 preDelete marker 不再匹配
     C->>R: 切换 lifecycle-state=terminating
-    C->>P: 清除 preDelete finalizer
-    C->>P: 删除业务 Pod并完成 RI 删除收尾
+    C->>P: 删除业务 Pod
+    C->>R: 清除保留的 preDelete finalizer并完成 RI 删除收尾
 ```
 
 本提案不包含 postDelete，业务 Pod 删除后的外部清理由其他机制承担。
 删除流程只包括 preDelete 协作、Pod 删除和 RI 最终收尾，executor 不在删除完成后加回 marker。
 
-RI finalizer 只保留 RI 对象，不天然阻止 GC 提前删除依赖 Pod。
-因此，RI 生效配置包含 preDelete 时，controller 必须在创建成员 Pod 时注入 RBG 专属的 preDelete finalizer。
-executor 只清除 RI 上的 delete marker；controller 确认 preDelete 放行后，再清除 Pod finalizer并执行删除。
-这样 executor 不需要额外的 Pod PATCH 权限，finalizer 始终由 controller 管理。
+RI 生效配置包含 preDelete 时，controller 必须确保 RI 在删除完成前带有
+RBG 保留的 preDelete finalizer。executor 只清除 RI 上的 delete marker；
+marker 仍匹配时，controller 不得删除成员 Pod。确认 preDelete 放行后，
+controller 删除成员 Pod、完成 RI 收尾，并移除保留 finalizer。
+本方案不使用逐 Pod finalizer。
 
-存量 RI 启用 preDelete 时，controller 为现有成员 Pod 补充 finalizer。
+默认 background 删除路径上，保留的 RI finalizer 使 owner 对象继续存在，
+Kubernetes background GC 在 owner 仍为 solid 时不会删除 dependent 成员 Pod。
+这就是 preDelete 执行期间 executor 仍能访问存活负载的 invariant；
+controller 仍必须在 marker 放行前避免主动删除成员 Pod。
+
+存量稳定 RI 启用 preDelete 时，controller 为该 RI 补充保留 finalizer。
 仅在 RI 稳定且没有未完成删除操作时，禁用 preDelete 才清理对应 finalizer；
 删除过程中禁用或修改 preDelete 属于在途配置修改，不作为正常回滚或跳过 hook 的方式。
 
 从生效配置中删除 hook，只有在稳定边界上才属于受支持的禁用方式。
 RI 没有未完成 lifecycle 操作后，controller 停止触发该 hook，
-清理协议拥有的遗留运行时 labels；对 preDelete 还要清理 RBG 管理的 Pod finalizer。
+清理协议拥有的遗留运行时 labels；对 preDelete 还要清理 RI 上的保留 finalizer。
 如果 marker 或 state 仍在执行中，此时删除 hook 配置属于在途配置修改，
 不得解释为 marker 放行、操作完成、finalizer 释放或跳过 hook；
 应先由兼容 controller 等待操作完成，或先恢复兼容配置再禁用。
-Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放行后清除待替换 Pod 的 finalizer，
-再执行内部删除，不触发 preDelete；新 Pod 创建时重新按配置注入。
+Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放行后执行内部替换，
+不触发 preDelete；成员 Pod 不需要 lifecycle finalizer。
 
-Pod finalizer 保留的是 Pod API 对象，不能保证容器在 preDelete 完成前持续运行。
-外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，不触发 preDelete。
-需要存活引擎参与的删除协调必须验证 kubelet 实际终止时序，不能仅凭 finalizer 声称提供存活屏障。
+受支持的删除路径是 controller 发起的删除和默认 background 级联。
+对可能到达启用 preDelete RI 的 RBG、RIS 或 RI foreground 删除请求，
+准入必须拒绝；foreground GC 可能在 hook 放行前删除 dependent Pods。
+外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，
+不触发 preDelete，也不提供存活引擎屏障。
 
 ### 执行恢复与并发约束
 
@@ -515,8 +523,8 @@ postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Re
 但不进入独立 Update／Recovery 操作，也不触发对应 hooks；`recovering` 不重复进入 Recovery，
 `terminating` 在 reconcile 开头跳过 Update／Recovery；postReady 不阻塞任何后续操作，不增加操作代次。
 消费者边界已确认：RBG 只判断 marker 是否存在，不关心消费者身份、数量、选主或聚合。
-preDelete 屏障已确认：controller 在创建 Pod 时注入 finalizer，preDelete 放行后清除；
-Update 和 Recovery 内部替换 Pod 时由 controller 单独放行 finalizer，不执行 preDelete。
+preDelete 屏障已确认：controller 在 RI 上保留专属 finalizer，preDelete 放行后再删除成员 Pod 并清除；
+Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需要 lifecycle finalizer。
 上线与回滚边界已确认：先部署 executor和权限再启用，存量 postReady 不因当前 Ready 重放；
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
@@ -524,7 +532,8 @@ Update 和 Recovery 内部替换 Pod 时由 controller 单独放行 finalizer，
 
 1. 新旧 lifecycle 的兼容或隔离。
 2. 授权与诊断细则、版本支持矩阵和存量接管实施流程。
-3. preDelete finalizer 保留 Pod 对象时的实际容器终止时序。
+3. 保留 RI finalizer 时的默认 background GC 行为、
+   foreground 级联删除的准入拒绝，以及 controller 有序删除成员 Pod。
 
 超时预算、人工跳过和不同失败策略作为后续能力讨论。
 
@@ -575,9 +584,10 @@ Update 和 Recovery 内部替换 Pod 时由 controller 单独放行 finalizer，
 - RIS metadata 同步不覆盖运行时 marker，controller 不在同一前置阶段重复写入。
 - 连续更新、旧 postReady 任务迟到、同名 RI 重建及多执行者接管，验证 state 驱动的取消、恢复和幂等清理。
 - preDelete 的 GC 传播、零 Pod 删除，以及新旧 lifecycle 和 Ready 门控兼容性。
-- 创建 Pod 时按配置注入 finalizer，存量启用时补充、禁用时清理，preDelete 放行前不提前清除。
-- Update 和 Recovery 内部替换 Pod 时清除旧 Pod finalizer，不执行 preDelete，新 Pod 重新注入。
-- 稳定禁用 hook 时清理遗留运行时 labels 和全部 RBG 管理的 preDelete finalizer；
+- RI 保留 finalizer 的添加、preDelete 等待期间保持，以及成员 Pod 删除完成后的移除。
+- 默认 background 删除在 preDelete 放行前保留成员 Pod，准入拒绝所有受影响祖先的 foreground 删除。
+- Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
+- 稳定禁用 hook 时清理遗留运行时 labels 和 RI 上的保留 finalizer；
   操作未完成时禁用不得跳过 marker、释放 finalizer 或推进 phase。
 
 #### 端到端测试
@@ -586,7 +596,7 @@ Update 和 Recovery 内部替换 Pod 时由 controller 单独放行 finalizer，
 - Recovery 在实际补齐或重建 Pod 前执行 preRecover，达到工作负载 Ready 后执行统一的 postReady，普通 Ready 抖动不重放。
 - Create 达到工作负载 Ready 后直接执行 postReady，不执行 preRecover。
 - 开关前置 RI Ready 门控，验证 postReady marker 不影响 RI Ready，业务路由按自身流量策略恢复。
-- preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller 清除 finalizer并进入最终删除。
+- preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller 删除成员 Pod并清除保留的 RI finalizer。
 - 连续提交多个 update，验证 updating 中不重复 preUpdate、旧 postReady 不阻塞新操作，以及同名 marker 的幂等处理。
 - 验证 Update 打断 Recovery 和 Delete 抢占其他操作。
 - executor 长期不可用、业务结果未知和双方重启时的前置等待、postReady 后台处理与诊断。
@@ -603,7 +613,7 @@ controller 写入与 executor 清除的 Handler Label 协作及可配置 Ready �
 
 未配置新 hooks 时保持行为不变。存量 RI 启用功能不得因当前 Ready 或历史更新而重放 postReady／preUpdate。
 postReady 由受控操作的状态转换和运行时 labels 触发，不能仅根据存量 RI 当前 Ready 触发。
-启用 preDelete 时，controller 按前述规则为存量成员 Pod 补充 finalizer。
+启用 preDelete 时，controller 按前述规则为存量稳定 RI 补充保留 finalizer。
 
 启用 lifecycle 前，先部署兼容 executor并确认 RBAC 权限，再开放 hook 配置。
 如果先写入前置 marker 而没有可用消费者，对应更新、恢复或删除会持续等待。
@@ -614,8 +624,8 @@ hook 的语义一旦确定，后续版本不得改变其触发条件、阻塞方
 需要不同生命周期逻辑时，应添加新 hook，而不是重用已有 hook 名称并改变含义。
 
 不兼容降级前，应先在理解该协议的 controller 仍管理 RI 时禁用 hooks。
-等待所有 RI 稳定、没有 `lifecycle-state` 和 marker，并且没有残留 RBG 管理的
-preDelete Pod finalizer 后，再替换 controller。
+等待所有 RI 稳定、没有 `lifecycle-state` 和 marker，并且没有残留保留的
+preDelete RI finalizer 后，再替换 controller。
 替换前必须验证上述条件；否则应保留兼容 controller，由其完成操作并清理 finalizer。
 存在未完成操作时不得直接降级；降级可能使 controller 忽略阶段、绕过 hook 或卡住删除。
 不得把手工清除 labels、门控或 finalizers 视为通用回滚方法。
@@ -637,8 +647,9 @@ controller 与 executor 必须约定阶段位置、阶段值和 marker 方向。
 关闭或重新启用功能时，不能重置执行中的 marker或跳过未完成阶段。
 有未完成操作时不得直接回退到不理解当前协议的版本。
 preDelete 需要确认 executor 在业务 Pod 删除前可用，并验证所支持删除路径的屏障。
+foreground 级联删除不是受支持路径；可能到达启用 preDelete RI 时，准入必须拒绝。
 执行不兼容回滚时，应先禁用 hook 配置，再移除兼容 controller。
-只有 RI 已稳定且兼容 controller 已清理全部 preDelete Pod finalizer 后，
+只有 RI 已稳定且兼容 controller 已清理全部保留的 preDelete RI finalizer 后，
 禁用才算完成；feature gate 或配置删除不能替代该收敛过程。
 
 ### 发布、升级与回滚规划
