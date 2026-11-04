@@ -210,14 +210,17 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	roleReplicas := *role.Replicas
 
 	defer func() {
-		// Limit the replicas with less than partition will not be updated.
-		var partition int
-		partition, err = intstr.GetScaledValueFromIntOrPercent(role.RolloutStrategy.RollingUpdate.Partition, int(*role.Replicas), true)
 		if err != nil {
 			return
 		}
+		// Limit the replicas with less than partition will not be updated.
+		partition, partitionErr := intstr.GetScaledValueFromIntOrPercent(
+			role.RolloutStrategy.RollingUpdate.Partition, int(*role.Replicas), true)
+		if partitionErr != nil {
+			err = partitionErr
+			return
+		}
 		stsPartition = max(stsPartition, int32(partition))
-
 	}()
 
 	// Case 1:
@@ -372,7 +375,7 @@ func (r *StatefulSetReconciler) getReplicaStates(ctx context.Context, sts *appsv
 
 	highestRevision, err := r.getHighestRevision(ctx, sts, podSelector)
 	if err != nil {
-		logger.Error(fmt.Errorf("get sts highest controller revision error"), "sts", sts.Name)
+		logger.Error(err, "failed to get highest controller revision", "sts", sts.Name)
 		return nil, err
 	}
 	if highestRevision == nil {
