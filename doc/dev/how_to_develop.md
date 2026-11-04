@@ -64,9 +64,17 @@ When your modification involves the CRD API definition, you need to update the g
 ```shell
 # Generates WebhookConfiguration, CustomResourceDefinition objects.
 $ make manifests
-# Generates code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+# Generates DeepCopy methods, the OpenAPI definitions in pkg/generated/openapi, and the client in client-go/.
 $ make generate
 ```
+
+`make generate` also embeds an OpenAPI schema of the API types in the apply configurations under
+`client-go/applyconfiguration`, which `fake.NewClientset()` and the generated `Extract<Kind>` helpers
+need to handle RBG objects. A new API version package therefore needs the `+k8s:openapi-gen=true`
+marker in its `doc.go` (the tests in `pkg/generated/openapi` fail without it), and a field with
+`patchStrategy`/`patchMergeKey` struct tags needs matching `+patchStrategy`/`+patchMergeKey` comment
+markers, or openapi-gen fails. CI runs `make generate` and fails when the result differs from what is
+committed.
 
 `make manifests` also regenerates the Helm chart's ClusterRole
 (`deploy/helm/rbgs/templates/rbac/clusterrole.yaml`) from `config/rbac/role.yaml`, so a change to

@@ -38,6 +38,4261 @@ func Parser() *typed.Parser {
 var parserOnce sync.Once
 var parser *typed.Parser
 var schemaYAML = typed.YAMLObject(`types:
+- name: io.k8s.api.core.v1.AWSElasticBlockStoreVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: partition
+      type:
+        scalar: numeric
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: volumeID
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.Affinity
+  map:
+    fields:
+    - name: nodeAffinity
+      type:
+        namedType: io.k8s.api.core.v1.NodeAffinity
+    - name: podAffinity
+      type:
+        namedType: io.k8s.api.core.v1.PodAffinity
+    - name: podAntiAffinity
+      type:
+        namedType: io.k8s.api.core.v1.PodAntiAffinity
+- name: io.k8s.api.core.v1.AppArmorProfile
+  map:
+    fields:
+    - name: localhostProfile
+      type:
+        scalar: string
+    - name: type
+      type:
+        scalar: string
+      default: ""
+    unions:
+    - discriminator: type
+      fields:
+      - fieldName: localhostProfile
+        discriminatorValue: LocalhostProfile
+- name: io.k8s.api.core.v1.AzureDiskVolumeSource
+  map:
+    fields:
+    - name: cachingMode
+      type:
+        scalar: string
+      default: ReadWrite
+    - name: diskName
+      type:
+        scalar: string
+      default: ""
+    - name: diskURI
+      type:
+        scalar: string
+      default: ""
+    - name: fsType
+      type:
+        scalar: string
+      default: ext4
+    - name: kind
+      type:
+        scalar: string
+      default: Shared
+    - name: readOnly
+      type:
+        scalar: boolean
+      default: false
+- name: io.k8s.api.core.v1.AzureFileVolumeSource
+  map:
+    fields:
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretName
+      type:
+        scalar: string
+      default: ""
+    - name: shareName
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.CSIVolumeSource
+  map:
+    fields:
+    - name: driver
+      type:
+        scalar: string
+      default: ""
+    - name: fsType
+      type:
+        scalar: string
+    - name: nodePublishSecretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: volumeAttributes
+      type:
+        map:
+          elementType:
+            scalar: string
+- name: io.k8s.api.core.v1.Capabilities
+  map:
+    fields:
+    - name: add
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: drop
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.CephFSVolumeSource
+  map:
+    fields:
+    - name: monitors
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: path
+      type:
+        scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretFile
+      type:
+        scalar: string
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: user
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.CinderVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: volumeID
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.ClusterTrustBundleProjection
+  map:
+    fields:
+    - name: labelSelector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: name
+      type:
+        scalar: string
+    - name: optional
+      type:
+        scalar: boolean
+    - name: path
+      type:
+        scalar: string
+      default: ""
+    - name: signerName
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.ConfigMapEnvSource
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.ConfigMapKeySelector
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.ConfigMapProjection
+  map:
+    fields:
+    - name: items
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.KeyToPath
+          elementRelationship: atomic
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.ConfigMapVolumeSource
+  map:
+    fields:
+    - name: defaultMode
+      type:
+        scalar: numeric
+    - name: items
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.KeyToPath
+          elementRelationship: atomic
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.Container
+  map:
+    fields:
+    - name: args
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: command
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: env
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.EnvVar
+          elementRelationship: associative
+          keys:
+          - name
+    - name: envFrom
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.EnvFromSource
+          elementRelationship: atomic
+    - name: image
+      type:
+        scalar: string
+    - name: imagePullPolicy
+      type:
+        scalar: string
+    - name: lifecycle
+      type:
+        namedType: io.k8s.api.core.v1.Lifecycle
+    - name: livenessProbe
+      type:
+        namedType: io.k8s.api.core.v1.Probe
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: ports
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ContainerPort
+          elementRelationship: associative
+          keys:
+          - containerPort
+          - protocol
+    - name: readinessProbe
+      type:
+        namedType: io.k8s.api.core.v1.Probe
+    - name: resizePolicy
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ContainerResizePolicy
+          elementRelationship: atomic
+    - name: resources
+      type:
+        namedType: io.k8s.api.core.v1.ResourceRequirements
+      default: {}
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: restartPolicyRules
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ContainerRestartRule
+          elementRelationship: atomic
+    - name: securityContext
+      type:
+        namedType: io.k8s.api.core.v1.SecurityContext
+    - name: startupProbe
+      type:
+        namedType: io.k8s.api.core.v1.Probe
+    - name: stdin
+      type:
+        scalar: boolean
+    - name: stdinOnce
+      type:
+        scalar: boolean
+    - name: terminationMessagePath
+      type:
+        scalar: string
+    - name: terminationMessagePolicy
+      type:
+        scalar: string
+    - name: tty
+      type:
+        scalar: boolean
+    - name: volumeDevices
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.VolumeDevice
+          elementRelationship: associative
+          keys:
+          - devicePath
+    - name: volumeMounts
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.VolumeMount
+          elementRelationship: associative
+          keys:
+          - mountPath
+    - name: workingDir
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.ContainerPort
+  map:
+    fields:
+    - name: containerPort
+      type:
+        scalar: numeric
+      default: 0
+    - name: hostIP
+      type:
+        scalar: string
+    - name: hostPort
+      type:
+        scalar: numeric
+    - name: name
+      type:
+        scalar: string
+    - name: protocol
+      type:
+        scalar: string
+      default: TCP
+- name: io.k8s.api.core.v1.ContainerResizePolicy
+  map:
+    fields:
+    - name: resourceName
+      type:
+        scalar: string
+      default: ""
+    - name: restartPolicy
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.ContainerRestartRule
+  map:
+    fields:
+    - name: action
+      type:
+        scalar: string
+    - name: exitCodes
+      type:
+        namedType: io.k8s.api.core.v1.ContainerRestartRuleOnExitCodes
+- name: io.k8s.api.core.v1.ContainerRestartRuleOnExitCodes
+  map:
+    fields:
+    - name: operator
+      type:
+        scalar: string
+    - name: values
+      type:
+        list:
+          elementType:
+            scalar: numeric
+          elementRelationship: associative
+- name: io.k8s.api.core.v1.DownwardAPIProjection
+  map:
+    fields:
+    - name: items
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.DownwardAPIVolumeFile
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.DownwardAPIVolumeFile
+  map:
+    fields:
+    - name: fieldRef
+      type:
+        namedType: io.k8s.api.core.v1.ObjectFieldSelector
+    - name: mode
+      type:
+        scalar: numeric
+    - name: path
+      type:
+        scalar: string
+      default: ""
+    - name: resourceFieldRef
+      type:
+        namedType: io.k8s.api.core.v1.ResourceFieldSelector
+- name: io.k8s.api.core.v1.DownwardAPIVolumeSource
+  map:
+    fields:
+    - name: defaultMode
+      type:
+        scalar: numeric
+    - name: items
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.DownwardAPIVolumeFile
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.EmptyDirVolumeSource
+  map:
+    fields:
+    - name: medium
+      type:
+        scalar: string
+    - name: sizeLimit
+      type:
+        namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+- name: io.k8s.api.core.v1.EnvFromSource
+  map:
+    fields:
+    - name: configMapRef
+      type:
+        namedType: io.k8s.api.core.v1.ConfigMapEnvSource
+    - name: prefix
+      type:
+        scalar: string
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.SecretEnvSource
+- name: io.k8s.api.core.v1.EnvVar
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: value
+      type:
+        scalar: string
+    - name: valueFrom
+      type:
+        namedType: io.k8s.api.core.v1.EnvVarSource
+- name: io.k8s.api.core.v1.EnvVarSource
+  map:
+    fields:
+    - name: configMapKeyRef
+      type:
+        namedType: io.k8s.api.core.v1.ConfigMapKeySelector
+    - name: fieldRef
+      type:
+        namedType: io.k8s.api.core.v1.ObjectFieldSelector
+    - name: fileKeyRef
+      type:
+        namedType: io.k8s.api.core.v1.FileKeySelector
+    - name: resourceFieldRef
+      type:
+        namedType: io.k8s.api.core.v1.ResourceFieldSelector
+    - name: secretKeyRef
+      type:
+        namedType: io.k8s.api.core.v1.SecretKeySelector
+- name: io.k8s.api.core.v1.EphemeralContainer
+  map:
+    fields:
+    - name: args
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: command
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: env
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.EnvVar
+          elementRelationship: associative
+          keys:
+          - name
+    - name: envFrom
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.EnvFromSource
+          elementRelationship: atomic
+    - name: image
+      type:
+        scalar: string
+    - name: imagePullPolicy
+      type:
+        scalar: string
+    - name: lifecycle
+      type:
+        namedType: io.k8s.api.core.v1.Lifecycle
+    - name: livenessProbe
+      type:
+        namedType: io.k8s.api.core.v1.Probe
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: ports
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ContainerPort
+          elementRelationship: associative
+          keys:
+          - containerPort
+          - protocol
+    - name: readinessProbe
+      type:
+        namedType: io.k8s.api.core.v1.Probe
+    - name: resizePolicy
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ContainerResizePolicy
+          elementRelationship: atomic
+    - name: resources
+      type:
+        namedType: io.k8s.api.core.v1.ResourceRequirements
+      default: {}
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: restartPolicyRules
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ContainerRestartRule
+          elementRelationship: atomic
+    - name: securityContext
+      type:
+        namedType: io.k8s.api.core.v1.SecurityContext
+    - name: startupProbe
+      type:
+        namedType: io.k8s.api.core.v1.Probe
+    - name: stdin
+      type:
+        scalar: boolean
+    - name: stdinOnce
+      type:
+        scalar: boolean
+    - name: targetContainerName
+      type:
+        scalar: string
+    - name: terminationMessagePath
+      type:
+        scalar: string
+    - name: terminationMessagePolicy
+      type:
+        scalar: string
+    - name: tty
+      type:
+        scalar: boolean
+    - name: volumeDevices
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.VolumeDevice
+          elementRelationship: associative
+          keys:
+          - devicePath
+    - name: volumeMounts
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.VolumeMount
+          elementRelationship: associative
+          keys:
+          - mountPath
+    - name: workingDir
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.EphemeralVolumeSource
+  map:
+    fields:
+    - name: volumeClaimTemplate
+      type:
+        namedType: io.k8s.api.core.v1.PersistentVolumeClaimTemplate
+- name: io.k8s.api.core.v1.ExecAction
+  map:
+    fields:
+    - name: command
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.FCVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: lun
+      type:
+        scalar: numeric
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: targetWWNs
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: wwids
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.FileKeySelector
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+      default: false
+    - name: path
+      type:
+        scalar: string
+      default: ""
+    - name: volumeName
+      type:
+        scalar: string
+      default: ""
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.FlexVolumeSource
+  map:
+    fields:
+    - name: driver
+      type:
+        scalar: string
+      default: ""
+    - name: fsType
+      type:
+        scalar: string
+    - name: options
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+- name: io.k8s.api.core.v1.FlockerVolumeSource
+  map:
+    fields:
+    - name: datasetName
+      type:
+        scalar: string
+    - name: datasetUUID
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.GCEPersistentDiskVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: partition
+      type:
+        scalar: numeric
+    - name: pdName
+      type:
+        scalar: string
+      default: ""
+    - name: readOnly
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.GRPCAction
+  map:
+    fields:
+    - name: port
+      type:
+        scalar: numeric
+      default: 0
+    - name: service
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.GitRepoVolumeSource
+  map:
+    fields:
+    - name: directory
+      type:
+        scalar: string
+    - name: repository
+      type:
+        scalar: string
+      default: ""
+    - name: revision
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.GlusterfsVolumeSource
+  map:
+    fields:
+    - name: endpoints
+      type:
+        scalar: string
+      default: ""
+    - name: path
+      type:
+        scalar: string
+      default: ""
+    - name: readOnly
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.HTTPGetAction
+  map:
+    fields:
+    - name: host
+      type:
+        scalar: string
+    - name: httpHeaders
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.HTTPHeader
+          elementRelationship: atomic
+    - name: path
+      type:
+        scalar: string
+    - name: port
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: scheme
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.HTTPHeader
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: value
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.HostAlias
+  map:
+    fields:
+    - name: hostnames
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: ip
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.HostPathVolumeSource
+  map:
+    fields:
+    - name: path
+      type:
+        scalar: string
+      default: ""
+    - name: type
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.ISCSIVolumeSource
+  map:
+    fields:
+    - name: chapAuthDiscovery
+      type:
+        scalar: boolean
+    - name: chapAuthSession
+      type:
+        scalar: boolean
+    - name: fsType
+      type:
+        scalar: string
+    - name: initiatorName
+      type:
+        scalar: string
+    - name: iqn
+      type:
+        scalar: string
+      default: ""
+    - name: iscsiInterface
+      type:
+        scalar: string
+      default: default
+    - name: lun
+      type:
+        scalar: numeric
+      default: 0
+    - name: portals
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: targetPortal
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.ImageVolumeSource
+  map:
+    fields:
+    - name: pullPolicy
+      type:
+        scalar: string
+    - name: reference
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.KeyToPath
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+      default: ""
+    - name: mode
+      type:
+        scalar: numeric
+    - name: path
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.Lifecycle
+  map:
+    fields:
+    - name: postStart
+      type:
+        namedType: io.k8s.api.core.v1.LifecycleHandler
+    - name: preStop
+      type:
+        namedType: io.k8s.api.core.v1.LifecycleHandler
+    - name: stopSignal
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.LifecycleHandler
+  map:
+    fields:
+    - name: exec
+      type:
+        namedType: io.k8s.api.core.v1.ExecAction
+    - name: httpGet
+      type:
+        namedType: io.k8s.api.core.v1.HTTPGetAction
+    - name: sleep
+      type:
+        namedType: io.k8s.api.core.v1.SleepAction
+    - name: tcpSocket
+      type:
+        namedType: io.k8s.api.core.v1.TCPSocketAction
+- name: io.k8s.api.core.v1.LocalObjectReference
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.NFSVolumeSource
+  map:
+    fields:
+    - name: path
+      type:
+        scalar: string
+      default: ""
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: server
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.NodeAffinity
+  map:
+    fields:
+    - name: preferredDuringSchedulingIgnoredDuringExecution
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PreferredSchedulingTerm
+          elementRelationship: atomic
+    - name: requiredDuringSchedulingIgnoredDuringExecution
+      type:
+        namedType: io.k8s.api.core.v1.NodeSelector
+- name: io.k8s.api.core.v1.NodeSelector
+  map:
+    fields:
+    - name: nodeSelectorTerms
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.NodeSelectorTerm
+          elementRelationship: atomic
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.NodeSelectorRequirement
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+      default: ""
+    - name: operator
+      type:
+        scalar: string
+      default: ""
+    - name: values
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.NodeSelectorTerm
+  map:
+    fields:
+    - name: matchExpressions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.NodeSelectorRequirement
+          elementRelationship: atomic
+    - name: matchFields
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.NodeSelectorRequirement
+          elementRelationship: atomic
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.ObjectFieldSelector
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: fieldPath
+      type:
+        scalar: string
+      default: ""
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.PersistentVolumeClaimSpec
+  map:
+    fields:
+    - name: accessModes
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: dataSource
+      type:
+        namedType: io.k8s.api.core.v1.TypedLocalObjectReference
+    - name: dataSourceRef
+      type:
+        namedType: io.k8s.api.core.v1.TypedObjectReference
+    - name: resources
+      type:
+        namedType: io.k8s.api.core.v1.VolumeResourceRequirements
+      default: {}
+    - name: selector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: storageClassName
+      type:
+        scalar: string
+    - name: volumeAttributesClassName
+      type:
+        scalar: string
+    - name: volumeMode
+      type:
+        scalar: string
+    - name: volumeName
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.PersistentVolumeClaimTemplate
+  map:
+    fields:
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.api.core.v1.PersistentVolumeClaimSpec
+      default: {}
+- name: io.k8s.api.core.v1.PersistentVolumeClaimVolumeSource
+  map:
+    fields:
+    - name: claimName
+      type:
+        scalar: string
+      default: ""
+    - name: readOnly
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.PhotonPersistentDiskVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: pdID
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.PodAffinity
+  map:
+    fields:
+    - name: preferredDuringSchedulingIgnoredDuringExecution
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.WeightedPodAffinityTerm
+          elementRelationship: atomic
+    - name: requiredDuringSchedulingIgnoredDuringExecution
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PodAffinityTerm
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.PodAffinityTerm
+  map:
+    fields:
+    - name: labelSelector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: matchLabelKeys
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: mismatchLabelKeys
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: namespaceSelector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: namespaces
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: topologyKey
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.PodAntiAffinity
+  map:
+    fields:
+    - name: preferredDuringSchedulingIgnoredDuringExecution
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.WeightedPodAffinityTerm
+          elementRelationship: atomic
+    - name: requiredDuringSchedulingIgnoredDuringExecution
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PodAffinityTerm
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.PodCertificateProjection
+  map:
+    fields:
+    - name: certificateChainPath
+      type:
+        scalar: string
+    - name: credentialBundlePath
+      type:
+        scalar: string
+    - name: keyPath
+      type:
+        scalar: string
+    - name: keyType
+      type:
+        scalar: string
+    - name: maxExpirationSeconds
+      type:
+        scalar: numeric
+    - name: signerName
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.PodDNSConfig
+  map:
+    fields:
+    - name: nameservers
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: options
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PodDNSConfigOption
+          elementRelationship: atomic
+    - name: searches
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.PodDNSConfigOption
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+    - name: value
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.PodOS
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.PodReadinessGate
+  map:
+    fields:
+    - name: conditionType
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.PodResourceClaim
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: resourceClaimName
+      type:
+        scalar: string
+    - name: resourceClaimTemplateName
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.PodSchedulingGate
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.PodSecurityContext
+  map:
+    fields:
+    - name: appArmorProfile
+      type:
+        namedType: io.k8s.api.core.v1.AppArmorProfile
+    - name: fsGroup
+      type:
+        scalar: numeric
+    - name: fsGroupChangePolicy
+      type:
+        scalar: string
+    - name: runAsGroup
+      type:
+        scalar: numeric
+    - name: runAsNonRoot
+      type:
+        scalar: boolean
+    - name: runAsUser
+      type:
+        scalar: numeric
+    - name: seLinuxChangePolicy
+      type:
+        scalar: string
+    - name: seLinuxOptions
+      type:
+        namedType: io.k8s.api.core.v1.SELinuxOptions
+    - name: seccompProfile
+      type:
+        namedType: io.k8s.api.core.v1.SeccompProfile
+    - name: supplementalGroups
+      type:
+        list:
+          elementType:
+            scalar: numeric
+          elementRelationship: atomic
+    - name: supplementalGroupsPolicy
+      type:
+        scalar: string
+    - name: sysctls
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Sysctl
+          elementRelationship: atomic
+    - name: windowsOptions
+      type:
+        namedType: io.k8s.api.core.v1.WindowsSecurityContextOptions
+- name: io.k8s.api.core.v1.PodSpec
+  map:
+    fields:
+    - name: activeDeadlineSeconds
+      type:
+        scalar: numeric
+    - name: affinity
+      type:
+        namedType: io.k8s.api.core.v1.Affinity
+    - name: automountServiceAccountToken
+      type:
+        scalar: boolean
+    - name: containers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: associative
+          keys:
+          - name
+    - name: dnsConfig
+      type:
+        namedType: io.k8s.api.core.v1.PodDNSConfig
+    - name: dnsPolicy
+      type:
+        scalar: string
+    - name: enableServiceLinks
+      type:
+        scalar: boolean
+    - name: ephemeralContainers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.EphemeralContainer
+          elementRelationship: associative
+          keys:
+          - name
+    - name: hostAliases
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.HostAlias
+          elementRelationship: associative
+          keys:
+          - ip
+    - name: hostIPC
+      type:
+        scalar: boolean
+    - name: hostNetwork
+      type:
+        scalar: boolean
+    - name: hostPID
+      type:
+        scalar: boolean
+    - name: hostUsers
+      type:
+        scalar: boolean
+    - name: hostname
+      type:
+        scalar: string
+    - name: hostnameOverride
+      type:
+        scalar: string
+    - name: imagePullSecrets
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.LocalObjectReference
+          elementRelationship: associative
+          keys:
+          - name
+    - name: initContainers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: associative
+          keys:
+          - name
+    - name: nodeName
+      type:
+        scalar: string
+    - name: nodeSelector
+      type:
+        map:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: os
+      type:
+        namedType: io.k8s.api.core.v1.PodOS
+    - name: overhead
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+    - name: preemptionPolicy
+      type:
+        scalar: string
+    - name: priority
+      type:
+        scalar: numeric
+    - name: priorityClassName
+      type:
+        scalar: string
+    - name: readinessGates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PodReadinessGate
+          elementRelationship: atomic
+    - name: resourceClaims
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PodResourceClaim
+          elementRelationship: associative
+          keys:
+          - name
+    - name: resources
+      type:
+        namedType: io.k8s.api.core.v1.ResourceRequirements
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: runtimeClassName
+      type:
+        scalar: string
+    - name: schedulerName
+      type:
+        scalar: string
+    - name: schedulingGates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.PodSchedulingGate
+          elementRelationship: associative
+          keys:
+          - name
+    - name: securityContext
+      type:
+        namedType: io.k8s.api.core.v1.PodSecurityContext
+    - name: serviceAccount
+      type:
+        scalar: string
+    - name: serviceAccountName
+      type:
+        scalar: string
+    - name: setHostnameAsFQDN
+      type:
+        scalar: boolean
+    - name: shareProcessNamespace
+      type:
+        scalar: boolean
+    - name: subdomain
+      type:
+        scalar: string
+    - name: terminationGracePeriodSeconds
+      type:
+        scalar: numeric
+    - name: tolerations
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Toleration
+          elementRelationship: atomic
+    - name: topologySpreadConstraints
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.TopologySpreadConstraint
+          elementRelationship: associative
+          keys:
+          - topologyKey
+          - whenUnsatisfiable
+    - name: volumes
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Volume
+          elementRelationship: associative
+          keys:
+          - name
+- name: io.k8s.api.core.v1.PodTemplateSpec
+  map:
+    fields:
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.api.core.v1.PodSpec
+      default: {}
+- name: io.k8s.api.core.v1.PortworxVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: volumeID
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.PreferredSchedulingTerm
+  map:
+    fields:
+    - name: preference
+      type:
+        namedType: io.k8s.api.core.v1.NodeSelectorTerm
+      default: {}
+    - name: weight
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.api.core.v1.Probe
+  map:
+    fields:
+    - name: exec
+      type:
+        namedType: io.k8s.api.core.v1.ExecAction
+    - name: failureThreshold
+      type:
+        scalar: numeric
+    - name: grpc
+      type:
+        namedType: io.k8s.api.core.v1.GRPCAction
+    - name: httpGet
+      type:
+        namedType: io.k8s.api.core.v1.HTTPGetAction
+    - name: initialDelaySeconds
+      type:
+        scalar: numeric
+    - name: periodSeconds
+      type:
+        scalar: numeric
+    - name: successThreshold
+      type:
+        scalar: numeric
+    - name: tcpSocket
+      type:
+        namedType: io.k8s.api.core.v1.TCPSocketAction
+    - name: terminationGracePeriodSeconds
+      type:
+        scalar: numeric
+    - name: timeoutSeconds
+      type:
+        scalar: numeric
+- name: io.k8s.api.core.v1.ProjectedVolumeSource
+  map:
+    fields:
+    - name: defaultMode
+      type:
+        scalar: numeric
+    - name: sources
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.VolumeProjection
+          elementRelationship: atomic
+- name: io.k8s.api.core.v1.QuobyteVolumeSource
+  map:
+    fields:
+    - name: group
+      type:
+        scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: registry
+      type:
+        scalar: string
+      default: ""
+    - name: tenant
+      type:
+        scalar: string
+    - name: user
+      type:
+        scalar: string
+    - name: volume
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.RBDVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: image
+      type:
+        scalar: string
+      default: ""
+    - name: keyring
+      type:
+        scalar: string
+      default: /etc/ceph/keyring
+    - name: monitors
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: pool
+      type:
+        scalar: string
+      default: rbd
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: user
+      type:
+        scalar: string
+      default: admin
+- name: io.k8s.api.core.v1.ResourceClaim
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: request
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.ResourceFieldSelector
+  map:
+    fields:
+    - name: containerName
+      type:
+        scalar: string
+    - name: divisor
+      type:
+        namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+    - name: resource
+      type:
+        scalar: string
+      default: ""
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.ResourceRequirements
+  map:
+    fields:
+    - name: claims
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ResourceClaim
+          elementRelationship: associative
+          keys:
+          - name
+    - name: limits
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+    - name: requests
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+- name: io.k8s.api.core.v1.SELinuxOptions
+  map:
+    fields:
+    - name: level
+      type:
+        scalar: string
+    - name: role
+      type:
+        scalar: string
+    - name: type
+      type:
+        scalar: string
+    - name: user
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.ScaleIOVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+      default: xfs
+    - name: gateway
+      type:
+        scalar: string
+      default: ""
+    - name: protectionDomain
+      type:
+        scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: sslEnabled
+      type:
+        scalar: boolean
+    - name: storageMode
+      type:
+        scalar: string
+      default: ThinProvisioned
+    - name: storagePool
+      type:
+        scalar: string
+    - name: system
+      type:
+        scalar: string
+      default: ""
+    - name: volumeName
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.SeccompProfile
+  map:
+    fields:
+    - name: localhostProfile
+      type:
+        scalar: string
+    - name: type
+      type:
+        scalar: string
+      default: ""
+    unions:
+    - discriminator: type
+      fields:
+      - fieldName: localhostProfile
+        discriminatorValue: LocalhostProfile
+- name: io.k8s.api.core.v1.SecretEnvSource
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.SecretKeySelector
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.SecretProjection
+  map:
+    fields:
+    - name: items
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.KeyToPath
+          elementRelationship: atomic
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: optional
+      type:
+        scalar: boolean
+- name: io.k8s.api.core.v1.SecretVolumeSource
+  map:
+    fields:
+    - name: defaultMode
+      type:
+        scalar: numeric
+    - name: items
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.KeyToPath
+          elementRelationship: atomic
+    - name: optional
+      type:
+        scalar: boolean
+    - name: secretName
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.SecurityContext
+  map:
+    fields:
+    - name: allowPrivilegeEscalation
+      type:
+        scalar: boolean
+    - name: appArmorProfile
+      type:
+        namedType: io.k8s.api.core.v1.AppArmorProfile
+    - name: capabilities
+      type:
+        namedType: io.k8s.api.core.v1.Capabilities
+    - name: privileged
+      type:
+        scalar: boolean
+    - name: procMount
+      type:
+        scalar: string
+    - name: readOnlyRootFilesystem
+      type:
+        scalar: boolean
+    - name: runAsGroup
+      type:
+        scalar: numeric
+    - name: runAsNonRoot
+      type:
+        scalar: boolean
+    - name: runAsUser
+      type:
+        scalar: numeric
+    - name: seLinuxOptions
+      type:
+        namedType: io.k8s.api.core.v1.SELinuxOptions
+    - name: seccompProfile
+      type:
+        namedType: io.k8s.api.core.v1.SeccompProfile
+    - name: windowsOptions
+      type:
+        namedType: io.k8s.api.core.v1.WindowsSecurityContextOptions
+- name: io.k8s.api.core.v1.ServiceAccountTokenProjection
+  map:
+    fields:
+    - name: audience
+      type:
+        scalar: string
+    - name: expirationSeconds
+      type:
+        scalar: numeric
+    - name: path
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.ServicePort
+  map:
+    fields:
+    - name: appProtocol
+      type:
+        scalar: string
+    - name: name
+      type:
+        scalar: string
+    - name: nodePort
+      type:
+        scalar: numeric
+    - name: port
+      type:
+        scalar: numeric
+      default: 0
+    - name: protocol
+      type:
+        scalar: string
+      default: TCP
+    - name: targetPort
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+- name: io.k8s.api.core.v1.SleepAction
+  map:
+    fields:
+    - name: seconds
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.api.core.v1.StorageOSVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: secretRef
+      type:
+        namedType: io.k8s.api.core.v1.LocalObjectReference
+    - name: volumeName
+      type:
+        scalar: string
+    - name: volumeNamespace
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.Sysctl
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: value
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.TCPSocketAction
+  map:
+    fields:
+    - name: host
+      type:
+        scalar: string
+    - name: port
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+- name: io.k8s.api.core.v1.Toleration
+  map:
+    fields:
+    - name: effect
+      type:
+        scalar: string
+    - name: key
+      type:
+        scalar: string
+    - name: operator
+      type:
+        scalar: string
+    - name: tolerationSeconds
+      type:
+        scalar: numeric
+    - name: value
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.TopologySpreadConstraint
+  map:
+    fields:
+    - name: labelSelector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: matchLabelKeys
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: maxSkew
+      type:
+        scalar: numeric
+      default: 0
+    - name: minDomains
+      type:
+        scalar: numeric
+    - name: nodeAffinityPolicy
+      type:
+        scalar: string
+    - name: nodeTaintsPolicy
+      type:
+        scalar: string
+    - name: topologyKey
+      type:
+        scalar: string
+      default: ""
+    - name: whenUnsatisfiable
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.TypedLocalObjectReference
+  map:
+    fields:
+    - name: apiGroup
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    elementRelationship: atomic
+- name: io.k8s.api.core.v1.TypedObjectReference
+  map:
+    fields:
+    - name: apiGroup
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: namespace
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.Volume
+  map:
+    fields:
+    - name: awsElasticBlockStore
+      type:
+        namedType: io.k8s.api.core.v1.AWSElasticBlockStoreVolumeSource
+    - name: azureDisk
+      type:
+        namedType: io.k8s.api.core.v1.AzureDiskVolumeSource
+    - name: azureFile
+      type:
+        namedType: io.k8s.api.core.v1.AzureFileVolumeSource
+    - name: cephfs
+      type:
+        namedType: io.k8s.api.core.v1.CephFSVolumeSource
+    - name: cinder
+      type:
+        namedType: io.k8s.api.core.v1.CinderVolumeSource
+    - name: configMap
+      type:
+        namedType: io.k8s.api.core.v1.ConfigMapVolumeSource
+    - name: csi
+      type:
+        namedType: io.k8s.api.core.v1.CSIVolumeSource
+    - name: downwardAPI
+      type:
+        namedType: io.k8s.api.core.v1.DownwardAPIVolumeSource
+    - name: emptyDir
+      type:
+        namedType: io.k8s.api.core.v1.EmptyDirVolumeSource
+    - name: ephemeral
+      type:
+        namedType: io.k8s.api.core.v1.EphemeralVolumeSource
+    - name: fc
+      type:
+        namedType: io.k8s.api.core.v1.FCVolumeSource
+    - name: flexVolume
+      type:
+        namedType: io.k8s.api.core.v1.FlexVolumeSource
+    - name: flocker
+      type:
+        namedType: io.k8s.api.core.v1.FlockerVolumeSource
+    - name: gcePersistentDisk
+      type:
+        namedType: io.k8s.api.core.v1.GCEPersistentDiskVolumeSource
+    - name: gitRepo
+      type:
+        namedType: io.k8s.api.core.v1.GitRepoVolumeSource
+    - name: glusterfs
+      type:
+        namedType: io.k8s.api.core.v1.GlusterfsVolumeSource
+    - name: hostPath
+      type:
+        namedType: io.k8s.api.core.v1.HostPathVolumeSource
+    - name: image
+      type:
+        namedType: io.k8s.api.core.v1.ImageVolumeSource
+    - name: iscsi
+      type:
+        namedType: io.k8s.api.core.v1.ISCSIVolumeSource
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: nfs
+      type:
+        namedType: io.k8s.api.core.v1.NFSVolumeSource
+    - name: persistentVolumeClaim
+      type:
+        namedType: io.k8s.api.core.v1.PersistentVolumeClaimVolumeSource
+    - name: photonPersistentDisk
+      type:
+        namedType: io.k8s.api.core.v1.PhotonPersistentDiskVolumeSource
+    - name: portworxVolume
+      type:
+        namedType: io.k8s.api.core.v1.PortworxVolumeSource
+    - name: projected
+      type:
+        namedType: io.k8s.api.core.v1.ProjectedVolumeSource
+    - name: quobyte
+      type:
+        namedType: io.k8s.api.core.v1.QuobyteVolumeSource
+    - name: rbd
+      type:
+        namedType: io.k8s.api.core.v1.RBDVolumeSource
+    - name: scaleIO
+      type:
+        namedType: io.k8s.api.core.v1.ScaleIOVolumeSource
+    - name: secret
+      type:
+        namedType: io.k8s.api.core.v1.SecretVolumeSource
+    - name: storageos
+      type:
+        namedType: io.k8s.api.core.v1.StorageOSVolumeSource
+    - name: vsphereVolume
+      type:
+        namedType: io.k8s.api.core.v1.VsphereVirtualDiskVolumeSource
+- name: io.k8s.api.core.v1.VolumeDevice
+  map:
+    fields:
+    - name: devicePath
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.VolumeMount
+  map:
+    fields:
+    - name: mountPath
+      type:
+        scalar: string
+      default: ""
+    - name: mountPropagation
+      type:
+        scalar: string
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: readOnly
+      type:
+        scalar: boolean
+    - name: recursiveReadOnly
+      type:
+        scalar: string
+    - name: subPath
+      type:
+        scalar: string
+    - name: subPathExpr
+      type:
+        scalar: string
+- name: io.k8s.api.core.v1.VolumeProjection
+  map:
+    fields:
+    - name: clusterTrustBundle
+      type:
+        namedType: io.k8s.api.core.v1.ClusterTrustBundleProjection
+    - name: configMap
+      type:
+        namedType: io.k8s.api.core.v1.ConfigMapProjection
+    - name: downwardAPI
+      type:
+        namedType: io.k8s.api.core.v1.DownwardAPIProjection
+    - name: podCertificate
+      type:
+        namedType: io.k8s.api.core.v1.PodCertificateProjection
+    - name: secret
+      type:
+        namedType: io.k8s.api.core.v1.SecretProjection
+    - name: serviceAccountToken
+      type:
+        namedType: io.k8s.api.core.v1.ServiceAccountTokenProjection
+- name: io.k8s.api.core.v1.VolumeResourceRequirements
+  map:
+    fields:
+    - name: limits
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+    - name: requests
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
+- name: io.k8s.api.core.v1.VsphereVirtualDiskVolumeSource
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+    - name: storagePolicyID
+      type:
+        scalar: string
+    - name: storagePolicyName
+      type:
+        scalar: string
+    - name: volumePath
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.api.core.v1.WeightedPodAffinityTerm
+  map:
+    fields:
+    - name: podAffinityTerm
+      type:
+        namedType: io.k8s.api.core.v1.PodAffinityTerm
+      default: {}
+    - name: weight
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.api.core.v1.WindowsSecurityContextOptions
+  map:
+    fields:
+    - name: gmsaCredentialSpec
+      type:
+        scalar: string
+    - name: gmsaCredentialSpecName
+      type:
+        scalar: string
+    - name: hostProcess
+      type:
+        scalar: boolean
+    - name: runAsUserName
+      type:
+        scalar: string
+- name: io.k8s.apimachinery.pkg.api.resource.Quantity
+  scalar: untyped
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+  map:
+    fields:
+    - name: lastTransitionTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: message
+      type:
+        scalar: string
+      default: ""
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: reason
+      type:
+        scalar: string
+      default: ""
+    - name: status
+      type:
+        scalar: string
+      default: ""
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1
+  map:
+    elementType:
+      scalar: untyped
+      list:
+        elementType:
+          namedType: __untyped_atomic_
+        elementRelationship: atomic
+      map:
+        elementType:
+          namedType: __untyped_deduced_
+        elementRelationship: separable
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+  map:
+    fields:
+    - name: matchExpressions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement
+          elementRelationship: atomic
+    - name: matchLabels
+      type:
+        map:
+          elementType:
+            scalar: string
+    elementRelationship: atomic
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+      default: ""
+    - name: operator
+      type:
+        scalar: string
+      default: ""
+    - name: values
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: fieldsType
+      type:
+        scalar: string
+    - name: fieldsV1
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1
+    - name: manager
+      type:
+        scalar: string
+    - name: operation
+      type:
+        scalar: string
+    - name: subresource
+      type:
+        scalar: string
+    - name: time
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+  map:
+    fields:
+    - name: annotations
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: creationTimestamp
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: deletionGracePeriodSeconds
+      type:
+        scalar: numeric
+    - name: deletionTimestamp
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: finalizers
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: associative
+    - name: generateName
+      type:
+        scalar: string
+    - name: generation
+      type:
+        scalar: numeric
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: managedFields
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry
+          elementRelationship: atomic
+    - name: name
+      type:
+        scalar: string
+    - name: namespace
+      type:
+        scalar: string
+    - name: ownerReferences
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference
+          elementRelationship: associative
+          keys:
+          - uid
+    - name: resourceVersion
+      type:
+        scalar: string
+    - name: selfLink
+      type:
+        scalar: string
+    - name: uid
+      type:
+        scalar: string
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+      default: ""
+    - name: blockOwnerDeletion
+      type:
+        scalar: boolean
+    - name: controller
+      type:
+        scalar: boolean
+    - name: kind
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: uid
+      type:
+        scalar: string
+      default: ""
+    elementRelationship: atomic
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+  scalar: untyped
+- name: io.k8s.apimachinery.pkg.runtime.RawExtension
+  map:
+    elementType:
+      scalar: untyped
+      list:
+        elementType:
+          namedType: __untyped_atomic_
+        elementRelationship: atomic
+      map:
+        elementType:
+          namedType: __untyped_deduced_
+        elementRelationship: separable
+- name: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+  scalar: untyped
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.AdapterScaleTargetRef
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: role
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ClusterEngineRuntimeProfile
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ClusterEngineRuntimeProfileSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ClusterEngineRuntimeProfileStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ClusterEngineRuntimeProfileSpec
+  map:
+    fields:
+    - name: containers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: atomic
+    - name: initContainers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: atomic
+    - name: updateStrategy
+      type:
+        scalar: string
+      default: ""
+    - name: volumes
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Volume
+          elementRelationship: atomic
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ClusterEngineRuntimeProfileStatus
+  map:
+    elementType:
+      scalar: untyped
+      list:
+        elementType:
+          namedType: __untyped_atomic_
+        elementRelationship: atomic
+      map:
+        elementType:
+          namedType: __untyped_deduced_
+        elementRelationship: separable
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ComponentStatus
+  map:
+    fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: scheduledReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReadyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReplicas
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.Coordination
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: roles
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: strategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.CoordinationStrategy
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.CoordinationRollingUpdate
+  map:
+    fields:
+    - name: maxSkew
+      type:
+        scalar: string
+    - name: maxUnavailable
+      type:
+        scalar: string
+    - name: partition
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.CoordinationScaling
+  map:
+    fields:
+    - name: maxSkew
+      type:
+        scalar: string
+    - name: progression
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.CoordinationStrategy
+  map:
+    fields:
+    - name: rollingUpdate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.CoordinationRollingUpdate
+    - name: scaling
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.CoordinationScaling
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.EngineRuntime
+  map:
+    fields:
+    - name: containers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: atomic
+    - name: injectContainers
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: profileName
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InPlaceUpdateStrategy
+  map:
+    fields:
+    - name: gracePeriodSeconds
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.Instance
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceComponent
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: serviceName
+      type:
+        scalar: string
+    - name: size
+      type:
+        scalar: numeric
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceCondition
+  map:
+    fields:
+    - name: lastTransitionTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: message
+      type:
+        scalar: string
+    - name: reason
+      type:
+        scalar: string
+    - name: status
+      type:
+        scalar: string
+      default: ""
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceReadinessGate
+  map:
+    fields:
+    - name: conditionType
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSet
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetCondition
+  map:
+    fields:
+    - name: lastTransitionTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: message
+      type:
+        scalar: string
+    - name: reason
+      type:
+        scalar: string
+    - name: status
+      type:
+        scalar: string
+      default: ""
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetScaleStrategy
+  map:
+    fields:
+    - name: instanceToDelete
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetSpec
+  map:
+    fields:
+    - name: instanceTemplate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceTemplate
+      default: {}
+    - name: lifecycle
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.Lifecycle
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: revisionHistoryLimit
+      type:
+        scalar: numeric
+    - name: scaleStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetScaleStrategy
+      default: {}
+    - name: selector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: updateStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetUpdateStrategy
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetStatus
+  map:
+    fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: collisionCount
+      type:
+        scalar: numeric
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetCondition
+          elementRelationship: atomic
+    - name: currentReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: currentRevision
+      type:
+        scalar: string
+    - name: expectedUpdatedReplicas
+      type:
+        scalar: numeric
+    - name: labelSelector
+      type:
+        scalar: string
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updateRevision
+      type:
+        scalar: string
+    - name: updatedReadyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReplicas
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSetUpdateStrategy
+  map:
+    fields:
+    - name: inPlaceUpdateStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InPlaceUpdateStrategy
+    - name: maxSurge
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: partition
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: paused
+      type:
+        scalar: boolean
+    - name: type
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceSpec
+  map:
+    fields:
+    - name: components
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceComponent
+          elementRelationship: associative
+          keys:
+          - name
+    - name: podGroupPolicy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.PodGroupPolicy
+    - name: readinessGates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceReadinessGate
+          elementRelationship: atomic
+    - name: readyPolicy
+      type:
+        scalar: string
+    - name: restartPolicy
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceStatus
+  map:
+    fields:
+    - name: collisionCount
+      type:
+        scalar: numeric
+    - name: componentStatuses
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ComponentStatus
+          elementRelationship: atomic
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceCondition
+          elementRelationship: atomic
+    - name: currentRevision
+      type:
+        scalar: string
+    - name: labelSelector
+      type:
+        scalar: string
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: updateRevision
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceTemplate
+  map:
+    fields:
+    - name: components
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceComponent
+          elementRelationship: associative
+          keys:
+          - name
+    - name: podGroupPolicy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.PodGroupPolicy
+    - name: readinessGates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceReadinessGate
+          elementRelationship: atomic
+    - name: readyPolicy
+      type:
+        scalar: string
+    - name: restartPolicy
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.KubeSchedulingPodGroupPolicySource
+  map:
+    fields:
+    - name: scheduleTimeoutSeconds
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.LeaderWorkerTemplate
+  map:
+    fields:
+    - name: patchLeaderTemplate
+      type:
+        namedType: __untyped_atomic_
+    - name: patchWorkerTemplate
+      type:
+        namedType: __untyped_atomic_
+    - name: size
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.Lifecycle
+  map:
+    fields:
+    - name: inPlaceUpdate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.LifecycleHook
+    - name: preDelete
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.LifecycleHook
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.LifecycleHook
+  map:
+    fields:
+    - name: finalizersHandler
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: labelsHandler
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: markPodNotReady
+      type:
+        scalar: boolean
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.PodGroupPolicy
+  map:
+    fields:
+    - name: kubeScheduling
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.KubeSchedulingPodGroupPolicySource
+    - name: volcanoScheduling
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.VolcanoSchedulingPodGroupPolicySource
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroup
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupScalingAdapter
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupScalingAdapterSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupScalingAdapterStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupScalingAdapterSpec
+  map:
+    fields:
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: scaleTargetRef
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.AdapterScaleTargetRef
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupScalingAdapterStatus
+  map:
+    fields:
+    - name: lastScaleTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: phase
+      type:
+        scalar: string
+    - name: readyReplicas
+      type:
+        scalar: numeric
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: selector
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSet
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSetSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSetStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSetSpec
+  map:
+    fields:
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: template
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSetStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: associative
+          keys:
+          - type
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupSpec
+  map:
+    fields:
+    - name: coordination
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.Coordination
+          elementRelationship: associative
+          keys:
+          - name
+    - name: podGroupPolicy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.PodGroupPolicy
+    - name: roleTemplates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleTemplate
+          elementRelationship: associative
+          keys:
+          - name
+    - name: roles
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleSpec
+          elementRelationship: associative
+          keys:
+          - name
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleBasedGroupStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: associative
+          keys:
+          - type
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: roleStatuses
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleStatus
+          elementRelationship: atomic
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleSpec
+  map:
+    fields:
+    - name: annotations
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: components
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InstanceComponent
+          elementRelationship: associative
+          keys:
+          - name
+    - name: dependencies
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: engineRuntimes
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.EngineRuntime
+          elementRelationship: atomic
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: leaderWorkerSet
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.LeaderWorkerTemplate
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: rolloutStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RolloutStrategy
+    - name: scalingAdapter
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ScalingAdapter
+    - name: servicePorts
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ServicePort
+          elementRelationship: atomic
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+    - name: templatePatch
+      type:
+        namedType: __untyped_atomic_
+    - name: templateRef
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.TemplateRef
+    - name: workload
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.WorkloadSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleStatus
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReplicas
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RoleTemplate
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RollingUpdate
+  map:
+    fields:
+    - name: inPlaceUpdateStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.InPlaceUpdateStrategy
+    - name: maxSurge
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: partition
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: paused
+      type:
+        scalar: boolean
+    - name: type
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RolloutStrategy
+  map:
+    fields:
+    - name: rollingUpdate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha1.RollingUpdate
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.ScalingAdapter
+  map:
+    fields:
+    - name: enable
+      type:
+        scalar: boolean
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.TemplateRef
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.VolcanoSchedulingPodGroupPolicySource
+  map:
+    fields:
+    - name: priorityClassName
+      type:
+        scalar: string
+    - name: queue
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha1.WorkloadSpec
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+      default: ""
+    - name: kind
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.AdapterScaleTargetRef
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: role
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ClusterEngineRuntimeProfile
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ClusterEngineRuntimeProfileSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ClusterEngineRuntimeProfileStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ClusterEngineRuntimeProfileSpec
+  map:
+    fields:
+    - name: containers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: atomic
+    - name: initContainers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: atomic
+    - name: updateStrategy
+      type:
+        scalar: string
+      default: ""
+    - name: volumes
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Volume
+          elementRelationship: atomic
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ClusterEngineRuntimeProfileStatus
+  map:
+    elementType:
+      scalar: untyped
+      list:
+        elementType:
+          namedType: __untyped_atomic_
+        elementRelationship: atomic
+      map:
+        elementType:
+          namedType: __untyped_deduced_
+        elementRelationship: separable
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ContainerUpdateBaseline
+  map:
+    fields:
+    - name: imageID
+      type:
+        scalar: string
+    - name: restartCount
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicy
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicySpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicyStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicyRule
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: roles
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: strategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicyStrategy
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicySpec
+  map:
+    fields:
+    - name: policies
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicyRule
+          elementRelationship: associative
+          keys:
+          - name
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicyStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: associative
+          keys:
+          - type
+    - name: observedGeneration
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicyStrategy
+  map:
+    fields:
+    - name: rollingUpdate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RollingUpdateCoordinationStrategy
+    - name: scaling
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ScalingCoordinationStrategy
+    - name: scheduling
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.SchedulingCoordinationStrategy
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CustomComponentsPattern
+  map:
+    fields:
+    - name: components
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.InstanceComponent
+          elementRelationship: associative
+          keys:
+          - name
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: restartPolicyConfig
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RestartPolicyConfig
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.EngineRuntime
+  map:
+    fields:
+    - name: containers
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.Container
+          elementRelationship: atomic
+    - name: injectContainers
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: profileName
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.GangSchedulingStrategy
+  map:
+    fields:
+    - name: minReplicas
+      type:
+        map:
+          elementType:
+            scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.InPlaceUpdateStrategy
+  map:
+    fields:
+    - name: gracePeriodSeconds
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.InstanceComponent
+  map:
+    fields:
+    - name: annotations
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: serviceName
+      type:
+        scalar: string
+    - name: size
+      type:
+        scalar: numeric
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.LeaderWorkerPattern
+  map:
+    fields:
+    - name: leaderTemplatePatch
+      type:
+        namedType: __untyped_atomic_
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: restartPolicyConfig
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RestartPolicyConfig
+    - name: sharedServiceSelection
+      type:
+        scalar: string
+    - name: size
+      type:
+        scalar: numeric
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+    - name: templateRef
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.TemplateRef
+    - name: workerTemplatePatch
+      type:
+        namedType: __untyped_atomic_
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RestartPolicyConfig
+  map:
+    fields:
+    - name: baseDelaySeconds
+      type:
+        scalar: numeric
+    - name: maxDelaySeconds
+      type:
+        scalar: numeric
+    - name: type
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroup
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupScalingAdapter
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupScalingAdapterSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupScalingAdapterStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupScalingAdapterSpec
+  map:
+    fields:
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: scaleTargetRef
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.AdapterScaleTargetRef
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupScalingAdapterStatus
+  map:
+    fields:
+    - name: lastScaleTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: phase
+      type:
+        scalar: string
+    - name: readyReplicas
+      type:
+        scalar: numeric
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: selector
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSet
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSetSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSetStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSetSpec
+  map:
+    fields:
+    - name: groupTemplate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupTemplateSpec
+      default: {}
+    - name: replicas
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSetStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: associative
+          keys:
+          - type
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSpec
+  map:
+    fields:
+    - name: roleTemplates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleTemplate
+          elementRelationship: associative
+          keys:
+          - name
+    - name: roles
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleSpec
+          elementRelationship: associative
+          keys:
+          - name
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: associative
+          keys:
+          - type
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: roleStatuses
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleStatus
+          elementRelationship: atomic
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupTemplateSpec
+  map:
+    fields:
+    - name: annotations
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstance
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceComponent
+  map:
+    fields:
+    - name: annotations
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: serviceName
+      type:
+        scalar: string
+    - name: size
+      type:
+        scalar: numeric
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceComponentStatus
+  map:
+    fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: scheduledReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: size
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReadyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReplicas
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceCondition
+  map:
+    fields:
+    - name: lastTransitionTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: message
+      type:
+        scalar: string
+    - name: reason
+      type:
+        scalar: string
+    - name: status
+      type:
+        scalar: string
+      default: ""
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceReadinessGate
+  map:
+    fields:
+    - name: conditionType
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSet
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetSpec
+      default: {}
+    - name: status
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetStatus
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetCondition
+  map:
+    fields:
+    - name: lastTransitionTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: message
+      type:
+        scalar: string
+    - name: reason
+      type:
+        scalar: string
+    - name: status
+      type:
+        scalar: string
+      default: ""
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetInPlaceUpdateStrategy
+  map:
+    fields:
+    - name: gracePeriodSeconds
+      type:
+        scalar: numeric
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetLifecycle
+  map:
+    fields:
+    - name: inPlaceUpdate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetLifecycleHook
+    - name: preDelete
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetLifecycleHook
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetLifecycleHook
+  map:
+    fields:
+    - name: finalizersHandler
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: labelsHandler
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: markPodNotReady
+      type:
+        scalar: boolean
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetScaleStrategy
+  map:
+    fields:
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: roleInstanceToDelete
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetSpec
+  map:
+    fields:
+    - name: lifecycle
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetLifecycle
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: podManagementPolicy
+      type:
+        scalar: string
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: revisionHistoryLimit
+      type:
+        scalar: numeric
+    - name: roleInstanceTemplate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceTemplate
+      default: {}
+    - name: scaleStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetScaleStrategy
+      default: {}
+    - name: selector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: updateStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetUpdateStrategy
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetStatus
+  map:
+    fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: collisionCount
+      type:
+        scalar: numeric
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetCondition
+          elementRelationship: atomic
+    - name: currentReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: currentRevision
+      type:
+        scalar: string
+    - name: expectedUpdatedReplicas
+      type:
+        scalar: numeric
+    - name: labelSelector
+      type:
+        scalar: string
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: rolloutReplacementState
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RolloutReplacementState
+    - name: updateRevision
+      type:
+        scalar: string
+    - name: updatedReadyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReplicas
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetUpdateStrategy
+  map:
+    fields:
+    - name: inPlaceUpdateStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSetInPlaceUpdateStrategy
+    - name: maxSurge
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: partition
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: paused
+      type:
+        scalar: boolean
+    - name: type
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSpec
+  map:
+    fields:
+    - name: components
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceComponent
+          elementRelationship: associative
+          keys:
+          - name
+    - name: readinessGates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceReadinessGate
+          elementRelationship: atomic
+    - name: readyPolicy
+      type:
+        scalar: string
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: restartPolicyConfig
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RestartPolicyConfig
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceStatus
+  map:
+    fields:
+    - name: collisionCount
+      type:
+        scalar: numeric
+    - name: componentStatuses
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceComponentStatus
+          elementRelationship: atomic
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceCondition
+          elementRelationship: atomic
+    - name: currentRevision
+      type:
+        scalar: string
+    - name: inPlaceUpdateContainerBaselines
+      type:
+        map:
+          elementType:
+            map:
+              elementType:
+                namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ContainerUpdateBaseline
+    - name: labelSelector
+      type:
+        scalar: string
+    - name: lastRestartTime
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: observedGeneration
+      type:
+        scalar: numeric
+    - name: restartCount
+      type:
+        scalar: numeric
+    - name: updateRevision
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceTemplate
+  map:
+    fields:
+    - name: components
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceComponent
+          elementRelationship: associative
+          keys:
+          - name
+    - name: readinessGates
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceReadinessGate
+          elementRelationship: atomic
+    - name: readyPolicy
+      type:
+        scalar: string
+    - name: restartPolicy
+      type:
+        scalar: string
+    - name: restartPolicyConfig
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RestartPolicyConfig
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleSpec
+  map:
+    fields:
+    - name: annotations
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: customComponentsPattern
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.CustomComponentsPattern
+    - name: dependencies
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: engineRuntimes
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.EngineRuntime
+          elementRelationship: atomic
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+    - name: leaderWorkerPattern
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.LeaderWorkerPattern
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: podManagementPolicy
+      type:
+        scalar: string
+    - name: replicas
+      type:
+        scalar: numeric
+    - name: rolloutStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RolloutStrategy
+    - name: scalingAdapter
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ScalingAdapter
+    - name: servicePorts
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.core.v1.ServicePort
+          elementRelationship: atomic
+    - name: standalonePattern
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.StandalonePattern
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleStatus
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: readyReplicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updatedReplicas
+      type:
+        scalar: numeric
+      default: 0
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleTemplate
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+      default: {}
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RollingUpdate
+  map:
+    fields:
+    - name: inPlaceUpdateStrategy
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.InPlaceUpdateStrategy
+    - name: maxSurge
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: partition
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: paused
+      type:
+        scalar: boolean
+    - name: type
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RollingUpdateCoordinationStrategy
+  map:
+    fields:
+    - name: maxSkew
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: maxUnavailable
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: partition
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RolloutReplacementState
+  map:
+    fields:
+    - name: partition
+      type:
+        scalar: numeric
+      default: 0
+    - name: replicas
+      type:
+        scalar: numeric
+      default: 0
+    - name: updateRevision
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RolloutStrategy
+  map:
+    fields:
+    - name: rollingUpdate
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.RollingUpdate
+    - name: type
+      type:
+        scalar: string
+      default: ""
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ScalingAdapter
+  map:
+    fields:
+    - name: enable
+      type:
+        scalar: boolean
+    - name: labels
+      type:
+        map:
+          elementType:
+            scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.ScalingCoordinationStrategy
+  map:
+    fields:
+    - name: maxSkew
+      type:
+        namedType: io.k8s.apimachinery.pkg.util.intstr.IntOrString
+    - name: progression
+      type:
+        scalar: string
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.SchedulingCoordinationStrategy
+  map:
+    fields:
+    - name: gang
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.GangSchedulingStrategy
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.StandalonePattern
+  map:
+    fields:
+    - name: template
+      type:
+        namedType: io.k8s.api.core.v1.PodTemplateSpec
+    - name: templateRef
+      type:
+        namedType: io.k8s.sigs.rbgs.api.workloads.v1alpha2.TemplateRef
+- name: io.k8s.sigs.rbgs.api.workloads.v1alpha2.TemplateRef
+  map:
+    fields:
+    - name: name
+      type:
+        scalar: string
+      default: ""
+    - name: patch
+      type:
+        namedType: __untyped_atomic_
 - name: __untyped_atomic_
   scalar: untyped
   list:
