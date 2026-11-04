@@ -56,7 +56,7 @@ hook executor 观察到匹配 marker 后执行业务动作，完成、取消或�
 postReady 完全异步，controller 写入 marker 后立即进入 `running`，不等待业务处理完成。
 marker 不再由 executor 初始登记，也不要求 executor 在后置 hook 完成后加回。
 
-executor 负责业务重试、退避和幂等恢复。前置 hooks 可配置 `markNotReady`；
+executor 负责业务重试、退避和幂等恢复。前置 hooks 可配置 `markPodNotReady`；
 postReady marker 不阻塞 phase 或 RI Ready。
 
 ## 动机
@@ -83,7 +83,7 @@ postReady marker 不阻塞 phase 或 RI Ready。
 ### 非目标
 
 - 不在 RBGSet、RBG 或 RIS 上执行独立业务 hooks；lifecycle 虽在 Role 中定义，
-  仍以 RI 操作为执行粒度，不替换现有 RIS lifecycle API。
+  仍以 RI 操作为执行粒度。旧 RIS lifecycle API 仅保留兼容。
 - 不拦截外部直接删除 Pod、节点故障或 kubelet 自主重启容器。
 - 不提供通用脚本执行平台，不为每次 hook 创建 Job 或独立执行 Pod。
 - 不定义通用请求／结果协议，不由 RI controller 管理业务尝试次数或退避。
@@ -209,23 +209,29 @@ spec:
         preUpdate:
           labelsHandler:
             example.com/update-block: "true"
-          markNotReady: true
+          markPodNotReady: true
         preRecover:
           labelsHandler:
             example.com/recover-block: "true"
-          markNotReady: true
+          markPodNotReady: true
         postReady:
           labelsHandler:
-            example.com/ready-block: "true"
+            example.com/ready-notify: "true"
         preDelete:
           labelsHandler:
             example.com/delete-block: "true"
-          markNotReady: true
+          markPodNotReady: true
 ```
 
-配置层级已经确定：`RoleBasedGroup.spec.roles[].lifecycle` 是唯一的用户定义入口，
-每个 Role 可以声明自己的 hooks；RIS 只负责传递，RI 保存实际生效的执行快照。
-RIS 和 RI 不作为独立用户配置入口，具体 Go 字段类型和名称仍需 API 评审。
+配置层级已经确定：`RoleBasedGroup.spec.roles[].lifecycle` 是新四-hook 协议的
+唯一用户定义入口，每个 Role 可以声明自己的 hooks；RIS 传递实际生效快照，
+RI 保存该快照。具体 Go 字段类型和名称仍需 API 评审。
+
+新的 Role-level 字段与现有 `RoleInstanceSetSpec.lifecycle` 使用相同的 hook
+结构，但二者不合并。旧 RIS 字段仅供存量 standalone RIS 使用，其中
+`inPlaceUpdate` 标记为 deprecated。Alpha 准入必须拒绝新 Role-level
+lifecycle 与用户配置的旧 RIS lifecycle 同时非空；RBG 管理的 RIS lifecycle
+只能由 Role 向下传递，不得独立修改，也不得与旧协议混用。
 声明式配置只向下传递，`lifecycle-state` 和运行时 marker 只写入 RI labels，不回写 RBG 或 RIS。
 `labelsHandler` 是 controller 写入及双方判断的匹配规则，不是由 executor 维护的登记配置。
 未配置 hook 表示禁用；配置了 hook 但 `labelsHandler` 缺省或为空属于配置错误，准入校验必须拒绝。
@@ -238,7 +244,12 @@ marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被�
 handler key 也不能等于 `lifecycle-state` 或其他由 controller 管理的 RI label key；
 hook marker 本身是运行时 label，但不得与 controller 保留的状态 key 冲突。
 
-运行中修改 `labelsHandler` 不提供迁移或兼容处理。controller 按 RI 中最新的生效配置切换判断条件，
+本文中的 `lifecycle-state` 是概念名。实现必须使用
+`rbg.workloads.x-k8s.io/` 前缀下的完整 label key，且不得复用现有的
+`rbg.workloads.x-k8s.io/role-instance-lifecycle-state`。
+
+准入应在受影响 RI 的 `lifecycle-state` 非空时拒绝修改 lifecycle。
+如果修改与准入校验发生竞态，controller 按 RI 中最新的生效配置切换判断条件，
 例如从 markerA 改为 markerB 后直接检查 markerB，不继续等待 markerA，也不负责清理或迁移旧 marker。
 此类在途修改属于主动错误操作，可能跳过等待或遗留状态，不应作为正常运维方式。
 
@@ -247,13 +258,14 @@ hook marker 本身是运行时 label，但不得与 controller 保留的状态 k
 下文“工作负载 Ready”指 RI 满足原有健康条件，但不包含本功能的 lifecycle Ready 门控。
 “对外 RI Ready”是上层资源和其他 controller 观察到的最终 Ready 状态。
 
-- `preUpdate.markNotReady`、`preRecover.markNotReady` 和 `preDelete.markNotReady`
+- `preUpdate.markPodNotReady`、`preRecover.markPodNotReady` 和 `preDelete.markPodNotReady`
   控制进入相应前置阶段时是否将 RI 标记为 NotReady。
 - 该门控复用现有 `RoleInstanceCustomReady` condition；RI 的 `spec.readinessGates`
   必须登记 `RoleInstanceCustomReady`，否则现有 readiness helper 会直接返回，门控不生效。
-  实现必须保证启用 `markNotReady` 时满足此前提，不能只写 condition 而缺少 readinessGate。
+  实现必须保证启用 `markPodNotReady` 时满足此前提，不能只写 condition 而缺少 readinessGate。
 - 更新或恢复期间建立的 NotReady 门控持续到本轮操作进入 `running`，不能在 preUpdate 或 preRecover marker 清除后立即解除。
-- `postReady` 不配置 `markNotReady` 或 `blockReady`，其 marker 不参与 RI Ready 计算。
+- preDelete 建立的 NotReady 门控持续到 RI 对象删除；删除 marker 放行后不得恢复 Ready。
+- `postReady` 不配置 `markPodNotReady` 或 `blockReady`，其 marker 不参与 RI Ready 计算。
 - 工作负载达到 Ready 后，controller 写入 postReady state 和 marker，立即进入 `running`，
   并按原有健康条件和前置门控计算 RI Ready。
 - postReady 后台处理结果不改变 controller 的 phase 和 Ready；业务结果由 executor 自行诊断，流量准入由业务系统负责。
@@ -284,8 +296,8 @@ RBG 不关心 marker 的消费者身份、数量或部署方式。controller 只
 
 ### 更新交互流程
 
-以下示例使用 `example.com/update-block=true` 和 `example.com/ready-block=true`，
-分别简称 update-block 和 ready-block。
+以下示例使用 `example.com/update-block=true` 和 `example.com/ready-notify=true`，
+分别简称 update-block 和 ready-notify。
 
 ```mermaid
 sequenceDiagram
@@ -306,17 +318,17 @@ sequenceDiagram
     C->>R: 切换 lifecycle-state=updating
     C->>P: 执行原地更新或重建 Pod
     P-->>C: 本轮目标更新完成且达到工作负载 Ready
-    C->>R: 同批写入 lifecycle-state=postReady 和 ready-block=true
+    C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify=true
     C->>R: 立即切换 phase=running，解除更新门控并计算 RI Ready
     R-->>E: 观察到 postReady 且 marker 匹配
     E->>E: 异步验收新版本、恢复动态配置和注册路由
-    E->>R: 完成或取消后移除 ready-block
+    E->>R: 完成或取消后移除 ready-notify
     R-->>C: running 且 lifecycle-state=postReady、marker 不再匹配
     C->>R: 清理 lifecycle-state
 ```
 
 preUpdate 期间 marker 不匹配是 controller 开始更新的必要条件。
-postReady 不阻塞 `running`、RI Ready 或下一轮操作；executor 完成或取消后清除 ready-block，不再加回。
+postReady 不阻塞 `running`、RI Ready 或下一轮操作；executor 完成或取消后清除 ready-notify，不再加回。
 下一轮更新由 controller 重新写入 lifecycle-state 和对应 marker。
 
 ### 恢复交互流程
@@ -340,9 +352,9 @@ sequenceDiagram
     C->>R: 切换 lifecycle-state=recovering
     C->>P: 补齐或重建本轮目标 Pod
     P-->>C: 恢复目标完成且达到工作负载 Ready
-    C->>R: 同批写入 lifecycle-state=postReady 和 ready-block=true
+    C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify=true
     C->>R: 立即切换 phase=running并解除恢复门控
-    E->>R: 后台完成或取消后移除 ready-block
+    E->>R: 后台完成或取消后移除 ready-notify
     C->>R: 清理 lifecycle-state
 ```
 
@@ -440,6 +452,12 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 
 ### 执行恢复与并发约束
 
+phase 模型来自 KEP-502，当前对应 PR #528。RI 的 `Creating`、`Running`、
+`Updating`、`Recovering`、`Terminating` 持久化在
+`RoleInstance.status.phase`，executor 同时观察 `status.phase` 和 RI lifecycle
+labels。KEP-502 的 schema 与持久化规则被接受前，本 KEP 不能进入
+implementable。
+
 业务重试由 executor 负责，controller 只重试自身 API 读写和状态收敛。
 业务结果未知时，executor 应先查询、恢复或幂等重试，不能直接清除 marker。
 
@@ -477,6 +495,11 @@ executor 启动或 watch 重连后重新读取 RI，只在 `lifecycle-state` 匹
 初始镜像错误可以在成员尚未达到工作负载 Ready 时被修正并替换，
 但 controller 不进入独立 Update／Recovery 操作，也不触发对应 hooks。
 
+Update 可能在旧 engine 已经失效时打断 Recovery。preUpdate executor 因此
+不能假设必然存在存活 engine：要么判断依赖 engine 的动作不适用并安全放行，
+要么保留 marker 等待业务侧条件满足。controller 不推断 engine 存活状态，
+也不跳过 marker。
+
 `recovering` 表示本轮恢复尚未成功完成；期间重复 reconcile 或再次观察到 Recovery 需求，
 都只继续当前恢复，不构成新一轮操作，也不能再次进入 preRecover。
 `terminating` 的 Update／Recovery 检查必须先于对应操作和 hook 逻辑，避免删除过程中被其他操作重新接管。
@@ -505,14 +528,16 @@ executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空�
 本方案沿用现有 RIS `labelsHandler` 的协作思路，但改变 marker 的初始化职责：
 新 RI 协议由 controller 在每次 hook 触发时写入，executor 只负责清除，不采用首次登记或后置加回。
 
-现有 RIS lifecycle 的配置和阶段不能不加区分地复用为新 RI 协议。
-新阶段 key、枚举、配置字段及新旧机制隔离方式需要定稿，两个 controller 不能无约束地写同一状态。
+旧 RIS `spec.lifecycle` 与新 Role-level lifecycle 共享 hook 结构，但协议状态不同。
+旧 `inPlaceUpdate` 仅在 standalone RIS 兼容路径中保留并标记 deprecated，
+不属于新四-hook 路径。两套协议不得在同一 RI 上同时生效，Alpha 准入强制该边界，
+状态 key 也必须彼此独立。
 Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提案的实例级 hooks。
 
 ### 待讨论的设计问题
 
 四个 hooks 的 API 设计已确认：Role 定义、RIS 传递、RI 生效；空 handler 校验失败；
-前置 hooks 保留 `markNotReady`，postReady 不门控 RI Ready。具体字段类型和名称仍需 API 评审。
+前置 hooks 保留 `markPodNotReady`，postReady 不门控 RI Ready。具体字段类型和名称仍需 API 评审。
 重启恢复不新增 `step`：进入 hook 时同批写入 `lifecycle-state` 与 marker；
 前置 hooks 放行后切换到 `updating`、`recovering` 或 `terminating`，不清空 state；
 postReady 则立即进入 `running` 并异步收尾。
@@ -528,9 +553,13 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 上线与回滚边界已确认：先部署 executor和权限再启用，存量 postReady 不因当前 Ready 重放；
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
+Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 互斥，
+旧 `inPlaceUpdate` 标记 deprecated。
+
 进入 `implementable` 前需解决：
 
-1. 新旧 lifecycle 的兼容或隔离。
+1. KEP-502 的 `RoleInstance.status.phase` schema 被接受，以及 Alpha 后
+   standalone RIS lifecycle 用户的迁移路径。
 2. 授权与诊断细则、版本支持矩阵和存量接管实施流程。
 3. 保留 RI finalizer 时的默认 background GC 行为、
    foreground 级联删除的准入拒绝，以及 controller 有序删除成员 Pod。
@@ -549,6 +578,10 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 #### 单元测试
 
 - 四个 hooks 的触发边界，确认不存在其他生命周期挂载点。
+- 准入拒绝新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 共存，
+  以及 marker key 与完整 controller 状态 key 冲突。
+- controller 持久化并暴露 KEP-502 的 RI `status.phase`，executor 同时观察
+  该 phase 和 lifecycle marker labels。
 - controller 在进入前置 hook 阶段时只写入一次 marker，等待期间不重复补回；
   postReady 支持幂等写入已有 marker。
 - executor 只在阶段和 marker 匹配时处理，前置 hooks 放行后清除，postReady 后台完成或取消后清除。
@@ -556,7 +589,8 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
   preDelete marker 未清除时不删除 Pod。
 - postReady marker 未清除时仍进入 `running`，且不阻塞 RI Ready。
 - postReady 仅在目标完成且工作负载 Ready 后触发，普通 Ready 抖动不重复触发。
-- 前置 `markNotReady` 的建立及解除时机，以及 postReady 不参与 RI Ready 计算。
+- 前置 `markPodNotReady` 的建立及解除时机，以及 postReady 不参与 RI Ready 计算。
+- preDelete 建立的 NotReady 门控持续到 RI 对象删除，删除 marker 放行后不恢复。
 - `recovering` 中依次执行 preRecover 和异步 postReady，普通 `running` Ready 抖动及存量启用不触发 postReady。
 - `updating` 中 Update 合并且不重复 preUpdate，Recovery 并入当前 Update；
   `recovering` 中 Update 进入 preUpdate，重复 Recovery 不重新进入或重复 preRecover。
@@ -570,7 +604,8 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 - `lifecycle-state` 与 marker 同批写入；前置 hooks 清 marker 后切换到实际操作 state，
   重启后不会重复执行已放行 hook；postReady 先进入 `running` 再异步清理 state。
 - 在途 markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
-- 启用 `markNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
+- 受影响 RI 的 `lifecycle-state` 非空时，准入拒绝修改 lifecycle。
+- 启用 `markPodNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
 - 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
 - RI 稳定后禁用 hook 可阻止后续触发；在未完成 hook 操作中删除配置，
@@ -589,6 +624,8 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 - Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
 - 稳定禁用 hook 时清理遗留运行时 labels 和 RI 上的保留 finalizer；
   操作未完成时禁用不得跳过 marker、释放 finalizer 或推进 phase。
+- 紧急 break-glass 只移除精确匹配的阻塞 marker，controller 正常推进，
+  不直接修改 phase、finalizer 或 Pod。
 
 #### 端到端测试
 
@@ -690,6 +727,12 @@ executor 需要限制观察范围、连接数、轮询频率和业务退避，�
 - 新 update 未开始：检查是否仍处于 updating；postReady 不应阻塞新操作。
 - 删除等待：区分 preDelete、Pod 删除和其他 finalizers，不应把强制清除 marker作为常规恢复方法。
 - API 不可用：连接恢复后重读阶段和 marker，不能因写入失败推断业务副作用未发生。
+
+Alpha 不提供自动忽略失败策略。executor 永久不可用时，唯一受支持的
+紧急流程是显式 break-glass：先停止新操作，确认 executor 已无法恢复且
+业务动作不再需要，记录决策，然后只移除精确匹配的阻塞 marker key，
+让 controller 正常推进。不得直接修改 phase、门控、保留的 RI finalizer
+或成员 Pods。该流程不是常规回滚，也不能替代恢复 executor。
 
 ## 实现历史
 
