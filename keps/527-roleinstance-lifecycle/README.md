@@ -210,7 +210,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | Handler key overwrites controller state | Reject reserved keys in admission |
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
 | Ready/postReady circular wait | Exclude postReady from RI Ready |
-| GC deletes Pod early | Add finalizer; verify container stop timing |
+| Foreground/direct deletion bypass | Reject foreground; direct is Recovery |
 | Executor outage blocks progress | Expose diagnostics; never skip in Alpha |
 | Broad metadata permissions | Limit scope; use admission/proxy for fields |
 
@@ -527,7 +527,7 @@ sequenceDiagram
     participant R as RI object
     participant P as Application Pod
     participant E as Hook executor
-    R-->>C: Observe RI deletion intent
+    R-->>C: Observe RI deletion intent while the reserved finalizer holds RI
     C->>R: Write lifecycle-state=preDelete and delete-block=true together
     C->>R: Set phase=terminating and establish the NotReady gate if configured
     R-->>E: Observe preDelete with a matching marker
@@ -538,8 +538,8 @@ sequenceDiagram
     E->>R: Remove delete-block after success
     R-->>C: No preDelete markers match
     C->>R: Set lifecycle-state=terminating
-    C->>P: Remove the preDelete finalizer
-    C->>P: Delete the application Pod and finish RI deletion
+    C->>P: Delete the application Pod
+    C->>R: Remove the reserved preDelete finalizer and finish RI deletion
 ```
 
 This proposal does not include `postDelete`; other mechanisms handle external
@@ -547,42 +547,47 @@ cleanup after application Pod deletion. The deletion flow consists only of
 `preDelete` coordination, Pod deletion, and final RI cleanup. The executor
 does not restore a marker after deletion completes.
 
-An RI finalizer retains only the RI object; it does not inherently prevent GC
-from deleting dependent Pods first. Therefore, when the effective RI
-configuration includes `preDelete`, the controller must inject an RBG-owned
-`preDelete` finalizer into each member Pod at creation. The executor removes
-only the delete marker on the RI. After confirming that `preDelete` has been
-released, the controller removes the Pod finalizer and performs the deletion.
-This keeps finalizer management with the controller and avoids granting the
-executor additional Pod PATCH permission.
+When the effective RI configuration includes `preDelete`, the controller
+ensures that an RBG-owned reserved finalizer is present on the RI before
+deletion can complete. The executor removes only the delete marker on the RI.
+While that marker matches, the controller does not issue member Pod deletions.
+After confirming that `preDelete` has been released, the controller deletes
+the member Pods, performs final RI cleanup, and removes its reserved finalizer.
+No per-Pod finalizer is used.
 
-When `preDelete` is enabled on an existing RI, the controller adds the
-finalizer to its existing member Pods. Disabling `preDelete` removes that
-finalizer only when the RI is stable and has no unfinished deletion.
-Disabling or modifying `preDelete` during deletion is an in-flight
-configuration change, not a supported rollback or hook-skip mechanism.
+On the default background deletion path, the reserved RI finalizer keeps the
+owner object present, and Kubernetes background GC does not delete dependent
+member Pods while their owner is solid. This is the invariant that gives the
+executor access to a live workload while `preDelete` runs. The controller is
+still responsible for not deleting member Pods before the marker is released.
+
+When `preDelete` is enabled on an existing stable RI, the controller adds the
+reserved finalizer to that RI. Disabling `preDelete` removes it only when the
+RI is stable and has no unfinished deletion. Disabling or modifying
+`preDelete` during deletion is an in-flight configuration change, not a
+supported rollback or hook-skip mechanism.
 
 Removing a hook from the effective configuration is a supported disable only
 at a stable boundary. Once the RI has no unfinished lifecycle operation, the
 controller stops triggering that hook, removes stale runtime labels owned by
-the protocol, and, for `preDelete`, removes the RBG-owned Pod finalizers.
+the protocol, and, for `preDelete`, removes the reserved RI finalizer.
 Removing a hook while its marker or state is in flight is an in-flight
 configuration change. It must not be interpreted as marker release, operation
 completion, finalizer release, or permission to skip the hook; wait for the
 operation to finish under a compatible controller or restore a compatible
 configuration before disabling it.
 
-When Update or Recovery replaces a Pod, the controller removes the old Pod's
-finalizer after the corresponding pre-operation hook is released, then
-performs the internal deletion without triggering `preDelete`. New Pods are
-created with the finalizer if required by the configuration.
+When Update or Recovery replaces a Pod, the controller performs the internal
+replacement after the corresponding pre-operation hook is released, without
+triggering `preDelete`. No member Pod requires a lifecycle finalizer.
 
-A Pod finalizer retains the Pod API object; it does not guarantee that its
-containers remain running until `preDelete` completes. A direct external Pod
-deletion cannot be undone by clearing its deletionTimestamp. That path still
-belongs to Recovery and does not trigger `preDelete`. Deletion coordination
-that requires a live engine must verify actual kubelet termination timing;
-a finalizer alone must not be presented as a liveness barrier.
+Controller-initiated deletion and default background cascade are the supported
+deletion paths. Foreground cascading deletion must be rejected by admission
+for RBG, RIS, or RI deletion requests that can reach an RI with `preDelete`
+configured; foreground GC may delete dependent Pods before the hook is
+released. A direct external Pod deletion cannot be undone by clearing its
+deletionTimestamp. That path still belongs to Recovery, does not trigger
+`preDelete`, and provides no live-engine barrier.
 
 ### Restart Recovery and Concurrency Constraints
 
@@ -724,10 +729,10 @@ operation generation.
 
 The consumer boundary is settled: RBG evaluates only marker presence and is
 agnostic to consumer identity, count, election, and aggregation. The
-`preDelete` barrier is also settled: the controller injects the finalizer at
-Pod creation and removes it after `preDelete` is released. When Update or
-Recovery replaces a Pod internally, the controller releases its finalizer
-separately without executing `preDelete`.
+`preDelete` barrier is also settled: the controller retains a reserved RI
+finalizer, deletes member Pods only after `preDelete` is released, and then
+removes the finalizer. Internal Update or Recovery replacement does not
+execute `preDelete` and needs no member Pod finalizer.
 
 The rollout and rollback boundaries are settled: deploy the executor and its
 permissions before enabling the feature; existing `postReady` hooks are not
@@ -740,8 +745,9 @@ Before this KEP can become `implementable`, the following must be resolved:
 1. Compatibility or isolation between the old and new lifecycle protocols.
 2. Authorization and diagnostics details, the version support matrix, and
    the procedure for adopting existing resources.
-3. Actual container termination timing while a `preDelete` finalizer retains
-   the Pod object.
+3. Default background GC behavior with the reserved RI finalizer, admission
+   rejection of foreground cascading deletion, and controller-ordered member
+   Pod deletion.
 
 Timeout budgets, manual skipping, and alternative failure policies are left
 for future enhancements.
@@ -823,15 +829,16 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   state-driven cancellation, recovery, and idempotent cleanup.
 - GC propagation for `preDelete`, deletion with zero Pods, and compatibility
   between old and new lifecycle protocols and Ready gates.
-- Finalizer injection at Pod creation, addition when enabled on existing
-  RIs, removal when disabled, and no early removal before `preDelete` is
-  released.
-- Update and Recovery remove the old Pod finalizer during internal
-  replacement without executing `preDelete`, and new Pods receive the
-  finalizer again.
-- Stable hook disablement removes stale runtime labels and all RBG-owned
-  `preDelete` finalizers; disablement during an unfinished operation does not
-  skip the marker, release the finalizer, or advance the phase.
+- Reserved RI finalizer addition, retention while `preDelete` is pending, and
+  removal after member Pod deletion is complete.
+- Default background deletion retains member Pods until `preDelete` is
+  released, and admission rejects foreground deletion at every affected
+  ancestor.
+- Update and Recovery replace Pods during internal replacement without
+  executing `preDelete` and without member Pod finalizers.
+- Stable hook disablement removes stale runtime labels and the reserved RI
+  finalizer; disablement during an unfinished operation does not skip the
+  marker, release the finalizer, or advance the phase.
 
 #### E2E Tests
 
@@ -847,8 +854,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   not affect RI Ready, while application routing resumes according to its
   own traffic policy.
 - The controller does not terminate application Pods before `preDelete`
-  completes; after release, it removes the finalizer and proceeds with final
-  deletion.
+  completes; after release, it deletes member Pods and removes the reserved
+  RI finalizer.
 - Submit several consecutive updates and verify that `updating` does not
   repeat preUpdate, old postReady work does not block new operations, and
   same-name markers are handled idempotently.
@@ -882,8 +889,8 @@ Enabling the feature on an existing RI must not replay `postReady` or
 `preUpdate` merely because the RI is currently Ready or was updated in the
 past. `postReady` is triggered by a controlled operation's state transition
 and runtime labels, not by the current Ready state of an existing RI alone.
-When `preDelete` is enabled, the controller adds finalizers to existing
-member Pods as described above.
+When `preDelete` is enabled, the controller adds the reserved finalizer to
+existing stable RIs as described above.
 
 Before enabling lifecycle hooks, deploy a compatible executor and verify its
 RBAC permissions, then allow hook configuration. Writing a pre-operation
@@ -899,8 +906,8 @@ reusing an existing name with different semantics.
 
 Before an incompatible downgrade, disable the hooks while a controller that
 understands the protocol still owns the RIs. Wait until every RI is stable,
-has no `lifecycle-state` or marker, and has no RBG-owned `preDelete` finalizer
-remaining. Verify those conditions before replacing the controller; otherwise,
+has no `lifecycle-state` or marker, and has no reserved `preDelete` RI
+finalizer remaining. Verify those conditions before replacing the controller; otherwise,
 retain a compatible controller to finish operations and remove finalizers. Do
 not downgrade directly while an operation is unfinished. A downgrade could
 otherwise ignore phases, bypass hooks, or stall deletion. Clearing labels,
@@ -933,12 +940,13 @@ skip an unfinished phase. A version that does not understand the current
 protocol must not take over an unfinished operation. `preDelete` requires an
 executor that is available before application Pod deletion and validation of
 the barrier across all supported deletion paths.
+Foreground cascading deletion is not a supported path and must be rejected by
+admission when it can reach an RI with `preDelete` configured.
 
 For an incompatible rollback, disable the hook configuration before removing
 the compatible controller. The disablement is complete only after the RIs are
-stable and the compatible controller has removed all `preDelete` Pod
-finalizers. A feature-gate change or configuration deletion is not a substitute
-for that convergence.
+stable and no reserved `preDelete` RI finalizer remains. A feature-gate change
+or configuration deletion is not a substitute for that convergence.
 
 ### Rollout, Upgrade, and Rollback Planning
 
