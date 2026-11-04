@@ -30,7 +30,6 @@ import (
 // this defaulter heals the stored template itself, so the set stays writable and
 // the template stops diverging from the normalized children it produces.
 //
-// +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=mrolebasedgroupset.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupSetDefaulter struct{}
 
