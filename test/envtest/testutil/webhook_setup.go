@@ -40,8 +40,8 @@ import (
 )
 
 // SetupWebhookTestEnv initializes a webhook-enabled test environment: the same
-// CRDs as SetupTestEnv, plus the three mutating admission webhooks the release
-// installs (RoleBasedGroup, RoleBasedGroupSet, RoleInstanceSet defaulters) served
+// CRDs as SetupTestEnv, plus RBG/RBGSet validators and the three mutating admission
+// webhooks (RoleBasedGroup, RoleBasedGroupSet, RoleInstanceSet defaulters) served
 // by the manager's webhook server. No controllers are started: the point of this
 // suite is the admission path itself, and the objects it creates must survive
 // exactly as the webhooks wrote them.

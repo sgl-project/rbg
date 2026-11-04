@@ -23,9 +23,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	"sigs.k8s.io/rbgs/pkg/utils"
 
 	"sigs.k8s.io/yaml"
@@ -131,8 +133,12 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Inst
 		portMap[generatePortKey(port)] = port.Port
 	}
 
+	members, err := b.memberOrdinals(role)
+	if err != nil {
+		return nil, err
+	}
 	var instances []Instance
-	for i := 0; i < int(*role.Replicas); i++ {
+	for _, i := range members {
 		var addresses []string
 
 		switch {
@@ -228,4 +234,36 @@ func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
 
 	diff := cmp.Diff(oldCopy, newCopy, opts)
 	return diff == "", diff
+}
+
+// Discovery follows the committed child target, not live Pods or the exclusion
+// input. Before initial child creation it uses the same initial planner.
+func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int, error) {
+	dense := func() ([]int, error) { return (ordinals.Ranges{}).Members(int(*role.Replicas)) }
+	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType || !workloadsv1alpha2.IsStatefulRole(role) {
+		return dense()
+	}
+	set := &workloadsv1alpha2.RoleInstanceSet{}
+	err := b.client.Get(context.TODO(), client.ObjectKey{Namespace: b.rbg.Namespace, Name: b.rbg.GetWorkloadName(role)}, set)
+	_, present := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
+	if apierrors.IsNotFound(err) {
+		if !present {
+			return dense()
+		}
+		e, err := ordinals.Parse(role.Annotations[constants.ExcludedOrdinalsAnnotationKey])
+		if err != nil {
+			return nil, err
+		}
+		return ordinals.Select(nil, int(*role.Replicas), e)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if present || set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
+		if owner := metav1.GetControllerOf(set); owner == nil || owner.UID != b.rbg.UID {
+			return nil, fmt.Errorf("discovery RIS %s has a different controller owner", set.Name)
+		}
+		return set.CommittedOrdinals()
+	}
+	return dense()
 }

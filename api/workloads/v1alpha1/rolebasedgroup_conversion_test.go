@@ -1298,3 +1298,14 @@ func TestRoleBasedGroup_RoundTrip_UpdateStrategyType(t *testing.T) {
 		})
 	}
 }
+
+func TestExcludedOrdinalsSurviveVersionConversion(t *testing.T) {
+	src := &RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Name: "group"}, Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{Name: "worker", Replicas: ptr.To[int32](3), Annotations: map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3-5"}, Workload: WorkloadSpec{APIVersion: v2.GroupVersion.String(), Kind: "RoleInstanceSet"}, TemplateSource: TemplateSource{Template: podTemplate("app")}}}}}
+	converted := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(converted))
+	require.Equal(t, "1,3-5", converted.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey])
+	require.NoError(t, v2.ValidateExcludedOrdinals(converted))
+	restored := &RoleBasedGroup{}
+	require.NoError(t, restored.ConvertFrom(converted))
+	require.Equal(t, "1,3-5", restored.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey])
+}

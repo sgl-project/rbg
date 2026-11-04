@@ -36,6 +36,7 @@ func TestConfigBuilder_Build(t *testing.T) {
 	replicas1 := int32(1)
 	schema := runtime.NewScheme()
 	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
 
 	tests := []struct {
 		name     string
