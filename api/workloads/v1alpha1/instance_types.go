@@ -24,8 +24,6 @@ import (
 // InstanceSpec defines the desired state of Instance
 type InstanceSpec struct {
 	// Components is a list of components, each of which specifies a component and the number of replicas and template for Instance that match the component.
-	// +patchMergeKey=name
-	// +patchStrategy=merge
 	Components []InstanceComponent `json:"components" patchStrategy:"merge" patchMergeKey:"name"`
 
 	// MinReadySeconds is the minimum number of seconds for which a newly created Pod should be ready without any of its containers crashing, for it to be considered available.

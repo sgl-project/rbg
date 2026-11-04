@@ -64,17 +64,17 @@ When your modification involves the CRD API definition, you need to update the g
 ```shell
 # Generates WebhookConfiguration, CustomResourceDefinition objects.
 $ make manifests
-# Generates DeepCopy methods, the OpenAPI definitions in pkg/generated/openapi, and the client in client-go/.
+# Generates DeepCopy methods and the client in client-go/. Runs `make manifests` first.
 $ make generate
 ```
 
-`make generate` also embeds an OpenAPI schema of the API types in the apply configurations under
-`client-go/applyconfiguration`, which `fake.NewClientset()` and the generated `Extract<Kind>` helpers
-need to handle RBG objects. A new API version package therefore needs the `+k8s:openapi-gen=true`
-marker in its `doc.go` (the tests in `pkg/generated/openapi` fail without it), and a field with
-`patchStrategy`/`patchMergeKey` struct tags needs matching `+patchStrategy`/`+patchMergeKey` comment
-markers, or openapi-gen fails. CI runs `make generate` and fails when the result differs from what is
-committed.
+The apply configurations in `client-go/applyconfiguration` embed the schema kube-apiserver uses for
+server-side apply on the RBG custom resources, which `fake.NewClientset()` and the generated
+`Extract<Kind>` helpers need. `hack/models-schema` derives it from the CRDs in `config/crd/bases`,
+which is why `make generate` runs `make manifests` first. When you add an API version, register its
+package in `hack/models-schema`; the tests in `internal/clientgo` compare the embedded schema with
+kube-apiserver's for every kind. CI runs `make generate` and fails when the result differs from what
+is committed.
 
 `make manifests` also regenerates the Helm chart's ClusterRole
 (`deploy/helm/rbgs/templates/rbac/clusterrole.yaml`) from `config/rbac/role.yaml`, so a change to

@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 // +kubebuilder:object:generate=true
-// +k8s:openapi-gen=true
 // +groupName=workloads.x-k8s.io
 
 package v1alpha1

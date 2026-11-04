@@ -29,26 +29,17 @@ source "${CODEGEN_PKG}/kube_codegen.sh"
 GOFLAGS=-mod=mod kube::codegen::gen_helpers ${REPO_ROOT}/api \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
 
-# applyconfiguration-gen needs an OpenAPI schema of the RBG types to embed a
-# structured-merge-diff schema in client-go/applyconfiguration/internal and to
-# generate Extract<Kind> helpers. Without one, fake.NewClientset() rejects every
-# RBG object. RBG types embed core/v1 types such as PodTemplateSpec, so those
-# packages are generated as well to keep every reference resolvable.
+# applyconfiguration-gen embeds a structured-merge-diff schema in
+# client-go/applyconfiguration/internal, which Extract<Kind> and
+# fake.NewClientset() use to track field ownership. It must match the schema
+# kube-apiserver uses for server-side apply on the RBG custom resources, so
+# hack/models-schema derives it from the CRDs in config/crd/bases (written by
+# `make manifests`) instead of from the Go types.
 OPENAPI_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${OPENAPI_TMP_DIR}"' EXIT
 
-# API rule violations are not enforced, so the report goes to the temp dir.
-GOFLAGS=-mod=mod kube::codegen::gen_openapi ${REPO_ROOT}/api \
-    --extra-pkgs k8s.io/api/core/v1 \
-    --extra-pkgs k8s.io/apimachinery/pkg/api/resource \
-    --extra-pkgs k8s.io/apimachinery/pkg/util/intstr \
-    --output-dir "${REPO_ROOT}/pkg/generated/openapi" \
-    --output-pkg sigs.k8s.io/rbgs/pkg/generated/openapi \
-    --report-filename "${OPENAPI_TMP_DIR}/api_violations.report" \
-    --update-report \
-    --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
-
-GOFLAGS=-mod=mod "${GO_CMD}" run ./hack/models-schema > "${OPENAPI_TMP_DIR}/swagger.json"
+GOFLAGS=-mod=mod "${GO_CMD}" run ./hack/models-schema \
+    --crd-dir "${REPO_ROOT}/config/crd/bases" > "${OPENAPI_TMP_DIR}/swagger.json"
 
 GOFLAGS=-mod=mod kube::codegen::gen_client ${REPO_ROOT}/api \
     --with-watch \
