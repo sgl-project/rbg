@@ -181,6 +181,16 @@ ChildReadiness
 
 A current external blocker outranks an activity reason because it explains why the current target is not converging. Child readiness is not an external blocker: during creation, update, scaling, or recovery it is subsumed by the active workflow reason and is reported independently by `Ready`. If no active workflow remains but the target is not ready, child readiness may be the `Progressing` reason. This precedence affects reporting only, not controller execution order.
 
+Within the Activity family, RBG uses this deterministic precedence:
+
+```text
+Creating
+Recovering
+ScalingOrUpdating
+```
+
+When multiple Activity facts are present, RBG uses the highest-precedence activity reason and describes all activities in message. `Creating` outranks recovery because the group has not yet reached its first steady state; `Recovering` outranks ordinary target changes because it reports repair work; `ScalingOrUpdating` is the aggregate reason for normal target changes.
+
 `RolesNotReady` and `RoleNotReady` are distinct, case- and plural-sensitive machine-readable strings. `RolesNotReady` is the RBG child-readiness reason for `Progressing`; `RoleNotReady` is the retained RBG `Ready=False` reason. Clients must match the exact string and must not normalize singular and plural forms.
 
 ### Validation Ownership and Failure Semantics
@@ -482,6 +492,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Individual RIS / RI scaling or update failures produce Warning Events on the corresponding objects, not new failure conditions, and do not directly change Accepted, Ready, or phase. Legacy writes during the compatibility window follow migration rules. Repeated failures must remain edge-triggered and aggregated so they do not exhaust the object's event budget or trigger the client-go spam filter.
 - Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
+- When one role is `Recovering` and another is updating, RBG uses `Recovering`; when one role is `Creating` and another is updating or recovering, RBG uses `Creating`; when only update or scaling work remains, RBG uses `ScalingOrUpdating`. Message describes every concurrent activity.
 - A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
 - RI phase and `Progressing` remain independent, including `phase=Recovering` with `Progressing=True` while recovery is blocked, and `phase=Running` with `Progressing=True` for a blocker that does not involve recovery.
 - Cover absent / False / Unknown / True gates, multiple gates, readyPolicy, and reason consistency across blocking, recovery, and repeated blocking.
