@@ -100,6 +100,11 @@ func TestRoleSpec_GetRestartPolicyConfig(t *testing.T) {
 			expectedType: RestartPolicyNone,
 		},
 		{
+			name:         "always policy is preserved",
+			role:         lwpRole(RecreateRoleInstanceOnPodRestart, &RestartPolicyConfig{Type: RestartPolicyAlways}),
+			expectedType: RestartPolicyAlways,
+		},
+		{
 			name:         "legacy field used when config carries no type",
 			role:         lwpRole(RestartPolicyNone, &RestartPolicyConfig{BaseDelaySeconds: ptr.To(int32(5))}),
 			expectedType: RestartPolicyNone,

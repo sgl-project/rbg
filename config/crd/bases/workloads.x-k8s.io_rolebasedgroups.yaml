@@ -8958,6 +8958,7 @@ spec:
                       enum:
                       - None
                       - RecreateRoleInstanceOnPodRestart
+                      - Always
                       type: string
                     rolloutStrategy:
                       description: |-
@@ -23971,6 +23972,7 @@ spec:
                           enum:
                           - None
                           - RecreateRoleInstanceOnPodRestart
+                          - Always
                           type: string
                         restartPolicyConfig:
                           description: |-
@@ -24000,6 +24002,7 @@ spec:
                               enum:
                               - None
                               - RecreateRoleInstanceOnPodRestart
+                              - Always
                               type: string
                           type: object
                           x-kubernetes-validations:
@@ -25418,6 +25421,7 @@ spec:
                           enum:
                           - None
                           - RecreateRoleInstanceOnPodRestart
+                          - Always
                           type: string
                         restartPolicyConfig:
                           description: |-
@@ -25447,6 +25451,7 @@ spec:
                               enum:
                               - None
                               - RecreateRoleInstanceOnPodRestart
+                              - Always
                               type: string
                           type: object
                           x-kubernetes-validations:

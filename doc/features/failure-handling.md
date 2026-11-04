@@ -1,6 +1,6 @@
 # Failure Handling
 
-RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanceOnPodRestart`.
+RBG supports multiple failure handling policies: `None`, `RecreateRoleInstanceOnPodRestart`, and `Always`.
 
 ![failure-handling](../img/failure-handling.png)
 
@@ -9,7 +9,8 @@ RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanc
 | Policy | Description |
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails or a container restarts. Default for `leaderWorkerPattern` and `customComponentsPattern`. |
+| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails, is deleted, or a container restarts. Default for `leaderWorkerPattern` and `customComponentsPattern`. |
+| `Always` | Recreate only the affected role instance whenever a pod is failed, is deleted, restarts, or the owned pod count differs from the expected size. |
 
 ## Configuration
 
@@ -20,7 +21,7 @@ Set the `restartPolicyConfig` field on the pattern (`leaderWorkerPattern` or `cu
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None` or `RecreateRoleInstanceOnPodRestart`. |
+| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None`, `RecreateRoleInstanceOnPodRestart`, or `Always`. |
 | `baseDelaySeconds` | int | `30` | Base delay (seconds) for exponential backoff between restart attempts. Set to `0` with `maxDelaySeconds: 0` to disable backoff entirely. |
 | `maxDelaySeconds` | int | `600` | Cap (seconds) for the exponential backoff delay. |
 
@@ -87,7 +88,7 @@ spec:
 
 ## Exponential Backoff
 
-When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
+When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart` or `Always`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
 
 - **First crash**: immediate recreation (no delay).
 - **Second crash** (within the stability window): delayed by `baseDelaySeconds`.
@@ -175,7 +176,8 @@ When this annotation is set to "Ignore" on a component's pod template:
 
 ## Use Cases
 
-- **RecreateRoleInstanceOnPodRestart**: Worker roles where pod failure or container restart should recreate the affected instance.
+- **RecreateRoleInstanceOnPodRestart**: Worker roles where pod failure, deletion, or container restart should recreate the affected instance.
+- **Always**: Strict process groups (for example inference rings) where any pod failure, deletion, restart, or owned-pod count mismatch should recreate the affected instance.
 - **None**: Monitoring/logging sidecars that don't affect the main workload. Failed pods are replaced individually.
 - **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components within a multi-component instance whose pod failures should not trigger the role's restart policy for the entire instance.
 

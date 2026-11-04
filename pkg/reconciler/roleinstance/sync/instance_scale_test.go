@@ -277,8 +277,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Pod being deleted - should NOT recreate",
-			desc: "Pod being deleted (with DeletionTimestamp) is not counted as Failed",
+			name: "Pod being deleted - should recreate",
+			desc: "Pod being deleted (with DeletionTimestamp) invalidates the instance process group",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -287,7 +287,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
 					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](1)},
+						{Name: "main", Size: ptr.To[int32](1)},
 					},
 				},
 				Status: workloadsv1alpha2.RoleInstanceStatus{
@@ -304,11 +304,15 @@ func TestShouldRecreateInstance(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						DeletionTimestamp: &metav1.Time{},
+						Labels: map[string]string{
+							constants.ComponentNameLabelKey: "main",
+							constants.ComponentIDLabelKey:   "0",
+						},
 					},
 					Status: corev1.PodStatus{Phase: corev1.PodFailed},
 				},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "All pods Running - should NOT recreate",
@@ -1618,6 +1622,143 @@ func TestShouldRecreateInstance(t *testing.T) {
 			assert.Equal(t, tt.expected, result, tt.desc)
 		})
 	}
+}
+
+func TestShouldRecreateInstanceAlwaysPolicy(t *testing.T) {
+	newInstance := func() *workloadsv1alpha2.RoleInstance {
+		return &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "test-instance",
+				Generation: 2,
+			},
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+					Type: workloadsv1alpha2.RestartPolicyAlways,
+				},
+				Components: []workloadsv1alpha2.RoleInstanceComponent{
+					{Size: ptr.To[int32](2)},
+				},
+			},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				ObservedGeneration: 1,
+				CurrentRevision:    "rev-1",
+				UpdateRevision:     "rev-2",
+				Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+				},
+			},
+		}
+	}
+	runningPod := func() *corev1.Pod {
+		return &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	}
+
+	tests := []struct {
+		name     string
+		pods     []*corev1.Pod
+		expected bool
+	}{
+		{
+			name:     "no pods does not trigger initial creation",
+			pods:     nil,
+			expected: false,
+		},
+		{
+			name:     "expected running pods do not trigger",
+			pods:     []*corev1.Pod{runningPod(), runningPod()},
+			expected: false,
+		},
+		{
+			name:     "missing pod triggers",
+			pods:     []*corev1.Pod{runningPod()},
+			expected: true,
+		},
+		{
+			name:     "extra pod triggers",
+			pods:     []*corev1.Pod{runningPod(), runningPod(), runningPod()},
+			expected: true,
+		},
+		{
+			name: "failed pod triggers",
+			pods: []*corev1.Pod{
+				runningPod(),
+				{Status: corev1.PodStatus{Phase: corev1.PodFailed}},
+			},
+			expected: true,
+		},
+		{
+			name: "terminating pod triggers",
+			pods: []*corev1.Pod{
+				runningPod(),
+				{
+					ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{}},
+					Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "container restart triggers",
+			pods: []*corev1.Pod{
+				runningPod(),
+				{
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "main", RestartCount: 1},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, shouldRecreateInstance(newInstance(), tt.pods, nil))
+		})
+	}
+}
+
+func TestShouldRecreateInstanceDeletedPodWhenNotReady(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-instance",
+			Generation: 1,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "main", Size: ptr.To[int32](2)},
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1,
+			CurrentRevision:    "rev-1",
+			UpdateRevision:     "rev-1",
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
+			},
+		},
+	}
+	pods := []*corev1.Pod{
+		{Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				DeletionTimestamp: &metav1.Time{},
+				Labels: map[string]string{
+					constants.ComponentNameLabelKey: "main",
+					constants.ComponentIDLabelKey:   "1",
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		},
+	}
+
+	assert.True(t, shouldRecreateInstance(instance, pods, nil))
 }
 
 // TestRestartingCachePreventsRecreation tests that the in-memory restarting cache

@@ -91,7 +91,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// and the Restarting condition. A single fresh read is shared between
 	// checkRestartBackoff and shouldRecreateInstance to avoid duplicate API calls.
 	var freshInstance *workloadsv1alpha2.RoleInstance
-	if updateInstance.Spec.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if usesInstanceRestartPolicy(updateInstance.Spec.GetRestartPolicy()) {
 		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
 	}
 
@@ -332,7 +332,17 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 	var modified bool
 
 	for _, pod := range podsToDelete {
+		// The restart-policy path can list pods that are already terminating or
+		// have disappeared since the informer snapshot was taken.
+		if pod.DeletionTimestamp != nil {
+			modified = true
+			continue
+		}
 		if err := c.Delete(ctx, pod); err != nil {
+			if apierrors.IsNotFound(err) {
+				modified = true
+				continue
+			}
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedDelete", "failed to delete pod %s: %v", pod.Name, err)
 			return modified, err
 		}
@@ -417,8 +427,8 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 
 func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstance,
 	fresh *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
-	// Only applies when restart policy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.GetRestartPolicy() != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	// Only applies to policies that recreate the whole RoleInstance.
+	if !usesInstanceRestartPolicy(instance.Spec.GetRestartPolicy()) {
 		return 0
 	}
 
@@ -555,6 +565,7 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 // shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
 // This applies when restartPolicy = RecreateRoleInstanceOnPodRestart AND:
 //   - Any Pod is in Failed phase, OR
+//   - Any Pod is being deleted, OR
 //   - Any container has restarted (RestartCount > 0)
 //
 // Pods with the restart-trigger-policy annotation set to "Ignore" are excluded —
@@ -568,14 +579,23 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 // Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
 // and should not trigger Instance recreation.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
-	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.GetRestartPolicy() != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	// Only apply to policies that recreate the whole RoleInstance.
+	if !usesInstanceRestartPolicy(instance.Spec.GetRestartPolicy()) {
 		return false
 	}
 
 	// If no pods exist yet (initial creation), don't trigger recreate
 	if len(pods) == 0 {
 		return false
+	}
+
+	// Always is a strict formation policy: a missing, extra, failed, deleted, or
+	// restarted pod invalidates the whole instance. It intentionally does not use
+	// the readiness/revision gates below because scale changes must also trigger
+	// a full recreation.
+	if instance.Spec.GetRestartPolicy() == workloadsv1alpha2.RestartPolicyAlways &&
+		hasAlwaysPolicyTrigger(instance, pods, baselines) {
+		return true
 	}
 
 	// Only trigger when Instance was previously Ready (stable state)
@@ -588,7 +608,8 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// This bypass is bounded: after the stable threshold (max(maxDelay*2, 10min)) elapses
 	// without a restart, hasRecentRestart returns false and the normal wasInstanceReady
 	// check resumes. LastRestartTime is preserved as a historical record.
-	if (!wasInstanceReady(instance) && !hasRecentRestart(instance)) ||
+	if (!wasInstanceReady(instance) && !hasRecentRestart(instance) &&
+		!hasDeletedExpectedMember(instance, pods)) ||
 		instance.Generation != instance.Status.ObservedGeneration {
 		return false
 	}
@@ -614,6 +635,12 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
 			return true
 		}
+		// A terminating pod is being deleted (for example by eviction, preemption,
+		// drain, or a manual delete). Its replacement would not be able to rejoin a
+		// process group formed by the surviving pods.
+		if p.DeletionTimestamp != nil && isExpectedMemberSlot(instance, p) {
+			return true
+		}
 		// Check if any container has restarted beyond what's expected from in-place updates.
 		if containerRestarted(p) && !isContainerRestartExpected(p, baselines) {
 			return true
@@ -621,6 +648,80 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	}
 
 	return false
+}
+
+// usesInstanceRestartPolicy reports whether the policy recreates the whole
+// RoleInstance instead of replacing an individual pod.
+func usesInstanceRestartPolicy(policy workloadsv1alpha2.RestartPolicyType) bool {
+	return policy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart ||
+		policy == workloadsv1alpha2.RestartPolicyAlways
+}
+
+// hasDeletedExpectedMember reports whether an expected member pod is
+// terminating. This bypasses the current-readiness gate: a node failure can make
+// the instance NotReady before eviction sets the pod's DeletionTimestamp.
+func hasDeletedExpectedMember(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
+	for _, p := range pods {
+		if p.DeletionTimestamp != nil &&
+			!hasTriggerPolicyIgnore(p) &&
+			isExpectedMemberSlot(instance, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExpectedMemberSlot reports whether the pod occupies a slot below its
+// component's current size. Pods left over after scale-in are not members.
+func isExpectedMemberSlot(instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) bool {
+	if instance == nil || pod == nil {
+		return false
+	}
+	componentName := instanceutil.GetPodComponentName(pod)
+	componentID := instanceutil.GetPodComponentID(pod)
+	for i := range instance.Spec.Components {
+		component := &instance.Spec.Components[i]
+		if component.Name != componentName {
+			continue
+		}
+		return component.Size != nil && componentID >= 0 && componentID < *component.Size
+	}
+	return false
+}
+
+// hasAlwaysPolicyTrigger reports whether any pod-level state invalidates an
+// instance using the Always restart policy.
+func hasAlwaysPolicyTrigger(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod,
+	baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
+	if len(pods) != expectedPodCount(instance) {
+		return true
+	}
+	for _, p := range pods {
+		if hasTriggerPolicyIgnore(p) {
+			continue
+		}
+		if p.Status.Phase == v1.PodFailed || p.DeletionTimestamp != nil {
+			return true
+		}
+		if containerRestarted(p) && !isContainerRestartExpected(p, baselines) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedPodCount sums component sizes for the instance's current spec.
+func expectedPodCount(instance *workloadsv1alpha2.RoleInstance) int {
+	if instance == nil {
+		return 0
+	}
+	count := 0
+	for i := range instance.Spec.Components {
+		if size := instance.Spec.Components[i].Size; size != nil {
+			count += int(*size)
+		}
+	}
+	return count
 }
 
 // containerRestarted checks if any container in the pod has been restarted.

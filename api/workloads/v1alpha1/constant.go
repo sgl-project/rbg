@@ -221,6 +221,11 @@ const (
 	// failed, we will recreate only one lws instance, not all lws instances.
 	// It equals to RecreateGroupOnPodRestart in lws.spec.LeaderWorkerTemplate.RestartPolicyType
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
+
+	// AlwaysRestartPolicy is the v1alpha1 pass-through spelling of the v1alpha2
+	// Always restart policy. It recreates an instance whenever a pod is failed,
+	// deleted, or the owned pod count differs from the expected size.
+	AlwaysRestartPolicy RestartPolicyType = "Always"
 )
 
 // UpdateStrategyType defines strategies for Instances in-place update.

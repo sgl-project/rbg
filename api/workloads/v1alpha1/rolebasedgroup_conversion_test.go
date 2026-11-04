@@ -1177,6 +1177,7 @@ func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
 		{"empty preserved, getter resolves to Recreate", "", "", v2.RecreateRoleInstanceOnPodRestart},
 		{"None preserved", NoneRestartPolicy, NoneRestartPolicy, v2.RestartPolicyNone},
 		{"Recreate preserved", RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestart, v2.RecreateRoleInstanceOnPodRestart},
+		{"Always preserved", AlwaysRestartPolicy, AlwaysRestartPolicy, v2.RestartPolicyAlways},
 	}
 
 	for _, tc := range tests {
