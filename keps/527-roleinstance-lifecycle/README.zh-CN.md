@@ -225,18 +225,29 @@ spec:
 
 配置层级已经确定：`RoleBasedGroup.spec.roles[].lifecycle` 是新四-hook 协议的
 唯一用户定义入口，每个 Role 可以声明自己的 hooks；RIS 传递实际生效快照，
-RI 保存该快照。具体 Go 字段类型和名称仍需 API 评审。
+RI 保存该快照。新字段复用现有 lifecycle hook 结构，并向 lifecycle 对象扩展
+`preUpdate`、`preRecover` 和 `postReady`；具体 Go 类型位置仍需 API 评审。
 
-新的 Role-level 字段与现有 `RoleInstanceSetSpec.lifecycle` 使用相同的 hook
-结构，但二者不合并。旧 RIS 字段仅供存量 standalone RIS 使用，其中
+新的 Role-level 字段与现有 `RoleInstanceSetSpec.lifecycle` 复用同一 API
+类型族，但运行协议彼此独立。旧 RIS 字段仅供存量 standalone RIS 使用，其中
 `inPlaceUpdate` 标记为 deprecated。Alpha 准入必须拒绝新 Role-level
 lifecycle 与用户配置的旧 RIS lifecycle 同时非空；RBG 管理的 RIS lifecycle
 只能由 Role 向下传递，不得独立修改，也不得与旧协议混用。
+
+考虑 Kubernetes API 兼容，复用 hook 类型上的 `finalizersHandler` 字段保留。
+该字段在新 Role-level 协议中标记 deprecated，且必须为空；非空时准入拒绝。
+旧 RIS 协议继续保留现有 `finalizersHandler` 语义。新 Role-level 路径同样
+拒绝 `inPlaceUpdate`；该字段虽因类型复用而存在，但只属于旧 RIS 兼容路径。
+反之，legacy standalone RIS 路径拒绝 `preUpdate`、`preRecover` 和
+`postReady`；这三个 hook 只在新 Role-level 协议中生效。
 声明式配置只向下传递，`lifecycle-state` 和运行时 marker 只写入 RI labels，不回写 RBG 或 RIS。
 `labelsHandler` 是 controller 写入及双方判断的匹配规则，不是由 executor 维护的登记配置。
 未配置 hook 表示禁用；配置了 hook 但 `labelsHandler` 缺省或为空属于配置错误，准入校验必须拒绝。
 前置 hooks 的多个 label 表示多个协作条件，全部不再匹配后 controller 才继续。
 普通 metadata 同步不得修改运行时 marker。
+
+由于 postReady 复用 hook 类型，其结构上可用的 `finalizersHandler` 和
+`markPodNotReady` 在语义上无效。postReady 配置任一字段时，准入必须拒绝。
 
 marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被多个已配置 hook 使用时，
 准入校验必须拒绝，包括 postReady 和 preDelete 共用 key 的情况；
@@ -528,16 +539,19 @@ executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空�
 本方案沿用现有 RIS `labelsHandler` 的协作思路，但改变 marker 的初始化职责：
 新 RI 协议由 controller 在每次 hook 触发时写入，executor 只负责清除，不采用首次登记或后置加回。
 
-旧 RIS `spec.lifecycle` 与新 Role-level lifecycle 共享 hook 结构，但协议状态不同。
+旧 RIS `spec.lifecycle` 与新 Role-level lifecycle 复用同一 API 类型族，但协议状态不同。
 旧 `inPlaceUpdate` 仅在 standalone RIS 兼容路径中保留并标记 deprecated，
-不属于新四-hook 路径。两套协议不得在同一 RI 上同时生效，Alpha 准入强制该边界，
-状态 key 也必须彼此独立。
+新 Role-level 路径拒绝该字段。deprecated 的 `finalizersHandler` 为 API 兼容而保留，
+仅在旧 RIS 协议中保持原语义；新 Role-level 协议必须为空。
+两套运行协议不得在同一 RI 上同时生效，Alpha 准入强制该边界，状态 key 也必须彼此独立。
 Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提案的实例级 hooks。
 
 ### 待讨论的设计问题
 
-四个 hooks 的 API 设计已确认：Role 定义、RIS 传递、RI 生效；空 handler 校验失败；
-前置 hooks 保留 `markPodNotReady`，postReady 不门控 RI Ready。具体字段类型和名称仍需 API 评审。
+四个 hooks 的 API 设计已确认：Role 定义、RIS 传递、RI 生效；复用现有 hook 结构并扩展
+三个新 hook 字段；空 `labelsHandler` 校验失败；前置 hooks 保留 `markPodNotReady`，
+postReady 不门控 RI Ready；新 Role-level 路径上的 `finalizersHandler` 标记
+deprecated 且必须为空。具体 Go 类型位置仍需 API 评审。
 重启恢复不新增 `step`：进入 hook 时同批写入 `lifecycle-state` 与 marker；
 前置 hooks 放行后切换到 `updating`、`recovering` 或 `terminating`，不清空 state；
 postReady 则立即进入 `running` 并异步收尾。
@@ -553,8 +567,9 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 上线与回滚边界已确认：先部署 executor和权限再启用，存量 postReady 不因当前 Ready 重放；
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
-Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 互斥，
-旧 `inPlaceUpdate` 标记 deprecated。
+Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 互斥；
+旧 `inPlaceUpdate` 标记 deprecated，`finalizersHandler` 为 API 兼容保留但在
+新 Role-level 路径上 deprecated 且必须为空。
 
 进入 `implementable` 前需解决：
 
@@ -580,6 +595,10 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
 - 四个 hooks 的触发边界，确认不存在其他生命周期挂载点。
 - 准入拒绝新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 共存，
   以及 marker key 与完整 controller 状态 key 冲突。
+- 新 Role-level lifecycle 中，非空 deprecated `finalizersHandler`、
+  `inPlaceUpdate`，以及 postReady 使用 `finalizersHandler` 或
+  `markPodNotReady` 均被准入拒绝；旧 RIS 协议保留现有
+  `finalizersHandler` 行为，并拒绝三个新 hook 字段。
 - controller 持久化并暴露 KEP-502 的 RI `status.phase`，executor 同时观察
   该 phase 和 lifecycle marker labels。
 - controller 在进入前置 hook 阶段时只写入一次 marker，等待期间不重复补回；

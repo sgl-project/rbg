@@ -308,17 +308,28 @@ spec:
 The configuration hierarchy is settled:
 `RoleBasedGroup.spec.roles[].lifecycle` is the sole user-facing definition
 point for the new four-hook protocol. Each Role may declare its own hooks;
-RIS propagates the effective snapshot, and RI stores it. The concrete Go field
-types and names still require API review.
+RIS propagates the effective snapshot, and RI stores it. The new field reuses
+the existing lifecycle hook structure and extends the lifecycle object with
+`preUpdate`, `preRecover`, and `postReady`; exact Go type placement still
+requires API review.
 
 The new Role-level field and the existing
-`RoleInstanceSetSpec.lifecycle` use the same hook structure, but they are not
-merged. The legacy RIS field remains for existing standalone RIS usage, and
-its `inPlaceUpdate` hook is deprecated. Alpha admission must reject a
-Role/RIS combination in which the new Role-level lifecycle and a legacy
-user-configured RIS lifecycle are both non-empty. RBG-managed RIS lifecycle
-data is propagated from the Role and must not be independently edited or
-combined with the legacy protocol.
+`RoleInstanceSetSpec.lifecycle` reuse the same API type family, but their
+runtime protocols are distinct. The legacy RIS field remains for existing
+standalone RIS usage, and its `inPlaceUpdate` hook is deprecated. Alpha
+admission must reject a Role/RIS combination in which the new Role-level
+lifecycle and a legacy user-configured RIS lifecycle are both non-empty.
+RBG-managed RIS lifecycle data is propagated from the Role and must not be
+independently edited or combined with the legacy protocol.
+
+For Kubernetes API compatibility, `finalizersHandler` remains on the reused
+hook type. It is deprecated for the new Role-level protocol and must be empty;
+admission rejects a non-empty value there. The legacy RIS protocol retains its
+existing `finalizersHandler` semantics. The new Role-level path also rejects
+`inPlaceUpdate`, which exists on the reused type but belongs only to the legacy
+RIS compatibility path. Conversely, the legacy standalone RIS path rejects
+`preUpdate`, `preRecover`, and `postReady`; those three hooks are meaningful
+only through the new Role-level protocol.
 
 Declarative configuration flows only downward. `lifecycle-state` and runtime
 markers are written only to RI labels and are never written back to RBG or
@@ -331,6 +342,10 @@ empty `labelsHandler` is invalid and must be rejected by admission. Multiple
 labels on a pre-operation hook represent multiple coordination conditions;
 the controller proceeds only after none of them match. Ordinary metadata
 synchronization must not modify runtime markers.
+
+Because `postReady` uses the reused hook type, its structurally available
+`finalizersHandler` and `markPodNotReady` fields are invalid semantically.
+Admission rejects either field when it is set for `postReady`.
 
 Marker keys are scoped to a hook point. Admission must reject a key used by
 more than one configured hook, including `postReady` and `preDelete`, because
@@ -723,20 +738,26 @@ protocol, the controller writes the marker on every hook trigger. The
 executor only removes it; there is no initial registration or post-operation
 restoration.
 
-The legacy RIS `spec.lifecycle` and new Role-level lifecycle share the hook
-structure but use distinct protocol state. The legacy `inPlaceUpdate` field
-remains deprecated for standalone RIS compatibility and is not part of the
-new four-hook path. The two protocols must not be active on the same RIS;
-Alpha admission enforces that boundary. Their state keys must remain distinct.
-Warmup and container lifecycle hooks retain their own responsibilities and
-are not equivalent to the instance-level hooks proposed here.
+The legacy RIS `spec.lifecycle` and new Role-level lifecycle reuse the same
+API type family but use distinct protocol state. The legacy `inPlaceUpdate`
+field remains deprecated for standalone RIS compatibility and is rejected on
+the new Role-level path. The deprecated `finalizersHandler` field is retained
+for API compatibility, remains meaningful only in the legacy RIS protocol, and
+must be empty in the new Role-level protocol. The two runtime protocols must
+not be active on the same RIS; Alpha admission enforces that boundary. Their
+state keys must remain distinct. Warmup and container lifecycle hooks retain
+their own responsibilities and are not equivalent to the instance-level hooks
+proposed here.
 
 ### Open Design Questions
 
 The four-hook API design is settled: Roles define the configuration, RIS
-propagates it, and RI stores the effective snapshot. Empty handlers fail
-validation. Pre-operation hooks retain `markPodNotReady`, while `postReady` does
-not gate RI Ready. Concrete field types and names still require API review.
+propagates it, and RI stores the effective snapshot. The existing hook
+structure is reused and extended with the three new hook fields. Empty
+`labelsHandler` values fail validation. Pre-operation hooks retain
+`markPodNotReady`, while `postReady` does not gate RI Ready. On the new
+Role-level path, `finalizersHandler` is deprecated and must be empty. Exact Go
+type placement still requires API review.
 
 Restart recovery adds no `step`: `lifecycle-state` and the marker are written
 together on hook entry. After a pre-operation hook is released, the state
@@ -771,8 +792,9 @@ must not change, new behavior requires a new hook, and a version that does
 not understand the protocol must not take over an unfinished operation.
 
 The Alpha compatibility rule is also settled: the new Role-level lifecycle
-and the legacy user-configured RIS lifecycle are mutually exclusive, and the
-legacy `inPlaceUpdate` hook is deprecated.
+and the legacy user-configured RIS lifecycle are mutually exclusive. The
+legacy `inPlaceUpdate` hook is deprecated, and `finalizersHandler` is retained
+for API compatibility but deprecated and empty on the new Role-level path.
 
 Before this KEP can become `implementable`, the following must be resolved:
 
@@ -805,6 +827,11 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Admission rejects a new Role-level lifecycle together with a legacy
   user-configured RIS lifecycle, and rejects marker keys that collide with
   the fully qualified controller state key.
+- For the new Role-level lifecycle, admission rejects non-empty deprecated
+  `finalizersHandler` values, `inPlaceUpdate`, and semantic use of
+  `finalizersHandler` or `markPodNotReady` by `postReady`. The legacy RIS
+  protocol retains its existing `finalizersHandler` behavior and rejects the
+  three new hook fields.
 - The controller persists and exposes the KEP-502 RI `status.phase`, and the
   executor observes it together with the lifecycle marker labels.
 - The controller writes a pre-operation marker only when entering the phase
