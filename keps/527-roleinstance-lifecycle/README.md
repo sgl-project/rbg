@@ -64,7 +64,7 @@ waiting for application processing to finish.
 Executors no longer register markers initially, and they do not restore
 markers after a post-operation hook completes. Executors own application
 retries, backoff, and idempotent recovery. Pre-operation hooks may configure
-`markNotReady`; `postReady` markers gate neither the phase nor RI Ready.
+`markPodNotReady`; `postReady` markers gate neither the phase nor RI Ready.
 
 ## Motivation
 
@@ -109,7 +109,7 @@ RBG does not need to embed application logic or create a Job for every hook.
 
 - Running independent application hooks on RBGSet, RBG, or RIS. Although
   lifecycle configuration is declared on a Role, execution remains scoped to
-  RI operations and does not replace the existing RIS lifecycle API.
+  RI operations. The legacy RIS lifecycle API remains only for compatibility.
 - Intercepting direct external Pod deletion, node failures, or container
   restarts initiated independently by kubelet.
 - Providing a general-purpose script execution platform, or creating a Job or
@@ -291,26 +291,34 @@ spec:
         preUpdate:
           labelsHandler:
             example.com/update-block: "true"
-          markNotReady: true
+          markPodNotReady: true
         preRecover:
           labelsHandler:
             example.com/recover-block: "true"
-          markNotReady: true
+          markPodNotReady: true
         postReady:
           labelsHandler:
-            example.com/ready-block: "true"
+            example.com/ready-notify: "true"
         preDelete:
           labelsHandler:
             example.com/delete-block: "true"
-          markNotReady: true
+          markPodNotReady: true
 ```
 
 The configuration hierarchy is settled:
 `RoleBasedGroup.spec.roles[].lifecycle` is the sole user-facing definition
-point. Each Role may declare its own hooks; RIS only propagates the
-configuration, and RI stores the effective execution snapshot. Neither RIS
-nor RI is a separate user-facing configuration entry point. The concrete Go
-field types and names still require API review.
+point for the new four-hook protocol. Each Role may declare its own hooks;
+RIS propagates the effective snapshot, and RI stores it. The concrete Go field
+types and names still require API review.
+
+The new Role-level field and the existing
+`RoleInstanceSetSpec.lifecycle` use the same hook structure, but they are not
+merged. The legacy RIS field remains for existing standalone RIS usage, and
+its `inPlaceUpdate` hook is deprecated. Alpha admission must reject a
+Role/RIS combination in which the new Role-level lifecycle and a legacy
+user-configured RIS lifecycle are both non-empty. RBG-managed RIS lifecycle
+data is propagated from the Role and must not be independently edited or
+combined with the legacy protocol.
 
 Declarative configuration flows only downward. `lifecycle-state` and runtime
 markers are written only to RI labels and are never written back to RBG or
@@ -331,13 +339,18 @@ belonging to another hook. Handler keys must also be rejected when they equal
 `lifecycle-state` or another controller-managed RI label key; hook marker keys
 are runtime labels, but they must not collide with controller-reserved state.
 
-Changing `labelsHandler` while an operation is in flight has no migration or
-compatibility support. The controller evaluates the latest effective
-configuration on the RI. For example, after changing markerA to markerB, it
-checks markerB directly, stops waiting for markerA, and does not clean up or
-migrate the old marker. Such an in-flight change is an explicit operator
-error: it can bypass a wait or leave stale state and must not be used as a
-normal operating procedure.
+`lifecycle-state` in this document is a conceptual name. The implementation
+must use a fully qualified label key under the project's
+`rbg.workloads.x-k8s.io/` prefix and must not reuse the existing
+`rbg.workloads.x-k8s.io/role-instance-lifecycle-state` key.
+
+Admission should reject lifecycle changes while an affected RI has a
+non-empty `lifecycle-state`. If a change races with admission, the controller
+evaluates the latest effective configuration on the RI. For example, after
+changing markerA to markerB, it checks markerB directly, stops waiting for
+markerA, and does not clean up or migrate the old marker. Such an in-flight
+change is an explicit operator error: it can bypass a wait or leave stale
+state and must not be used as a normal operating procedure.
 
 ### Ready Gating
 
@@ -346,19 +359,22 @@ health conditions, excluding the lifecycle Ready gate introduced here.
 “Externally observed RI Ready” is the final Ready state seen by parent
 resources and other controllers.
 
-- `preUpdate.markNotReady`, `preRecover.markNotReady`, and
-  `preDelete.markNotReady` control whether entering the corresponding
+- `preUpdate.markPodNotReady`, `preRecover.markPodNotReady`, and
+  `preDelete.markPodNotReady` control whether entering the corresponding
   pre-operation phase marks the RI NotReady.
 - This gate reuses the existing `RoleInstanceCustomReady` condition. The RI's
   `spec.readinessGates` must include `RoleInstanceCustomReady`; otherwise,
   the existing readiness helper returns immediately and the gate has no
   effect. Implementations must satisfy this prerequisite whenever
-  `markNotReady` is enabled rather than merely writing the condition without
+  `markPodNotReady` is enabled rather than merely writing the condition without
   registering the readiness gate.
 - A NotReady gate established during Update or Recovery remains until that
   operation enters `running`. It must not be lifted as soon as the preUpdate
   or preRecover marker is removed.
-- `postReady` has neither `markNotReady` nor `blockReady`, and its marker does
+- A NotReady gate established by `preDelete.markPodNotReady` remains until
+  the RI object is deleted; it is not restored merely because the delete
+  marker has been released.
+- `postReady` has neither `markPodNotReady` nor `blockReady`, and its marker does
   not participate in RI Ready computation.
 - After the workload becomes Ready, the controller writes the `postReady`
   state and marker, immediately enters `running`, and computes RI Ready from
@@ -406,7 +422,7 @@ match.
 ### Update Interaction Flow
 
 This example uses `example.com/update-block=true` and
-`example.com/ready-block=true`, abbreviated as update-block and ready-block.
+`example.com/ready-notify=true`, abbreviated as update-block and ready-notify.
 
 ```mermaid
 sequenceDiagram
@@ -428,19 +444,19 @@ sequenceDiagram
     C->>R: Set lifecycle-state=updating
     C->>P: Perform an in-place update or rebuild the Pod
     P-->>C: Update target complete and workload Ready
-    C->>R: Write lifecycle-state=postReady and ready-block=true together
+    C->>R: Write lifecycle-state=postReady and ready-notify=true together
     C->>R: Immediately set phase=running and lift the update gate
     C->>R: Compute RI Ready
     R-->>E: Observe postReady with a matching marker
     E->>E: Validate, restore config, and register routes asynchronously
-    E->>R: Remove ready-block after completion or cancellation
+    E->>R: Remove ready-notify after completion or cancellation
     R-->>C: running with lifecycle-state=postReady and no matching marker
     C->>R: Clean up lifecycle-state
 ```
 
 While `preUpdate` is active, no matching marker is a necessary condition for
 the controller to start the update. `postReady` blocks neither `running`, RI
-Ready, nor the next operation. The executor removes ready-block after
+Ready, nor the next operation. The executor removes ready-notify after
 completion or cancellation and does not restore it. The next update writes a
 new lifecycle-state and corresponding marker through the controller.
 
@@ -466,9 +482,9 @@ sequenceDiagram
     C->>R: Set lifecycle-state=recovering
     C->>P: Create or rebuild the Pods required by the current target
     P-->>C: Recovery target complete and workload Ready
-    C->>R: Write lifecycle-state=postReady and ready-block=true together
+    C->>R: Write lifecycle-state=postReady and ready-notify=true together
     C->>R: Immediately set phase=running and lift the recovery gate
-    E->>R: Remove ready-block after background completion or cancellation
+    E->>R: Remove ready-notify after background completion or cancellation
     C->>R: Clean up lifecycle-state
 ```
 
@@ -591,6 +607,13 @@ deletionTimestamp. That path still belongs to Recovery, does not trigger
 
 ### Restart Recovery and Concurrency Constraints
 
+The phase model is defined by KEP-502, currently proposed in PR #528. RI
+phases are persisted in `RoleInstance.status.phase` as `Creating`, `Running`,
+`Updating`, `Recovering`, and `Terminating`. The executor observes
+`status.phase` together with the RI lifecycle labels. KEP-527 cannot become
+implementable until the KEP-502 schema and phase persistence rules are
+accepted.
+
 The executor owns application retries. The controller retries only its own
 API reads and writes and status convergence. If an application result is
 unknown, the executor must query, recover, or retry idempotently before
@@ -641,6 +664,13 @@ For `creating`, a target change is folded into Create convergence rather than
 ignored. A corrected initial image may replace a member that has not reached
 workload Ready, but the controller does not enter separate Update or Recovery
 operations and does not invoke their hooks.
+
+Update may interrupt Recovery when the previous engine is dead. A
+`preUpdate` executor therefore must not assume that a live engine is
+available. It either determines that the engine-dependent action is
+inapplicable and safely releases the marker, or retains the marker until the
+application-side prerequisite is satisfied. The controller does not infer
+engine liveness and does not skip the marker.
 
 `recovering` means that the current Recovery has not yet completed
 successfully. Repeated reconciliations or another observation of the same
@@ -693,19 +723,19 @@ protocol, the controller writes the marker on every hook trigger. The
 executor only removes it; there is no initial registration or post-operation
 restoration.
 
-The configuration and phases of the existing RIS lifecycle must not be
-reused indiscriminately as the new RI protocol. The new phase key, values,
-configuration fields, and isolation between the old and new mechanisms still
-need to be finalized. The two controllers must not write the same state
-without constraints. Warmup and container lifecycle hooks retain their own
-responsibilities and are not equivalent to the instance-level hooks proposed
-here.
+The legacy RIS `spec.lifecycle` and new Role-level lifecycle share the hook
+structure but use distinct protocol state. The legacy `inPlaceUpdate` field
+remains deprecated for standalone RIS compatibility and is not part of the
+new four-hook path. The two protocols must not be active on the same RIS;
+Alpha admission enforces that boundary. Their state keys must remain distinct.
+Warmup and container lifecycle hooks retain their own responsibilities and
+are not equivalent to the instance-level hooks proposed here.
 
 ### Open Design Questions
 
 The four-hook API design is settled: Roles define the configuration, RIS
 propagates it, and RI stores the effective snapshot. Empty handlers fail
-validation. Pre-operation hooks retain `markNotReady`, while `postReady` does
+validation. Pre-operation hooks retain `markPodNotReady`, while `postReady` does
 not gate RI Ready. Concrete field types and names still require API review.
 
 Restart recovery adds no `step`: `lifecycle-state` and the marker are written
@@ -740,9 +770,14 @@ replayed merely because an RI is currently Ready. Established hook semantics
 must not change, new behavior requires a new hook, and a version that does
 not understand the protocol must not take over an unfinished operation.
 
+The Alpha compatibility rule is also settled: the new Role-level lifecycle
+and the legacy user-configured RIS lifecycle are mutually exclusive, and the
+legacy `inPlaceUpdate` hook is deprecated.
+
 Before this KEP can become `implementable`, the following must be resolved:
 
-1. Compatibility or isolation between the old and new lifecycle protocols.
+1. Acceptance of the KEP-502 `RoleInstance.status.phase` schema and the
+   post-Alpha migration path for standalone RIS lifecycle users.
 2. Authorization and diagnostics details, the version support matrix, and
    the procedure for adopting existing resources.
 3. Default background GC behavior with the reserved RI finalizer, admission
@@ -767,6 +802,11 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 - Trigger boundaries for all four hooks, confirming that no other lifecycle
   hooks exist.
+- Admission rejects a new Role-level lifecycle together with a legacy
+  user-configured RIS lifecycle, and rejects marker keys that collide with
+  the fully qualified controller state key.
+- The controller persists and exposes the KEP-502 RI `status.phase`, and the
+  executor observes it together with the lifecycle marker labels.
 - The controller writes a pre-operation marker only when entering the phase
   and does not restore it while waiting; `postReady` supports idempotent
   writes to an existing marker.
@@ -780,8 +820,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   RI Ready.
 - `postReady` triggers only after the target completes and the workload is
   Ready; ordinary Ready fluctuations do not retrigger it.
-- Establishment and release timing for pre-operation `markNotReady`, and
+- Establishment and release timing for pre-operation `markPodNotReady`, and
   exclusion of `postReady` from RI Ready computation.
+- `preDelete.markPodNotReady` remains NotReady until the RI object is
+  deleted, including after the delete marker is released.
 - `recovering` runs preRecover followed by asynchronous postReady. Ordinary
   Ready fluctuations in `running` and enablement on existing RIs do not
   trigger `postReady`.
@@ -804,7 +846,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   `running` before asynchronous state cleanup.
 - An in-flight change from markerA to markerB immediately uses the latest
   configuration without migrating or removing the old marker.
-- Enabling `markNotReady` requires the `RoleInstanceCustomReady` readiness
+- Admission rejects lifecycle mutation while an affected RI has a non-empty
+  `lifecycle-state`.
+- Enabling `markPodNotReady` requires the `RoleInstanceCustomReady` readiness
   gate.
 - Repeated Ready transitions idempotently write the same `postReady` marker
   without generations. Delayed cleanup can remove a newer marker, and
@@ -839,6 +883,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Stable hook disablement removes stale runtime labels and the reserved RI
   finalizer; disablement during an unfinished operation does not skip the
   marker, release the finalizer, or advance the phase.
+- The emergency break-glass procedure removes only the exact blocking marker
+  and lets the controller advance without direct phase, finalizer, or Pod
+  edits.
 
 #### E2E Tests
 
@@ -1021,6 +1068,15 @@ failures, and large numbers of instances waiting for hooks to complete.
 - The API is unavailable: reread the phase and markers after reconnecting.
   A write failure does not prove that the application side effect did not
   occur.
+
+Alpha provides no automatic failure-ignore policy. The only supported
+emergency procedure for an executor that is permanently unavailable is an
+explicit operator break-glass action: stop new operations, verify that the
+executor can no longer run and that its application action is no longer
+required, record the decision, and remove only the exact blocking marker key.
+The controller then advances normally. Do not modify the phase, gate,
+reserved RI finalizer, or member Pods directly. This procedure is not a
+routine rollback or a substitute for restoring an executor.
 
 ## Implementation History
 

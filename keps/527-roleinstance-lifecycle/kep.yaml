@@ -1,7 +1,7 @@
 title: RoleInstance Lifecycle Hooks
 kep-number: 527
 authors:
-  - TBD
+  - diw-zw
 status: provisional
 creation-date: 2026-10-26
 reviewers: []
@@ -11,6 +11,4 @@ see-also:
   - /keps/502-workload-status-model
 stage: alpha
 feature-gates: []
-# Segment is data-driven: it activates only when a policy rule carries segment.
-# Safe disablement removes the rule or field; existing labels are inert.
-disable-supported: true
+disable-supported: false
