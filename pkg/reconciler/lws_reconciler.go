@@ -33,12 +33,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	lwsapplyv1 "sigs.k8s.io/lws/client-go/applyconfiguration/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -47,6 +49,7 @@ type LeaderWorkerSetReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
 	gangScheduler scheduler.GangScheduler
+	recorder      record.EventRecorder
 }
 
 var _ WorkloadReconciler = &LeaderWorkerSetReconciler{}
@@ -58,6 +61,11 @@ func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) 
 // SetGangScheduler implements GangSchedulerSetter.
 func (r *LeaderWorkerSetReconciler) SetGangScheduler(m scheduler.GangScheduler) {
 	r.gangScheduler = m
+}
+
+// SetRecorder implements RecorderSetter.
+func (r *LeaderWorkerSetReconciler) SetRecorder(recorder record.EventRecorder) {
+	r.recorder = recorder
 }
 
 func (r *LeaderWorkerSetReconciler) Validate(
@@ -235,6 +243,12 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 		lwSize = *leaderWorkerPattern.Size
 	}
 
+	engineRuntimePlan, err := discovery.ResolveEngineRuntimes(ctx, r.client, r.recorder, rbg, role)
+	if err != nil {
+		logger.Error(err, "resolve engine runtimes failed", "rbg", keyOfRbg(rbg))
+		return nil, err
+	}
+
 	// Note: templateRef is prohibited for LWS workloads (validated by CRD and controller)
 	// baseTemplate uses value type (consistent with applyStrategicMergePatch return type)
 	var baseTemplate corev1.PodTemplateSpec
@@ -256,6 +270,8 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	// leaderTemplate
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podReconciler.SetGangScheduler(r.gangScheduler)
+	podReconciler.SetRecorder(r.recorder)
+	podReconciler.SetEngineRuntimePlan(string(constants.LeaderComponentType), engineRuntimePlan)
 	// KEP-8: use applyStrategicMergePatch
 	leaderTemp, err := applyStrategicMergePatch(baseTemplate, leaderPatch)
 	if err != nil {
@@ -278,8 +294,8 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	}
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
 	workerPodReconciler.SetGangScheduler(r.gangScheduler)
-	// workerTemplate do not need to inject sidecar
-	workerPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector})
+	workerPodReconciler.SetRecorder(r.recorder)
+	workerPodReconciler.SetEngineRuntimePlan(string(constants.WorkerComponentType), engineRuntimePlan)
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, rbg.GetCommonLabelsFromRole(role), workerTemp,
 	)

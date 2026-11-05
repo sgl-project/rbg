@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/csaupgrade"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	workloadsv1alpha2client "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/scheduler/common"
@@ -48,6 +50,7 @@ type RoleInstanceSetReconciler struct {
 	client        client.Client
 	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
+	recorder      record.EventRecorder
 }
 
 var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
@@ -70,6 +73,11 @@ func (r *RoleInstanceSetReconciler) SetAPIReader(reader client.Reader) {
 // SetGangScheduler implements GangSchedulerSetter.
 func (r *RoleInstanceSetReconciler) SetGangScheduler(m scheduler.GangScheduler) {
 	r.gangScheduler = m
+}
+
+// SetRecorder implements RecorderSetter.
+func (r *RoleInstanceSetReconciler) SetRecorder(recorder record.EventRecorder) {
+	r.recorder = recorder
 }
 
 func (r *RoleInstanceSetReconciler) Validate(
@@ -399,6 +407,11 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 ) error {
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podReconciler.SetGangScheduler(r.gangScheduler)
+	podReconciler.SetRecorder(r.recorder)
+	engineRuntimePlan, err := discovery.ResolveEngineRuntimes(ctx, r.client, r.recorder, rbg, role)
+	if err != nil {
+		return err
+	}
 	for _, component := range role.GetCustomComponentsPattern().Components {
 		// Deep-copy the pod template and merge component-level labels/annotations into it.
 		// This allows users to set controller-directive annotations (e.g. component-depends-on,
@@ -422,6 +435,8 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByCustomCompone
 			}
 		}
 
+		podReconciler.SetEngineRuntimePlan(component.Name, engineRuntimePlan)
+		podReconciler.EnableEngineRuntimePositionGate()
 		podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 			ctx, rbg, role, maps.Clone(matchLabels), tpl)
 		if err != nil {
@@ -462,6 +477,12 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 		return fmt.Errorf("leaderWorkerPattern is nil")
 	}
 
+	engineRuntimePlan, err := discovery.ResolveEngineRuntimes(ctx, r.client, r.recorder, rbg, role)
+	if err != nil {
+		logger.Error(err, "resolve engine runtimes failed", "rbg", keyOfRbg(rbg))
+		return err
+	}
+
 	// Resolve baseTemplate using shared helper (supports both templateRef and inline template)
 	baseTemplate, err := role.GetResolvedTemplate(rbg)
 	if err != nil {
@@ -486,7 +507,10 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 
 	leaderPodReconciler := NewPodReconciler(r.scheme, r.client)
 	leaderPodReconciler.SetGangScheduler(r.gangScheduler)
-	leaderPodReconciler.SetInjectors([]string{configInjector, sidecarInjector, commonEnvInjector, lwpEnvInjector})
+	leaderPodReconciler.SetRecorder(r.recorder)
+	leaderPodReconciler.SetEngineRuntimePlan(string(constants.LeaderComponentType), engineRuntimePlan)
+	leaderPodReconciler.EnableEngineRuntimePositionGate()
+	leaderPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector, lwpEnvInjector})
 	leaderTemplateApplyCfg, err := leaderPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, leaderTemp,
 	)
@@ -504,7 +528,9 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 
 	workerPodReconciler := NewPodReconciler(r.scheme, r.client)
 	workerPodReconciler.SetGangScheduler(r.gangScheduler)
-	// workerTemplate do not need to inject sidecar
+	workerPodReconciler.SetRecorder(r.recorder)
+	workerPodReconciler.SetEngineRuntimePlan(string(constants.WorkerComponentType), engineRuntimePlan)
+	workerPodReconciler.EnableEngineRuntimePositionGate()
 	workerPodReconciler.SetInjectors([]string{configInjector, commonEnvInjector, lwpEnvInjector})
 	workerTemplateApplyCfg, err := workerPodReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, matchLabels, workerTemp,
@@ -561,8 +587,19 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateFromStandaloneP
 		return err
 	}
 
+	engineRuntimePlan, err := discovery.ResolveEngineRuntimes(ctx, r.client, r.recorder, rbg, role)
+	if err != nil {
+		return err
+	}
+
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podReconciler.SetGangScheduler(r.gangScheduler)
+	podReconciler.SetRecorder(r.recorder)
+	// A standalonePattern role's single component is named after the role
+	// (KEP-173), so the plan keys by role.Name and component: <role name>
+	// resolves to it.
+	podReconciler.SetEngineRuntimePlan(role.Name, engineRuntimePlan)
+	podReconciler.EnableEngineRuntimePositionGate()
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)
