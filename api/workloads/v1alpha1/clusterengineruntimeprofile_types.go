@@ -36,13 +36,47 @@ type ClusterEngineRuntimeProfileSpec struct {
 	Volumes []v1.Volume `json:"volumes,omitempty"`
 	// +kubebuilder:validation:Enum=NoUpdate;RollingUpdate
 	// +kubebuilder:default=NoUpdate
+	// Deprecated: updateStrategy was never consumed by the controller and
+	// is removed at the next API version boundary alongside
+	// injectContainers. Profile revisions are published as new profiles
+	// and references migrate one at a time — see Profile Mutability in
+	// KEP-531.
 	UpdateStrategy string `json:"updateStrategy"`
+
+	// ContainerPatches mirrors the v1alpha2 field with identical shape:
+	// ClusterEngineRuntimeProfile uses a None conversion strategy, so a
+	// v1alpha1 write without this schema entry would prune the field
+	// from the stored object.
+	//
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	ContainerPatches []ContainerPatch `json:"containerPatches,omitempty"`
 }
 
-// ClusterEngineRuntimeProfileStatus defines the observed state of ClusterEngineRuntimeProfile.
+// ClusterEngineRuntimeProfileStatus mirrors the v1alpha2 status fields:
+// display and detection only, never authoritative for rendering.
 type ClusterEngineRuntimeProfileStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// ReferenceCount is the count of live references to this profile:
+	// RoleBasedGroups plus the group templates of RoleBasedGroupSets,
+	// a set's template counting even at zero replicas.
+	// +optional
+	ReferenceCount int32 `json:"referenceCount,omitempty"`
+
+	// ReferencedGeneration is the profile's metadata.generation recorded
+	// at the none-to-referenced transition and cleared when the last
+	// reference leaves; it is never refreshed while referenced.
+	// +optional
+	ReferencedGeneration int64 `json:"referencedGeneration,omitempty"`
+
+	// Conditions carries the Frozen condition: True with reason
+	// Referenced while a live reference exists, flipping to reason
+	// SpecChangedWhileReferenced on a generation mismatch.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // +genclient

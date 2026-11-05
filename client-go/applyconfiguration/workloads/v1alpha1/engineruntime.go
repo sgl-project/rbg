@@ -24,9 +24,11 @@ import (
 // EngineRuntimeApplyConfiguration represents a declarative configuration of the EngineRuntime type for use
 // with apply.
 type EngineRuntimeApplyConfiguration struct {
-	ProfileName      *string        `json:"profileName,omitempty"`
-	InjectContainers []string       `json:"injectContainers,omitempty"`
-	Containers       []v1.Container `json:"containers,omitempty"`
+	ProfileName      *string                                          `json:"profileName,omitempty"`
+	Component        *string                                          `json:"component,omitempty"`
+	TargetContainers []EngineRuntimeTargetContainerApplyConfiguration `json:"targetContainers,omitempty"`
+	Containers       []v1.Container                                   `json:"containers,omitempty"`
+	InjectContainers []string                                         `json:"injectContainers,omitempty"`
 }
 
 // EngineRuntimeApplyConfiguration constructs a declarative configuration of the EngineRuntime type for use with
@@ -43,12 +45,23 @@ func (b *EngineRuntimeApplyConfiguration) WithProfileName(value string) *EngineR
 	return b
 }
 
-// WithInjectContainers adds the given value to the InjectContainers field in the declarative configuration
+// WithComponent sets the Component field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Component field is set to the value of the last call.
+func (b *EngineRuntimeApplyConfiguration) WithComponent(value string) *EngineRuntimeApplyConfiguration {
+	b.Component = &value
+	return b
+}
+
+// WithTargetContainers adds the given value to the TargetContainers field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the InjectContainers field.
-func (b *EngineRuntimeApplyConfiguration) WithInjectContainers(values ...string) *EngineRuntimeApplyConfiguration {
+// If called multiple times, values provided by each call will be appended to the TargetContainers field.
+func (b *EngineRuntimeApplyConfiguration) WithTargetContainers(values ...*EngineRuntimeTargetContainerApplyConfiguration) *EngineRuntimeApplyConfiguration {
 	for i := range values {
-		b.InjectContainers = append(b.InjectContainers, values[i])
+		if values[i] == nil {
+			panic("nil value passed to WithTargetContainers")
+		}
+		b.TargetContainers = append(b.TargetContainers, *values[i])
 	}
 	return b
 }
@@ -59,6 +72,16 @@ func (b *EngineRuntimeApplyConfiguration) WithInjectContainers(values ...string)
 func (b *EngineRuntimeApplyConfiguration) WithContainers(values ...v1.Container) *EngineRuntimeApplyConfiguration {
 	for i := range values {
 		b.Containers = append(b.Containers, values[i])
+	}
+	return b
+}
+
+// WithInjectContainers adds the given value to the InjectContainers field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the InjectContainers field.
+func (b *EngineRuntimeApplyConfiguration) WithInjectContainers(values ...string) *EngineRuntimeApplyConfiguration {
+	for i := range values {
+		b.InjectContainers = append(b.InjectContainers, values[i])
 	}
 	return b
 }
