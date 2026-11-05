@@ -21,7 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
-	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // ClusterEngineRuntimeProfileApplyConfiguration represents a declarative configuration of the ClusterEngineRuntimeProfile type for use
@@ -30,7 +29,7 @@ type ClusterEngineRuntimeProfileApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *ClusterEngineRuntimeProfileSpecApplyConfiguration   `json:"spec,omitempty"`
-	Status                           *workloadsv1alpha2.ClusterEngineRuntimeProfileStatus `json:"status,omitempty"`
+	Status                           *ClusterEngineRuntimeProfileStatusApplyConfiguration `json:"status,omitempty"`
 }
 
 // ClusterEngineRuntimeProfile constructs a declarative configuration of the ClusterEngineRuntimeProfile type for use with
@@ -214,8 +213,8 @@ func (b *ClusterEngineRuntimeProfileApplyConfiguration) WithSpec(value *ClusterE
 // WithStatus sets the Status field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Status field is set to the value of the last call.
-func (b *ClusterEngineRuntimeProfileApplyConfiguration) WithStatus(value workloadsv1alpha2.ClusterEngineRuntimeProfileStatus) *ClusterEngineRuntimeProfileApplyConfiguration {
-	b.Status = &value
+func (b *ClusterEngineRuntimeProfileApplyConfiguration) WithStatus(value *ClusterEngineRuntimeProfileStatusApplyConfiguration) *ClusterEngineRuntimeProfileApplyConfiguration {
+	b.Status = value
 	return b
 }
 

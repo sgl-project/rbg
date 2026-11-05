@@ -24,10 +24,11 @@ import (
 // ClusterEngineRuntimeProfileSpecApplyConfiguration represents a declarative configuration of the ClusterEngineRuntimeProfileSpec type for use
 // with apply.
 type ClusterEngineRuntimeProfileSpecApplyConfiguration struct {
-	InitContainers []v1.Container `json:"initContainers,omitempty"`
-	Containers     []v1.Container `json:"containers,omitempty"`
-	Volumes        []v1.Volume    `json:"volumes,omitempty"`
-	UpdateStrategy *string        `json:"updateStrategy,omitempty"`
+	InitContainers   []v1.Container                     `json:"initContainers,omitempty"`
+	Containers       []v1.Container                     `json:"containers,omitempty"`
+	Volumes          []v1.Volume                        `json:"volumes,omitempty"`
+	UpdateStrategy   *string                            `json:"updateStrategy,omitempty"`
+	ContainerPatches []ContainerPatchApplyConfiguration `json:"containerPatches,omitempty"`
 }
 
 // ClusterEngineRuntimeProfileSpecApplyConfiguration constructs a declarative configuration of the ClusterEngineRuntimeProfileSpec type for use with
@@ -71,5 +72,18 @@ func (b *ClusterEngineRuntimeProfileSpecApplyConfiguration) WithVolumes(values .
 // If called multiple times, the UpdateStrategy field is set to the value of the last call.
 func (b *ClusterEngineRuntimeProfileSpecApplyConfiguration) WithUpdateStrategy(value string) *ClusterEngineRuntimeProfileSpecApplyConfiguration {
 	b.UpdateStrategy = &value
+	return b
+}
+
+// WithContainerPatches adds the given value to the ContainerPatches field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ContainerPatches field.
+func (b *ClusterEngineRuntimeProfileSpecApplyConfiguration) WithContainerPatches(values ...*ContainerPatchApplyConfiguration) *ClusterEngineRuntimeProfileSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithContainerPatches")
+		}
+		b.ContainerPatches = append(b.ContainerPatches, *values[i])
+	}
 	return b
 }

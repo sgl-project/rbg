@@ -294,11 +294,51 @@ func convertEngineRuntimesV1alpha1ToV2(src []EngineRuntime) []v2.EngineRuntime {
 	for i, er := range src {
 		dst[i] = v2.EngineRuntime{
 			ProfileName:      er.ProfileName,
+			Component:        er.Component,
+			TargetContainers: convertEngineRuntimeTargetContainersV1alpha1ToV2(er.TargetContainers),
 			InjectContainers: er.InjectContainers,
 			Containers:       er.Containers,
 		}
 	}
 	return dst
+}
+
+func convertEngineRuntimeTargetContainersV1alpha1ToV2(
+	in []EngineRuntimeTargetContainer,
+) []v2.EngineRuntimeTargetContainer {
+	if in == nil {
+		return nil
+	}
+	dst := make([]v2.EngineRuntimeTargetContainer, len(in))
+	for i, tc := range in {
+		dst[i] = v2.EngineRuntimeTargetContainer{Name: tc.Name}
+		dst[i].ExtraPatches = convertContainerPatchesV1alpha1ToV2(tc.ExtraPatches)
+	}
+	return dst
+}
+
+func convertContainerPatchesV1alpha1ToV2(in []ContainerPatch) []v2.ContainerPatch {
+	if in == nil {
+		return nil
+	}
+	dst := make([]v2.ContainerPatch, len(in))
+	for i, p := range in {
+		dst[i].JSONPatch = convertContainerJSONPatchV1alpha1ToV2(p.JSONPatch)
+	}
+	return dst
+}
+
+func convertContainerJSONPatchV1alpha1ToV2(in *ContainerJSONPatch) *v2.ContainerJSONPatch {
+	if in == nil {
+		return nil
+	}
+	return &v2.ContainerJSONPatch{
+		Op:   in.Op,
+		Path: in.Path,
+		Value: runtime.RawExtension{
+			Raw: append([]byte(nil), in.Value.Raw...),
+		},
+	}
 }
 
 func convertStatusV1alpha1ToV2(src *RoleBasedGroupStatus, dst *v2.RoleBasedGroupStatus) {
@@ -475,11 +515,51 @@ func convertEngineRuntimesV2ToV1alpha1(src []v2.EngineRuntime) []EngineRuntime {
 	for i, er := range src {
 		dst[i] = EngineRuntime{
 			ProfileName:      er.ProfileName,
+			Component:        er.Component,
+			TargetContainers: convertEngineRuntimeTargetContainersV2ToV1alpha1(er.TargetContainers),
 			InjectContainers: er.InjectContainers,
 			Containers:       er.Containers,
 		}
 	}
 	return dst
+}
+
+func convertEngineRuntimeTargetContainersV2ToV1alpha1(
+	in []v2.EngineRuntimeTargetContainer,
+) []EngineRuntimeTargetContainer {
+	if in == nil {
+		return nil
+	}
+	dst := make([]EngineRuntimeTargetContainer, len(in))
+	for i, tc := range in {
+		dst[i] = EngineRuntimeTargetContainer{Name: tc.Name}
+		dst[i].ExtraPatches = convertContainerPatchesV2ToV1alpha1(tc.ExtraPatches)
+	}
+	return dst
+}
+
+func convertContainerPatchesV2ToV1alpha1(in []v2.ContainerPatch) []ContainerPatch {
+	if in == nil {
+		return nil
+	}
+	dst := make([]ContainerPatch, len(in))
+	for i, p := range in {
+		dst[i].JSONPatch = convertContainerJSONPatchV2ToV1alpha1(p.JSONPatch)
+	}
+	return dst
+}
+
+func convertContainerJSONPatchV2ToV1alpha1(in *v2.ContainerJSONPatch) *ContainerJSONPatch {
+	if in == nil {
+		return nil
+	}
+	return &ContainerJSONPatch{
+		Op:   in.Op,
+		Path: in.Path,
+		Value: runtime.RawExtension{
+			Raw: append([]byte(nil), in.Value.Raw...),
+		},
+	}
 }
 
 func convertStatusV2ToV1alpha1(src *v2.RoleBasedGroupStatus, dst *RoleBasedGroupStatus) {

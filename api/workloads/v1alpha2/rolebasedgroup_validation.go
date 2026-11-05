@@ -18,9 +18,11 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -250,6 +252,245 @@ func scaledIntOrPercent(v *intstr.IntOrString, replicas int32, roundUp bool, def
 		return defaultVal, nil
 	}
 	return intstr.GetScaledValueFromIntOrPercent(v, int(replicas), roundUp)
+}
+
+// ValidateEngineRuntimes enforces the role-side engine-runtime invariants
+// the role's own object can answer (KEP-531 Validation Layer Split):
+// targetContainers requiring component except under standalonePattern,
+// same-profile effective-component-set overlap (D6, with the
+// compatibility-shape exemption), a component outside the pattern's
+// vocabulary (standalone's must-equal-the-role's-name as the special
+// case), duplicate env-name creation within one targetContainers entry's
+// extraPatches, and the new fields present on a role whose workload type
+// routes through a deprecated surface (Deployment/StatefulSet/LWS). The
+// RoleBasedGroup and RoleBasedGroupSet webhooks invoke it at create and
+// update, re-validating the whole object on each — so flipping a written
+// role's workload-type annotation to a deprecated surface is itself a
+// rejected spec update. The render-time resolver re-runs it as the
+// authoritative gate for writes stored with the webhook absent: an
+// uninstalled webhook configuration validates nothing, and objects written
+// during an old-controller window reach the new renderer by reconcile, not
+// by admission, failing there with EngineRuntimeRenderFailed. The presence
+// rule is webhook-enforced rather than CEL: the apiserver's CEL cost
+// budget rejects a comprehension over the uncapped engineRuntimes list
+// by more than 100x, the KEP-531 cost-budget remedy.
+func ValidateEngineRuntimes(role *RoleSpec) error {
+	if role == nil || len(role.EngineRuntimes) == 0 {
+		return nil
+	}
+	allErrs := validateEngineRuntimeTargetContainersPresence(role)
+	allErrs = append(allErrs, validateEngineRuntimeScopeOwnership(role)...)
+	allErrs = append(allErrs, validateEngineRuntimeComponentVocabulary(role)...)
+	allErrs = append(allErrs, validateEngineRuntimeEnvCreation(role)...)
+	allErrs = append(allErrs, validateEngineRuntimeNewFieldsOnDeprecatedSurface(role)...)
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// validateEngineRuntimeTargetContainersPresence enforces the
+// cross-field presence rule: a reference entry carrying targetContainers
+// must name a component, except under standalonePattern where the entry
+// is scoped to the role's own name. CEL cannot carry the rule — a
+// comprehension over the uncapped engineRuntimes list at the uncapped
+// roles[].scope yields an O(n^2) cost estimate the apiserver rejects —
+// so this is its write-time home.
+func validateEngineRuntimeTargetContainersPresence(role *RoleSpec) []error {
+	if role.StandalonePattern != nil {
+		return nil
+	}
+	var allErrs []error
+	for i := range role.EngineRuntimes {
+		er := &role.EngineRuntimes[i]
+		if len(er.TargetContainers) > 0 && er.Component == "" {
+			allErrs = append(allErrs, fmt.Errorf(
+				"role %q reference %q (engineRuntimes[%d]): targetContainers requires component to be set, except under standalonePattern",
+				role.Name, er.ProfileName, i))
+		}
+	}
+	return allErrs
+}
+
+// validateEngineRuntimeScopeOwnership enforces D6: for one profileName,
+// any two references whose effective component sets intersect are an
+// error, except the pure compatibility shape — any number of references
+// all lacking component and carrying no targetContainers — which keeps
+// main's duplicate-reference semantics verbatim.
+func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
+	var allErrs []error
+	for i := range role.EngineRuntimes {
+		for j := i + 1; j < len(role.EngineRuntimes); j++ {
+			a, b := &role.EngineRuntimes[i], &role.EngineRuntimes[j]
+			if a.ProfileName != b.ProfileName {
+				continue
+			}
+			if a.Component == "" && b.Component == "" &&
+				len(a.TargetContainers) == 0 && len(b.TargetContainers) == 0 {
+				continue
+			}
+			aSet := engineRuntimeEffectiveComponents(role, a)
+			bSet := engineRuntimeEffectiveComponents(role, b)
+			for component := range aSet {
+				if _, ok := bSet[component]; !ok {
+					continue
+				}
+				allErrs = append(allErrs, fmt.Errorf(
+					"role %q reference %q: component %q is covered by both engineRuntimes[%d] and engineRuntimes[%d] — same-profile references must not have overlapping effective component sets",
+					role.Name, a.ProfileName, component, i, j))
+				break
+			}
+		}
+	}
+	return allErrs
+}
+
+// engineRuntimeEffectiveComponents expands one reference to its effective
+// component set (KEP-531 Effective Component Set): the named component
+// when set, else the pattern's default set. It is a function of the
+// pattern alone — no profile content — so the webhook can compute it.
+// This is the write-time twin of the resolver's positionVocabulary
+// (pkg/discovery/runtime_resolver.go); the two are an intentional mirror,
+// not a shared helper: the KEP's validation layer split keeps them in
+// separate packages, and they diverge by design — the resolver
+// additionally collapses the vocabulary for legacy Deployment/StatefulSet
+// renders (the single role template), while this side always uses the
+// pattern shape (D6 overlap is judged on pattern semantics regardless of
+// render path). Both sides are pinned by tests
+// (TestValidateEngineRuntimes, TestResolveEngineRuntimesVocabulary).
+func engineRuntimeEffectiveComponents(role *RoleSpec, er *EngineRuntime) map[string]struct{} {
+	if er.Component != "" {
+		return map[string]struct{}{er.Component: {}}
+	}
+	switch {
+	case role.LeaderWorkerPattern != nil:
+		// main's default reaches the leader only: the worker template's
+		// injector chain omits the sidecar stage.
+		return map[string]struct{}{string(constants.LeaderComponentType): {}}
+	case role.CustomComponentsPattern != nil:
+		set := make(map[string]struct{}, len(role.CustomComponentsPattern.Components))
+		for _, c := range role.CustomComponentsPattern.Components {
+			set[c.Name] = struct{}{}
+		}
+		return set
+	case role.StandalonePattern != nil:
+		// The standalone component is named after the role (KEP-173).
+		return map[string]struct{}{role.Name: {}}
+	}
+	return nil
+}
+
+// validateEngineRuntimeComponentVocabulary checks every named component
+// against the pattern's vocabulary (KEP-531 Plan-Time Vocabulary Check):
+// `leader`/`worker` under leaderWorkerPattern, a declared component name
+// under customComponentsPattern, the role's own name under
+// standalonePattern. An unknown name would otherwise create an unused
+// plan key and silently inject nothing, so it is rejected at write time
+// in every pattern, with the standalone row's wording kept as its
+// special case.
+func validateEngineRuntimeComponentVocabulary(role *RoleSpec) []error {
+	vocabulary := make(map[string]struct{})
+	switch {
+	case role.LeaderWorkerPattern != nil:
+		vocabulary[string(constants.LeaderComponentType)] = struct{}{}
+		vocabulary[string(constants.WorkerComponentType)] = struct{}{}
+	case role.CustomComponentsPattern != nil:
+		for _, c := range role.CustomComponentsPattern.Components {
+			vocabulary[c.Name] = struct{}{}
+		}
+	case role.StandalonePattern != nil:
+		vocabulary[role.Name] = struct{}{}
+	default:
+		vocabulary[role.Name] = struct{}{}
+	}
+	var allErrs []error
+	for i := range role.EngineRuntimes {
+		er := &role.EngineRuntimes[i]
+		if er.Component == "" {
+			continue
+		}
+		if _, ok := vocabulary[er.Component]; ok {
+			continue
+		}
+		if role.StandalonePattern != nil {
+			allErrs = append(allErrs, fmt.Errorf(
+				"role %q reference %q (engineRuntimes[%d]): component %q must equal the role's name %q under standalonePattern",
+				role.Name, er.ProfileName, i, er.Component, role.Name))
+			continue
+		}
+		allErrs = append(allErrs, fmt.Errorf(
+			"role %q reference %q (engineRuntimes[%d]): component %q is not defined by the role's pattern",
+			role.Name, er.ProfileName, i, er.Component))
+	}
+	return allErrs
+}
+
+// validateEngineRuntimeNewFieldsOnDeprecatedSurface rejects the KEP-531
+// fields (component, targetContainers) on a role whose workload type
+// routes through a deprecated render surface: the new fields' semantics
+// are defined for the RoleBasedGroup → RoleInstanceSet render path only.
+// Unlike validateNoDeprecatedWorkloadTypes this fires regardless of the
+// deprecated-workload-types toggle, and a reference carrying neither new
+// field keeps main's behavior on the deprecated path verbatim.
+func validateEngineRuntimeNewFieldsOnDeprecatedSurface(role *RoleSpec) []error {
+	if !isDeprecatedWorkloadType(role.GetWorkloadType()) {
+		return nil
+	}
+	var allErrs []error
+	for i := range role.EngineRuntimes {
+		er := &role.EngineRuntimes[i]
+		if er.Component == "" && len(er.TargetContainers) == 0 {
+			continue
+		}
+		allErrs = append(allErrs, fmt.Errorf(
+			"role %q reference %q (engineRuntimes[%d]): component and targetContainers are only defined for the RoleInstanceSet render path, but the role's workload type is %q",
+			role.Name, er.ProfileName, i, role.GetWorkloadType()))
+	}
+	return allErrs
+}
+
+// validateEngineRuntimeEnvCreation enforces the intra-list env rule
+// (KEP-531 Patch Grammar): two entries in one targetContainers entry's
+// extraPatches creating the same env name are an error — the earlier one
+// is a dead letter, so a duplicate is always a mistake. The check needs
+// the value unmarshalled, so it rides this shared function rather than
+// CEL. The profile-side half fires at render instead (the CERP has no
+// write-time home for it).
+func validateEngineRuntimeEnvCreation(role *RoleSpec) []error {
+	var allErrs []error
+	for i := range role.EngineRuntimes {
+		er := &role.EngineRuntimes[i]
+		for j := range er.TargetContainers {
+			tc := &er.TargetContainers[j]
+			seen := make(map[string]struct{}, len(tc.ExtraPatches))
+			for k := range tc.ExtraPatches {
+				name, ok := engineRuntimeCreatedEnvName(&tc.ExtraPatches[k])
+				if !ok {
+					continue
+				}
+				if _, dup := seen[name]; dup {
+					allErrs = append(allErrs, fmt.Errorf(
+						"role %q reference %q targetContainers[%q].extraPatches[%d]: duplicate env name %q created within one extraPatches list",
+						role.Name, er.ProfileName, tc.Name, k, name))
+					continue
+				}
+				seen[name] = struct{}{}
+			}
+		}
+	}
+	return allErrs
+}
+
+// engineRuntimeCreatedEnvName reports the env name an extraPatches entry
+// creates, or ok=false when the entry does not address /env or its value
+// does not unmarshal into an env var (a shape mismatch the render pass
+// reports with attribution).
+func engineRuntimeCreatedEnvName(p *ContainerPatch) (name string, ok bool) {
+	if p.JSONPatch == nil || !strings.HasPrefix(p.JSONPatch.Path, "/env/") {
+		return "", false
+	}
+	var env corev1.EnvVar
+	if err := json.Unmarshal(p.JSONPatch.Value.Raw, &env); err != nil || env.Name == "" {
+		return "", false
+	}
+	return env.Name, true
 }
 
 // deprecatedWorkloadTypeHint explains a non-obvious consequence of turning off the
