@@ -1023,6 +1023,49 @@ func TestRollingUpdateParameters_PropagatesPartitionConversionError(t *testing.T
 	require.Error(t, err)
 }
 
+func TestRollingUpdatePartition_ClampsIndexToLiveStates(t *testing.T) {
+	// Desired 4, maxUnavailable 1, live 1, and no continuously ready replica
+	// produces rollingStep -2. The partition index would be 3.
+	got := rollingUpdatePartition(context.Background(), make([]replicaState, 1), 1, -2, 0)
+	assert.Equal(t, int32(0), got)
+
+	// A live count of 0 used to panic at states[0].
+	got = rollingUpdatePartition(context.Background(), nil, 0, -3, 2)
+	assert.Equal(t, int32(0), got)
+}
+
+func TestRollingUpdateParameters_ScalesUpWhenLiveReplicasBelowDesired(t *testing.T) {
+	scheme := newRolloutErrScheme(t)
+	rbg, role := newRolloutErrRBG(intstr.FromInt32(0))
+	selector := rbg.GetCommonLabelsFromRole(role)
+	revision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{Name: "rev-1", Namespace: "default", Labels: selector},
+		Revision:   1,
+	}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        rbg.GetWorkloadName(role),
+			Namespace:   "default",
+			UID:         "sts-uid",
+			Annotations: map[string]string{constants.RoleSizeAnnotationKey: "4"},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: selector},
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptr.To(int32(2))},
+			},
+		},
+	}
+	r := NewStatefulSetReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts, revision).Build())
+
+	partition, replicas, err := r.rollingUpdateParameters(context.Background(), role, sts, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int32(4), replicas)
+	assert.Equal(t, int32(1), partition)
+}
+
 func TestReconcileStatefulSet_ReadFailureDoesNotScaleToZero(t *testing.T) {
 	scheme := newRolloutErrScheme(t)
 	rbg, role := newRolloutErrRBG(intstr.FromInt32(0))

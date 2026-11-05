@@ -310,6 +310,17 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 		return partition, replicas, nil
 	}
 
+	if stsReplicas < roleReplicas {
+		partition = min(partition, stsReplicas)
+		logger.V(1).Info(
+			fmt.Sprintf(
+				"live replicas %d are below desired %d, scale up before rolling update. partition %d",
+				stsReplicas, roleReplicas, partition,
+			),
+		)
+		return partition, roleReplicas, nil
+	}
+
 	// Case 6:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(
@@ -412,12 +423,16 @@ func rollingUpdatePartition(
 
 	// Update up to rollingStep replicas at once.
 	rollingStepPartition := utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
+	stateCount := int32(len(states))
+	if rollingStepPartition > stateCount {
+		rollingStepPartition = stateCount
+	}
 
 	// rollingStepPartition calculation above disregards the state of replicas with idx<rollingStepPartition.
 	// To prevent violating the maxUnavailable, we have to account for these replicas
 	// and increase the partition if some are not ready.
 	var unavailable int32
-	for idx := 0; idx < int(rollingStepPartition); idx++ {
+	for idx := int32(0); idx < rollingStepPartition; idx++ {
 		if !states[idx].ready {
 			unavailable++
 		}
@@ -433,11 +448,13 @@ func rollingUpdatePartition(
 	// maxUnavailable is already violated
 	// (for example, all replicas are not ready when rolling update is started).
 	// Note that we never drop the partition below rollingStepPartition.
-	for idx := min(partition, stsReplicas-1); idx >= rollingStepPartition; idx-- {
-		if !states[idx].ready || states[idx].updated {
-			partition = idx
-		} else {
-			break
+	if stateCount > 0 {
+		for idx := min(partition, stateCount-1); idx >= rollingStepPartition; idx-- {
+			if !states[idx].ready || states[idx].updated {
+				partition = idx
+			} else {
+				break
+			}
 		}
 	}
 
