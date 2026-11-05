@@ -376,9 +376,13 @@ are still rolling.
 protected `Update` as the spec, metadata, and set revision label: an in-place template
 update, a user-metadata-only change, and a `Recreate` replicas-only update, which is
 availability-gated and acknowledged like any other rather than a shortcut. The value is
-a per-child decimal counter, starting at `"1"` when no previous counter exists;
-actual later writes increment it. Reconciles that make no change do not advance
-it. The key is excluded from template identity and preserved during metadata
+a per-child decimal counter. Each write uses one more than the larger of the
+request annotation and `status.observedRolloutRequest`, so a missing or reset
+annotation cannot reuse a completed request. Empty, malformed, or negative
+counters are treated as zero; the first request is `"1"` when neither field has
+a valid counter. Out-of-range counters or increment overflow abort the child
+write without changing its template or request. Reconciles that make no change
+do not advance it. The key is excluded from template identity and preserved during metadata
 sync, but is never copied from the template. Repeated content such as `A -> B -> A`
 therefore receives a new request rather than reusing an old acknowledgement.
 
@@ -493,7 +497,10 @@ These are coverage plans, not a claim that every case is already automated.
   generation.
 - **Request ownership**: template annotations cannot overwrite the request,
   requests do not affect set revision identity, and repeated writes advance the
-  counter without reusing an old acknowledgement.
+  counter without reusing an old acknowledgement, including after the annotation
+  is lost or reset. A recovered pending request keeps its budget slot across
+  controller restarts until it is acknowledged. Counter overflow rejects the
+  child write without changing the template or request.
 - **Acknowledgement ordering**: status construction before workload application
   never acknowledges a request; the post-application check requires every role
   to be complete, and both SSA status writers preserve the acknowledgement.

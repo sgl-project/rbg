@@ -18,7 +18,9 @@ package workloads
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strconv"
@@ -110,16 +112,27 @@ func groupSetChildReady(child *workloadsv1alpha2.RoleBasedGroup) bool {
 }
 
 // requestGroupSetChildRollout must be applied to every budgeted write of an existing child, so the
-// child keeps consuming budget until its controller acknowledges that write.
-func requestGroupSetChildRollout(child *workloadsv1alpha2.RoleBasedGroup) {
-	next := 1
-	if previous, err := strconv.Atoi(child.Annotations[constants.RolloutRequestAnnotationKey]); err == nil && previous >= 0 {
-		next = previous + 1
+// child keeps consuming budget until its controller acknowledges that write. Recover from the
+// acknowledgement when the annotation is lost or reset, so an old acknowledgement is never reused.
+func requestGroupSetChildRollout(child *workloadsv1alpha2.RoleBasedGroup) error {
+	previous := 0
+	for _, value := range []string{child.Annotations[constants.RolloutRequestAnnotationKey], child.Status.ObservedRolloutRequest} {
+		counter, err := strconv.Atoi(value)
+		if errors.Is(err, strconv.ErrRange) {
+			return fmt.Errorf("rollout request counter out of range: %w", err)
+		}
+		if err == nil {
+			previous = max(previous, counter)
+		}
+	}
+	if previous == math.MaxInt {
+		return fmt.Errorf("rollout request counter exhausted for RoleBasedGroup %s", client.ObjectKeyFromObject(child))
 	}
 	if child.Annotations == nil {
 		child.Annotations = make(map[string]string)
 	}
-	child.Annotations[constants.RolloutRequestAnnotationKey] = strconv.Itoa(next)
+	child.Annotations[constants.RolloutRequestAnnotationKey] = strconv.Itoa(previous + 1)
+	return nil
 }
 
 func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
@@ -502,7 +515,9 @@ func (r *RoleBasedGroupSetReconciler) updateRollingGroupSetChild(
 	}
 	r.syncRBGMetadata(set, updated)
 	updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
-	requestGroupSetChildRollout(updated)
+	if err := requestGroupSetChildRollout(updated); err != nil {
+		return err
+	}
 	return r.client.Update(ctx, updated)
 }
 

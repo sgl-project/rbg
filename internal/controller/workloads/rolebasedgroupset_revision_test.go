@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -1080,6 +1082,87 @@ func TestSyncRollingGroupSet_InPlaceUpdateBudgetAndOrder(t *testing.T) {
 	}
 }
 
+func TestRequestGroupSetChildRollout(t *testing.T) {
+	for _, tt := range []struct {
+		name, request, observed, want string
+		hasRequest, nilAnnotations    bool
+	}{
+		{name: "new child", nilAnnotations: true, want: "1"},
+		{name: "empty counters", hasRequest: true, want: "1"},
+		{name: "unacknowledged request", hasRequest: true, request: "2", want: "3"},
+		{name: "acknowledged request", hasRequest: true, request: "2", observed: "2", want: "3"},
+		{name: "lost annotation map", nilAnnotations: true, observed: "1", want: "2"},
+		{name: "missing request key", observed: "9", want: "10"},
+		{name: "observed counter ahead", hasRequest: true, request: "2", observed: "5", want: "6"},
+		{name: "request counter ahead", hasRequest: true, request: "5", observed: "2", want: "6"},
+		{name: "invalid request", hasRequest: true, request: "invalid", observed: "4", want: "5"},
+		{name: "negative request", hasRequest: true, request: "-2", observed: "4", want: "5"},
+		{name: "invalid acknowledgement", hasRequest: true, request: "4", observed: "invalid", want: "5"},
+		{name: "negative acknowledgement", hasRequest: true, request: "4", observed: "-2", want: "5"},
+		{name: "both invalid", hasRequest: true, request: "invalid", observed: "-2", want: "1"},
+		{name: "last request counter", hasRequest: true, request: strconv.Itoa(math.MaxInt - 1), want: strconv.Itoa(math.MaxInt)},
+		{name: "last observed counter", observed: strconv.Itoa(math.MaxInt - 1), want: strconv.Itoa(math.MaxInt)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			if !tt.nilAnnotations {
+				child.Annotations = map[string]string{"example.com/keep": "value"}
+			}
+			if tt.hasRequest {
+				child.Annotations[constants.RolloutRequestAnnotationKey] = tt.request
+			}
+			child.Status.ObservedRolloutRequest = tt.observed
+
+			require.NoError(t, requestGroupSetChildRollout(child))
+
+			assert.Equal(t, tt.want, child.Annotations[constants.RolloutRequestAnnotationKey])
+			assert.Equal(t, tt.observed, child.Status.ObservedRolloutRequest, "issuing a request must not acknowledge it")
+			if !tt.nilAnnotations {
+				assert.Equal(t, "value", child.Annotations["example.com/keep"])
+			}
+		})
+	}
+}
+
+func TestRequestGroupSetChildRollout_Overflow(t *testing.T) {
+	for _, tt := range []struct {
+		name, request, observed string
+	}{
+		{name: "exhausted request", request: strconv.Itoa(math.MaxInt)},
+		{name: "exhausted acknowledgement", observed: strconv.Itoa(math.MaxInt)},
+		{name: "out of range request", request: strconv.Itoa(math.MaxInt) + "0"},
+		{name: "out of range acknowledgement", observed: strconv.Itoa(math.MaxInt) + "0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			if tt.request != "" {
+				child.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: tt.request}
+			}
+			child.Status.ObservedRolloutRequest = tt.observed
+			before := child.DeepCopy()
+
+			require.ErrorContains(t, requestGroupSetChildRollout(child), "rollout request counter")
+			assert.Equal(t, before, child, "overflow must not mutate the child")
+		})
+	}
+}
+
+func TestUpdateRollingGroupSetChild_CounterOverflowDoesNotWrite(t *testing.T) {
+	current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+	update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{
+		constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname",
+	})}
+	set := revisionTestRollingSet(1, update)
+	child := revisionTestReadyChild(set, 0, current)
+	child.Status.ObservedRolloutRequest = strconv.Itoa(math.MaxInt)
+	r, updates := revisionTestRollingReconciler(t, set, child)
+	before := revisionTestGetChild(t, r, set, 0)
+
+	require.ErrorContains(t, r.updateRollingGroupSetChild(context.Background(), set, before, update), "rollout request counter")
+	assert.Empty(t, *updates)
+	assert.Equal(t, before, revisionTestGetChild(t, r, set, 0), "a failed request must not write the target template")
+}
+
 func TestRolloutRequestCannotBeOverriddenByTemplate(t *testing.T) {
 	revision := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
 	set := revisionTestRollingSet(1, revision)
@@ -1091,7 +1174,7 @@ func TestRolloutRequestCannotBeOverriddenByTemplate(t *testing.T) {
 	assert.False(t, r.needsTemplateAnnotationUpdate(set, child))
 	r.syncRBGMetadata(set, child)
 	assert.Equal(t, "2", child.Annotations[constants.RolloutRequestAnnotationKey])
-	requestGroupSetChildRollout(child)
+	require.NoError(t, requestGroupSetChildRollout(child))
 	assert.Equal(t, "3", child.Annotations[constants.RolloutRequestAnnotationKey])
 	assert.False(t, groupSetChildReady(child))
 	assert.NotContains(t, newRBGForSet(set, 0).Annotations, constants.RolloutRequestAnnotationKey)
@@ -1165,6 +1248,60 @@ func TestSyncRollingGroupSet_MetadataOnlyUpdateHoldsBudgetUntilAcknowledged(t *t
 	assert.False(t, changed)
 	assert.True(t, r.groupSetPartitionReady(set, children, update, 0))
 	assert.Equal(t, []string{"test-2", "test-1", "test-0"}, *updates)
+}
+
+func TestSyncRollingGroupSet_MetadataOnlyUpdateAfterRequestLossHoldsBudget(t *testing.T) {
+	for _, tt := range []struct {
+		name, request, observed, want string
+	}{
+		{name: "lost request", observed: "1", want: "2"},
+		{name: "reset request", request: "0", observed: "1", want: "2"},
+		{name: "rolled back request", request: "2", observed: "5", want: "6"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+			update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{
+				constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname",
+			})}
+			set := revisionTestRollingSet(2, update)
+			set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromInt(1))
+			first := revisionTestReadyChild(set, 1, current)
+			if tt.request != "" {
+				first.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: tt.request}
+			}
+			first.Status.ObservedRolloutRequest = tt.observed
+			first.Status.Conditions = append(first.Status.Conditions, metav1.Condition{
+				Type: string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress), Status: metav1.ConditionFalse,
+				ObservedGeneration: first.Generation, Reason: "AllRolesUpdated", LastTransitionTime: metav1.Now(),
+			})
+			r, updates := revisionTestRollingReconciler(t, set, revisionTestReadyChild(set, 0, current), first)
+			before := revisionTestGetChild(t, r, set, 1)
+
+			changed, _ := revisionTestSync(t, r, set, current, update)
+			require.True(t, changed)
+			first = revisionTestGetChild(t, r, set, 1)
+			assert.Equal(t, tt.want, first.Annotations[constants.RolloutRequestAnnotationKey])
+			assert.Equal(t, before.Status, first.Status)
+			assert.Equal(t, before.Generation, first.Generation)
+			assert.Equal(t, before.UID, first.UID)
+			assert.False(t, groupSetChildReady(first))
+			require.Equal(t, []string{"test-1"}, *updates)
+
+			// A restarted set controller must recover the pending request from the persisted child.
+			r = &RoleBasedGroupSetReconciler{client: r.client, apiReader: r.apiReader, scheme: r.scheme}
+			for attempt := 0; attempt < 2; attempt++ {
+				changed, _ = revisionTestSync(t, r, set, current, update)
+				assert.False(t, changed, "an old acknowledgement must not release the next ordinal")
+				assert.Equal(t, []string{"test-1"}, *updates)
+				assert.Equal(t, tt.want, revisionTestGetChild(t, r, set, 1).Annotations[constants.RolloutRequestAnnotationKey])
+			}
+
+			revisionTestMarkReady(t, r, first)
+			changed, _ = revisionTestSync(t, r, set, current, update)
+			require.True(t, changed)
+			assert.Equal(t, []string{"test-1", "test-0"}, *updates)
+		})
+	}
 }
 
 func TestSyncRollingGroupSet_ReplicaUpdatesWaitForCompletion(t *testing.T) {
