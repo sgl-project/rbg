@@ -14,7 +14,7 @@ metadata:
     app.kubernetes.io/name: rbgs
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 webhooks:
-- name: vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io
+- name: vv1alpha1-warning-deprecation.kb.io
   admissionReviewVersions:
   - v1
   sideEffects: None
@@ -24,49 +24,7 @@ webhooks:
     service:
       name: rbgs-webhook-service
       namespace: {{ .Release.Namespace }}
-      path: /validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - clusterengineruntimeprofiles
-- name: vinstance-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: {{ .Release.Namespace }}
-      path: /validate-workloads-x-k8s-io-v1alpha1-instance
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - instances
-- name: vinstanceset-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: {{ .Release.Namespace }}
-      path: /validate-workloads-x-k8s-io-v1alpha1-instanceset
+      path: /validate-workloads-v1alpha1-deprecation
   rules:
   - apiGroups:
     - workloads.x-k8s.io
@@ -77,6 +35,10 @@ webhooks:
     - UPDATE
     resources:
     - instancesets
+    - instances
+    - rolebasedgroupscalingadapters
+    - clusterengineruntimeprofiles
+
 - name: vrolebasedgroup-v1alpha1-deprecation.kb.io
   admissionReviewVersions:
   - v1
@@ -98,27 +60,6 @@ webhooks:
     - UPDATE
     resources:
     - rolebasedgroups
-- name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
-  admissionReviewVersions:
-  - v1
-  sideEffects: None
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: {{ .Release.Namespace }}
-      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroupscalingadapters
 - name: vrolebasedgroupset-v1alpha1-deprecation.kb.io
   admissionReviewVersions:
   - v1

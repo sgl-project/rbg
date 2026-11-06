@@ -203,10 +203,7 @@ func registerProductionWebhooks(mgr ctrl.Manager) {
 
 	Expect((&workloadsv1alpha1.RoleBasedGroup{}).SetupDeprecationWebhookWithManager(mgr, true)).To(Succeed())
 	Expect((&workloadsv1alpha1.RoleBasedGroupSet{}).SetupDeprecationWebhookWithManager(mgr, true)).To(Succeed())
-	Expect((&workloadsv1alpha1.InstanceSet{}).SetupDeprecationWebhookWithManager(mgr)).To(Succeed())
-	Expect((&workloadsv1alpha1.Instance{}).SetupDeprecationWebhookWithManager(mgr)).To(Succeed())
-	Expect((&workloadsv1alpha1.RoleBasedGroupScalingAdapter{}).SetupDeprecationWebhookWithManager(mgr)).To(Succeed())
-	Expect((&workloadsv1alpha1.ClusterEngineRuntimeProfile{}).SetupDeprecationWebhookWithManager(mgr)).To(Succeed())
+	Expect(workloadsv1alpha1.SetupV1alpha1WarningWebhook(mgr)).To(Succeed())
 }
 
 // installShippedWebhookConfigurations decodes the shipped webhook manifests and
