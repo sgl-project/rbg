@@ -10,5 +10,6 @@ see-also:
   - /keps/30-instanceset
   - /keps/502-workload-status-model
 stage: alpha
-feature-gates: []
-disable-supported: false
+feature-gates:
+  - RoleInstanceLifecycleHooks
+disable-supported: true

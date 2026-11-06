@@ -13,6 +13,7 @@
     - [风险与缓解措施](#风险与缓解措施)
   - [设计细节](#设计细节)
     - [挂载点与触发边界](#挂载点与触发边界)
+    - [固定名称与常量](#固定名称与常量)
     - [Handler Label 协作](#handler-label-协作)
     - [Ready 门控](#ready-门控)
     - [Hook executor 服务](#hook-executor-服务)
@@ -53,7 +54,7 @@
 四个 hook 使用相同的 Handler Label 协作方式：RI controller 在触发 hook 时写入 label marker；
 hook executor 观察到匹配 marker 后执行业务动作，完成、取消或决定放行后清除 marker。
 前置 hooks 阻塞实际负载操作，controller 等 marker 不再匹配后继续；
-postReady 完全异步，controller 写入 marker 后立即进入 `running`，不等待业务处理完成。
+postReady 完全异步，controller 写入 marker 后立即进入 `Running`，不等待业务处理完成。
 marker 不再由 executor 初始登记，也不要求 executor 在后置 hook 完成后加回。
 
 executor 负责业务重试、退避和幂等恢复。前置 hooks 可配置 `markPodNotReady`；
@@ -107,7 +108,7 @@ postReady marker 不阻塞 phase 或 RI Ready。
 RIS 负责传递配置，RI 保存实际生效的配置快照。
 RIS 不是独立的用户配置入口，RI controller 不需要反向读取 RBG 或 RIS。
 controller 写入 marker 表示本轮 hook 待执行；前置 hooks 由 executor 清除 marker 放行实际负载操作。
-postReady 由 controller 写入 marker 后立即进入 `running`，executor 在后台处理并清除 marker；
+postReady 由 controller 写入 marker 后立即进入 `Running`，executor 在后台处理并清除 marker；
 controller 不等待 postReady 完成。
 controller 不接收业务返回值，executor 从 RI 和业务系统获取所需上下文。
 
@@ -121,7 +122,7 @@ controller 不接收业务返回值，executor 从 RI 和业务系统获取所�
 | `preDelete` | 缩容或删除 RI 时摘流、排空，并完成需要存活引擎参与的资源交接 |
 
 postReady executor 在后台验收引擎、恢复动态配置并注册路由，完成或取消后清除 marker。
-RI 可以在 postReady 尚未完成时进入 `running` 和 Ready；
+RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 如果业务注册完成前不能接收流量，业务必须自行控制流量入口，不能依赖 postReady marker 门控 RI Ready。
 共享 KVCache 迁移还需确认其他实例的在途读写和数据交接，不能只以本实例请求归零作为安全退出依据。
 
@@ -129,12 +130,12 @@ RI 可以在 postReady 尚未完成时进入 `running` 和 Ready；
 
 - hook 以整个 RI 的操作为粒度，不按 Pod 数量或 reconcile 次数重复触发。
 - `preUpdate` 和 `preRecover` 只约束 controller 尚未执行的更新或恢复，不能阻止外部直接修改或删除 Pod。
-- 顶层 phase 包括 `creating`、`updating`、`recovering`、`terminating`、`running`；
+- 顶层 phase 包括 `Creating`、`Updating`、`Recovering`、`Terminating`、`Running`；
   Ready 仍是独立的 status condition。
-- Delete 可使 `creating`、`updating`、`recovering`、`running` 中任一阶段进入 `terminating`；
+- Delete 可使 `Creating`、`Updating`、`Recovering`、`Running` 中任一阶段进入 `Terminating`；
   进入后 Update 和 Recovery 均在 reconcile 开头跳过。
 - `postReady` 在创建、恢复或更新目标完成且 RI 达到工作负载 Ready 后触发，普通 Ready 抖动不重放。
-- postReady 完全异步：写入 state 和 marker 后立即进入 `running`，不等待 executor，也不门控 RI Ready。
+- postReady 完全异步：写入 state 和 marker 后立即进入 `Running`，不等待 executor，也不门控 RI Ready。
 - RIS 扩缩 RI 数量时，新 RI 可在首次达到工作负载 Ready 后执行 `postReady`，被删除 RI 可执行 `preDelete`。
 - executor 可以位于业务 Pod 内，也可以独立部署；`preDelete` 的执行者必须在业务 Pod 删除前可用。
 - `preRecover` 不能依赖已经失效的业务 Pod，全部成员不可用时需要独立 executor。
@@ -164,13 +165,13 @@ RI 可以在 postReady 尚未完成时进入 `running` 和 Ready；
 | 挂载点 | 触发边界 | marker 清除后的推进 |
 | --- | --- | --- |
 | `preUpdate` | 已确定本轮更新目标，controller 第一次实际变更业务 Pod 之前 | 开始执行本轮更新 |
-| `preRecover` | `recovering` 中实际恢复业务 Pod 之前 | 开始执行本轮恢复 |
+| `preRecover` | `Recovering` 中实际恢复业务 Pod 之前 | 开始执行本轮恢复 |
 | `postReady` | 受控操作达到工作负载 Ready | 已提前 running；清 marker 后清 state |
 | `preDelete` | RI 最终删除流程中，controller 主动终止业务 Pod 之前 | 开始删除业务 Pod并完成 RI 删除收尾 |
 
 `postReady` 不是 Pod 对象创建通知，也不是容器 `postStart`。
 仅创建 Pod、写入 RI spec 或更新 revision 不足以触发它；controller 必须先确认本轮目标已达到工作负载 Ready。
-`lifecycle-state=postReady` 和对应 marker 只在这次受控操作的状态转换中写入，
+`hook-state=PostReady` 和对应 marker 只在这次受控操作的状态转换中写入，
 不能由启用配置或普通 metadata 同步补写到存量 RI。
 `postReady` 复用同一挂载点表达创建、恢复和更新后的业务处理，不再按操作类型拆分后置 hooks。
 
@@ -178,15 +179,53 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 恢复过程中补齐或重建 Pod 不触发 `preUpdate`，而是在实际操作前触发 `preRecover`；恢复后达到工作负载 Ready 时触发统一的 `postReady`。
 若替换的是 RI UID，旧 RI 走 Delete，新 RI 走 Create，不能视为同一 RI 的 Recovery。
 
+### 固定名称与常量
+
+以下名称和取值是规范性的：
+
+| 用途 | 固定名称或取值 |
+| --- | --- |
+| 新用户入口字段 | `RoleBasedGroup.spec.roles[].lifecycle` |
+| RIS 模板字段 | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
+| 新 RI 字段 | `RoleInstance.spec.lifecycle` |
+| 旧 RIS 字段 | `RoleInstanceSet.spec.lifecycle` |
+| hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
+| hook-state 取值 | `PreUpdate` |
+| hook-state 取值 | `Updating` |
+| hook-state 取值 | `PreRecover` |
+| hook-state 取值 | `Recovering` |
+| hook-state 取值 | `PostReady` |
+| hook-state 取值 | `PreDelete` |
+| hook-state 取值 | `Terminating` |
+| phase 字段 | `RoleInstance.status.phase` |
+| phase 取值 | `Creating` |
+| phase 取值 | `Running` |
+| phase 取值 | `Updating` |
+| phase 取值 | `Recovering` |
+| phase 取值 | `Terminating` |
+| preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
+| readiness condition | `RoleInstanceCustomReady` |
+| 旧协议 state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
+| feature gate | `RoleInstanceLifecycleHooks` |
+| state key Go 常量 | `RoleInstanceLifecycleHookStateKey` |
+| finalizer Go 常量 | `RoleInstancePreDeleteFinalizer` |
+
+没有 lifecycle 操作进行时，hook-state label 不存在。协议不定义 `Running`
+hook-state；`Running` 是 `status.phase` 的取值。未知 hook-state 值非法：
+controller 不得推进，executor 不得执行，诊断必须暴露非法值，且不能自动清理。
+
+本文中的 `hook-state` 是上表 label key 的固定简称。marker key 和 value
+由用户通过 `labelsHandler` 配置，不是项目级常量。
+
 ### Handler Label 协作
 
 四个 hooks 使用相同的协作方向：
 
-1. controller 确定本轮操作后，在同一次 RI labels 写入中设置 `lifecycle-state` 和对应 marker。
-2. executor 观察到 `lifecycle-state` 和自己的 marker 匹配，开始执行业务动作。
+1. controller 确定本轮操作后，在同一次 RI labels 写入中设置 `hook-state` 和对应 marker。
+2. executor 观察到 `hook-state` 和自己的 marker 匹配，开始执行业务动作。
 3. 前置 hooks 由 executor 成功或决定放行后清除 marker；失败时保留并自行退避重试。
 4. controller 等前置 hooks 的所有相关 marker 不再匹配后，继续实际负载操作。
-5. postReady 写入 state 和 marker 后立即进入 `running`，不等待 executor；
+5. postReady 写入 state 和 marker 后立即进入 `Running`，不等待 executor；
    executor 后台完成或取消后清除 marker，controller 再清理 state。
 
 “匹配”表示 RI label 的 key/value 与 `labelsHandler` 一致。
@@ -227,9 +266,11 @@ spec:
 ```
 
 配置层级已经确定：`RoleBasedGroup.spec.roles[].lifecycle` 是新四-hook 协议的
-唯一用户定义入口，每个 Role 可以声明自己的 hooks；RIS 传递实际生效快照，
-RI 保存该快照。新字段复用现有 lifecycle hook 结构，并向 lifecycle 对象扩展
-`preUpdate`、`preRecover` 和 `postReady`；具体 Go 类型位置仍需 API 评审。
+唯一用户定义入口，每个 Role 可以声明自己的 hooks；RBG controller 将
+desired snapshot 写入 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`，
+RIS controller 再复制到 `RoleInstance.spec.lifecycle`。新字段复用现有
+lifecycle hook 结构，并向 lifecycle 对象扩展 `preUpdate`、`preRecover`
+和 `postReady`；仅生成后的 Go 常量名仍需 API 评审。
 
 新的 Role-level 字段与现有 `RoleInstanceSetSpec.lifecycle` 复用同一 API
 类型族，但运行协议彼此独立。旧 RIS 字段仅供存量 standalone RIS 使用，其中
@@ -243,7 +284,7 @@ lifecycle 与用户配置的旧 RIS lifecycle 同时非空；RBG 管理的 RIS l
 拒绝 `inPlaceUpdate`；该字段虽因类型复用而存在，但只属于旧 RIS 兼容路径。
 反之，legacy standalone RIS 路径拒绝 `preUpdate`、`preRecover` 和
 `postReady`；这三个 hook 只在新 Role-level 协议中生效。
-声明式配置只向下传递，`lifecycle-state` 和运行时 marker 只写入 RI labels，不回写 RBG 或 RIS。
+声明式配置只向下传递，`hook-state` 和运行时 marker 只写入 RI labels，不回写 RBG 或 RIS。
 `labelsHandler` 是 controller 写入及双方判断的匹配规则，不是由 executor 维护的登记配置。
 未配置 hook 表示禁用；配置了 hook 但 `labelsHandler` 缺省或为空属于配置错误，准入校验必须拒绝。
 前置 hooks 的多个 label 表示多个协作条件，全部不再匹配后 controller 才继续。
@@ -255,14 +296,14 @@ lifecycle 与用户配置的旧 RIS lifecycle 同时非空；RBG 管理的 RIS l
 marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被多个已配置 hook 使用时，
 准入校验必须拒绝，包括 postReady 和 preDelete 共用 key 的情况；
 否则一个 hook 的迟到取消清理可能删除另一个 hook 的 marker。
-handler key 也不能等于 `lifecycle-state` 或其他由 controller 管理的 RI label key；
+handler key 也不能等于 `hook-state` 或其他由 controller 管理的 RI label key；
 hook marker 本身是运行时 label，但不得与 controller 保留的状态 key 冲突。
 
-本文中的 `lifecycle-state` 是概念名。实现必须使用
-`rbg.workloads.x-k8s.io/` 前缀下的完整 label key，且不得复用现有的
-`rbg.workloads.x-k8s.io/role-instance-lifecycle-state`。
+实现必须使用固定 hook-state label key
+`rbg.workloads.x-k8s.io/role-instance-hook-state`，
+且不得复用现有的 `rbg.workloads.x-k8s.io/role-instance-lifecycle-state`。
 
-准入必须在受影响 RI 的 `lifecycle-state` 非空时拒绝修改 lifecycle。
+准入必须在受影响 RI 的 `hook-state` 非空时拒绝修改 lifecycle。
 如果修改与准入校验发生竞态，controller 按 RI 中最新的生效配置切换判断条件，
 例如从 markerA 改为 markerB 后直接检查 markerB，不继续等待 markerA，也不负责清理或迁移旧 marker。
 此类在途修改属于主动错误操作，可能跳过等待或遗留状态，不应作为正常运维方式。
@@ -277,10 +318,10 @@ hook marker 本身是运行时 label，但不得与 controller 保留的状态 k
 - 该门控复用现有 `RoleInstanceCustomReady` condition；RI 的 `spec.readinessGates`
   必须登记 `RoleInstanceCustomReady`，否则现有 readiness helper 会直接返回，门控不生效。
   实现必须保证启用 `markPodNotReady` 时满足此前提，不能只写 condition 而缺少 readinessGate。
-- 更新或恢复期间建立的 NotReady 门控持续到本轮操作进入 `running`，不能在 preUpdate 或 preRecover marker 清除后立即解除。
+- 更新或恢复期间建立的 NotReady 门控持续到本轮操作进入 `Running`，不能在 preUpdate 或 preRecover marker 清除后立即解除。
 - preDelete 建立的 NotReady 门控持续到 RI 对象删除；删除 marker 放行后不得恢复 Ready。
 - `postReady` 不配置 `markPodNotReady` 或 `blockReady`，其 marker 不参与 RI Ready 计算。
-- 工作负载达到 Ready 后，controller 写入 postReady state 和 marker，立即进入 `running`，
+- 工作负载达到 Ready 后，controller 写入 postReady state 和 marker，立即进入 `Running`，
   并按原有健康条件和前置门控计算 RI Ready。
 - postReady 后台处理结果不改变 controller 的 phase 和 Ready；业务结果由 executor 自行诊断，流量准入由业务系统负责。
 
@@ -320,33 +361,33 @@ sequenceDiagram
     participant R as RI 对象
     participant P as 业务 Pod
     participant E as Hook executor
-    C->>R: 记录目标，同批写入 lifecycle-state=preUpdate 和 update-block=true
-    C->>R: 切换 phase=updating，按配置建立 NotReady 门控
+    C->>R: 写入 hook-state=PreUpdate 和 update-block=true
+    C->>R: 切换 phase=Updating，按配置建立 NotReady 门控
     R-->>E: 观察到 preUpdate 且 marker 匹配
     loop 当前阶段有效且 preUpdate 尚未成功
         E->>E: 摘流、排空，失败自行退避重试
         Note over C,R: controller 等待，不发起 Pod 更新
     end
     E->>R: 成功后移除 update-block
-    R-->>C: lifecycle-state=preUpdate 且所有 marker 不再匹配
-    C->>R: 切换 lifecycle-state=updating
+    R-->>C: hook-state=PreUpdate 且所有 marker 不再匹配
+    C->>R: 切换 hook-state=Updating
     C->>P: 执行原地更新或重建 Pod
     P-->>C: 本轮目标更新完成且达到工作负载 Ready
     alt 配置了 postReady
-        C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify
-        C->>R: 切换 phase=running并解除更新门控
+        C->>R: 写入 hook-state=PostReady 和 ready-notify
+        C->>R: 切换 phase=Running并解除更新门控
         R-->>E: 观察到 postReady 且 marker 匹配
         E->>E: 异步验收新版本、恢复动态配置和注册路由
         E->>R: 完成或取消后移除 ready-notify
-        C->>R: 清理 lifecycle-state
+        C->>R: 清理 hook-state
     else 未配置 postReady
-        C->>R: 切换 phase=running，解除门控并清理 state
+        C->>R: 切换 phase=Running，解除门控并清理 state
     end
 ```
 
 preUpdate 期间 marker 不匹配是 controller 开始更新的必要条件。
-postReady 不阻塞 `running`、RI Ready 或下一轮操作；executor 完成或取消后清除 ready-notify，不再加回。
-下一轮更新由 controller 重新写入 lifecycle-state 和对应 marker。
+postReady 不阻塞 `Running`、RI Ready 或下一轮操作；executor 完成或取消后清除 ready-notify，不再加回。
+下一轮更新由 controller 重新写入 hook-state 和对应 marker。
 
 ### 恢复交互流程
 
@@ -360,22 +401,22 @@ sequenceDiagram
     participant P as 业务 Pod
     participant E as Hook executor
     C->>C: 确认同一 RI UID 内需要执行 Recovery
-    C->>R: 同批写入 lifecycle-state=preRecover 和 recover-block=true
-    C->>R: 切换 phase=recovering，按配置建立 NotReady 门控
+    C->>R: 写入 hook-state=PreRecover 和 recover-block=true
+    C->>R: 切换 phase=Recovering，按配置建立 NotReady 门控
     R-->>E: 观察到 preRecover 且 marker 匹配
     E->>E: 清理失效路由、准备替代资源或完成缓存交接
     E->>R: 成功后移除 recover-block
-    R-->>C: lifecycle-state=preRecover 且所有 marker 不再匹配
-    C->>R: 切换 lifecycle-state=recovering
+    R-->>C: hook-state=PreRecover 且所有 marker 不再匹配
+    C->>R: 切换 hook-state=Recovering
     C->>P: 补齐或重建本轮目标 Pod
     P-->>C: 恢复目标完成且达到工作负载 Ready
     alt 配置了 postReady
-        C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify
-        C->>R: 切换 phase=running并解除恢复门控
+        C->>R: 写入 hook-state=PostReady 和 ready-notify
+        C->>R: 切换 phase=Running并解除恢复门控
         E->>R: 完成或取消后移除 ready-notify
-        C->>R: 清理 lifecycle-state
+        C->>R: 清理 hook-state
     else 未配置 postReady
-        C->>R: 切换 phase=running，解除门控并清理 state
+        C->>R: 切换 phase=Running，解除门控并清理 state
     end
 ```
 
@@ -394,25 +435,25 @@ sequenceDiagram
     participant E as Hook executor
     C->>C: 确认创建、恢复或更新目标完成
     C->>C: 等待工作负载 Ready（不含 lifecycle 门控）
-    C->>R: 同批写入 lifecycle-state=postReady 和配置的 ready marker
-    C->>R: 立即切换 phase=running并计算 RI Ready
+    C->>R: 写入 hook-state=PostReady 和配置的 ready marker
+    C->>R: 立即切换 phase=Running并计算 RI Ready
     R-->>E: 观察到 postReady 且 marker 匹配
     loop 当前阶段有效且后台业务动作尚未完成
         E->>E: 验收实例、恢复配置或注册路由，失败自行重试
     end
     E->>R: 完成或取消后移除 ready marker
-    R-->>C: running 且 lifecycle-state=postReady、marker 不再匹配
-    C->>R: 清理 lifecycle-state
+    R-->>C: Running 且 hook-state=PostReady、marker 不再匹配
+    C->>R: 清理 hook-state
 ```
 
-controller 通过 phase、`lifecycle-state` 和 marker 的组合恢复 postReady 进度，
+controller 通过 phase、`hook-state` 和 marker 的组合恢复 postReady 进度，
 不新增 `step` 或 controller 私有状态。
-postReady 只允许由 `creating`、`updating`、`recovering` 中正在执行的受控操作发起，
+postReady 只允许由 `Creating`、`Updating`、`Recovering` 中正在执行的受控操作发起，
 并且必须在本轮达到工作负载 Ready 的状态转换中写入 state 和 marker。
-`running` 不是触发来源，普通 Ready 变化不会补写这些 labels。
-因此，存量 `running` RI 启用 postReady 后没有对应状态转换，不会立即执行或重放历史 hook。
+`Running` 不是触发来源，普通 Ready 变化不会补写这些 labels。
+因此，存量 `Running` RI 启用 postReady 后没有对应状态转换，不会立即执行或重放历史 hook。
 即使上一轮 ready marker 尚未清除，新一轮达到工作负载 Ready 时仍写入 postReady state 和 marker，
-并立即进入 `running`；重复写同名 marker 是幂等操作，不增加操作代次。
+并立即进入 `Running`；重复写同名 marker 是幂等操作，不增加操作代次。
 
 ### 删除交互流程
 
@@ -424,8 +465,8 @@ sequenceDiagram
     participant P as 业务 Pod
     participant E as Hook executor
     R-->>C: 保留 finalizer 的 RI 收到删除意图
-    C->>R: 同批写入 lifecycle-state=preDelete 和 delete-block=true
-    C->>R: 切换 phase=terminating，按配置建立 NotReady 门控
+    C->>R: 写入 hook-state=PreDelete 和 delete-block=true
+    C->>R: 切换 phase=Terminating，按配置建立 NotReady 门控
     R-->>E: 观察到 preDelete 且 marker 匹配
     loop 当前阶段有效且 preDelete 尚未成功
         E->>P: 摘流、排空及资源交接，失败自行重试
@@ -433,7 +474,7 @@ sequenceDiagram
     end
     E->>R: 成功后移除 delete-block
     R-->>C: 所有 preDelete marker 不再匹配
-    C->>R: 切换 lifecycle-state=terminating
+    C->>R: 切换 hook-state=Terminating
     C->>P: 删除业务 Pod
     C->>R: 清除保留的 preDelete finalizer并完成 RI 删除收尾
 ```
@@ -442,7 +483,8 @@ sequenceDiagram
 删除流程只包括 preDelete 协作、Pod 删除和 RI 最终收尾，executor 不在删除完成后加回 marker。
 
 RI 生效配置包含 preDelete 时，controller 必须确保 RI 在 hook 生效前带有
-RBG 保留的 preDelete finalizer。executor 只清除 RI 上的 delete marker；
+保留 finalizer
+`rbg.workloads.x-k8s.io/role-instance-pre-delete`。executor 只清除 RI 上的 delete marker；
 marker 仍匹配时，controller 不得删除成员 Pod。确认 preDelete 放行后，
 controller 删除成员 Pod、完成 RI 收尾，并移除保留 finalizer。
 本方案不使用逐 Pod finalizer。
@@ -487,37 +529,37 @@ implementable。
 业务重试由 executor 负责，controller 只重试自身 API 读写和状态收敛。
 业务结果未知时，executor 应先查询、恢复或幂等重试，不能直接清除 marker。
 
-controller 不新增 `step` 或私有运行状态，而是通过 RI phase、`lifecycle-state` 和 marker 的组合恢复进度。
-进入 hook 时，`lifecycle-state` 与 marker 必须在同一次 labels 写入中设置，
+controller 不新增 `step` 或私有运行状态，而是通过 RI phase、`hook-state` 和 marker 的组合恢复进度。
+进入 hook 时，`hook-state` 与 marker 必须在同一次 labels 写入中设置，
 不允许出现只有 state、尚未写 marker 的中间状态。
 前置 hooks 放行后不能清空 state，而要显式切换到实际操作阶段：
 
 ```text
-preUpdate + marker   → preUpdate + 无 marker → updating
-preRecover + marker  → preRecover + 无 marker → recovering
-preDelete + marker   → preDelete + 无 marker → terminating
+PreUpdate + marker   → PreUpdate + 无 marker → Updating
+PreRecover + marker  → PreRecover + 无 marker → Recovering
+PreDelete + marker   → PreDelete + 无 marker → Terminating
 ```
 
-`preUpdate + 无 marker` 等状态表示 hook 已放行；controller 重启后据此继续，不会误判为尚未触发。
-进入 `updating`、`recovering` 或 `terminating` 后再执行实际负载操作，
+`PreUpdate + 无 marker` 等状态表示 hook 已放行；controller 重启后据此继续，不会误判为尚未触发。
+进入 `Updating`、`Recovering` 或 `Terminating` 后再执行实际负载操作，
 后续由 postReady 覆盖更新／恢复 state，删除 state 则保留到 RI 最终删除。
-postReady 先进入 `running`，再由 executor 异步清除 marker，最后清理 state；controller 不等待业务结果。
-executor 启动或 watch 重连后重新读取 RI，只在 `lifecycle-state` 匹配且 marker 存在时执行或恢复业务动作。
+postReady 先进入 `Running`，再由 executor 异步清除 marker，最后清理 state；controller 不等待业务结果。
+executor 启动或 watch 重连后重新读取 RI，只在 `hook-state` 匹配且 marker 存在时执行或恢复业务动作。
 
 操作规则如下：
 
 | 当前操作 | 新操作 | 处理规则 |
 | --- | --- | --- |
-| `creating` | Update、Recovery | 目标并入 Create；不单独触发 hooks |
-| `updating` | Update | 合并目标，不重复 preUpdate；仅非 updating 启动时触发 |
-| `updating` | Recovery | 认为当前更新尚未完成，将恢复目标并入本轮 Update，不单独执行 preRecover |
-| `recovering` | Recovery | 属于当前 Recovery 的持续推进，不重复进入，也不重复 preRecover |
-| `recovering` | Update | 中断当前 Recovery，进入 preUpdate，再执行 Update 和异步 postReady |
+| `Creating` | Update、Recovery | 目标并入 Create；不单独触发 hooks |
+| `Updating` | Update | 合并目标，不重复 preUpdate；仅非 Updating 启动时触发 |
+| `Updating` | Recovery | 恢复目标并入本轮 Update，不单独执行 preRecover |
+| `Recovering` | Recovery | 继续当前 Recovery，不重复进入或执行 preRecover |
+| `Recovering` | Update | 中断当前 Recovery，进入 preUpdate，再执行 Update |
 | 任意非删除 phase | Delete | 进入 terminating 和 preDelete，不等待当前操作 |
-| `terminating` | Update、Recovery | 在 reconcile 开头检查后跳过，不执行具体逻辑或对应 hooks |
+| `Terminating` | Update、Recovery | 在 reconcile 开头检查后跳过，不执行具体逻辑或对应 hooks |
 | 后台 postReady | Update、Recovery、Delete | 直接开始；旧 executor 按 state 自行处理 |
 
-`creating` 中的目标变化会并入当前 Create 收敛，而不是被忽略。
+`Creating` 中的目标变化会并入当前 Create 收敛，而不是被忽略。
 初始镜像错误可以在成员尚未达到工作负载 Ready 时被修正并替换，
 但 controller 不进入独立 Update／Recovery 操作，也不触发对应 hooks。
 
@@ -526,15 +568,15 @@ Update 可能在旧 engine 已经失效时打断 Recovery。preUpdate executor �
 要么保留 marker 等待业务侧条件满足。controller 不推断 engine 存活状态，
 也不跳过 marker。
 
-`recovering` 表示本轮恢复尚未成功完成；期间重复 reconcile 或再次观察到 Recovery 需求，
+`Recovering` 表示本轮恢复尚未成功完成；期间重复 reconcile 或再次观察到 Recovery 需求，
 都只继续当前恢复，不构成新一轮操作，也不能再次进入 preRecover。
-`terminating` 的 Update／Recovery 检查必须先于对应操作和 hook 逻辑，避免删除过程中被其他操作重新接管。
+`Terminating` 的 Update／Recovery 检查必须先于对应操作和 hook 逻辑，避免删除过程中被其他操作重新接管。
 
 postReady 的完成条件非常简单：受控操作达到工作负载 Ready 且配置了 postReady 时，
-写入 state 和 marker，并立即进入 `running`。未配置 postReady 时，controller 直接进入
-`running`，解除操作门控并清理 `lifecycle-state`，不写入 marker。
+写入 state 和 marker，并立即进入 `Running`。未配置 postReady 时，controller 直接进入
+`Running`，解除操作门控并清理 `hook-state`，不写入 marker。
 如果上一轮 marker 仍存在，重复写入不改变 marker 值；
-lifecycle-state 已从新一轮前置阶段变为 postReady，executor 据此处理最新阶段。
+hook-state 已从新一轮前置阶段变为 PostReady，executor 据此处理最新阶段。
 旧 executor 完成或取消后清除自己负责的 marker；controller 不等待旧任务确认停止，也不引入操作代次。
 同名 marker 不区分业务轮次：第一轮任务的迟到清理可能清除第二轮刚写入的同名 marker，
 使 controller 提前将第二轮 postReady 视为结束。本设计明确接受 postReady 同一挂载点内的共享 marker 风险，
@@ -565,19 +607,20 @@ Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提�
 
 ### 待讨论的设计问题
 
-四个 hooks 的 API 设计已确认：Role 定义、RIS 传递、RI 生效；复用现有 hook 结构并扩展
+四个 hooks 的 API 设计已确认：Role 定义、RIS 模板保存 desired snapshot、
+`RoleInstance.spec.lifecycle` 保存生效副本；复用现有 hook 结构并扩展
 三个新 hook 字段；空 `labelsHandler` 校验失败；前置 hooks 保留 `markPodNotReady`，
 postReady 不门控 RI Ready；新 Role-level 路径上的 `finalizersHandler` 标记
-deprecated 且必须为空。具体 Go 类型位置仍需 API 评审。
-重启恢复不新增 `step`：进入 hook 时同批写入 `lifecycle-state` 与 marker；
-前置 hooks 放行后切换到 `updating`、`recovering` 或 `terminating`，不清空 state；
-postReady 则立即进入 `running` 并异步收尾。
+deprecated 且必须为空。上表中的 wire 名称和 Go 常量名均已确定。
+重启恢复不新增 `step`：进入 hook 时同批写入 `hook-state` 与 marker；
+前置 hooks 放行后切换到 `Updating`、`Recovering` 或 `Terminating`，不清空 state；
+postReady 则立即进入 `Running` 并异步收尾。
 postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Ready 不含 lifecycle 门控；
-普通 Ready 抖动和存量 `running` 启用均不重放。
+普通 Ready 抖动和存量 `Running` 启用均不重放。
 连续操作规则已确认：Update 中合并 Update 和 Recovery，Update 可打断 Recovery，Delete 抢占其他操作；
-`creating` 将 Update／Recovery 的目标变化并入当前 Create 收敛，包括修正初始镜像错误，
-但不进入独立 Update／Recovery 操作，也不触发对应 hooks；`recovering` 不重复进入 Recovery，
-`terminating` 在 reconcile 开头跳过 Update／Recovery；postReady 不阻塞任何后续操作，不增加操作代次。
+`Creating` 将 Update／Recovery 的目标变化并入当前 Create 收敛，包括修正初始镜像错误，
+但不进入独立 Update／Recovery 操作，也不触发对应 hooks；`Recovering` 不重复进入 Recovery，
+`Terminating` 在 reconcile 开头跳过 Update／Recovery；postReady 不阻塞任何后续操作，不增加操作代次。
 消费者边界已确认：RBG 只判断 marker 是否存在，不关心消费者身份、数量、选主或聚合。
 preDelete 屏障已确认：controller 在 RI 上保留专属 finalizer，preDelete 放行后再删除成员 Pod 并清除；
 Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需要 lifecycle finalizer。
@@ -618,34 +661,36 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
   `finalizersHandler` 行为，并拒绝三个新 hook 字段。
 - controller 持久化并暴露 KEP-502 的 RI `status.phase`，executor 同时观察
   该 phase 和 lifecycle marker labels。
+- 实现使用固定的 hook-state key、finalizer、feature gate 和取值集合；
+  未知 hook-state 不被推进或执行。
 - controller 在进入前置 hook 阶段时只写入一次 marker，等待期间不重复补回；
   postReady 支持幂等写入已有 marker。
 - executor 只在阶段和 marker 匹配时处理，前置 hooks 放行后清除，postReady 后台完成或取消后清除。
 - preUpdate marker 未清除时不更新 Pod，preRecover marker 未清除时不恢复 Pod；
   preDelete marker 未清除时不删除 Pod。
-- postReady marker 未清除时仍进入 `running`，且不阻塞 RI Ready。
+- postReady marker 未清除时仍进入 `Running`，且不阻塞 RI Ready。
 - postReady 仅在目标完成且工作负载 Ready 后触发，普通 Ready 抖动不重复触发。
 - 前置 `markPodNotReady` 的建立及解除时机，以及 postReady 不参与 RI Ready 计算。
 - preDelete 建立的 NotReady 门控持续到 RI 对象删除，删除 marker 放行后不恢复。
-- `recovering` 中依次执行 preRecover 和异步 postReady，普通 `running` Ready 抖动及存量启用不触发 postReady。
-- `updating` 中 Update 合并且不重复 preUpdate，Recovery 并入当前 Update；
-  `recovering` 中 Update 进入 preUpdate，重复 Recovery 不重新进入或重复 preRecover。
-- `creating` 中 Update／Recovery 的目标变化并入当前 Create 收敛，
+- `Recovering` 中依次执行 preRecover 和异步 postReady，普通 `Running` Ready 抖动及存量启用不触发 postReady。
+- `Updating` 中 Update 合并且不重复 preUpdate，Recovery 并入当前 Update；
+  `Recovering` 中 Update 进入 preUpdate，重复 Recovery 不重新进入或重复 preRecover。
+- `Creating` 中 Update／Recovery 的目标变化并入当前 Create 收敛，
   允许修正错误镜像并替换尚未 Ready 的成员，但不触发 preUpdate 或 preRecover；
-  `terminating` 中在 reconcile 开头跳过二者。
+  `Terminating` 中在 reconcile 开头跳过二者。
 - Delete 抢占 Update、Recovery 和后台 postReady，新操作不等待旧 postReady。
 - 多 marker 条件、空 handler 和非法 marker key 的准入失败
   （不同 hooks 共用 key，或与 controller 管理 label 冲突）、
   重启恢复和未配置 hooks 的行为；controller 不识别消费者身份。
-- `lifecycle-state` 与 marker 同批写入；前置 hooks 清 marker 后切换到实际操作 state，
-  重启后不会重复执行已放行 hook；postReady 先进入 `running` 再异步清理 state。
+- `hook-state` 与 marker 同批写入；前置 hooks 清 marker 后切换到实际操作 state，
+  重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
 - 在途 markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
-- 受影响 RI 的 `lifecycle-state` 非空时，准入拒绝修改 lifecycle。
+- 受影响 RI 的 `hook-state` 非空时，准入拒绝修改 lifecycle。
 - 启用 `markPodNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
 - 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
 - 未配置 postReady 时，Update 或 Recovery 达到工作负载 Ready 后直接进入
-  `running`，解除门控并清理 `lifecycle-state`，不写入 marker。
+  `Running`，解除门控并清理 `hook-state`，不写入 marker。
 - RI 稳定后禁用 hook 可阻止后续触发；在未完成 hook 操作中删除配置，
   不得被解释为 marker 放行或操作完成。
 
@@ -702,7 +747,7 @@ hook 的语义一旦确定，后续版本不得改变其触发条件、阻塞方
 需要不同生命周期逻辑时，应添加新 hook，而不是重用已有 hook 名称并改变含义。
 
 不兼容降级前，应先在理解该协议的 controller 仍管理 RI 时禁用 hooks。
-等待所有 RI 稳定、没有 `lifecycle-state` 和 marker，并且没有残留保留的
+等待所有 RI 稳定、没有 `hook-state` 和 marker，并且没有残留保留的
 preDelete RI finalizer 后，再替换 controller。
 替换前必须验证上述条件；否则应保留兼容 controller，由其完成操作并清理 finalizer。
 存在未完成操作时不得直接降级；降级可能使 controller 忽略阶段、绕过 hook 或卡住删除。
@@ -721,7 +766,8 @@ controller 与 executor 必须约定阶段位置、阶段值和 marker 方向。
 
 ### 功能启用与回退
 
-启用方式及 feature gate 待定。先部署支持该阶段协议的 executor并授予必要权限，再启用配置。
+feature gate 为 `RoleInstanceLifecycleHooks`。先部署支持该阶段协议的
+executor 并授予必要权限，再开启该 gate。
 关闭或重新启用功能时，不能重置执行中的 marker或跳过未完成阶段。
 有未完成操作时不得直接回退到不理解当前协议的版本。
 preDelete 需要确认 executor 在业务 Pod 删除前可用，并验证所支持删除路径的屏障。

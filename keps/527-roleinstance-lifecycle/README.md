@@ -13,6 +13,7 @@
     - [Risks and Mitigations](#risks-and-mitigations)
   - [Design Details](#design-details)
     - [Hooks and Trigger Boundaries](#hooks-and-trigger-boundaries)
+    - [Wire Names and Constants](#wire-names-and-constants)
     - [Handler Label Coordination](#handler-label-coordination)
     - [Ready Gating](#ready-gating)
     - [Hook Executor Service](#hook-executor-service)
@@ -58,7 +59,7 @@ for matching markers, performs the required application action, and removes
 the marker when it completes, cancels, or explicitly allows the operation to
 proceed. The pre-operation hooks block the actual workload operation until
 their markers no longer match. By contrast, `postReady` is fully asynchronous:
-the controller writes its marker and immediately enters `running` without
+the controller writes its marker and immediately enters `Running` without
 waiting for application processing to finish.
 
 Executors no longer register markers initially, and they do not restore
@@ -145,7 +146,7 @@ read back from RBG or RIS.
 A controller-written marker indicates that the current hook invocation is
 pending. For pre-operation hooks, the executor removes the marker to allow
 the workload operation to proceed. For `postReady`, the controller writes the
-marker and immediately enters `running`; the executor processes the hook in
+marker and immediately enters `Running`; the executor processes the hook in
 the background and removes the marker. The controller never waits for
 `postReady` to complete. It receives no application return value; the
 executor obtains the context it needs from the RI and application systems.
@@ -161,7 +162,7 @@ executor obtains the context it needs from the RI and application systems.
 
 The `postReady` executor validates the engine, restores dynamic
 configuration, and registers routes in the background, then removes the
-marker after completion or cancellation. An RI may enter `running` and become
+marker after completion or cancellation. An RI may enter `Running` and become
 Ready while `postReady` is still running. If the application must not receive
 traffic before registration completes, the application must control its own
 traffic ingress rather than relying on a `postReady` marker to gate RI Ready.
@@ -177,17 +178,17 @@ local instance is not sufficient evidence that it is safe to exit.
 - `preUpdate` and `preRecover` constrain only controller operations that have
   not yet executed. They cannot prevent external actors from directly
   modifying or deleting Pods.
-- The top-level phases are `creating`, `updating`, `recovering`,
-  `terminating`, and `running`. Ready remains an independent status
+- The top-level phases are `Creating`, `Updating`, `Recovering`,
+  `Terminating`, and `Running`. Ready remains an independent status
   condition.
-- Delete can move any of `creating`, `updating`, `recovering`, or `running`
-  to `terminating`. Once there, Update and Recovery are skipped at the start
+- Delete can move any of `Creating`, `Updating`, `Recovering`, or `Running`
+  to `Terminating`. Once there, Update and Recovery are skipped at the start
   of reconciliation.
 - `postReady` triggers after a create, recovery, or update target completes
   and the RI reaches workload Ready. Ordinary Ready fluctuations do not
   replay it.
 - `postReady` is fully asynchronous: the controller writes the state and
-  marker, then immediately enters `running` without waiting for the executor
+  marker, then immediately enters `Running` without waiting for the executor
   or gating RI Ready.
 - When RIS scales the number of RIs, a new RI may run `postReady` after first
   reaching workload Ready, and a deleted RI may run `preDelete`.
@@ -225,7 +226,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | Hook | Trigger | After marker removal |
 | --- | --- | --- |
 | `preUpdate` | Before the first Pod change for an update | Start Update |
-| `preRecover` | Before restoring a Pod in `recovering` | Start Recovery |
+| `preRecover` | Before restoring a Pod in `Recovering` | Start Recovery |
 | `postReady` | Controlled operation is workload Ready | Clean state; running |
 | `preDelete` | Before final Pod termination | Delete Pods; finish RI |
 
@@ -233,7 +234,7 @@ local instance is not sufficient evidence that it is safe to exit.
 `postStart`. Creating a Pod, writing the RI spec, or updating a revision is
 not sufficient to trigger it. The controller must first confirm that the
 current operation target has reached workload Ready.
-`lifecycle-state=postReady` and its marker are written only during that
+`hook-state=PostReady` and its marker are written only during that
 controlled operation's state transition. Enabling the configuration or
 running ordinary metadata synchronization must not backfill them onto an
 existing RI. The same `postReady` hook covers application processing after
@@ -248,22 +249,63 @@ the recovered workload becomes Ready. If the RI UID is replaced, the old RI
 follows Delete and the new RI follows Create. This is not Recovery within the
 same RI.
 
+### Wire Names and Constants
+
+The following names and values are normative:
+
+| Purpose | Exact name or value |
+| --- | --- |
+| New user-facing field | `RoleBasedGroup.spec.roles[].lifecycle` |
+| RIS template field | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
+| New RI field | `RoleInstance.spec.lifecycle` |
+| Legacy RIS field | `RoleInstanceSet.spec.lifecycle` |
+| Hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
+| Hook-state value | `PreUpdate` |
+| Hook-state value | `Updating` |
+| Hook-state value | `PreRecover` |
+| Hook-state value | `Recovering` |
+| Hook-state value | `PostReady` |
+| Hook-state value | `PreDelete` |
+| Hook-state value | `Terminating` |
+| Phase field | `RoleInstance.status.phase` |
+| Phase value | `Creating` |
+| Phase value | `Running` |
+| Phase value | `Updating` |
+| Phase value | `Recovering` |
+| Phase value | `Terminating` |
+| preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
+| Readiness condition | `RoleInstanceCustomReady` |
+| Legacy state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
+| Feature gate | `RoleInstanceLifecycleHooks` |
+| State-key Go constant | `RoleInstanceLifecycleHookStateKey` |
+| Finalizer Go constant | `RoleInstancePreDeleteFinalizer` |
+
+The hook-state label is absent when no lifecycle operation is active. The
+protocol does not define a `Running` hook-state value; `Running` is a
+`status.phase` value. Unknown hook-state values are invalid: the controller
+must not advance, the executor must not execute, and diagnostics must expose
+the invalid value without automatic cleanup.
+
+`hook-state` is a defined short name for the exact label key above. Marker
+keys and values are user-configured through `labelsHandler`; they are not
+project-wide constants.
+
 ### Handler Label Coordination
 
 All four hooks use the same coordination direction:
 
 1. After determining the current operation, the controller sets
-   `lifecycle-state` and the corresponding marker in the same RI labels
+   `hook-state` and the corresponding marker in the same RI labels
    write.
 2. The executor starts the application action when it observes a matching
-   `lifecycle-state` and marker.
+   `hook-state` and marker.
 3. For a pre-operation hook, the executor removes the marker after success or
    when it decides to allow the operation. On failure, it leaves the marker
    in place and retries with its own backoff.
 4. The controller proceeds with the actual workload operation only after all
    markers associated with the pre-operation hooks no longer match.
 5. For `postReady`, the controller writes the state and marker and immediately
-   enters `running`. The executor removes the marker after background
+   enters `Running`. The executor removes the marker after background
    completion or cancellation, and the controller then cleans up the state.
 
 “Matching” means that the RI label key and value equal those configured in
@@ -312,10 +354,12 @@ spec:
 The configuration hierarchy is settled:
 `RoleBasedGroup.spec.roles[].lifecycle` is the sole user-facing definition
 point for the new four-hook protocol. Each Role may declare its own hooks;
-RIS propagates the effective snapshot, and RI stores it. The new field reuses
-the existing lifecycle hook structure and extends the lifecycle object with
-`preUpdate`, `preRecover`, and `postReady`; exact Go type placement still
-requires API review.
+the RBG controller writes the desired snapshot to
+`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`, and the RIS controller
+copies it to `RoleInstance.spec.lifecycle`. The new field reuses the existing
+lifecycle hook structure and extends the lifecycle object with `preUpdate`,
+`preRecover`, and `postReady`; only the generated Go constant names require
+API review.
 
 The new Role-level field and the existing
 `RoleInstanceSetSpec.lifecycle` reuse the same API type family, but their
@@ -335,7 +379,7 @@ RIS compatibility path. Conversely, the legacy standalone RIS path rejects
 `preUpdate`, `preRecover`, and `postReady`; those three hooks are meaningful
 only through the new Role-level protocol.
 
-Declarative configuration flows only downward. `lifecycle-state` and runtime
+Declarative configuration flows only downward. `hook-state` and runtime
 markers are written only to RI labels and are never written back to RBG or
 RIS. `labelsHandler` defines the matching rules used by the controller when
 writing markers and by both parties when evaluating them; it is not
@@ -355,16 +399,15 @@ Marker keys are scoped to a hook point. Admission must reject a key used by
 more than one configured hook, including `postReady` and `preDelete`, because
 delayed cancellation cleanup from one hook can otherwise remove the marker
 belonging to another hook. Handler keys must also be rejected when they equal
-`lifecycle-state` or another controller-managed RI label key; hook marker keys
+`hook-state` or another controller-managed RI label key; hook marker keys
 are runtime labels, but they must not collide with controller-reserved state.
 
-`lifecycle-state` in this document is a conceptual name. The implementation
-must use a fully qualified label key under the project's
-`rbg.workloads.x-k8s.io/` prefix and must not reuse the existing
-`rbg.workloads.x-k8s.io/role-instance-lifecycle-state` key.
+The implementation must use the exact hook-state label key
+`rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
+existing `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` key.
 
 Admission must reject lifecycle changes while an affected RI has a
-non-empty `lifecycle-state`. If a change races with admission, the controller
+non-empty `hook-state`. If a change races with admission, the controller
 evaluates the latest effective configuration on the RI. For example, after
 changing markerA to markerB, it checks markerB directly, stops waiting for
 markerA, and does not clean up or migrate the old marker. Such an in-flight
@@ -388,7 +431,7 @@ resources and other controllers.
   `markPodNotReady` is enabled rather than merely writing the condition without
   registering the readiness gate.
 - A NotReady gate established during Update or Recovery remains until that
-  operation enters `running`. It must not be lifted as soon as the preUpdate
+  operation enters `Running`. It must not be lifted as soon as the preUpdate
   or preRecover marker is removed.
 - A NotReady gate established by `preDelete.markPodNotReady` remains until
   the RI object is deleted; it is not restored merely because the delete
@@ -396,7 +439,7 @@ resources and other controllers.
 - `postReady` has neither `markPodNotReady` nor `blockReady`, and its marker does
   not participate in RI Ready computation.
 - After the workload becomes Ready, the controller writes the `postReady`
-  state and marker, immediately enters `running`, and computes RI Ready from
+  state and marker, immediately enters `Running`, and computes RI Ready from
   the existing health conditions and pre-operation gates.
 - Background `postReady` results do not change the controller's phase or
   Ready. The executor diagnoses application results, and the application
@@ -451,35 +494,35 @@ sequenceDiagram
     participant P as Application Pod
     participant E as Hook executor
     C->>R: Record the update target
-    C->>R: Write lifecycle-state=preUpdate and update-block=true
-    C->>R: Set phase=updating and establish the NotReady gate if configured
+    C->>R: Write hook-state=PreUpdate and update-block=true
+    C->>R: Set phase=Updating and establish the NotReady gate
     R-->>E: Observe preUpdate with a matching marker
     loop While the phase is valid and preUpdate has not succeeded
         E->>E: Remove from routing and drain; retry with backoff on failure
         Note over C,R: Controller waits and does not update the Pod
     end
     E->>R: Remove update-block after success
-    R-->>C: lifecycle-state=preUpdate and no markers match
-    C->>R: Set lifecycle-state=updating
+    R-->>C: hook-state=PreUpdate and no markers match
+    C->>R: Set hook-state=Updating
     C->>P: Perform an in-place update or rebuild the Pod
     P-->>C: Update target complete and workload Ready
     alt postReady is configured
-        C->>R: Write lifecycle-state=postReady and ready-notify=true
-        C->>R: Set phase=running and lift the update gate
+        C->>R: Write hook-state=PostReady and ready-notify=true
+        C->>R: Set phase=Running and lift the update gate
         R-->>E: Observe postReady with a matching marker
         E->>E: Validate, restore config, and register routes
         E->>R: Remove ready-notify after completion or cancellation
-        C->>R: Clean up lifecycle-state
+        C->>R: Clean up hook-state
     else postReady is omitted
-        C->>R: Set phase=running, lift gate, and clear state
+        C->>R: Set phase=Running, lift gate, and clear state
     end
 ```
 
 While `preUpdate` is active, no matching marker is a necessary condition for
-the controller to start the update. `postReady` blocks neither `running`, RI
+the controller to start the update. `postReady` blocks neither `Running`, RI
 Ready, nor the next operation. The executor removes ready-notify after
 completion or cancellation and does not restore it. The next update writes a
-new lifecycle-state and corresponding marker through the controller.
+new hook-state and corresponding marker through the controller.
 
 ### Recovery Interaction Flow
 
@@ -494,22 +537,22 @@ sequenceDiagram
     participant P as Application Pod
     participant E as Hook executor
     C->>C: Confirm that Recovery is required within the same RI UID
-    C->>R: Write lifecycle-state=preRecover and recover-block=true together
-    C->>R: Set phase=recovering and establish the NotReady gate if configured
+    C->>R: Write hook-state=PreRecover and recover-block=true
+    C->>R: Set phase=Recovering and establish the NotReady gate
     R-->>E: Observe preRecover with a matching marker
     E->>E: Clean stale routes, prepare replacement resources, or hand off caches
     E->>R: Remove recover-block after success
-    R-->>C: lifecycle-state=preRecover and no markers match
-    C->>R: Set lifecycle-state=recovering
+    R-->>C: hook-state=PreRecover and no markers match
+    C->>R: Set hook-state=Recovering
     C->>P: Create or rebuild the Pods required by the current target
     P-->>C: Recovery target complete and workload Ready
     alt postReady is configured
-        C->>R: Write lifecycle-state=postReady and ready-notify=true
-        C->>R: Set phase=running and lift the recovery gate
+        C->>R: Write hook-state=PostReady and ready-notify=true
+        C->>R: Set phase=Running and lift the recovery gate
         E->>R: Remove ready-notify after completion or cancellation
-        C->>R: Clean up lifecycle-state
+        C->>R: Clean up hook-state
     else postReady is omitted
-        C->>R: Set phase=running, lift gate, and clear state
+        C->>R: Set phase=Running, lift gate, and clear state
     end
 ```
 
@@ -531,32 +574,32 @@ sequenceDiagram
     participant E as Hook executor
     C->>C: Confirm that the create, recovery, or update target is complete
     C->>C: Wait for workload Ready, excluding lifecycle gates
-    C->>R: Write lifecycle-state=postReady and the configured ready marker together
-    C->>R: Immediately set phase=running and compute RI Ready
+    C->>R: Write hook-state=PostReady and the ready marker together
+    C->>R: Set phase=Running and compute RI Ready
     R-->>E: Observe postReady with a matching marker
     loop While the phase is valid and the background action is incomplete
         E->>E: Validate, restore config, or register routes; retry on failure
     end
     E->>R: Remove the ready marker after completion or cancellation
-    R-->>C: running with lifecycle-state=postReady and no matching marker
-    C->>R: Clean up lifecycle-state
+    R-->>C: Running with hook-state=PostReady and no marker
+    C->>R: Clean up hook-state
 ```
 
 The controller reconstructs `postReady` progress from the combination of
-phase, `lifecycle-state`, and marker, without adding a `step` field or private
+phase, `hook-state`, and marker, without adding a `step` field or private
 controller state. `postReady` may originate only from a controlled operation
-already in `creating`, `updating`, or `recovering`, and its state and marker
+already in `Creating`, `Updating`, or `Recovering`, and its state and marker
 must be written during the transition in which that operation reaches
 workload Ready.
 
-`running` is not a trigger source, and ordinary Ready changes do not backfill
-these labels. Consequently, enabling `postReady` on an existing `running` RI
+`Running` is not a trigger source, and ordinary Ready changes do not backfill
+these labels. Consequently, enabling `postReady` on an existing `Running` RI
 does not immediately execute or replay a historical hook because there is no
 corresponding state transition.
 
 Even if the previous ready marker has not yet been removed, a new operation
 that reaches workload Ready still writes the `postReady` state and marker and
-immediately enters `running`. Rewriting the same marker is idempotent and
+immediately enters `Running`. Rewriting the same marker is idempotent and
 introduces no operation generation.
 
 ### Deletion Interaction Flow
@@ -569,8 +612,8 @@ sequenceDiagram
     participant P as Application Pod
     participant E as Hook executor
     R-->>C: Observe RI deletion intent while the reserved finalizer holds RI
-    C->>R: Write lifecycle-state=preDelete and delete-block=true together
-    C->>R: Set phase=terminating and establish the NotReady gate if configured
+    C->>R: Write hook-state=PreDelete and delete-block=true
+    C->>R: Set phase=Terminating and establish the NotReady gate
     R-->>E: Observe preDelete with a matching marker
     loop While the phase is valid and preDelete has not succeeded
         E->>P: Drain traffic and hand off resources; retry on failure
@@ -578,7 +621,7 @@ sequenceDiagram
     end
     E->>R: Remove delete-block after success
     R-->>C: No preDelete markers match
-    C->>R: Set lifecycle-state=terminating
+    C->>R: Set hook-state=Terminating
     C->>P: Delete the application Pod
     C->>R: Remove the reserved preDelete finalizer and finish RI deletion
 ```
@@ -589,9 +632,10 @@ cleanup after application Pod deletion. The deletion flow consists only of
 does not restore a marker after deletion completes.
 
 When the effective RI configuration includes `preDelete`, the controller
-ensures that an RBG-owned reserved finalizer is present on the RI before the
-hook is considered effective. The executor removes only the delete marker on
-the RI.
+ensures that the reserved finalizer
+`rbg.workloads.x-k8s.io/role-instance-pre-delete` is present on the RI before
+the hook is considered effective. The executor removes only the delete marker
+on the RI.
 While that marker matches, the controller does not issue member Pod deletions.
 After confirming that `preDelete` has been released, the controller deletes
 the member Pods, performs final RI cleanup, and removes its reserved finalizer.
@@ -653,8 +697,8 @@ unknown, the executor must query, recover, or retry idempotently before
 removing a marker; it must not remove the marker directly.
 
 The controller adds neither a `step` field nor private runtime state. It
-reconstructs progress from the combination of RI phase, `lifecycle-state`,
-and marker. On hook entry, `lifecycle-state` and the marker must be set in
+reconstructs progress from the combination of RI phase, `hook-state`,
+and marker. On hook entry, `hook-state` and the marker must be set in
 the same labels write. An intermediate state with the state present but the
 marker not yet written is not allowed.
 
@@ -662,38 +706,38 @@ After a pre-operation hook is released, the controller must not clear its
 state. It explicitly transitions to the actual operation phase:
 
 ```text
-preUpdate + marker   → preUpdate + no marker → updating
-preRecover + marker  → preRecover + no marker → recovering
-preDelete + marker   → preDelete + no marker → terminating
+PreUpdate + marker   → PreUpdate + no marker → Updating
+PreRecover + marker  → PreRecover + no marker → Recovering
+PreDelete + marker   → PreDelete + no marker → Terminating
 ```
 
-A state such as `preUpdate + no marker` means that the hook has been released.
+A state such as `PreUpdate + no marker` means that the hook has been released.
 After a restart, the controller uses this state to continue without
 incorrectly treating the hook as untriggered. It performs the actual workload
-operation only after entering `updating`, `recovering`, or `terminating`.
+operation only after entering `Updating`, `Recovering`, or `Terminating`.
 `postReady` subsequently replaces the update or recovery state, while the
 deletion state remains until the RI is finally deleted.
 
-For `postReady`, the controller first enters `running`; the executor then
+For `postReady`, the controller first enters `Running`; the executor then
 removes the marker asynchronously, and the controller finally cleans up the
 state. The controller does not wait for the application result. On startup or
 watch reconnection, the executor rereads the RI and executes or resumes an
-application action only when `lifecycle-state` matches and its marker exists.
+application action only when `hook-state` matches and its marker exists.
 
 The operation rules are:
 
 | Current operation | New operation | Rule |
 | --- | --- | --- |
-| `creating` | Update, Recovery | Fold target into Create; no separate hooks |
-| `updating` | Update | Merge; preUpdate only from non-updating |
-| `updating` | Recovery | Fold into Update; no preRecover |
-| `recovering` | Recovery | Continue; do not re-enter or repeat preRecover |
-| `recovering` | Update | Interrupt; run preUpdate, Update, async postReady |
+| `Creating` | Update, Recovery | Fold target into Create; no hooks |
+| `Updating` | Update | Merge; preUpdate only from non-updating |
+| `Updating` | Recovery | Fold into Update; no preRecover |
+| `Recovering` | Recovery | Continue; no repeat preRecover |
+| `Recovering` | Update | Interrupt; run preUpdate and Update |
 | Any non-terminating phase | Delete | Preempt with terminating and preDelete |
-| `terminating` | Update, Recovery | Skip at reconcile start |
+| `Terminating` | Update, Recovery | Skip at reconcile start |
 | Background postReady | Update, Recovery, Delete | Start; executor uses state |
 
-For `creating`, a target change is folded into Create convergence rather than
+For `Creating`, a target change is folded into Create convergence rather than
 ignored. A corrected initial image may replace a member that has not reached
 workload Ready, but the controller does not enter separate Update or Recovery
 operations and does not invoke their hooks.
@@ -705,21 +749,21 @@ inapplicable and safely releases the marker, or retains the marker until the
 application-side prerequisite is satisfied. The controller does not infer
 engine liveness and does not skip the marker.
 
-`recovering` means that the current Recovery has not yet completed
+`Recovering` means that the current Recovery has not yet completed
 successfully. Repeated reconciliations or another observation of the same
 Recovery need merely continue that operation. They do not start a new
 operation and must not re-enter `preRecover`.
 
-The Update and Recovery checks for `terminating` must run before their
+The Update and Recovery checks for `Terminating` must run before their
 operation and hook logic, preventing another operation from taking over while
 deletion is in progress.
 
 The `postReady` completion condition is deliberately simple: when a controlled
 operation reaches workload Ready and `postReady` is configured, write the state
-and marker and immediately enter `running`. If `postReady` is omitted, enter
-`running`, release the operation gate, and clear `lifecycle-state` without
+and marker and immediately enter `Running`. If `postReady` is omitted, enter
+`Running`, release the operation gate, and clear `hook-state` without
 writing a marker. If the previous marker still exists, rewriting
-it does not change its value. `lifecycle-state` has moved from the new
+it does not change its value. `hook-state` has moved from the new
 operation's pre-operation phase to `postReady`, so the executor processes the
 latest phase.
 
@@ -771,30 +815,31 @@ proposed here.
 
 ### Open Design Questions
 
-The four-hook API design is settled: Roles define the configuration, RIS
-propagates it, and RI stores the effective snapshot. The existing hook
+The four-hook API design is settled: Roles define the configuration, the RIS
+template stores the desired snapshot, and `RoleInstance.spec.lifecycle` stores
+the effective copy. The existing hook
 structure is reused and extended with the three new hook fields. Empty
 `labelsHandler` values fail validation. Pre-operation hooks retain
 `markPodNotReady`, while `postReady` does not gate RI Ready. On the new
-Role-level path, `finalizersHandler` is deprecated and must be empty. Exact Go
-type placement still requires API review.
+Role-level path, `finalizersHandler` is deprecated and must be empty. The wire
+names and Go constant names above are settled.
 
-Restart recovery adds no `step`: `lifecycle-state` and the marker are written
+Restart recovery adds no `step`: `hook-state` and the marker are written
 together on hook entry. After a pre-operation hook is released, the state
-transitions to `updating`, `recovering`, or `terminating` rather than being
-cleared. `postReady` enters `running` immediately and finishes
+transitions to `Updating`, `Recovering`, or `Terminating` rather than being
+cleared. `postReady` enters `Running` immediately and finishes
 asynchronously.
 
 `postReady` covers only controlled Create, Update, and Recovery operations.
 Workload Ready excludes lifecycle gates. Neither ordinary Ready fluctuations
-nor enabling the feature on an existing `running` RI replays the hook.
+nor enabling the feature on an existing `Running` RI replays the hook.
 
 The continuous-operation rules are also settled. Update merges subsequent
 Update and Recovery targets; Update can interrupt Recovery; Delete preempts
-other operations. `creating` folds target changes into Create convergence,
+other operations. `Creating` folds target changes into Create convergence,
 including correcting a failed initial image, but does not enter separate
-Update or Recovery operations or invoke their hooks; `recovering` does not
-re-enter Recovery; and `terminating` skips Update and Recovery at the start of
+Update or Recovery operations or invoke their hooks; `Recovering` does not
+re-enter Recovery; and `Terminating` skips Update and Recovery at the start of
 reconciliation. `postReady` blocks no subsequent operation and adds no
 operation generation.
 
@@ -854,6 +899,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   three new hook fields.
 - The controller persists and exposes the KEP-502 RI `status.phase`, and the
   executor observes it together with the lifecycle marker labels.
+- The implementation uses the exact hook-state key, finalizer, feature gate,
+  and value set; an unknown hook-state is not advanced or executed.
 - The controller writes a pre-operation marker only when entering the phase
   and does not restore it while waiting; `postReady` supports idempotent
   writes to an existing marker.
@@ -863,7 +910,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - A pending preUpdate marker prevents Pod updates, a pending preRecover
   marker prevents Pod recovery, and a pending preDelete marker prevents Pod
   deletion.
-- A pending `postReady` marker does not prevent entry into `running` or block
+- A pending `postReady` marker does not prevent entry into `Running` or block
   RI Ready.
 - `postReady` triggers only after the target completes and the workload is
   Ready; ordinary Ready fluctuations do not retrigger it.
@@ -871,15 +918,15 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   exclusion of `postReady` from RI Ready computation.
 - `preDelete.markPodNotReady` remains NotReady until the RI object is
   deleted, including after the delete marker is released.
-- `recovering` runs preRecover followed by asynchronous postReady. Ordinary
-  Ready fluctuations in `running` and enablement on existing RIs do not
+- `Recovering` runs preRecover followed by asynchronous postReady. Ordinary
+  Ready fluctuations in `Running` and enablement on existing RIs do not
   trigger `postReady`.
-- Update merges while `updating` without repeating preUpdate, and Recovery
-  folds into the current Update. Update while `recovering` enters preUpdate;
+- Update merges while `Updating` without repeating preUpdate, and Recovery
+  folds into the current Update. Update while `Recovering` enters preUpdate;
   repeated Recovery neither re-enters the phase nor repeats preRecover.
-- `creating` folds Update and Recovery target changes into Create
+- `Creating` folds Update and Recovery target changes into Create
   convergence, allowing a corrected image to replace a not-yet-Ready member
-  without invoking preUpdate or preRecover; `terminating` skips both at the
+  without invoking preUpdate or preRecover; `Terminating` skips both at the
   start of reconciliation.
 - Delete preempts Update, Recovery, and background postReady; new operations
   do not wait for an old `postReady`.
@@ -887,21 +934,21 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   illegal marker keys (keys shared between hooks or colliding with
   controller-managed labels), restart recovery, behavior with no configured
   hooks, and controller agnosticism to consumer identity.
-- `lifecycle-state` and marker writes occur together. After a pre-operation
+- `hook-state` and marker writes occur together. After a pre-operation
   marker is removed, the controller transitions to the actual operation
   state, and a restart does not repeat the released hook. `postReady` enters
-  `running` before asynchronous state cleanup.
+  `Running` before asynchronous state cleanup.
 - An in-flight change from markerA to markerB immediately uses the latest
   configuration without migrating or removing the old marker.
 - Admission rejects lifecycle mutation while an affected RI has a non-empty
-  `lifecycle-state`.
+  `hook-state`.
 - Enabling `markPodNotReady` requires the `RoleInstanceCustomReady` readiness
   gate.
 - Repeated Ready transitions idempotently write the same `postReady` marker
   without generations. Delayed cleanup can remove a newer marker, and
   consumers own coordination of that risk.
 - When `postReady` is omitted, an Update or Recovery that reaches workload
-  Ready enters `running`, releases its gate, and clears `lifecycle-state`
+  Ready enters `Running`, releases its gate, and clears `hook-state`
   without writing a marker.
 - Disabling a hook after an RI is stable prevents future invocations, while
   deleting the configuration during an unfinished hook is not treated as
@@ -957,7 +1004,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - The controller does not terminate application Pods before `preDelete`
   completes; after release, it deletes member Pods and removes the reserved
   RI finalizer.
-- Submit several consecutive updates and verify that `updating` does not
+- Submit several consecutive updates and verify that `Updating` does not
   repeat preUpdate, old postReady work does not block new operations, and
   same-name markers are handled idempotently.
 - Verify that Update interrupts Recovery and Delete preempts other
@@ -1007,7 +1054,7 @@ reusing an existing name with different semantics.
 
 Before an incompatible downgrade, disable the hooks while a controller that
 understands the protocol still owns the RIs. Wait until every RI is stable,
-has no `lifecycle-state` or marker, and has no reserved `preDelete` RI
+has no `hook-state` or marker, and has no reserved `preDelete` RI
 finalizer remaining. Verify those conditions before replacing the controller; otherwise,
 retain a compatible controller to finish operations and remove finalizers. Do
 not downgrade directly while an operation is unfinished. A downgrade could
@@ -1032,9 +1079,9 @@ readiness review has not yet been completed.
 
 ### Feature Enablement and Rollback
 
-The enablement mechanism and feature gate remain TBD. Deploy an executor that
-supports the phase protocol and grant its required permissions before
-allowing the configuration to be enabled.
+The feature gate is `RoleInstanceLifecycleHooks`. Deploy an executor that
+supports the phase protocol and grant its required permissions before enabling
+the gate.
 
 Disabling or re-enabling the feature must not reset an in-flight marker or
 skip an unfinished phase. A version that does not understand the current
@@ -1119,7 +1166,7 @@ failures, and large numbers of instances waiting for hooks to complete.
 - RI is NotReady: distinguish workload health failures, existing readiness
   gates, and the lifecycle gate. Check for an incorrect wait on externally
   observed Ready.
-- A new update has not started: check whether the RI is still `updating`;
+- A new update has not started: check whether the RI is still `Updating`;
   `postReady` must not block it.
 - Deletion is waiting: distinguish `preDelete`, Pod deletion, and other
   finalizers. Forcibly removing markers is not a routine recovery procedure.
