@@ -37,7 +37,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -674,12 +676,24 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 	}
 }
 
+func groupSetForOrphanRBG(_ context.Context, obj client.Object) []reconcile.Request {
+	if metav1.GetControllerOfNoCopy(obj) != nil {
+		return nil
+	}
+	name := obj.GetLabels()[constants.GroupSetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: name}}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *RoleBasedGroupSetReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroupSet{}).
 		Owns(&workloadsv1alpha2.RoleBasedGroup{}).
+		Watches(&workloadsv1alpha2.RoleBasedGroup{}, handler.EnqueueRequestsFromMapFunc(groupSetForOrphanRBG)).
 		Named("rbgset-controller").
 		Complete(r)
 }

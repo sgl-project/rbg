@@ -36,6 +36,50 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
+func TestGroupSetForOrphanRBG(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		setName     string
+		owner       *metav1.OwnerReference
+		terminating bool
+		wantRequest bool
+	}{
+		{name: "orphan", setName: "demo", wantRequest: true},
+		{name: "terminating orphan", setName: "demo", terminating: true, wantRequest: true},
+		{name: "missing set label"},
+		{name: "non-controller owner", setName: "demo", owner: &metav1.OwnerReference{
+			APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other", Controller: ptr.To(false),
+		}, wantRequest: true},
+		{name: "owned by set", setName: "demo", owner: &metav1.OwnerReference{
+			APIVersion: workloadsv1alpha2.GroupVersion.String(), Kind: "RoleBasedGroupSet", Name: "demo", UID: "set", Controller: ptr.To(true),
+		}},
+		{name: "foreign controller", setName: "demo", owner: &metav1.OwnerReference{
+			APIVersion: "apps/v1", Kind: "StatefulSet", Name: "other", UID: "other", Controller: ptr.To(true),
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			child := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{
+				Name: "demo-1", Namespace: "test-namespace",
+			}}
+			if tt.setName != "" {
+				child.Labels = map[string]string{constants.GroupSetNameLabelKey: tt.setName}
+			}
+			if tt.owner != nil {
+				child.OwnerReferences = []metav1.OwnerReference{*tt.owner}
+			}
+			if tt.terminating {
+				now := metav1.Now()
+				child.DeletionTimestamp = &now
+			}
+			var expected []ctrl.Request
+			if tt.wantRequest {
+				expected = []ctrl.Request{{NamespacedName: types.NamespacedName{Namespace: child.Namespace, Name: tt.setName}}}
+			}
+			assert.Equal(t, expected, groupSetForOrphanRBG(context.Background(), child))
+		})
+	}
+}
+
 func TestRoleBasedGroupSetReconciler_ForeignChildUID(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
