@@ -1,0 +1,33 @@
+title: "Pod Cache Filtering with a Transform Stub"
+kep-number: 284
+authors:
+  - "@QIW9"
+status: provisional
+creation-date: 2026-10-28
+reviewers:
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.9.0"
+
+milestone:
+  alpha: "v0.9.0"
+
+# Pod filtering uses --pod-cache-scope=filtered; all remains the alpha default.
+# Switching takes an operator restart. The independent --watch-list-client
+# option must explicitly set the effective client-go WatchListClient gate;
+# KUBE_FEATURE_WatchListClient alone is ineffective with current imports.
+disable-supported: true
+
+metrics:
+  - rbg_pod_cache_scope
+  - rbg_pod_cache_objects
+  - rbg_pod_cache_transform_total
+  - rbg_pod_cache_stub_reads_total
+  - rbg_pod_cache_initial_sync_seconds
+
+see-also:
+  - "https://github.com/sgl-project/rbg/issues/284"
