@@ -29,7 +29,6 @@ import (
 // was introduced can carry "" or the v1alpha1 "Recreate" spelling; normalizing
 // them here keeps such objects writable instead of failing schema validation.
 //
-// +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=roleinstancesets,verbs=create;update,versions=v1alpha2,name=mroleinstanceset.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleInstanceSetDefaulter struct{}
 

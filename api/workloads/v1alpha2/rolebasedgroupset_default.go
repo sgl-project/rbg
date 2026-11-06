@@ -32,7 +32,6 @@ import (
 // It also defaults an empty group-set strategy type without enabling rolling updates
 // for sets whose rolloutStrategy is unset.
 //
-// +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=create;update,versions=v1alpha2,name=mrolebasedgroupset.kb.io,admissionReviewVersions=v1
 // +kubebuilder:object:generate=false
 type RoleBasedGroupSetDefaulter struct{}
 
