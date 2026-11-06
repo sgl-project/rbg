@@ -16,7 +16,7 @@ spec:
   versions:
   - deprecated: true
     deprecationWarning: workloads.x-k8s.io/v1alpha1 ClusterEngineRuntimeProfile is
-      deprecated; use workloads.x-k8s.io/v1alpha2 ClusterEngineRuntimeProfile
+      deprecated and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 ClusterEngineRuntimeProfile
     name: v1alpha1
     schema:
       openAPIV3Schema:
