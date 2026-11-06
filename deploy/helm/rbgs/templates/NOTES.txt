@@ -15,18 +15,28 @@ Check the controller:
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
 {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
 {{- if not $deprecatedEnabled }}
-NOTE: compatibility for deprecated workload types is DISABLED
+NOTE: the deprecated workload types are DISABLED
 (controller.deprecatedWorkloadTypes.enabled=false).
-This is the final cutoff: all remaining uses are rejected, and legacy RBAC, watches,
-and orphan cleanup are disabled. Set this value only after every role has migrated to
-RoleInstanceSet.
+Only RoleInstanceSet is accepted; no RBAC or watches exist for Deployment,
+StatefulSet, or LeaderWorkerSet. If this cluster was upgraded and still has roles
+on those types, set controller.deprecatedWorkloadTypes.enabled=true, migrate
+them, then switch back.
+WARNING: the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet,
+so a new v1alpha1 object is rejected even if it never sets `workload`. To keep using
+v1alpha1, every role must set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and
+workload.kind=RoleInstanceSet; submitting the object as v1alpha2 does this by default.
 {{- else }}
 NOTE: compatibility for existing deprecated workload types is ENABLED
 (controller.deprecatedWorkloadTypes.enabled=true).
 Existing roles keep their own deprecated workload type and continue to reconcile,
-while new uses — including switching between deprecated types — are rejected
-during the migration window. v1alpha1 writes return a deprecation warning.
-Set the value to false only after every role has migrated to RoleInstanceSet.
+while new uses — including switching between deprecated types — are rejected.
+v1alpha1 writes return a deprecation warning.
+{{- if .Release.IsInstall }}
+For a new installation, prefer controller.deprecatedWorkloadTypes.enabled=false.
+{{- else }}
+Take the deprecated-role inventory (see the chart README) and switch to
+controller.deprecatedWorkloadTypes.enabled=false once it is empty.
+{{- end }}
 {{- end }}
 
 NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under

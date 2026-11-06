@@ -73,11 +73,12 @@ controller:
       portRange: 5000
   # deprecatedWorkloadTypes controls compatibility for existing deprecated
   # workload types (Deployment, StatefulSet, LeaderWorkerSet), superseded by
-  # RoleInstanceSet. Defaults to true for the 0.9.0 migration window.
-  # Existing roles keep their own deprecated type and can be migrated one role
-  # at a time, while new uses — including switching between deprecated types —
-  # are rejected. Set false only after all roles have migrated; at that point
-  # every remaining use is rejected and legacy RBAC/watches are off.
+  # RoleInstanceSet.
+  # Recommended: false for new installations and for clusters with no remaining
+  # deprecated roles. Keep true only while roles still use a deprecated type:
+  # existing roles keep their own type and can be migrated one at a time, while
+  # new uses — including switching between deprecated types — are rejected.
+  # With false, every remaining use is rejected and legacy RBAC/watches are off.
   deprecatedWorkloadTypes:
     enabled: true
 

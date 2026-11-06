@@ -90,18 +90,20 @@ their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
 
 | Value | Behaviour |
 |:------|:----------|
-| `true` (default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling, while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. Every `v1alpha1` write returns a deprecation warning. |
-| `false` | The final cutoff: the controller refuses the deprecated workload types outright — no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. Set it only after every role has migrated. |
+| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling, while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. Every `v1alpha1` write returns a deprecation warning. |
+| `false` | Strict mode: the controller refuses the deprecated workload types outright — no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. |
 
-The point of `false` is to let a **brand-new** installation start on `v1alpha2` and stay there, with
-the constraint enforced by the controller rather than by convention. Because that mode leaves the
-controller unable to reconcile a deprecated workload type at all, it is only for a first-time
-installation.
+Choose by installation type, not by migration progress:
 
-> **If you already run the RBG controller, keep `true`.** There is currently no supported way to
-> turn the toggle off on an existing installation — objects already using a deprecated workload type
-> would become unreconcilable. A migration guide and an update path to `RoleInstanceSet` will be
-> provided in a later release.
+- **New installation**: use `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted, with the constraint enforced by the controller rather than by convention.
+- **Upgraded cluster with no remaining deprecated roles**: use `false`.
+- **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for the deprecated types so the remaining roles stay reconcilable.
+
+> **v1alpha1 defaults to a deprecated workload type.** The `v1alpha1` schema defaults
+> `spec.roles[].workload` to `apps/v1 StatefulSet`, so a new `v1alpha1` object that never mentions
+> `workload` is rejected **in both modes**. To submit `v1alpha1`, set
+> `workload: {apiVersion: workloads.x-k8s.io/v1alpha2, kind: RoleInstanceSet}` on every role; prefer
+> submitting the object as `v1alpha2`, where `RoleInstanceSet` is already the default.
 
 ### 🎮 Quick Start
 

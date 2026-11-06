@@ -28,11 +28,37 @@ of these workload types are rejected in `0.9.0`.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `controller.deprecatedWorkloadTypes.enabled` | Keep compatibility for existing deprecated workloads during migration. New uses are rejected in both modes. Set false only after every role has migrated. | `true` |
+| `controller.deprecatedWorkloadTypes.enabled` | Compatibility mode for existing deprecated workloads. Recommended: `false` for new installations and for clusters with no remaining deprecated roles; keep `true` only while roles still use a deprecated workload type. | `true` (see [choosing a value](#choosing-a-value)) |
 
-While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated. New deprecated workload uses are rejected during this transition.
+### Choosing a value
 
-When the value is `false`, every remaining deprecated workload use is rejected. This is the final cutoff, not a migration mode: set it only after all roles have moved to `RoleInstanceSet`. In this mode the chart also removes legacy workload RBAC and the controller does not watch those resources.
+Decide by installation type, not by migration progress:
+
+- **New installation**: set `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted.
+- **Upgraded cluster, inventory empty**: set `false` now. Nothing is left to migrate.
+- **Upgraded cluster with deprecated roles**: keep `true` until the inventory below is empty, then switch to `false`.
+
+Take the inventory to decide (empty output means `false` is safe):
+
+```bash
+kubectl get rbg,rbgs -A -o json | jq -r '.items[] | . as $o
+  | (.spec.roles // .spec.groupTemplate.spec.roles // [])[]
+  | (.annotations["rbg.workloads.x-k8s.io/role-workload-type"] // "") as $wt
+  | select($wt | test("/(Deployment|StatefulSet|LeaderWorkerSet)$"))
+  | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
+```
+
+While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition.
+
+When the value is `false`, every deprecated workload use is rejected and the chart also removes legacy workload RBAC, so the controller does not watch those resources.
+
+> **v1alpha1 defaults to a deprecated workload type.** The `v1alpha1` schema defaults
+> `spec.roles[].workload` to `apps/v1 StatefulSet`, so a new `v1alpha1` RoleBasedGroup or
+> RoleBasedGroupSet that never mentions `workload` is rejected **in both modes** — the defaulted
+> StatefulSet counts as a new use. To submit `v1alpha1`, set
+> `workload: {apiVersion: workloads.x-k8s.io/v1alpha2, kind: RoleInstanceSet}` on every role;
+> prefer submitting the object as `v1alpha2`, where `RoleInstanceSet` is already the default. This
+> is the first error a new user is likely to hit.
 
 Rejected writes include:
 
@@ -48,7 +74,8 @@ Rejected writes include:
 Every `v1alpha1` write also returns an admission warning that `v1alpha1` is
 deprecated and will be removed in `0.10.0`.
 
-See the project migration guide for the manual role inventory, per-role rollout, rollback procedure, and storage-version migration.
+The project migration guide (manual role inventory, per-role rollout, rollback procedure, and
+storage-version migration) is tracked in [sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454).
 
 ## Installing
 
@@ -111,7 +138,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.features.portAllocator.strategy` | Port allocation strategy (`random`) | `random` |
 | `controller.features.portAllocator.startPort` | Starting port of the allocatable range | `30000` |
 | `controller.features.portAllocator.portRange` | Size of the allocatable port range | `5000` |
-| `controller.deprecatedWorkloadTypes.enabled` | Keep compatibility for existing deprecated workloads during migration — see [Deprecated workload types](#deprecated-workload-types) | `true` |
+| `controller.deprecatedWorkloadTypes.enabled` | Compatibility for existing deprecated workloads — `false` recommended unless deprecated roles remain — see [Deprecated workload types](#deprecated-workload-types) | `true` |
 
 ### CRD Upgrader
 
@@ -139,9 +166,11 @@ kubectl delete -f config/crd/bases/
 
 ## Upgrading
 
-`helm upgrade` is supported. The `0.9.0` default keeps compatibility for existing deprecated
-workloads while rejecting new uses. Review [Deprecated workload types](#deprecated-workload-types),
-follow the project migration guide, and set the toggle to false only after all roles have migrated.
+`helm upgrade` is supported. Review [Deprecated workload types](#deprecated-workload-types) and take
+the inventory before upgrading: if it is empty, set `controller.deprecatedWorkloadTypes.enabled=false`
+with the upgrade; otherwise keep `true`, migrate the listed roles (the migration guide is tracked in
+[sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454)), and switch to `false` once it
+is empty.
 
 ### Breaking change: values regrouped in chart v0.8.0
 
