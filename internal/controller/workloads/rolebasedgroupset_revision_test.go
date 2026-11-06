@@ -356,6 +356,48 @@ func TestGroupSetMatchesRevision_IgnoresControllerOwnedAnnotations(t *testing.T)
 	)
 }
 
+func TestGroupSetMatchesRevision_EmptyCollectionsJSONRoundTrip(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		role string
+	}{
+		{name: "container env", role: `{"standalonePattern":{"template":{"spec":{"containers":[{"name":"worker","image":"test:v1","env":[]}]}}}}`},
+		{name: "pod nodeSelector", role: `{"standalonePattern":{"template":{"spec":{"nodeSelector":{}}}}}`},
+		{name: "pod tolerations", role: `{"standalonePattern":{"template":{"spec":{"tolerations":[]}}}}`},
+		{name: "role annotations", role: `{"annotations":{}}`},
+		{name: "role labels", role: `{"labels":{}}`},
+		{name: "role dependencies", role: `{"dependencies":[]}`},
+		{name: "role servicePorts", role: `{"servicePorts":[]}`},
+		{name: "role engineRuntimes", role: `{"engineRuntimes":[]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			template := revisionTestTemplate(nil)
+			require.NoError(t, json.Unmarshal([]byte(tt.role), &template.Spec.Roles[0]))
+			original := template.DeepCopy()
+			data, err := json.Marshal(template.Spec.Roles)
+			require.NoError(t, err)
+			child := revisionTestChild(nil)
+			child.Spec.Roles = nil
+			require.NoError(t, json.Unmarshal(data, &child.Spec.Roles))
+			require.NotEqual(t, template.Spec.Roles, child.Spec.Roles, "the JSON round trip must drop the explicit empty collection")
+
+			r := &RoleBasedGroupSetReconciler{}
+			revision := &groupSetRevision{name: "rbgs-x", template: template}
+			assert.True(t, r.rolesEqual(child.Spec.Roles, template.Spec.Roles))
+			assert.True(t, r.rolesEqual(template.Spec.Roles, child.Spec.Roles))
+			assert.True(t, r.groupSetMatchesRevision(child, revision))
+			assert.Equal(t, original, template, "comparison must not mutate the template")
+
+			child.Labels[constants.GroupSetRevisionLabelKey] = "rbgs-other"
+			assert.False(t, r.groupSetMatchesRevision(child, revision))
+			child.Labels[constants.GroupSetRevisionLabelKey] = revision.name
+			child.Spec.Roles[0].Replicas = ptr.To(int32(2))
+			assert.False(t, r.rolesEqual(child.Spec.Roles, template.Spec.Roles))
+			assert.False(t, r.groupSetMatchesRevision(child, revision), "real role changes must still be detected")
+		})
+	}
+}
+
 // TestGroupSetOnlyReplicasChanged_IgnoresControllerOwnedAnnotations keeps the scale path on the
 // same rule: a replicas-only change must route to the in-place update even when the child carries
 // discovery-config-mode.
