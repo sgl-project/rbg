@@ -110,6 +110,10 @@ RBG does not need to embed application logic or create a Job for every hook.
 - Running independent application hooks on RBGSet, RBG, or RIS. Although
   lifecycle configuration is declared on a Role, execution remains scoped to
   RI operations. The legacy RIS lifecycle API remains only for compatibility.
+- Adding `preCreate` or `postDelete`. `preCreate` has no established workload
+  or executor to coordinate before Pod creation, while `postDelete` concerns
+  external cleanup after the live instance is gone and needs a separate
+  protocol.
 - Intercepting direct external Pod deletion, node failures, or container
   restarts initiated independently by kubelet.
 - Providing a general-purpose script execution platform, or creating a Job or
@@ -359,7 +363,7 @@ must use a fully qualified label key under the project's
 `rbg.workloads.x-k8s.io/` prefix and must not reuse the existing
 `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` key.
 
-Admission should reject lifecycle changes while an affected RI has a
+Admission must reject lifecycle changes while an affected RI has a
 non-empty `lifecycle-state`. If a change races with admission, the controller
 evaluates the latest effective configuration on the RI. For example, after
 changing markerA to markerB, it checks markerB directly, stops waiting for
@@ -459,14 +463,16 @@ sequenceDiagram
     C->>R: Set lifecycle-state=updating
     C->>P: Perform an in-place update or rebuild the Pod
     P-->>C: Update target complete and workload Ready
-    C->>R: Write lifecycle-state=postReady and ready-notify=true together
-    C->>R: Immediately set phase=running and lift the update gate
-    C->>R: Compute RI Ready
-    R-->>E: Observe postReady with a matching marker
-    E->>E: Validate, restore config, and register routes asynchronously
-    E->>R: Remove ready-notify after completion or cancellation
-    R-->>C: running with lifecycle-state=postReady and no matching marker
-    C->>R: Clean up lifecycle-state
+    alt postReady is configured
+        C->>R: Write lifecycle-state=postReady and ready-notify=true
+        C->>R: Set phase=running and lift the update gate
+        R-->>E: Observe postReady with a matching marker
+        E->>E: Validate, restore config, and register routes
+        E->>R: Remove ready-notify after completion or cancellation
+        C->>R: Clean up lifecycle-state
+    else postReady is omitted
+        C->>R: Set phase=running, lift gate, and clear state
+    end
 ```
 
 While `preUpdate` is active, no matching marker is a necessary condition for
@@ -497,10 +503,14 @@ sequenceDiagram
     C->>R: Set lifecycle-state=recovering
     C->>P: Create or rebuild the Pods required by the current target
     P-->>C: Recovery target complete and workload Ready
-    C->>R: Write lifecycle-state=postReady and ready-notify=true together
-    C->>R: Immediately set phase=running and lift the recovery gate
-    E->>R: Remove ready-notify after background completion or cancellation
-    C->>R: Clean up lifecycle-state
+    alt postReady is configured
+        C->>R: Write lifecycle-state=postReady and ready-notify=true
+        C->>R: Set phase=running and lift the recovery gate
+        E->>R: Remove ready-notify after completion or cancellation
+        C->>R: Clean up lifecycle-state
+    else postReady is omitted
+        C->>R: Set phase=running, lift gate, and clear state
+    end
 ```
 
 `preRecover` is not used for Pod replacement within Update, or for deletion
@@ -579,8 +589,9 @@ cleanup after application Pod deletion. The deletion flow consists only of
 does not restore a marker after deletion completes.
 
 When the effective RI configuration includes `preDelete`, the controller
-ensures that an RBG-owned reserved finalizer is present on the RI before
-deletion can complete. The executor removes only the delete marker on the RI.
+ensures that an RBG-owned reserved finalizer is present on the RI before the
+hook is considered effective. The executor removes only the delete marker on
+the RI.
 While that marker matches, the controller does not issue member Pod deletions.
 After confirming that `preDelete` has been released, the controller deletes
 the member Pods, performs final RI cleanup, and removes its reserved finalizer.
@@ -592,8 +603,12 @@ member Pods while their owner is solid. This is the invariant that gives the
 executor access to a live workload while `preDelete` runs. The controller is
 still responsible for not deleting member Pods before the marker is released.
 
-When `preDelete` is enabled on an existing stable RI, the controller adds the
-reserved finalizer to that RI. Disabling `preDelete` removes it only when the
+New RIs are created with the reserved finalizer when their effective
+configuration includes `preDelete`. For an existing stable RI, the controller
+adds the finalizer before exposing the effective `preDelete` configuration.
+Enablement is rejected or deferred if the RI already has a deletionTimestamp,
+because Kubernetes does not allow a new finalizer to be added after deletion
+has begun. Disabling `preDelete` removes it only when the
 RI is stable and has no unfinished deletion. Disabling or modifying
 `preDelete` during deletion is an in-flight configuration change, not a
 supported rollback or hook-skip mechanism.
@@ -614,11 +629,14 @@ triggering `preDelete`. No member Pod requires a lifecycle finalizer.
 
 Controller-initiated deletion and default background cascade are the supported
 deletion paths. Foreground cascading deletion must be rejected by admission
-for RBG, RIS, or RI deletion requests that can reach an RI with `preDelete`
-configured; foreground GC may delete dependent Pods before the hook is
-released. A direct external Pod deletion cannot be undone by clearing its
-deletionTimestamp. That path still belongs to Recovery, does not trigger
-`preDelete`, and provides no live-engine barrier.
+for RBGSet, RBG, RIS, or RI deletion requests that can reach an RI with
+`preDelete` configured; foreground GC may delete dependent Pods before the
+hook is released. Namespace teardown is outside the live-engine guarantee:
+the namespace controller may delete member Pods directly, and an operator must
+use the break-glass procedure if a reserved RI finalizer remains. A direct
+external Pod deletion cannot be undone by clearing its deletionTimestamp. That
+path still belongs to Recovery, does not trigger `preDelete`, and provides no
+live-engine barrier.
 
 ### Restart Recovery and Concurrency Constraints
 
@@ -696,9 +714,11 @@ The Update and Recovery checks for `terminating` must run before their
 operation and hook logic, preventing another operation from taking over while
 deletion is in progress.
 
-The `postReady` completion condition is deliberately simple: when a
-controlled operation reaches workload Ready, write the state and marker and
-immediately enter `running`. If the previous marker still exists, rewriting
+The `postReady` completion condition is deliberately simple: when a controlled
+operation reaches workload Ready and `postReady` is configured, write the state
+and marker and immediately enter `running`. If `postReady` is omitted, enter
+`running`, release the operation gate, and clear `lifecycle-state` without
+writing a marker. If the previous marker still exists, rewriting
 it does not change its value. `lifecycle-state` has moved from the new
 operation's pre-operation phase to `postReady`, so the executor processes the
 latest phase.
@@ -880,6 +900,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Repeated Ready transitions idempotently write the same `postReady` marker
   without generations. Delayed cleanup can remove a newer marker, and
   consumers own coordination of that risk.
+- When `postReady` is omitted, an Update or Recovery that reaches workload
+  Ready enters `running`, releases its gate, and clears `lifecycle-state`
+  without writing a marker.
 - Disabling a hook after an RI is stable prevents future invocations, while
   deleting the configuration during an unfinished hook is not treated as
   marker release or operation completion.
@@ -902,9 +925,13 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   between old and new lifecycle protocols and Ready gates.
 - Reserved RI finalizer addition, retention while `preDelete` is pending, and
   removal after member Pod deletion is complete.
+- New RIs are created with the reserved finalizer; existing enablement adds
+  it before exposing the hook, and enablement is rejected once deletion has
+  begun.
 - Default background deletion retains member Pods until `preDelete` is
-  released, and admission rejects foreground deletion at every affected
-  ancestor.
+  released, admission rejects foreground deletion at every affected ancestor
+  including RBGSet, and namespace teardown is documented as outside the
+  live-engine guarantee.
 - Update and Recovery replace Pods during internal replacement without
   executing `preDelete` and without member Pod finalizers.
 - Stable hook disablement removes stale runtime labels and the reserved RI
@@ -1015,7 +1042,11 @@ protocol must not take over an unfinished operation. `preDelete` requires an
 executor that is available before application Pod deletion and validation of
 the barrier across all supported deletion paths.
 Foreground cascading deletion is not a supported path and must be rejected by
-admission when it can reach an RI with `preDelete` configured.
+admission for RBGSet, RBG, RIS, or RI deletion when it can reach an RI with
+`preDelete` configured.
+
+The `disable-supported` metadata field describes feature-gate rollback, not
+stable-boundary removal of individual hook configuration.
 
 For an incompatible rollback, disable the hook configuration before removing
 the compatible controller. The disablement is complete only after the RIs are

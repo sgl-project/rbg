@@ -84,6 +84,9 @@ postReady marker 不阻塞 phase 或 RI Ready。
 
 - 不在 RBGSet、RBG 或 RIS 上执行独立业务 hooks；lifecycle 虽在 Role 中定义，
   仍以 RI 操作为执行粒度。旧 RIS lifecycle API 仅保留兼容。
+- 不新增 preCreate 或 postDelete。preCreate 发生在 Pod 创建前，尚无已建立的
+  workload 和 executor 可协调；postDelete 面向实例退出后的外部清理，
+  需要独立协议。
 - 不拦截外部直接删除 Pod、节点故障或 kubelet 自主重启容器。
 - 不提供通用脚本执行平台，不为每次 hook 创建 Job 或独立执行 Pod。
 - 不定义通用请求／结果协议，不由 RI controller 管理业务尝试次数或退避。
@@ -259,7 +262,7 @@ hook marker 本身是运行时 label，但不得与 controller 保留的状态 k
 `rbg.workloads.x-k8s.io/` 前缀下的完整 label key，且不得复用现有的
 `rbg.workloads.x-k8s.io/role-instance-lifecycle-state`。
 
-准入应在受影响 RI 的 `lifecycle-state` 非空时拒绝修改 lifecycle。
+准入必须在受影响 RI 的 `lifecycle-state` 非空时拒绝修改 lifecycle。
 如果修改与准入校验发生竞态，controller 按 RI 中最新的生效配置切换判断条件，
 例如从 markerA 改为 markerB 后直接检查 markerB，不继续等待 markerA，也不负责清理或迁移旧 marker。
 此类在途修改属于主动错误操作，可能跳过等待或遗留状态，不应作为正常运维方式。
@@ -329,13 +332,16 @@ sequenceDiagram
     C->>R: 切换 lifecycle-state=updating
     C->>P: 执行原地更新或重建 Pod
     P-->>C: 本轮目标更新完成且达到工作负载 Ready
-    C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify=true
-    C->>R: 立即切换 phase=running，解除更新门控并计算 RI Ready
-    R-->>E: 观察到 postReady 且 marker 匹配
-    E->>E: 异步验收新版本、恢复动态配置和注册路由
-    E->>R: 完成或取消后移除 ready-notify
-    R-->>C: running 且 lifecycle-state=postReady、marker 不再匹配
-    C->>R: 清理 lifecycle-state
+    alt 配置了 postReady
+        C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify
+        C->>R: 切换 phase=running并解除更新门控
+        R-->>E: 观察到 postReady 且 marker 匹配
+        E->>E: 异步验收新版本、恢复动态配置和注册路由
+        E->>R: 完成或取消后移除 ready-notify
+        C->>R: 清理 lifecycle-state
+    else 未配置 postReady
+        C->>R: 切换 phase=running，解除门控并清理 state
+    end
 ```
 
 preUpdate 期间 marker 不匹配是 controller 开始更新的必要条件。
@@ -363,10 +369,14 @@ sequenceDiagram
     C->>R: 切换 lifecycle-state=recovering
     C->>P: 补齐或重建本轮目标 Pod
     P-->>C: 恢复目标完成且达到工作负载 Ready
-    C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify=true
-    C->>R: 立即切换 phase=running并解除恢复门控
-    E->>R: 后台完成或取消后移除 ready-notify
-    C->>R: 清理 lifecycle-state
+    alt 配置了 postReady
+        C->>R: 同批写入 lifecycle-state=postReady 和 ready-notify
+        C->>R: 切换 phase=running并解除恢复门控
+        E->>R: 完成或取消后移除 ready-notify
+        C->>R: 清理 lifecycle-state
+    else 未配置 postReady
+        C->>R: 切换 phase=running，解除门控并清理 state
+    end
 ```
 
 `preRecover` 不用于 Update 内部的 Pod 替换，也不用于替换 RI UID 的删除和新建。
@@ -431,7 +441,7 @@ sequenceDiagram
 本提案不包含 postDelete，业务 Pod 删除后的外部清理由其他机制承担。
 删除流程只包括 preDelete 协作、Pod 删除和 RI 最终收尾，executor 不在删除完成后加回 marker。
 
-RI 生效配置包含 preDelete 时，controller 必须确保 RI 在删除完成前带有
+RI 生效配置包含 preDelete 时，controller 必须确保 RI 在 hook 生效前带有
 RBG 保留的 preDelete finalizer。executor 只清除 RI 上的 delete marker；
 marker 仍匹配时，controller 不得删除成员 Pod。确认 preDelete 放行后，
 controller 删除成员 Pod、完成 RI 收尾，并移除保留 finalizer。
@@ -442,7 +452,10 @@ Kubernetes background GC 在 owner 仍为 solid 时不会删除 dependent 成员
 这就是 preDelete 执行期间 executor 仍能访问存活负载的 invariant；
 controller 仍必须在 marker 放行前避免主动删除成员 Pod。
 
-存量稳定 RI 启用 preDelete 时，controller 为该 RI 补充保留 finalizer。
+新建 RI 在生效配置包含 preDelete 时，创建请求即带保留 finalizer。
+存量稳定 RI 启用 preDelete 时，controller 先补充保留 finalizer，
+再暴露生效的 preDelete 配置。如果 RI 已有 deletionTimestamp，
+启用请求会被拒绝或暂缓，因为 Kubernetes 不允许删除开始后新增 finalizer。
 仅在 RI 稳定且没有未完成删除操作时，禁用 preDelete 才清理对应 finalizer；
 删除过程中禁用或修改 preDelete 属于在途配置修改，不作为正常回滚或跳过 hook 的方式。
 
@@ -456,8 +469,10 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 不触发 preDelete；成员 Pod 不需要 lifecycle finalizer。
 
 受支持的删除路径是 controller 发起的删除和默认 background 级联。
-对可能到达启用 preDelete RI 的 RBG、RIS 或 RI foreground 删除请求，
+对可能到达启用 preDelete RI 的 RBGSet、RBG、RIS 或 RI foreground 删除请求，
 准入必须拒绝；foreground GC 可能在 hook 放行前删除 dependent Pods。
+namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
+成员 Pods；若保留 RI finalizer 残留，运维需要使用 break-glass 流程。
 外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，
 不触发 preDelete，也不提供存活引擎屏障。
 
@@ -515,7 +530,9 @@ Update 可能在旧 engine 已经失效时打断 Recovery。preUpdate executor �
 都只继续当前恢复，不构成新一轮操作，也不能再次进入 preRecover。
 `terminating` 的 Update／Recovery 检查必须先于对应操作和 hook 逻辑，避免删除过程中被其他操作重新接管。
 
-postReady 的完成条件非常简单：受控操作达到工作负载 Ready 时写入 state 和 marker，并立即进入 `running`。
+postReady 的完成条件非常简单：受控操作达到工作负载 Ready 且配置了 postReady 时，
+写入 state 和 marker，并立即进入 `running`。未配置 postReady 时，controller 直接进入
+`running`，解除操作门控并清理 `lifecycle-state`，不写入 marker。
 如果上一轮 marker 仍存在，重复写入不改变 marker 值；
 lifecycle-state 已从新一轮前置阶段变为 postReady，executor 据此处理最新阶段。
 旧 executor 完成或取消后清除自己负责的 marker；controller 不等待旧任务确认停止，也不引入操作代次。
@@ -543,7 +560,7 @@ executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空�
 旧 `inPlaceUpdate` 仅在 standalone RIS 兼容路径中保留并标记 deprecated，
 新 Role-level 路径拒绝该字段。deprecated 的 `finalizersHandler` 为 API 兼容而保留，
 仅在旧 RIS 协议中保持原语义；新 Role-level 协议必须为空。
-两套运行协议不得在同一 RI 上同时生效，Alpha 准入强制该边界，状态 key 也必须彼此独立。
+两套运行协议不得在同一 RIS 上同时生效，Alpha 准入强制该边界，状态 key 也必须彼此独立。
 Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提案的实例级 hooks。
 
 ### 待讨论的设计问题
@@ -627,6 +644,8 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
 - 启用 `markPodNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
 - 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
+- 未配置 postReady 时，Update 或 Recovery 达到工作负载 Ready 后直接进入
+  `running`，解除门控并清理 `lifecycle-state`，不写入 marker。
 - RI 稳定后禁用 hook 可阻止后续触发；在未完成 hook 操作中删除配置，
   不得被解释为 marker 放行或操作完成。
 
@@ -639,7 +658,10 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
 - 连续更新、旧 postReady 任务迟到、同名 RI 重建及多执行者接管，验证 state 驱动的取消、恢复和幂等清理。
 - preDelete 的 GC 传播、零 Pod 删除，以及新旧 lifecycle 和 Ready 门控兼容性。
 - RI 保留 finalizer 的添加、preDelete 等待期间保持，以及成员 Pod 删除完成后的移除。
-- 默认 background 删除在 preDelete 放行前保留成员 Pod，准入拒绝所有受影响祖先的 foreground 删除。
+- 新建 RI 的创建请求包含保留 finalizer；存量启用先加 finalizer 再暴露 hook，
+  RI 已开始删除时拒绝启用。
+- 默认 background 删除在 preDelete 放行前保留成员 Pod，准入拒绝包括 RBGSet
+  在内所有受影响祖先的 foreground 删除，并明确 namespace 删除不提供存活引擎保证。
 - Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
 - 稳定禁用 hook 时清理遗留运行时 labels 和 RI 上的保留 finalizer；
   操作未完成时禁用不得跳过 marker、释放 finalizer 或推进 phase。
@@ -704,9 +726,13 @@ controller 与 executor 必须约定阶段位置、阶段值和 marker 方向。
 有未完成操作时不得直接回退到不理解当前协议的版本。
 preDelete 需要确认 executor 在业务 Pod 删除前可用，并验证所支持删除路径的屏障。
 foreground 级联删除不是受支持路径；可能到达启用 preDelete RI 时，准入必须拒绝。
+该准入范围包括 RBGSet、RBG、RIS 和 RI 删除入口。
 执行不兼容回滚时，应先禁用 hook 配置，再移除兼容 controller。
 只有 RI 已稳定且兼容 controller 已清理全部保留的 preDelete RI finalizer 后，
 禁用才算完成；feature gate 或配置删除不能替代该收敛过程。
+
+KEP metadata 中的 `disable-supported` 描述 feature gate 回退，
+不是稳定边界上删除单个 hook 配置的语义。
 
 ### 发布、升级与回滚规划
 
