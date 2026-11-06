@@ -763,6 +763,70 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Expect(string(merged.Data.Raw)).To(Equal(stored))
 	})
 
+	DescribeTable("refills an ordinal when a terminating orphan disappears without unrelated writes",
+		func(strategy workloadsv1alpha2.GroupUpdateStrategyType) {
+			setName := "rbgs-terminating-orphan"
+			set := buildRollingSet(setName, testNs, 2, 0, 1, 0, 0)
+			set.Spec.RolloutStrategy.Type = strategy
+			orphan := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: childName(setName, 1), Namespace: testNs,
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey: setName, constants.GroupSetIndexLabelKey: "1",
+					},
+					Finalizers: []string{"test.io/hold"},
+				},
+				Spec: *set.Spec.GroupTemplate.Spec.DeepCopy(),
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, orphan)).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(orphan), orphan)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(orphan.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady))).To(BeTrue())
+			}, timeout, interval).Should(Succeed())
+			// envtest has no GC; foreground deletion lets the reaper remove old-UID dependents.
+			Expect(testutil.K8sClient.Delete(testutil.Ctx, orphan,
+				client.PropagationPolicy(metav1.DeletePropagationForeground))).To(Succeed())
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(orphan), orphan)).To(Succeed())
+				g.Expect(orphan.Finalizers).To(ConsistOf("test.io/hold"))
+				latest := mustFetchSet(testNs, setName)
+				g.Expect(latest.Status.ReadyReplicas).To(Equal(int32(1)))
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveLen(1))
+				g.Expect(children).To(HaveKey(0))
+				g.Expect(metav1.IsControlledBy(children[0], set)).To(BeTrue())
+			}, timeout, interval).Should(Succeed())
+
+			stable := mustFetchSet(testNs, setName)
+			Consistently(func(g Gomega) {
+				g.Expect(mustFetchSet(testNs, setName).ResourceVersion).To(Equal(stable.ResourceVersion))
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(orphan), orphan)).To(Succeed())
+				g.Expect(orphan.DeletionTimestamp.IsZero()).To(BeFalse())
+				g.Expect(metav1.GetControllerOfNoCopy(orphan)).To(BeNil())
+			}, 3*time.Second, interval).Should(Succeed())
+
+			base := orphan.DeepCopy()
+			controllerutil.RemoveFinalizer(orphan, "test.io/hold")
+			Expect(testutil.K8sClient.Patch(testutil.Ctx, orphan,
+				client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))).To(Succeed())
+			Eventually(func(g Gomega) {
+				children := fetchChildren(testNs, setName)
+				g.Expect(children).To(HaveKey(1))
+				g.Expect(children[1].UID).NotTo(Equal(base.UID))
+				g.Expect(metav1.IsControlledBy(children[1], set)).To(BeTrue())
+				latest := mustFetchSet(testNs, setName)
+				g.Expect(latest.Status.ReadyReplicas).To(Equal(int32(2)))
+				rolling := meta.FindStatusCondition(latest.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+				g.Expect(rolling).NotTo(BeNil())
+				g.Expect(rolling.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(rolling.Reason).To(Equal("RolloutComplete"))
+			}, timeout, interval).Should(Succeed())
+		},
+		Entry("Recreate", workloadsv1alpha2.RecreateStrategyType),
+		Entry("InPlaceUpdate", workloadsv1alpha2.InPlaceUpdateStrategyType),
+	)
+
 	It("adopts old-UID orphan revisions and prunes only excess unused history", func() {
 		setName := "rbgs-orphan-history"
 		set := buildRollingSet(setName, testNs, 2, 0, 1, 0, 0)
