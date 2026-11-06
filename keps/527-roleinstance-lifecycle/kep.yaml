@@ -1,0 +1,15 @@
+title: RoleInstance Lifecycle Hooks
+kep-number: 527
+authors:
+  - diw-zw
+status: provisional
+creation-date: 2026-10-26
+reviewers: []
+approvers: []
+see-also:
+  - /keps/30-instanceset
+  - /keps/502-workload-status-model
+stage: alpha
+feature-gates:
+  - RoleInstanceLifecycleHooks
+disable-supported: true
