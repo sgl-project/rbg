@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -440,7 +441,7 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 	normalizeRolloutUpdateTypes(sortedRoles2)
 
 	// Compare the sorted slices
-	return reflect.DeepEqual(sortedRoles1, sortedRoles2)
+	return apiequality.Semantic.DeepEqual(sortedRoles1, sortedRoles2)
 }
 
 // deepCopyRoles returns a deep copy of roles so callers can sort, normalize and
