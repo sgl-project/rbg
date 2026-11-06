@@ -1,0 +1,16 @@
+title: Workload Status Model
+kep-number: 502
+authors:
+  - "@diw-zw"
+status: provisional
+creation-date: 2026-10-26
+# Reviewers and approvers are confirmed by maintainers.
+reviewers: []
+approvers: []
+see-also:
+  - /keps/30-instanceset
+  - /keps/31-rbg-controller-revision
+  - /keps/430-gang-scheduling
+# Alpha is the proposed maturity level; it does not imply implementation or inclusion in a release.
+stage: alpha
+# Target release, feature gate, and compatibility window will be added when release targeting is decided; no milestone or enablement commitment is declared yet.
