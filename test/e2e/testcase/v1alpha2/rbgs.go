@@ -556,8 +556,9 @@ func runRbgSetMetadataOnlyCases(f *framework.Framework) {
 				WithRolloutStrategy(wrappersv2.BuildRecreateRolloutStrategy(1, 0, 0)).Obj()
 			rbgset.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
 			role := &rbgset.Spec.GroupTemplate.Spec.Roles[0]
-			role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment"}
+			role.Annotations = map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)}
 			rollingUpdate := wrappersv2.BuildRollingUpdate(1, 0)
+			rollingUpdate.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
 			role.RolloutStrategy.RollingUpdate = &rollingUpdate
 			role.StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
 
