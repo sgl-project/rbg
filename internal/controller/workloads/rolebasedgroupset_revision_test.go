@@ -660,6 +660,7 @@ func TestWarmUpGroupSetSurge_BoundedByRemainingWork(t *testing.T) {
 		// back below the partition is never touched by the rollout. Surge must still be created from
 		// the remaining headroom, otherwise the rollout waits for that group to recover by itself.
 		{name: "failure below partition consumes the unavailable budget", maxSurge: 1, maxUnavailable: 1, servingOutdated: 1, readyBase: 3, wantCreated: 1},
+		{name: "failure below the floor needs both the serving group and the deficit covered", maxSurge: 2, maxUnavailable: 1, servingOutdated: 1, readyBase: 2, wantCreated: 2},
 		{name: "failure leaves partial headroom", maxSurge: 2, maxUnavailable: 2, servingOutdated: 3, readyBase: 3, wantCreated: 2},
 		{name: "failure covers the whole batch", maxSurge: 2, maxUnavailable: 2, servingOutdated: 1, readyBase: 3},
 	}

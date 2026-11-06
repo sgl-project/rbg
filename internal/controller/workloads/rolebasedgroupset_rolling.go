@@ -422,14 +422,12 @@ func (r *RoleBasedGroupSetReconciler) warmUpGroupSetSurge(
 	existing map[int]*workloadsv1alpha2.RoleBasedGroup, replicas int, limits groupSetRolloutLimits,
 	update *groupSetRevision, accounting groupSetSurgeAccounting, capacity int,
 ) (bool, error) {
-	// Surge covers the serving groups that a Recreate update would take down, minus whatever
-	// availability headroom the base replicas still provide. Sizing from the declared
-	// maxUnavailable instead lets an existing failure consume the whole allowance, and then no
-	// surge is created even though maxSurge permits it, stalling the rollout until that group
-	// recovers on its own -- including a failure below the partition, which no rollout touches.
+	// Surge must cover both the serving batch and any existing deficit below the availability floor.
 	floor := max(0, replicas-limits.maxUnavailable)
-	headroom := max(0, accounting.readyBase-floor)
-	needed := min(limits.maxSurge, max(0, accounting.servingOutdated-headroom))
+	needed := 0
+	if accounting.servingOutdated > 0 {
+		needed = min(limits.maxSurge, max(0, accounting.servingOutdated+floor-accounting.readyBase))
+	}
 	for index := range existing {
 		if index >= replicas {
 			needed--
