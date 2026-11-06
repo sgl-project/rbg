@@ -49,7 +49,7 @@ type ClusterEngineRuntimeProfileStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 ClusterEngineRuntimeProfile is deprecated; use workloads.x-k8s.io/v1alpha2 ClusterEngineRuntimeProfile"
+// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 ClusterEngineRuntimeProfile is deprecated and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 ClusterEngineRuntimeProfile"
 
 // ClusterEngineRuntimeProfile is the Schema for the clusterengineruntimeprofiles API.
 type ClusterEngineRuntimeProfile struct {
