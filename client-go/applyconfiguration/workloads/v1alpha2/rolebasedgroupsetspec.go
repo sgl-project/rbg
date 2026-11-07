@@ -20,8 +20,9 @@ package v1alpha2
 // RoleBasedGroupSetSpecApplyConfiguration represents a declarative configuration of the RoleBasedGroupSetSpec type for use
 // with apply.
 type RoleBasedGroupSetSpecApplyConfiguration struct {
-	Replicas      *int32                                        `json:"replicas,omitempty"`
-	GroupTemplate *RoleBasedGroupTemplateSpecApplyConfiguration `json:"groupTemplate,omitempty"`
+	Replicas        *int32                                        `json:"replicas,omitempty"`
+	GroupTemplate   *RoleBasedGroupTemplateSpecApplyConfiguration `json:"groupTemplate,omitempty"`
+	RolloutStrategy *GroupSetRolloutStrategyApplyConfiguration    `json:"rolloutStrategy,omitempty"`
 }
 
 // RoleBasedGroupSetSpecApplyConfiguration constructs a declarative configuration of the RoleBasedGroupSetSpec type for use with
@@ -43,5 +44,13 @@ func (b *RoleBasedGroupSetSpecApplyConfiguration) WithReplicas(value int32) *Rol
 // If called multiple times, the GroupTemplate field is set to the value of the last call.
 func (b *RoleBasedGroupSetSpecApplyConfiguration) WithGroupTemplate(value *RoleBasedGroupTemplateSpecApplyConfiguration) *RoleBasedGroupSetSpecApplyConfiguration {
 	b.GroupTemplate = value
+	return b
+}
+
+// WithRolloutStrategy sets the RolloutStrategy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RolloutStrategy field is set to the value of the last call.
+func (b *RoleBasedGroupSetSpecApplyConfiguration) WithRolloutStrategy(value *GroupSetRolloutStrategyApplyConfiguration) *RoleBasedGroupSetSpecApplyConfiguration {
+	b.RolloutStrategy = value
 	return b
 }

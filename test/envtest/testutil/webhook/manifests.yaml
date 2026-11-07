@@ -1,12 +1,4 @@
-# Mutating webhook configurations for the admission defaulters this suite tests.
-#
-# Only the mutating webhooks are installed in envtest: the validating webhooks are
-# intentionally left out so the existing envtest suites keep running without them,
-# and the caBundle/clientConfig below are rewritten by envtest's
-# WebhookInstallOptions to point at the local test webhook server.
-#
-# Do NOT use this file for real deployments; deploy/kubectl and deploy/helm carry the
-# full rendered set.
+# Test-only webhooks; envtest rewrites their clientConfig and caBundle for its local server.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -72,3 +64,29 @@ webhooks:
     - UPDATE
     resources:
     - roleinstancesets
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: rbgset-validating-webhook-configuration
+webhooks:
+- name: vrolebasedgroupset.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rolebasedgroupsets

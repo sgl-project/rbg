@@ -121,6 +121,26 @@ const (
 
 	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
 	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
+
+	// RolloutRequestAnnotationKey carries an opaque token a managing controller changes with every
+	// write it needs acknowledged. The RoleBasedGroup controller copies it to
+	// status.observedRolloutRequest only once every role workload has rolled out for that object,
+	// which covers metadata-only writes that never bump metadata.generation.
+	RolloutRequestAnnotationKey = RBGPrefix + "rollout-request"
+
+	// ConversionV1alpha1CoordinationAnnotationKey carries v1alpha1 coordination intent to child RBGs independently of revisions.
+	ConversionV1alpha1CoordinationAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+
+	// ConversionV1alpha1PodGroupPolicyAnnotationKey preserves v1alpha1 PodGroupPolicy through hub round trips.
+	ConversionV1alpha1PodGroupPolicyAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy"
+
+	// ConversionV1alpha2RolloutStrategyAnnotationKey stores the v1alpha2 rollout strategy on the
+	// v1alpha1 view during conversion.
+	ConversionV1alpha2RolloutStrategyAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-rollout-strategy"
+
+	// ConversionV1alpha2RolloutStatusAnnotationKey stores v1alpha2-only rollout status on the
+	// v1alpha1 view during conversion.
+	ConversionV1alpha2RolloutStatusAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-rollout-status"
 )
 
 // Lifecycle management annotations
