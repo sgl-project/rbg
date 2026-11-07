@@ -188,6 +188,8 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 //     done, Partition will not change, new replicas are created using the new template from the get-go.
 //   - When sts is rolling update, and Replicas decreases, the partition will not change until new Replicas < Partition,
 //     in which case Partition will be reset to the new Replicas value.
+//   - When live replicas are below the desired count and the role size is unchanged, keep the partition and scale
+//     back. Replicas include surge only while the partition is above zero.
 //   - When sts is ready for a rolling update and Replicas increases at the same time, we'll delay the rolling update
 //     until the scaling up is done.
 //   - When sts is ready for a rolling update and Replicas decreases at the same time, we'll start the rolling update
@@ -310,6 +312,20 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 		return partition, replicas, nil
 	}
 
+	if stsReplicas < roleReplicas {
+		replicas := roleReplicas
+		if partition > 0 {
+			replicas = wantReplicas(roleUnreadyReplicas)
+		}
+		logger.V(1).Info(
+			fmt.Sprintf(
+				"live replicas %d are below desired %d, scale up before rolling update. partition %d, replicas %d",
+				stsReplicas, roleReplicas, partition, replicas,
+			),
+		)
+		return partition, replicas, nil
+	}
+
 	// Case 6:
 	// Calculating the Partition during rolling update, no leaderWorkerSet updates happens.
 	rollingStep, err := intstr.GetScaledValueFromIntOrPercent(
@@ -412,12 +428,16 @@ func rollingUpdatePartition(
 
 	// Update up to rollingStep replicas at once.
 	rollingStepPartition := utils.NonZeroValue(stsReplicas - continuousReadyReplicas - rollingStep)
+	stateCount := int32(len(states))
+	if rollingStepPartition > stateCount {
+		rollingStepPartition = stateCount
+	}
 
 	// rollingStepPartition calculation above disregards the state of replicas with idx<rollingStepPartition.
 	// To prevent violating the maxUnavailable, we have to account for these replicas
 	// and increase the partition if some are not ready.
 	var unavailable int32
-	for idx := 0; idx < int(rollingStepPartition); idx++ {
+	for idx := int32(0); idx < rollingStepPartition; idx++ {
 		if !states[idx].ready {
 			unavailable++
 		}
@@ -433,11 +453,13 @@ func rollingUpdatePartition(
 	// maxUnavailable is already violated
 	// (for example, all replicas are not ready when rolling update is started).
 	// Note that we never drop the partition below rollingStepPartition.
-	for idx := min(partition, stsReplicas-1); idx >= rollingStepPartition; idx-- {
-		if !states[idx].ready || states[idx].updated {
-			partition = idx
-		} else {
-			break
+	if stateCount > 0 {
+		for idx := min(partition, stateCount-1); idx >= rollingStepPartition; idx-- {
+			if !states[idx].ready || states[idx].updated {
+				partition = idx
+			} else {
+				break
+			}
 		}
 	}
 
