@@ -546,17 +546,8 @@ func setupV1alpha1DeprecationWebhooks(mgr ctrl.Manager, enableDeprecatedWorkload
 	if err := (&workloadsv1alpha1.RoleBasedGroupSet{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
 		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupSet: %w", err)
 	}
-	if err := (&workloadsv1alpha1.InstanceSet{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for InstanceSet: %w", err)
-	}
-	if err := (&workloadsv1alpha1.Instance{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for Instance: %w", err)
-	}
-	if err := (&workloadsv1alpha1.RoleBasedGroupScalingAdapter{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupScalingAdapter: %w", err)
-	}
-	if err := (&workloadsv1alpha1.ClusterEngineRuntimeProfile{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for ClusterEngineRuntimeProfile: %w", err)
+	if err := workloadsv1alpha1.SetupV1alpha1WarningWebhook(mgr); err != nil {
+		return fmt.Errorf("unable to create v1alpha1 warning-only deprecation webhook: %w", err)
 	}
 	return nil
 }

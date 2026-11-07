@@ -23,42 +23,59 @@ CRD upgrade Job into your Kubernetes cluster.
 ## Deprecated workload types
 
 The `Deployment`, `StatefulSet`, and `LeaderWorkerSet` workload types are deprecated in favour of
-`RoleInstanceSet`, which is the default in `v1alpha2`. They remain enabled by default and can be
-turned off to shrink the controller's RBAC surface.
-
-The deprecation is not yet declared on the API itself: `v1alpha1` is still served, the CRDs carry no
-deprecation warning, and no removal timeline has been published. Until that lands, this key is an
-opt-in escape hatch rather than a migration deadline.
+`RoleInstanceSet`, which is the default in `v1alpha2`. `v1alpha1` writes return a warning and new uses
+of these workload types are rejected in `0.9.0`.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types (Deployment/StatefulSet/LeaderWorkerSet). When false, RBAC for these resources is removed, the controller stops watching them, and the validating webhook rejects any create or update whose roles use them. | `true` |
+| `controller.deprecatedWorkloadTypes.enabled` | Compatibility mode for existing deprecated workloads. Recommended: `false` for new installations and for clusters with no remaining deprecated roles; keep `true` only while roles still use a deprecated workload type. | `true` (see [choosing a value](#choosing-a-value)) |
 
-> **Only set `false` on a fresh installation.** With the toggle off the controller holds no RBAC for
-> Deployment/StatefulSet/LeaderWorkerSet and watches none of them, so it cannot reconcile an object
-> that uses one. An installation that already has such objects must keep `true`. A migration path
-> for moving existing objects to `RoleInstanceSet` will be published later; until then there is no
-> supported way to turn the toggle off on an existing installation.
+### Choosing a value
 
-With `controller.deprecatedWorkloadTypes.enabled=false`, a role is only accepted if its workload
-type is `RoleInstanceSet`. The whole object is validated on every write, not just the part the write
-changes, so all of the following are rejected:
+Decide by installation type, not by migration progress:
 
-- creating a RoleBasedGroup/RoleBasedGroupSet whose roles use a deprecated workload type;
-- updating one that already does — including an unchanged re-apply, a `kubectl scale`, and the
-  controllers' own writes, so such an object cannot be reconciled at all;
-- scaling a RoleBasedGroupSet whose `groupTemplate` uses one, since scale-up creates child
-  RoleBasedGroups that would be rejected in turn.
+- **New installation**: set `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted.
+- **Upgraded cluster, inventory empty**: set `false` now. Nothing is left to migrate.
+- **Upgraded cluster with deprecated roles**: keep `true` until the inventory below is empty, then switch to `false`.
 
-> **Warning**: a v1alpha1 role must name `RoleInstanceSet` **explicitly** to be accepted.
->
-> The v1alpha1 schema defaults `spec.roles[].workload` to `apps/v1 StatefulSet`, so a role submitted through v1alpha1 carries a deprecated workload type even if it never mentions `workload`. The conversion webhook records that defaulted value and the validating webhook then rejects it. In practice:
->
-> - Every **new** v1alpha1 RoleBasedGroup/RoleBasedGroupSet that relies on the default workload is rejected, including manifests that look workload-free.
-> - Updating an existing object through v1alpha1 without naming the workload is rejected the same way, whatever the object's roles used before.
-> - To keep using v1alpha1, set `workload.apiVersion: workloads.x-k8s.io/v1alpha2` and `workload.kind: RoleInstanceSet` on every role. Prefer submitting the object as `v1alpha2`, where `RoleInstanceSet` is already the default.
->
-> An automated migration path is still to be implemented.
+Take the inventory to decide (empty output means `false` is safe):
+
+```bash
+kubectl get rbg,rbgs -A -o json | jq -r '.items[] | . as $o
+  | (.spec.roles // .spec.groupTemplate.spec.roles // [])[]
+  | (.annotations["rbg.workloads.x-k8s.io/role-workload-type"] // "") as $wt
+  | select($wt | test("/(Deployment|StatefulSet|LeaderWorkerSet)$"))
+  | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
+```
+
+While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition.
+
+When the value is `false`, every deprecated workload use is rejected and the chart also removes legacy workload RBAC, so the controller does not watch those resources.
+
+> **v1alpha1 defaults to a deprecated workload type.** The `v1alpha1` schema defaults
+> `spec.roles[].workload` to `apps/v1 StatefulSet`, so a new `v1alpha1` RoleBasedGroup or
+> RoleBasedGroupSet that never mentions `workload` is rejected **in both modes** — the defaulted
+> StatefulSet counts as a new use. To submit `v1alpha1`, set
+> `workload: {apiVersion: workloads.x-k8s.io/v1alpha2, kind: RoleInstanceSet}` on every role;
+> prefer submitting the object as `v1alpha2`, where `RoleInstanceSet` is already the default. This
+> is the first error a new user is likely to hit.
+
+Rejected writes include:
+
+- creating a RoleBasedGroup or RoleBasedGroupSet whose roles use a deprecated workload type;
+- changing a role that did not already use a deprecated workload type to one;
+- switching a role between deprecated workload types (for example StatefulSet to
+  Deployment or LeaderWorkerSet) — the compatibility exemption is type-exact, so
+  the switch provisions a new deprecated workload and counts as a new use; migrate
+  the role to `RoleInstanceSet` instead;
+- introducing a deprecated workload type through a new RoleBasedGroupSet template role;
+- while the value is false, updating or re-applying an object that still uses a deprecated workload type.
+
+Every `v1alpha1` write also returns an admission warning that `v1alpha1` is
+deprecated and will be removed in `0.10.0`.
+
+The project migration guide (manual role inventory, per-role rollout, rollback procedure, and
+storage-version migration) is tracked in [sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454).
 
 ## Installing
 
@@ -121,7 +138,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.features.portAllocator.strategy` | Port allocation strategy (`random`) | `random` |
 | `controller.features.portAllocator.startPort` | Starting port of the allocatable range | `30000` |
 | `controller.features.portAllocator.portRange` | Size of the allocatable port range | `5000` |
-| `controller.deprecatedWorkloadTypes.enabled` | Enable the deprecated workload types — see [Deprecated workload types](#deprecated-workload-types) | `true` |
+| `controller.deprecatedWorkloadTypes.enabled` | Compatibility for existing deprecated workloads — `false` recommended unless deprecated roles remain — see [Deprecated workload types](#deprecated-workload-types) | `true` |
 
 ### CRD Upgrader
 
@@ -149,10 +166,11 @@ kubectl delete -f config/crd/bases/
 
 ## Upgrading
 
-`helm upgrade` is supported. Nothing checks the cluster's existing objects against
-`controller.deprecatedWorkloadTypes.enabled`, so keeping it at its default `true` on an installation
-that already has objects using a deprecated workload type is the operator's responsibility — see
-[Deprecated workload types](#deprecated-workload-types).
+`helm upgrade` is supported. Review [Deprecated workload types](#deprecated-workload-types) and take
+the inventory before upgrading: if it is empty, set `controller.deprecatedWorkloadTypes.enabled=false`
+with the upgrade; otherwise keep `true`, migrate the listed roles (the migration guide is tracked in
+[sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454)), and switch to `false` once it
+is empty.
 
 ### Breaking change: values regrouped in chart v0.8.0
 

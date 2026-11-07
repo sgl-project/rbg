@@ -206,37 +206,32 @@ func (r *RoleBasedGroupSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager,
 		Complete()
 }
 
-// SetupDeprecationWebhookWithManager registers the warning-only v1alpha1
-// InstanceSet endpoint. It is registered with failurePolicy=Ignore: the handler
-// can never reject, so failing closed would block InstanceSet writes during a
-// webhook outage for no enforcement value.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instanceset,mutating=false,failurePolicy=ignore,sideEffects=None,groups=workloads.x-k8s.io,resources=instancesets,verbs=create;update,versions=v1alpha1,name=vinstanceset-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// SetupV1alpha1WarningWebhook registers one warning-only endpoint covering the
+// four v1alpha1 kinds that carry no enforcing gate: InstanceSet, Instance,
+// RoleBasedGroupScalingAdapter, and ClusterEngineRuntimeProfile. All four get
+// the identical deprecation warning, so a single handler answers every kind and
+// the marker lists all four resources.
+//
+// The endpoint is registered with failurePolicy=Ignore: the handler can never
+// reject, so failing closed would block writes to these still-supported kinds
+// during a webhook outage for no enforcement value.
+//
+// +kubebuilder:webhook:path=/validate-workloads-v1alpha1-deprecation,mutating=false,failurePolicy=ignore,sideEffects=None,groups=workloads.x-k8s.io,resources=instancesets;instances;rolebasedgroupscalingadapters;clusterengineruntimeprofiles,verbs=create;update,versions=v1alpha1,name=vv1alpha1-warning-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
 
-func (r *InstanceSet) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
+func SetupV1alpha1WarningWebhook(mgr ctrl.Manager) error {
+	mgr.GetWebhookServer().Register("/validate-workloads-v1alpha1-deprecation", &admission.Webhook{
+		Handler: v1alpha1WarningHandler{},
+	})
+	return nil
 }
 
-// SetupDeprecationWebhookWithManager registers the warning-only v1alpha1
-// Instance endpoint (failurePolicy=Ignore; see the InstanceSet setup).
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-instance,mutating=false,failurePolicy=ignore,sideEffects=None,groups=workloads.x-k8s.io,resources=instances,verbs=create;update,versions=v1alpha1,name=vinstance-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
+// v1alpha1WarningHandler answers every warning-only v1alpha1 kind with the
+// deprecation warning. The response never depends on the object, so no decoding
+// is needed.
+type v1alpha1WarningHandler struct{}
 
-func (r *Instance) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
-}
+var _ admission.Handler = v1alpha1WarningHandler{}
 
-// SetupDeprecationWebhookWithManager registers the warning-only v1alpha1
-// ScalingAdapter endpoint (failurePolicy=Ignore; see the InstanceSet setup).
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter,mutating=false,failurePolicy=ignore,sideEffects=None,groups=workloads.x-k8s.io,resources=rolebasedgroupscalingadapters,verbs=create;update,versions=v1alpha1,name=vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
-
-func (r *RoleBasedGroupScalingAdapter) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
-}
-
-// SetupDeprecationWebhookWithManager registers the warning-only v1alpha1
-// ClusterEngineRuntimeProfile endpoint (failurePolicy=Ignore; see the
-// InstanceSet setup).
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile,mutating=false,failurePolicy=ignore,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=create;update,versions=v1alpha1,name=vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io,admissionReviewVersions=v1,matchPolicy=Exact
-
-func (r *ClusterEngineRuntimeProfile) SetupDeprecationWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(r).WithValidator(&DeprecationWarningValidator{}).Complete()
+func (v1alpha1WarningHandler) Handle(_ context.Context, _ admission.Request) admission.Response {
+	return admission.Allowed("").WithWarnings(v1alpha1DeprecationWarning)
 }
