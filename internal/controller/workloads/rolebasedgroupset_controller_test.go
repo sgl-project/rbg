@@ -18,10 +18,13 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -545,6 +548,43 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 				assert.Equal(t, tt.expectedUpdate, result)
 			},
 		)
+	}
+}
+
+func TestRoleBasedGroupSetReconciler_NeedsUpdateEmptyRoleTemplates(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		template string
+	}{
+		{name: "env", template: `{"spec":{"containers":[{"name":"worker","image":"test:v1","env":[]}]}}`},
+		{name: "nodeSelector", template: `{"spec":{"nodeSelector":{}}}`},
+		{name: "tolerations", template: `{"spec":{"tolerations":[]}}`},
+		{name: "labels", template: `{"metadata":{"labels":{}}}`},
+		{name: "annotations", template: `{"metadata":{"annotations":{}}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			set := &workloadsv1alpha2.RoleBasedGroupSet{}
+			set.Spec.GroupTemplate.Spec.RoleTemplates = []workloadsv1alpha2.RoleTemplate{{
+				Name: "worker",
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "worker", Image: "test:v1"}},
+				}},
+			}}
+			require.NoError(t, json.Unmarshal([]byte(tt.template), &set.Spec.GroupTemplate.Spec.RoleTemplates[0].Template))
+			original := set.DeepCopy()
+			data, err := json.Marshal(newRBGForSet(set, 0))
+			require.NoError(t, err)
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, json.Unmarshal(data, child))
+			require.NotEqual(t, set.Spec.GroupTemplate.Spec.RoleTemplates, child.Spec.RoleTemplates,
+				"the JSON round trip must omit the explicit empty collection")
+
+			r := &RoleBasedGroupSetReconciler{}
+			assert.False(t, r.needsUpdate(set, child))
+			assert.Equal(t, original, set, "comparison must not mutate the template")
+			child.Spec.RoleTemplates[0].Template.Spec.Containers[0].Image = "test:v2"
+			assert.True(t, r.needsUpdate(set, child), "real template changes must still require an update")
+		})
 	}
 }
 
