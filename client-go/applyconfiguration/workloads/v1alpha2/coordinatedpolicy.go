@@ -20,7 +20,10 @@ package v1alpha2
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
+	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	internal "sigs.k8s.io/rbgs/client-go/applyconfiguration/internal"
 )
 
 // CoordinatedPolicyApplyConfiguration represents a declarative configuration of the CoordinatedPolicy type for use
@@ -41,6 +44,42 @@ func CoordinatedPolicy(name, namespace string) *CoordinatedPolicyApplyConfigurat
 	b.WithKind("CoordinatedPolicy")
 	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
 	return b
+}
+
+// ExtractCoordinatedPolicy extracts the applied configuration owned by fieldManager from
+// coordinatedPolicy. If no managedFields are found in coordinatedPolicy for fieldManager, a
+// CoordinatedPolicyApplyConfiguration is returned with only the Name, Namespace (if applicable),
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
+// field managers have taken ownership of all the fields previously owned by fieldManager, or because
+// the fieldManager never owned fields any fields.
+// coordinatedPolicy must be a unmodified CoordinatedPolicy API object that was retrieved from the Kubernetes API.
+// ExtractCoordinatedPolicy provides a way to perform a extract/modify-in-place/apply workflow.
+// Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
+// applied if another fieldManager has updated or force applied any of the previously applied fields.
+// Experimental!
+func ExtractCoordinatedPolicy(coordinatedPolicy *workloadsv1alpha2.CoordinatedPolicy, fieldManager string) (*CoordinatedPolicyApplyConfiguration, error) {
+	return extractCoordinatedPolicy(coordinatedPolicy, fieldManager, "")
+}
+
+// ExtractCoordinatedPolicyStatus is the same as ExtractCoordinatedPolicy except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractCoordinatedPolicyStatus(coordinatedPolicy *workloadsv1alpha2.CoordinatedPolicy, fieldManager string) (*CoordinatedPolicyApplyConfiguration, error) {
+	return extractCoordinatedPolicy(coordinatedPolicy, fieldManager, "status")
+}
+
+func extractCoordinatedPolicy(coordinatedPolicy *workloadsv1alpha2.CoordinatedPolicy, fieldManager string, subresource string) (*CoordinatedPolicyApplyConfiguration, error) {
+	b := &CoordinatedPolicyApplyConfiguration{}
+	err := managedfields.ExtractInto(coordinatedPolicy, internal.Parser().Type("io.k8s.sigs.rbgs.api.workloads.v1alpha2.CoordinatedPolicy"), fieldManager, b, subresource)
+	if err != nil {
+		return nil, err
+	}
+	b.WithName(coordinatedPolicy.Name)
+	b.WithNamespace(coordinatedPolicy.Namespace)
+
+	b.WithKind("CoordinatedPolicy")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
+	return b, nil
 }
 func (b CoordinatedPolicyApplyConfiguration) IsApplyConfiguration() {}
 

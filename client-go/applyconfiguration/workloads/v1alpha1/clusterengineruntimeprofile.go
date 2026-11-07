@@ -20,8 +20,10 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
+	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	internal "sigs.k8s.io/rbgs/client-go/applyconfiguration/internal"
 )
 
 // ClusterEngineRuntimeProfileApplyConfiguration represents a declarative configuration of the ClusterEngineRuntimeProfile type for use
@@ -42,6 +44,42 @@ func ClusterEngineRuntimeProfile(name, namespace string) *ClusterEngineRuntimePr
 	b.WithKind("ClusterEngineRuntimeProfile")
 	b.WithAPIVersion("workloads.x-k8s.io/v1alpha1")
 	return b
+}
+
+// ExtractClusterEngineRuntimeProfile extracts the applied configuration owned by fieldManager from
+// clusterEngineRuntimeProfile. If no managedFields are found in clusterEngineRuntimeProfile for fieldManager, a
+// ClusterEngineRuntimeProfileApplyConfiguration is returned with only the Name, Namespace (if applicable),
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
+// field managers have taken ownership of all the fields previously owned by fieldManager, or because
+// the fieldManager never owned fields any fields.
+// clusterEngineRuntimeProfile must be a unmodified ClusterEngineRuntimeProfile API object that was retrieved from the Kubernetes API.
+// ExtractClusterEngineRuntimeProfile provides a way to perform a extract/modify-in-place/apply workflow.
+// Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
+// applied if another fieldManager has updated or force applied any of the previously applied fields.
+// Experimental!
+func ExtractClusterEngineRuntimeProfile(clusterEngineRuntimeProfile *workloadsv1alpha1.ClusterEngineRuntimeProfile, fieldManager string) (*ClusterEngineRuntimeProfileApplyConfiguration, error) {
+	return extractClusterEngineRuntimeProfile(clusterEngineRuntimeProfile, fieldManager, "")
+}
+
+// ExtractClusterEngineRuntimeProfileStatus is the same as ExtractClusterEngineRuntimeProfile except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractClusterEngineRuntimeProfileStatus(clusterEngineRuntimeProfile *workloadsv1alpha1.ClusterEngineRuntimeProfile, fieldManager string) (*ClusterEngineRuntimeProfileApplyConfiguration, error) {
+	return extractClusterEngineRuntimeProfile(clusterEngineRuntimeProfile, fieldManager, "status")
+}
+
+func extractClusterEngineRuntimeProfile(clusterEngineRuntimeProfile *workloadsv1alpha1.ClusterEngineRuntimeProfile, fieldManager string, subresource string) (*ClusterEngineRuntimeProfileApplyConfiguration, error) {
+	b := &ClusterEngineRuntimeProfileApplyConfiguration{}
+	err := managedfields.ExtractInto(clusterEngineRuntimeProfile, internal.Parser().Type("io.k8s.sigs.rbgs.api.workloads.v1alpha1.ClusterEngineRuntimeProfile"), fieldManager, b, subresource)
+	if err != nil {
+		return nil, err
+	}
+	b.WithName(clusterEngineRuntimeProfile.Name)
+	b.WithNamespace(clusterEngineRuntimeProfile.Namespace)
+
+	b.WithKind("ClusterEngineRuntimeProfile")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha1")
+	return b, nil
 }
 func (b ClusterEngineRuntimeProfileApplyConfiguration) IsApplyConfiguration() {}
 

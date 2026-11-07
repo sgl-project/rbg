@@ -64,9 +64,17 @@ When your modification involves the CRD API definition, you need to update the g
 ```shell
 # Generates WebhookConfiguration, CustomResourceDefinition objects.
 $ make manifests
-# Generates code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+# Generates DeepCopy methods and the client in client-go/. Runs `make manifests` first.
 $ make generate
 ```
+
+The apply configurations in `client-go/applyconfiguration` embed the schema kube-apiserver uses for
+server-side apply on the RBG custom resources, which `fake.NewClientset()` and the generated
+`Extract<Kind>` helpers need. `hack/models-schema` derives it from the CRDs in `config/crd/bases`,
+which is why `make generate` runs `make manifests` first. When you add an API version, register its
+package in `hack/models-schema`; the tests in `internal/clientgo` compare the embedded schema with
+kube-apiserver's for every kind. CI runs `make generate` and fails when the result differs from what
+is committed.
 
 `make manifests` also regenerates the Helm chart's ClusterRole
 (`deploy/helm/rbgs/templates/rbac/clusterrole.yaml`) from `config/rbac/role.yaml`, so a change to
