@@ -494,7 +494,7 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.GroupTemplate.Spec.Roles) {
 		return true
 	}
-	if !reflect.DeepEqual(rbg.Spec.RoleTemplates, rbgset.Spec.GroupTemplate.Spec.RoleTemplates) {
+	if !apiequality.Semantic.DeepEqual(rbg.Spec.RoleTemplates, rbgset.Spec.GroupTemplate.Spec.RoleTemplates) {
 		return true
 	}
 
