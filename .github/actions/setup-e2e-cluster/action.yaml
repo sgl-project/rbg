@@ -57,6 +57,10 @@ inputs:
     description: scheduler-plugins release version
     required: false
     default: v0.32.7
+  image_registry:
+    description: Registry used to pull e2e workload images (docker.io or aliyun)
+    required: false
+    default: docker.io
 
 runs:
   using: composite
@@ -308,28 +312,7 @@ runs:
 
     - name: Pre-load e2e workload images
       shell: bash
-      run: |
-        set -euo pipefail
-        image_archive=$(mktemp "${RUNNER_TEMP}/workload-image.XXXXXX")
-        trap 'rm -f "$image_archive"' EXIT
-        images=(
-          "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
-          "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
-        )
-        for image in "${images[@]}"; do
-          pulled=false
-          for attempt in $(seq 1 6); do
-            if docker pull "$image"; then
-              pulled=true
-              break
-            fi
-            echo "image pull attempt $attempt failed for $image; retrying in 15s"
-            sleep 15
-          done
-          if [ "$pulled" != true ]; then
-            echo "::error::failed to pull $image"
-            exit 1
-          fi
-          docker image save --platform linux/amd64 --output "$image_archive" "$image"
-          kind load image-archive "$image_archive" --name "${{ inputs.cluster_name }}"
-        done
+      env:
+        E2E_IMAGE_REGISTRY: ${{ inputs.image_registry }}
+        KIND_CLUSTER_NAME: ${{ inputs.cluster_name }}
+      run: hack/preload-e2e-images.sh

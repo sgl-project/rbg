@@ -206,22 +206,10 @@ jobs:
           echo "All CRDs verified successfully"
 
       - name: Pre-load e2e test images
-        run: |
-          set -euo pipefail
-          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
-          trap 'rm -f "${image_archive}"' EXIT
-          E2E_IMAGES=(
-            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
-            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
-          )
-          for image in "${E2E_IMAGES[@]}"; do
-            echo "Pulling image: ${image}"
-            docker pull "${image}"
-            echo "Loading image into Kind: ${image}"
-            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
-            kind load image-archive "${image_archive}" --name rbgs-e2e
-          done
-          echo "All e2e test images loaded successfully"
+        env:
+          E2E_IMAGE_REGISTRY: docker.io
+          KIND_CLUSTER_NAME: rbgs-e2e
+        run: hack/preload-e2e-images.sh
 
       - name: Run E2E tests
         run: |
@@ -355,22 +343,10 @@ jobs:
           echo "CRDs verified successfully"
 
       - name: Pre-load e2e test images
-        run: |
-          set -euo pipefail
-          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
-          trap 'rm -f "${image_archive}"' EXIT
-          E2E_IMAGES=(
-            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
-            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
-          )
-          for image in "${E2E_IMAGES[@]}"; do
-            echo "Pulling image: ${image}"
-            docker pull "${image}"
-            echo "Loading image into Kind: ${image}"
-            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
-            kind load image-archive "${image_archive}" --name rbgs-manifest-e2e
-          done
-          echo "All e2e test images loaded successfully"
+        env:
+          E2E_IMAGE_REGISTRY: docker.io
+          KIND_CLUSTER_NAME: rbgs-manifest-e2e
+        run: hack/preload-e2e-images.sh
 
       - name: Run E2E tests
         run: |
@@ -500,22 +476,10 @@ jobs:
           kubectl get pods -n volcano-system
 
       - name: Pre-load e2e test images
-        run: |
-          set -euo pipefail
-          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
-          trap 'rm -f "${image_archive}"' EXIT
-          E2E_IMAGES=(
-            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
-            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
-          )
-          for image in "${E2E_IMAGES[@]}"; do
-            echo "Pulling image: ${image}"
-            docker pull "${image}"
-            echo "Loading image into Kind: ${image}"
-            docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" "${image}"
-            kind load image-archive "${image_archive}" --name rbgs-upgrade-e2e
-          done
-          echo "All e2e test images loaded successfully"
+        env:
+          E2E_IMAGE_REGISTRY: docker.io
+          KIND_CLUSTER_NAME: rbgs-upgrade-e2e
+        run: hack/preload-e2e-images.sh
 
       - name: Load the published images of the release being upgraded from
         run: |
