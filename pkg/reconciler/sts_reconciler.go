@@ -188,6 +188,8 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 //     done, Partition will not change, new replicas are created using the new template from the get-go.
 //   - When sts is rolling update, and Replicas decreases, the partition will not change until new Replicas < Partition,
 //     in which case Partition will be reset to the new Replicas value.
+//   - When live replicas are below the desired count and the role size is unchanged, keep the partition and scale
+//     back. Replicas include surge only while the partition is above zero.
 //   - When sts is ready for a rolling update and Replicas increases at the same time, we'll delay the rolling update
 //     until the scaling up is done.
 //   - When sts is ready for a rolling update and Replicas decreases at the same time, we'll start the rolling update
@@ -311,14 +313,17 @@ func (r *StatefulSetReconciler) rollingUpdateParameters(
 	}
 
 	if stsReplicas < roleReplicas {
-		partition = min(partition, stsReplicas)
+		replicas := roleReplicas
+		if partition > 0 {
+			replicas = wantReplicas(roleUnreadyReplicas)
+		}
 		logger.V(1).Info(
 			fmt.Sprintf(
-				"live replicas %d are below desired %d, scale up before rolling update. partition %d",
-				stsReplicas, roleReplicas, partition,
+				"live replicas %d are below desired %d, scale up before rolling update. partition %d, replicas %d",
+				stsReplicas, roleReplicas, partition, replicas,
 			),
 		)
-		return partition, roleReplicas, nil
+		return partition, replicas, nil
 	}
 
 	// Case 6:
