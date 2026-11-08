@@ -446,6 +446,20 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 	return apiequality.Semantic.DeepEqual(sortedRoles1, sortedRoles2)
 }
 
+// roleTemplatesEqual compares role templates by name. Sorting copies rather than the
+// inputs keeps the informer-cache slices in their original order; the elements are only
+// read, so a shallow copy is enough.
+func roleTemplatesEqual(templates1, templates2 []workloadsv1alpha2.RoleTemplate) bool {
+	if len(templates1) != len(templates2) {
+		return false
+	}
+	sorted1 := append([]workloadsv1alpha2.RoleTemplate(nil), templates1...)
+	sorted2 := append([]workloadsv1alpha2.RoleTemplate(nil), templates2...)
+	sort.Slice(sorted1, func(i, j int) bool { return sorted1[i].Name < sorted1[j].Name })
+	sort.Slice(sorted2, func(i, j int) bool { return sorted2[i].Name < sorted2[j].Name })
+	return apiequality.Semantic.DeepEqual(sorted1, sorted2)
+}
+
 // deepCopyRoles returns a deep copy of roles so callers can sort, normalize and
 // compare without mutating the source RoleSpecs (which share *RolloutStrategy /
 // *RollingUpdate pointers with the informer-cache objects they came from).
@@ -494,7 +508,7 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.GroupTemplate.Spec.Roles) {
 		return true
 	}
-	if !apiequality.Semantic.DeepEqual(rbg.Spec.RoleTemplates, rbgset.Spec.GroupTemplate.Spec.RoleTemplates) {
+	if !roleTemplatesEqual(rbg.Spec.RoleTemplates, rbgset.Spec.GroupTemplate.Spec.RoleTemplates) {
 		return true
 	}
 
