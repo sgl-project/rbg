@@ -82,7 +82,7 @@ type GroupSetRolloutStrategy struct {
 	// previous template. Only the ordinals in [Partition, Replicas) take part in the
 	// rollout. Value can be an absolute number (ex: 2) or a percentage of Replicas
 	// (ex: 25%). Absolute number is calculated from percentage by rounding down.
-	// It must not be greater than Replicas.
+	// A value above Replicas is capped at Replicas by the controller.
 	//
 	// +optional
 	// +kubebuilder:validation:XIntOrString
