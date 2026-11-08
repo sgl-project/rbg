@@ -35,6 +35,7 @@ type RoleInstanceStatusApplyConfiguration struct {
 	InPlaceUpdateContainerBaselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline `json:"inPlaceUpdateContainerBaselines,omitempty"`
 	RestartCount                    *int32                                                          `json:"restartCount,omitempty"`
 	LastRestartTime                 *v1.Time                                                        `json:"lastRestartTime,omitempty"`
+	RetiringPods                    []RoleInstancePodReferenceApplyConfiguration                    `json:"retiringPods,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -136,5 +137,18 @@ func (b *RoleInstanceStatusApplyConfiguration) WithRestartCount(value int32) *Ro
 // If called multiple times, the LastRestartTime field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithLastRestartTime(value v1.Time) *RoleInstanceStatusApplyConfiguration {
 	b.LastRestartTime = &value
+	return b
+}
+
+// WithRetiringPods adds the given value to the RetiringPods field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RetiringPods field.
+func (b *RoleInstanceStatusApplyConfiguration) WithRetiringPods(values ...*RoleInstancePodReferenceApplyConfiguration) *RoleInstanceStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRetiringPods")
+		}
+		b.RetiringPods = append(b.RetiringPods, *values[i])
+	}
 	return b
 }

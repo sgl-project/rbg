@@ -19,6 +19,8 @@ package roleinstance
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -45,12 +47,17 @@ type StatusUpdater interface {
 	UpdateInstanceStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) error
 }
 
-func newStatusUpdater(c client.Client) StatusUpdater {
-	return &realStatusUpdater{Client: c, lifecycleControl: lifecycle.New(c)}
+func newStatusUpdater(c client.Client, readers ...client.Reader) StatusUpdater {
+	r := &realStatusUpdater{Client: c, lifecycleControl: lifecycle.New(c)}
+	if len(readers) > 0 {
+		r.apiReader = readers[0]
+	}
+	return r
 }
 
 type realStatusUpdater struct {
 	client.Client
+	apiReader        client.Reader
 	lifecycleControl lifecycle.Interface
 }
 
@@ -60,7 +67,7 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 	r.calculateStatus(instance, newStatus, conditions, pods)
 	var updateStatusErr error
 	if r.inconsistentStatus(instance, newStatus) {
-		updateStatusErr = r.updateStatus(ctx, instance, newStatus)
+		updateStatusErr = r.updateStatus(ctx, instance, newStatus, pods...)
 	}
 	updatePodsConditionErr := r.updatePodsLifeCycle(ctx, instance, pods)
 	return utilerrors.NewAggregate([]error{updateStatusErr, updatePodsConditionErr})
@@ -83,14 +90,8 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 //     reports a failure. Their absence means no failure was reported in this
 //     reconcile: the operation succeeded or was not attempted. Either way,
 //     setInstanceConditions drops stale copies from the live object.
-//   - Restarting has an explicit lifecycle and is cleared by setInstanceConditions
-//     once the instance becomes Ready.
-//   - RoleInstanceInPlaceUpdateReady and RoleInstanceCustomReady are written by
-//     external controllers, but setInstanceConditions always copies them from
-//     instance.Status into newStatus (via getInstanceInplaceUpdateReadyCondition and
-//     the custom-condition passthrough). They are therefore already present in
-//     newStatus.Conditions, so they must be listed here to prevent a duplicate entry
-//     being appended from the live clone.
+//   - Restarting is projected from the freshly saved deletion list by updateStatus.
+//   - Custom/in-place readiness conditions remain owned by their external writers.
 func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceConditionType] {
 	return sets.New[workloadsv1alpha2.RoleInstanceConditionType](
 		// Computed by this controller on every reconcile.
@@ -99,10 +100,6 @@ func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceCond
 		workloadsv1alpha2.RoleInstanceFailedScale,
 		workloadsv1alpha2.RoleInstanceFailedUpdate,
 		workloadsv1alpha2.RoleInstanceRestarting,
-		// Written externally but always copied into newStatus by setInstanceConditions,
-		// so they are already present and must not be appended again from the live clone.
-		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
-		workloadsv1alpha2.RoleInstanceCustomReady,
 	)
 }
 
@@ -449,16 +446,33 @@ func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.Role
 	return false
 }
 
-func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) error {
+func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods ...*v1.Pod) error {
 	ownedTypes := controllerOwnedConditionTypes()
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		clone := &workloadsv1alpha2.RoleInstance{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
+		reader := client.Reader(r.Client)
+		if r.apiReader != nil {
+			reader = r.apiReader
+		}
+		if err := reader.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
 			if apierrors.IsNotFound(err) {
 				// Instance has been deleted; nothing to update.
 				return nil
 			}
 			return err
+		}
+		if clone.UID != instance.UID || clone.DeletionTimestamp != nil {
+			return nil
+		}
+		if clone.Generation != newStatus.ObservedGeneration {
+			// Do not acknowledge a newer spec with stale aggregate status. Pod
+			// updates have already happened, however: preserve their baselines
+			// so the expected image-change restart is not mistaken for a crash.
+			changed, err := preserveAppliedUpdateBaselines(ctx, reader, instance, clone, newStatus, pods)
+			if err != nil || !changed {
+				return err
+			}
+			return r.Status().Update(ctx, clone)
 		}
 		// Snapshot the live custom conditions before overwriting clone.Status.
 		// These are conditions not owned by this controller (e.g. RoleInstanceCustomReady
@@ -472,36 +486,92 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 				liveCustomConditions = append(liveCustomConditions, c)
 			}
 		}
-		// Snapshot live restart tracking before overwriting clone.Status.
-		// The informer cache may be stale: a previous reconcile may have already
-		// persisted a different RestartCount/LastRestartTime. We use the live API
-		// value (clone) as the source of truth and only overwrite when this
-		// reconcile intentionally modified restart tracking (via updateRestartTracking).
-		liveRestartCount := clone.Status.RestartCount
-		liveLastRestartTime := clone.Status.LastRestartTime
-		// Detect whether updateRestartTracking ran this reconcile. It sets
-		// LastRestartTime = metav1.Now(), producing a timestamp that differs from
-		// BOTH the informer's value AND the live API value. In contrast,
-		// syncRestartTrackingFromAPI copies the API's timestamp, which equals the
-		// live value — so the double-check below correctly identifies that case as
-		// "not changed" and preserves the live (potentially reset) count.
-		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
-		clone.Status = *newStatus
+		// calculateDiffs already committed the list/count/time before Delete.
+		// Preserve that fresh authority, including an empty clear or count reset.
+		liveStatus := clone.Status.DeepCopy()
+		clone.Status = *newStatus.DeepCopy()
+		clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+			return !ownedTypes.Has(condition.Type)
+		})
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
-		if restartTrackingModified {
-			// updateRestartTracking ran this reconcile — trust newStatus values.
-			// This covers both increments (count goes up) and resets (count goes
-			// down after a stable period). The timestamp is always brand-new.
-		} else {
-			// Restart tracking was NOT modified by updateRestartTracking this
-			// reconcile. Preserve the live API values to prevent a stale informer
-			// (or a syncRestartTrackingFromAPI pass-through) from clobbering a
-			// reset that was persisted by a prior reconcile.
-			clone.Status.RestartCount = liveRestartCount
-			clone.Status.LastRestartTime = liveLastRestartTime
+		clone.Status.RetiringPods = liveStatus.RetiringPods
+		clone.Status.RestartCount = liveStatus.RestartCount
+		clone.Status.LastRestartTime = liveStatus.LastRestartTime
+		clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+			return condition.Type == workloadsv1alpha2.RoleInstanceRestarting
+		})
+		if len(liveStatus.RetiringPods) > 0 {
+			for _, condition := range liveStatus.Conditions {
+				if condition.Type == workloadsv1alpha2.RoleInstanceRestarting {
+					clone.Status.Conditions = append(clone.Status.Conditions, condition)
+				}
+			}
+			for i := range clone.Status.Conditions {
+				if clone.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceReady {
+					clone.Status.Conditions[i].Status = v1.ConditionFalse
+					clone.Status.Conditions[i].Reason = "Restarting"
+					clone.Status.Conditions[i].Message = "Removing the previous member Pods"
+				}
+			}
+		}
+		// Do not resurrect old baselines cleared when the list was recorded;
+		// keep genuinely new baselines recorded by the existing Update path.
+		for name, baselines := range clone.Status.InPlaceUpdateContainerBaselines {
+			if _, exists := liveStatus.InPlaceUpdateContainerBaselines[name]; !exists &&
+				maps.Equal(baselines, instance.Status.InPlaceUpdateContainerBaselines[name]) {
+				delete(clone.Status.InPlaceUpdateContainerBaselines, name)
+			}
 		}
 		return r.Status().Update(ctx, clone)
 	})
+}
+
+// preserveAppliedUpdateBaselines carries only bookkeeping for verified Pod
+// updates across an RI spec change. It never copies stale aggregate status,
+// overwrites a newer baseline, or restores allowances during retirement.
+func preserveAppliedUpdateBaselines(ctx context.Context, reader client.Reader,
+	instance, live *workloadsv1alpha2.RoleInstance, computed *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) (bool, error) {
+	if len(live.Status.RetiringPods) > 0 {
+		return false, nil
+	}
+	changed := false
+	for _, pod := range pods {
+		baseline := computed.InPlaceUpdateContainerBaselines[pod.Name]
+		previous := instance.Status.InPlaceUpdateContainerBaselines[pod.Name]
+		if pod.UID == "" || maps.Equal(baseline, previous) {
+			continue
+		}
+		current := &v1.Pod{}
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(pod), current); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		if current.UID != pod.UID || !metav1.IsControlledBy(current, live) ||
+			current.DeletionTimestamp != nil || !instanceutils.EqualToRevisionHash("", current, computed.UpdateRevision) {
+			continue
+		}
+		for name, value := range baseline {
+			old, existed := previous[name]
+			if existed && value == old {
+				continue
+			}
+			existing, present := live.Status.InPlaceUpdateContainerBaselines[pod.Name][name]
+			if present && (!existed || existing != old) {
+				continue
+			}
+			if live.Status.InPlaceUpdateContainerBaselines == nil {
+				live.Status.InPlaceUpdateContainerBaselines = make(map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline)
+			}
+			if live.Status.InPlaceUpdateContainerBaselines[pod.Name] == nil {
+				live.Status.InPlaceUpdateContainerBaselines[pod.Name] = make(map[string]workloadsv1alpha2.ContainerUpdateBaseline)
+			}
+			live.Status.InPlaceUpdateContainerBaselines[pod.Name][name] = value
+			changed = true
+		}
+	}
+	return changed, nil
 }
 
 func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) error {

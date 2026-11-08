@@ -57,7 +57,7 @@ func NewReconciler(mgr ctrl.Manager, bindings *synccontrol.NodeBindingStore) rec
 		scheme:                mgr.GetScheme(),
 		recorder:              recorder,
 		controllerHistory:     historyutil.NewHistory(c),
-		statusUpdater:         newStatusUpdater(c),
+		statusUpdater:         newStatusUpdater(c, mgr.GetAPIReader()),
 		revisionControl:       revisioncontrol.NewRevisionControl(),
 		syncControl:           synccontrol.New(c, mgr.GetAPIReader(), recorder, bindings),
 		revisionEqualityCache: lru.New(pkgutils.MaxRevisionEqualityCacheEntries),
@@ -88,9 +88,6 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	instance := new(workloadsv1alpha2.RoleInstance)
 	if err := r.Get(ctx, request.NamespacedName, instance); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.syncControl.ClearRestarting(&workloadsv1alpha2.RoleInstance{
-				ObjectMeta: metav1.ObjectMeta{Namespace: request.Namespace, Name: request.Name},
-			})
 			logger.Info("Instance has been deleted")
 			return reconcile.Result{}, nil
 		}
@@ -100,7 +97,6 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// Skip reconcile if the instance is being deleted to avoid StorageError
 	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
 	if instance.DeletionTimestamp != nil {
-		r.syncControl.ClearRestarting(instance)
 		return reconcile.Result{}, nil
 	}
 
@@ -149,14 +145,6 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {
 		logger.Error(err, "Failed to update instance status")
 		return reconcile.Result{}, err
-	}
-
-	// Clear the in-memory restarting cache when instance becomes Ready
-	for _, cond := range newStatus.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			r.syncControl.ClearRestarting(instance)
-			break
-		}
 	}
 
 	if err = r.truncateHistory(filteredPods, revisions, currentRevision, updateRevision); err != nil {
@@ -216,15 +204,11 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		if updateInstance.Status.LastRestartTime != nil {
 			newStatus.LastRestartTime = updateInstance.Status.LastRestartTime
 		}
-		return syncResult{err: podsScaleErr}
+		return syncResult{err: podsScaleErr, requeue: scaleRequeue}
 	}
 	// Restart backoff: delay not elapsed, skip Update and just requeue.
-	// Do NOT propagate the Restarting condition here. The Restarting condition
-	// should only be set when a restart is actually in progress (scaling=true
-	// for deletion/creation). Propagating it during backoff causes the Ready
-	// condition to become False (pods are Failed), which then prevents
-	// shouldRecreateInstance from triggering on the next reconcile because
-	// wasInstanceReady() returns false.
+	// Do NOT project the Restarting condition here: no deletion has started yet,
+	// so there are no retiring UIDs to advertise.
 	if scaleRequeue > 0 {
 		return syncResult{requeue: scaleRequeue}
 	}

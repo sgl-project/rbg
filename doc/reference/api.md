@@ -124,7 +124,7 @@ Reusable pod template at RBG level:
 | Value | Description |
 |-------|-------------|
 | `None` | No automatic restart |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
+| `RecreateRoleInstanceOnPodRestart` | With RoleInstanceSet backing, retain the affected RoleInstance object and recreate all its member Pods on explicit Pod failure (`Failed`), unexpected container restart, or observed member Pod deletion, including before first Ready. Member Pod deletion is best-effort; see [Failure handling](../features/failure-handling.md). |
 
 ## ScalingAdapter
 
@@ -249,6 +249,27 @@ Reusable pod template at RBG level:
 | `initContainers` | []Container — init containers to inject |
 | `containers` | []Container — sidecar containers to inject |
 | `volumes` | []Volume — volumes to inject |
+
+## RoleInstance Member Recovery
+
+A `RoleInstance` is the unit the restart policy acts on: it owns the member Pods of one group.
+With `RecreateRoleInstanceOnPodRestart`, a member Pod that fails, restarts a container
+unexpectedly, or is observed terminating rebuilds **all** member Pods of the affected
+instance. The `RoleInstance` object itself is retained, so its UID and revision history
+do not change.
+
+The decision is recorded in the status before any Pod is deleted:
+
+| Field / condition | Meaning |
+|---|---|
+| `status.retiringPods` | `name` and `uid` of every member Pod selected for this rebuild. While the list is non-empty no replacement Pod is created; entries are dropped only once the recorded UID is gone from the API. |
+| `status.restartCount` / `status.lastRestartTime` | Accepted rebuild attempts and the start time of the latest attempt. On the next attempt after more than `max(maxDelaySeconds*2, 10 minutes)` has elapsed, the count restarts at 1 and the timestamp is updated. Readiness is not required for this reset. |
+| `Restarting` (condition) | `True` while `status.retiringPods` is non-empty. It is a projection of that list and is cleared when the old UIDs disappear, not when the instance becomes Ready. |
+| `RoleInstanceReady` (condition) | `False` with reason `Restarting` and message `Removing the previous member Pods` while the rebuild is draining. |
+
+Because the barrier is the recorded UID list rather than readiness, a rebuild whose
+replacement Pods fail to initialize is retried: once the previous drain completes, the
+next explicit failure starts another round.
 
 ## RoleInstanceSet Rollback Recovery
 

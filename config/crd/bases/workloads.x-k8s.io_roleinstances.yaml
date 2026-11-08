@@ -302,6 +302,27 @@ spec:
                   a full RoleInstance recreation.
                 format: int32
                 type: integer
+              retiringPods:
+                description: |-
+                  RetiringPods records the old Pod names and UIDs to delete. An accepted
+                  Delete does not mean deletion is complete: normal creation is blocked
+                  while this list is nonempty.
+                items:
+                  description: RoleInstancePodReference identifies a specific Pod
+                    incarnation, never just a name.
+                  properties:
+                    name:
+                      type: string
+                    uid:
+                      description: |-
+                        UID is a type that holds unique ID values, including UUIDs.  Because we
+                        don't ONLY use UUIDs, this is an alias to string.
+                      type: string
+                  required:
+                  - name
+                  - uid
+                  type: object
+                type: array
               updateRevision:
                 description: UpdateRevision is a hash value that changes when the
                   spec is changed.

@@ -132,7 +132,7 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 
 | Risk | Mitigation |
 |------|------------|
-| Extended trigger conditions may cause unexpected recreation loops | Use `wasInstanceReady` check to avoid triggering during initial creation; require `Generation == ObservedGeneration` to avoid triggering during spec changes |
+| Extended trigger conditions may cause unexpected recreation loops | `status.retiringPods` is an explicit barrier: a second round cannot start until the recorded UIDs are gone, and `Generation == ObservedGeneration` / current-vs-update revision guards still block scale changes and rollouts. A manual Pod delete does rebuild the whole instance under `RecreateRoleInstanceOnPodRestart`; use the `restart-trigger-policy: Ignore` annotation for auxiliary members. |
 | Frequent Failed Pod state transitions may increase controller load | Only react to Failed phase (terminal state), not intermediate transitions |
 | DisruptionTarget condition depends on K8s 1.22+ | Also support traditional detection method (status.reason) to ensure backward compatibility |
 
@@ -280,12 +280,17 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
     if len(pods) == 0 {
         return false
     }
-    if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
+    // No readiness gate: an explicit failure is a signal even before the first Ready.
+    if instance.Generation != instance.Status.ObservedGeneration ||
+        instance.Status.CurrentRevision != instance.Status.UpdateRevision {
         return false
     }
-    // Check if any Pod is in Failed phase (excluding pods being deleted)
     for _, p := range pods {
-        if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
+        // Skipped when the slot is no longer desired or the Pod opted out.
+        if !isExpectedMemberSlot(instance, p) || hasTriggerPolicyIgnore(p) {
+            continue
+        }
+        if p.Status.Phase == v1.PodFailed || p.DeletionTimestamp != nil {
             return true
         }
     }
@@ -447,6 +452,20 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
   - Updated KEP documentation with two-level handling approach
   - RoleInstance Controller handles both Level 1 (delete Failed pod) and Level 2 (recreate Instance)
   - Removed `ContainerRestarted` check from `shouldRecreateInstance` (handled by LWS controller)
+
+- 2026-11-08: Member-loss recovery made durable
+  - Observed deletion (`deletionTimestamp != nil`) on an expected member is now a
+    trigger, alongside `Failed` and unexpected ordinary/init container restarts.
+  - The readiness gate was removed: recovery no longer requires the instance to have
+    been Ready, and the `Restarting` condition stopped being a guard.
+  - `status.retiringPods` (name + UID) is persisted with `restartCount`/`lastRestartTime`
+    before any Delete, so a drain resumes across reconciles and controller restarts,
+    creation stays blocked until the old UIDs are gone, and a failed replacement can be
+    retried without waiting for readiness.
+  - `RecreateRoleInstanceOnPodRestart` is best-effort for deletion: if a Pod disappears
+    before the controller observes it as terminating, ordinary reconciliation replaces
+    that single Pod. A missing slot alone, a NotReady-only hang, and a not-ready timeout
+    remain out of scope.
 
 - 2026-05-18: Updated after upstream #340 removed Pod Controller
   - Removed Pod Controller references (deprecated by upstream #340)

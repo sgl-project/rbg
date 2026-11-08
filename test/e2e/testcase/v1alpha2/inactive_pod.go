@@ -281,9 +281,9 @@ func runIgnoredComponentTest(f *framework.Framework) {
 		}
 		gomega.Expect(monitorPod).ShouldNot(gomega.BeNil(), "monitor pod with Ignore annotation should exist")
 
-		// Confirm a durable restart on the original Pod. A terminal failure can
-		// make the instance unready before the restart-policy check, masking
-		// whether Ignore itself prevented instance recreation.
+		// Confirm a durable restart on the original Pod. Recovery no longer
+		// depends on the instance being Ready, so a restarted ignored container
+		// must still leave the instance untouched.
 		waitForNginxContainerRestart(f, monitorPod)
 		waitForInstanceFullyRecovered(f, ignoreInstanceName)
 

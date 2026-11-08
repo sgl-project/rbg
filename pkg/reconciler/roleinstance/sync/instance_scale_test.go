@@ -18,20 +18,27 @@ package sync
 
 import (
 	"context"
+	"fmt"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
 // TestShouldRecreateInstance tests the shouldRecreateInstance function
@@ -148,8 +155,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Instance not Ready - should NOT recreate",
-			desc: "Only trigger recreation when Instance was previously Ready (stable state)",
+			name: "Instance not Ready - explicit failure should recreate",
+			desc: "An explicit failure triggers recreation even before the first Ready state",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -179,7 +186,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{Phase: corev1.PodFailed},
 				},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "Generation != ObservedGeneration (spec being changed) - should NOT recreate",
@@ -277,8 +284,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Pod being deleted - should NOT recreate",
-			desc: "Pod being deleted (with DeletionTimestamp) is not counted as Failed",
+			name: "Desired Pod being deleted - should recreate",
+			desc: "DeletionTimestamp on a desired member triggers recreation",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -308,7 +315,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 					Status: corev1.PodStatus{Phase: corev1.PodFailed},
 				},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "All pods Running - should NOT recreate",
@@ -1614,117 +1621,30 @@ func TestShouldRecreateInstance(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			normalizeOriginalRestartFixtures(tt.instance, tt.pods)
 			result := shouldRecreateInstance(tt.instance, tt.pods, tt.baselines)
 			assert.Equal(t, tt.expected, result, tt.desc)
 		})
 	}
 }
 
-// TestRestartingCachePreventsRecreation tests that the in-memory restarting cache
-// prevents shouldRecreateInstanceGuarded from triggering when the instance is already restarting.
-func TestRestartingCachePreventsRecreation(t *testing.T) {
-	instance := &workloadsv1alpha2.RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-instance",
-			Namespace:  "default",
-			Generation: 1,
-		},
-		Spec: workloadsv1alpha2.RoleInstanceSpec{
-			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
-			Components: []workloadsv1alpha2.RoleInstanceComponent{
-				{Size: ptr.To[int32](2)},
-			},
-		},
-		Status: workloadsv1alpha2.RoleInstanceStatus{
-			ObservedGeneration: 1,
-			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-				{
-					Type:   workloadsv1alpha2.RoleInstanceReady,
-					Status: corev1.ConditionTrue,
-				},
-			},
-		},
-	}
-	pods := []*corev1.Pod{
-		{
-			Status: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-				ContainerStatuses: []corev1.ContainerStatus{
-					{Name: "main", RestartCount: 1},
-				},
-			},
-		},
-	}
-
-	// Without cache: shouldRecreateInstance returns true
-	assert.True(t, shouldRecreateInstance(instance, pods, nil))
-
-	// Set the in-memory cache to mark instance as restarting
-	restartingCache.Store(instanceKey(instance), true)
-	defer restartingCache.Delete(instanceKey(instance))
-
-	// The guarded version with a nil apiReader (cache hit means no API call needed)
-	ctrl := &realControl{}
-	result := ctrl.shouldRecreateInstanceGuarded(context.Background(), instance, pods, nil)
-	assert.False(t, result, "should not recreate when instance is in restarting cache")
-}
-
-// TestIsInstanceRestarting tests the isInstanceRestarting helper function
-func TestIsInstanceRestarting(t *testing.T) {
-	tests := []struct {
-		name     string
-		instance *workloadsv1alpha2.RoleInstance
-		expected bool
-	}{
-		{
-			name: "Restarting condition True",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-						{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionTrue},
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "Restarting condition False",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-						{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: corev1.ConditionFalse},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "No Restarting condition",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-						{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionTrue},
-					},
-				},
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isInstanceRestarting(tt.instance)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-// TestSetRestartingCondition tests the setRestartingCondition helper function
+// TestSetRestartingCondition tests the setRestartingCondition helper function.
+// The condition is a projection of status.retiringPods, so only the condition
+// itself is asserted here.
 func TestSetRestartingCondition(t *testing.T) {
+	hasRestarting := func(instance *workloadsv1alpha2.RoleInstance) bool {
+		for _, cond := range instance.Status.Conditions {
+			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+		return false
+	}
+
 	t.Run("sets condition when not present", func(t *testing.T) {
 		instance := &workloadsv1alpha2.RoleInstance{}
 		setRestartingCondition(instance)
-		assert.True(t, isInstanceRestarting(instance))
+		assert.True(t, hasRestarting(instance))
 	})
 
 	t.Run("updates existing condition", func(t *testing.T) {
@@ -1736,180 +1656,9 @@ func TestSetRestartingCondition(t *testing.T) {
 			},
 		}
 		setRestartingCondition(instance)
-		assert.True(t, isInstanceRestarting(instance))
+		assert.True(t, hasRestarting(instance))
+		assert.Len(t, instance.Status.Conditions, 1, "an existing condition must be updated in place")
 	})
-}
-
-// TestClearRestarting tests that ClearRestarting removes the instance from the
-// in-memory cache, preventing stale entries from blocking new instances.
-func TestClearRestarting(t *testing.T) {
-	instance := &workloadsv1alpha2.RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "test-instance"},
-	}
-	ctrl := &realControl{}
-
-	// Seed the cache
-	restartingCache.Store(instanceKey(instance), true)
-	_, ok := restartingCache.Load(instanceKey(instance))
-	assert.True(t, ok, "cache should have entry before clear")
-
-	ctrl.ClearRestarting(instance)
-
-	_, ok = restartingCache.Load(instanceKey(instance))
-	assert.False(t, ok, "cache should not have entry after clear")
-}
-
-// TestClearRestartingPreventsStaleBlock verifies that after ClearRestarting,
-// isAlreadyRestarting does not return true from a stale cache entry.
-func TestClearRestartingPreventsStaleBlock(t *testing.T) {
-	instance := &workloadsv1alpha2.RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "test-instance"},
-	}
-	ctrl := &realControl{}
-
-	// Simulate restart trigger then deletion cleanup
-	setRestartingCondition(instance)
-	ctrl.ClearRestarting(instance)
-
-	// With nil apiReader, isAlreadyRestarting should return false
-	assert.False(t, ctrl.isAlreadyRestarting(context.Background(), instance),
-		"should not be restarting after cache cleared")
-}
-
-// TestHasRecentRestart tests that hasRecentRestart correctly identifies whether
-// the last restart falls within the stable threshold.
-func TestHasRecentRestart(t *testing.T) {
-	oldRestartTime := metav1.NewTime(time.Now().Add(-21 * time.Minute))
-	recentRestartTime := metav1.NewTime(time.Now().Add(-1 * time.Minute))
-
-	tests := []struct {
-		name     string
-		instance *workloadsv1alpha2.RoleInstance
-		expected bool
-	}{
-		{
-			name: "nil LastRestartTime: false",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "recent restart (within default threshold): true",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
-				},
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					LastRestartTime: &recentRestartTime,
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "old restart (beyond default 20min threshold): false",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
-				},
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					LastRestartTime: &oldRestartTime,
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "old restart with custom maxDelay=60 (threshold=10min): false",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Spec: workloadsv1alpha2.RoleInstanceSpec{
-					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
-						Type:            workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
-						MaxDelaySeconds: ptr.To(int32(60)),
-					},
-				},
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					LastRestartTime: &oldRestartTime,
-				},
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, hasRecentRestart(tt.instance))
-		})
-	}
-}
-
-// TestWasInstanceReady tests the wasInstanceReady helper function
-func TestWasInstanceReady(t *testing.T) {
-	tests := []struct {
-		name     string
-		instance *workloadsv1alpha2.RoleInstance
-		expected bool
-	}{
-		{
-			name: "Instance was Ready",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-						{
-							Type:   workloadsv1alpha2.RoleInstanceReady,
-							Status: corev1.ConditionTrue,
-						},
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "Instance was not Ready",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-						{
-							Type:   workloadsv1alpha2.RoleInstanceReady,
-							Status: corev1.ConditionFalse,
-						},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "Ready condition not found",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{
-						{
-							Type:   workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
-							Status: corev1.ConditionTrue,
-						},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "Empty conditions",
-			instance: &workloadsv1alpha2.RoleInstance{
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{},
-				},
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := wasInstanceReady(tt.instance)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
 }
 
 // TestFailedPodDeletion tests that Failed pods in inactivePods are included in the delete list
@@ -2006,6 +1755,37 @@ func TestFailedPodDeletion(t *testing.T) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// normalizeOriginalRestartFixtures supplies identity omitted by the original
+// predicate tables, without changing Pod names or their baseline lookup keys.
+// Only legacy fixtures use this helper; malformed-member regression cases do not.
+func normalizeOriginalRestartFixtures(instance *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod) {
+	if len(instance.Spec.Components) == 0 {
+		instance.Spec.Components = []workloadsv1alpha2.RoleInstanceComponent{{Name: "worker", Size: ptr.To(int32(len(pods)))}}
+	}
+	componentIndex, ordinal := 0, int32(0)
+	for i := range instance.Spec.Components {
+		if instance.Spec.Components[i].Name == "" {
+			instance.Spec.Components[i].Name = "worker"
+		}
+	}
+	for _, pod := range pods {
+		for componentIndex < len(instance.Spec.Components)-1 && ordinal >= *instance.Spec.Components[componentIndex].Size {
+			componentIndex++
+			ordinal = 0
+		}
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		if pod.Labels[constants.ComponentNameLabelKey] == "" {
+			pod.Labels[constants.ComponentNameLabelKey] = instance.Spec.Components[componentIndex].Name
+		}
+		if pod.Labels[constants.ComponentIDLabelKey] == "" {
+			pod.Labels[constants.ComponentIDLabelKey] = strconv.Itoa(int(ordinal))
+		}
+		ordinal++
+	}
+}
 
 func makeComponentStatus(name string, size, readyReplicas int32) workloadsv1alpha2.RoleInstanceComponentStatus {
 	return workloadsv1alpha2.RoleInstanceComponentStatus{
@@ -2464,6 +2244,8 @@ func TestCheckRestartBackoff(t *testing.T) {
 		Status:     corev1.PodStatus{Phase: corev1.PodFailed},
 	}
 
+	normalizeOriginalRestartFixtures(instance, []*corev1.Pod{failedPod})
+
 	t.Run("RestartPolicy=None: no backoff", func(t *testing.T) {
 		inst := instance.DeepCopy()
 		inst.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RestartPolicyNone}
@@ -2622,7 +2404,7 @@ func TestUpdateRestartTracking(t *testing.T) {
 				},
 			}
 
-			updateRestartTracking(instance)
+			require.NoError(t, updateRestartTracking(instance))
 
 			assert.Equal(t, tt.expectedCount, instance.Status.RestartCount, tt.desc)
 			assert.NotNil(t, instance.Status.LastRestartTime, "LastRestartTime should always be set after updateRestartTracking")
@@ -2664,7 +2446,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.Nil(t, result)
 		assert.Equal(t, int32(3), instance.Status.RestartCount)
 		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
@@ -2680,7 +2463,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.Error(t, err)
 		assert.Nil(t, result)
 		assert.Equal(t, int32(3), instance.Status.RestartCount)
 	})
@@ -2702,7 +2486,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &earlier,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(1), instance.Status.RestartCount, "should adopt fresh count (5→1 reset)")
 		assertTimeEqual(t, &now, instance.Status.LastRestartTime, "should adopt fresh timestamp")
@@ -2725,7 +2510,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &earlier,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(10), instance.Status.RestartCount)
 		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
@@ -2748,10 +2534,11 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
-		assert.Equal(t, int32(10), instance.Status.RestartCount, "should adopt higher count even when timestamp is older")
-		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+		assert.Equal(t, int32(10), instance.Status.RestartCount, "should adopt the authoritative API count even when timestamp is older")
+		assertTimeEqual(t, &earlier, instance.Status.LastRestartTime)
 	})
 
 	t.Run("instance LastRestartTime nil, fresh has one: adopt both", func(t *testing.T) {
@@ -2771,7 +2558,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: nil,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(2), instance.Status.RestartCount)
 		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
@@ -2794,10 +2582,11 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(7), instance.Status.RestartCount, "should adopt higher count even without timestamp")
-		assertTimeEqual(t, &now, instance.Status.LastRestartTime, "should NOT change timestamp when fresh is nil")
+		assertTimeEqual(t, nil, instance.Status.LastRestartTime, "should clear stale timestamp when fresh is nil")
 	})
 
 	t.Run("fresh LastRestartTime nil, count not higher: no change", func(t *testing.T) {
@@ -2817,10 +2606,11 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
-		assert.Equal(t, int32(5), instance.Status.RestartCount)
-		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
+		assert.Equal(t, int32(2), instance.Status.RestartCount)
+		assertTimeEqual(t, nil, instance.Status.LastRestartTime)
 	})
 
 	t.Run("same timestamp, fresh count higher: adopt count only", func(t *testing.T) {
@@ -2840,7 +2630,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(8), instance.Status.RestartCount, "should adopt higher count with same timestamp")
 		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
@@ -2863,7 +2654,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(3), instance.Status.RestartCount)
 		assertTimeEqual(t, &now, instance.Status.LastRestartTime)
@@ -2886,7 +2678,8 @@ func TestSyncRestartTrackingFromAPI(t *testing.T) {
 				LastRestartTime: &now,
 			},
 		}
-		result := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		result, err := ctrl.syncRestartTrackingFromAPI(context.Background(), instance)
+		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, int32(3), instance.Status.RestartCount)
 		assertTimeEqual(t, &later, instance.Status.LastRestartTime, "should adopt newer timestamp even if count is same")
@@ -2943,7 +2736,7 @@ func TestShouldRecreateInstanceBypass(t *testing.T) {
 		desc     string
 	}{
 		{
-			name: "not Ready + LastRestartTime nil + PodFailed: bypass does NOT apply",
+			name: "not Ready + LastRestartTime nil + PodFailed: explicit failure triggers",
 			modify: func(inst *workloadsv1alpha2.RoleInstance) {
 				inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{
 					{Type: workloadsv1alpha2.RoleInstanceReady, Status: corev1.ConditionFalse},
@@ -2951,8 +2744,8 @@ func TestShouldRecreateInstanceBypass(t *testing.T) {
 				inst.Status.LastRestartTime = nil
 			},
 			pods:     failedPod,
-			expected: false,
-			desc:     "Without LastRestartTime, wasInstanceReady=False blocks recreation (no bypass)",
+			expected: true,
+			desc:     "Neither prior Ready nor restart history is required for an explicit failure",
 		},
 		{
 			name: "not Ready + LastRestartTime set + PodFailed: bypass applies",
@@ -3048,6 +2841,7 @@ func TestShouldRecreateInstanceBypass(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			inst := baseInstance.DeepCopy()
 			tt.modify(inst)
+			normalizeOriginalRestartFixtures(inst, tt.pods)
 			result := shouldRecreateInstance(inst, tt.pods, nil)
 			assert.Equal(t, tt.expected, result, tt.desc)
 		})
@@ -3084,7 +2878,9 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		Status:     corev1.PodStatus{Phase: corev1.PodFailed},
 	}
 
-	t.Run("restarting == true (from fresh): returns 0", func(t *testing.T) {
+	normalizeOriginalRestartFixtures(baseInstance, []*corev1.Pod{failedPod})
+
+	t.Run("legacy Restarting=True (from fresh): still applies backoff", func(t *testing.T) {
 		inst := baseInstance.DeepCopy()
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
@@ -3098,10 +2894,10 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		}
 
 		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
-		assert.Equal(t, time.Duration(0), result, "fresh Restarting=True should skip backoff")
+		assert.Greater(t, result, time.Duration(0), "legacy fresh Restarting=True alone must not skip backoff")
 	})
 
-	t.Run("restarting == true (from informer, fresh == nil): returns 0", func(t *testing.T) {
+	t.Run("legacy Restarting=True (from informer, fresh == nil): still applies backoff", func(t *testing.T) {
 		inst := baseInstance.DeepCopy()
 		now := metav1.Now()
 		inst.Status.LastRestartTime = &now
@@ -3114,7 +2910,7 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		})
 
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
-		assert.Equal(t, time.Duration(0), result, "informer Restarting=True should skip backoff")
+		assert.Greater(t, result, time.Duration(0), "legacy informer Restarting=True alone must not skip backoff")
 	})
 
 	t.Run("restarting == true from informer overridden by fresh == false: proceeds with backoff", func(t *testing.T) {
@@ -3137,6 +2933,28 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		result := c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil)
 		assert.Greater(t, result, time.Duration(0), "fresh Restarting=False should override stale informer Restarting=True")
 	})
+
+	for _, useFresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("RetiringPods alone skips backoff, fresh=%t", useFresh), func(t *testing.T) {
+			inst := baseInstance.DeepCopy()
+			inst.Status.LastRestartTime = ptr.To(metav1.Now())
+			inst.Status.RestartCount = 1
+			inst.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+			inst.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
+			inst.Status.RetiringPods = []workloadsv1alpha2.RoleInstancePodReference{{Name: failedPod.Name, UID: "old"}}
+			var fresh *workloadsv1alpha2.RoleInstance
+			if useFresh {
+				fresh = inst.DeepCopy()
+				inst.Status.RetiringPods = nil
+			}
+			assert.Zero(t, c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil))
+			if useFresh {
+				inst.Status.RetiringPods = fresh.Status.RetiringPods
+				fresh.Status.RetiringPods = nil
+				assert.Positive(t, c.checkRestartBackoff(inst, fresh, []*corev1.Pod{failedPod}, nil), "fresh empty list overrides a stale informer list")
+			}
+		})
+	}
 
 	t.Run("baseDelay == 0 && maxDelay == 0: returns 0 (disabled)", func(t *testing.T) {
 		inst := baseInstance.DeepCopy()
@@ -3196,8 +3014,8 @@ func TestCheckRestartBackoff_Branches(t *testing.T) {
 		inst.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{}
 
 		result := c.checkRestartBackoff(inst, nil, []*corev1.Pod{failedPod}, nil)
-		assert.Equal(t, time.Duration(0), result,
-			"backoff should not freeze updates when Generation != ObservedGeneration")
+		assert.Equal(t, 2*time.Second, result,
+			"generation mismatch should poll for acknowledgment instead of applying restart backoff")
 	})
 
 	t.Run("CurrentRevision != UpdateRevision with failed pods: returns 0 (no backoff freeze)", func(t *testing.T) {
@@ -3382,4 +3200,635 @@ func TestScaleCreatesNonCollidingSiblingsDuringNameCollision(t *testing.T) {
 		assert.True(t, metav1.IsControlledBy(&podList.Items[i], instance),
 			"pod %s should be controlled by the new RoleInstance", podList.Items[i].Name)
 	}
+}
+
+// restartScaleFixture uses real identities and the same component labels as Pods
+// created by the existing Scale path. It deliberately has no Ready history.
+func restartScaleFixture() (*workloadsv1alpha2.RoleInstance, []*corev1.Pod) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "recovery-0", Namespace: "default", UID: "recovery-instance", Generation: 1,
+			Labels: map[string]string{constants.RoleTypeLabelKey: string(constants.ComponentsTemplateType)},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				BaseDelaySeconds: ptr.To(int32(0)), MaxDelaySeconds: ptr.To(int32(0)),
+			},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "worker", Size: ptr.To(int32(2)),
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "main", Image: "rbg:latest"}},
+				}},
+			}},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1, CurrentRevision: "revision-1", UpdateRevision: "revision-1",
+		},
+	}
+	pods := make([]*corev1.Pod, 2)
+	for i := range pods {
+		pods[i] = &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("%s-worker-%d", instance.Name, i), Namespace: instance.Namespace,
+				UID: types.UID(fmt.Sprintf("old-%d", i)),
+				Labels: map[string]string{
+					constants.ComponentNameLabelKey: "worker", constants.ComponentIDLabelKey: strconv.Itoa(i),
+					constants.RoleInstanceNameLabelKey: instance.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(instance, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))},
+			},
+			Spec:   instance.Spec.Components[0].Template.Spec,
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+	}
+	return instance, pods
+}
+
+func restartScaleClient(t *testing.T, instance *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod, funcs interceptor.Funcs) (client.WithWatch, *realControl) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	objects := make([]client.Object, 1, 1+len(pods))
+	objects[0] = instance
+	for _, pod := range pods {
+		objects = append(objects, pod)
+	}
+	// The fake API does not allocate UIDs. Allocate a distinct incarnation for
+	// each Pod created by ordinary Scale, including repeated same-name creates.
+	var created atomic.Int32
+	if funcs.Create == nil {
+		funcs.Create = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, ok := obj.(*corev1.Pod); ok && obj.GetUID() == "" {
+				obj.SetUID(types.UID(fmt.Sprintf("new-%d", created.Add(1))))
+			}
+			return c.Create(ctx, obj, opts...)
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(instance, &corev1.Pod{}).WithObjects(objects...).
+		WithInterceptorFuncs(funcs).Build()
+	return c, &realControl{Client: c, apiReader: c, recorder: record.NewFakeRecorder(100)}
+}
+
+func restartScaleStep(t *testing.T, ctrl *realControl, key client.ObjectKey) (*workloadsv1alpha2.RoleInstance, bool, time.Duration, error) {
+	t.Helper()
+	ctx := context.Background()
+	instance := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, ctrl.Get(ctx, key, instance))
+	pods, inactivePods, err := instanceutil.GetActiveAndInactivePods(ctx, ctrl.Client, &client.ListOptions{Namespace: key.Namespace})
+	require.NoError(t, err)
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+	scaled, requeue, err := ctrl.Scale(ctx, instance, revision, revision, nil, pods, inactivePods)
+	return instance, scaled, requeue, err
+}
+
+func TestRestartRecordBeforeDelete(t *testing.T) {
+	for _, failPatch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persistence failure=%t", failPatch), func(t *testing.T) {
+			instance, pods := restartScaleFixture()
+			pods[1].Status.Phase = corev1.PodFailed
+			instance.Status.InPlaceUpdateContainerBaselines = map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				pods[0].Name: {"main": {RestartCount: 0, ImageID: "old"}},
+				pods[1].Name: {"main": {RestartCount: 0, ImageID: "old"}},
+				"unrelated":  {"main": {RestartCount: 2}},
+			}
+			expected := []workloadsv1alpha2.RoleInstancePodReference{{Name: pods[0].Name, UID: pods[0].UID}, {Name: pods[1].Name, UID: pods[1].UID}}
+			patches, deletes := 0, 0
+			c, ctrl := restartScaleClient(t, instance, pods, interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					patches++
+					data, err := patch.Data(obj)
+					require.NoError(t, err)
+					assert.Contains(t, string(data), `"resourceVersion"`, "status persistence must be optimistic")
+					if failPatch {
+						return fmt.Errorf("status persistence failed")
+					}
+					return c.SubResource(subresource).Patch(ctx, obj, patch, opts...)
+				},
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deletes++
+					persisted := &workloadsv1alpha2.RoleInstance{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), persisted))
+					assert.ElementsMatch(t, expected, persisted.Status.RetiringPods, "all old UIDs must be saved before the first Delete")
+					assert.Equal(t, int32(1), persisted.Status.RestartCount)
+					assert.NotNil(t, persisted.Status.LastRestartTime)
+					assert.Empty(t, persisted.Status.InPlaceUpdateContainerBaselines, "a group rebuild invalidates allowances for every old slot")
+					return c.Delete(ctx, obj, opts...)
+				},
+			})
+			_, _, _, err := restartScaleStep(t, ctrl, client.ObjectKeyFromObject(instance))
+			assert.Equal(t, 1, patches)
+			if failPatch {
+				assert.ErrorContains(t, err, "status persistence failed")
+				assert.Zero(t, deletes, "a failed status write must not delete any Pod")
+				persisted := &workloadsv1alpha2.RoleInstance{}
+				require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), persisted))
+				assert.Empty(t, persisted.Status.RetiringPods)
+				assert.Zero(t, persisted.Status.RestartCount)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, 2, deletes)
+			}
+		})
+	}
+}
+
+func TestRestartFinalizerCountsOnceAndBlocksReplacement(t *testing.T) {
+	ctx := context.Background()
+	instance, pods := restartScaleFixture()
+	pods[1].Status.Phase = corev1.PodFailed
+	pods[1].Finalizers = []string{"test.example/hold"}
+	c, ctrl := restartScaleClient(t, instance, pods, interceptor.Funcs{})
+	key := client.ObjectKeyFromObject(instance)
+	started, scaled, requeue, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.True(t, scaled)
+	assert.Equal(t, 2*time.Second, requeue)
+	require.Equal(t, int32(1), started.Status.RestartCount)
+	changed := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, key, changed))
+	changed.Spec.RestartPolicyConfig.Type = workloadsv1alpha2.RestartPolicyNone
+	changed.Generation++ // an accepted deletion also survives unacknowledged spec changes
+	require.NoError(t, c.Update(ctx, changed))
+	for i := 0; i < 3; i++ {
+		// Reconstruct control to model process loss; the status list alone resumes.
+		ctrl = &realControl{Client: c, apiReader: c, recorder: record.NewFakeRecorder(100)}
+		resumed, _, requeue, err := restartScaleStep(t, ctrl, key)
+		require.NoError(t, err)
+		assert.Equal(t, 2*time.Second, requeue, "terminating UIDs require polling even with base delay zero")
+		assert.Equal(t, int32(1), resumed.Status.RestartCount)
+		assert.Equal(t, started.Status.LastRestartTime, resumed.Status.LastRestartTime)
+		assert.Len(t, resumed.Status.RetiringPods, 2)
+		list := &corev1.PodList{}
+		require.NoError(t, c.List(ctx, list))
+		require.Len(t, list.Items, 1, "no replacement may be created while an old UID remains")
+		assert.Equal(t, pods[1].UID, list.Items[0].UID)
+	}
+	held := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[1]), held))
+	held.Finalizers = nil
+	require.NoError(t, c.Update(ctx, held))
+	cleared, scaled, requeue, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.Empty(t, cleared.Status.RetiringPods)
+	assert.True(t, scaled, "clearing the saved deletion is progress through deletePods")
+	assert.Equal(t, 2*time.Second, requeue, "clearing the barrier polls once before ordinary creation")
+	_, scaled, _, err = restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.True(t, scaled)
+	list := &corev1.PodList{}
+	require.NoError(t, c.List(ctx, list))
+	assert.Len(t, list.Items, 2)
+}
+
+func TestRestartBarrierUsesOldUIDNotReusedName(t *testing.T) {
+	ctx := context.Background()
+	instance, pods := restartScaleFixture()
+	pods[1].Status.Phase = corev1.PodFailed
+	pods[1].Finalizers = []string{"test.example/hold"}
+	c, ctrl := restartScaleClient(t, instance, pods, interceptor.Funcs{})
+	key := client.ObjectKeyFromObject(instance)
+	_, _, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	newPod := pods[0].DeepCopy()
+	newPod.UID = "new-same-name"
+	newPod.ResourceVersion = ""
+	require.NoError(t, c.Create(ctx, newPod))
+	_, _, requeue, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.Positive(t, requeue)
+	check := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(newPod), check))
+	assert.Equal(t, newPod.UID, check.UID, "resumption must never delete the newer same-name Pod")
+	held := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[1]), held))
+	held.Finalizers = nil
+	require.NoError(t, c.Update(ctx, held))
+	cleared, scaled, requeue, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.Empty(t, cleared.Status.RetiringPods, "the surviving new UID must not keep the old barrier alive")
+	assert.Equal(t, int32(1), cleared.Status.RestartCount)
+	assert.True(t, scaled)
+	assert.Positive(t, requeue)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(newPod), check))
+	assert.Equal(t, newPod.UID, check.UID)
+}
+
+func isReady(instance *workloadsv1alpha2.RoleInstance) bool {
+	for _, cond := range instance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRestartRepeatedAttemptsWithoutReady(t *testing.T) {
+	ctx := context.Background()
+	instance, pods := restartScaleFixture()
+	c, ctrl := restartScaleClient(t, instance, pods, interceptor.Funcs{})
+	key := client.ObjectKeyFromObject(instance)
+	for attempt := int32(1); attempt <= 3; attempt++ {
+		failed := &corev1.Pod{}
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[1]), failed))
+		failed.Status.Phase = corev1.PodFailed
+		require.NoError(t, c.Status().Update(ctx, failed))
+		started, _, _, err := restartScaleStep(t, ctrl, key)
+		require.NoError(t, err)
+		assert.Equal(t, attempt, started.Status.RestartCount)
+		assert.False(t, isReady(started), "recovery must not depend on the instance being Ready")
+		cleared, _, requeue, err := restartScaleStep(t, ctrl, key)
+		require.NoError(t, err)
+		assert.Empty(t, cleared.Status.RetiringPods)
+		assert.Positive(t, requeue)
+		replaced, scaled, _, err := restartScaleStep(t, ctrl, key)
+		require.NoError(t, err)
+		assert.True(t, scaled)
+		assert.Equal(t, attempt, replaced.Status.RestartCount)
+		assert.False(t, isReady(replaced), "a second round must not wait for readiness")
+		current := &corev1.Pod{}
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(failed), current))
+		assert.NotEqual(t, failed.UID, current.UID)
+	}
+}
+
+func TestMissedDeletionScalesNormallyThenExplicitFailureDrainsBoth(t *testing.T) {
+	ctx := context.Background()
+	instance, pods := restartScaleFixture()
+	// B disappeared entirely between observations. Missing history must not
+	// manufacture an instance restart: the existing Scale path creates B2.
+	c, ctrl := restartScaleClient(t, instance, pods, interceptor.Funcs{})
+	require.NoError(t, c.Delete(ctx, pods[1]))
+	key := client.ObjectKeyFromObject(instance)
+	ordinary, scaled, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.True(t, scaled)
+	assert.Empty(t, ordinary.Status.RetiringPods)
+	assert.Zero(t, ordinary.Status.RestartCount)
+	b2 := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[1]), b2))
+	assert.NotEqual(t, pods[1].UID, b2.UID)
+	assert.True(t, metav1.IsControlledBy(b2, instance))
+	b2.Status.Phase = corev1.PodFailed
+	require.NoError(t, c.Status().Update(ctx, b2))
+	started, _, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []workloadsv1alpha2.RoleInstancePodReference{
+		{Name: pods[0].Name, UID: pods[0].UID}, {Name: b2.Name, UID: b2.UID},
+	}, started.Status.RetiringPods)
+	assert.Equal(t, int32(1), started.Status.RestartCount)
+	list := &corev1.PodList{}
+	require.NoError(t, c.List(ctx, list))
+	assert.Empty(t, list.Items, "an explicit B2 failure must drain both B2 and its surviving sibling")
+}
+
+func TestRestartClearsAbsentMemberBaseline(t *testing.T) {
+	ctx := context.Background()
+	instance, pods := restartScaleFixture()
+	baselines := map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+		pods[1].Name: {"main": {RestartCount: 0, ImageID: "old-image"}},
+	}
+	instance.Status.InPlaceUpdateContainerBaselines = baselines
+	// B is already absent when A explicitly fails, so only A can be retired.
+	pods[0].Status.Phase = corev1.PodFailed
+	c, ctrl := restartScaleClient(t, instance, pods[:1], interceptor.Funcs{})
+	key := client.ObjectKeyFromObject(instance)
+	started, _, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.Equal(t, []workloadsv1alpha2.RoleInstancePodReference{{Name: pods[0].Name, UID: pods[0].UID}}, started.Status.RetiringPods)
+	assert.Equal(t, int32(1), started.Status.RestartCount)
+	persisted := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, key, persisted))
+	assert.Empty(t, persisted.Status.InPlaceUpdateContainerBaselines, "the absent member's old allowance must also be persisted as cleared")
+
+	cleared, _, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.Empty(t, cleared.Status.RetiringPods)
+	_, scaled, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.True(t, scaled)
+	list := &corev1.PodList{}
+	require.NoError(t, c.List(ctx, list))
+	require.Len(t, list.Items, 2)
+	for i := range list.Items {
+		assert.NotEqual(t, pods[0].UID, list.Items[i].UID)
+		assert.NotEqual(t, pods[1].UID, list.Items[i].UID)
+		assert.True(t, metav1.IsControlledBy(&list.Items[i], instance))
+	}
+	freshB := &corev1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[1]), freshB))
+	freshB.Status.Phase = corev1.PodRunning
+	freshB.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", RestartCount: 1, ImageID: "new-image"}}
+	assert.True(t, isContainerRestartExpected(freshB, baselines), "the stale name-keyed allowance would hide this genuine restart")
+	require.NoError(t, c.Status().Update(ctx, freshB))
+	restarted, _, _, err := restartScaleStep(t, ctrl, key)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), restarted.Status.RestartCount)
+	assert.Len(t, restarted.Status.RetiringPods, 2)
+	require.NoError(t, c.List(ctx, list))
+	assert.Empty(t, list.Items, "the first unexpected restart on fresh B must drain the replacement group")
+}
+
+func TestUpdateRestartTrackingRejectsUnverifiedPod(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		modify func(*corev1.Pod)
+	}{
+		{"missing UID", func(p *corev1.Pod) { p.UID = "" }},
+		{"foreign owner", func(p *corev1.Pod) { p.OwnerReferences[0].UID = "other-instance" }},
+		{"non-controller owner", func(p *corev1.Pod) { p.OwnerReferences[0].Controller = ptr.To(false) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance, pods := restartScaleFixture()
+			instance.Status.InPlaceUpdateContainerBaselines = map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+				pods[0].Name: {"main": {RestartCount: 0, ImageID: "old-image"}},
+				pods[1].Name: {"main": {RestartCount: 0, ImageID: "old-image"}},
+			}
+			before := instance.DeepCopy()
+			tc.modify(pods[1]) // Validate a good Pod before encountering the invalid one.
+			require.ErrorContains(t, updateRestartTracking(instance, pods...), "without a verified owner and UID")
+			assert.Equal(t, before.Status.InPlaceUpdateContainerBaselines, instance.Status.InPlaceUpdateContainerBaselines)
+			assert.Equal(t, before.Status.RestartCount, instance.Status.RestartCount)
+			assert.Equal(t, before.Status.LastRestartTime, instance.Status.LastRestartTime)
+		})
+	}
+}
+
+func TestDesiredMemberTriggersAndInitRestartAllowance(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		modify func(*workloadsv1alpha2.RoleInstance, *corev1.Pod)
+		want   bool
+	}{
+		{"desired deletion", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) { p.DeletionTimestamp = ptr.To(metav1.Now()) }, true},
+		{"unknown component", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			p.Labels[constants.ComponentNameLabelKey] = "removed"
+			p.Status.Phase = corev1.PodFailed
+		}, false},
+		{"missing component label uses existing name fallback", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			delete(p.Labels, constants.ComponentNameLabelKey)
+			p.Status.Phase = corev1.PodFailed
+		}, true},
+		{"missing component label with unknown name", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			delete(p.Labels, constants.ComponentNameLabelKey)
+			p.Name = "removed"
+			p.Status.Phase = corev1.PodFailed
+		}, false},
+		{"scaled down ordinal", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			p.Labels[constants.ComponentIDLabelKey] = "2"
+			p.Status.Phase = corev1.PodFailed
+		}, false},
+		{"negative ordinal", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			p.Labels[constants.ComponentIDLabelKey] = "-1"
+			p.Status.Phase = corev1.PodFailed
+		}, false},
+		{"malformed ordinal", func(_ *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			p.Labels[constants.ComponentIDLabelKey] = "invalid"
+			p.Status.Phase = corev1.PodFailed
+		}, false},
+		{"missing sibling is not a trigger", func(_ *workloadsv1alpha2.RoleInstance, _ *corev1.Pod) {}, false},
+		{"init restart cannot borrow main allowance", func(inst *workloadsv1alpha2.RoleInstance, p *corev1.Pod) {
+			inst.Status.InPlaceUpdateContainerBaselines = map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{p.Name: {"main": {RestartCount: 0, ImageID: "old"}}}
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", RestartCount: 1, ImageID: "new"}}
+			p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "main", RestartCount: 1, ImageID: "new"}}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance, pods := restartScaleFixture()
+			tc.modify(instance, pods[0])
+			assert.Equal(t, tc.want, shouldRecreateInstance(instance, pods[:1], instance.Status.InPlaceUpdateContainerBaselines))
+			instance.Status.LastRestartTime = ptr.To(metav1.Now())
+			instance.Status.RestartCount = 1
+			instance.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(30))
+			instance.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(600))
+			delay := (&realControl{}).checkRestartBackoff(instance, nil, pods[:1], nil)
+			if tc.want {
+				assert.Positive(t, delay)
+			} else {
+				assert.Zero(t, delay, "false predicates must skip the obsolete failed-Pod slow path")
+			}
+		})
+	}
+}
+
+func TestRestartAcceptanceUsesCurrentPodIncarnations(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		wantRecreate bool
+	}{
+		{name: "old UIDs are gone"},
+		{name: "same-name replacements are healthy"},
+		{name: "same UID is no longer failed"},
+		{name: "current Pod ignores restart triggers"},
+		{name: "same-name Pod is now foreign"},
+		{name: "new incarnation has a genuine failure", wantRecreate: true},
+		{name: "current sibling is absent from the informer", wantRecreate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			instance, cachedPods := restartScaleFixture()
+			instance.Spec.RestartPolicyConfig.BaseDelaySeconds = ptr.To[int32](30)
+			instance.Spec.RestartPolicyConfig.MaxDelaySeconds = ptr.To[int32](600)
+			instance.Status.RestartCount = 1
+			previous := metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second))
+			instance.Status.LastRestartTime = &previous
+			cachedPods[0].Status.Phase = corev1.PodFailed
+			livePods := []*corev1.Pod{cachedPods[0].DeepCopy(), cachedPods[1].DeepCopy()}
+			for _, pod := range livePods {
+				pod.Status.Phase = corev1.PodRunning
+			}
+			switch tc.name {
+			case "old UIDs are gone":
+				livePods = nil
+			case "same-name replacements are healthy":
+				livePods[0].UID = "new-0"
+				livePods[1].UID = "new-1"
+			case "current Pod ignores restart triggers":
+				livePods[0].Status.Phase = corev1.PodFailed
+				livePods[0].Annotations = map[string]string{constants.RestartTriggerPolicyAnnotationKey: "Ignore"}
+			case "same-name Pod is now foreign":
+				livePods[0].Status.Phase = corev1.PodFailed
+				livePods[0].OwnerReferences[0].UID = "another-instance"
+			case "new incarnation has a genuine failure":
+				livePods[0].UID = "new-0"
+				livePods[1].UID = "new-1"
+				livePods[0].Status.Phase = corev1.PodFailed
+			case "current sibling is absent from the informer":
+				livePods[0].Status.Phase = corev1.PodFailed
+				livePods[1].UID = "new-1"
+				cachedPods = cachedPods[:1]
+			}
+			patches := 0
+			c, control := restartScaleClient(t, instance, livePods, interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					patches++
+					return c.SubResource(subresource).Patch(ctx, obj, patch, opts...)
+				},
+			})
+			accepted, err := control.shouldRecreateInstanceGuarded(ctx, instance, cachedPods, nil, "revision-1", "revision-1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantRecreate, accepted)
+			fresh := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), fresh))
+			if !tc.wantRecreate {
+				assert.Zero(t, patches, "obsolete Pod evidence must not write restart tracking")
+				assert.Equal(t, int32(1), fresh.Status.RestartCount)
+				assert.Equal(t, previous, *fresh.Status.LastRestartTime)
+				assert.Empty(t, fresh.Status.RetiringPods)
+				return
+			}
+			assert.Equal(t, 1, patches)
+			assert.Equal(t, int32(2), fresh.Status.RestartCount, "a genuine current fault charges exactly once")
+			expected := make([]workloadsv1alpha2.RoleInstancePodReference, 0, len(livePods))
+			for _, pod := range livePods {
+				expected = append(expected, workloadsv1alpha2.RoleInstancePodReference{Name: pod.Name, UID: pod.UID})
+			}
+			assert.ElementsMatch(t, expected, fresh.Status.RetiringPods, "retire current members, including uncached siblings, not stale UIDs")
+		})
+	}
+}
+
+func TestRestartAcceptanceScopesLivePodListToInstance(t *testing.T) {
+	instance, pods := restartScaleFixture()
+	pods[0].Status.Phase = corev1.PodFailed
+	otherInstance := pods[1].DeepCopy()
+	otherInstance.Name = "other-instance-worker-0"
+	otherInstance.UID = "other-member"
+	otherInstance.Labels[constants.RoleInstanceNameLabelKey] = "other-instance"
+	otherInstance.OwnerReferences[0].UID = "other-instance-uid"
+	otherNamespace := pods[1].DeepCopy()
+	otherNamespace.Namespace = "other-namespace"
+	otherNamespace.UID = "other-namespace-member"
+	previousInstance := pods[1].DeepCopy()
+	previousInstance.Name = "previous-instance-worker-0"
+	previousInstance.UID = "previous-member"
+	previousInstance.OwnerReferences[0].UID = "previous-instance-uid"
+	allPods := append(pods, otherInstance, otherNamespace, previousInstance)
+	lists := 0
+	c, control := restartScaleClient(t, instance, allPods, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			lists++
+			options := (&client.ListOptions{}).ApplyOptions(opts)
+			assert.Equal(t, instance.Namespace, options.Namespace)
+			require.NotNil(t, options.LabelSelector, "live Pod reads must not list the whole namespace")
+			assert.Equal(t, fmt.Sprintf("%s=%s", constants.RoleInstanceNameLabelKey, instance.Name), options.LabelSelector.String())
+			if options.FieldSelector != nil {
+				assert.True(t, options.FieldSelector.Empty(), "the API server does not support the owner UID cache index")
+			}
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			result, ok := list.(*corev1.PodList)
+			require.True(t, ok)
+			assert.Len(t, result.Items, 3, "only same-namespace Pods with this instance label may be returned")
+			return nil
+		},
+	})
+	accepted, err := control.shouldRecreateInstanceGuarded(context.Background(), instance, pods, nil)
+	require.NoError(t, err)
+	require.True(t, accepted)
+	assert.Equal(t, 1, lists)
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), fresh))
+	assert.ElementsMatch(t, []workloadsv1alpha2.RoleInstancePodReference{
+		{Name: pods[0].Name, UID: pods[0].UID},
+		{Name: pods[1].Name, UID: pods[1].UID},
+	}, fresh.Status.RetiringPods, "a matching label alone must not authorize retiring a foreign Pod")
+}
+
+func TestRestartAcceptanceReadsPodsWithoutInformerCache(t *testing.T) {
+	instance, cachedPods := restartScaleFixture()
+	cachedPods[0].Status.Phase = corev1.PodFailed
+	livePods := []*corev1.Pod{cachedPods[0].DeepCopy(), cachedPods[1].DeepCopy()}
+	livePods[0].Status.Phase = corev1.PodRunning
+	c, control := restartScaleClient(t, instance, livePods, interceptor.Funcs{})
+	control.Client = interceptor.NewClient(c, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			t.Fatal("restart acceptance must use the API reader, not the informer client")
+			return nil
+		},
+	})
+	accepted, err := control.shouldRecreateInstanceGuarded(context.Background(), instance, cachedPods, nil)
+	require.NoError(t, err)
+	assert.False(t, accepted)
+}
+
+func TestRestartAcceptanceRejectsStaleContainerRestart(t *testing.T) {
+	instance, cachedPods := restartScaleFixture()
+	cachedPods[0].Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", RestartCount: 1}}
+	livePods := []*corev1.Pod{cachedPods[0].DeepCopy(), cachedPods[1].DeepCopy()}
+	livePods[0].Status.ContainerStatuses[0].RestartCount = 0
+	c, control := restartScaleClient(t, instance, livePods, interceptor.Funcs{})
+	accepted, err := control.shouldRecreateInstanceGuarded(context.Background(), instance, cachedPods, nil)
+	require.NoError(t, err)
+	assert.False(t, accepted)
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), fresh))
+	assert.Zero(t, fresh.Status.RestartCount)
+	assert.Nil(t, fresh.Status.LastRestartTime)
+	assert.Empty(t, fresh.Status.RetiringPods)
+}
+
+func TestRestartAcceptanceFiltersNonControllerReferences(t *testing.T) {
+	instance, pods := restartScaleFixture()
+	pods[0].Status.Phase = corev1.PodFailed
+	auxiliary := pods[1].DeepCopy()
+	auxiliary.Name = "auxiliary-pod"
+	auxiliary.UID = "auxiliary-uid"
+	auxiliary.OwnerReferences[0].Controller = ptr.To(false)
+	allPods := append(pods, auxiliary)
+	c, control := restartScaleClient(t, instance, allPods, interceptor.Funcs{})
+	accepted, err := control.shouldRecreateInstanceGuarded(context.Background(), instance, allPods, nil)
+	require.NoError(t, err)
+	require.True(t, accepted, "an auxiliary owner reference cannot veto a genuine member failure")
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), fresh))
+	assert.Len(t, fresh.Status.RetiringPods, 2)
+	assert.NotContains(t, fresh.Status.RetiringPods, workloadsv1alpha2.RoleInstancePodReference{Name: auxiliary.Name, UID: auxiliary.UID})
+	_, err = control.deletePods(context.Background(), instance, allPods)
+	require.NoError(t, err)
+	current := &corev1.Pod{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(auxiliary), current))
+	assert.Equal(t, auxiliary.UID, current.UID, "non-controller-owned Pods must not be deleted")
+}
+
+func TestRestartAcceptancePodReadErrorDoesNotCharge(t *testing.T) {
+	instance, pods := restartScaleFixture()
+	pods[0].Status.Phase = corev1.PodFailed
+	c, control := restartScaleClient(t, instance, pods, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return fmt.Errorf("Pod API read failed")
+		},
+	})
+	accepted, err := control.shouldRecreateInstanceGuarded(context.Background(), instance, pods, nil)
+	require.ErrorContains(t, err, "Pod API read failed")
+	assert.False(t, accepted)
+	fresh := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), fresh))
+	assert.Zero(t, fresh.Status.RestartCount)
+	assert.Nil(t, fresh.Status.LastRestartTime)
+	assert.Empty(t, fresh.Status.RetiringPods)
+	for _, pod := range pods {
+		current := &corev1.Pod{}
+		require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), current))
+		assert.Equal(t, pod.UID, current.UID)
+	}
+}
+
+func TestRestartResumeDoesNotRequireNewPodEvidence(t *testing.T) {
+	instance, pods := restartScaleFixture()
+	instance.Status.RestartCount = 1
+	instance.Status.RetiringPods = []workloadsv1alpha2.RoleInstancePodReference{{Name: pods[0].Name, UID: pods[0].UID}}
+	_, control := restartScaleClient(t, instance, pods, interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			t.Fatal("an already accepted deletion list must not revalidate its trigger")
+			return nil
+		},
+	})
+	accepted, err := control.shouldRecreateInstanceGuarded(context.Background(), instance, nil, nil)
+	require.NoError(t, err)
+	assert.True(t, accepted)
+	assert.Equal(t, int32(1), instance.Status.RestartCount)
 }
