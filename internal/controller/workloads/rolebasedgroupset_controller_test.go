@@ -588,6 +588,29 @@ func TestRoleBasedGroupSetReconciler_NeedsUpdateEmptyRoleTemplates(t *testing.T)
 	}
 }
 
+func TestRoleBasedGroupSetReconciler_NeedsUpdateRoleTemplateOrder(t *testing.T) {
+	set := &workloadsv1alpha2.RoleBasedGroupSet{}
+	set.Spec.GroupTemplate.Spec.RoleTemplates = []workloadsv1alpha2.RoleTemplate{
+		{Name: "prefill", Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "worker", Image: "test:v1"}},
+		}}},
+		{Name: "decode", Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "worker", Image: "test:v2"}},
+		}}},
+	}
+	child := newRBGForSet(set, 0)
+	child.Spec.RoleTemplates[0], child.Spec.RoleTemplates[1] = child.Spec.RoleTemplates[1], child.Spec.RoleTemplates[0]
+	setBefore, childBefore := set.DeepCopy(), child.DeepCopy()
+
+	r := &RoleBasedGroupSetReconciler{}
+	assert.False(t, r.needsUpdate(set, child), "template order must not read as a change")
+	assert.Equal(t, setBefore, set, "comparison must not reorder the template")
+	assert.Equal(t, childBefore, child, "comparison must not reorder the child")
+
+	child.Spec.RoleTemplates[0].Template.Spec.Containers[0].Image = "test:v3"
+	assert.True(t, r.needsUpdate(set, child), "real template changes must still require an update")
+}
+
 // TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate tests the needsTemplateAnnotationUpdate method.
 func TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate(t *testing.T) {
 	tests := []struct {
