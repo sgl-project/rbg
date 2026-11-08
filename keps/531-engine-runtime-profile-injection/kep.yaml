@@ -15,5 +15,8 @@ stage: alpha
 
 latest-milestone: "v0.9.0"
 
+see-also:
+  - "https://github.com/sgl-project/rbg/issues/531"
+
 milestone:
   alpha: "v0.9.0"
