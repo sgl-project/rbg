@@ -67,7 +67,7 @@ waiting for application processing to finish.
 Executors no longer register markers initially, and they do not restore
 markers after a post-operation hook completes. Executors own application
 retries, backoff, and idempotent recovery. Pre-operation hooks may configure
-`markPodNotReady`; `postReady` markers gate neither the phase nor RI Ready.
+`markNotReady`; `postReady` markers gate neither the phase nor RI Ready.
 
 ## Motivation
 
@@ -265,6 +265,8 @@ The following names and values are normative:
 | RBG user entry | `RoleBasedGroup.spec.roles[].lifecycle` |
 | Standalone RIS entry | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
 | New RI field | `RoleInstance.spec.lifecycle` |
+| Pre-operation hook fields | `labelsHandler`, `markNotReady` |
+| postReady field | `labelsHandler` |
 | Legacy RIS field | `RoleInstanceSet.spec.lifecycle` |
 | Hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
 | Hook-state value | `PreUpdate` |
@@ -344,18 +346,18 @@ spec:
         preUpdate:
           labelsHandler:
             example.com/update-block: "true"
-          markPodNotReady: true
+          markNotReady: true
         preRecover:
           labelsHandler:
             example.com/recover-block: "true"
-          markPodNotReady: true
+          markNotReady: true
         postReady:
           labelsHandler:
             example.com/ready-notify: "true"
         preDelete:
           labelsHandler:
             example.com/delete-block: "true"
-          markPodNotReady: true
+          markNotReady: true
 ```
 
 The configuration hierarchy is settled:
@@ -365,13 +367,14 @@ the RBG controller writes the desired snapshot to
 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`, and the RIS controller
 copies it to `RoleInstance.spec.lifecycle`. For a standalone RIS that uses the
 new protocol, `roleInstanceTemplate.lifecycle` is the user-facing source of
-truth. The new field reuses the existing lifecycle hook structure and extends
-the lifecycle object with `preUpdate`, `preRecover`, and `postReady`.
+truth. The new protocol defines an independent hook type: pre-operation hooks
+contain `labelsHandler` and `markNotReady`, while `postReady` contains only
+`labelsHandler`.
 
-The new Role-level field and the existing `RoleInstanceSetSpec.lifecycle`
-reuse the same API type family, but their runtime protocols are distinct. The
-legacy RIS field remains for existing standalone RIS usage, and its
-`inPlaceUpdate` hook is deprecated. An admission webhook must reject a
+The new Role-level field and the existing `RoleInstanceSetSpec.lifecycle` use
+distinct API types and runtime protocols. The legacy RIS field remains for
+existing standalone RIS usage, and its `inPlaceUpdate` hook is deprecated. An
+admission webhook must reject a
 Role/RIS combination in which the new Role-level lifecycle and a legacy
 user-configured RIS lifecycle are both non-empty. RBG-managed RIS lifecycle
 data is propagated from the Role and must not be independently edited or
@@ -382,12 +385,10 @@ distinct controller responsibilities: the legacy protocol is executed by the
 RIS controller, while the new protocol is executed by the RI controller.
 Admission enforces mutual exclusion so one RIS never activates both.
 
-For Kubernetes API compatibility, `finalizersHandler` remains on the reused
-hook type. It is deprecated for the new Role-level protocol and must be empty;
-admission rejects a non-empty value there. The legacy RIS protocol retains its
-existing `finalizersHandler` semantics. The new Role-level path also rejects
-`inPlaceUpdate`, which exists on the reused type but belongs only to the
-legacy RIS compatibility path. Conversely, the legacy standalone RIS path
+The new protocol does not reuse the legacy hook type. `finalizersHandler` and
+`inPlaceUpdate` are absent from the new API rather than deprecated-and-empty.
+The legacy RIS protocol retains its existing `finalizersHandler` and
+`markPodNotReady` semantics. Conversely, the legacy standalone RIS path
 rejects `preUpdate`, `preRecover`, and `postReady`; those three hooks are
 meaningful only through the new Role-level protocol.
 
@@ -411,9 +412,8 @@ most 63 characters. Admission rejects invalid marker keys or values before
 configuration is accepted. The controller does not truncate, rewrite, or
 drop a configured marker to make it writable.
 
-Because `postReady` uses the reused hook type, its structurally available
-`finalizersHandler` and `markPodNotReady` fields are invalid semantically.
-Admission rejects either field when it is set for `postReady`.
+Because `postReady` is asynchronous and does not gate RI Ready, its type
+contains only `labelsHandler` and does not expose `markNotReady`.
 
 Marker keys are scoped to a hook point. Admission must reject a key used by
 more than one configured hook, including `postReady` and `preDelete`, because
@@ -442,22 +442,22 @@ health conditions, excluding the lifecycle Ready gate introduced here.
 “Externally observed RI Ready” is the final Ready state seen by parent
 resources and other controllers.
 
-- `preUpdate.markPodNotReady`, `preRecover.markPodNotReady`, and
-  `preDelete.markPodNotReady` control whether entering the corresponding
+- `preUpdate.markNotReady`, `preRecover.markNotReady`, and
+  `preDelete.markNotReady` control whether entering the corresponding
   pre-operation phase marks the RI NotReady.
 - This gate reuses the existing `RoleInstanceCustomReady` condition. The RI's
   `spec.readinessGates` must include `RoleInstanceCustomReady`; otherwise,
   the existing readiness helper returns immediately and the gate has no
   effect. Implementations must satisfy this prerequisite whenever
-  `markPodNotReady` is enabled rather than merely writing the condition without
+  `markNotReady` is enabled rather than merely writing the condition without
   registering the readiness gate.
 - A NotReady gate established during Update or Recovery remains until that
   operation enters `Running`. It must not be lifted as soon as the preUpdate
   or preRecover marker is removed.
-- A NotReady gate established by `preDelete.markPodNotReady` remains until
+- A NotReady gate established by `preDelete.markNotReady` remains until
   the RI object is deleted; it is not restored merely because the delete
   marker has been released.
-- `postReady` has neither `markPodNotReady` nor `blockReady`, and its marker does
+- `postReady` has neither `markNotReady` nor `blockReady`, and its marker does
   not participate in RI Ready computation.
 - After the workload becomes Ready, the controller writes the `postReady`
   state and marker, immediately enters `Running`, and computes RI Ready from
@@ -820,12 +820,11 @@ protocol, the controller writes the marker on every hook trigger. The
 executor only removes it; there is no initial registration or post-operation
 restoration.
 
-The legacy RIS `spec.lifecycle` and new Role-level lifecycle reuse the same
-API type family but use distinct protocol state. The legacy `inPlaceUpdate`
-field remains deprecated for standalone RIS compatibility and is rejected on
-the new Role-level path. The deprecated `finalizersHandler` field is retained
-for API compatibility, remains meaningful only in the legacy RIS protocol, and
-must be empty in the new Role-level protocol. The two runtime protocols must
+The legacy RIS `spec.lifecycle` and new Role-level lifecycle use distinct API
+types and runtime protocol state. The legacy `inPlaceUpdate` and
+`finalizersHandler` fields remain part of the legacy protocol only. The new
+protocol exposes only `labelsHandler` and, for pre-operation hooks,
+`markNotReady`. The two runtime protocols must
 not be active on the same RIS; an admission webhook enforces that boundary.
 Their state keys remain distinct. Warmup and container lifecycle hooks retain
 their own responsibilities and are not equivalent to the instance-level hooks
@@ -835,12 +834,11 @@ proposed here.
 
 The four-hook API design is settled: Roles define the configuration, the RIS
 template stores the desired snapshot, and `RoleInstance.spec.lifecycle` stores
-the effective copy. The existing hook
-structure is reused and extended with the three new hook fields. Empty
-`labelsHandler` values fail validation. Pre-operation hooks retain
-`markPodNotReady`, while `postReady` does not gate RI Ready. On the new
-Role-level path, the deprecated `finalizersHandler` field must be empty. The
-wire names and Go constant names above are settled.
+the effective copy. The new protocol defines an independent hook type rather
+than reusing the legacy structure. Empty `labelsHandler` values fail
+validation. Pre-operation hooks contain `labelsHandler` and `markNotReady`,
+while `postReady` contains only `labelsHandler` and does not gate RI Ready.
+The wire names and Go constant names above are settled.
 
 Restart recovery adds no `step`: `hook-state` and the marker are written
 together on hook entry. After a pre-operation hook is released, the state
@@ -876,8 +874,8 @@ not understand the protocol must not take over an unfinished operation.
 
 The Alpha compatibility rule is also settled: the new Role-level lifecycle
 and the legacy user-configured RIS lifecycle are mutually exclusive. The
-legacy `inPlaceUpdate` hook is deprecated, and `finalizersHandler` is retained
-for API compatibility but deprecated and empty on the new Role-level path.
+legacy protocol remains unchanged; the new protocol does not expose
+`inPlaceUpdate`, `finalizersHandler`, or the legacy `markPodNotReady` field.
 
 Before this KEP can become `implementable`, the following must be resolved:
 
@@ -914,11 +912,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   Kubernetes labels, including over-long names or values, invalid prefix
   syntax, invalid leading or trailing characters, and unsupported
   characters.
-- For the new Role-level lifecycle, admission rejects non-empty deprecated
-  `finalizersHandler` values, `inPlaceUpdate`, and semantic use of
-  `finalizersHandler` or `markPodNotReady` by `postReady`. The legacy RIS
-  protocol retains its existing `finalizersHandler` behavior and rejects the
-  three new hook fields.
+- The new API exposes only `labelsHandler` and `markNotReady` on
+  pre-operation hooks, and only `labelsHandler` on `postReady`. The legacy
+  RIS protocol retains its existing fields and rejects the three new hook
+  fields.
 - The controller persists and exposes the KEP-502 RI `status.phase`, and the
   executor observes it together with the lifecycle marker labels.
 - The implementation uses the exact hook-state key, finalizer, feature gate,
@@ -936,9 +933,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   RI Ready.
 - `postReady` triggers only after the target completes and the workload is
   Ready; ordinary Ready fluctuations do not retrigger it.
-- Establishment and release timing for pre-operation `markPodNotReady`, and
+- Establishment and release timing for pre-operation `markNotReady`, and
   exclusion of `postReady` from RI Ready computation.
-- `preDelete.markPodNotReady` remains NotReady until the RI object is
+- `preDelete.markNotReady` remains NotReady until the RI object is
   deleted, including after the delete marker is released.
 - `Recovering` runs preRecover followed by asynchronous postReady. Ordinary
   Ready fluctuations in `Running` and enablement on existing RIs do not
@@ -964,7 +961,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   without migrating or removing the old marker.
 - Removing an active hook uses absence semantics: the controller performs no
   marker matching for it and may clean its stale runtime labels.
-- Enabling `markPodNotReady` requires the `RoleInstanceCustomReady` readiness
+- Enabling `markNotReady` requires the `RoleInstanceCustomReady` readiness
   gate.
 - Repeated Ready transitions idempotently write the same `postReady` marker
   without generations. Delayed cleanup can remove a newer marker, and

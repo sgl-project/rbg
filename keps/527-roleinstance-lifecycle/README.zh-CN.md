@@ -58,7 +58,7 @@ hook executor 观察到匹配 marker 后执行业务动作，完成、取消或�
 postReady 完全异步，controller 写入 marker 后立即进入 `Running`，不等待业务处理完成。
 marker 不再由 executor 初始登记，也不要求 executor 在后置 hook 完成后加回。
 
-executor 负责业务重试、退避和幂等恢复。前置 hooks 可配置 `markPodNotReady`；
+executor 负责业务重试、退避和幂等恢复。前置 hooks 可配置 `markNotReady`；
 postReady marker 不阻塞 phase 或 RI Ready。
 
 ## 动机
@@ -191,6 +191,8 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 | RBG 用户入口 | `RoleBasedGroup.spec.roles[].lifecycle` |
 | standalone RIS 用户入口 | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
 | 新 RI 字段 | `RoleInstance.spec.lifecycle` |
+| 前置 hook 字段 | `labelsHandler`、`markNotReady` |
+| postReady 字段 | `labelsHandler` |
 | 旧 RIS 字段 | `RoleInstanceSet.spec.lifecycle` |
 | hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
 | hook-state 取值 | `PreUpdate` |
@@ -254,18 +256,18 @@ spec:
         preUpdate:
           labelsHandler:
             example.com/update-block: "true"
-          markPodNotReady: true
+          markNotReady: true
         preRecover:
           labelsHandler:
             example.com/recover-block: "true"
-          markPodNotReady: true
+          markNotReady: true
         postReady:
           labelsHandler:
             example.com/ready-notify: "true"
         preDelete:
           labelsHandler:
             example.com/delete-block: "true"
-          markPodNotReady: true
+          markNotReady: true
 ```
 
 配置层级已经确定：`RoleBasedGroup.spec.roles[].lifecycle` 是新四-hook 协议的
@@ -273,11 +275,11 @@ spec:
 期望快照写入 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`，
 RIS controller 再复制到 `RoleInstance.spec.lifecycle`。使用新协议的
 standalone RIS 以 `roleInstanceTemplate.lifecycle` 作为用户唯一事实来源。
-新字段复用现有 lifecycle hook 结构，并向 lifecycle 对象扩展
-`preUpdate`、`preRecover` 和 `postReady`。
+新协议定义独立的 hook 类型：前置 hooks 包含 `labelsHandler` 和
+`markNotReady`，postReady 只包含 `labelsHandler`。
 
-新的 Role-level 字段与现有 `RoleInstanceSetSpec.lifecycle` 复用同一 API
-类型族，但运行协议彼此独立。旧 RIS 字段仅供存量 standalone RIS 使用，其中
+新的 Role-level 字段与现有 `RoleInstanceSetSpec.lifecycle` 使用不同 API
+类型和运行协议。旧 RIS 字段仅供存量 standalone RIS 使用，其中
 `inPlaceUpdate` 标记为 deprecated。准入 webhook 必须拒绝新 Role-level lifecycle
 与用户配置的旧 RIS lifecycle 同时非空；RBG 管理的 RIS lifecycle
 只能由 Role 向下传递，不得独立修改，也不得与旧协议混用。
@@ -286,10 +288,9 @@ standalone RIS 以 `roleInstanceTemplate.lifecycle` 作为用户唯一事实来�
 旧协议由 RIS controller 执行，新协议由 RI controller 执行。准入通过互斥
 校验保证同一个 RIS 不会同时激活两套协议。
 
-考虑 Kubernetes API 兼容，复用 hook 类型上的 `finalizersHandler` 字段保留。
-该字段在新 Role-level 协议中标记 deprecated，且必须为空；非空时准入拒绝。
-旧 RIS 协议继续保留现有 `finalizersHandler` 语义。新 Role-level 路径同样
-拒绝 `inPlaceUpdate`；该字段虽因类型复用而存在，但只属于旧 RIS 兼容路径。
+新协议不复用旧 hook 类型。`finalizersHandler` 和 `inPlaceUpdate`
+在新 API 中不存在，而不是 deprecated 后必须为空。旧 RIS 协议继续保留
+现有 `finalizersHandler` 和 `markPodNotReady` 语义。
 反之，legacy standalone RIS 路径拒绝 `preUpdate`、`preRecover` 和
 `postReady`；这三个 hook 只在新 Role-level 协议中生效。
 声明式配置只向下传递，`hook-state` 和运行时 marker 只写入 RI labels，不回写 RBG 或 RIS。
@@ -304,8 +305,8 @@ DNS subdomain，name 部分不超过 63 字符。marker value 必须是合法 Ku
 label value，且不超过 63 字符。准入在配置被接受前拒绝非法 marker key 或
 value。controller 不会为了可写而截断、改写或丢弃配置的 marker。
 
-由于 postReady 复用 hook 类型，其结构上可用的 `finalizersHandler` 和
-`markPodNotReady` 在语义上无效。postReady 配置任一字段时，准入必须拒绝。
+由于 postReady 异步执行且不门控 RI Ready，其类型只包含
+`labelsHandler`，不暴露 `markNotReady`。
 
 marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被多个已配置 hook 使用时，
 准入校验必须拒绝，包括 postReady 和 preDelete 共用 key 的情况；
@@ -329,14 +330,14 @@ controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时�
 下文“工作负载 Ready”指 RI 满足原有健康条件，但不包含本功能的 lifecycle Ready 门控。
 “对外 RI Ready”是上层资源和其他 controller 观察到的最终 Ready 状态。
 
-- `preUpdate.markPodNotReady`、`preRecover.markPodNotReady` 和 `preDelete.markPodNotReady`
+- `preUpdate.markNotReady`、`preRecover.markNotReady` 和 `preDelete.markNotReady`
   控制进入相应前置阶段时是否将 RI 标记为 NotReady。
 - 该门控复用现有 `RoleInstanceCustomReady` condition；RI 的 `spec.readinessGates`
   必须登记 `RoleInstanceCustomReady`，否则现有 readiness helper 会直接返回，门控不生效。
-  实现必须保证启用 `markPodNotReady` 时满足此前提，不能只写 condition 而缺少 readinessGate。
+  实现必须保证启用 `markNotReady` 时满足此前提，不能只写 condition 而缺少 readinessGate。
 - 更新或恢复期间建立的 NotReady 门控持续到本轮操作进入 `Running`，不能在 preUpdate 或 preRecover marker 清除后立即解除。
 - preDelete 建立的 NotReady 门控持续到 RI 对象删除；删除 marker 放行后不得恢复 Ready。
-- `postReady` 不配置 `markPodNotReady` 或 `blockReady`，其 marker 不参与 RI Ready 计算。
+- `postReady` 不配置 `markNotReady` 或 `blockReady`，其 marker 不参与 RI Ready 计算。
 - 工作负载达到 Ready 后，controller 写入 postReady state 和 marker，立即进入 `Running`，
   并按原有健康条件和前置门控计算 RI Ready。
 - postReady 后台处理结果不改变 controller 的 phase 和 Ready；业务结果由 executor 自行诊断，流量准入由业务系统负责。
@@ -614,20 +615,19 @@ executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空�
 本方案沿用现有 RIS `labelsHandler` 的协作思路，但改变 marker 的初始化职责：
 新 RI 协议由 controller 在每次 hook 触发时写入，executor 只负责清除，不采用首次登记或后置加回。
 
-旧 RIS `spec.lifecycle` 与新 Role-level lifecycle 复用同一 API 类型族，但协议状态不同。
-旧 `inPlaceUpdate` 仅在 standalone RIS 兼容路径中保留并标记 deprecated，
-新 Role-level 路径拒绝该字段。deprecated 的 `finalizersHandler` 为 API 兼容而保留，
-仅在旧 RIS 协议中保持原语义；新 Role-level 协议必须为空。
+旧 RIS `spec.lifecycle` 与新 Role-level lifecycle 使用不同 API 类型和运行协议。
+旧 `inPlaceUpdate` 与 `finalizersHandler` 仅属于旧协议。新协议的前置 hooks
+只暴露 `labelsHandler` 和 `markNotReady`；postReady 只暴露 `labelsHandler`。
 两套运行协议不得在同一 RIS 上同时生效，准入 webhook 强制该边界，状态 key 也必须彼此独立。
 Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提案的实例级 hooks。
 
 ### 待讨论的设计问题
 
 四个 hooks 的 API 设计已确认：Role 定义、RIS 模板保存期望快照、
-`RoleInstance.spec.lifecycle` 保存生效副本；复用现有 hook 结构并扩展
-三个新 hook 字段；空 `labelsHandler` 校验失败；前置 hooks 保留 `markPodNotReady`，
-postReady 不门控 RI Ready；新 Role-level 路径上的 `finalizersHandler`
-标记 deprecated 且必须为空。
+`RoleInstance.spec.lifecycle` 保存生效副本；新协议定义独立 hook 类型，
+不复用旧结构；空 `labelsHandler` 校验失败；前置 hooks 包含
+`labelsHandler` 和 `markNotReady`，postReady 只包含 `labelsHandler`
+且不门控 RI Ready。
 上表中的 wire 名称和 Go 常量名均已确定。
 重启恢复不新增 `step`：进入 hook 时同批写入 `hook-state` 与 marker；
 前置 hooks 放行后切换到 `Updating`、`Recovering` 或 `Terminating`，不清空 state；
@@ -645,8 +645,8 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
 Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 互斥；
-旧 `inPlaceUpdate` 标记 deprecated，`finalizersHandler` 为 API 兼容保留但在
-新 Role-level 路径上 deprecated 且必须为空。
+旧协议保持原有字段不变；新协议不暴露 `inPlaceUpdate`、
+`finalizersHandler` 或旧的 `markPodNotReady` 字段。
 
 进入 `implementable` 前需解决：
 
@@ -674,10 +674,9 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
   以及 marker key 与完整 controller 状态 key 冲突。
 - 准入拒绝不符合 Kubernetes label 语法的 `labelsHandler` key/value，
   包括 name/value 超长、prefix 语法非法、首尾字符非法或包含不支持字符。
-- 新 Role-level lifecycle 中，非空 deprecated `finalizersHandler`、
-  `inPlaceUpdate`，以及 postReady 使用 `finalizersHandler` 或
-  `markPodNotReady` 均被准入拒绝；旧 RIS 协议保留现有
-  `finalizersHandler` 行为，并拒绝三个新 hook 字段。
+- 新 API 的前置 hooks 只暴露 `labelsHandler` 和 `markNotReady`，
+  postReady 只暴露 `labelsHandler`；旧 RIS 协议保留原有字段，
+  并拒绝三个新 hook 字段。
 - controller 持久化并暴露 KEP-502 的 RI `status.phase`，executor 同时观察
   该 phase 和 lifecycle marker labels。
 - 实现使用固定的 hook-state key、finalizer、feature gate 和取值集合；
@@ -689,7 +688,7 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
   preDelete marker 未清除时不删除 Pod。
 - postReady marker 未清除时仍进入 `Running`，且不阻塞 RI Ready。
 - postReady 仅在目标完成且工作负载 Ready 后触发，普通 Ready 抖动不重复触发。
-- 前置 `markPodNotReady` 的建立及解除时机，以及 postReady 不参与 RI Ready 计算。
+- 前置 `markNotReady` 的建立及解除时机，以及 postReady 不参与 RI Ready 计算。
 - preDelete 建立的 NotReady 门控持续到 RI 对象删除，删除 marker 放行后不恢复。
 - `Recovering` 中依次执行 preRecover 和异步 postReady，普通 `Running` Ready 抖动及存量启用不触发 postReady。
 - `Updating` 中 Update 合并且不重复 preUpdate，Recovery 并入当前 Update；
@@ -706,7 +705,7 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
 - markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
 - 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
   匹配，并可清理遗留 runtime labels。
-- 启用 `markPodNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
+- 启用 `markNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
 - 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
 - 未配置 postReady 时，Update 或 Recovery 达到工作负载 Ready 后直接进入
