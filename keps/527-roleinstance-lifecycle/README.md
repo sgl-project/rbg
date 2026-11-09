@@ -403,6 +403,14 @@ labels on a pre-operation hook represent multiple coordination conditions;
 the controller proceeds only after none of them match. Ordinary metadata
 synchronization must not modify runtime markers.
 
+Every `labelsHandler` key and value must satisfy Kubernetes label syntax.
+Marker keys must be valid Kubernetes label keys: an optional prefix is a
+DNS subdomain of at most 253 characters, and the name segment is at most 63
+characters. Marker values must be valid Kubernetes label values and are at
+most 63 characters. Admission rejects invalid marker keys or values before
+configuration is accepted. The controller does not truncate, rewrite, or
+drop a configured marker to make it writable.
+
 Because `postReady` uses the reused hook type, its structurally available
 `finalizersHandler` and `markPodNotReady` fields are invalid semantically.
 Admission rejects either field when it is set for `postReady`.
@@ -752,7 +760,7 @@ ignored. A corrected initial image may replace a member that has not reached
 workload Ready, but the controller does not enter separate Update or Recovery
 operations and does not invoke their hooks.
 
-Update may interrupt Recovery when the previous engine is dead. A
+Update may interrupt Recovery; the previous engine may then be dead. A
 `preUpdate` executor therefore must not assume that a live engine is
 available. It either determines that the engine-dependent action is
 inapplicable and safely releases the marker, or retains the marker until the
@@ -902,6 +910,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Admission rejects a new Role-level lifecycle together with a legacy
   user-configured RIS lifecycle, and rejects marker keys that collide with
   the fully qualified controller state key.
+- Admission rejects `labelsHandler` keys and values that are invalid
+  Kubernetes labels, including over-long names or values, invalid prefix
+  syntax, invalid leading or trailing characters, and unsupported
+  characters.
 - For the new Role-level lifecycle, admission rejects non-empty deprecated
   `finalizersHandler` values, `inPlaceUpdate`, and semantic use of
   `finalizersHandler` or `markPodNotReady` by `postReady`. The legacy RIS

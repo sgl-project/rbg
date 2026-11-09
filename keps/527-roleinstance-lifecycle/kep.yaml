@@ -11,5 +11,5 @@ see-also:
   - /keps/502-workload-status-model
 stage: alpha
 feature-gates:
-  - RoleInstanceLifecycleHooks
+  - name: RoleInstanceLifecycleHooks
 disable-supported: true

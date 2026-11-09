@@ -270,9 +270,9 @@ spec:
 
 配置层级已经确定：`RoleBasedGroup.spec.roles[].lifecycle` 是新四-hook 协议的
 唯一用户定义入口，每个 Role 可以声明自己的 hooks；RBG controller 将
-desired snapshot 写入 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`，
+期望快照写入 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`，
 RIS controller 再复制到 `RoleInstance.spec.lifecycle`。使用新协议的
-standalone RIS 以 `roleInstanceTemplate.lifecycle` 作为用户 source of truth。
+standalone RIS 以 `roleInstanceTemplate.lifecycle` 作为用户唯一事实来源。
 新字段复用现有 lifecycle hook 结构，并向 lifecycle 对象扩展
 `preUpdate`、`preRecover` 和 `postReady`。
 
@@ -297,6 +297,12 @@ standalone RIS 以 `roleInstanceTemplate.lifecycle` 作为用户 source of truth
 未配置 hook 表示禁用；配置了 hook 但 `labelsHandler` 缺省或为空属于配置错误，准入校验必须拒绝。
 前置 hooks 的多个 label 表示多个协作条件，全部不再匹配后 controller 才继续。
 普通 metadata 同步不得修改运行时 marker。
+
+`labelsHandler` 中的每个 key 和 value 都必须满足 Kubernetes label 语法。
+marker key 必须是合法 Kubernetes label key：可选 prefix 是不超过 253 字符的
+DNS subdomain，name 部分不超过 63 字符。marker value 必须是合法 Kubernetes
+label value，且不超过 63 字符。准入在配置被接受前拒绝非法 marker key 或
+value。controller 不会为了可写而截断、改写或丢弃配置的 marker。
 
 由于 postReady 复用 hook 类型，其结构上可用的 `finalizersHandler` 和
 `markPodNotReady` 在语义上无效。postReady 配置任一字段时，准入必须拒绝。
@@ -573,7 +579,7 @@ executor 启动或 watch 重连后重新读取 RI，只在 `hook-state` 匹配�
 初始镜像错误可以在成员尚未达到工作负载 Ready 时被修正并替换，
 但 controller 不进入独立 Update／Recovery 操作，也不触发对应 hooks。
 
-Update 可能在旧 engine 已经失效时打断 Recovery。preUpdate executor 因此
+Update 可以打断 Recovery；此时旧 engine 可能已经失效。preUpdate executor 因此
 不能假设必然存在存活 engine：要么判断依赖 engine 的动作不适用并安全放行，
 要么保留 marker 等待业务侧条件满足。controller 不推断 engine 存活状态，
 也不跳过 marker。
@@ -617,7 +623,7 @@ Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提�
 
 ### 待讨论的设计问题
 
-四个 hooks 的 API 设计已确认：Role 定义、RIS 模板保存 desired snapshot、
+四个 hooks 的 API 设计已确认：Role 定义、RIS 模板保存期望快照、
 `RoleInstance.spec.lifecycle` 保存生效副本；复用现有 hook 结构并扩展
 三个新 hook 字段；空 `labelsHandler` 校验失败；前置 hooks 保留 `markPodNotReady`，
 postReady 不门控 RI Ready；新 Role-level 路径上的 `finalizersHandler`
@@ -666,6 +672,8 @@ Alpha 兼容规则也已确认：新 Role-level lifecycle 与用户配置的旧 
 - 四个 hooks 的触发边界，确认不存在其他生命周期挂载点。
 - 准入拒绝新 Role-level lifecycle 与用户配置的旧 RIS lifecycle 共存，
   以及 marker key 与完整 controller 状态 key 冲突。
+- 准入拒绝不符合 Kubernetes label 语法的 `labelsHandler` key/value，
+  包括 name/value 超长、prefix 语法非法、首尾字符非法或包含不支持字符。
 - 新 Role-level lifecycle 中，非空 deprecated `finalizersHandler`、
   `inPlaceUpdate`，以及 postReady 使用 `finalizersHandler` 或
   `markPodNotReady` 均被准入拒绝；旧 RIS 协议保留现有
