@@ -398,13 +398,14 @@ The implementation must use the exact hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
 existing `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` key.
 
-Admission must reject lifecycle changes while an affected RI has a
-non-empty `hook-state`. If a change races with admission, the controller
-evaluates the latest effective configuration on the RI. For example, after
-changing markerA to markerB, it checks markerB directly, stops waiting for
-markerA, and does not clean up or migrate the old marker. Such an in-flight
-change is an explicit operator error: it can bypass a wait or leave stale
-state and must not be used as a normal operating procedure.
+The controller always evaluates the latest effective lifecycle configuration.
+If a hook is configured, its markers are matched; if a hook is not configured,
+no marker matching occurs for that hook. A configuration change therefore
+takes effect on the next reconciliation without special in-flight handling.
+For example, after markerA changes to markerB, the controller checks markerB
+directly and stops waiting for markerA. If an active hook is removed, the
+controller treats it as absent, performs no marker matching for it, and may
+clean its stale runtime labels. This is the intended declarative semantics.
 
 ### Ready Gating
 
@@ -644,20 +645,17 @@ configuration includes `preDelete`. For an existing stable RI, the controller
 adds the finalizer before exposing the effective `preDelete` configuration.
 Enablement is rejected or deferred if the RI already has a deletionTimestamp,
 because Kubernetes does not allow a new finalizer to be added after deletion
-has begun. Disabling `preDelete` removes it only when the
-RI is stable and has no unfinished deletion. Disabling or modifying
-`preDelete` during deletion is an in-flight configuration change, not a
-supported rollback or hook-skip mechanism.
+has begun. Disabling `preDelete` removes the reserved finalizer as part of
+normal configuration convergence. If `preDelete` is removed while deletion is
+in progress, the controller treats the hook as absent, performs no marker
+matching, and removes the reserved finalizer so deletion may continue. This is
+the direct result of the user removing the hook.
 
-Removing a hook from the effective configuration is a supported disable only
-at a stable boundary. Once the RI has no unfinished lifecycle operation, the
-controller stops triggering that hook, removes stale runtime labels owned by
-the protocol, and, for `preDelete`, removes the reserved RI finalizer.
-Removing a hook while its marker or state is in flight is an in-flight
-configuration change. It must not be interpreted as marker release, operation
-completion, finalizer release, or permission to skip the hook; wait for the
-operation to finish under a compatible controller or restore a compatible
-configuration before disabling it.
+Removing a hook from the effective configuration is a normal disable. The
+controller stops matching its markers, removes stale runtime labels owned by
+the protocol, and, for `preDelete`, removes the reserved RI finalizer. The
+change applies whether or not another lifecycle operation is in flight; no
+special active-hook state is retained.
 
 When Update or Recovery replaces a Pod, the controller performs the internal
 replacement after the corresponding pre-operation hook is released, without
@@ -920,10 +918,10 @@ that the removed RIS lifecycle fields are rejected.
   marker is removed, the controller transitions to the actual operation
   state, and a restart does not repeat the released hook. `postReady` enters
   `Running` before asynchronous state cleanup.
-- An in-flight change from markerA to markerB immediately uses the latest
-  configuration without migrating or removing the old marker.
-- Admission rejects lifecycle mutation while an affected RI has a non-empty
-  `hook-state`.
+- A change from markerA to markerB immediately uses the latest configuration
+  without migrating or removing the old marker.
+- Removing an active hook uses absence semantics: the controller performs no
+  marker matching for it and may clean its stale runtime labels.
 - Enabling `markPodNotReady` requires the `RoleInstanceCustomReady` readiness
   gate.
 - Repeated Ready transitions idempotently write the same `postReady` marker
@@ -932,9 +930,8 @@ that the removed RIS lifecycle fields are rejected.
 - When `postReady` is omitted, an Update or Recovery that reaches workload
   Ready enters `Running`, releases its gate, and clears `hook-state`
   without writing a marker.
-- Disabling a hook after an RI is stable prevents future invocations, while
-  deleting the configuration during an unfinished hook is not treated as
-  marker release or operation completion.
+- Disabling a hook stops future invocations and, on the next reconciliation,
+  stops marker matching even if an operation is unfinished.
 
 #### Integration Tests
 

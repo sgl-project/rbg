@@ -297,10 +297,12 @@ hook marker 本身是运行时 label，但不得与 controller 保留的状态 k
 `rbg.workloads.x-k8s.io/role-instance-hook-state`，
 且不得复用现有的 `rbg.workloads.x-k8s.io/role-instance-lifecycle-state`。
 
-准入必须在受影响 RI 的 `hook-state` 非空时拒绝修改 lifecycle。
-如果修改与准入校验发生竞态，controller 按 RI 中最新的生效配置切换判断条件，
-例如从 markerA 改为 markerB 后直接检查 markerB，不继续等待 markerA，也不负责清理或迁移旧 marker。
-此类在途修改属于主动错误操作，可能跳过等待或遗留状态，不应作为正常运维方式。
+controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时匹配其 marker；
+未配置 hook 时不为该 hook 执行 marker 匹配。因此配置变更在下一次 reconcile
+直接生效，不引入特殊的在途处理。例如 markerA 改为 markerB 后，controller
+直接检查 markerB，不再等待 markerA；如果删除 active hook，controller 视其
+为不存在，不为它执行 marker 匹配，并可清理遗留 runtime labels。这是预期的
+声明式语义。
 
 ### Ready 门控
 
@@ -492,15 +494,15 @@ controller 仍必须在 marker 放行前避免主动删除成员 Pod。
 存量稳定 RI 启用 preDelete 时，controller 先补充保留 finalizer，
 再暴露生效的 preDelete 配置。如果 RI 已有 deletionTimestamp，
 启用请求会被拒绝或暂缓，因为 Kubernetes 不允许删除开始后新增 finalizer。
-仅在 RI 稳定且没有未完成删除操作时，禁用 preDelete 才清理对应 finalizer；
-删除过程中禁用或修改 preDelete 属于在途配置修改，不作为正常回滚或跳过 hook 的方式。
+禁用 preDelete 时，controller 在正常配置收敛中移除保留 finalizer。
+如果删除过程中移除 preDelete，controller 视该 hook 为不存在，不执行
+marker 匹配，并移除保留 finalizer，使删除可以继续。这是用户删除 hook
+的直接结果。
 
-从生效配置中删除 hook，只有在稳定边界上才属于受支持的禁用方式。
-RI 没有未完成 lifecycle 操作后，controller 停止触发该 hook，
+从生效配置中删除 hook 属于普通禁用。controller 停止匹配其 marker，
 清理协议拥有的遗留运行时 labels；对 preDelete 还要清理 RI 上的保留 finalizer。
-如果 marker 或 state 仍在执行中，此时删除 hook 配置属于在途配置修改，
-不得解释为 marker 放行、操作完成、finalizer 释放或跳过 hook；
-应先由兼容 controller 等待操作完成，或先恢复兼容配置再禁用。
+无论是否存在其他在途 lifecycle 操作，该变更都直接生效，不保留特殊的
+active-hook 状态。
 Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放行后执行内部替换，
 不触发 preDelete；成员 Pod 不需要 lifecycle finalizer。
 
@@ -672,15 +674,16 @@ Alpha 替换规则也已确认：旧 RIS lifecycle 协议被移除，其字段�
   重启恢复和未配置 hooks 的行为；controller 不识别消费者身份。
 - `hook-state` 与 marker 同批写入；前置 hooks 清 marker 后切换到实际操作 state，
   重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
-- 在途 markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
-- 受影响 RI 的 `hook-state` 非空时，准入拒绝修改 lifecycle。
+- markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
+- 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
+  匹配，并可清理遗留 runtime labels。
 - 启用 `markPodNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
 - 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
 - 未配置 postReady 时，Update 或 Recovery 达到工作负载 Ready 后直接进入
   `Running`，解除门控并清理 `hook-state`，不写入 marker。
-- RI 稳定后禁用 hook 可阻止后续触发；在未完成 hook 操作中删除配置，
-  不得被解释为 marker 放行或操作完成。
+- 禁用 hook 后停止后续触发；下一次 reconcile 起即停止 marker 匹配，
+  即使操作尚未完成。
 
 #### 集成测试
 
