@@ -166,10 +166,13 @@ this KEP answers:
   defined in Profile Mutability, and rbg provides nothing beyond it: no
   channels, no revision tracking, no automated migration.
 - The deprecated workload surfaces: roles rendered as Deployment, StatefulSet or
-  LWS through the PodReconciler path. The new fields' semantics are defined for
+  LWS. The new fields' semantics are defined for
   the RoleBasedGroup → RoleInstanceSet render path only; deprecated surfaces
   take no new features, and the follow-up implementation rejects the new fields
-  there rather than giving them meaning.
+  there — at write time, by the shared role-side validation function riding
+  the existing webhooks, with the render failing as the backstop for the
+  workload-type-annotation flip (Validation Model) — rather than giving them
+  meaning.
 - `replace`/`remove`/`test` patch operations: the grammar is `add`-only.
 - Mutating the injected pod-level content (initContainers, sidecars, volumes)
   via the patch grammar — patches address containers only.
@@ -399,13 +402,15 @@ templates carry the sidecar injector at all:
 |---|---|
 | RoleInstanceSet, standalonePattern or customComponentsPattern | every component template |
 | RoleInstanceSet or LWS, leaderWorkerPattern | the leader template only — the worker chain omits the sidecar injector |
-| legacy Deployment / StatefulSet (PodReconciler; deprecated, see Non-Goals) | the single role template |
+| legacy Deployment / StatefulSet (deprecated, see Non-Goals) | the single role template |
 
 The legacy rows — and the LWS half of the leaderWorkerPattern row — record
-existing behavior as-is: LWS and the PodReconciler surfaces are deprecated
+existing behavior as-is: the Deployment/StatefulSet/LWS surfaces are deprecated
 (Non-Goals), every new dimension in this KEP is scoped to the RoleInstanceSet
 path, and a deprecated-path render keeps main's behavior verbatim for the
-references it can carry, the new fields rejected there rather than given
+references it can carry, the new fields rejected there — write time via the
+shared validation function (Validation Model), render as the
+annotation-flip backstop — rather than given
 meaning.
 
 RoleBasedGroupSet embeds the full `RoleBasedGroupSpec`, and its controller
@@ -645,11 +650,15 @@ never pass.
     Validation Model).
   - **Profile-side entries may only default.** A profile-side entry addressing a
     role-owned name is legal **only** at index `0`: a `-` append, or an insert
-    at any other index, is a render error. The rule is itself positional — any
-    position but the head lands the profile's entry after the role's own, and
-    last-occurrence-wins makes it the winner: an override achieved by position,
-    which the ownership boundary refuses; at the head the entry precedes the
-    role's and loses to it, which is the default. The default is genuine
+    at any other index, is a render error. The rule is itself positional: an
+    insert whose index exceeds the role entry's own lands after it and wins by
+    last occurrence — an override achieved by position, which the ownership
+    boundary refuses — but that index is unknowable to the patch author, and
+    an insert at or before it lands ahead of the role's entry and merely
+    defaults.
+    Only the head is statically knowable: an `/env/0` insert always precedes
+    the role's own entry without needing its index, loses to it, which is the
+    default. The default is genuine
     across renders: effective while the role does not declare the name,
     superseded once it does. A name the target does not already carry —
     profile-authored vocabulary, not role-owned — is addressable at any index;
@@ -665,8 +674,12 @@ never pass.
     entries, losing to any same-named one and effective only when the name is
     otherwise absent — the **default** spelling, the role yielding to profile
     content. Two references' role-side entries creating the same name on one
-    container resolve by reference order — the later reference's entry lands
-    later and wins.
+    container resolve by reference order, by spelling: appended entries land
+    in reference order, so the later reference's entry lands later and wins;
+    two `/env/0` head inserts invert it — the later pass inserts at the head
+    and pushes the earlier reference's entry back, so by last occurrence the
+    earlier reference's default wins, the same inversion as the cross-profile
+    geometry below.
   - **`$(VAR)` consumers align by re-declaration.** A consumer positioned
     between two same-named entries keeps expanding against the earlier one —
     standard behavior, preserved even when the later entry wins the name. A
@@ -707,7 +720,7 @@ never pass.
   a different `mountPath` is a legal second mount; a `mountPath` already used by
   a different volume name is a render error — the apiserver rejects duplicate
   mount paths within a container at pod admission, so rendering one would fail
-  at workload creation anyway, a shadowing the merge refuses to create; two
+  at pod creation anyway, a shadowing the merge refuses to create; two
   entries in one patch list creating the same key are an error.
 - **Capabilities.** A capability already present is an idempotent no-op, by
   verbatim match. Names pass through **verbatim, no normalization** — the
@@ -717,7 +730,10 @@ never pass.
   case-insensitively but silently drops `CAP_`-prefixed and unknown names, CRI-O
   fails creation on unknown names (kubernetes#119569). One form hazard gets a
   render-time signal: a name not matching the canonical uppercase form
-  `^[A-Z]+(_[A-Z]+)*$` emits a warning event attributed to the role — not an
+  `^[A-Z]+(_[A-Z]+)*$` — or matching it while carrying the `CAP_` prefix,
+  checked case-insensitively, since the prefixed form passes the uppercase check
+  (`CAP_SYS_ADMIN` is all-caps) yet is exactly the one containerd silently
+  drops — emits a warning event attributed to the role — not an
   error, because lowercase works on both runtimes while the prefixed form works
   only on CRI-O. Well-formed unknown names pass silently; PodSecurity admission
   gates additions when the rendered pod is created.
@@ -763,8 +779,10 @@ head inserts, and the reason the volumeMount rules catch collisions between
 different references' patches as each pass lands. What no pass treats as
 role-owned is an env name created only by another reference's patches:
 role-owned names come from two static sources, so check timing cannot change
-the outcome — the pre-injection snapshot, and the referencing role's own
-legacy `engineRuntimes[].containers[].env` names, legacy-merge output being
+the outcome — the role template's own env entries, read off the containers
+named in the pre-injection snapshot (the snapshot holds container names, the
+env names come from those containers' templates), and the referencing role's
+own legacy `engineRuntimes[].containers[].env` names, legacy-merge output being
 role content, so a profile append onto such a name is the same render error
 the Patch Grammar promises for role-owned names.
 
@@ -796,8 +814,10 @@ controller's own config surface.
 
 Main's pod renderer already ran a chain per component template: template
 resolution (inline `template` or `templateRef`; templateRef is prohibited for
-LWS workloads), strategic-merge patches and the four built-in injector passes
-— config, sidecar stages 1–2, env, LWP env — followed by
+LWS workloads), strategic-merge patches and the built-in injector passes
+— config, sidecar stages 1–2, env, LWP env, two to four passes by chain: the
+config injector runs for stateful roles only and the worker chain omits the
+sidecar injector — followed by
 exclusive-topology affinities, gang-scheduling fields and the applied
 labels/annotations. This KEP keeps that chain unchanged and adds its extension
 points to it:
@@ -867,11 +887,19 @@ pair, delete + recreate under the same name would bypass the freeze with two
 writes. The freeze and the finalizer both lift when
 the last reference is removed: the profile returns to the freely editable state
 it had before adoption, so a drained profile can be revised in place and
-re-adopted. The finalizer's own removal needs the same freshness guarantee as
-its addition — the controller confirms, uncached, that no reference remains
-cluster-wide before dropping it, so a reference created while the removal
-decision was in flight leaves the finalizer in place; the PVC-protection shape
-again.
+re-adopted. The finalizer's own removal takes the same uncached freshness
+step as its addition — the controller confirms, uncached, that no reference
+remains cluster-wide before dropping it — but unlike the admission check this
+is a best-effort guard, not an atomic one: an RBG stored after the lookup
+returns but before the finalizer-removal write lands is invisible to it (the
+CERP update changes nothing the reference writer raced against), so the
+removal can succeed and the terminating profile be deleted under a freshly
+created reference — the third accepted race below. Closing it would take
+reference-side admission coordination — the RBG webhook rejecting references
+to terminating profiles — which puts an uncached CERP lookup on the RBG write
+path, a hot path where the CERP-side lookup's rare-write cost argument does
+not hold; the visible-failure outcome below is accepted instead. The
+PVC-protection shape again.
 
 A publisher who needs to change a referenced profile publishes the revision as a
 **new profile** — `vllm-runtime-v2` beside `vllm-runtime` — and consuming roles
@@ -896,19 +924,26 @@ visibility in `kubectl get`. It deploys with the controller image, mirroring
 the RoleBasedGroup webhook's deployment shape, and rolls out in two steps: the
 alpha emits an **admission warning** — the freeze tightens a published surface,
 and the warning window keeps the move to the new-profile workflow non-breaking
-— and the beta turns the warning into rejection (`failurePolicy: Fail`). During
+— registering with `failurePolicy: Ignore`, so a webhook that is down or
+unreachable costs only the warning, which the controller-watch backstop below
+already recovers as evidence; the beta turns the warning into rejection and
+tightens the registration to `failurePolicy: Fail`. During
 the warning window the controller's CERP watch — informer-driven, like the rest
-of the controller — is the evidence trail: exactly the backstop below. Two
+of the controller — is the evidence trail: exactly the backstop below. Three
 races of the same shape exist and are accepted: a role creation genuinely in
 flight while a profile update passes the check —
 the update was admitted against a reference-less profile, and the role's first
 render reads the post-update content, indistinguishable from a profile edited
-before it was ever referenced — and the same window against a profile DELETE:
+before it was ever referenced — the same window against a profile DELETE:
 the deletion is admitted against a reference-less cluster before the
 controller has observed the referencing role and added the in-use finalizer,
 the profile object goes away, and the dangling reference fails its next render
-exactly as a missing profile does (`EngineRuntimeRenderFailed`) — render
-failure, never silent miscontent. The
+exactly as a missing profile does (`EngineRuntimeRenderFailed`) — and the
+finalizer-removal window itself: an RBG created after the removal's uncached
+lookup but before the CERP update lands is not seen, the finalizer drops, and
+the terminating profile is deleted under the new reference — which dangles and
+fails its next render exactly the same way. All three end in render failure,
+never silent miscontent. The
 controller backstops a failed, misconfigured, or uninstalled webhook: it
 watches CERPs, and a spec change observed on a referenced profile emits a
 warning event on that profile — the signal fires exactly on the paths the
@@ -966,9 +1001,16 @@ mirror carries a version-specific predicate, because v1alpha1 `RoleSpec` has no
 `leaderWorkerSet` nor `components` is set (`rolebasedgroup_conversion.go`), so
 copying the rule verbatim would fail CEL type checking and block the CRD
 upgrade. The v1alpha1 form substitutes the native shape,
-`!has(self.leaderWorkerSet) && !has(self.components)`, matching the Hub
-conversion's pattern inference; envtest pins rule compilation in both versions
-and the exemption firing through a v1alpha1 write.
+`!has(self.leaderWorkerSet) &&
+!(has(self.components) && size(self.components) > 0)`,
+matching the Hub conversion's pattern inference exactly: the conversion
+switches on `len(components) > 0`, while CEL `has()` is true for a
+present-but-empty list — and `components: []` is writable (`+optional`, no
+`MinItems`) — so a bare `!has(self.components)` would treat that degenerate
+shape as pattern-set and reject a v1alpha1 write whose conversion default is
+StandalonePattern; envtest pins rule compilation in both versions
+and the exemption firing through a v1alpha1 write, including the
+empty-`components` edge.
 
 The reference-side Go shape: `EngineRuntime` keeps `profileName` (required,
 `MinLength=1`) and the legacy `containers` and inert `injectContainers` exactly
@@ -996,15 +1038,23 @@ standalone role named `MyRole` renders today, so `component: MyRole` must write
 — and existence is settled at the plan-time vocabulary check. Container-name
 fields keep their DNS-label patterns, matching Kubernetes core.
 
-The intra-object invariants split by authorship. The role-side three —
+The intra-object invariants split by authorship. The role-side four —
 same-profile effective-set overlap, a `component` outside the pattern's
 vocabulary (standalone's must-equal-the-role's-name being the special case),
-duplicate env-name creation within one entry's `extraPatches` list — are
+duplicate env-name creation within one entry's `extraPatches` list, and the
+new fields present on a role whose workload type routes through a deprecated
+surface (Deployment/StatefulSet/LWS) — are
 profile-independent, so they ride the **existing** validating webhooks as one
 shared validation function at three call sites: the RoleBasedGroup webhook and
 the RoleBasedGroupSet webhook (the embedded `RoleBasedGroupSpec` is writable
-there too) report them at write time as synchronous, attributed errors, and the
-resolver re-runs the same function on every pass as the authoritative gate. The
+there too) report them at write time as synchronous, attributed errors, and
+the resolver re-runs the same function on every pass as the authoritative gate.
+The workload-type check needs the resolver leg: the workload type is a mutable
+annotation (`rbg.workloads.x-k8s.io/role-workload-type`, default
+RoleInstanceSet), so a role written under RoleInstanceSet and flipped to a
+deprecated surface afterwards dodges write-time rejection — the render then
+fails with `EngineRuntimeRenderFailed`, the loud outcome, rather than silently
+dropping the fields. The
 backstop is load-bearing: an uninstalled webhook configuration validates
 nothing, and objects written during an old-controller window reach the new
 renderer by reconcile, not by admission.
@@ -1099,12 +1149,12 @@ grants, and their mitigations:
 
 | risk | mitigation |
 |---|---|
-| Referencing a profile runs publisher-authored containers and volumes with **no consent step** — including `privileged: true` securityContext and hostPath volumes on the profile's own containers (node-level blast radius). | CERP write RBAC restricted to cluster-admin-equivalent principals; PodSecurity admission in consuming namespaces is a backstop — a profile whose containers violate it fails at workload creation, not render. |
+| Referencing a profile runs publisher-authored containers and volumes with **no consent step** — including `privileged: true` securityContext and hostPath volumes on the profile's own containers (node-level blast radius). | CERP write RBAC restricted to cluster-admin-equivalent principals; PodSecurity admission in consuming namespaces is a backstop — a profile whose containers violate it fails at pod admission, not render. |
 | A compromised registry image substituting what a profile-declared container runs. | No in-API mitigation: image integrity is cluster infrastructure outside this KEP — image signing, admission policy — and a hand-written pod spec referencing the same image carries the identical exposure; this KEP neither widens nor gates it. |
 | An argv prepend into a listed engine container is code execution in that container's context (its image, service account, GPUs). | A `targetContainers` entry is an explicit, per-container, reviewable consent line in the role's spec; consent granularity beyond per-container is the profile variant (future work). |
 | Secret channel: profile-side patch values read consuming-namespace Secrets via `valueFrom.secretKeyRef`, steering role content into listed role containers. | The trust premise (cluster-scoped publisher ≈ cluster admin); the `targetContainers` entry is the reviewable consent line. The reverse direction is role-authored on every channel — the role author's decision (Consent and Trust). |
 | Silent drops: an unknown capability name is dropped (runtime EPERM, no event); a cross-profile name collision skips a container. | Documented above; the cross-profile skip emits a render-time warning event (alpha); the unknown-name drop stays undetectable by design — the renderer holds no capability list, the runtime's EPERM is the signal, exactly as for hand-written pod specs. |
-| A compromised publisher silently editing a live profile to push new content into already-consenting workloads. | Structurally closed under enforcement: a referenced profile's spec cannot change and it cannot be deleted (DELETE admission plus the in-use finalizer) — new content requires a new profile object plus an explicit reference edit per consuming role, each an auditable re-consent. Enforcement is staged: admission warning in the alpha, rejection from the beta, the controller's CERP watch emitting evidence throughout — so during the alpha window, and with the alpha disable flag set, the watch is the sole signal: evidence, not prevention. |
+| A compromised publisher silently editing a live profile to push new content into already-consenting workloads. | Structurally closed under enforcement: a referenced profile's spec cannot change and it cannot be deleted (DELETE admission plus the in-use finalizer) — subject only to the narrow reference-creation races accepted in Profile Mutability, all ending in visible render failure — and new content requires a new profile object plus an explicit reference edit per consuming role, each an auditable re-consent. Enforcement is staged: admission warning in the alpha, rejection from the beta, the controller's CERP watch emitting evidence throughout — so during the alpha window, and with the alpha disable flag set, the watch is the sole signal: evidence, not prevention. |
 | The immutability webhook is disabled or misconfigured, letting a blocked edit through. | The controller's CERP watch emits a warning event on any spec change landing on a referenced profile — a disabled webhook leaves evidence, not silence; and the frozen-profile constraint is never an outage, since the new-profile-plus-migration remedy needs no special permissions. |
 
 ## Test Plan
@@ -1152,7 +1202,9 @@ grants, and their mitigations:
   order; the `EngineRuntimeEnvCollision` warning event firing on every
   cross-source same-name creation with name, sources and winner — and not
   firing for the legacy merge; two references' role-side entries creating one
-  name on one container resolving positionally by reference order;
+  name on one container resolving positionally by spelling — the later
+  reference's append winning, two `/env/0` head inserts leaving the earlier
+  reference's entry as the winner;
   `RBG_`-prefixed env names rejected on both sides.
 - **Patch grammar and element pointers**: profile-side root violations as render
   errors attributed to the profile; path allowlist boundaries; element-pointer
@@ -1185,7 +1237,10 @@ grants, and their mitigations:
   apiserver at write time (`+listType=map`).
 - Deprecated-path rejection: the new fields rejected on a role whose workload
   type routes through a deprecated surface (Deployment/StatefulSet, LWS), per
-  Non-Goals — while a `profileName`-only reference on such a role keeps
+  Non-Goals — at write time by the shared validation function, and at render
+  with `EngineRuntimeRenderFailed` for the annotation-flip shape (a role
+  written under RoleInstanceSet, then flipped to a deprecated surface) — while
+  a `profileName`-only reference on such a role keeps
   rendering main's behavior verbatim.
 - Profile immutability: the webhook flagging (alpha warning) and rejecting (beta
   enforcement) a spec change to a referenced profile and admitting a
@@ -1198,6 +1253,10 @@ grants, and their mitigations:
   carries the reference counted as live by the admission check (no child RBG
   required); the admission path consulting references uncached — a recently
   created referencing RBG visible to a profile update without cache-lag delay;
+  the finalizer-removal race — an RBG created after the controller's
+  no-reference lookup but before the finalizer-removal write, the profile then
+  deleted, and the dangling reference failing its next render with
+  `EngineRuntimeRenderFailed` (the accepted third race);
   the `--disable-profile-immutability` path — no finalizer added, no admission
   flag, the CERP watch still emitting the mutation-while-referenced warning
   event, and the transition path — a finalizer installed under default
@@ -1248,6 +1307,12 @@ grants, and their mitigations:
 - The cleanup drill: new-field references removed from the spec, the remaining
   spec rendering byte-for-byte as on main; objects written before the CRD
   upgrade rendering identically under the new controller.
+- The admission-enabled rollback drill: the CERP ValidatingWebhookConfiguration
+  entry removed, the controller image rolled back, and CERP updates and
+  deletes — including manual removal of a stranded in-use finalizer — then
+  succeeding with no webhook in the path; re-upgrade reinstalls the entry and
+  restores enforcement, asserted by the alpha warning or beta rejection
+  firing on a spec edit to a referenced profile.
 
 **Documentation**: an API reference for the two field surfaces on the project
 website — the path grammar table, the reverse-order wrap convention, and the
@@ -1315,7 +1380,14 @@ pods only through the workload's own rollout — a template change, however it
 arrives, publishes to pods the way any workload template change does. Two
 rollback depths:
 
-1. **Controller only (CRD retained):** the fields persist in storage, semantics
+1. **Controller only (CRD retained):** remove the CERP webhook entry
+   **first** — the ValidatingWebhookConfiguration survives the image swap, and
+   under the beta's `failurePolicy: Fail` the old image cannot serve the
+   endpoint, so every CERP update and delete — including the manual finalizer
+   removal this item prescribes — fails admission rather than reopening (the
+   alpha's `Ignore` registration loses only the warning); re-upgrading the
+   controller reinstalls the entry (it deploys with the image). Then the fields
+   persist in storage, semantics
    are silently lost and scoped references silently change scope (the
    old-controller row). The immutability rule leaves with the controller image —
    referenced profiles reopen for in-place edits, silently, because nothing
