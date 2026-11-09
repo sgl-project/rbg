@@ -74,7 +74,7 @@ func SetupV1alpha1GateTestEnv() {
 	// conversion webhooks on the CRDs. Without this, the CRDs are installed
 	// with conversion strategy None and the v1alpha1 request path never
 	// traverses the production conversion chain.
-	TestEnv.WebhookInstallOptions.PrepWithoutInstalling()
+	Expect(TestEnv.WebhookInstallOptions.PrepWithoutInstalling()).To(Succeed())
 
 	Cfg, err = TestEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
@@ -186,7 +186,6 @@ type gateWebhookSpec struct {
 type admissionv1ValidatingConfig = admissionregistrationv1.ValidatingWebhookConfiguration
 type admissionv1Webhook = admissionregistrationv1.ValidatingWebhook
 type admissionv1ClientConfig = admissionregistrationv1.WebhookClientConfig
-type admissionv1Rule = admissionregistrationv1.RuleWithOperations
 
 var (
 	v1a1NoneSideEffect = admissionregistrationv1.SideEffectClassNone
