@@ -136,7 +136,7 @@ Status fields across all three CR types follow these common rules:
 - Transitions compare the latest persisted status with the final status being submitted, not intermediate values within a reconciliation. For example, False → temporary True → final False is not a transition.
 - `status.observedGeneration` identifies the generation of this object that has been processed; a condition's observedGeneration identifies the generation of this object to which its fact applies. Neither directly proves target completion.
 - RI phase transitions and progress decisions use valid observations corresponding to the current operation target. Parent and child generations cannot be compared directly, and old status cannot prove completion of a new target.
-- When observations are insufficient, affected conditions whose facts cannot be determined use Unknown, with `ObservationIncomplete` as a candidate reason. `Ready` is the exception: after the first readiness observation, it retains its last known value until a fresh observation succeeds, so upper-level ready counts do not flap. A read failure does not mean zero replicas, and an absent RI phase does not mean Running.
+- When observations are insufficient, affected conditions whose facts cannot be determined use Unknown with reason `ObservationIncomplete`. `Ready` is the exception: after the first readiness observation, it retains its last known value until a fresh observation succeeds, so upper-level ready counts do not flap. A read failure does not mean zero replicas, and an absent RI phase does not mean Running.
 - When children have not yet received the current generation's target, the parent must still record that it has observed the new generation: write `status.observedGeneration=N` together with the `Progressing` value derived from the validation, pause, and progress rules before or while dispatching that target to children. Incomplete work writes `Progressing=True`; a confirmed compatibility failure writes `Progressing=False` with the matching incompatibility reason; a full pause writes `Progressing=False(reason=Paused)`. Preflight or compatibility failures must not skip this status write; they are represented through the corresponding conditions.
 - A condition-only change is a status change. If condition status, reason, message, or observedGeneration changes, the controller must write status even when counters and revision fields are unchanged.
 - Status must eventually update after changes only to label / revision metadata or after dependencies recover, without requiring an additional manual spec change.
@@ -214,11 +214,11 @@ Automation should use a small, stable decision table:
 | Unknown / unrecognized reason | Treat as still progressing, not as failure |
 
 The condition-level `observedGeneration` check is required for completion: a legacy or rolled-back controller can advance `status.observedGeneration` while leaving a `Converged` condition written for an older generation. A missing or stale condition `observedGeneration` must be treated as incomplete, not done.
-`Progressing=True` means the target has not converged; it does not imply a healthy rate of progress. kstatus-based tools do not understand these condition types by default, so deployments can provide tool-specific health checks: Flux 2.5+ health checks can use CEL expressions over the fields above, and Argo CD can use a Lua health check implementing the same rules. Concrete examples will accompany the implementation.
+`Progressing=True` means the target has not converged; it does not imply a healthy rate of progress. kstatus-based tools do not understand these condition types by default, so deployments can provide tool-specific health checks: Flux 2.5+ health checks can use CEL expressions over the fields above, and Argo CD can use a Lua health check implementing the same rules.
 
 ### Validation Ownership and Accepted Semantics
 
-Deterministic static validation belongs to admission. The webhook should reject create or update requests for invalid names, rollout parameters, dependency cycles, unsupported workload declarations, and other local spec errors before the target is persisted. If such an invalid object is already persisted by a legacy writer or is discovered through defense-in-depth checks, the controller may report `Accepted=False`; admission rejection remains the preferred path.
+Deterministic static validation belongs to admission. The webhook must reject create or update requests for invalid names, rollout parameters, dependency cycles, unsupported workload declarations, and other local spec errors before the target is persisted. If such an invalid object is already persisted by a legacy writer or is discovered through defense-in-depth checks, the controller reports `Accepted=False`; admission rejection remains the preferred path.
 
 `Accepted` is not an admission receipt, a completion signal, or a success verdict. It reports whether the controller has confirmed that the current target's configuration and required runtime prerequisites are compatible with the currently observed cluster and referenced resources. This fact can change without a new RBG generation when referenced configuration, scheduler capabilities, installed CRDs, or feature gates change.
 
@@ -307,7 +307,7 @@ RBG completion is computed from the RBG's own current target and generation; it 
 
 Each condition has one reason. Overall RBG progress for scaling and updates uses `ScalingOrUpdating`, with message describing each role's activity. Creation, recovery, and waiting use the corresponding reasons below. A current blocker takes precedence over an activity reason.
 
-| Condition / Status | Candidate Reasons |
+| Condition / Status | Reasons |
 | --- | --- |
 | Accepted=True | `ValidSpec` |
 | Accepted=False | `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
@@ -409,7 +409,7 @@ The proposed RI phase values and boundaries are:
 | `Recovering` | Independent recreation or replacement of required Pods is in progress outside an update, until recreation, cleanup, and effective readiness conditions complete |
 | `Terminating` | The RI itself has a deletionTimestamp, rather than a child Pod being deleted |
 
-RI phase is not the lifecycle-hook protocol. Hook execution, retries, and release use the hook-state labels and finalizer handshake defined by KEP-527. Phase describes the instance lifecycle for observation and pacing and may serve as an eligibility input: an RI that is still `Creating` has never established its target, so target changes during Create convergence do not invoke `preUpdate` or `preRecover`. Phase must not be used as a hook trigger, handshake, or completion signal.
+RI phase is not the lifecycle-hook protocol. Hook execution, retries, and release use the hook-state labels and finalizer handshake defined by KEP-527. Phase describes the instance lifecycle for observation and pacing and serves as an eligibility input: an RI that is still `Creating` has never established its target, so target changes during Create convergence do not invoke `preUpdate` or `preRecover`. Phase must not be used as a hook trigger, handshake, or completion signal.
 
 Deletion of the RI takes priority and enters Terminating. Identifying an update target enters Updating; an empty revision during initial creation is not evidence of an update.
 Confirming independent recovery of required Pods outside an update enters Recovering. Pod recreation that is already part of an update remains Updating rather than entering a separate Recovering phase.
@@ -435,7 +435,7 @@ The allowed phase edges are:
 | `Recovering` | An update target is identified while recovery continues | `Updating` |
 | `Recovering` | RI deletion is confirmed | `Terminating` |
 
-No phase returns to `Creating`, and `Creating` exits only to `Running` or `Terminating`: recreating an established RI's Pods is recovery, and an update or recovery target identified before initial creation completes is folded into Create convergence. This matches KEP-527: `preUpdate` and `preRecover` apply to an established instance, so replacing members that have not yet reached workload Ready during a first deploy does not invoke them. `Creating` still describes first convergence toward the latest target, including replacement of partially created resources. `Updating` is the Activity reason only when no current blocker or incomplete observation takes precedence; for example, a quota-blocked Pod creation keeps `Progressing=True(reason=PodCreateQuotaExceeded)` while `phase=Updating`. Message may note that the target changed during initial creation. Readiness gates only `Creating → Running` and completion decisions, but a readiness drop alone never triggers a phase transition. Deletion wins from every phase.
+No phase returns to `Creating`, and `Creating` exits only to `Running` or `Terminating`: recreating an established RI's Pods is recovery, and an update or recovery target identified before initial creation completes is folded into Create convergence. This matches KEP-527: `preUpdate` and `preRecover` apply to an established instance, so replacing members that have not yet reached workload Ready during a first deploy does not invoke them. `Creating` still describes first convergence toward the latest target, including replacement of partially created resources. `Updating` is the Activity reason only when no current blocker or incomplete observation takes precedence; for example, a quota-blocked Pod creation keeps `Progressing=True(reason=PodCreateQuotaExceeded)` while `phase=Updating`. Message notes that the target changed during initial creation. Readiness gates only `Creating → Running` and completion decisions, but a readiness drop alone never triggers a phase transition. Deletion wins from every phase.
 
 | Situation | Phase Handling |
 | --- | --- |
@@ -458,7 +458,7 @@ RI readiness and restart safeguards remain expressed by the following conditions
 | `RoleInstanceCustomReady` and external gates | Maintained by the corresponding owners, preserving their conditions, reasons, and messages |
 | `Restarting` | Restart safeguard maintained by the RI controller; continues to suppress duplicate restart-policy recreation and does not automatically become a readiness gate |
 
-RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. Candidate reasons for aggregated RI readiness are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady.
+RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. Reasons for aggregated RI readiness are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady.
 Multiple blocking gates require a stable priority. If blocking recurs after recovery, a stale `False / Ready` combination must not remain.
 Preserve restartCount, lastRestartTime, inPlaceUpdateContainerBaselines, and their safety-critical persistence ordering.
 
@@ -517,13 +517,14 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Document and regression-test the stateless / stateful readiness-gate difference: stateless requires `RoleInstanceReady` plus every `spec.readinessGates` condition, stateful checks only `RoleInstanceReady`.
 - Cover legacy API writes, historically incomplete conditions, and applicability boundaries for v1alpha2 objects using legacy backends and mixed-backend RBGs.
 - A legacy writer omitting condition.observedGeneration does not confirm the current generation; the aggregation layer does not supply confirmation for external owners.
-- For existing RI objects without phase, confirmed completion may initialize Running, confirmed in-progress workflows initialize the corresponding RI phase, and uncertainty leaves phase absent. Confirmed deletion of the RI initializes Terminating.
+- For existing RI objects without phase, confirmed completion initializes Running, confirmed in-progress workflows initialize the corresponding RI phase, and uncertainty leaves phase absent. Confirmed deletion of the RI initializes Terminating.
 
 #### Integration tests
 
 - Validate CRD constraints, condition list semantics, SSA, conversion, and writes to existing objects against a real API Server.
 - Test concurrent external gate writes and status retries: external fields are preserved, and timestamps do not change without a transition.
 - After changes only to revision labels or after dependency recovery, status eventually reflects current facts without an additional manual spec change.
+- Provide consumer-facing health-check examples for the decision table above: Flux 2.5+ CEL expressions and an Argo CD Lua check. These examples are implementation deliverables and are validated against the same contract tests.
 - Re-evaluate Accepted when required environmental capabilities recover, even if RBG generation is unchanged. Capability probe failures must not be reported as confirmed lack of support.
 - Validate failure Event attribution to the correct object and duplicate reporting handling. After upgrade, stop writing and clean up controller-owned failure conditions according to the compatibility window; legacy writers / rollback must not cause removal of external conditions.
 - Preserve restart / rollout recovery fields across status migration and controller restarts. Healthy workloads are not recreated because of status field migration.
