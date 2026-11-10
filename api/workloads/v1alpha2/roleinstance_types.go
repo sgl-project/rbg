@@ -38,7 +38,7 @@ type RoleInstanceSpec struct {
 	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
 	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart,RecreateRoleInstanceOnPodRestartFromCreation}
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// RestartPolicyConfig defines the restart policy and backoff configuration for

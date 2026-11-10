@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const v1alpha1DeprecationWarning = "workloads.x-k8s.io/v1alpha1 is deprecated and will be removed in 0.10.0; migrate to v1alpha2 using the migration guide"
@@ -127,6 +128,27 @@ func validateV1alpha1DeprecatedRoles(
 	newRoles, oldRoles []RoleSpec,
 	allowExisting bool,
 ) error {
+	// Check policy compatibility before deprecated-workload grandfathering: an
+	// existing backing workload cannot gain support for a new policy by updating
+	// through the deprecated API version.
+	converted := &v2.RoleBasedGroupSpec{}
+	if err := convertSpecV1alpha1ToV2(&RoleBasedGroupSpec{Roles: newRoles}, converted); err != nil {
+		return err
+	}
+	for i := range newRoles {
+		if newRoles[i].RestartPolicy == RecreateRoleInstanceOnPodRestartFromCreation && converted.Roles[i].StandalonePattern != nil {
+			// StandalonePattern has no restart-policy field, so conversion drops
+			// the role-level v1alpha1 value. Carry it in a validation-only pattern
+			// to check the backing workload rather than silently accepting it.
+			converted.Roles[i].Pattern = v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				RestartPolicyConfig: &v2.RestartPolicyConfig{Type: v2.RecreateRoleInstanceOnPodRestartFromCreation},
+			}}
+		}
+	}
+	if err := v2.ValidateRestartPolicyWorkloadCompatibility(fieldPath, converted.Roles); err != nil {
+		return err
+	}
+
 	oldWorkloadTypes := make(map[string]string, len(oldRoles))
 	for i := range oldRoles {
 		oldWorkloadTypes[oldRoles[i].Name] = workloadType(oldRoles[i].Workload)

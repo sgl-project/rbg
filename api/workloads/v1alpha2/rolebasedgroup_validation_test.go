@@ -170,6 +170,35 @@ func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 	}
 }
 
+func TestValidateRestartPolicyWorkloadCompatibility(t *testing.T) {
+	policyRole := func(workloadType string) RoleSpec {
+		return RoleSpec{
+			Name: "worker",
+			Annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: workloadType,
+			},
+			Pattern: Pattern{
+				LeaderWorkerPattern: &LeaderWorkerPattern{
+					RestartPolicyConfig: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestartFromCreation},
+				},
+			},
+		}
+	}
+
+	t.Run("RoleInstanceSet accepts policy", func(t *testing.T) {
+		err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{policyRole(constants.RoleInstanceSetWorkloadType)})
+		assert.NoError(t, err)
+	})
+
+	t.Run("LeaderWorkerSet rejects policy", func(t *testing.T) {
+		err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{policyRole(constants.LeaderWorkerSetWorkloadType)})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "RecreateRoleInstanceOnPodRestartFromCreation")
+		assert.Contains(t, err.Error(), "not supported for LeaderWorkerSet roles")
+		assert.Contains(t, err.Error(), "use RoleInstanceSet")
+	})
+}
+
 func TestValidateRoleDependencies(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -238,6 +267,42 @@ func TestValidateRoleDependencies(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+func TestRoleBasedGroupValidator_ValidateCreateRestartPolicy(t *testing.T) {
+	role := RoleSpec{
+		Name:     "worker",
+		Replicas: ptr.To(int32(1)),
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{
+			RestartPolicyConfig: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestartFromCreation},
+		}},
+	}
+	group := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy-group"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{role}},
+	}
+	validator := &RoleBasedGroupValidator{EnableDeprecatedWorkloadTypes: true}
+	_, err := validator.ValidateCreate(context.Background(), group)
+	require.NoError(t, err, "admission should accept the opt-in policy for RoleInstanceSet")
+}
+
+func TestRoleBasedGroupValidator_ValidateCreateRejectsUnsupportedRestartPolicy(t *testing.T) {
+	group := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy-group"},
+		Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+			Name: "worker",
+			Annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType,
+			},
+			Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{
+				RestartPolicyConfig: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestartFromCreation},
+			}},
+		}}},
+	}
+	validator := &RoleBasedGroupValidator{EnableDeprecatedWorkloadTypes: true}
+	_, err := validator.ValidateCreate(context.Background(), group)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for LeaderWorkerSet roles")
 }
 
 func TestRoleBasedGroupValidator_ValidateCreateRoleDependencies(t *testing.T) {

@@ -182,14 +182,24 @@ const (
 
 	// RecreateRoleInstanceOnPodRestart - Recreate the role instance on pod restart.
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
+
+	// RecreateRoleInstanceOnPodRestartFromCreation recreates the role instance on unexpected
+	// container restarts or Failed pods, including before the instance first becomes
+	// Ready and when a desired member pod is deleted.
+	RecreateRoleInstanceOnPodRestartFromCreation RestartPolicyType = "RecreateRoleInstanceOnPodRestartFromCreation"
 )
+
+// IsRoleInstanceRecreatePolicy reports whether policy recreates a whole RoleInstance.
+func IsRoleInstanceRecreatePolicy(policy RestartPolicyType) bool {
+	return policy == RecreateRoleInstanceOnPodRestart || policy == RecreateRoleInstanceOnPodRestartFromCreation
+}
 
 // RestartPolicyConfig groups restart policy type and backoff configuration.
 // +kubebuilder:validation:XValidation:rule="!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds) || self.maxDelaySeconds >= self.baseDelaySeconds",message="maxDelaySeconds must be greater than or equal to baseDelaySeconds"
 type RestartPolicyConfig struct {
 	// Type defines the restart policy when pod failures happen.
 	// Default is RecreateRoleInstanceOnPodRestart.
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart,RecreateRoleInstanceOnPodRestartFromCreation}
 	// +optional
 	Type RestartPolicyType `json:"type,omitempty"`
 
@@ -417,7 +427,7 @@ type LeaderWorkerPattern struct {
 	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
 	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart,RecreateRoleInstanceOnPodRestartFromCreation}
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// RestartPolicyConfig defines the restart policy and backoff configuration.
@@ -438,7 +448,7 @@ type CustomComponentsPattern struct {
 	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
 	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart,RecreateRoleInstanceOnPodRestartFromCreation}
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// RestartPolicyConfig defines the restart policy and backoff configuration.

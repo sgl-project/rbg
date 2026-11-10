@@ -126,6 +126,7 @@ spec:
                 enum:
                 - None
                 - RecreateRoleInstanceOnPodRestart
+                - RecreateRoleInstanceOnPodRestartFromCreation
                 type: string
               restartPolicyConfig:
                 description: |-
@@ -156,6 +157,7 @@ spec:
                     enum:
                     - None
                     - RecreateRoleInstanceOnPodRestart
+                    - RecreateRoleInstanceOnPodRestartFromCreation
                     type: string
                 type: object
                 x-kubernetes-validations:

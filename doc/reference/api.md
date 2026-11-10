@@ -52,7 +52,7 @@ Leader + workers per instance (for tensor parallelism):
 | Field | Description |
 |-------|-------------|
 | `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`; also supports opt-in `RecreateRoleInstanceOnPodRestartFromCreation`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 | `template` | PodTemplateSpec — base pod template |
 | `templateRef` | *TemplateRef — reference to roleTemplate |
@@ -66,7 +66,7 @@ Heterogeneous pod groups per instance:
 | Field | Description |
 |-------|-------------|
 | `components` | []ComponentSpec — list of component definitions |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`; also supports opt-in `RecreateRoleInstanceOnPodRestartFromCreation`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 
 ### ComponentSpec
@@ -124,7 +124,8 @@ Reusable pod template at RBG level:
 | Value | Description |
 |-------|-------------|
 | `None` | No automatic restart |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
+| `RecreateRoleInstanceOnPodRestart` | Preserve existing behavior and recreate only the affected role instance on its existing triggers |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | Opt-in policy: same ordinary-container unexpected-restart and Failed-pod triggers, plus desired member deletion and triggers before first Ready, after desired generation is observed; RoleInstanceSet only |
 
 ## ScalingAdapter
 

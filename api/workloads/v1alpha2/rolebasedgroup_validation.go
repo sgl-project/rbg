@@ -56,6 +56,25 @@ func ValidateRollingUpdate(rbg *RoleBasedGroup) error {
 	return utilerrors.NewAggregate(allErrs)
 }
 
+// ValidateRestartPolicyWorkloadCompatibility rejects policies that the backing
+// workload cannot implement faithfully.
+func ValidateRestartPolicyWorkloadCompatibility(fieldPath string, roles []RoleSpec) error {
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		if role.GetRestartPolicy() != RecreateRoleInstanceOnPodRestartFromCreation {
+			continue
+		}
+		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+			allErrs = append(allErrs, fmt.Errorf(
+				"%s[%d] (role %q): restart policy %q is not supported for %s roles; use RoleInstanceSet",
+				fieldPath, i, role.Name, RecreateRoleInstanceOnPodRestartFromCreation, role.GetWorkloadSpec().Kind,
+			))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
 // ValidateRoleDependencies validates that every role dependency references an
 // existing role, no role depends on itself, and the role dependency graph is acyclic.
 func ValidateRoleDependencies(rbg *RoleBasedGroup) error {

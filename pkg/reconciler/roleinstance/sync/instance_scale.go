@@ -91,7 +91,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// and the Restarting condition. A single fresh read is shared between
 	// checkRestartBackoff and shouldRecreateInstance to avoid duplicate API calls.
 	var freshInstance *workloadsv1alpha2.RoleInstance
-	if updateInstance.Spec.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if workloadsv1alpha2.IsRoleInstanceRecreatePolicy(updateInstance.Spec.GetRestartPolicy()) {
 		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
 	}
 
@@ -418,7 +418,7 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstance,
 	fresh *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, inactivePods []*v1.Pod) time.Duration {
 	// Only applies when restart policy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.GetRestartPolicy() != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	if !workloadsv1alpha2.IsRoleInstanceRecreatePolicy(instance.Spec.GetRestartPolicy()) {
 		return 0
 	}
 
@@ -444,6 +444,9 @@ func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstan
 		}
 		hasFailedPods := false
 		for _, p := range allPods {
+			if hasTriggerPolicyIgnore(p) {
+				continue
+			}
 			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
 				hasFailedPods = true
 				break
@@ -568,8 +571,8 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 // Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
 // and should not trigger Instance recreation.
 func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
-	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
-	if instance.Spec.GetRestartPolicy() != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+	policy := instance.Spec.GetRestartPolicy()
+	if !workloadsv1alpha2.IsRoleInstanceRecreatePolicy(policy) {
 		return false
 	}
 
@@ -588,7 +591,7 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	// This bypass is bounded: after the stable threshold (max(maxDelay*2, 10min)) elapses
 	// without a restart, hasRecentRestart returns false and the normal wasInstanceReady
 	// check resumes. LastRestartTime is preserved as a historical record.
-	if (!wasInstanceReady(instance) && !hasRecentRestart(instance)) ||
+	if (policy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart && !wasInstanceReady(instance) && !hasRecentRestart(instance)) ||
 		instance.Generation != instance.Status.ObservedGeneration {
 		return false
 	}
@@ -600,13 +603,19 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 	}
 
 	for _, p := range pods {
+		if policy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation && !isDesiredMember(instance, p) {
+			continue
+		}
 		if hasTriggerPolicyIgnore(p) {
 			continue
 		}
-		// If this pod is currently undergoing an in-place update, skip it.
-		// The container restart is expected and should not trigger instance recreation.
-		// We continue checking other pods so that a genuine PodFailed on a sibling
-		// is not masked by one pod's in-place update state.
+		// FromCreation treats explicit member loss independently of the in-place
+		// gate. Updating explains a container restart, not a Failed/deleted Pod.
+		if policy == workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation &&
+			(p.Status.Phase == v1.PodFailed || p.DeletionTimestamp != nil) {
+			return true
+		}
+		// Keep the legacy policy's behavior and exempt expected update restarts.
 		if isPodInPlaceUpdating(p) {
 			continue
 		}
@@ -620,6 +629,17 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		}
 	}
 
+	return false
+}
+
+// isDesiredMember excludes removed components and ordinals during normal scale-in.
+func isDesiredMember(instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) bool {
+	id := instanceutil.GetPodComponentID(pod)
+	for _, component := range instance.Spec.Components {
+		if component.Name == instanceutil.GetPodComponentName(pod) && component.Size != nil && id >= 0 && id < *component.Size {
+			return true
+		}
+	}
 	return false
 }
 

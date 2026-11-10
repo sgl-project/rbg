@@ -1,6 +1,6 @@
 # Failure Handling
 
-RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanceOnPodRestart`.
+RBG supports `None`, `RecreateRoleInstanceOnPodRestart`, and the opt-in `RecreateRoleInstanceOnPodRestartFromCreation` policy.
 
 ![failure-handling](../img/failure-handling.png)
 
@@ -9,7 +9,14 @@ RBG supports multiple failure handling policies: `None` and `RecreateRoleInstanc
 | Policy | Description |
 |--------|-------------|
 | `None` | No automatic restart action; rely on default pod restart behavior. Failed pods are replaced through normal reconciliation. |
-| `RecreateRoleInstanceOnPodRestart` | Recreate only the affected role instance when a pod fails or a container restarts. Default for `leaderWorkerPattern` and `customComponentsPattern`. |
+| `RecreateRoleInstanceOnPodRestart` | Preserve the existing behavior: recreate the affected role instance on its existing unexpected-restart and Failed-pod triggers. |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | Opt-in broader recovery: use the same ordinary-container unexpected-restart and Failed-pod triggers, and also recreate when a desired member pod is deleted. These triggers apply before the instance first becomes Ready and after observed generation matches desired generation. |
+
+The new policy is supported only by native RoleInstanceSet workloads. LeaderWorkerSet, StatefulSet, and Deployment roles are rejected at admission when configured with `RecreateRoleInstanceOnPodRestartFromCreation`, rather than silently ignoring its triggers. Existing `RecreateRoleInstanceOnPodRestart` configuration and behavior are unchanged.
+
+`FromCreation` does not treat Pending or NotReady alone as a failure, bypass generation/revision guards, or count init-container/native-sidecar restarts. An in-place update exempts its expected container restarts, but cannot mask a Failed Pod or an observed desired-member deletion under the new policy.
+
+Both served RBG APIs accept the new policy. In v1alpha1 use `spec.roles[].restartPolicy`; in v1alpha2 use the pattern's `restartPolicyConfig.type`. Conversion preserves the selected policy in both directions.
 
 ## Configuration
 
@@ -20,7 +27,7 @@ Set the `restartPolicyConfig` field on the pattern (`leaderWorkerPattern` or `cu
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None` or `RecreateRoleInstanceOnPodRestart`. |
+| `type` | string | `RecreateRoleInstanceOnPodRestart` | Restart policy type: `None`, `RecreateRoleInstanceOnPodRestart`, or `RecreateRoleInstanceOnPodRestartFromCreation`. |
 | `baseDelaySeconds` | int | `30` | Base delay (seconds) for exponential backoff between restart attempts. Set to `0` with `maxDelaySeconds: 0` to disable backoff entirely. |
 | `maxDelaySeconds` | int | `600` | Cap (seconds) for the exponential backoff delay. |
 
@@ -87,7 +94,7 @@ spec:
 
 ## Exponential Backoff
 
-When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
+When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart` or `RecreateRoleInstanceOnPodRestartFromCreation`, subsequent crash-triggered recreations within a stability window are delayed by exponential backoff:
 
 - **First crash**: immediate recreation (no delay).
 - **Second crash** (within the stability window): delayed by `baseDelaySeconds`.
@@ -175,7 +182,8 @@ When this annotation is set to "Ignore" on a component's pod template:
 
 ## Use Cases
 
-- **RecreateRoleInstanceOnPodRestart**: Worker roles where pod failure or container restart should recreate the affected instance.
+- **`RecreateRoleInstanceOnPodRestart`**: Existing workloads that depend on the original, readiness-gated unexpected-restart and Failed-pod triggers.
+- **`RecreateRoleInstanceOnPodRestartFromCreation`**: RoleInstanceSet workloads that must recover from the same triggers before first readiness or after a desired member pod is deleted.
 - **None**: Monitoring/logging sidecars that don't affect the main workload. Failed pods are replaced individually.
 - **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components within a multi-component instance whose pod failures should not trigger the role's restart policy for the entire instance.
 

@@ -607,6 +607,15 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 		},
 		{
+			name: "role opting into recreate on pod failure",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("pod-failure-role").
+					WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
+					Obj()
+			},
+			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation,
+		},
+		{
 			name: "role configuring a type but no delays",
 			role: func() workloadsv1alpha2.RoleSpec {
 				return wrappersv2.BuildLeaderWorkerRole("type-only-role").

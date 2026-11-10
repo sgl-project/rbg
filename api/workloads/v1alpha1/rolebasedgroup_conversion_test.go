@@ -1164,6 +1164,109 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyRecreateMapsToRecreate(t *testing
 	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.LeaderWorkerPattern.RestartPolicyConfig.Type)
 }
 
+func nativeRestartPolicyRoleForConversionTest(pattern string, policy RestartPolicyType) RoleSpec {
+	role := RoleSpec{
+		Name:          "worker",
+		Replicas:      ptr.To(int32(1)),
+		RestartPolicy: policy,
+		Workload:      WorkloadSpec{APIVersion: v2.GroupVersion.String(), Kind: "RoleInstanceSet"},
+	}
+	if pattern == "leaderWorker" {
+		role.LeaderWorkerSet = &LeaderWorkerTemplate{Size: ptr.To(int32(2))}
+		role.TemplateSource = TemplateSource{Template: podTemplate("app")}
+	} else {
+		role.Components = []InstanceComponent{{Name: "worker", Size: ptr.To(int32(2)), Template: *podTemplate("app")}}
+	}
+	return role
+}
+
+func TestRoleBasedGroup_RoundTrip_NativeRestartPolicy(t *testing.T) {
+	for _, pattern := range []string{"leaderWorker", "components"} {
+		for _, policy := range []RestartPolicyType{"", NoneRestartPolicy, RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestartFromCreation} {
+			t.Run(pattern+"/"+string(policy), func(t *testing.T) {
+				original := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+					nativeRestartPolicyRoleForConversionTest(pattern, policy),
+				}}}
+				hub := &v2.RoleBasedGroup{}
+				require.NoError(t, original.ConvertTo(hub))
+				require.Len(t, hub.Spec.Roles, 1)
+				assert.Equal(t, constants.RoleInstanceSetWorkloadType, hub.Spec.Roles[0].GetWorkloadType())
+				assert.Equal(t, v2.RestartPolicyType(policy), hub.Spec.Roles[0].GetRawRestartPolicyType())
+				expected := v2.RestartPolicyType(policy)
+				if policy == "" {
+					expected = v2.RecreateRoleInstanceOnPodRestart
+				}
+				assert.Equal(t, expected, hub.Spec.Roles[0].GetRestartPolicy())
+
+				restored := &RoleBasedGroup{}
+				require.NoError(t, restored.ConvertFrom(hub))
+				assert.Equal(t, policy, restored.Spec.Roles[0].RestartPolicy)
+				assert.Equal(t, original.Spec.Roles[0].Workload, restored.Spec.Roles[0].Workload)
+				assert.Equal(t, original.Spec.Roles[0].LeaderWorkerSet, restored.Spec.Roles[0].LeaderWorkerSet)
+				assert.Equal(t, original.Spec.Roles[0].Components, restored.Spec.Roles[0].Components)
+
+				// RBGSet shares spec conversion but has a different template path.
+				set := &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{Template: original.Spec}}
+				hubSet := &v2.RoleBasedGroupSet{}
+				require.NoError(t, set.ConvertTo(hubSet))
+				assert.Equal(t, expected, hubSet.Spec.GroupTemplate.Spec.Roles[0].GetRestartPolicy())
+				restoredSet := &RoleBasedGroupSet{}
+				require.NoError(t, restoredSet.ConvertFrom(hubSet))
+				assert.Equal(t, policy, restoredSet.Spec.Template.Roles[0].RestartPolicy)
+				assert.Equal(t, set.Spec.Template.Roles[0].Workload, restoredSet.Spec.Template.Roles[0].Workload)
+			})
+		}
+	}
+}
+
+func TestRoleBasedGroup_RoundTrip_FromV2NewRestartPolicy(t *testing.T) {
+	for _, pattern := range []string{"leaderWorker", "components"} {
+		for _, field := range []string{"legacy", "config"} {
+			t.Run(pattern+"/"+field, func(t *testing.T) {
+				var legacy v2.RestartPolicyType
+				var config *v2.RestartPolicyConfig
+				if field == "legacy" {
+					legacy = v2.RecreateRoleInstanceOnPodRestartFromCreation
+				} else {
+					// The explicit config must win over the legacy string.
+					legacy = v2.RestartPolicyNone
+					config = &v2.RestartPolicyConfig{Type: v2.RecreateRoleInstanceOnPodRestartFromCreation}
+				}
+				role := v2.RoleSpec{Name: "worker"}
+				if pattern == "leaderWorker" {
+					role.LeaderWorkerPattern = &v2.LeaderWorkerPattern{
+						Size: ptr.To(int32(2)), TemplateSource: v2.TemplateSource{Template: podTemplate("app")},
+						RestartPolicy: legacy, RestartPolicyConfig: config, //nolint:staticcheck // test deprecated-field conversion
+					}
+				} else {
+					role.CustomComponentsPattern = &v2.CustomComponentsPattern{
+						Components:    []v2.InstanceComponent{{Name: "worker", Size: ptr.To(int32(2)), Template: *podTemplate("app")}},
+						RestartPolicy: legacy, RestartPolicyConfig: config, //nolint:staticcheck // test deprecated-field conversion
+					}
+				}
+				original := &v2.RoleBasedGroup{Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{role}}}
+				spoke := &RoleBasedGroup{}
+				require.NoError(t, spoke.ConvertFrom(original))
+				assert.Equal(t, RecreateRoleInstanceOnPodRestartFromCreation, spoke.Spec.Roles[0].RestartPolicy)
+				assert.Equal(t, WorkloadSpec{APIVersion: v2.GroupVersion.String(), Kind: "RoleInstanceSet"}, spoke.Spec.Roles[0].Workload)
+				restored := &v2.RoleBasedGroup{}
+				require.NoError(t, spoke.ConvertTo(restored))
+				assert.Equal(t, v2.RecreateRoleInstanceOnPodRestartFromCreation, restored.Spec.Roles[0].GetRestartPolicy())
+				assert.Equal(t, constants.RoleInstanceSetWorkloadType, restored.Spec.Roles[0].GetWorkloadType())
+
+				hubSet := &v2.RoleBasedGroupSet{}
+				hubSet.Spec.GroupTemplate.Spec = original.Spec
+				spokeSet := &RoleBasedGroupSet{}
+				require.NoError(t, spokeSet.ConvertFrom(hubSet))
+				assert.Equal(t, RecreateRoleInstanceOnPodRestartFromCreation, spokeSet.Spec.Template.Roles[0].RestartPolicy)
+				restoredSet := &v2.RoleBasedGroupSet{}
+				require.NoError(t, spokeSet.ConvertTo(restoredSet))
+				assert.Equal(t, v2.RecreateRoleInstanceOnPodRestartFromCreation, restoredSet.Spec.GroupTemplate.Spec.Roles[0].GetRestartPolicy())
+			})
+		}
+	}
+}
+
 func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
 	// Round-trip: v1alpha1 → v1alpha2 → v1alpha1 must preserve the raw value
 	// (not the getter-resolved default) so that a read-back → update cycle
