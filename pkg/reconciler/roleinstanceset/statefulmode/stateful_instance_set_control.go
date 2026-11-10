@@ -35,6 +35,7 @@ import (
 	"k8s.io/kubernetes/pkg/controller/history"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
@@ -773,6 +774,20 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		if isTerminating(target) {
 			continue
 		}
+		if set.Spec.UpdateStrategy.Type == workloadsv1alpha2.RecreatePodUpdateStrategyType {
+			blocked, err := ssc.prepareDelete(set, target)
+			if err != nil {
+				return status, err
+			}
+			if blocked {
+				// Reserve this disruption slot while the consumer drains it,
+				// preserving the existing ordinal update order.
+				if !isFree {
+					newlyUnavail++
+				}
+				continue
+			}
+		}
 
 		decrement, err := ssc.applyTargetUpdate(ctx, set, status, target, currentRevision, updateRevision, revisions, isSurgeSlot, isFree)
 		if err != nil {
@@ -1217,7 +1232,7 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 	}
 
 	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(condemned[i]))
-	if err := ssc.instanceControl.DeleteStatefulInstance(set, condemned[i]); err != nil {
+	if _, _, err := ssc.deleteInstance(set, condemned[i]); err != nil {
 		return monotonic, err
 	}
 
@@ -1342,6 +1357,9 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	if isTerminating(instance) {
 		return false, false, nil
 	}
+	if blocked, err := ssc.prepareDelete(set, instance); err != nil || blocked {
+		return false, false, err
+	}
 
 	err := ssc.instanceControl.DeleteStatefulInstance(set, instance)
 	if err != nil {
@@ -1349,4 +1367,16 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	}
 
 	return true, true, nil
+}
+
+func (ssc *defaultStatefulInstanceSetControl) prepareDelete(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) (bool, error) {
+	if set.Spec.Lifecycle == nil || set.Spec.Lifecycle.PreDelete == nil || isTerminating(instance) {
+		return false, nil
+	}
+	hook := set.Spec.Lifecycle.PreDelete
+	if instancelifecycle.GetRoleInstanceLifecycleState(instance) != constants.RoleInstanceLifecycleStatePreparingDelete {
+		_, _, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStatePreparingDelete, hook.MarkNotReady)
+		return true, err
+	}
+	return instancelifecycle.IsRoleInstanceHooked(hook, instance), nil
 }

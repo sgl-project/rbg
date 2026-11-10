@@ -27,6 +27,7 @@ import (
 	"golang.org/x/text/language"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -84,7 +85,12 @@ func (om *realStatefulInstanceControlObjectManager) UpdateInstance(instance *wor
 }
 
 func (om *realStatefulInstanceControlObjectManager) DeleteInstance(instance *workloadsv1alpha2.RoleInstance) error {
-	return om.client.Delete(context.TODO(), instance)
+	// Hold the instance name until every old member is gone. Otherwise a new
+	// worker can resolve the old leader's stable DNS name and join its process
+	// while garbage collection is still terminating the previous incarnation.
+	return om.client.Delete(context.TODO(), instance,
+		sigsclient.PropagationPolicy(metav1.DeletePropagationForeground),
+		sigsclient.Preconditions{UID: &instance.UID, ResourceVersion: &instance.ResourceVersion})
 }
 
 func (sic *StatefulInstanceControl) CreateStatefulInstance(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) error {
