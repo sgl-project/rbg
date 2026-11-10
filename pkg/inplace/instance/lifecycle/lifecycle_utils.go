@@ -121,14 +121,9 @@ func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.Ro
 
 	instance = instance.DeepCopy()
 	if adp, ok := c.adp.(clientdapter.AdapterWithPatch); ok {
-		body := fmt.Sprintf(
-			`{"metadata":{"labels":{"%s":"%s"},"annotations":{"%s":"%s"}}}`,
-			constants.RoleInstanceSetLifecycleStateKey,
-			string(state),
-			constants.RoleInstanceSetLifecycleTimestampKey,
-			time.Now().Format(time.RFC3339),
-		)
-		gotPod, err = adp.PatchRoleInstance(instance, client.RawPatch(types.MergePatchType, []byte(body)))
+		before := instance.DeepCopy()
+		SetRoleInstanceLifecycle(state)(instance)
+		gotPod, err = adp.PatchRoleInstance(instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	} else {
 		SetRoleInstanceLifecycle(state)(instance)
 		gotPod, err = c.adp.UpdateRoleInstance(instance)
