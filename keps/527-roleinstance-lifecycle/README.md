@@ -267,7 +267,7 @@ The following names and values are normative:
 
 | Purpose | Exact name or value |
 | --- | --- |
-| Authority: RBG-managed | `RoleBasedGroup.spec.roles[].lifecycle` |
+| RBG authority | `RoleBasedGroup.spec.roles[].lifecycle` |
 | Standalone authority | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
 | RI execution snapshot | `RoleInstance.spec.lifecycle` |
 | Pre-operation hook fields | `labelsHandler`, `markNotReady` |
@@ -384,14 +384,13 @@ The new protocol defines an independent hook type: pre-operation hooks contain
 `labelsHandler` and `markNotReady`, while `postReady` contains only
 `labelsHandler`.
 
-The new protocol field and the existing `RoleInstanceSetSpec.lifecycle` use
-distinct API types and runtime protocols. The legacy RIS field remains for
-existing standalone RIS usage, and its `inPlaceUpdate` hook is deprecated. An
-admission webhook must reject a
-Role/RIS combination in which the new protocol lifecycle and a legacy
-user-configured RIS lifecycle are both non-empty. RBG-managed RIS lifecycle
-data is propagated from the Role and must not be independently edited or
-combined with the legacy protocol.
+The new lifecycle protocol and the existing `RoleInstanceSetSpec.lifecycle`
+use distinct API types and runtime protocols. The legacy RIS field remains
+for existing standalone RIS usage, and its `inPlaceUpdate` hook is
+deprecated. Admission rejects a Role/RIS combination in which the new
+lifecycle protocol and a legacy user-configured RIS lifecycle are both
+non-empty. RBG-managed RIS lifecycle data is propagated from the Role and is
+not independently editable.
 
 The two protocols can coexist safely because they use distinct state keys and
 distinct controller responsibilities: the legacy protocol is executed by the
@@ -466,8 +465,8 @@ resources and other controllers.
   `markNotReady` is enabled rather than merely writing the condition without
   registering the readiness gate.
 - A NotReady gate established during Update or Recovery remains until that
-  operation enters `Running`. It must not be lifted as soon as the preUpdate
-  or preRecover marker is removed.
+  operation enters `Running`, not merely until the preUpdate or preRecover
+  marker is removed.
 - A NotReady gate established by `preDelete.markNotReady` remains until
   the RI object is deleted; it is not restored merely because the delete
   marker has been released.
@@ -842,7 +841,7 @@ protocol, the controller writes the marker on every hook trigger. The
 executor only removes it; there is no initial registration or post-operation
 restoration.
 
-The legacy RIS `spec.lifecycle` and new protocol lifecycle use distinct API
+The legacy RIS `spec.lifecycle` and new lifecycle protocol use distinct API
 types and runtime protocol state. The legacy `inPlaceUpdate` and
 `finalizersHandler` fields remain part of the legacy protocol only. The new
 protocol exposes only `labelsHandler` and, for pre-operation hooks,
@@ -856,9 +855,9 @@ proposed here.
 
 The four-hook API design is settled: for RBG-managed workloads, the Role
 defines the desired configuration; for standalone RIS objects, the RIS
-template defines it. The RIS controller stores the desired snapshot, and
-`RoleInstance.spec.lifecycle` stores the effective copy. The new protocol
-defines an independent hook type rather
+template defines it. The RIS template stores the desired snapshot, and the
+RIS controller copies it into `RoleInstance.spec.lifecycle` as the effective
+copy. The new lifecycle protocol defines an independent hook type rather
 than reusing the legacy structure. Empty `labelsHandler` values fail
 validation. Pre-operation hooks contain `labelsHandler` and `markNotReady`,
 while `postReady` contains only `labelsHandler` and does not gate RI Ready.
@@ -896,7 +895,7 @@ replayed merely because an RI is currently Ready. Established hook semantics
 must not change, new behavior requires a new hook, and a version that does
 not understand the protocol must not take over an unfinished operation.
 
-The Alpha compatibility rule is also settled: the new protocol lifecycle
+The Alpha compatibility rule is also settled: the new lifecycle protocol
 and the legacy user-configured RIS lifecycle are mutually exclusive. The
 legacy protocol remains unchanged; the new protocol does not expose
 `inPlaceUpdate`, `finalizersHandler`, or the legacy `markPodNotReady` field.
@@ -929,7 +928,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 - Trigger boundaries for all four hooks, confirming that no other lifecycle
   hooks exist.
-- Admission rejects a new protocol lifecycle together with a legacy
+- Admission rejects a new lifecycle protocol together with a legacy
   user-configured RIS lifecycle, and rejects marker keys that collide with
   the fully qualified controller state key.
 - Admission rejects `labelsHandler` keys and values that are invalid
@@ -1059,8 +1058,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 ### Graduation Criteria
 
-Before Alpha, resolve the blocking questions around operation context,
-concurrency isolation, and deletion timing. Implement all four hooks,
+Before Alpha, resolve the three remaining pre-implementable questions
+listed above. Implement all four hooks,
 controller-write/executor-remove Handler Label coordination, and configurable
 Ready gating; complete the core tests and provide an executor integration
 example.
@@ -1075,12 +1074,11 @@ This KEP does not assign a release milestone.
 ### Upgrade / Downgrade Strategy
 
 Workloads with no new hooks configured retain their existing behavior.
-Enabling the feature on an existing RI must not replay `postReady` or
-`preUpdate` merely because the RI is currently Ready or was updated in the
-past. `postReady` is triggered by a controlled operation's state transition
-and runtime labels, not by the current Ready state of an existing RI alone.
-When `preDelete` is enabled, the controller adds the reserved finalizer to
-existing stable RIs as described above.
+Enabling the feature on an existing RI does not replay `postReady` or
+`preUpdate` solely because the RI is currently Ready or was updated in the
+past; those hooks are triggered by controlled operations. When `preDelete`
+is enabled, the controller adds the reserved finalizer to existing stable
+RIs as described above.
 
 Before enabling lifecycle hooks, deploy a compatible executor and verify its
 RBAC permissions, then allow hook configuration. Writing a pre-operation
@@ -1088,20 +1086,18 @@ marker before a consumer is available leaves the corresponding update,
 recovery, or deletion waiting indefinitely. The executor does not perform
 initial marker registration.
 
-Phases and markers already in use must retain stable semantics across
-upgrades. Once a hook's semantics are established, later versions must not
-change its trigger conditions, blocking behavior, marker direction, or
-operation boundaries. New lifecycle behavior requires a new hook rather than
-reusing an existing name with different semantics.
+Phases and markers already in use retain stable semantics across upgrades.
+After a hook's semantics are established, later versions keep its trigger
+conditions, blocking behavior, marker direction, and operation boundaries.
+New lifecycle behavior is expressed through a new hook.
 
 Before an incompatible downgrade, disable the hooks while a controller that
 understands the protocol still owns the RIs. Wait until every RI is stable,
 has no `hook-state` or marker, and has no reserved `preDelete` RI
-finalizer remaining. Verify those conditions before replacing the controller; otherwise,
-retain a compatible controller to finish operations and remove finalizers. Do
-not downgrade directly while an operation is unfinished. A downgrade could
-otherwise ignore phases, bypass hooks, or stall deletion. Clearing labels,
-gates, or finalizers manually is not a general rollback procedure.
+finalizer remaining. Replace the controller only after those conditions are
+verified; otherwise, retain a compatible controller to finish operations and
+remove finalizers. Clearing labels, gates, or finalizers manually is not a
+supported rollback.
 
 ### Version Skew Strategy
 
@@ -1127,9 +1123,9 @@ the gate. The gate defaults to false. While it is disabled, the new protocol
 fields are rejected and the legacy RIS lifecycle protocol retains its existing
 behavior.
 
-Disabling or re-enabling the feature must not reset an in-flight marker or
-skip an unfinished phase. A version that does not understand the current
-protocol must not take over an unfinished operation. `preDelete` requires an
+Disabling or re-enabling the feature leaves in-flight markers and unfinished
+phases intact. A version that does not understand the current protocol does
+not take over an unfinished operation. `preDelete` requires an
 executor that is available before application Pod deletion and validation of
 the barrier across all supported deletion paths.
 Foreground cascading deletion is not a supported path and must be rejected by
