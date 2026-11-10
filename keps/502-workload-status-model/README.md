@@ -155,11 +155,12 @@ External blocker families use stable, machine-readable categories. RI may report
 | Quota | `PodCreateQuotaExceeded`, `PodUpdateQuotaExceeded` | `WaitingForQuota` | `WaitingForQuota` |
 | Resources | `InsufficientResources` | `WaitingForResources` | `WaitingForResources` |
 | Dependencies | `DependencyNotReady` | `WaitingForDependencies` | `WaitingForDependencies` |
+| Unclassified | `PodOperationUnclassified` | `UnclassifiedBlocker` | `UnclassifiedBlocker` |
 | Gang scheduling | Not owned by RI | `WaitingForGang` | `WaitingForGang` |
 
 Blocker classification is deterministic and is performed by the layer that observed the error, normally the RI controller. Kubernetes commonly returns 403 for quota, RBAC, and admission denials, so classification must use error details rather than the status code alone: quota errors identify the exceeded quota object; RBAC denials identify the missing verb, resource, or subresource; admission denials identify the rejecting admission plugin or webhook. The implementation must document this mapping and tests must cover representative errors for each family.
 
-If an error cannot be classified, for example 5xx responses, timeouts, or `AlreadyExists` while a same-name Pod from a previous RI UID is still being garbage-collected, the controller must not guess a blocker family. When no blocker family is confirmed for the current target, it retains the current Activity reason, describes the concrete error in message, and emits a Warning Event. When a blocker family is already confirmed, an unclassifiable error does not replace it: the blocker remains until a fresh successful observation confirms it no longer holds, and the new error is recorded in message and a Warning Event. The reason becomes a stable blocker-family reason only after a fresh observation confirms a specific family; when the condition clears, classification is discarded with it.
+If an error cannot be classified, for example 5xx responses, timeouts, or `AlreadyExists` while a same-name Pod from a previous RI UID is still being garbage-collected, the controller must not guess a blocker family. It reports the unclassified blocker family: RI uses `PodOperationUnclassified`, and RIS / RBG use `UnclassifiedBlocker`, with the concrete error in message and a Warning Event. When a blocker family is already confirmed for the current target, an unclassifiable error does not replace it: the confirmed blocker remains until a fresh successful observation confirms it no longer holds, and the new error is recorded in message and a Warning Event. The unclassified reason is replaced by a specific family after a fresh observation confirms one, or cleared when that observation succeeds; when the condition clears, classification is discarded with it.
 
 Activity and child-readiness reasons are layer-specific:
 
@@ -182,11 +183,12 @@ Quota
 Resources
 Gang
 Dependencies
+Unclassified
 Activity
 ChildReadiness
 ```
 
-A current external blocker outranks an activity reason because it explains why the current target is not converging. Child readiness is not an external blocker: during creation, update, scaling, or recovery it is subsumed by the active workflow reason and is reported independently by `Ready`. If no active workflow remains but the target is not ready, child readiness may be the `Progressing` reason. This precedence affects reporting only, not controller execution order.
+A current external blocker outranks an activity reason because it explains why the current target is not converging. Unclassified ranks below the specific blocker families because a confirmed family is more actionable, and an unclassified error never replaces a confirmed family for the same target. Child readiness is not an external blocker: during creation, update, scaling, or recovery it is subsumed by the active workflow reason and is reported independently by `Ready`. If no active workflow remains but the target is not ready, child readiness may be the `Progressing` reason. This precedence affects reporting only, not controller execution order.
 
 Within the Activity family, RBG uses this deterministic precedence:
 
@@ -210,7 +212,7 @@ Automation should use a small, stable decision table:
 | --- | --- |
 | Is it serving? | `Ready=True` |
 | Is the change done? | `Progressing=False`, `reason=Converged`, `status.observedGeneration == metadata.generation`, and the `Progressing` condition's own `observedGeneration == metadata.generation` |
-| Does it need attention? | `Accepted=False`, or `Progressing=True` with a reason in the permission, admission, quota, resources, gang, dependencies, or configuration-compatibility families |
+| Does it need attention? | `Accepted=False`, or `Progressing=True` with a reason in the permission, admission, quota, resources, gang, dependencies, unclassified, or configuration-compatibility families |
 | Unknown / unrecognized reason | Treat as still progressing, not as failure |
 
 The condition-level `observedGeneration` check is required for completion: a legacy or rolled-back controller can advance `status.observedGeneration` while leaving a `Converged` condition written for an older generation. A missing or stale condition `observedGeneration` must be treated as incomplete, not done.
@@ -312,7 +314,7 @@ Each condition has one reason. Overall RBG progress for scaling and updates uses
 | Accepted=True | `ValidSpec` |
 | Accepted=False | `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
 | Progressing=True | `Creating`, `ScalingOrUpdating`, `Recovering` |
-| Progressing=True, waiting | `WaitingForDependencies`, `RolesNotReady`, `WaitingForGang`, `WaitingForResources`, `WaitingForQuota`, `PermissionDenied`, `AdmissionDenied` |
+| Progressing=True, waiting | `WaitingForDependencies`, `RolesNotReady`, `WaitingForGang`, `WaitingForResources`, `WaitingForQuota`, `PermissionDenied`, `AdmissionDenied`, `UnclassifiedBlocker` |
 | Progressing=False | `Converged`, `Paused`, `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
 | Ready=True | `AllRolesReady` |
 | Ready=False | `RoleNotReady` |
@@ -508,7 +510,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
 - When one role is `Recovering` and another is updating, RBG uses `Recovering`. When only update or scaling work remains, RBG uses `ScalingOrUpdating`. Message describes every concurrent activity.
 - A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
-- Record today's 403-classification behavior, then test quota, RBAC, and admission denials with representative error details. Unclassifiable errors (5xx, timeout, `AlreadyExists` during garbage collection) emit a Warning Event without guessing a blocker family: with no confirmed blocker they retain the Activity reason, and with a confirmed blocker they keep that blocker reason until a fresh observation clears it.
+- Record today's 403-classification behavior, then test quota, RBAC, and admission denials with representative error details. Unclassifiable errors (5xx, timeout, `AlreadyExists` during garbage collection) report `PodOperationUnclassified` at RI and `UnclassifiedBlocker` at RIS / RBG, with the concrete error in message and a Warning Event. A confirmed blocker family is not replaced by an unclassified error and is cleared only by a fresh observation; the unclassified reason is replaced or cleared by the next fresh observation.
 - CoordinatedPolicy rollouts step RIS partition and coordinated scaling targets one step at a time. A RIS may alternate between `Converged` and active reasons while RBG remains `Progressing=True` until the RBG-level target completes; RBG completion never derives from child phase or `Converged`.
 - Before or during dispatch of a new generation, including preCheck failures, the parent writes `observedGeneration=N` together with the `Progressing` value derived from validation, pause, and progress rules; condition-only changes trigger a status write even when counters and revisions are unchanged.
 - When RI recovery overlaps an active RIS update or scaling workflow, RIS `Progressing` uses `Recovering` and message describes the update or scaling workflow.
