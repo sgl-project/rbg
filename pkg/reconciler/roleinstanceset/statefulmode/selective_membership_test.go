@@ -180,3 +180,39 @@ func TestSparseMaxOrdinalUnhealthyOrdering(t *testing.T) {
 	require.Equal(t, 1, count)
 	require.Same(t, instance, first, "the largest valid ordinal must still be an OrderedReady blocker")
 }
+
+func TestSparseOrderedReadyCleanupUsesLogicalPosition(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-ordered-cleanup", 3, 0, 0)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	h.set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	// Keep every base member eligible and allow enough budget that an overly
+	// broad cleanup scope would also delete the healthy predecessors.
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(3))
+	zero := h.instance(0, h.current.Name, true)
+	two := h.instance(2, h.current.Name, true)
+	four := h.instance(4, h.current.Name, false)
+	instances := []*workloadsv1alpha2.RoleInstance{zero, two, four}
+	setUnhealthySince(h.set, four, time.Now().Add(-2*stableUnhealthyDuration))
+
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.True(t, topo.inRollout)
+	require.Equal(t, []int{0, 2, 4}, topo.ordinals)
+	require.Equal(t, 2, topo.position(getOrdinal(four)))
+	require.Equal(t, []int{2, 1, 0}, buildUpdateTargets(instances, topo, h.intermediate.Name))
+	require.Same(t, four, orderedReadyCleanupTarget(h.set, instances, topo, h.intermediate.Name))
+	beforeZero, beforeTwo := zero.DeepCopy(), two.DeepCopy()
+	status := &workloadsv1alpha2.RoleInstanceSetStatus{CurrentReplicas: 3}
+
+	err = h.control.progressOrderedReadyUnhealthyTarget(context.Background(), h.set, status,
+		h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate},
+		instances, instances, 0, topo)
+	require.NoError(t, err)
+	require.Equal(t, []string{four.Name}, h.objects.deleted, "cleanup must target only logical position 2 / actual ordinal 4")
+	require.Empty(t, h.objects.created)
+	require.Equal(t, beforeZero, zero, "member 0 must remain untouched")
+	require.Equal(t, beforeTwo, two, "member 2 must remain untouched")
+	require.Equal(t, int32(2), status.CurrentReplicas)
+	require.Zero(t, topo.partition, "the cleanup scope must not modify the original rollout topology")
+	require.Equal(t, 3, topo.endOrdinal)
+}
