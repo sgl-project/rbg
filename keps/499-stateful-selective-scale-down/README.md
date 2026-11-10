@@ -372,6 +372,18 @@ before a concurrent sparse commitment must conflict instead of overwriting the
 new target. These requirements govern controller writes and transitions; they
 do not promise protection against arbitrary external forced apply.
 
+Create and conditional merge-patch requests record `rbg/Update` ownership,
+which is distinct from `rbg/Apply`. Before ordinary SSA, fold only the
+controller's main-resource Update fields into its Apply manager using
+`csaupgrade.UpgradeManagedFieldsPatch`. Perform this handoff after ordinary
+create and when resuming the ordinary path, including existing objects left
+with Update ownership. Keep create-only semantics so a concurrent sparse child
+cannot be overwritten. Protect the handoff with UID and resource version,
+stop on failure, and use the returned resource version for subsequent SSA.
+Do not migrate other managers or status-subresource ownership. Without this
+handoff, omitting a role label, annotation, or conditional gang flag from SSA
+can leave it owned by the Update entry and prevent removal.
+
 For example, starting with five instances `[0,1,2,3,4]`, a user changes replicas
 to 3 and E to `[1,3]` together:
 
@@ -592,6 +604,12 @@ controller implementation or runtime verification has been completed.
   fields intact, and fresh readers can retry after controller restart.
 - With E removed but a non-empty record retained, keep using the conditional
   writer. After both are absent, verify ordinary forced SSA resumes safely.
+- On newly created non-feature RIS objects, remove role labels, annotations,
+  and conditional gang flags and assert they disappear after ordinary SSA.
+  Repeat for legacy Update ownership and feature-to-ordinary transitions.
+- Verify ownership handoff failure or conflict stops subsequent SSA, supports
+  fresh retries, rejects same-name UID replacement, is idempotent, and preserves
+  other managers' fields and the status-subresource manager.
 - Interleave an ordinary SSA request based on an old dense snapshot with a new
   sparse commitment: the stale apply must conflict and preserve the new target.
   Cover metadata removal, unrelated child controls, repeated-sync convergence,

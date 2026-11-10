@@ -49,10 +49,13 @@ type membershipWrite struct {
 
 type guardedClient struct {
 	client.Client
-	fail        bool
-	sawApply    bool
-	beforePatch func()
-	writes      []membershipWrite
+	fail            bool
+	sawApply        bool
+	beforePatch     func()
+	writes          []membershipWrite
+	migrations      []string
+	beforeMigration func()
+	migrationErr    error
 }
 
 // Match informer Get behavior for the ordinary workload/service builders.
@@ -75,6 +78,21 @@ func (c *guardedClient) Patch(ctx context.Context, obj client.Object, patch clie
 		raw, err := patch.Data(obj)
 		if err != nil {
 			return err
+		}
+		if patch.Type() == types.JSONPatchType {
+			if c.beforeMigration != nil {
+				f := c.beforeMigration
+				c.beforeMigration = nil
+				f()
+			}
+			if c.migrationErr != nil {
+				return c.migrationErr
+			}
+			if err := c.Client.Patch(ctx, obj, patch, opts...); err != nil {
+				return err
+			}
+			c.migrations = append(c.migrations, obj.GetResourceVersion())
+			return nil
 		}
 		var body map[string]interface{}
 		if err = json.Unmarshal(raw, &body); err != nil {
@@ -270,10 +288,13 @@ func TestConditionalMembershipWithLegacyApplyOwnership(t *testing.T) {
 	require.Empty(t, dense.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
 	require.Equal(t, int32(5), *dense.Spec.Replicas)
 	wrapped.writes = nil
+	wrapped.migrations = nil
 	wrapped.sawApply = false
 	require.NoError(t, sync())
 	require.True(t, wrapped.sawApply, "dense roles without E return to ordinary SSA")
-	assertOrdinaryApplyWrite(t, wrapped.writes, dense.ResourceVersion)
+	require.Len(t, wrapped.migrations, 1, "conditional Update ownership must be folded before ordinary SSA")
+	require.NotEqual(t, dense.ResourceVersion, wrapped.migrations[0])
+	assertOrdinaryApplyWrite(t, wrapped.writes, wrapped.migrations[0])
 	require.Empty(t, get().Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
 	require.Equal(t, int32(5), *get().Spec.Replicas)
 	// Ordinary synchronization that read a dense target cannot overwrite a
@@ -330,4 +351,162 @@ func TestConditionalMembershipWithLegacyApplyOwnership(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int{0, 1, 2, 3}, members)
 
+}
+
+func TestOrdinaryRISRemovesMetadataAfterManagedFieldsHandoff(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	environment := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join(filepath.Dir(file), "../../../../config/crd/bases")}, ErrorIfCRDPathMissing: true}
+	cfg, err := environment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, environment.Stop()) })
+	scheme := apiruntime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ownership-handoff"}}))
+	for _, scenario := range []string{"ordinary-create", "legacy-update-owner", "feature-exit",
+		"create-migration-failure", "migration-failure", "migration-conflict", "recreated-child"} {
+		t.Run(scenario, func(t *testing.T) {
+			role := wrappers.BuildStandaloneRole("worker").WithReplicas(2).Obj()
+			role.Labels = map[string]string{"example.org/role-label": "owned"}
+			role.Annotations = map[string]string{
+				"example.org/role-annotation":                     "owned",
+				constants.RoleInstanceGangSchedulingAnnotationKey: "true",
+			}
+			if scenario == "feature-exit" {
+				role.Annotations[constants.ExcludedOrdinalsAnnotationKey] = "1"
+			}
+			parent := wrappers.BuildBasicRoleBasedGroup(scenario, "ownership-handoff").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			require.NoError(t, c.Create(ctx, parent))
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+			wrapped := &guardedClient{Client: c}
+			r := reconciler.NewRoleInstanceSetReconciler(scheme, wrapped)
+			r.SetAPIReader(c)
+			sync := func() error {
+				parent.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+				return r.Reconciler(ctx, parent, &parent.Spec.Roles[0], nil, "stable-hash")
+			}
+			get := func() *workloadsv1alpha2.RoleInstanceSet {
+				set := &workloadsv1alpha2.RoleInstanceSet{}
+				require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: parent.Namespace, Name: parent.GetWorkloadName(&parent.Spec.Roles[0])}, set))
+				return set
+			}
+			writeStatus := func() {
+				set := get()
+				set.Status.Replicas = 42
+				require.NoError(t, c.Status().Update(ctx, set, client.FieldOwner("rbg")))
+			}
+			if scenario == "create-migration-failure" {
+				wrapped.migrationErr = fmt.Errorf("injected migration failure")
+				require.ErrorIs(t, sync(), wrapped.migrationErr)
+				require.Empty(t, wrapped.writes, "failed creation handoff must not apply")
+				require.NotEmpty(t, get().UID, "the created child survives a handoff failure")
+				wrapped.migrationErr = nil
+			} else {
+				require.NoError(t, sync())
+			}
+			if scenario == "legacy-update-owner" || scenario == "migration-failure" ||
+				scenario == "migration-conflict" || scenario == "recreated-child" {
+				set := get()
+				// An unchanged Update does not establish Update ownership after
+				// migration; change an owned field to reproduce a legacy writer.
+				set.Labels["example.org/role-label"] = "legacy-update"
+				require.NoError(t, c.Update(ctx, set, client.FieldOwner("rbg")))
+				updateOwner := false
+				for _, entry := range get().ManagedFields {
+					updateOwner = updateOwner || (entry.Manager == "rbg" && entry.Operation == metav1.ManagedFieldsOperationUpdate && entry.Subresource == "")
+				}
+				require.True(t, updateOwner, "the fixture must actually establish legacy Update ownership")
+			}
+			// Own only external fields, rather than taking ownership of the
+			// role metadata whose deletion this test is exercising.
+			require.NoError(t, c.Patch(ctx, get(), client.RawPatch(types.MergePatchType,
+				[]byte(`{"metadata":{"labels":{"example.org/external":"keep"},"annotations":{"example.org/external":"keep"}},"spec":{"lifecycle":{"preDelete":{"labelsHandler":{"example.org/drain":"hold"}}}}}`)),
+				client.FieldOwner("external-operator")))
+			// A same-name status manager is a separate subresource owner and
+			// must not be folded along with main-resource rbg/Update fields.
+			writeStatus()
+			if scenario == "migration-failure" || scenario == "migration-conflict" || scenario == "recreated-child" {
+				wrapped.writes = nil
+				oldUID := get().UID
+				if scenario == "migration-failure" {
+					wrapped.migrationErr = fmt.Errorf("injected migration failure")
+				} else {
+					wrapped.beforeMigration = func() {
+						latest := get()
+						if scenario == "recreated-child" {
+							require.NoError(t, c.Delete(ctx, latest, client.Preconditions{UID: &latest.UID}))
+							latest.UID, latest.ResourceVersion = "", ""
+							latest.CreationTimestamp = metav1.Time{}
+							latest.ManagedFields = nil
+							delete(latest.Labels, "example.org/external")
+							delete(latest.Annotations, "example.org/external")
+							latest.Spec.Lifecycle = nil
+							require.NoError(t, c.Create(ctx, latest, client.FieldOwner("rbg")))
+							require.NoError(t, c.Patch(ctx, get(), client.RawPatch(types.MergePatchType,
+								[]byte(`{"metadata":{"labels":{"example.org/external":"keep"},"annotations":{"example.org/external":"keep"}},"spec":{"lifecycle":{"preDelete":{"labelsHandler":{"example.org/drain":"hold"}}}}}`)),
+								client.FieldOwner("external-operator")))
+							return
+						}
+						require.NoError(t, c.Patch(ctx, latest, client.RawPatch(types.MergePatchType,
+							[]byte(`{"metadata":{"annotations":{"example.org/concurrent":"keep"}}}`)),
+							client.FieldOwner("external-operator")))
+					}
+				}
+				err := sync()
+				require.Error(t, err)
+				if scenario == "migration-conflict" {
+					require.True(t, apierrors.IsConflict(err), "%v", err)
+					require.Equal(t, "keep", get().Annotations["example.org/concurrent"])
+				}
+				if scenario == "recreated-child" {
+					require.NotEqual(t, oldUID, get().UID)
+					// Recreating a main resource does not persist its status.
+					writeStatus()
+				}
+				require.Empty(t, wrapped.writes, "a failed migration must stop before ordinary SSA")
+				wrapped.migrationErr = nil
+			}
+			if scenario == "feature-exit" {
+				delete(parent.Spec.Roles[0].Annotations, constants.ExcludedOrdinalsAnnotationKey)
+				parent.Spec.Roles[0].Replicas = ptr.To[int32](3)
+				require.NoError(t, c.Update(ctx, parent))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+				require.NoError(t, sync()) // Atomically clear the sparse record first.
+				require.Empty(t, get().Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+			}
+			require.NoError(t, sync())
+			before := get()
+			require.Equal(t, "owned", before.Labels["example.org/role-label"])
+			require.Equal(t, "owned", before.Annotations["example.org/role-annotation"])
+			delete(parent.Spec.Roles[0].Labels, "example.org/role-label")
+			delete(parent.Spec.Roles[0].Annotations, "example.org/role-annotation")
+			delete(parent.Spec.Roles[0].Annotations, constants.RoleInstanceGangSchedulingAnnotationKey)
+			require.NoError(t, c.Update(ctx, parent))
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+			require.NoError(t, sync())
+			actual := get()
+			require.NotContains(t, actual.Labels, "example.org/role-label")
+			require.NotContains(t, actual.Annotations, "example.org/role-annotation")
+			require.NotContains(t, actual.Annotations, constants.RoleInstanceGangSchedulingAnnotationKey)
+			require.Equal(t, before.UID, actual.UID)
+			require.Equal(t, "keep", actual.Labels["example.org/external"])
+			require.Equal(t, "keep", actual.Annotations["example.org/external"])
+			require.Equal(t, "hold", actual.Spec.Lifecycle.PreDelete.LabelsHandler["example.org/drain"])
+			require.Equal(t, int32(42), actual.Status.Replicas)
+			statusOwner := false
+			for _, entry := range actual.ManagedFields {
+				statusOwner = statusOwner || (entry.Manager == "rbg" && entry.Subresource == "status" && entry.Operation == metav1.ManagedFieldsOperationUpdate)
+				require.False(t, entry.Manager == "rbg" && entry.Operation == metav1.ManagedFieldsOperationUpdate && entry.Subresource == "",
+					"ordinary SSA must not leave a second rbg/Update owner")
+			}
+			require.True(t, statusOwner, "ownership migration must not change the status manager")
+			migrations := len(wrapped.migrations)
+			require.NoError(t, sync())
+			require.Len(t, wrapped.migrations, migrations, "a completed handoff must not migrate repeatedly")
+		})
+	}
 }

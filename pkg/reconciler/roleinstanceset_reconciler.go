@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"strconv"
@@ -27,7 +28,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/util/csaupgrade"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -124,6 +127,14 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 		return r.reconcileSelectiveMembership(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
 	}
 
+	// Create and conditional merge-patch writes use rbg/Update ownership.
+	// Fold that ownership before ordinary SSA so omitted fields can be removed.
+	if oldRoleInstanceSet.ResourceVersion != "" {
+		if err := r.upgradeRoleInstanceSetOwnership(ctx, oldRoleInstanceSet); err != nil {
+			return err
+		}
+	}
+
 	roleInstanceSetApplyConfig, err := r.constructRoleInstanceSetApplyConfiguration(ctx, rbg, role, rollingUpdateStrategy, revisionKey, oldRoleInstanceSet)
 	if err != nil {
 		logger.Error(err, "Failed to construct roleInstanceSet apply configuration")
@@ -141,7 +152,10 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	}
 	if oldRoleInstanceSet.ResourceVersion == "" {
 		// Create-only cannot overwrite a concurrently created sparse target.
-		return r.client.Create(ctx, newRoleInstanceSet, client.FieldOwner(utils.FieldManager))
+		if err := r.client.Create(ctx, newRoleInstanceSet, client.FieldOwner(utils.FieldManager)); err != nil {
+			return err
+		}
+		return r.upgradeRoleInstanceSetOwnership(ctx, newRoleInstanceSet)
 	}
 	// A concurrent membership commit must invalidate this ordinary update.
 	// Force apply alone could let replicas move ahead of the committed record.
@@ -163,6 +177,42 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 		return err
 	}
 
+	return nil
+}
+
+// upgradeRoleInstanceSetOwnership transfers only the controller's main-resource
+// Update ownership to Apply. It must run only on the ordinary path, after sparse
+// membership has been cleared. The helper's patch guards resourceVersion; also
+// guard UID so a same-name replacement cannot inherit the migration.
+func (r *RoleInstanceSetReconciler) upgradeRoleInstanceSetOwnership(
+	ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet,
+) error {
+	patch, err := csaupgrade.UpgradeManagedFieldsPatch(set, sets.New(utils.FieldManager), utils.FieldManager)
+	if err != nil || patch == nil {
+		return err
+	}
+	var operations []map[string]interface{}
+	if err = json.Unmarshal(patch, &operations); err != nil {
+		return err
+	}
+	operations = append([]map[string]interface{}{{
+		"op": "test", "path": "/metadata/uid", "value": set.UID,
+	}}, operations...)
+	patch, err = json.Marshal(operations)
+	if err != nil {
+		return err
+	}
+	updated := set.DeepCopy()
+	if err = r.client.Patch(ctx, updated, client.RawPatch(types.JSONPatchType, patch)); err != nil {
+		return err
+	}
+	if updated.UID != set.UID {
+		return apierrors.NewConflict(workloadsv1alpha2.GroupVersion.WithResource("roleinstancesets").GroupResource(),
+			set.Name, fmt.Errorf("child identity changed during managed-fields migration"))
+	}
+	// Continue SSA with the migrated response's resource version, never the
+	// snapshot that preceded the ownership write.
+	*set = *updated
 	return nil
 }
 
