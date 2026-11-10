@@ -765,7 +765,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 开关前置 RI Ready 门控，验证 postReady marker 不影响 RI Ready，业务路由按自身流量策略恢复。
 - preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller
   删除成员 Pod 并清除保留的 RI finalizer。
-- 连续提交多个 update，验证 updating 中不重复 preUpdate、旧 postReady 不阻塞新操作，以及同名 marker 的幂等处理。
+- 连续提交多个 update，验证 `Updating` 中不重复 preUpdate、旧 postReady 不阻塞新操作，以及同名 marker 的幂等处理。
 - 验证 Update 打断 Recovery 和 Delete 抢占其他操作。
 - executor 长期不可用、业务结果未知和双方重启时的前置等待、postReady 后台处理与诊断。
 - 未配置 hooks 行为不变，存量启用、升级和回滚不重放历史动作。

@@ -239,7 +239,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | --- | --- | --- |
 | `preUpdate` | Before the first Pod change for an update | Start Update |
 | `preRecover` | Before restoring a Pod in `Recovering` | Start Recovery |
-| `postReady` | Controlled operation is Ready | Already `Running`; clean state |
+| `postReady` | Controlled operation is workload Ready | Already `Running` |
 | `preDelete` | Before final Pod termination | Delete Pods; finish RI |
 
 `postReady` is neither a Pod creation notification nor a container
@@ -562,9 +562,9 @@ sequenceDiagram
 While `preUpdate` is active, the absence of any matching marker is a
 necessary condition for the controller to start the update. `postReady`
 blocks neither `Running`, RI Ready, nor the next operation. The executor
-removes ready-notify after
-completion or cancellation and does not restore it. The next update writes a
-new hook-state and corresponding marker through the controller.
+removes ready-notify after completion or cancellation and does not restore
+it. The next update writes a new hook-state and corresponding marker
+through the controller.
 
 ### Recovery Interaction Flow
 
@@ -773,7 +773,7 @@ The operation rules are:
 | `Updating` | Recovery | Fold into Update; no preRecover |
 | `Recovering` | Recovery | Continue; no repeat preRecover |
 | `Recovering` | Update | Interrupt; run preUpdate and Update |
-| Any non-terminating phase | Delete | Preempt with `Terminating` + preDelete |
+| Any non-terminating phase | Delete | Preempt; `Terminating` and preDelete |
 | `Terminating` | Update, Recovery | Skip at reconcile start |
 | Background postReady | Update, Recovery, Delete | Start; executor uses state |
 
