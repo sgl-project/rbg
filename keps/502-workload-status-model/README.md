@@ -51,7 +51,7 @@ The following checklist applies to releases in the RBG project.
 ## Summary
 
 This KEP defines a workload status model for RoleBasedGroup (RBG), RoleInstanceSet (RIS), and RoleInstance (RI).
-Conditions, stable reasons, and existing counters distinguish progress toward the target, current blockers, resource waits, and workload-level readiness.
+Conditions, stable reasons, and existing counters distinguish progress toward the target, current blockers, and workload-level readiness.
 RBG and RIS do not add `status.phase`; their workflow is reported through `Progressing.reason` and existing counters. RI adds an optional `status.phase` because its controller already has a meaningful instance-level lifecycle state machine.
 The scope is limited to condition fields and values, RI phase, compatibility migration, and contract tests. It does not include controller refactoring or extensions to the role status schema.
 
@@ -113,7 +113,7 @@ RI phase is not set through ordinary spec updates; the status subresource remain
 | Risk | Mitigation |
 | --- | --- |
 | Confusing lifecycle, service readiness, and revision convergence | Define field semantics separately and cover partition, pause, and zero-replica cases |
-| New checks leave deprecated backends permanently not Ready | Preserve legacy semantics during migration and run compatibility regression tests with actual backend status |
+| New checks make deprecated backends report unexpected unavailability | Preserve legacy semantics during migration and run compatibility regression tests with actual backend status |
 | Readiness changes bypass existing gates or alter timing | Validate against stateful / stateless consumer baselines |
 | Overwriting external conditions or causing timestamp churn | Define ownership, unique keys, and transition rules; test concurrent writes |
 | Losing information during schema or legacy condition migration | Validate legacy writes, conversion, failure Event coverage, current blocker reporting, and recovery data preservation |
@@ -137,7 +137,7 @@ Status fields across all three CR types follow these common rules:
 - `status.observedGeneration` identifies the generation of this object that has been processed; a condition's observedGeneration identifies the generation of this object to which its fact applies. Neither directly proves target completion.
 - RI phase transitions and progress decisions use valid observations corresponding to the current operation target. Parent and child generations cannot be compared directly, and old status cannot prove completion of a new target.
 - When observations are insufficient, affected conditions whose facts cannot be determined use Unknown with reason `ObservationIncomplete`. Controller-owned readiness conditions such as `RoleInstanceReady` are the exception: after the first readiness observation, they retain their last known value until a fresh observation succeeds, so upper-level ready counts do not flap. A read failure does not mean zero replicas, and an absent RI phase does not mean Running.
-- When children have not yet received the current generation's target, the parent must still record that it has observed the new generation: write `status.observedGeneration=N` together with the `Progressing` value derived from the validation, pause, and progress rules before or while dispatching that target to children. Incomplete work writes `Progressing=True`; a confirmed compatibility failure writes `Progressing=False` with the matching incompatibility reason; a full pause writes `Progressing=False(reason=Paused)`. Preflight or compatibility failures must not skip this status write; they are represented through the corresponding conditions.
+- When children have not yet received the current generation's target, the parent must still record that it has observed the new generation: write `status.observedGeneration=N` together with the `Progressing` value derived from the validation, pause, and progress rules before or while dispatching that target to children. Incomplete work writes `Progressing=True`; a confirmed configuration-family blocker writes `Progressing=True` with the configuration-family reason; a full pause writes `Progressing=False(reason=Paused)`. Preflight or compatibility failures must not skip this status write; they are represented through the corresponding conditions.
 - A condition-only change is a status change. If condition status, reason, message, or observedGeneration changes, the controller must write status even when counters and revision fields are unchanged.
 - Status must eventually update after changes only to label / revision metadata or after dependencies recover, without requiring an additional manual spec change.
 - Do not add a finalizer solely to display RI phase, and do not guarantee that clients observe every intermediate phase.
@@ -150,7 +150,7 @@ External blocker families use stable, machine-readable categories. RI may report
 
 | Reason family | RI example reason | RIS reason | RBG reason |
 | --- | --- | --- | --- |
-| Configuration | Not owned by RI | Not newly defined at RIS | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
+| Configuration | Not owned by RI | Not owned by RIS | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
 | Permission | `PodCreateForbidden`, `PodUpdateForbidden` | `PermissionDenied` | `PermissionDenied` |
 | Admission | `PodAdmissionRejected` | `AdmissionDenied` | `AdmissionDenied` |
 | Quota | `PodCreateQuotaExceeded`, `PodUpdateQuotaExceeded` | `WaitingForQuota` | `WaitingForQuota` |
@@ -168,9 +168,9 @@ Not every RBG reason comes from RIS. Each fact has one lowest layer that can obs
 | `WaitingForDependencies` | RBG | Role dependencies are declared in the RBG spec and cross roles; RIS cannot observe them |
 | `WaitingForGang` | RBG | Gang scheduling facts are observed with the gang state owned at RBG scope (today the `GangConfigured` condition) |
 | `RoleInstanceSetUpdated`, `Recovering` | RIS | RIS `Progressing` reason, aggregated by family |
-| `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `UnclassifiedBlocker` | RI (or RIS for its own CR operations) | RI `Progressing` reason, mapped to a family by RIS, then aggregated by RBG |
+| `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `UnclassifiedBlocker` | RI (or RIS / RBG for their own CR operations) | RI `Progressing` reason, mapped to a family by RIS, then aggregated by RBG; a controller's own CR-operation errors are reported directly |
 
-RBG does not probe Pod-level errors itself, and RIS does not report RBG-owned facts such as dependencies, gang configuration, or configuration compatibility. This bound is what keeps top-level reasons at family granularity instead of mirroring lower-level detail.
+RBG does not probe Pod-level errors itself, and RIS does not report RBG-owned facts such as dependencies, gang configuration, or configuration compatibility. Each controller reports its own CR-operation errors directly as `UnclassifiedBlocker`: RBG creating or updating RIS, and RIS creating or updating RI. This bound is what keeps top-level reasons at family granularity instead of mirroring lower-level detail.
 
 Blocker classification is deterministic and is performed by the layer that observed the error, normally the RI controller. Kubernetes commonly returns 403 for quota, RBAC, and admission denials, so classification must use error details rather than the status code alone: quota errors identify the exceeded quota object; RBAC denials identify the missing verb, resource, or subresource; admission denials identify the rejecting admission plugin or webhook. The implementation must document this mapping and tests must cover representative errors for each family.
 
@@ -281,11 +281,11 @@ status:
 
 RBG does not persist a lifecycle phase. `Progressing.reason` summarizes the current workflow; `message` describes the concurrent activities; `roleStatuses` and lower-level status carry details. This avoids a second single-valued summary that would need its own transition, initialization, and rollback rules. A printer column on `Progressing.reason` can still provide a one-word `kubectl` summary. Deletion remains indicated by `metadata.deletionTimestamp`, not by a new phase.
 
-The proposed semantics of RBG conditions are:
+The semantics of the RBG `Progressing` condition are:
 
 | Condition | True | False | Unknown |
 | --- | --- | --- | --- |
-| `Progressing` | The target is incomplete, with work executing or waiting for execution prerequisites | Converged, all relevant progress paused, or configuration incompatible | Progress facts cannot be determined |
+| `Progressing` | The target is incomplete, with work executing, waiting, or blocked | Converged, or all relevant progress paused | Progress facts cannot be determined |
 
 Configuration-family blockers validate the expanded target, referenced configuration actually in use (such as CoordinatedPolicy), and required environmental capabilities (such as Volcano gang support) against current observations. An absent optional configuration reference does not cause a blocker. A required reference confirmed missing reports `Progressing=True(reason=InvalidSpec)`; confirmed missing capabilities use `SchedulerUnsupported`; an unsatisfiable gang combination uses `IncompatibleGangConfig`. A read or validation that cannot be completed reports `Unknown(reason=ObservationIncomplete)`, not a confirmed incompatibility. Details are described in message, and a Warning Event records the discovery.
 Configuration-family blockers may appear or disappear without a new RBG generation, and they do not rewrite readiness facts or trigger a phase transition. GPU capacity, quota, permissions to execute operations, external admission decisions, dependencies, and runtime readiness use their own blocker reasons.
@@ -450,7 +450,7 @@ RI readiness and restart safeguards remain expressed by the following conditions
 | `RoleInstanceCustomReady` and external gates | Maintained by the corresponding owners, preserving their conditions, reasons, and messages |
 | `Restarting` | Restart safeguard maintained by the RI controller; continues to suppress duplicate restart-policy recreation and does not automatically become a readiness gate |
 
-RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. `RoleInstanceReady` reasons are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady when a configured gate condition is missing. `RoleInstanceCustomReady` and other externally owned readiness gates remain separate conditions and do not change `RoleInstanceReady`.
+RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `PodOperationUnclassified`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. `RoleInstanceReady` reasons are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady when a configured gate condition is missing. `RoleInstanceCustomReady` and other externally owned readiness gates remain separate conditions and do not change `RoleInstanceReady`.
 Multiple blocking gates require a stable priority. If blocking recurs after recovery, a stale `False / Ready` combination must not remain.
 Preserve restartCount, lastRestartTime, inPlaceUpdateContainerBaselines, and their safety-critical persistence ordering.
 
