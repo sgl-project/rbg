@@ -108,9 +108,10 @@ postReady marker 不阻塞 phase 或 RI Ready。
 | RI | 保存配置、操作上下文、阶段和 Handler Label | 不作为执行进程或消息队列 |
 | Hook executor | 观察阶段和 marker，执行业务并重试，完成后清除 | 不登记 marker，不修改 spec 或 phase |
 
-RBG 管理的负载在 `RoleBasedGroup.spec.roles[].lifecycle` 中声明需要协作的
-hook 和 marker 匹配规则；standalone RIS 在
-`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` 中声明。两种入口都由
+配置权威取决于对象所有权，而不是创建路径。RBG 管理的 RIS 在
+`RoleBasedGroup.spec.roles[].lifecycle` 中声明需要协作的 hook 和 marker
+匹配规则；standalone RIS 在
+`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` 中声明。两种归属都由
 RIS controller 把生效快照传递到 `RoleInstance.spec.lifecycle`，
 RI controller 只读取本地快照，不需要反向读取 RBG 或 RIS。
 controller 写入 marker 表示本轮 hook 待执行；前置 hooks 由 executor 清除 marker 放行实际负载操作。
@@ -193,9 +194,9 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 
 | 用途 | 固定名称或取值 |
 | --- | --- |
-| RBG 用户入口 | `RoleBasedGroup.spec.roles[].lifecycle` |
-| standalone RIS 用户入口 | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
-| 新 RI 字段 | `RoleInstance.spec.lifecycle` |
+| 权威：RBG 管理 | `RoleBasedGroup.spec.roles[].lifecycle` |
+| 权威：standalone RIS | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
+| RI 执行快照 | `RoleInstance.spec.lifecycle` |
 | 前置 hook 字段 | `labelsHandler`、`markNotReady` |
 | postReady 字段 | `labelsHandler` |
 | 旧 RIS 字段 | `RoleInstanceSet.spec.lifecycle` |
@@ -275,12 +276,18 @@ spec:
           markNotReady: true
 ```
 
-配置层级已经确定。对 RBG 管理的负载，
-`RoleBasedGroup.spec.roles[].lifecycle` 是用户唯一事实来源，
-每个 Role 可以声明自己的 hooks；RBG controller 将
-期望快照写入 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`，
-RIS controller 再复制到 `RoleInstance.spec.lifecycle`。使用新协议的
-standalone RIS 以 `roleInstanceTemplate.lifecycle` 作为用户唯一事实来源。
+配置层级已经确定。对 RBG 管理的 RIS，
+`RoleBasedGroup.spec.roles[].lifecycle` 是用户拥有的期望配置，
+每个 Role 可以声明自己的 hooks；RBG controller 将期望快照写入
+`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`。
+直接修改 RBG 所管理 RIS 上的该快照不受支持，并会在下一次
+RBG reconcile 被覆盖。RIS controller 再把快照复制到
+`RoleInstance.spec.lifecycle`。
+
+对 standalone RIS，`roleInstanceTemplate.lifecycle` 是用户拥有的期望配置，
+RIS controller 按同样方式复制到每个 RI。创建路径不改变 hook 执行方式，
+只决定哪个对象拥有期望配置，以及配置如何向下传播。
+
 新协议定义独立的 hook 类型：前置 hooks 包含 `labelsHandler` 和
 `markNotReady`，postReady 只包含 `labelsHandler`。
 
@@ -614,8 +621,8 @@ hook-state 已从新一轮前置阶段变为 PostReady，executor 据此处理�
 controller 负责写入 hook marker，executor 负责清除自己处理的 marker。
 双方只修改各自负责的 key，不整体替换 labels map。普通 RIS metadata 同步不得覆盖这些运行时标记。
 
-字段所有权明确：用户拥有 `labelsHandler`；controller 拥有 phase、
-`hook-state`、传递的 lifecycle 快照和保留 finalizer；executor 只拥有
+字段所有权明确：用户拥有上文定义的权威 lifecycle 配置；controller 拥有
+phase、`hook-state`、RI 生效快照和保留 finalizer；executor 只拥有
 marker 清除。该边界可由 admission 或受限代理执行。
 
 executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空间内
@@ -637,7 +644,8 @@ Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提�
 
 ### 已确定设计与遗留问题
 
-四个 hooks 的 API 设计已确认：Role 定义、RIS 模板保存期望快照、
+四个 hooks 的 API 设计已确认：RBG 管理的 RIS 由 Role 定义期望配置，
+standalone RIS 由 RIS 模板定义；RIS controller 保存期望快照，
 `RoleInstance.spec.lifecycle` 保存生效副本；新协议定义独立 hook 类型，
 不复用旧结构；空 `labelsHandler` 校验失败；前置 hooks 包含
 `labelsHandler` 和 `markNotReady`，postReady 只包含 `labelsHandler`

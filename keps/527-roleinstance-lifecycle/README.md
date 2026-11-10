@@ -145,10 +145,12 @@ RBG does not need to embed application logic or create a Job for every hook.
 | RI | Config, context, phase, Handler Labels | Execution and message queuing |
 | Executor | Watch, execute, retry, remove markers | Registration, spec, phase |
 
-For RBG-managed workloads, users declare hooks and marker-matching rules in
-`RoleBasedGroup.spec.roles[].lifecycle`. For a standalone RIS, users declare
-them in `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`. In both cases,
-the RIS controller propagates the effective snapshot to
+Configuration authority follows object ownership rather than the creation
+path. For an RBG-managed RIS, users declare
+hooks and marker-matching rules in `RoleBasedGroup.spec.roles[].lifecycle`.
+For a standalone RIS, users declare them in
+`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`. In both cases, the RIS
+controller propagates the effective snapshot to
 `RoleInstance.spec.lifecycle`, and the RI controller reads that local snapshot
 without reading back from RBG or RIS.
 
@@ -265,9 +267,9 @@ The following names and values are normative:
 
 | Purpose | Exact name or value |
 | --- | --- |
-| RBG user entry | `RoleBasedGroup.spec.roles[].lifecycle` |
-| Standalone RIS entry | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
-| New RI field | `RoleInstance.spec.lifecycle` |
+| Authority: RBG-managed | `RoleBasedGroup.spec.roles[].lifecycle` |
+| Standalone authority | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
+| RI execution snapshot | `RoleInstance.spec.lifecycle` |
 | Pre-operation hook fields | `labelsHandler`, `markNotReady` |
 | postReady field | `labelsHandler` |
 | Legacy RIS field | `RoleInstanceSet.spec.lifecycle` |
@@ -363,15 +365,23 @@ spec:
           markNotReady: true
 ```
 
-The configuration hierarchy is settled. For RBG-managed workloads,
-`RoleBasedGroup.spec.roles[].lifecycle` is the user-facing source of truth;
-each Role may declare its own hooks, and the RBG controller writes the desired
-snapshot to
-`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`, and the RIS controller
-copies it to `RoleInstance.spec.lifecycle`. For a standalone RIS that uses the
-new protocol, `roleInstanceTemplate.lifecycle` is the user-facing source of
-truth. The new protocol defines an independent hook type: pre-operation hooks
-contain `labelsHandler` and `markNotReady`, while `postReady` contains only
+The configuration hierarchy is settled. For an RBG-managed RIS,
+`RoleBasedGroup.spec.roles[].lifecycle` is the user-owned desired
+configuration; each Role may declare its own hooks, and the RBG controller
+writes the desired snapshot to
+`RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`. Direct edits to that
+snapshot on an RBG-owned RIS are unsupported and are overwritten on the next
+RBG reconcile. The RIS controller then copies the snapshot to
+`RoleInstance.spec.lifecycle`.
+
+For a standalone RIS, `roleInstanceTemplate.lifecycle` is the user-owned
+desired configuration. The RIS controller copies it to each RI in the same
+way. The creation path does not change hook execution; it only determines
+which object owns the desired configuration and how that configuration is
+propagated.
+
+The new protocol defines an independent hook type: pre-operation hooks contain
+`labelsHandler` and `markNotReady`, while `postReady` contains only
 `labelsHandler`.
 
 The new protocol field and the existing `RoleInstanceSetSpec.lifecycle` use
@@ -811,10 +821,10 @@ processes. Each party modifies only the keys it owns rather than replacing
 the entire labels map. Ordinary RIS metadata synchronization must not
 overwrite these runtime markers.
 
-Field ownership is explicit: users own `labelsHandler`; the controller owns
-phase, `hook-state`, propagated lifecycle snapshots, and the reserved
-finalizer; the executor owns only marker removal. Admission or a restricted
-proxy may enforce this boundary.
+Field ownership is explicit: users own the authoritative lifecycle
+configuration described above; the controller owns phase, `hook-state`, the
+effective RI snapshot, and the reserved finalizer; the executor owns only
+marker removal. Admission or a restricted proxy may enforce this boundary.
 
 An executor that polls with GET and PATCHes markers needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
@@ -844,9 +854,11 @@ proposed here.
 
 ### Settled Design and Remaining Questions
 
-The four-hook API design is settled: Roles define the configuration, the RIS
-template stores the desired snapshot, and `RoleInstance.spec.lifecycle` stores
-the effective copy. The new protocol defines an independent hook type rather
+The four-hook API design is settled: for RBG-managed workloads, the Role
+defines the desired configuration; for standalone RIS objects, the RIS
+template defines it. The RIS controller stores the desired snapshot, and
+`RoleInstance.spec.lifecycle` stores the effective copy. The new protocol
+defines an independent hook type rather
 than reusing the legacy structure. Empty `labelsHandler` values fail
 validation. Pre-operation hooks contain `labelsHandler` and `markNotReady`,
 while `postReady` contains only `labelsHandler` and does not gate RI Ready.
