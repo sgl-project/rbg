@@ -57,7 +57,7 @@
 hook executor 观察到匹配 marker 后执行业务动作，完成、取消或决定放行后清除 marker。
 前置 hooks 阻塞实际负载操作，controller 等 marker 不再匹配后继续；
 postReady 完全异步，controller 写入 marker 后立即进入 `Running`，不等待业务处理完成。
-marker 不再由 executor 初始登记，也不要求 executor 在后置 hook 完成后加回。
+与旧协议不同，executor 不做 marker 初始登记，也不在后置 hook 完成后加回。
 
 executor 负责业务重试、退避和幂等恢复。前置 hooks 可配置 `markNotReady`；
 postReady marker 不阻塞 phase 或 RI Ready。
@@ -164,7 +164,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | 重试造成重复副作用 | executor 使用可恢复记录或业务幂等去重，不承诺恰好一次 |
 | Ready 与 postReady 相互等待 | postReady 不参与 RI Ready 计算 |
 | foreground 级联或直接删除 Pod 绕过存活引擎屏障 | 准入拒绝 foreground 传播；直接删除 Pod 归入 Recovery |
-| executor 故障导致长期等待 | 暴露阶段、marker 和 executor 诊断；Alpha 不静默跳过 |
+| executor 故障导致长期等待 | 暴露阶段、marker 和 executor 诊断；Alpha 不自动跳过 |
 | metadata 回写权限过宽 | 限定命名空间、资源和身份；字段级限制需要 admission 或受限代理 |
 
 ## 设计细节
@@ -176,7 +176,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | `preUpdate` | 已确定本轮更新目标，controller 第一次实际变更业务 Pod 之前 | 开始执行本轮更新 |
 | `preRecover` | `Recovering` 中实际恢复业务 Pod 之前 | 开始执行本轮恢复 |
 | `postReady` | 受控操作达到工作负载 Ready | 已提前 running；清 marker 后清 state |
-| `preDelete` | RI 最终删除流程中，controller 主动终止业务 Pod 之前 | 开始删除业务 Pod并完成 RI 删除收尾 |
+| `preDelete` | RI 最终删除流程中，controller 主动终止业务 Pod 之前 | 开始删除业务 Pod 并完成 RI 删除收尾 |
 
 `postReady` 不是 Pod 对象创建通知，也不是容器 `postStart`。
 仅创建 Pod、写入 RI spec 或更新 revision 不足以触发它；controller 必须先确认本轮目标已达到工作负载 Ready。
@@ -222,7 +222,9 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 | finalizer Go 常量 | `RoleInstancePreDeleteFinalizer` |
 
 没有 lifecycle 操作进行时，hook-state label 不存在。协议不定义 `Running`
-hook-state；`Running` 是 `status.phase` 的取值。未知 hook-state 值非法：
+hook-state；`Running` 是 `status.phase` 的取值。`Updating`、`Recovering` 和
+`Terminating` 在两个字段中同名，是因为 hook-state 记录当前操作；
+没有进行中的操作或后台 hook 时清空。未知 hook-state 值非法：
 controller 不得推进，executor 不得执行，诊断必须暴露非法值，且不能自动清理。
 
 本文中的 `hook-state` 是上表 label key 的固定简称。marker key 和 value
@@ -295,7 +297,9 @@ RIS controller 按同样方式复制到每个 RI。创建路径不改变 hook �
 类型和运行协议。旧 RIS 字段仅供存量 standalone RIS 使用，其中
 `inPlaceUpdate` 标记为 deprecated。准入拒绝新 lifecycle 协议
 与用户配置的旧 RIS lifecycle 同时非空；RBG 管理的 RIS lifecycle
-只能由 Role 向下传递，不支持直接修改。
+只能由 Role 向下传递，不支持直接修改。该校验中，只要 RBG controller
+不拥有旧字段，就视为用户配置：RBG 只向下传递新协议字段，因此
+RBG 管理的 RIS 上旧 `spec.lifecycle` 非空即视为用户配置。
 
 两套协议可以安全共存，因为它们使用不同 state key，且 controller 职责不同：
 旧协议由 RIS controller 执行，新协议由 RI controller 执行。准入通过互斥
@@ -336,8 +340,8 @@ controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时�
 未配置 hook 时不为该 hook 执行 marker 匹配。因此配置变更在下一次 reconcile
 直接生效，不引入特殊的在途处理。例如 markerA 改为 markerB 后，controller
 直接检查 markerB，不再等待 markerA；如果删除 active hook，controller 视其
-为不存在，不为它执行 marker 匹配，并可清理遗留 runtime labels。这是预期的
-声明式语义。
+为不存在，不为它执行 marker 匹配，清理遗留 runtime labels，并按已放行
+hook 的转换继续，例如 `PreUpdate` 切换到 `Updating`。这是预期的声明式语义。
 
 ### Ready 门控
 
@@ -351,7 +355,7 @@ controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时�
   实现必须保证启用 `markNotReady` 时满足此前提，不能只写 condition 而缺少 readinessGate。
 - 更新或恢复期间的 NotReady 门控持续到本轮操作进入 `Running`，而非仅到 preUpdate 或 preRecover marker 清除。
 - preDelete 建立的 NotReady 门控持续到 RI 对象删除；删除 marker 放行后不得恢复 Ready。
-- `postReady` 不配置 `markNotReady` 或 `blockReady`，其 marker 不参与 RI Ready 计算。
+- `postReady` 不提供任何 Ready 门控字段，其 marker 不参与 RI Ready 计算。
 - 工作负载达到 Ready 后，controller 写入 postReady state 和 marker，立即进入 `Running`，
   并按原有健康条件和前置门控计算 RI Ready。
 - postReady 后台处理结果不改变 controller 的 phase 和 Ready；业务结果由 executor 自行诊断，流量准入由业务系统负责。
@@ -378,7 +382,6 @@ RBG 不关心 marker 的消费者身份、数量或部署方式。controller 只
 多个消费者如何协调、何时可以清除同一 hook 内共享的 marker，由业务自行决定。
 消费者过早清除该 marker 属于其内部协调问题，不改变 RBG 的协议；
 但 marker key 仍不得在不同挂载点之间复用。
-多个 label 仍表示多个匹配条件，前置 hooks 等所有条件不再匹配后继续。
 
 ### 更新交互流程
 
@@ -406,7 +409,7 @@ sequenceDiagram
     P-->>C: 本轮目标更新完成且达到工作负载 Ready
     alt 配置了 postReady
         C->>R: 写入 hook-state=PostReady 和 ready-notify
-        C->>R: 切换 phase=Running并解除更新门控
+        C->>R: 切换 phase=Running 并解除更新门控
         R-->>E: 观察到 postReady 且 marker 匹配
         E->>E: 异步验收新版本、恢复动态配置和注册路由
         E->>R: 完成或取消后移除 ready-notify
@@ -443,7 +446,7 @@ sequenceDiagram
     P-->>C: 恢复目标完成且达到工作负载 Ready
     alt 配置了 postReady
         C->>R: 写入 hook-state=PostReady 和 ready-notify
-        C->>R: 切换 phase=Running并解除恢复门控
+        C->>R: 切换 phase=Running 并解除恢复门控
         E->>R: 完成或取消后移除 ready-notify
         C->>R: 清理 hook-state
     else 未配置 postReady
@@ -467,7 +470,7 @@ sequenceDiagram
     C->>C: 确认创建、恢复或更新目标完成
     C->>C: 等待工作负载 Ready（不含 lifecycle 门控）
     C->>R: 写入 hook-state=PostReady 和配置的 ready marker
-    C->>R: 立即切换 phase=Running并计算 RI Ready
+    C->>R: 立即切换 phase=Running 并计算 RI Ready
     R-->>E: 观察到 postReady 且 marker 匹配
     loop 当前阶段有效且后台业务动作尚未完成
         E->>E: 验收实例、恢复配置或注册路由，失败自行重试
@@ -507,7 +510,7 @@ sequenceDiagram
     R-->>C: 所有 preDelete marker 不再匹配
     C->>R: 切换 hook-state=Terminating
     C->>P: 删除业务 Pod
-    C->>R: 清除保留的 preDelete finalizer并完成 RI 删除收尾
+    C->>R: 清除保留的 preDelete finalizer 并完成 RI 删除收尾
 ```
 
 本提案不包含 postDelete，业务 Pod 删除后的外部清理由其他机制承担。
@@ -521,14 +524,15 @@ controller 删除成员 Pod、完成 RI 收尾，并移除保留 finalizer。
 本方案不使用逐 Pod finalizer。
 
 默认 background 删除路径上，保留的 RI finalizer 使 owner 对象继续存在，
-Kubernetes background GC 在 owner 仍为 solid 时不会删除 dependent 成员 Pod。
+Kubernetes background GC 在 owner 对象仍然存在时不会删除 dependent 成员 Pod。
 这就是 preDelete 执行期间 executor 仍能访问存活负载的 invariant；
 controller 仍必须在 marker 放行前避免主动删除成员 Pod。
 
 新建 RI 在生效配置包含 preDelete 时，创建请求即带保留 finalizer。
 存量稳定 RI 启用 preDelete 时，controller 先补充保留 finalizer，
 再暴露生效的 preDelete 配置。如果 RI 已有 deletionTimestamp，
-启用请求会被拒绝或暂缓，因为 Kubernetes 不允许删除开始后新增 finalizer。
+controller 无法补充 finalizer，因此该 RI 不暴露 preDelete，
+本次删除继续且不触发该 hook；Kubernetes 不允许删除开始后新增 finalizer。
 禁用 preDelete 时，controller 在正常配置收敛中移除保留 finalizer。
 如果删除过程中移除 preDelete，controller 视该 hook 为不存在，不执行
 marker 匹配，并移除保留 finalizer，使删除可以继续。这是用户删除 hook
@@ -664,20 +668,21 @@ postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Re
 消费者边界已确认：RBG 只判断 marker 是否存在，不关心消费者身份、数量、选主或聚合。
 preDelete 屏障已确认：controller 在 RI 上保留专属 finalizer，preDelete 放行后再删除成员 Pod 并清除；
 Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需要 lifecycle finalizer。
-上线与回滚边界已确认：先部署 executor和权限再启用，存量 postReady 不因当前 Ready 重放；
+上线与回滚边界已确认：先部署 executor 和权限再启用，存量 postReady 不因当前 Ready 重放；
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
 Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS lifecycle 互斥；
 旧协议保持原有字段不变；新协议不暴露 `inPlaceUpdate`、
 `finalizersHandler` 或旧的 `markPodNotReady` 字段。
 
-进入 `implementable` 前需解决：
+上述设计已确定；进入 `implementable` 前需要的是完成与验证，而不是重新设计：
 
 1. KEP-502 的 `RoleInstance.status.phase` schema 被接受，以及 Alpha 后
    standalone RIS lifecycle 用户的迁移路径。
-2. 授权与诊断细则、版本支持矩阵和存量接管实施流程。
-3. 保留 RI finalizer 时的默认 background GC 行为、
-   foreground 级联删除的准入拒绝，以及 controller 有序删除成员 Pod。
+2. 明确授权与诊断细则、版本支持矩阵和存量接管实施流程。
+3. 验证已确定的 preDelete 屏障：保留 RI finalizer 时的默认
+   background GC 行为、foreground 级联删除的准入拒绝，
+   以及 controller 有序删除成员 Pod。
 
 超时预算、人工跳过和不同失败策略作为后续能力讨论。
 
@@ -727,7 +732,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
 - markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
 - 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
-  匹配，并可清理遗留 runtime labels。
+  匹配，清理遗留 runtime labels，并按已放行 hook 的转换继续。
 - 启用 `markNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
 - 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
@@ -746,12 +751,12 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - preDelete 的 GC 传播、零 Pod 删除，以及新旧 lifecycle 和 Ready 门控兼容性。
 - RI 保留 finalizer 的添加、preDelete 等待期间保持，以及成员 Pod 删除完成后的移除。
 - 新建 RI 的创建请求包含保留 finalizer；存量启用先加 finalizer 再暴露 hook，
-  RI 已开始删除时拒绝启用。
+  RI 已开始删除时不暴露该 hook，删除继续且不触发 preDelete。
 - 默认 background 删除在 preDelete 放行前保留成员 Pod，准入拒绝包括 RBGSet
   在内所有受影响祖先的 foreground 删除，并明确 namespace 删除不提供存活引擎保证。
 - Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
 - 禁用 hook 后，下一次 reconcile 起停止 marker 匹配，
-  并可清理遗留运行时 labels 和 RI 上的保留 finalizer，
+  清理遗留运行时 labels 和 RI 上的保留 finalizer，
   即使其他 lifecycle 操作尚未完成。
 - 紧急 break-glass 只移除精确匹配的阻塞 marker，controller 正常推进，
   不直接修改 phase、finalizer 或 Pod。
@@ -762,7 +767,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - Recovery 在实际补齐或重建 Pod 前执行 preRecover，达到工作负载 Ready 后执行统一的 postReady，普通 Ready 抖动不重放。
 - Create 达到工作负载 Ready 后直接执行 postReady，不执行 preRecover。
 - 开关前置 RI Ready 门控，验证 postReady marker 不影响 RI Ready，业务路由按自身流量策略恢复。
-- preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller 删除成员 Pod并清除保留的 RI finalizer。
+- preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller
+  删除成员 Pod 并清除保留的 RI finalizer。
 - 连续提交多个 update，验证 updating 中不重复 preUpdate、旧 postReady 不阻塞新操作，以及同名 marker 的幂等处理。
 - 验证 Update 打断 Recovery 和 Delete 抢占其他操作。
 - executor 长期不可用、业务结果未知和双方重启时的前置等待、postReady 后台处理与诊断。
@@ -770,7 +776,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 
 ### 成熟度晋级标准
 
-进入 alpha 前，先解决上文明列的三个 implementable 前置问题，实现四个挂载点、
+进入 alpha 前，先解决“已确定设计与遗留问题”中的三个 implementable 前置问题，实现四个挂载点、
 controller 写入与 executor 清除的 Handler Label 协作及可配置 Ready 门控，完成核心测试并提供 executor 接入示例。
 进入 beta 前验证真实业务、多 Pod 协调、权限、恢复和升级兼容、规模开销，完善故障诊断及运维恢复流程。
 进入 stable 需持续生产反馈并解决 beta 问题；本 KEP 不指定发布里程碑。
@@ -781,7 +787,7 @@ controller 写入与 executor 清除的 Handler Label 协作及可配置 Ready �
 Ready 或历史更新而重放 postReady／preUpdate；这些 hooks 只由受控操作触发。
 启用 preDelete 时，controller 按前述规则为存量稳定 RI 补充保留 finalizer。
 
-启用 lifecycle 前，先部署兼容 executor并确认 RBAC 权限，再开放 hook 配置。
+启用 lifecycle 前，先部署兼容 executor 并确认 RBAC 权限，再开放 hook 配置。
 如果先写入前置 marker 而没有可用消费者，对应更新、恢复或删除会持续等待。
 executor 不需要初始登记 marker。
 
@@ -799,7 +805,6 @@ preDelete RI finalizer 后，再替换 controller。
 
 controller 与 executor 必须约定阶段位置、阶段值和 marker 方向。
 不理解新协议的 executor 不得盲目清除 marker；混合版本中不允许旧 controller 接管运行中操作。
-已发布 hook 的语义不得随版本变化；新逻辑通过新 hook 表达。
 支持矩阵与迁移规则在 API 定稿时明确。
 
 ## 生产就绪评审
@@ -857,12 +862,12 @@ executor 需要限制观察范围、连接数、轮询频率和业务退避，�
 ### 故障排查
 
 - `preUpdate`、`preRecover` 或 `preDelete` 仍有 marker：检查 executor 是否在线、是否有权限，以及业务日志中的失败原因。
-- `postReady` 仍有 marker：检查实例验收、动态配置或业务注册是否完成，不要手动清除 marker伪报成功。
+- `postReady` 仍有 marker：检查实例验收、动态配置或业务注册是否完成，不要手动清除 marker 伪报成功。
 - controller 反复写入同一 marker：检查操作上下文是否正确保存，避免把阶段转换变成 reconcile 持续同步。
 - 业务成功但未推进：检查 marker PATCH 是否成功、当前阶段是否仍有效，以及其他 marker 是否已清除。
 - RI NotReady：区分工作负载健康失败、旧 readiness gates 和本功能门控，检查是否错误等待对外 Ready。
-- 新 update 未开始：检查是否仍处于 updating；postReady 不应阻塞新操作。
-- 删除等待：区分 preDelete、Pod 删除和其他 finalizers，不应把强制清除 marker作为常规恢复方法。
+- 新 update 未开始：检查是否仍处于 `Updating`；postReady 不应阻塞新操作。
+- 删除等待：区分 preDelete、Pod 删除和其他 finalizers。
 - API 不可用：连接恢复后重读阶段和 marker，不能因写入失败推断业务副作用未发生。
 
 Alpha 不提供自动忽略失败策略。executor 永久不可用时，唯一受支持的

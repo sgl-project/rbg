@@ -65,8 +65,8 @@ their markers no longer match. By contrast, `postReady` is fully asynchronous:
 the controller writes its marker and immediately enters `Running` without
 waiting for application processing to finish.
 
-Executors no longer register markers initially, and they do not restore
-markers after a post-operation hook completes. Executors own application
+Unlike the legacy protocol, executors do not register markers initially or
+restore them after a post-operation hook completes. Executors own application
 retries, backoff, and idempotent recovery. Pre-operation hooks may configure
 `markNotReady`; `postReady` markers gate neither the phase nor RI Ready.
 
@@ -228,7 +228,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
 | Ready/postReady circular wait | Exclude postReady from RI Ready |
 | Foreground/direct deletion bypass | Reject foreground; direct is Recovery |
-| Executor outage blocks progress | Expose diagnostics; never skip in Alpha |
+| Executor outage blocks progress | Diagnostics; no automatic skip in Alpha |
 | Broad metadata permissions | Limit scope; use admission/proxy for fields |
 
 ## Design Details
@@ -296,7 +296,10 @@ The following names and values are normative:
 
 The hook-state label is absent when no lifecycle operation is active. The
 protocol does not define a `Running` hook-state value; `Running` is a
-`status.phase` value. Unknown hook-state values are invalid: the controller
+`status.phase` value. `Updating`, `Recovering`, and `Terminating` appear in
+both fields because the hook-state records which operation is in progress;
+it is cleared once no operation or background hook remains. Unknown
+hook-state values are invalid: the controller
 must not advance, the executor must not execute, and diagnostics must expose
 the invalid value without automatic cleanup.
 
@@ -390,7 +393,10 @@ for existing standalone RIS usage, and its `inPlaceUpdate` hook is
 deprecated. Admission rejects a Role/RIS combination in which the new
 lifecycle protocol and a legacy user-configured RIS lifecycle are both
 non-empty. RBG-managed RIS lifecycle data is propagated from the Role and is
-not independently editable.
+not independently editable. For this check, a legacy RIS lifecycle is
+user-configured whenever the RBG controller does not own it: RBG propagates
+only the new protocol field, so any non-empty legacy `spec.lifecycle` on an
+RBG-managed RIS is treated as user configuration.
 
 The two protocols can coexist safely because they use distinct state keys and
 distinct controller responsibilities: the legacy protocol is executed by the
@@ -445,8 +451,10 @@ no marker matching occurs for that hook. A configuration change therefore
 takes effect on the next reconciliation without special in-flight handling.
 For example, after markerA changes to markerB, the controller checks markerB
 directly and stops waiting for markerA. If an active hook is removed, the
-controller treats it as absent, performs no marker matching for it, and may
-clean its stale runtime labels. This is the intended declarative semantics.
+controller treats it as absent, stops matching its marker, removes its stale
+runtime labels, and follows the same transition as a released hook; for
+example, `PreUpdate` advances to `Updating`. This is the intended declarative
+semantics.
 
 ### Ready Gating
 
@@ -470,7 +478,7 @@ resources and other controllers.
 - A NotReady gate established by `preDelete.markNotReady` remains until
   the RI object is deleted; it is not restored merely because the delete
   marker has been released.
-- `postReady` has neither `markNotReady` nor `blockReady`, and its marker does
+- `postReady` exposes no Ready-gating field, and its marker does
   not participate in RI Ready computation.
 - After the workload becomes Ready, the controller writes the `postReady`
   state and marker, immediately enters `Running`, and computes RI Ready from
@@ -511,9 +519,7 @@ election, membership aggregation, or result arbitration.
 Application owners decide how multiple consumers coordinate and when a marker
 shared within one hook is safe to remove. Removing such a marker too early is
 a consumer coordination problem and does not change the RBG protocol. Marker
-keys still may not be shared between hook points. Multiple labels represent
-independent matching conditions: a pre-operation hook waits until none of them
-match.
+keys remain scoped to a single hook point.
 
 ### Update Interaction Flow
 
@@ -677,18 +683,20 @@ No per-Pod finalizer is used.
 
 On the default background deletion path, the reserved RI finalizer keeps the
 owner object present, and Kubernetes background GC does not delete dependent
-member Pods while their owner is solid. This is the invariant that gives the
+member Pods while their owner object still exists. This is the invariant that
 executor access to a live workload while `preDelete` runs. The controller is
 still responsible for not deleting member Pods before the marker is released.
 
 New RIs are created with the reserved finalizer when their effective
 configuration includes `preDelete`. For an existing stable RI, the controller
 adds the finalizer before exposing the effective `preDelete` configuration.
-Enablement is rejected or deferred if the RI already has a deletionTimestamp,
-because Kubernetes does not allow a new finalizer to be added after deletion
-has begun. Disabling `preDelete` removes the reserved finalizer as part of
-normal configuration convergence. If `preDelete` is removed while deletion is
-in progress, the controller treats the hook as absent, performs no marker
+If the RI already has a deletionTimestamp, the controller cannot add the
+finalizer, so the hook is never exposed on that RI and its deletion
+continues without `preDelete`; Kubernetes does not allow a new finalizer to
+be added after deletion has begun. Disabling `preDelete` removes the
+reserved finalizer as part of normal configuration convergence. If
+`preDelete` is removed while deletion is in progress, the controller treats
+the hook as absent, performs no marker
 matching, and removes the reserved finalizer so deletion may continue. This is
 the direct result of the user removing the hook.
 
@@ -900,15 +908,16 @@ and the legacy user-configured RIS lifecycle are mutually exclusive. The
 legacy protocol remains unchanged; the new protocol does not expose
 `inPlaceUpdate`, `finalizersHandler`, or the legacy `markPodNotReady` field.
 
-Before this KEP can become `implementable`, the following must be resolved:
+The designs above are settled; what remains before this KEP can become
+`implementable` is completion and validation, not redesign:
 
 1. Acceptance of the KEP-502 `RoleInstance.status.phase` schema and the
    post-Alpha migration path for standalone RIS lifecycle users.
-2. Authorization and diagnostics details, the version support matrix, and
-   the procedure for adopting existing resources.
-3. Default background GC behavior with the reserved RI finalizer, admission
-   rejection of foreground cascading deletion, and controller-ordered member
-   Pod deletion.
+2. Finalize authorization and diagnostics details, the version support
+   matrix, and the procedure for adopting existing resources.
+3. Validate the settled preDelete barrier: default background GC behavior
+   with the reserved RI finalizer, admission rejection of foreground
+   cascading deletion, and controller-ordered member Pod deletion.
 
 Timeout budgets, manual skipping, and alternative failure policies are left
 for future enhancements.
@@ -983,7 +992,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - A change from markerA to markerB immediately uses the latest configuration
   without migrating or removing the old marker.
 - Removing an active hook uses absence semantics: the controller performs no
-  marker matching for it and may clean its stale runtime labels.
+  marker matching for it, removes its stale runtime labels, and follows the
+  released-hook transition.
 - Enabling `markNotReady` requires the `RoleInstanceCustomReady` readiness
   gate.
 - Repeated Ready transitions idempotently write the same `postReady` marker
@@ -1014,17 +1024,17 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Reserved RI finalizer addition, retention while `preDelete` is pending, and
   removal after member Pod deletion is complete.
 - New RIs are created with the reserved finalizer; existing enablement adds
-  it before exposing the hook, and enablement is rejected once deletion has
-  begun.
+  it before exposing the hook, and an RI already being deleted never exposes
+  the hook; that deletion continues without `preDelete`.
 - Default background deletion retains member Pods until `preDelete` is
   released, admission rejects foreground deletion at every affected ancestor
   including RBGSet, and namespace teardown is documented as outside the
   live-engine guarantee.
 - Update and Recovery replace Pods during internal replacement without
   executing `preDelete` and without member Pod finalizers.
-- Hook disablement stops marker matching on the next reconciliation and may
-  clean stale runtime labels and the reserved RI finalizer, even when another
-  lifecycle operation is unfinished.
+- Hook disablement stops marker matching on the next reconciliation and
+  cleans stale runtime labels and the reserved RI finalizer, even when
+  another lifecycle operation is unfinished.
 - The emergency break-glass procedure removes only the exact blocking marker
   and lets the controller advance without direct phase, finalizer, or Pod
   edits.
@@ -1058,8 +1068,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 ### Graduation Criteria
 
-Before Alpha, resolve the three remaining pre-implementable questions
-listed above. Implement all four hooks,
+Before Alpha, resolve the three remaining pre-implementable questions in
+"Settled Design and Remaining Questions". Implement all four hooks,
 controller-write/executor-remove Handler Label coordination, and configurable
 Ready gating; complete the core tests and provide an executor integration
 example.
@@ -1106,9 +1116,8 @@ values, and marker direction. An executor that does not understand the new
 protocol must not remove markers blindly. In a mixed-version deployment, an
 old controller must not take over an in-flight operation.
 
-Published hook semantics must not change between versions; new behavior is
-expressed through new hooks. The support matrix and migration rules will be
-defined when the API is finalized.
+The support matrix and migration rules will be defined when the API is
+finalized.
 
 ## Production Readiness Review
 
@@ -1211,7 +1220,7 @@ failures, and large numbers of instances waiting for hooks to complete.
 - A new update has not started: check whether the RI is still `Updating`;
   `postReady` must not block it.
 - Deletion is waiting: distinguish `preDelete`, Pod deletion, and other
-  finalizers. Forcibly removing markers is not a routine recovery procedure.
+  finalizers.
 - The API is unavailable: reread the phase and markers after reconnecting.
   A write failure does not prove that the application side effect did not
   occur.
