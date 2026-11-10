@@ -193,6 +193,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.RoleInstanceComponentStatusApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceCondition"):
 		return &workloadsv1alpha2.RoleInstanceConditionApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstancePodReference"):
+		return &workloadsv1alpha2.RoleInstancePodReferenceApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceReadinessGate"):
 		return &workloadsv1alpha2.RoleInstanceReadinessGateApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSet"):

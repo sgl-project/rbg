@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	v2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const v1alpha1DeprecationWarning = "workloads.x-k8s.io/v1alpha1 is deprecated and will be removed in 0.10.0; migrate to v1alpha2 using the migration guide"
@@ -127,6 +128,39 @@ func validateV1alpha1DeprecatedRoles(
 	newRoles, oldRoles []RoleSpec,
 	allowExisting bool,
 ) error {
+	// Check policy compatibility before deprecated-workload grandfathering: an
+	// existing backing workload cannot gain support for a new policy by updating
+	// through the deprecated API version.
+	converted := &v2.RoleBasedGroupSpec{}
+	if err := convertSpecV1alpha1ToV2(&RoleBasedGroupSpec{Roles: newRoles}, converted); err != nil {
+		return err
+	}
+	for i := range newRoles {
+		role := &newRoles[i]
+		if role.MaxGroupRestarts != nil && !v2.IsRoleInstanceRecreatePolicy(v2.RestartPolicyType(role.RestartPolicy)) {
+			// Match the RoleSpec CEL rule even when this validator is invoked without
+			// API-server schema validation. Legacy/default fallback is not an explicit type.
+			return fmt.Errorf("%s[%d] (role %q): maxGroupRestarts requires an explicit whole-RoleInstance recreate policy", fieldPath, i, role.Name)
+		}
+		if converted.Roles[i].StandalonePattern != nil &&
+			(role.MaxGroupRestarts != nil || role.RestartPolicy == RecreateRoleInstanceOnPodRestartFromCreation) {
+			// StandalonePattern has no restart-policy field. Validate the v1alpha1 restart
+			// fields in a temporary pattern before grandfathering so neither an unsupported
+			// policy nor a budget can disappear during conversion.
+			cfg := convertRestartPolicyConfigV1alpha1ToV2(role.RestartPolicy, role.MaxGroupRestarts)
+			converted.Roles[i].Pattern = v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{RestartPolicyConfig: cfg}}
+		}
+	}
+	if err := v2.ValidateRestartPolicyWorkloadCompatibility(fieldPath, converted.Roles); err != nil {
+		return err
+	}
+	for i := range newRoles {
+		role := &newRoles[i]
+		if role.MaxGroupRestarts != nil && role.LeaderWorkerSet == nil && len(role.Components) == 0 {
+			return fmt.Errorf("%s[%d] (role %q): maxGroupRestarts requires leaderWorkerSet or components; standalone roles cannot retain restart configuration", fieldPath, i, role.Name)
+		}
+	}
+
 	oldWorkloadTypes := make(map[string]string, len(oldRoles))
 	for i := range oldRoles {
 		oldWorkloadTypes[oldRoles[i].Name] = workloadType(oldRoles[i].Workload)

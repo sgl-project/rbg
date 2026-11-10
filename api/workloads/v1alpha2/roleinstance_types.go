@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // RoleInstanceSpec defines the desired state of RoleInstance
@@ -38,7 +39,7 @@ type RoleInstanceSpec struct {
 	// Deprecated: use RestartPolicyConfig instead. Kept as a string for wire
 	// compatibility with v0.7.0, where this field carried the policy directly.
 	// +optional
-	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart,RecreateRoleInstanceOnPodRestartFromCreation}
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
 	// RestartPolicyConfig defines the restart policy and backoff configuration for
@@ -187,6 +188,34 @@ type RoleInstanceStatus struct {
 	// recreation. Used to compute exponential backoff between restart attempts.
 	// +optional
 	LastRestartTime *metav1.Time `json:"lastRestartTime,omitempty"`
+
+	// GroupRestartCount is the durable number of accepted group rebuilds in
+	// GroupRestartRevision. Unlike RestartCount it never resets after a quiet period.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	GroupRestartCount int32 `json:"groupRestartCount,omitempty"`
+
+	// GroupRestartRevision identifies the Pod templates (not policy, budget or size).
+	// +optional
+	GroupRestartRevision string `json:"groupRestartRevision,omitempty"`
+
+	// RestartBudgetExhausted suppresses creation and updates until explicit recovery
+	// or a new Pod-template revision, even if the budget is changed or removed.
+	// +optional
+	RestartBudgetExhausted bool `json:"restartBudgetExhausted,omitempty"`
+
+	// RetiringPods records the old Pod names and UIDs to delete. An accepted
+	// Delete does not mean deletion is complete: normal creation is blocked
+	// while this list is nonempty. Recovery clears it once those UIDs are gone,
+	// before replacement Pods become Ready.
+	// +optional
+	RetiringPods []RoleInstancePodReference `json:"retiringPods,omitempty"`
+}
+
+// RoleInstancePodReference identifies a specific Pod incarnation, never just a name.
+type RoleInstancePodReference struct {
+	Name string    `json:"name"`
+	UID  types.UID `json:"uid"`
 }
 
 // ContainerUpdateBaseline records the pre-update state of a container for
@@ -226,6 +255,9 @@ type RoleInstanceComponentStatus struct {
 type RoleInstanceConditionType string
 
 const (
+	// RoleInstanceDegraded indicates that automatic group recovery is exhausted.
+	RoleInstanceDegraded RoleInstanceConditionType = "Degraded"
+
 	// RoleInstanceReady corresponding condition status was set to "False" by multiple writers,
 	// the condition status will be considered as "True" only when all these writers
 	// set it to "True".
@@ -246,9 +278,8 @@ const (
 	// RoleInstanceFailedUpdate indicates RoleInstance controller failed to update pods.
 	RoleInstanceFailedUpdate RoleInstanceConditionType = "FailedUpdate"
 
-	// RoleInstanceRestarting indicates the instance is being recreated due to restart policy.
-	// While this condition is True, further restart-policy recreations are suppressed to
-	// prevent cascading restart loops.
+	// RoleInstanceRestarting is an informational projection of RetiringPods,
+	// not a recovery guard. It clears when those UIDs disappear, before readiness.
 	RoleInstanceRestarting RoleInstanceConditionType = "Restarting"
 )
 

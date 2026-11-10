@@ -95,6 +95,13 @@ func IsSystemManagedRoleAnnotation(key string) bool {
 
 // RoleInstance level annotations
 const (
+	// RoleInstanceRecoverAnnotationKey requests recovery after budget exhaustion.
+	RoleInstanceRecoverAnnotationKey = RBGPrefix + "recover"
+
+	// GroupRestartBudgetCleanupFinalizer retains Pod API objects, not containers.
+	// Also protects the RI until its owned Pods have had this finalizer removed.
+	GroupRestartBudgetCleanupFinalizer = RBGPrefix + "group-restart-budget-cleanup"
+
 	// RoleInstancePatternKey identifies the RoleInstance organization pattern (Stateful/Stateless)
 	RoleInstancePatternKey = RBGPrefix + "role-instance-pattern"
 

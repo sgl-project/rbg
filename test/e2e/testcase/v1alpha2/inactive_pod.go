@@ -28,8 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	watchtools "k8s.io/client-go/tools/watch"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
@@ -40,6 +42,7 @@ import (
 func RunInactivePodTestCases(f *framework.Framework) {
 	runInactivePodReplacementTest(f)
 	runRestartedPodRecreationTest(f)
+	runDeletedMemberRecreationTest(f)
 	runIgnoredComponentTest(f)
 	runNonIgnoredComponentTest(f)
 	runRestartingConditionTest(f)
@@ -77,14 +80,14 @@ func runInactivePodReplacementTest(f *framework.Framework) {
 	})
 }
 
-// Case 2: a container restart triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestart
+// Case 2: a container restart triggers RoleInstance recreation with RestartPolicy=RecreateRoleInstanceOnPodRestartFromCreation
 // Note: With this policy, RoleInstance Controller recreates the entire affected Instance (not just replacement Pod).
 // Only the RoleInstance containing the restarted container is recreated; other RoleInstances are unaffected.
 func runRestartedPodRecreationTest(f *framework.Framework) {
-	ginkgo.It("container restart triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestart", ginkgo.Label("update", "serial"), func() {
+	ginkgo.It("container restart triggers RoleInstance recreation with RecreateRoleInstanceOnPodRestartFromCreation", ginkgo.Label("update", "serial"), func() {
 		role := wrappersv2.BuildLeaderWorkerRole("role-1").
 			WithReplicas(2).
-			WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+			WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 			Obj()
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-instance-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			role,
@@ -190,6 +193,107 @@ func runRestartedPodRecreationTest(f *framework.Framework) {
 	})
 }
 
+// A finalizer holds a real deletion visible until the controller durably accepts
+// the group rebuild. Without it, kubelet/GC could remove the trigger before the
+// controller's fresh API validation, legitimately falling back to member repair.
+func runDeletedMemberRecreationTest(f *framework.Framework) {
+	ginkgo.It("observed member deletion rebuilds a Ready native RoleInstance with RecreateRoleInstanceOnPodRestartFromCreation", ginkgo.Label("update", "serial"), func() {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-member-deletion", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildLeaderWorkerRole("role-1").
+				WithReplicas(1).
+				WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
+				Obj(),
+		}).Obj()
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, rbg) })
+		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+		f.ExpectRbgV2Equal(rbg)
+
+		pods := &corev1.PodList{}
+		gomega.Expect(f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).Should(gomega.Succeed())
+		gomega.Expect(pods.Items).Should(gomega.HaveLen(2))
+		target := pods.Items[0].DeepCopy()
+		targetUID := target.UID
+		instanceName := target.Labels[constants.RoleInstanceNameLabelKey]
+		gomega.Expect(instanceName).ShouldNot(gomega.BeEmpty())
+		waitForInstanceFullyRecovered(f, instanceName)
+		instanceKey := client.ObjectKey{Namespace: f.Namespace, Name: instanceName}
+		instance := &workloadsv1alpha2.RoleInstance{}
+		gomega.Expect(f.Client.Get(f.Ctx, instanceKey, instance)).Should(gomega.Succeed())
+		instanceUID := instance.UID
+		gomega.Expect(instance.Status.RestartCount).Should(gomega.BeZero())
+		oldUIDs := getInstancePodUIDs(f, rbg, instanceName)
+		gomega.Expect(oldUIDs).Should(gomega.HaveLen(2))
+		for _, pod := range pods.Items {
+			owner := metav1.GetControllerOf(&pod)
+			gomega.Expect(owner).ShouldNot(gomega.BeNil())
+			gomega.Expect(owner.UID).Should(gomega.Equal(instanceUID), "members must belong to the native RoleInstance")
+		}
+
+		const holdDeletionFinalizer = "e2e.rbg.workloads.x-k8s.io/hold-member-deletion"
+		targetKey := client.ObjectKeyFromObject(target)
+		releaseDeletion := func(ctx context.Context) error {
+			return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				pod := &corev1.Pod{}
+				if err := f.Client.Get(ctx, targetKey, pod); err != nil {
+					return client.IgnoreNotFound(err)
+				}
+				if pod.UID != targetUID || !controllerutil.RemoveFinalizer(pod, holdDeletionFinalizer) {
+					return nil
+				}
+				return f.Client.Update(ctx, pod)
+			})
+		}
+		// Register before adding the finalizer, so even a failed assertion after
+		// Delete cannot strand a terminating Pod or block namespace teardown.
+		ginkgo.DeferCleanup(func(ctx context.Context) {
+			gomega.Eventually(ctx, func() error { return releaseDeletion(ctx) }, utils.Timeout, utils.Interval).
+				Should(gomega.Succeed(), "remove the test finalizer even when the spec fails")
+		})
+		gomega.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			pod := &corev1.Pod{}
+			if err := f.Client.Get(f.Ctx, targetKey, pod); err != nil {
+				return err
+			}
+			if pod.UID != targetUID {
+				return fmt.Errorf("member %s changed UID before deletion", target.Name)
+			}
+			controllerutil.AddFinalizer(pod, holdDeletionFinalizer)
+			return f.Client.Update(f.Ctx, pod)
+		})).Should(gomega.Succeed())
+
+		gomega.Expect(f.Client.Delete(f.Ctx, target, client.Preconditions{UID: &targetUID})).Should(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(f.Client.Get(f.Ctx, targetKey, target)).Should(gomega.Succeed())
+			g.Expect(target.UID).Should(gomega.Equal(targetUID))
+			g.Expect(target.DeletionTimestamp).ShouldNot(gomega.BeNil())
+			g.Expect(f.Client.Get(f.Ctx, instanceKey, instance)).Should(gomega.Succeed())
+			g.Expect(instance.UID).Should(gomega.Equal(instanceUID))
+			g.Expect(instance.Status.RestartCount).Should(gomega.Equal(int32(1)))
+			g.Expect(instance.Status.RetiringPods).Should(gomega.HaveLen(len(oldUIDs)))
+			for name, uid := range oldUIDs {
+				g.Expect(instance.Status.RetiringPods).Should(gomega.ContainElement(
+					workloadsv1alpha2.RoleInstancePodReference{Name: name, UID: uid}))
+			}
+		}, utils.Timeout, utils.Interval).Should(gomega.Succeed(), "observe deletion and persist one whole-group restart before releasing the Pod")
+
+		gomega.Expect(releaseDeletion(f.Ctx)).Should(gomega.Succeed())
+		waitForInstancePodsRecreated(f, rbg, instanceName, oldUIDs)
+		waitForInstanceFullyRecovered(f, instanceName)
+		f.ExpectRbgV2Equal(rbg)
+		gomega.Expect(f.Client.Get(f.Ctx, instanceKey, instance)).Should(gomega.Succeed())
+		gomega.Expect(instance.UID).Should(gomega.Equal(instanceUID), "recovery preserves the RoleInstance object")
+		gomega.Expect(instance.Status.RestartCount).Should(gomega.Equal(int32(1)))
+		gomega.Expect(instance.Status.RetiringPods).Should(gomega.BeEmpty())
+		newUIDs := getInstancePodUIDs(f, rbg, instanceName)
+		gomega.Expect(newUIDs).Should(gomega.HaveLen(len(oldUIDs)))
+		for name, uid := range oldUIDs {
+			gomega.Expect(newUIDs).Should(gomega.HaveKey(name))
+			gomega.Expect(newUIDs[name]).ShouldNot(gomega.Equal(uid), "every old member UID must rotate")
+		}
+	})
+}
+
 // Case 3: a container restart with RestartTriggerPolicy=Ignore does NOT trigger
 // RoleInstance recreation, even after the kubelet has restored readiness.
 func runIgnoredComponentTest(f *framework.Framework) {
@@ -211,7 +315,7 @@ func runIgnoredComponentTest(f *framework.Framework) {
 				Replicas: ptr.To(int32(1)),
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
-						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation},
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
 								Name:     "main",
@@ -281,9 +385,9 @@ func runIgnoredComponentTest(f *framework.Framework) {
 		}
 		gomega.Expect(monitorPod).ShouldNot(gomega.BeNil(), "monitor pod with Ignore annotation should exist")
 
-		// Confirm a durable restart on the original Pod. A terminal failure can
-		// make the instance unready before the restart-policy check, masking
-		// whether Ignore itself prevented instance recreation.
+		// Confirm a durable restart on the original Pod. Recovery no longer
+		// depends on the instance being Ready, so a restarted ignored container
+		// must still leave the instance untouched.
 		waitForNginxContainerRestart(f, monitorPod)
 		waitForInstanceFullyRecovered(f, ignoreInstanceName)
 
@@ -312,7 +416,7 @@ func runNonIgnoredComponentTest(f *framework.Framework) {
 				Replicas: ptr.To(int32(1)),
 				Pattern: workloadsv1alpha2.Pattern{
 					CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
-						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation},
 						Components: []workloadsv1alpha2.InstanceComponent{
 							{
 								Name:     "main",
@@ -420,15 +524,15 @@ func runRestartPolicyNoneTest(f *framework.Framework) {
 	})
 }
 
-// runRestartingConditionTest verifies that the Restarting condition prevents cascading
-// restart-policy recreations. After a recreation triggers, Restarting=True is set;
-// it is cleared once the instance becomes Ready again, and no further recreation occurs.
+// runRestartingConditionTest verifies that one accepted round does not cascade.
+// Restarting=True is projected while old member UIDs drain and clears when the
+// drain finishes, before replacements necessarily become Ready.
 func runRestartingConditionTest(f *framework.Framework) {
 	ginkgo.It("restarting condition prevents cascading restart-policy recreations", ginkgo.Label("update", "serial"), func() {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("e2e-restarting-test", f.Namespace).WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildLeaderWorkerRole("role-1").
 				WithReplicas(1).
-				WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+				WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 				Obj(),
 		}).Obj()
 

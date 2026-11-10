@@ -33,6 +33,7 @@ type RoleSpecApplyConfiguration struct {
 	Replicas                         *int32                               `json:"replicas,omitempty"`
 	RolloutStrategy                  *RolloutStrategyApplyConfiguration   `json:"rolloutStrategy,omitempty"`
 	RestartPolicy                    *workloadsv1alpha1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	MaxGroupRestarts                 *int32                               `json:"maxGroupRestarts,omitempty"`
 	Dependencies                     []string                             `json:"dependencies,omitempty"`
 	Workload                         *WorkloadSpecApplyConfiguration      `json:"workload,omitempty"`
 	TemplateSourceApplyConfiguration `json:",inline"`
@@ -108,6 +109,14 @@ func (b *RoleSpecApplyConfiguration) WithRolloutStrategy(value *RolloutStrategyA
 // If called multiple times, the RestartPolicy field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithRestartPolicy(value workloadsv1alpha1.RestartPolicyType) *RoleSpecApplyConfiguration {
 	b.RestartPolicy = &value
+	return b
+}
+
+// WithMaxGroupRestarts sets the MaxGroupRestarts field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxGroupRestarts field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithMaxGroupRestarts(value int32) *RoleSpecApplyConfiguration {
+	b.MaxGroupRestarts = &value
 	return b
 }
 

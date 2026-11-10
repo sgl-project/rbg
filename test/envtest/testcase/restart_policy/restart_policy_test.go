@@ -23,7 +23,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -163,7 +165,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -240,7 +242,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -298,7 +300,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(2).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -364,7 +366,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -373,13 +375,37 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			makePodsReady(rbgName, roleName)
 			waitForRoleInstanceReady(rbgName, roleName)
 
-			// Trigger failure
+			// Hold deletion so the test observes the saved list, not a short-lived
+			// display condition after all old UIDs have already disappeared.
 			podList := listRolePods(rbgName, roleName)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			podKey := client.ObjectKeyFromObject(&podList.Items[0])
+			oldUID := podList.Items[0].UID
+			DeferCleanup(func() {
+				Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					pod := &corev1.Pod{}
+					if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
+						return client.IgnoreNotFound(err)
+					}
+					pod.Finalizers = nil
+					return testutil.K8sClient.Update(testutil.Ctx, pod)
+				})).Should(Succeed())
+			})
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
+					return err
+				}
+				pod.Finalizers = append(pod.Finalizers, recoveryHoldFinalizer)
+				return testutil.K8sClient.Update(testutil.Ctx, pod)
+			})).Should(Succeed())
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
+					return err
+				}
+				pod.Status.Phase = corev1.PodFailed
+				return testutil.K8sClient.Status().Update(testutil.Ctx, pod)
+			})).Should(Succeed())
 
 			// Verify Restarting condition is set
 			Eventually(func() bool {
@@ -396,30 +422,32 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			}, timeout, interval).Should(BeTrue(),
 				"Restarting condition should be set when restart policy triggers")
 
-			// Wait for replacement pods and make them Ready
-			waitForPods(rbgName, roleName, 1)
-			makePodsReady(rbgName, roleName)
-
-			// Verify Restarting condition is cleared when instance becomes Ready again
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
+					return err
+				}
+				pod.Finalizers = nil
+				return testutil.K8sClient.Update(testutil.Ctx, pod)
+			})).Should(Succeed())
 			Eventually(func() bool {
-				ri := getRoleInstance(rbgName, roleName)
-				if ri == nil {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, podKey, pod); err != nil {
 					return false
 				}
-				for _, cond := range ri.Status.Conditions {
-					if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == corev1.ConditionTrue {
-						return false // Still restarting
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil || len(ri.Status.RetiringPods) > 0 || pod.UID == oldUID {
+					return false
+				}
+				for _, condition := range ri.Status.Conditions {
+					if condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == corev1.ConditionTrue {
+						return false
 					}
 				}
-				// Also check that the instance is Ready
-				for _, cond := range ri.Status.Conditions {
-					if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue(),
-				"Restarting condition should be cleared when instance becomes Ready")
+				return true
+			}, timeout, interval).Should(BeTrue(), "the old UID barrier clears before replacement readiness")
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
 		})
 
 		It("should not recreate when container restart is on Ignore-annotated pod", func() {
@@ -431,7 +459,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(2).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -560,6 +588,11 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			{
 				name:     "both-unset-defaults-to-recreate",
 				expected: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			},
+			{
+				name:       "opt-in-before-ready-and-deletion",
+				configType: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation,
+				expected:   workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation,
 			},
 		}
 
@@ -708,7 +741,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -743,8 +776,8 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		})
 	})
 
-	Context("Guard conditions", func() {
-		It("should not recreate during initial creation (instance not yet Ready)", func() {
+	Context("Cross-instance recovery isolation", func() {
+		It("should recover only the affected instance's pod before first Ready", func() {
 			rbgName := "test-guard-init"
 			roleName := defaultRoleName
 
@@ -753,35 +786,81 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(2).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
 
-			// Wait for pods to be created but DON'T make them Ready
+			// Leave both instances' pods Pending: explicit failure recovery does not require first Ready.
 			waitForPods(rbgName, roleName, 2)
 
-			// Fail one pod while instance is NOT Ready yet
+			// Choose an arbitrary pod and identify its instance by controller ownership, not list order or naming.
 			podList := listRolePods(rbgName, roleName)
+			activePods := getActivePods(podList)
+			Expect(activePods).Should(HaveLen(2))
 			freshPod := &corev1.Pod{}
 			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+				client.ObjectKeyFromObject(activePods[0]), freshPod)).Should(Succeed())
+			failedUID := freshPod.UID
+			owner := metav1.GetControllerOf(freshPod)
+			Expect(owner).NotTo(BeNil(), "the affected pod should have a controller owner")
+			Expect(owner.Kind).Should(Equal("RoleInstance"))
+			Expect(owner.Name).NotTo(BeEmpty())
+			Expect(owner.UID).NotTo(BeEmpty())
+			instanceKey := types.NamespacedName{Name: owner.Name, Namespace: freshPod.Namespace}
+			instanceUID := owner.UID
+			instance := &workloadsv1alpha2.RoleInstance{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, instanceKey, instance)).Should(Succeed())
+			Expect(instance.UID).Should(Equal(instanceUID))
+			Expect(instance.Status.RestartCount).Should(BeZero())
+
+			// Locate the unaffected instance's pod by its distinct controller UID.
+			var otherPod *corev1.Pod
+			for _, pod := range activePods {
+				podOwner := metav1.GetControllerOf(pod)
+				Expect(podOwner).NotTo(BeNil())
+				Expect(podOwner.Kind).Should(Equal("RoleInstance"))
+				if podOwner.UID != instanceUID {
+					otherPod = pod
+				}
+			}
+			Expect(otherPod).NotTo(BeNil(), "the two pods should belong to different instances")
+			otherKey := client.ObjectKeyFromObject(otherPod)
+			otherUID := otherPod.UID
+
+			// Fail only the affected instance's pod before either instance becomes Ready.
 			freshPod.Status.Phase = corev1.PodFailed
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
 
-			// The other pod should NOT be deleted (restart policy should not trigger
-			// because instance was never Ready)
-			otherPod := &podList.Items[1]
-			otherUID := otherPod.UID
+			// Recovery replaces the affected member pod while retaining its instance object.
+			Eventually(func(g Gomega) {
+				ri := &workloadsv1alpha2.RoleInstance{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, instanceKey, ri)).Should(Succeed())
+				g.Expect(ri.UID).Should(Equal(instanceUID), "recovery should retain the affected instance")
+				g.Expect(ri.Status.RestartCount).Should(Equal(int32(1)))
+				var members []*corev1.Pod
+				for _, pod := range getActivePods(listRolePods(rbgName, roleName)) {
+					podOwner := metav1.GetControllerOf(pod)
+					if podOwner != nil && podOwner.Name == instanceKey.Name && podOwner.UID == instanceUID {
+						members = append(members, pod)
+					}
+				}
+				g.Expect(members).Should(HaveLen(1))
+				g.Expect(members[0].UID).NotTo(Equal(failedUID), "the failed pod should be replaced before first Ready")
+				pod := &corev1.Pod{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, otherKey, pod)).Should(Succeed())
+				g.Expect(pod.UID).Should(Equal(otherUID), "recovery should not replace another instance's pod")
+			}, timeout, interval).Should(Succeed())
+
+			// The other instance remains isolated from the affected instance's recovery.
 			Consistently(func() types.UID {
 				pod := &corev1.Pod{}
-				if err := testutil.K8sClient.Get(testutil.Ctx,
-					types.NamespacedName{Name: otherPod.Name, Namespace: testNs}, pod); err != nil {
+				if err := testutil.K8sClient.Get(testutil.Ctx, otherKey, pod); err != nil {
 					return ""
 				}
 				return pod.UID
 			}, 10*time.Second, interval).Should(Equal(otherUID),
-				"restart policy should NOT trigger during initial creation (instance not Ready yet)")
+				"pre-Ready failure recovery should not replace another instance's pod")
 		})
 	})
 
@@ -794,11 +873,11 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole("role-1").
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 					wrappersv2.BuildLeaderWorkerRole("role-2").
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -853,7 +932,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(2).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).Obj(),
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).Obj(),
 				}).Obj()
 
 			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
@@ -935,7 +1014,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 						WithBaseDelaySeconds(2).
 						WithMaxDelaySeconds(10).
 						Obj(),
@@ -1001,7 +1080,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 						WithBaseDelaySeconds(baseDelay).
 						WithMaxDelaySeconds(60).
 						Obj(),
@@ -1108,7 +1187,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 						WithBaseDelaySeconds(15).
 						WithMaxDelaySeconds(120).
 						Obj(),
@@ -1138,7 +1217,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 						WithBaseDelaySeconds(1).
 						WithMaxDelaySeconds(2).
 						Obj(),
@@ -1223,7 +1302,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				"RestartCount should reset to 1 after long stable period (not continue from previous value)")
 		})
 
-		It("should not bypass wasInstanceReady check after stable threshold", func() {
+		It("should recreate an explicit failure after stable threshold without Ready", func() {
 			rbgName := "test-bypass-bound"
 			roleName := defaultRoleName
 
@@ -1232,7 +1311,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(2).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 						WithBaseDelaySeconds(1).
 						WithMaxDelaySeconds(2).
 						Obj(),
@@ -1281,24 +1360,30 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				return ri.Status.RestartCount
 			}, timeout, interval).Should(Equal(int32(1)))
 
-			// Backdate LastRestartTime past the stable threshold.
-			// stableThreshold = max(maxDelaySeconds*2, 10min) = max(4, 600) = 600s = 10min.
-			// Setting to 11 minutes ago exceeds this threshold, making hasRecentRestart return false.
-			ri := getRoleInstance(rbgName, roleName)
-			Expect(ri).NotTo(BeNil())
-			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+			// Backdate beyond the count-reset interval. Ready is not eligibility.
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return fmt.Errorf("RoleInstance not found")
+				}
+				ri.Status.LastRestartTime = ptr.To(metav1.NewTime(time.Now().Add(-11 * time.Minute)))
+				return testutil.K8sClient.Status().Update(testutil.Ctx, ri)
+			})).Should(Succeed())
 
-			// Make pods not Ready so wasInstanceReady returns false.
-			// Set phase to Pending (IsRunningAndAvailable requires Phase==Running).
+			// Keep Running but remove readiness; no synthetic kubelet phase rewind.
 			podList = listRolePods(rbgName, roleName)
 			for i := range podList.Items {
-				freshPod := &corev1.Pod{}
-				Expect(testutil.K8sClient.Get(testutil.Ctx,
-					client.ObjectKeyFromObject(&podList.Items[i]), freshPod)).Should(Succeed())
-				freshPod.Status.Phase = corev1.PodPending
-				freshPod.Status.Conditions = nil
-				Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+				key := client.ObjectKeyFromObject(&podList.Items[i])
+				Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					pod := &corev1.Pod{}
+					if err := testutil.K8sClient.Get(testutil.Ctx, key, pod); err != nil {
+						return err
+					}
+					for j := range pod.Status.Conditions {
+						pod.Status.Conditions[j].Status = corev1.ConditionFalse
+					}
+					return testutil.K8sClient.Status().Update(testutil.Ctx, pod)
+				})).Should(Succeed())
 			}
 
 			// Wait for RoleInstance to become not Ready (wasInstanceReady will return false)
@@ -1314,18 +1399,13 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				}
 				return true
 			}, timeout, interval).Should(BeTrue(),
-				"RoleInstance should become not Ready after pods are set to Pending")
+				"RoleInstance should become not Ready before the next explicit failure")
 
-			// Now fail one pod. With the fix:
-			//   wasInstanceReady=false, hasRecentRestart=false → shouldRecreateInstance returns false
-			//   → no recreation, survivor pod should NOT be deleted.
-			// Without the fix (permanent bypass):
-			//   wasInstanceReady=false but LastRestartTime!=nil → bypass applies
-			//   → shouldRecreateInstance returns true → recreation happens, survivor deleted.
+			// A new explicit Failed must retire its sibling even after the quiet
+			// interval, and charge a fresh attempt with the reset count of one.
 			podList = listRolePods(rbgName, roleName)
 			Expect(podList.Items).Should(HaveLen(2))
-			survivorName := podList.Items[1].Name
-			survivorUID := podList.Items[1].UID
+			beforeFailure := getPodUIDs(podList)
 
 			freshPod = &corev1.Pod{}
 			Expect(testutil.K8sClient.Get(testutil.Ctx,
@@ -1333,16 +1413,19 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			freshPod.Status.Phase = corev1.PodFailed
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
 
-			// Verify the survivor pod is NOT deleted
-			Consistently(func() types.UID {
-				pod := &corev1.Pod{}
-				if err := testutil.K8sClient.Get(testutil.Ctx,
-					types.NamespacedName{Name: survivorName, Namespace: testNs}, pod); err != nil {
-					return ""
+			Eventually(func() bool {
+				current := getActivePods(listRolePods(rbgName, roleName))
+				if len(current) != 2 {
+					return false
 				}
-				return pod.UID
-			}, 10*time.Second, interval).Should(Equal(survivorUID),
-				"survivor pod should NOT be deleted when wasInstanceReady=false and hasRecentRestart=false")
+				for _, pod := range current {
+					if beforeFailure[pod.Name] == pod.UID {
+						return false
+					}
+				}
+				ri := getRoleInstance(rbgName, roleName)
+				return ri != nil && ri.Status.RestartCount == 1 && len(ri.Status.RetiringPods) == 0
+			}, timeout, interval).Should(BeTrue(), "both members are replaced without Ready, with the reset attempt count")
 		})
 
 		It("should not freeze rolling update when revision mismatch occurs during backoff", func() {
@@ -1365,7 +1448,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					wrappersv2.BuildLeaderWorkerRole(roleName).
 						WithReplicas(1).
 						WithSize(1).
-						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
 						WithBaseDelaySeconds(120).
 						WithMaxDelaySeconds(300).
 						Obj(),

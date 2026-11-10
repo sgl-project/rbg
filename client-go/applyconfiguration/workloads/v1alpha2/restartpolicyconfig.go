@@ -27,6 +27,7 @@ type RestartPolicyConfigApplyConfiguration struct {
 	Type             *workloadsv1alpha2.RestartPolicyType `json:"type,omitempty"`
 	BaseDelaySeconds *int32                               `json:"baseDelaySeconds,omitempty"`
 	MaxDelaySeconds  *int32                               `json:"maxDelaySeconds,omitempty"`
+	MaxGroupRestarts *int32                               `json:"maxGroupRestarts,omitempty"`
 }
 
 // RestartPolicyConfigApplyConfiguration constructs a declarative configuration of the RestartPolicyConfig type for use with
@@ -56,5 +57,13 @@ func (b *RestartPolicyConfigApplyConfiguration) WithBaseDelaySeconds(value int32
 // If called multiple times, the MaxDelaySeconds field is set to the value of the last call.
 func (b *RestartPolicyConfigApplyConfiguration) WithMaxDelaySeconds(value int32) *RestartPolicyConfigApplyConfiguration {
 	b.MaxDelaySeconds = &value
+	return b
+}
+
+// WithMaxGroupRestarts sets the MaxGroupRestarts field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxGroupRestarts field is set to the value of the last call.
+func (b *RestartPolicyConfigApplyConfiguration) WithMaxGroupRestarts(value int32) *RestartPolicyConfigApplyConfiguration {
+	b.MaxGroupRestarts = &value
 	return b
 }

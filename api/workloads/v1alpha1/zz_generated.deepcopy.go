@@ -1217,6 +1217,11 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 		*out = new(RolloutStrategy)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.MaxGroupRestarts != nil {
+		in, out := &in.MaxGroupRestarts, &out.MaxGroupRestarts
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Dependencies != nil {
 		in, out := &in.Dependencies, &out.Dependencies
 		*out = make([]string, len(*in))

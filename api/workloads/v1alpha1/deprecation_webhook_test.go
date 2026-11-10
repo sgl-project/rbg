@@ -18,11 +18,13 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -111,6 +113,93 @@ func TestDeprecatedWorkloadValidatorFinalModeRejectsExistingUse(t *testing.T) {
 	require.Len(t, warnings, 1)
 }
 
+func TestDeprecatedWorkloadValidatorRestartPolicyCompatibility(t *testing.T) {
+	workloads := []struct {
+		name       string
+		spec       WorkloadSpec
+		native     bool
+		deprecated bool
+	}{
+		{name: "implicit RoleInstanceSet", native: true},
+		{name: "RoleInstanceSet", spec: WorkloadSpec{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstanceSet"}, native: true},
+		{name: "LeaderWorkerSet", spec: WorkloadSpec{APIVersion: "leaderworkerset.x-k8s.io/v1", Kind: "LeaderWorkerSet"}, deprecated: true},
+		{name: "StatefulSet", spec: WorkloadSpec{APIVersion: "apps/v1", Kind: "StatefulSet"}, deprecated: true},
+		{name: "Deployment", spec: WorkloadSpec{APIVersion: "apps/v1", Kind: "Deployment"}, deprecated: true},
+		{name: "unsupported workload", spec: WorkloadSpec{APIVersion: "example.com/v1", Kind: "CustomWorkload"}},
+	}
+	for _, workload := range workloads {
+		for _, pattern := range []string{"leaderWorker", "components", "standalone"} {
+			for _, policy := range []RestartPolicyType{"", NoneRestartPolicy, RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestartFromCreation} {
+				for _, allowExisting := range []bool{true, false} {
+					name := workload.name + "/" + pattern + "/" + string(policy)
+					if !allowExisting {
+						name += "/deprecated-disabled"
+					}
+					t.Run(name, func(t *testing.T) {
+						role := RoleSpec{Name: "worker", Workload: workload.spec, RestartPolicy: policy}
+						switch pattern {
+						case "leaderWorker":
+							role.LeaderWorkerSet = &LeaderWorkerTemplate{Size: ptr.To(int32(2))}
+							role.TemplateSource = TemplateSource{Template: podTemplate("app")}
+						case "components":
+							role.Components = []InstanceComponent{{Name: "worker", Template: *podTemplate("app")}}
+						case "standalone":
+							role.TemplateSource = TemplateSource{Template: podTemplate("app")}
+						}
+						group := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{role}}}
+						set := &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{Template: group.Spec}}
+						objects := []struct {
+							name      string
+							obj       runtime.Object
+							fieldPath string
+						}{
+							{name: "RBG", obj: group, fieldPath: "spec.roles[0]"},
+							{name: "RBGSet", obj: set, fieldPath: "spec.template.roles[0]"},
+						}
+						validator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: allowExisting}
+						for _, object := range objects {
+							t.Run(object.name, func(t *testing.T) {
+								before := object.obj.DeepCopyObject()
+								old := object.obj.DeepCopyObject()
+								oldRoles, _, err := deprecatedWorkloadRoles(old)
+								require.NoError(t, err)
+								oldRoles[0].RestartPolicy = ""
+								for _, update := range []bool{false, true} {
+									t.Run(map[bool]string{false: "create", true: "update"}[update], func(t *testing.T) {
+										var warnings []string
+										var err error
+										if update {
+											warnings, err = validator.ValidateUpdate(context.Background(), old, object.obj)
+										} else {
+											warnings, err = validator.ValidateCreate(context.Background(), object.obj)
+										}
+										require.Len(t, warnings, 1)
+										assert.Contains(t, warnings[0], "v1alpha1 is deprecated")
+										switch {
+										case policy == RecreateRoleInstanceOnPodRestartFromCreation && !workload.native:
+											require.Error(t, err)
+											assert.Contains(t, err.Error(), string(policy))
+											assert.Contains(t, err.Error(), "RoleInstanceSet")
+											assert.Contains(t, err.Error(), object.fieldPath)
+											assert.NotContains(t, err.Error(), "deprecated", "compatibility must be checked before grandfathering")
+										case workload.deprecated && (!update || !allowExisting):
+											require.Error(t, err)
+											assert.Contains(t, err.Error(), "deprecated")
+										default:
+											require.NoError(t, err, "native and grandfathered legacy policies must retain their behavior")
+										}
+									})
+								}
+								assert.Equal(t, before, object.obj, "validation must not mutate admission objects")
+							})
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
 func TestWorkloadType(t *testing.T) {
 	assert.Equal(t, constants.StatefulSetWorkloadType, workloadType(WorkloadSpec{
 		APIVersion: "apps/v1",
@@ -156,4 +245,76 @@ func TestDeprecatedWorkloadValidatorValidateUpdateTrustsAdmissionOldObject(t *te
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "new uses are not accepted")
 	})
+}
+
+func TestRestartBudgetAlpha1Admission(t *testing.T) {
+	tests := []struct {
+		name     string
+		workload WorkloadSpec
+		policy   RestartPolicyType
+		budget   *int32
+		wantErr  string
+	}{
+		{name: "nil budget", policy: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "zero budget", policy: RecreateRoleInstanceOnPodRestartFromCreation, budget: ptr.To(int32(0))},
+		{name: "positive budget", policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(3))},
+		{name: "None without budget", policy: NoneRestartPolicy},
+		{name: "None zero budget", policy: NoneRestartPolicy, budget: ptr.To(int32(0)), wantErr: "requires an explicit whole-RoleInstance recreate policy"},
+		{name: "None positive budget", policy: NoneRestartPolicy, budget: ptr.To(int32(3)), wantErr: "requires an explicit whole-RoleInstance recreate policy"},
+		{name: "empty policy with budget", budget: ptr.To(int32(3)), wantErr: "requires an explicit whole-RoleInstance recreate policy"},
+		{name: "negative budget", policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(-1)), wantErr: "non-negative"},
+		{name: "STS budget", workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "StatefulSet"}, policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(2)), wantErr: "maxGroupRestarts is only supported"},
+		{name: "LWS budget", workload: WorkloadSpec{APIVersion: "leaderworkerset.x-k8s.io/v1", Kind: "LeaderWorkerSet"}, policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(0)), wantErr: "maxGroupRestarts is only supported"},
+		{name: "custom workload budget", workload: WorkloadSpec{APIVersion: "example.com/v1", Kind: "CustomWorkload"}, policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(2)), wantErr: "maxGroupRestarts is only supported"},
+		{name: "deployment from-creation policy", workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "Deployment"}, policy: RecreateRoleInstanceOnPodRestartFromCreation, wantErr: "is not supported"},
+	}
+	for _, tt := range tests {
+		for _, pattern := range []string{"leaderWorker", "components", "standalone"} {
+			for _, set := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/set=%t", tt.name, pattern, set), func(t *testing.T) {
+					role := restartBudgetRole(pattern)
+					role.Workload = tt.workload
+					role.RestartPolicy = tt.policy
+					role.MaxGroupRestarts = tt.budget
+					oldRole := restartBudgetRole(pattern)
+					oldRole.Workload = tt.workload
+					var obj, old runtime.Object
+					fieldPath := "spec.roles[0]"
+					if set {
+						obj = &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{Template: RoleBasedGroupSpec{Roles: []RoleSpec{role}}}}
+						old = &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{Template: RoleBasedGroupSpec{Roles: []RoleSpec{oldRole}}}}
+						fieldPath = "spec.template.roles[0]"
+					} else {
+						obj = &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{role}}}
+						old = &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{oldRole}}}
+					}
+					wantErr := tt.wantErr
+					if wantErr == "" && pattern == "standalone" && tt.budget != nil {
+						wantErr = "standalone roles cannot retain restart configuration"
+					}
+					for _, allowExisting := range []bool{false, true} {
+						validator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: allowExisting}
+						for _, update := range []bool{false, true} {
+							var warnings []string
+							var err error
+							if update {
+								warnings, err = validator.ValidateUpdate(context.Background(), old, obj)
+							} else {
+								warnings, err = validator.ValidateCreate(context.Background(), obj)
+							}
+							require.Len(t, warnings, 1)
+							if wantErr == "" {
+								require.NoError(t, err)
+								continue
+							}
+							require.Error(t, err)
+							assert.Contains(t, err.Error(), wantErr)
+							assert.Contains(t, err.Error(), fieldPath)
+							assert.NotContains(t, err.Error(), "deprecated", "restart compatibility precedes grandfathering")
+						}
+					}
+				})
+			}
+		}
+	}
 }

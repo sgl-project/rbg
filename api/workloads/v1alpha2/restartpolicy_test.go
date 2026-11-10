@@ -151,6 +151,71 @@ func TestRoleSpec_GetRestartPolicyConfig_PreservesBackoff(t *testing.T) {
 	assert.Equal(t, int32(120), role.GetMaxDelaySeconds())
 }
 
+func TestRestartPolicy_FromCreationOptInResolution(t *testing.T) {
+	tests := []struct {
+		name         string
+		legacy       RestartPolicyType
+		config       *RestartPolicyConfig
+		expectedRole RestartPolicyType
+		expectedSpec RestartPolicyType
+	}{
+		{name: "absent policy does not opt in", expectedRole: RecreateRoleInstanceOnPodRestart},
+		{name: "empty config does not opt in", config: &RestartPolicyConfig{}, expectedRole: RecreateRoleInstanceOnPodRestart},
+		{name: "backoff alone does not opt in", config: &RestartPolicyConfig{BaseDelaySeconds: ptr.To(int32(7))}, expectedRole: RecreateRoleInstanceOnPodRestart},
+		{name: "legacy recreate stays legacy", legacy: RecreateRoleInstanceOnPodRestart, expectedRole: RecreateRoleInstanceOnPodRestart, expectedSpec: RecreateRoleInstanceOnPodRestart},
+		{name: "legacy field explicitly opts in", legacy: RecreateRoleInstanceOnPodRestartFromCreation, expectedRole: RecreateRoleInstanceOnPodRestartFromCreation, expectedSpec: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "empty config preserves legacy opt in", legacy: RecreateRoleInstanceOnPodRestartFromCreation, config: &RestartPolicyConfig{}, expectedRole: RecreateRoleInstanceOnPodRestartFromCreation, expectedSpec: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "backoff config preserves legacy opt in", legacy: RecreateRoleInstanceOnPodRestartFromCreation, config: &RestartPolicyConfig{BaseDelaySeconds: ptr.To(int32(7))}, expectedRole: RecreateRoleInstanceOnPodRestartFromCreation, expectedSpec: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "config explicitly opts in", config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestartFromCreation}, expectedRole: RecreateRoleInstanceOnPodRestartFromCreation, expectedSpec: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "config opt in overrides legacy None", legacy: RestartPolicyNone, config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestartFromCreation}, expectedRole: RecreateRoleInstanceOnPodRestartFromCreation, expectedSpec: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "config None overrides legacy opt in", legacy: RecreateRoleInstanceOnPodRestartFromCreation, config: &RestartPolicyConfig{Type: RestartPolicyNone}, expectedRole: RestartPolicyNone, expectedSpec: RestartPolicyNone},
+		{name: "config legacy policy overrides legacy opt in", legacy: RecreateRoleInstanceOnPodRestartFromCreation, config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart}, expectedRole: RecreateRoleInstanceOnPodRestart, expectedSpec: RecreateRoleInstanceOnPodRestart},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns := map[string]Pattern{
+				"leaderWorker": {LeaderWorkerPattern: &LeaderWorkerPattern{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}},
+				"components":   {CustomComponentsPattern: &CustomComponentsPattern{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}},
+			}
+			for name, pattern := range patterns {
+				t.Run(name, func(t *testing.T) {
+					role := &RoleSpec{Pattern: pattern}
+					before := role.DeepCopy()
+					assert.Equal(t, tt.expectedRole, role.GetRestartPolicy())
+					assert.Equal(t, tt.expectedRole, role.GetRestartPolicyConfig().Type)
+					if tt.config != nil {
+						assert.Equal(t, tt.config.BaseDelaySeconds, role.GetRestartPolicyConfig().BaseDelaySeconds)
+					}
+					assert.Equal(t, before, role, "resolution must not mutate the stored policy")
+				})
+			}
+			spec := &RoleInstanceSpec{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}
+			before := spec.DeepCopy()
+			assert.Equal(t, tt.expectedSpec, spec.GetRestartPolicy())
+			assert.Equal(t, tt.expectedSpec, spec.GetRestartPolicyConfig().Type)
+			assert.Equal(t, before, spec, "resolution must not mutate the stored policy")
+		})
+	}
+}
+
+func TestRestartPolicy_DecodeFromCreationWire(t *testing.T) {
+	for _, pattern := range []string{"leaderWorkerPattern", "customComponentsPattern"} {
+		for _, policyJSON := range []string{
+			`"restartPolicy":"RecreateRoleInstanceOnPodRestartFromCreation"`,
+			`"restartPolicyConfig":{"type":"RecreateRoleInstanceOnPodRestartFromCreation"}`,
+		} {
+			t.Run(pattern+"/"+policyJSON, func(t *testing.T) {
+				var role RoleSpec
+				require.NoError(t, json.Unmarshal([]byte(`{"`+pattern+`":{`+policyJSON+`}}`), &role))
+				assert.Equal(t, RecreateRoleInstanceOnPodRestartFromCreation, role.GetRestartPolicy())
+				var spec RoleInstanceSpec
+				require.NoError(t, json.Unmarshal([]byte(`{`+policyJSON+`}`), &spec))
+				assert.Equal(t, RecreateRoleInstanceOnPodRestartFromCreation, spec.GetRestartPolicy())
+			})
+		}
+	}
+}
+
 func TestRoleInstanceSpec_GetRestartPolicy_NoSyntheticDefault(t *testing.T) {
 	// Unlike RoleSpec, an unset policy on a RoleInstance must stay empty:
 	// RecreateRoleInstanceOnPodRestart would start recreating instances of
