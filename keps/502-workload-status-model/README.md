@@ -85,7 +85,7 @@ The current status model has the following limitations:
 
 ## Proposal
 
-Use conditions for configuration compatibility, progress toward the target, and readiness facts, and Events for individual operation failures. RI phase remains the instance-level lifecycle anchor.
+Use `Progressing` conditions for progress toward the target and current blockers, counters and RI readiness conditions for availability facts, and Events for individual operation failures. RI phase remains the instance-level lifecycle anchor.
 RBG summarizes the workflows of its roles. Specific activities are available through reasons, messages, and lower-level status; programs use structured fields and stable reasons rather than parsing messages.
 
 ### User Stories
@@ -98,7 +98,7 @@ RBG summarizes the workflows of its roles. Specific activities are available thr
 ### Notes/Constraints/Caveats
 
 Deployment, StatefulSet, and LeaderWorkerSet are deprecated backends whose status capabilities will not be extended.
-RBG enables the new condition model only when all roles use RIS. If any role uses a legacy backend, RBG continues to use the existing `Ready` condition and role replica status during the compatibility window.
+RBG enables the new condition model only when all roles use RIS. If any role uses a legacy backend, RBG continues to use the existing `Ready` condition and role replica status while those backends are supported.
 For example, an RBG with prefill using RIS and decode using LeaderWorkerSet does not report the new overall conditions, but the prefill RIS / RI resources still use the new status model.
 Missing new fields on legacy backends do not affect existing Ready checks for existing objects.
 
@@ -231,7 +231,7 @@ Automation should use a small, stable decision table:
 | Unknown / unrecognized reason | Treat as still progressing, not as failure |
 
 The condition-level `observedGeneration` check is required for completion: a legacy or rolled-back controller can advance `status.observedGeneration` while leaving a `Converged` condition written for an older generation. A missing or stale condition `observedGeneration` must be treated as incomplete, not done.
-`Progressing=True` means the target has not converged; it does not imply a healthy rate of progress. kstatus-based tools do not understand these condition types by default, so deployments can provide tool-specific health checks: Flux 2.5+ health checks can use CEL expressions over the fields above, and Argo CD can use a Lua health check implementing the same rules.
+`Progressing=True` means the target has not converged; it does not imply a healthy rate of progress. kstatus-based tools do not understand these condition types by default, so operators can provide tool-specific health checks: Flux 2.5+ health checks can use CEL expressions over the fields above, and Argo CD can use a Lua health check implementing the same rules.
 
 ### Validation Ownership and Failure Semantics
 
@@ -274,7 +274,7 @@ status:
     - type: Progressing # [Changed] The type is already declared; define writes and execution, waiting, and pause semantics.
       status: "True"
       reason: RoleInstanceSetUpdated # [Changed] Mirrors Deployment ReplicaSetUpdated: established RIS are converging, covering updates and scaling.
-      message: "prefill is Scaling; decode is Updating, with 1/3 replicas updated"
+      message: "prefill is scaling up; decode is updating, with 1/3 replicas updated"
       observedGeneration: 5
       lastTransitionTime: "2026-10-26T09:01:00Z"
 ```
@@ -389,7 +389,7 @@ status:
       observedGeneration: 2
 ```
 
-The proposed RI phase values and boundaries are:
+The RI phase values and boundaries are:
 
 | Phase | Meaning |
 | --- | --- |
@@ -408,7 +408,7 @@ Scaling the number of RIs belongs to RIS; component spec changes within an RI ar
 To leave Updating, the RI must have all components / Pods required by the current target present, the target configuration must have taken effect, in-place updates or replacement must have completed, and the controller-observed readiness conditions for this update must be satisfied. Revision equality alone does not prove completion.
 To leave Recovering, all target Pods must be present, the relevant recreation / replacement / cleanup work must be complete, and readyPolicy must be satisfied. The RI then returns to Running.
 
-Phase completion is not externally observed readiness. RI phase transitions use controller-observed workload readiness: required Pods present and ready per readyPolicy, plus the in-place update readiness gate when it is configured. `RoleInstanceCustomReady` and other externally owned readiness gates do not gate phase transitions; they gate the externally observed Ready state and parent availability calculations. This keeps phase distinct from `RoleInstanceReady` plus gate aggregation and removes the circular wait with KEP-527: the lifecycle-owned `RoleInstanceCustomReady` contribution established by `markPodNotReady` remains until the RI enters `Running`, but it does not prevent the RI from entering `Running`.
+Phase completion is not externally observed readiness. RI phase transitions use controller-observed workload readiness: required Pods present and ready per readyPolicy, plus the in-place update readiness gate when it is configured. `RoleInstanceCustomReady` and other externally owned readiness gates do not gate phase transitions; they gate the readiness state consumed by parents and external clients (`RoleInstanceReady` plus configured gates) and parent availability calculations. This keeps phase distinct from `RoleInstanceReady` plus gate aggregation and removes the circular wait with KEP-527: the lifecycle-owned `RoleInstanceCustomReady` contribution established by `markPodNotReady` remains until the RI enters `Running`, but it does not prevent the RI from entering `Running`.
 
 The allowed phase edges are:
 
@@ -451,7 +451,7 @@ RI readiness and restart safeguards remain expressed by the following conditions
 | `Restarting` | Restart safeguard maintained by the RI controller; continues to suppress duplicate restart-policy recreation and does not automatically become a readiness gate |
 
 RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `PodOperationUnclassified`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. `RoleInstanceReady` reasons are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady when a configured gate condition is missing. `RoleInstanceCustomReady` and other externally owned readiness gates remain separate conditions and do not change `RoleInstanceReady`.
-Multiple blocking gates require a stable priority. If blocking recurs after recovery, a stale `False / Ready` combination must not remain.
+When several facts block `RoleInstanceReady`, the configured in-place update readiness gate takes precedence over Pod readiness, matching the current aggregation order. When blocking recurs after recovery, the condition must not keep a stale `True(reason=Ready)`.
 Preserve restartCount, lastRestartTime, inPlaceUpdateContainerBaselines, and their safety-critical persistence ordering.
 
 RI conditions retain the custom Go type for now, adding optional observedGeneration. Its absence does not confirm the current generation, and the aggregation layer does not fill in confirmation on behalf of external owners.
