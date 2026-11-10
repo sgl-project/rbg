@@ -150,7 +150,7 @@ External blocker families use stable, machine-readable categories. RI may report
 
 | Reason family | RI example reason | RIS reason | RBG reason |
 | --- | --- | --- | --- |
-| Configuration | Not owned by RI | Not newly defined at RIS | `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
+| Configuration | Not owned by RI | Not newly defined at RIS | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
 | Permission | `PodCreateForbidden`, `PodUpdateForbidden` | `PermissionDenied` | `PermissionDenied` |
 | Admission | `PodAdmissionRejected` | `AdmissionDenied` | `AdmissionDenied` |
 | Quota | `PodCreateQuotaExceeded`, `PodUpdateQuotaExceeded` | `WaitingForQuota` | `WaitingForQuota` |
@@ -169,11 +169,11 @@ Activity and child-readiness reasons are layer-specific:
 | --- | --- | --- | --- |
 | Child readiness | `PodsNotReady` | `InstancesNotReady` | `RolesNotReady` |
 | Initial creation | `Creating` | `Creating` | `Creating` |
-| Update | `Updating` | `RollingUpdate` | `ScalingOrUpdating` |
-| Instance-count scaling | Not owned by RI | `ScalingUp`, `ScalingDown` | `ScalingOrUpdating` |
+| Update | `Updating` | `RollingUpdate` | `RoleInstanceSetUpdated` |
+| Instance-count scaling | Not owned by RI | `ScalingUp`, `ScalingDown` | `RoleInstanceSetUpdated` |
 | Recovery | `Recovering` | `Recovering` | `Recovering` |
 
-`ScalingOrUpdating` is an RBG reporting aggregate, not a distinct lifecycle phase or controller workflow. RIS reports the concrete workflow, and RI does not own instance-count scaling.
+`RoleInstanceSetUpdated` is an RBG reporting aggregate modeled on the Deployment `ReplicaSetUpdated` reason: it states that the child RoleInstanceSets are converging, without distinguishing whether a role is updating or scaling, because those workflows are controlled below RBG and may run concurrently. RIS reports the concrete workflow, and RI does not own instance-count scaling.
 
 Parent controllers must aggregate through the documented reason-family mapping and must not parse condition messages. When multiple facts belong to the same family, the parent uses its canonical reason for that family and describes the details in message. For a `Progressing=True` condition, current external blockers take precedence, then an active workflow, then child readiness only when no active workflow remains:
 
@@ -197,10 +197,10 @@ Within the Activity family, RBG uses this deterministic precedence:
 ```text
 Creating
 Recovering
-ScalingOrUpdating
+RoleInstanceSetUpdated
 ```
 
-When multiple Activity facts are present, RBG uses the highest-precedence activity reason and describes all activities in message. `Creating` is used only during initial RBG establishment, before the target's required roles have been established. Once the RBG is established, a missing child is not `Creating`: it is classified under the workflow that requires it, such as `Recovering` for replacing an established child or `ScalingOrUpdating` for a target that adds one. `Recovering` is used when an established child is being repaired or replaced; that fact is more specific than ordinary target changes. `ScalingOrUpdating` is the aggregate reason for normal target changes.
+When multiple Activity facts are present, RBG uses the highest-precedence activity reason and describes all activities in message. `Creating` is used only during initial RBG establishment, before the target's required roles have been established. Once the RBG is established, a missing child is not `Creating`: it is classified under the workflow that requires it, such as `Recovering` for replacing an established child or `RoleInstanceSetUpdated` for a target that adds one. `Recovering` is used when an established child is being repaired or replaced; that fact is more specific than ordinary target changes. `RoleInstanceSetUpdated` is the aggregate reason for normal target changes in established children.
 
 RIS maps the same Activity ordering to its concrete reasons: `Creating`, `Recovering`, `RollingUpdate`, and `ScalingUp` / `ScalingDown`. This ordering selects the `Progressing` condition reason only; RIS workflow state remains expressed by counters and conditions, not by a persisted lifecycle phase.
 
@@ -224,7 +224,7 @@ The condition-level `observedGeneration` check is required for completion: a leg
 
 RBG does not define an `Accepted` condition. Static errors belong to admission, and runtime incompatibility is a current blocker reported through `Progressing`:
 
-- The webhook must reject create or update requests for invalid names, rollout parameters, dependency cycles, unsupported workload declarations, and other local spec errors before the target is persisted. If an invalid object is already persisted by a legacy writer or is discovered through defense-in-depth checks, the controller reports `Progressing=True` with `InvalidSpec`, `TemplateInvalid`, or `DependencyCycle`; admission rejection remains the preferred path.
+- The webhook must reject create or update requests for invalid names, rollout parameters, dependency cycles, unsupported workload declarations, and other local spec errors before the target is persisted. If an invalid object is already persisted by a legacy writer or is discovered through defense-in-depth checks, the controller reports `Progressing=True` with `InvalidSpec`; admission rejection remains the preferred path.
 - Runtime incompatibility is also a current blocker, not a separate acceptance verdict. A required referenced configuration confirmed missing, an installed scheduler lacking a required capability, or an unsatisfiable gang combination reports `Progressing=True` with `InvalidSpec`, `SchedulerUnsupported`, or `IncompatibleGangConfig`, describes the incompatible fact in message, and emits a Warning Event. A check that cannot be completed reports `Unknown(reason=ObservationIncomplete)`, not a confirmed incompatibility.
 
 Configuration-family blockers rank first in the blocker precedence because a human must change the spec, referenced configuration, or environment. Like other blockers, they are cleared only by a fresh observation confirming the incompatibility no longer holds — for example after the scheduler is upgraded or the referenced configuration is restored — and they may appear or disappear without a new RBG generation.
@@ -260,7 +260,7 @@ status:
   conditions:
     - type: Progressing # [Changed] The type is already declared; define writes and execution, waiting, and pause semantics.
       status: "True"
-      reason: ScalingOrUpdating # [Changed] Summarizes scaling and updates across roles.
+      reason: RoleInstanceSetUpdated # [Changed] Mirrors Deployment ReplicaSetUpdated: established RIS are converging, covering updates and scaling.
       message: "prefill is Scaling; decode is Updating, with 1/3 replicas updated"
       observedGeneration: 5
       lastTransitionTime: "2026-10-26T09:01:00Z"
@@ -285,12 +285,12 @@ The existing RBG `Ready` condition is deprecated. During the compatibility windo
 
 RBG completion is computed from the RBG's own current target and generation; it never derives completion by copying a child's phase or `Progressing=False(reason=Converged)`. CoordinatedPolicy may lower a role's RIS partition or coordinated scaling targets one step at a time, so a single RBG rollout can make each RIS converge between steps and report `Progressing=False(reason=Converged)` several times. During such rollouts RBG must remain `Progressing=True` until every coordinated step required by the RBG-level target completes.
 
-Each condition has one reason. Overall RBG progress for scaling and updates uses `ScalingOrUpdating`, with message describing each role's activity. Creation, recovery, and waiting use the corresponding reasons below. A current blocker takes precedence over an activity reason.
+Each condition has one reason. Overall RBG progress in established children uses `RoleInstanceSetUpdated`, with message describing each role's activity. Creation, recovery, and waiting use the corresponding reasons below. A current blocker takes precedence over an activity reason.
 
 | Condition / Status | Reasons |
 | --- | --- |
-| Progressing=True | `Creating`, `ScalingOrUpdating`, `Recovering` |
-| Progressing=True, blocked or waiting | `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported`, `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `WaitingForGang`, `WaitingForDependencies`, `UnclassifiedBlocker`, `RolesNotReady` |
+| Progressing=True | `Creating`, `RoleInstanceSetUpdated`, `Recovering` |
+| Progressing=True, blocked or waiting | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported`, `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `WaitingForGang`, `WaitingForDependencies`, `UnclassifiedBlocker`, `RolesNotReady` |
 | Progressing=False | `Converged`, `Paused` |
 | Unknown | `ObservationIncomplete` |
 
@@ -323,7 +323,7 @@ RIS workflow progress is reported by `Progressing.reason`, not by a persisted li
 
 Activity precedence for RIS `Progressing` is `Creating`, `Recovering`, `RollingUpdate`, and `ScalingUp` / `ScalingDown`. `Creating` is used only during initial set establishment, before the RIS has an established revision or established RIs for its target. Once the set is established, a required RI that does not yet exist is not `Creating`: it is classified under the workflow that requires it — `ScalingUp` when scaling adds instances, `RollingUpdate` when update work creates or replaces instances, and `Recovering` when an established RI is being repaired or replaced. Recovery outranks active update and scaling, an active update outranks scaling, and if only scaling remains active, use `ScalingUp` or `ScalingDown`.
 
-Concurrent update and scaling is represented by one `Progressing` reason; message describes the other workflow for humans and is not a machine interface. This is an accepted v1alpha2 trade-off to avoid a multi-workflow status schema. RBG still reports the aggregate `ScalingOrUpdating`; a future structured multi-workflow representation requires a separate proposal.
+Concurrent update and scaling is represented by one `Progressing` reason; message describes the other workflow for humans and is not a machine interface. This is an accepted v1alpha2 trade-off to avoid a multi-workflow status schema. RBG reports the aggregate `RoleInstanceSetUpdated` for both workflows; a future structured multi-workflow representation requires a separate proposal.
 
 Completion conditions are listed below. `Progressing=False(reason=Converged)` is written only after the relevant workflows complete:
 
@@ -463,7 +463,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Cover condition and reason transitions for creation, recreation, updates, scaling, pattern migration, pauses, deletion, and insufficient observations for RBG, RIS, and RI.
 - Validation ownership is split between admission and controller status: deterministic static errors are rejected by the webhook. Persisted invalid specs and runtime incompatibility report `Progressing=True` with a configuration-family reason at the top of the blocker priority; no `Accepted` condition or `Failed` phase is introduced.
 - RIS does not add `status.phase` or a `Ready` condition. RI recovery is reported by RIS `Progressing=True(reason=Recovering)` and the existing counters / lower-level conditions. RBG derives recovery facts from lower-level conditions, not from a RIS phase.
-- When different RISs are updating and scaling, RBG reports `Progressing=True(reason=ScalingOrUpdating)` and message describes each role's activity. When all relevant progress is paused, RBG reports `Progressing=False(reason=Paused)`.
+- When different RISs are updating and scaling, RBG reports `Progressing=True(reason=RoleInstanceSetUpdated)` and message describes each role's activity. When all relevant progress is paused, RBG reports `Progressing=False(reason=Paused)`.
 - When RIS update and scaling workflows overlap, RIS reports one dominant `Progressing` reason; fully paused progress reports `False(reason=Paused)`, and an active update without a higher-priority blocker reports `RollingUpdate` while message describes the scaling workflow. Verify that programs do not parse that message to detect concurrent scaling; structured multi-workflow reporting is intentionally out of scope for v1alpha2.
 - Propagate initial readiness and creation completion signals upward through conditions and counters. Recreating a child with a new UID does not by itself change parent status.
 - Recovery completion requires all target Pods to be present and readyPolicy to be satisfied, with completion facts aggregated upward. Cover AllPodReady waiting for Pod readiness and None skipping that wait. Entering Running does not wait for external readiness gates: an RI can enter Running while `RoleInstanceCustomReady` is False, including while a KEP-527 `markPodNotReady` lifecycle gate is still held, and stateless availability still counts that gate as not ready.
@@ -482,7 +482,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Individual RIS / RI scaling or update failures produce Warning Events on the corresponding objects, not new failure conditions, and do not directly change the aggregated `Progressing` reason, readiness facts, or RI phase. Legacy writes during the compatibility window follow migration rules. Repeated failures must remain edge-triggered and aggregated so they do not exhaust the object's event budget or trigger the client-go spam filter.
 - Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
-- When one role is `Recovering` and another is updating, RBG uses `Recovering`. When only update or scaling work remains, RBG uses `ScalingOrUpdating`. Message describes every concurrent activity.
+- When one role is `Recovering` and another is updating, RBG uses `Recovering`. When only update or scaling work remains, RBG uses `RoleInstanceSetUpdated`. Message describes every concurrent activity.
 - A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
 - Record today's 403-classification behavior, then test quota, RBAC, and admission denials with representative error details. Unclassifiable errors (5xx, timeout, `AlreadyExists` during garbage collection) report `PodOperationUnclassified` at RI and `UnclassifiedBlocker` at RIS / RBG, with the concrete error in message and a Warning Event. A confirmed blocker family is not replaced by an unclassified error and is cleared only by a fresh observation; the unclassified reason is replaced or cleared by the next fresh observation.
 - CoordinatedPolicy rollouts step RIS partition and coordinated scaling targets one step at a time. A RIS may alternate between `Converged` and active reasons while RBG remains `Progressing=True` until the RBG-level target completes; RBG completion never derives from child phase or `Converged`.
@@ -535,7 +535,7 @@ Specific release versions and feedback periods will be added when the release ta
 | --- | --- |
 | RI phase | New optional field; initialization when absent follows the table below; updates may stop after rollback |
 | RBG `Ready` | Deprecated and removed after the compatibility window: legacy writes may continue with existing all-replicas-ready semantics, then stop and clean up controller-owned entries; new consumers use `roleStatuses`, RIS counters, and RI `RoleInstanceReady` |
-| Progressing | RBG summarizes updates and scaling as `ScalingOrUpdating`; validate compatibility for release waits, dependency-based startup, and upper-level replica counts |
+| Progressing | RBG summarizes updates and scaling as `RoleInstanceSetUpdated`; validate compatibility for release waits, dependency-based startup, and upper-level replica counts |
 | Legacy backend applicability | RBGs containing legacy backends retain existing status without enabling the new overall condition model; new status on RIS / RI themselves is unaffected |
 | RollingUpdateInProgress | Not a new implementation goal; deprecate before handling constants and persisted legacy values |
 | GangConfigured | Retain existing semantics and absence when gang is not enabled during the compatibility window; new and legacy conditions must not contradict each other |
