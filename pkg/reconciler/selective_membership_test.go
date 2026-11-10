@@ -325,3 +325,66 @@ func TestSelectiveRejectsChangedParentIdentityOrGeneration(t *testing.T) {
 		})
 	}
 }
+
+func TestRemovePreviouslyOwnedMetadata(t *testing.T) {
+	entry := func(manager string, operation metav1.ManagedFieldsOperationType, subresource, kind, key string) metav1.ManagedFieldsEntry {
+		raw, err := json.Marshal(map[string]interface{}{
+			"f:metadata": map[string]interface{}{"f:" + kind: map[string]interface{}{"f:" + key: map[string]interface{}{}}},
+		})
+		require.NoError(t, err)
+		return metav1.ManagedFieldsEntry{Manager: manager, Operation: operation, Subresource: subresource, FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: raw}}
+	}
+	for _, kind := range []string{"annotations", "labels"} {
+		t.Run(kind, func(t *testing.T) {
+			own := entry("rbg", metav1.ManagedFieldsOperationApply, "", kind, "example.org/key")
+			external := entry("operator", metav1.ManagedFieldsOperationApply, "", kind, "example.org/key")
+			otherKind := "labels"
+			if kind == otherKind {
+				otherKind = "annotations"
+			}
+			for _, tc := range []struct {
+				name    string
+				entries []metav1.ManagedFieldsEntry
+				desired bool
+				keep    bool
+			}{
+				{name: "exclusive-apply", entries: []metav1.ManagedFieldsEntry{own}},
+				{name: "exclusive-update", entries: []metav1.ManagedFieldsEntry{entry("rbg", metav1.ManagedFieldsOperationUpdate, "", kind, "example.org/key")}},
+				{name: "shared-apply", entries: []metav1.ManagedFieldsEntry{own, external}, keep: true},
+				{name: "shared-update-reversed", entries: []metav1.ManagedFieldsEntry{entry("operator", metav1.ManagedFieldsOperationUpdate, "", kind, "example.org/key"), own}, keep: true},
+				{name: "foreign-only", entries: []metav1.ManagedFieldsEntry{external}, keep: true},
+				{name: "still-desired", entries: []metav1.ManagedFieldsEntry{own}, desired: true, keep: true},
+				{name: "separate-kind", entries: []metav1.ManagedFieldsEntry{own, entry("operator", metav1.ManagedFieldsOperationApply, "", otherKind, "example.org/key")}},
+				{name: "ignore-status", entries: []metav1.ManagedFieldsEntry{own, entry("operator", metav1.ManagedFieldsOperationUpdate, "status", kind, "example.org/key")}},
+				{name: "unreadable-ownership", entries: []metav1.ManagedFieldsEntry{own, {Manager: "operator", FieldsV1: &metav1.FieldsV1{Raw: []byte("{")}}}, keep: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					old := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{ManagedFields: tc.entries}}
+					old.Labels = map[string]string{"example.org/key": "value"}
+					old.Annotations = map[string]string{"example.org/key": "value"}
+					desired := &workloadsv1alpha2.RoleInstanceSet{}
+					if tc.desired {
+						desired.Labels = map[string]string{"example.org/key": "value"}
+						desired.Annotations = map[string]string{"example.org/key": "value"}
+					}
+					updated := old.DeepCopy()
+					removePreviouslyOwnedMetadata(old, updated, desired)
+					result, untouched := updated.Annotations, updated.Labels
+					if kind == "labels" {
+						result, untouched = updated.Labels, updated.Annotations
+					}
+					_, present := result["example.org/key"]
+					require.Equal(t, tc.keep, present)
+					require.Equal(t, "value", untouched["example.org/key"], "ownership of another metadata kind must not affect this key")
+				})
+			}
+		})
+	}
+	old := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{
+		Annotations:   map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"},
+		ManagedFields: []metav1.ManagedFieldsEntry{entry("rbg", metav1.ManagedFieldsOperationUpdate, "", "annotations", constants.CommittedSkipOrdinalsAnnotationKey)},
+	}}
+	updated := old.DeepCopy()
+	removePreviouslyOwnedMetadata(old, updated, &workloadsv1alpha2.RoleInstanceSet{})
+	require.Equal(t, "1,3", updated.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+}

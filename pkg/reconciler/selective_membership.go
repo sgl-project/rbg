@@ -251,37 +251,60 @@ func buildSelectivePatch(old, updated *workloadsv1alpha2.RoleInstanceSet, record
 	return patch, nil
 }
 
-// Retain ordinary synchronization's removal semantics without deleting metadata
-// owned by other controllers. Managed fields record both legacy apply and our
-// conditional patch writes; no additional annotation is needed for this.
-func removePreviouslyOwnedMetadata(old, updated, desired *workloadsv1alpha2.RoleInstanceSet) {
-	for _, entry := range old.ManagedFields {
-		if entry.Manager != utils.FieldManager || entry.Subresource != "" || entry.FieldsV1 == nil {
+type metadataKey struct {
+	kind string
+	key  string
+}
+
+// metadataOwnership separates rbg claims from other main-resource writers.
+// Apply and Update entries both own fields; status entries do not own metadata
+// on the main resource. Keep annotation and label identities separate.
+func metadataOwnership(entries []metav1.ManagedFieldsEntry) (map[metadataKey]bool, map[metadataKey]bool, error) {
+	owned, other := map[metadataKey]bool{}, map[metadataKey]bool{}
+	for _, entry := range entries {
+		if entry.Subresource != "" || entry.FieldsV1 == nil {
 			continue
 		}
 		var fields map[string]interface{}
-		if json.Unmarshal(entry.FieldsV1.Raw, &fields) != nil {
-			continue
+		if err := json.Unmarshal(entry.FieldsV1.Raw, &fields); err != nil {
+			return nil, nil, err
+		}
+		claims := other
+		if entry.Manager == utils.FieldManager {
+			claims = owned
 		}
 		metadata, _ := fields["f:metadata"].(map[string]interface{})
 		for _, kind := range []string{"annotations", "labels"} {
 			keys, _ := metadata["f:"+kind].(map[string]interface{})
-			target, want := updated.Annotations, desired.Annotations
-			if kind == "labels" {
-				target, want = updated.Labels, desired.Labels
-			}
-			for owned := range keys {
-				if len(owned) < 2 || owned[:2] != "f:" {
-					continue
-				}
-				key := owned[2:]
-				if key == constants.CommittedSkipOrdinalsAnnotationKey {
-					continue
-				}
-				if _, exists := want[key]; !exists {
-					delete(target, key)
+			for field := range keys {
+				if len(field) >= 2 && field[:2] == "f:" {
+					claims[metadataKey{kind: kind, key: field[2:]}] = true
 				}
 			}
+		}
+	}
+	return owned, other, nil
+}
+
+// Delete only metadata exclusively owned by rbg. A merge patch bypasses SSA
+// ownership checks, so shared keys must be preserved explicitly. This preserves
+// their values without attempting to relinquish rbg's managed-field claims.
+func removePreviouslyOwnedMetadata(old, updated, desired *workloadsv1alpha2.RoleInstanceSet) {
+	owned, other, err := metadataOwnership(old.ManagedFields)
+	if err != nil {
+		// Unknown ownership must not cause destructive metadata cleanup.
+		return
+	}
+	for field := range owned {
+		if other[field] || (field.kind == "annotations" && field.key == constants.CommittedSkipOrdinalsAnnotationKey) {
+			continue
+		}
+		target, want := updated.Annotations, desired.Annotations
+		if field.kind == "labels" {
+			target, want = updated.Labels, desired.Labels
+		}
+		if _, exists := want[field.key]; !exists {
+			delete(target, field.key)
 		}
 	}
 }

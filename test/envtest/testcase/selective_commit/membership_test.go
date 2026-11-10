@@ -594,3 +594,102 @@ func TestSelectiveDenseOrphanReapply(t *testing.T) {
 	require.Equal(t, "1,3", get().Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
 	require.Nil(t, metav1.GetControllerOf(get()))
 }
+
+func TestSelectiveMembershipPreservesSharedMetadata(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	environment := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join(filepath.Dir(file), "../../../../config/crd/bases")}, ErrorIfCRDPathMissing: true}
+	cfg, err := environment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, environment.Stop()) })
+	scheme := apiruntime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shared-metadata"}}))
+	role := wrappers.BuildStandaloneRole("worker").WithReplicas(5).Obj()
+	role.Labels = map[string]string{"example.org/shared": "keep", "example.org/exclusive": "remove", "example.org/concurrent": "keep"}
+	role.Annotations = map[string]string{"example.org/shared": "keep", "example.org/exclusive": "remove", "example.org/concurrent": "keep"}
+	parent := wrappers.BuildBasicRoleBasedGroup("group", "shared-metadata").WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+	require.NoError(t, c.Create(ctx, parent))
+	wrapped := &guardedClient{Client: c}
+	r := reconciler.NewRoleInstanceSetReconciler(scheme, wrapped)
+	r.SetAPIReader(c)
+	sync := func() error {
+		parent.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+		return r.Reconciler(ctx, parent, &parent.Spec.Roles[0], nil, "stable-hash")
+	}
+	get := func() *workloadsv1alpha2.RoleInstanceSet {
+		set := &workloadsv1alpha2.RoleInstanceSet{}
+		require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: parent.Namespace, Name: parent.GetWorkloadName(&parent.Spec.Roles[0])}, set))
+		return set
+	}
+	share := func(manager, key string) {
+		set := get()
+		apply := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": workloadsv1alpha2.GroupVersion.String(), "kind": "RoleInstanceSet",
+			"metadata": map[string]interface{}{"name": set.Name, "namespace": set.Namespace,
+				"labels": map[string]interface{}{key: "keep"}, "annotations": map[string]interface{}{key: "keep"}},
+		}}
+		require.NoError(t, c.Patch(ctx, apply, client.Apply, client.FieldOwner(manager)))
+		owners := map[string]int{}
+		for _, entry := range get().ManagedFields {
+			if entry.Subresource != "" || entry.FieldsV1 == nil || (entry.Manager != "rbg" && entry.Manager != manager) {
+				continue
+			}
+			var fields map[string]interface{}
+			require.NoError(t, json.Unmarshal(entry.FieldsV1.Raw, &fields))
+			metadata, _ := fields["f:metadata"].(map[string]interface{})
+			for _, kind := range []string{"labels", "annotations"} {
+				keys, _ := metadata["f:"+kind].(map[string]interface{})
+				if _, present := keys["f:"+key]; present {
+					owners[entry.Manager+"/"+kind]++
+				}
+			}
+		}
+		for _, owner := range []string{"rbg", manager} {
+			for _, kind := range []string{"labels", "annotations"} {
+				require.Positive(t, owners[owner+"/"+kind], "fixture must establish shared ownership")
+			}
+		}
+	}
+	require.NoError(t, sync())
+	require.NoError(t, sync())
+	share("shared-operator", "example.org/shared")
+	parent.Spec.Roles[0].Replicas = ptr.To[int32](3)
+	parent.Spec.Roles[0].Labels = nil
+	parent.Spec.Roles[0].Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3"}
+	require.NoError(t, c.Update(ctx, parent))
+	wrapped.beforePatch = func() { share("concurrent-operator", "example.org/concurrent") }
+	require.True(t, apierrors.IsConflict(sync()), "new ownership must invalidate the previously read deletion plan")
+	unchanged := get()
+	require.Equal(t, int32(5), *unchanged.Spec.Replicas)
+	require.Empty(t, unchanged.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+	require.Equal(t, "remove", unchanged.Labels["example.org/exclusive"])
+	require.NoError(t, sync())
+	assertMetadata := func() {
+		actual := get()
+		for _, metadata := range []map[string]string{actual.Labels, actual.Annotations} {
+			require.Equal(t, "keep", metadata["example.org/shared"])
+			require.Equal(t, "keep", metadata["example.org/concurrent"])
+			require.NotContains(t, metadata, "example.org/exclusive")
+		}
+	}
+	assertMetadata()
+	members, err := get().CommittedOrdinals()
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 2, 4}, members)
+	version := get().ResourceVersion
+	require.NoError(t, sync())
+	require.Equal(t, version, get().ResourceVersion, "unchanged shared metadata must not cause patch churn")
+	// Filling the gaps returns the child to ordinary SSA through the existing
+	// ownership handoff; the other managers must keep their shared fields.
+	parent.Spec.Roles[0].Replicas = ptr.To[int32](5)
+	delete(parent.Spec.Roles[0].Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	require.NoError(t, c.Update(ctx, parent))
+	require.NoError(t, sync())
+	require.Empty(t, get().Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+	require.NoError(t, sync())
+	assertMetadata()
+}
