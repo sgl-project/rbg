@@ -159,7 +159,7 @@ External blocker families use stable, machine-readable categories. RI may report
 
 Blocker classification is deterministic and is performed by the layer that observed the error, normally the RI controller. Kubernetes commonly returns 403 for quota, RBAC, and admission denials, so classification must use error details rather than the status code alone: quota errors identify the exceeded quota object; RBAC denials identify the missing verb, resource, or subresource; admission denials identify the rejecting admission plugin or webhook. The implementation must document this mapping and tests must cover representative errors for each family.
 
-If an error cannot be classified, for example 5xx responses, timeouts, or `AlreadyExists` while a same-name Pod from a previous RI UID is still being garbage-collected, the controller must not guess a blocker family. It retains the current Activity reason, describes the concrete error in message, and emits a Warning Event. The reason becomes a stable blocker-family reason only after a fresh observation confirms a specific family; when the condition clears, classification is discarded with it.
+If an error cannot be classified, for example 5xx responses, timeouts, or `AlreadyExists` while a same-name Pod from a previous RI UID is still being garbage-collected, the controller must not guess a blocker family. When no blocker family is confirmed for the current target, it retains the current Activity reason, describes the concrete error in message, and emits a Warning Event. When a blocker family is already confirmed, an unclassifiable error does not replace it: the blocker remains until a fresh successful observation confirms it no longer holds, and the new error is recorded in message and a Warning Event. The reason becomes a stable blocker-family reason only after a fresh observation confirms a specific family; when the condition clears, classification is discarded with it.
 
 Activity and child-readiness reasons are layer-specific:
 
@@ -240,9 +240,9 @@ RI phase transitions start from the last persisted phase and occur only when the
 RI Running means the instance-level target is steady; it is not a rollup of Pod readiness and does not imply that every readiness gate is currently True.
 Child readiness is a transition condition, not an invariant required to remain Running. Conditions continuously report current readiness, progress, and blockers.
 
-- Initial creation transitions to Running once the target structure is established and the effective readiness policy is satisfied. RI retains readyPolicy (AllPodReady by default) and configured readiness gates, with completion signals propagating upward through conditions and counters.
+- Initial creation transitions to Running once the target structure is established and the effective readiness policy is satisfied. RI retains readyPolicy (AllPodReady by default) and configured readiness gates; gates gate externally observed readiness and parent availability, but phase completion uses controller-observed workload readiness only.
 - Recreating missing resources after the RI has entered normal operation does not trigger a return to Creating; a replacement Pod goes through creation independently while the RI remains in its current phase unless an update or independent recovery is confirmed.
-- Recovery completes when the target Pods are all present, the relevant recreation / replacement / cleanup work is complete, and readyPolicy and configured readiness gates are satisfied.
+- Recovery completes when the target Pods are all present, the relevant recreation / replacement / cleanup work is complete, and readyPolicy is satisfied; external readiness gates do not block the phase transition.
 - When observations are insufficient to confirm a transition condition, retain the last phase; if it was absent, leave it absent. Related conditions may still change. A confirmed deletionTimestamp on the RI allows it to enter Terminating without complete observations of child resources.
 - When multiple workflows remain incomplete, select the RI phase using the display priority defined in the RoleInstance section. Display priority does not determine execution order.
 - When a target changes or is withdrawn, evaluate remaining work against the current target, accounting for operations already issued and required cleanup. Target changes during initial creation do not waive structural completeness or effective readiness requirements; pausing does not mean completion. Such changes fold into Create convergence: `Creating` does not transition directly to `Updating` or `Recovering`, consistent with the KEP-527 hook rules.
@@ -387,8 +387,8 @@ status:
       observedGeneration: 2 # [New] Refers to the RI generation.
     - type: RoleInstanceReady
       status: "False"
-      reason: ReadinessGatesNotReady
-      message: "RoleInstanceCustomReady is not yet satisfied"
+      reason: PodsNotReady
+      message: "A required Pod is being recreated and is blocked by resource quota"
       lastTransitionTime: "2026-10-26T09:01:00Z" # [Rule clarified] Changes only when status changes, preserving availability timing.
       observedGeneration: 2 # [New] Absent from current RI conditions; when used, refers to the RI itself.
     - type: RoleInstanceCustomReady
@@ -403,10 +403,10 @@ The proposed RI phase values and boundaries are:
 
 | Phase | Meaning |
 | --- | --- |
-| `Creating` | Initially establishing the target Pods for each component, waiting for readyPolicy and configured readiness gates to be satisfied |
+| `Creating` | Initially establishing the target Pods for each component, waiting for readyPolicy to be satisfied; external readiness gates do not gate this phase |
 | `Running` | The RI target is steady after startup, an update, or recovery completes; readiness may still be False and a readiness drop alone does not change the phase |
 | `Updating` | An identified component spec, template, or revision update is in progress, including in-place updates and Pod replacements required by the update |
-| `Recovering` | Independent recreation or replacement of required Pods is in progress outside an update, until recreation, cleanup, and effective readiness conditions complete |
+| `Recovering` | Independent recreation or replacement of required Pods is in progress outside an update, until recreation, cleanup, and controller-observed readiness complete |
 | `Terminating` | The RI itself has a deletionTimestamp, rather than a child Pod being deleted |
 
 RI phase is not the lifecycle-hook protocol. Hook execution, retries, and release use the hook-state labels and finalizer handshake defined by KEP-527. Phase describes the instance lifecycle for observation and pacing and serves as an eligibility input: an RI that is still `Creating` has never established its target, so target changes during Create convergence do not invoke `preUpdate` or `preRecover`. Phase must not be used as a hook trigger, handshake, or completion signal.
@@ -415,23 +415,25 @@ Deletion of the RI takes priority and enters Terminating. Identifying an update 
 Confirming independent recovery of required Pods outside an update enters Recovering. Pod recreation that is already part of an update remains Updating rather than entering a separate Recovering phase.
 Scaling the number of RIs belongs to RIS; component spec changes within an RI are expressed as Updating.
 
-To leave Updating, the RI must have all components / Pods required by the current target present, the target configuration must have taken effect, in-place updates or replacement must have completed, and the effective readiness conditions for this update must be satisfied. Revision equality alone does not prove completion.
-To leave Recovering, all target Pods must be present, the relevant recreation / replacement / cleanup work must be complete, and readyPolicy and configured readiness gates must be satisfied. The RI then returns to Running.
+To leave Updating, the RI must have all components / Pods required by the current target present, the target configuration must have taken effect, in-place updates or replacement must have completed, and the controller-observed readiness conditions for this update must be satisfied. Revision equality alone does not prove completion.
+To leave Recovering, all target Pods must be present, the relevant recreation / replacement / cleanup work must be complete, and readyPolicy must be satisfied. The RI then returns to Running.
+
+Phase completion is not externally observed readiness. RI phase transitions use controller-observed workload readiness: required Pods present and ready per readyPolicy, plus the in-place update readiness gate when it is configured. `RoleInstanceCustomReady` and other externally owned readiness gates do not gate phase transitions; they gate the externally observed Ready state and parent availability calculations. This keeps phase distinct from `RoleInstanceReady` plus gate aggregation and removes the circular wait with KEP-527: the lifecycle-owned `RoleInstanceCustomReady` contribution established by `markPodNotReady` remains until the RI enters `Running`, but it does not prevent the RI from entering `Running`.
 
 The allowed phase edges are:
 
 | From | Event | To |
 | --- | --- | --- |
 | absent | RI creation begins | `Creating` |
-| `Creating` | The current creation target is structurally complete and its effective readiness requirements are satisfied | `Running` |
+| `Creating` | The current creation target is structurally complete and its controller-observed readiness requirements are satisfied | `Running` |
 | `Creating` | An update or recovery target is identified before initial creation completes | Remain `Creating`; fold the new target into Create convergence without invoking hooks |
 | `Creating` | RI deletion is confirmed | `Terminating` |
 | `Running` | An update target is identified | `Updating` |
 | `Running` | Independent recreation or replacement of required Pods is confirmed | `Recovering` |
 | `Running` | RI deletion is confirmed | `Terminating` |
-| `Updating` | The update target, its replacement work, and effective readiness requirements complete | `Running` |
+| `Updating` | The update target, its replacement work, and controller-observed readiness requirements complete | `Running` |
 | `Updating` | RI deletion is confirmed | `Terminating` |
-| `Recovering` | Recovery and its effective readiness requirements complete | `Running` |
+| `Recovering` | Recovery and its controller-observed readiness requirements complete | `Running` |
 | `Recovering` | An update target is identified while recovery continues | `Updating` |
 | `Recovering` | RI deletion is confirmed | `Terminating` |
 
@@ -440,7 +442,7 @@ No phase returns to `Creating`, and `Creating` exits only to `Running` or `Termi
 | Situation | Phase Handling |
 | --- | --- |
 | An update remains incomplete, and target Pods are missing or being recreated | Remain Updating until the current update target and its recovery work are complete |
-| An independent failure and recreation occur after an update completes | Enter Recovering; return to Running only after recovery and its effective readiness conditions complete |
+| An independent failure and recreation occur after an update completes | Enter Recovering; return to Running only after recovery and its controller-observed readiness conditions complete |
 | A readiness drop occurs without confirmed resource recreation or replacement | Remain Running; readiness conditions report the current facts |
 | The target changes during initial creation, for example fixing a bad image before first readiness | Remain Creating and converge toward the latest target; do not invoke preUpdate or preRecover |
 | Observations are insufficient to confirm update or recovery completion | Retain the phase and handle affected conditions as having insufficient observations |
@@ -452,13 +454,13 @@ RI readiness and restart safeguards remain expressed by the following conditions
 | RI Condition | Ownership and Compatibility Requirements |
 | --- | --- |
 | `Progressing` | Current target progress or current blocker for this RI; owned by the RI controller and not used as a readiness gate |
-| `RoleInstanceReady` | Aggregated readiness, compatible with existing cooperative writes and gate blocking |
+| `RoleInstanceReady` | Controller-owned aggregate of Pod readiness and the configured in-place update readiness gate; external gates are not folded into it |
 | `RoleInstanceAllPodsReady` | Pod readiness facts provided by the RI controller, preserving readyPolicy semantics |
 | `RoleInstanceInPlaceUpdateReady` | Maintained by writers involved in in-place updates, preserving existing gate behavior |
 | `RoleInstanceCustomReady` and external gates | Maintained by the corresponding owners, preserving their conditions, reasons, and messages |
 | `Restarting` | Restart safeguard maintained by the RI controller; continues to suppress duplicate restart-policy recreation and does not automatically become a readiness gate |
 
-RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. Reasons for aggregated RI readiness are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady.
+RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. `RoleInstanceReady` reasons are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady when a configured gate condition is missing. `RoleInstanceCustomReady` and other externally owned readiness gates remain separate conditions and do not change `RoleInstanceReady`.
 Multiple blocking gates require a stable priority. If blocking recurs after recovery, a stale `False / Ready` combination must not remain.
 Preserve restartCount, lastRestartTime, inPlaceUpdateContainerBaselines, and their safety-critical persistence ordering.
 
@@ -488,7 +490,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - When different RISs are updating and scaling, RBG reports `Progressing=True(reason=ScalingOrUpdating)` and message describes each role's activity. When all relevant progress is paused, RBG reports `Progressing=False(reason=Paused)`.
 - When RIS update and scaling workflows overlap, RIS reports one dominant `Progressing` reason; fully paused progress reports `False(reason=Paused)`, and an active update without a higher-priority blocker reports `RollingUpdate` while message describes the scaling workflow. Verify that programs do not parse that message to detect concurrent scaling; structured multi-workflow reporting is intentionally out of scope for v1alpha2.
 - Propagate initial readiness and creation completion signals upward through conditions and counters. Recreating a child with a new UID does not by itself change parent status.
-- Recovery completion requires all target Pods to be present and readyPolicy and configured gates to be satisfied, with completion facts aggregated upward. Cover AllPodReady waiting for Pod readiness and None skipping that wait.
+- Recovery completion requires all target Pods to be present and readyPolicy to be satisfied, with completion facts aggregated upward. Cover AllPodReady waiting for Pod readiness and None skipping that wait. Entering Running does not wait for external readiness gates: an RI can enter Running while `RoleInstanceCustomReady` is False, including while a KEP-527 `markPodNotReady` lifecycle gate is still held, and stateless availability still counts that gate as not ready.
 - Insufficient observations leave affected conditions Unknown or retain the last RI phase; related facts may change. Deletion of the object does not require complete child observations.
 - Cover RI deletion taking priority to enter Terminating, empty revisions during initial creation, child Pod deletion versus RI deletion, and readiness gates becoming unsatisfied again after Running.
 - Distinguish RIS initial creation from scale-up, and cover scaling direction and target reversal. `Creating` is reserved for initial set establishment; a scale-up that creates a new RI, such as 2 → 3 with the third RI not yet created, reports `ScalingUp`. Surge, terminating instances, and fault recovery must not be misclassified as scaling.
@@ -506,14 +508,14 @@ after support is removed, tests verify rejection and migration guidance instead.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
 - When one role is `Recovering` and another is updating, RBG uses `Recovering`. When only update or scaling work remains, RBG uses `ScalingOrUpdating`. Message describes every concurrent activity.
 - A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
-- Record today's 403-classification behavior, then test quota, RBAC, and admission denials with representative error details. Unclassifiable errors (5xx, timeout, `AlreadyExists` during garbage collection) retain the Activity reason and emit a Warning Event without guessing a blocker family.
+- Record today's 403-classification behavior, then test quota, RBAC, and admission denials with representative error details. Unclassifiable errors (5xx, timeout, `AlreadyExists` during garbage collection) emit a Warning Event without guessing a blocker family: with no confirmed blocker they retain the Activity reason, and with a confirmed blocker they keep that blocker reason until a fresh observation clears it.
 - CoordinatedPolicy rollouts step RIS partition and coordinated scaling targets one step at a time. A RIS may alternate between `Converged` and active reasons while RBG remains `Progressing=True` until the RBG-level target completes; RBG completion never derives from child phase or `Converged`.
 - Before or during dispatch of a new generation, including preCheck failures, the parent writes `observedGeneration=N` together with the `Progressing` value derived from validation, pause, and progress rules; condition-only changes trigger a status write even when counters and revisions are unchanged.
 - When RI recovery overlaps an active RIS update or scaling workflow, RIS `Progressing` uses `Recovering` and message describes the update or scaling workflow.
 - After controller restart, RBG and RIS recompute `Progressing.reason` from current facts rather than from a persisted lifecycle phase.
 - RI phase and `Progressing` remain independent, including `phase=Recovering` with `Progressing=True` while recovery is blocked, and `phase=Running` with `Progressing=True` for a blocker that does not involve recovery.
 - Cover absent / False / Unknown / True gates, multiple gates, readyPolicy, and reason consistency across blocking, recovery, and repeated blocking.
-- Cover gate and minReadySeconds consumer behavior in stateful / stateless modes, and condition uniqueness, ownership, and transition timestamps.
+- Cover gate and minReadySeconds consumer behavior in stateful / stateless modes, and condition uniqueness, ownership, and transition timestamps. `RoleInstanceReady` aggregates Pod readiness and the configured in-place gate only; external gates are reported separately and must not change stateful `isHealthy` behavior.
 - Document and regression-test the stateless / stateful readiness-gate difference: stateless requires `RoleInstanceReady` plus every `spec.readinessGates` condition, stateful checks only `RoleInstanceReady`.
 - Cover legacy API writes, historically incomplete conditions, and applicability boundaries for v1alpha2 objects using legacy backends and mixed-backend RBGs.
 - A legacy writer omitting condition.observedGeneration does not confirm the current generation; the aggregation layer does not supply confirmation for external owners.
