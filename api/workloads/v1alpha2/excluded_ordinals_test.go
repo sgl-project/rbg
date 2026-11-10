@@ -89,3 +89,66 @@ func TestRBGSetExcludedOrdinalsAdmission(t *testing.T) {
 	_, err = validator.ValidateCreate(context.Background(), rbgs)
 	require.NoError(t, err)
 }
+
+func TestExcludedOrdinalsAdmissionOwnerTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		oldManaged, oldExcluded bool
+		newOwner                string
+		newExcluded             bool
+		value                   string
+		bad                     bool
+	}{
+		{name: "remove owner and add exclusions", oldManaged: true, newExcluded: true, value: "1", bad: true},
+		{name: "remove owner and add empty exclusions", oldManaged: true, newExcluded: true, bad: true},
+		{name: "replace owner and add exclusions", oldManaged: true, newOwner: "Job", newExcluded: true, value: "1", bad: true},
+		{name: "add owner and exclusions", newOwner: "RoleBasedGroupSet", newExcluded: true, value: "1", bad: true},
+		{name: "keep owner and add exclusions", oldManaged: true, newOwner: "RoleBasedGroupSet", newExcluded: true, value: "1", bad: true},
+		{name: "standalone add exclusions", newExcluded: true, value: "1"},
+		{name: "remove owner without exclusions", oldManaged: true},
+		{name: "remove existing exclusions", oldManaged: true, oldExcluded: true, newOwner: "RoleBasedGroupSet"},
+		{name: "remove owner and existing exclusions", oldManaged: true, oldExcluded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controller := true
+			owner := metav1.OwnerReference{APIVersion: GroupVersion.String(), Kind: "RoleBasedGroupSet", Name: "set", UID: "set-uid", Controller: &controller}
+			oldRBG := &RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "group"},
+				Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{{Name: "worker", Annotations: map[string]string{}}}},
+			}
+			if tc.oldManaged {
+				oldRBG.OwnerReferences = []metav1.OwnerReference{owner}
+			}
+			if tc.oldExcluded {
+				oldRBG.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "1"
+			}
+			newRBG := oldRBG.DeepCopy()
+			newRBG.OwnerReferences = nil
+			if tc.newOwner != "" {
+				owner.Kind = tc.newOwner
+				if tc.newOwner == "Job" {
+					owner.APIVersion = "batch/v1"
+				}
+				newRBG.OwnerReferences = []metav1.OwnerReference{owner}
+			}
+			delete(newRBG.Spec.Roles[0].Annotations, constants.ExcludedOrdinalsAnnotationKey)
+			if tc.newExcluded {
+				newRBG.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = tc.value
+			}
+			validator := &RoleBasedGroupValidator{EnableDeprecatedWorkloadTypes: true, Client: fake.NewClientBuilder().Build()}
+			_, err := validator.ValidateUpdate(context.Background(), oldRBG, newRBG)
+			if !tc.bad {
+				require.NoError(t, err)
+				return
+			}
+			require.True(t, apierrors.IsInvalid(err), "%v", err)
+			var status *apierrors.StatusError
+			require.ErrorAs(t, err, &status)
+			require.Contains(t, status.ErrStatus.Details.Causes, metav1.StatusCause{
+				Type:    metav1.CauseTypeForbidden,
+				Field:   "spec.roles[0].annotations[" + constants.ExcludedOrdinalsAnnotationKey + "]",
+				Message: "Forbidden: not supported on RBGSet templates or RBGSet-managed RBGs",
+			})
+		})
+	}
+}

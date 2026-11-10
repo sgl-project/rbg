@@ -29,13 +29,20 @@ import (
 // ValidateExcludedOrdinals validates content and placement, not caller identity.
 // It is also called at reconciliation when admission is disabled.
 func ValidateExcludedOrdinals(rbg *RoleBasedGroup) error {
-	managed := false
+	return validateExcludedOrdinals(rbg, isRBGSetManaged(rbg))
+}
+
+func isRBGSetManaged(rbg *RoleBasedGroup) bool {
 	for _, owner := range rbg.OwnerReferences {
 		gv, err := schema.ParseGroupVersion(owner.APIVersion)
 		if err == nil && gv.Group == GroupVersion.Group && owner.Kind == "RoleBasedGroupSet" {
-			managed = true
+			return true
 		}
 	}
+	return false
+}
+
+func validateExcludedOrdinals(rbg *RoleBasedGroup, managed bool) error {
 	errs := validateExcludedOrdinalsRoles(rbg.Spec.Roles, field.NewPath("spec", "roles"), managed)
 	if len(errs) == 0 {
 		return nil

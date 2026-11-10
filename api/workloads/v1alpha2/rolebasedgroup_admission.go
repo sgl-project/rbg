@@ -195,7 +195,10 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	}
 	klog.V(4).InfoS("validating RoleBasedGroup on update", "name", rbg.Name, "namespace", rbg.Namespace)
 
-	if err := ValidateExcludedOrdinals(rbg); err != nil {
+	// Removing or replacing the owner in this update must not bypass placement
+	// validation. Only the new role configuration is validated, allowing cleanup.
+	managed := isRBGSetManaged(oldRBG) || isRBGSetManaged(rbg)
+	if err := validateExcludedOrdinals(rbg, managed); err != nil {
 		return nil, err
 	}
 	var allErrs []error

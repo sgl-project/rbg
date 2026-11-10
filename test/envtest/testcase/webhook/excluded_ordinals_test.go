@@ -59,6 +59,42 @@ var _ = Describe("Excluded ordinal admission", func() {
 		valid.Spec.Roles[0].Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3-5,4"}
 		Expect(testutil.K8sClient.Update(testutil.Ctx, valid)).To(Succeed())
 	})
+
+	It("rejects atomically removing the RBGSet controller owner and adding exclusions", func() {
+		role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()
+		set := &workloadsv1alpha2.RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: namespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+				GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+					Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}},
+				},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		owner := *metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroupSet"))
+		for i, value := range []string{"1", ""} {
+			group := wrappers.BuildBasicRoleBasedGroup(fmt.Sprintf("managed-%d", i), namespace).
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			group.OwnerReferences = []metav1.OwnerReference{owner}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+
+			updated := getRBG(group.Name, namespace)
+			updated.OwnerReferences = nil
+			if updated.Spec.Roles[0].Annotations == nil {
+				updated.Spec.Roles[0].Annotations = map[string]string{}
+			}
+			updated.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = value
+			err := testutil.K8sClient.Update(testutil.Ctx, updated)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%v", err)
+			Expect(err.Error()).To(ContainSubstring("spec.roles[0].annotations[" + constants.ExcludedOrdinalsAnnotationKey + "]"))
+			Expect(err.Error()).To(ContainSubstring("Forbidden"))
+
+			stored := getRBG(group.Name, namespace)
+			Expect(stored.OwnerReferences).To(Equal(group.OwnerReferences))
+			Expect(stored.Spec.Roles[0].Annotations).NotTo(HaveKey(constants.ExcludedOrdinalsAnnotationKey))
+			Expect(stored.Spec.Roles[0].Replicas).To(Equal(group.Spec.Roles[0].Replicas))
+		}
+	})
 	It("rejects unsupported roles, RBGSet templates and managed children", func() {
 		for _, scenario := range []string{"stateless", "foreign backend", "managed child", "internal key"} {
 			role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()
