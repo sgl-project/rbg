@@ -141,7 +141,7 @@ RBG does not need to embed application logic or create a Job for every hook.
 
 | Participant | Owns | Does not own |
 | --- | --- | --- |
-| RI controller | Phases, markers, Pods, Ready | App actions, retries |
+| RI controller | Phases, marker writes, Pods, Ready | App actions, retries |
 | RI | Config, context, phase, Handler Labels | Execution and message queuing |
 | Executor | Watch, execute, retry, remove markers | Registration, spec, phase |
 
@@ -239,7 +239,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | --- | --- | --- |
 | `preUpdate` | Before the first Pod change for an update | Start Update |
 | `preRecover` | Before restoring a Pod in `Recovering` | Start Recovery |
-| `postReady` | Controlled operation is workload Ready | Clean state; running |
+| `postReady` | Operation reaches workload Ready | Clean state; `Running` |
 | `preDelete` | Before final Pod termination | Delete Pods; finish RI |
 
 `postReady` is neither a Pod creation notification nor a container
@@ -495,8 +495,9 @@ so neither side waits for the other.
 
 ### Hook Executor Service
 
-The executor is a long-running, application-provided service that watches RI
-phases and the markers it owns, mapping each phase to an application action.
+The executor is a long-running, application-provided service that watches
+RI phases and the markers it processes, mapping each phase to an
+application action.
 It may reuse an engineRuntime directly or run as a separate deployment.
 
 If the engineRuntime exposes only application management APIs, an adapter
@@ -651,7 +652,7 @@ sequenceDiagram
     participant R as RI object
     participant P as Application Pod
     participant E as Hook executor
-    R-->>C: Observe RI deletion intent while the reserved finalizer holds RI
+    R-->>C: Observe deletion intent; finalizer keeps the RI present
     C->>R: Write hook-state=PreDelete and delete-block=true
     C->>R: Set phase=Terminating and establish the NotReady gate
     R-->>E: Observe preDelete with a matching marker
@@ -675,8 +676,8 @@ When the effective RI configuration includes `preDelete`, the controller
 ensures that the reserved finalizer
 `rbg.workloads.x-k8s.io/role-instance-pre-delete` is present on the RI before
 the hook is considered effective. The executor removes only the delete marker
-on the RI.
-While that marker matches, the controller does not issue member Pod deletions.
+on the RI. While that marker matches, the controller does not issue member
+Pod deletions.
 After confirming that `preDelete` has been released, the controller deletes
 the member Pods, performs final RI cleanup, and removes its reserved finalizer.
 No per-Pod finalizer is used.
@@ -684,8 +685,9 @@ No per-Pod finalizer is used.
 On the default background deletion path, the reserved RI finalizer keeps the
 owner object present, and Kubernetes background GC does not delete dependent
 member Pods while their owner object still exists. This is the invariant that
-executor access to a live workload while `preDelete` runs. The controller is
-still responsible for not deleting member Pods before the marker is released.
+gives the executor access to a live workload while `preDelete` runs. The
+controller is still responsible for not deleting member Pods before the
+marker is released.
 
 New RIs are created with the reserved finalizer when their effective
 configuration includes `preDelete`. For an existing stable RI, the controller
@@ -693,18 +695,13 @@ adds the finalizer before exposing the effective `preDelete` configuration.
 If the RI already has a deletionTimestamp, the controller cannot add the
 finalizer, so the hook is never exposed on that RI and its deletion
 continues without `preDelete`; Kubernetes does not allow a new finalizer to
-be added after deletion has begun. Disabling `preDelete` removes the
-reserved finalizer as part of normal configuration convergence. If
-`preDelete` is removed while deletion is in progress, the controller treats
-the hook as absent, performs no marker
-matching, and removes the reserved finalizer so deletion may continue. This is
-the direct result of the user removing the hook.
-
-Removing a hook from the effective configuration is a normal disable. The
-controller stops matching its markers, removes stale runtime labels owned by
-the protocol, and, for `preDelete`, removes the reserved RI finalizer. The
-change applies whether or not another lifecycle operation is in flight; no
-special active-hook state is retained.
+be added after deletion has begun. Removing a hook from the effective
+configuration is a normal disable: the controller stops matching its markers,
+removes stale runtime labels owned by the protocol, and, for `preDelete`,
+removes the reserved RI finalizer as part of configuration convergence. If
+`preDelete` is removed while deletion is in progress, removing the finalizer
+lets deletion continue. The change applies whether or not another lifecycle
+operation is in flight; no special active-hook state is retained.
 
 When Update or Recovery replaces a Pod, the controller performs the internal
 replacement after the corresponding pre-operation hook is released, without
@@ -714,7 +711,7 @@ Controller-initiated deletion and default background cascade are the supported
 deletion paths. Foreground cascading deletion must be rejected by admission
 for RBGSet, RBG, RIS, or RI deletion requests that can reach an RI with
 `preDelete` configured. The webhook intercepts those DELETE requests, checks
-`DeleteOptions.propagationPolicy`, and rejects `Foreground`; it may resolve
+`DeleteOptions.propagationPolicy`, and rejects `Foreground`; it resolves
 reachable RIs through owner references and cached informers. Foreground GC may
 delete dependent Pods before the hook is released. Namespace teardown is
 outside the live-engine guarantee:
@@ -736,7 +733,7 @@ accepted.
 The executor owns application retries. The controller retries only its own
 API reads and writes and status convergence. If an application result is
 unknown, the executor must query, recover, or retry idempotently before
-removing a marker; it must not remove the marker directly.
+removing a marker.
 
 The controller adds neither a `step` field nor private runtime state. It
 reconstructs progress from the combination of RI phase, `hook-state`,
@@ -775,7 +772,7 @@ The operation rules are:
 | `Updating` | Recovery | Fold into Update; no preRecover |
 | `Recovering` | Recovery | Continue; no repeat preRecover |
 | `Recovering` | Update | Interrupt; run preUpdate and Update |
-| Any non-terminating phase | Delete | Preempt with terminating and preDelete |
+| Any non-terminating phase | Delete | Preempt with `Terminating` + preDelete |
 | `Terminating` | Update, Recovery | Skip at reconcile start |
 | Background postReady | Update, Recovery, Delete | Start; executor uses state |
 
@@ -830,8 +827,8 @@ overwrite these runtime markers.
 
 Field ownership is explicit: users own the authoritative lifecycle
 configuration described above; the controller owns phase, `hook-state`, the
-effective RI snapshot, and the reserved finalizer; the executor owns only
-marker removal. Admission or a restricted proxy may enforce this boundary.
+effective RI snapshot, and the reserved finalizer; the executor only removes
+markers. Admission or a restricted proxy may enforce this boundary.
 
 An executor that polls with GET and PATCHes markers needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
@@ -996,9 +993,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   released-hook transition.
 - Enabling `markNotReady` requires the `RoleInstanceCustomReady` readiness
   gate.
-- Repeated Ready transitions idempotently write the same `postReady` marker
-  without generations. Delayed cleanup can remove a newer marker, and
-  consumers own coordination of that risk.
+- Repeated controlled operations reaching workload Ready idempotently write
+  the same `postReady` marker without generations. Delayed cleanup can
+  remove a newer marker, and consumers own coordination of that risk.
 - When `postReady` is omitted, an Update or Recovery that reaches workload
   Ready enters `Running`, releases its gate, and clears `hook-state`
   without writing a marker.
@@ -1113,8 +1110,7 @@ supported rollback.
 
 The controller and executor must agree on where the phase is stored, its
 values, and marker direction. An executor that does not understand the new
-protocol must not remove markers blindly. In a mixed-version deployment, an
-old controller must not take over an in-flight operation.
+protocol must not remove markers blindly.
 
 The support matrix and migration rules will be defined when the API is
 finalized.

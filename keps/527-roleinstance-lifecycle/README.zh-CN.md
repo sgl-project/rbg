@@ -104,7 +104,7 @@ postReady marker 不阻塞 phase 或 RI Ready。
 
 | 参与方 | 职责 | 不承担的职责 |
 | --- | --- | --- |
-| RI controller | 维护操作、阶段、marker、Pod 与 RI Ready | 不执行业务动作，不决定业务重试 |
+| RI controller | 维护操作、阶段、写入 marker、Pod 与 RI Ready | 不执行业务动作，不决定业务重试 |
 | RI | 保存配置、操作上下文、阶段和 Handler Label | 不作为执行进程或消息队列 |
 | Hook executor | 观察阶段和 marker，执行业务并重试，完成后清除 | 不登记 marker，不修改 spec 或 phase |
 
@@ -175,7 +175,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | --- | --- | --- |
 | `preUpdate` | 已确定本轮更新目标，controller 第一次实际变更业务 Pod 之前 | 开始执行本轮更新 |
 | `preRecover` | `Recovering` 中实际恢复业务 Pod 之前 | 开始执行本轮恢复 |
-| `postReady` | 受控操作达到工作负载 Ready | 已提前 running；清 marker 后清 state |
+| `postReady` | 受控操作达到工作负载 Ready | 已提前进入 `Running`；清 marker 后清 state |
 | `preDelete` | RI 最终删除流程中，controller 主动终止业务 Pod 之前 | 开始删除业务 Pod 并完成 RI 删除收尾 |
 
 `postReady` 不是 Pod 对象创建通知，也不是容器 `postStart`。
@@ -533,15 +533,11 @@ controller 仍必须在 marker 放行前避免主动删除成员 Pod。
 再暴露生效的 preDelete 配置。如果 RI 已有 deletionTimestamp，
 controller 无法补充 finalizer，因此该 RI 不暴露 preDelete，
 本次删除继续且不触发该 hook；Kubernetes 不允许删除开始后新增 finalizer。
-禁用 preDelete 时，controller 在正常配置收敛中移除保留 finalizer。
-如果删除过程中移除 preDelete，controller 视该 hook 为不存在，不执行
-marker 匹配，并移除保留 finalizer，使删除可以继续。这是用户删除 hook
-的直接结果。
-
 从生效配置中删除 hook 属于普通禁用。controller 停止匹配其 marker，
-清理协议拥有的遗留运行时 labels；对 preDelete 还要清理 RI 上的保留 finalizer。
-无论是否存在其他在途 lifecycle 操作，该变更都直接生效，不保留特殊的
-active-hook 状态。
+清理协议拥有的遗留运行时 labels；对 preDelete 还要在正常配置收敛中
+清理 RI 上的保留 finalizer。如果删除过程中移除 preDelete，清理
+finalizer 后删除可以继续。无论是否存在其他在途 lifecycle 操作，
+该变更都直接生效，不保留特殊的 active-hook 状态。
 Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放行后执行内部替换，
 不触发 preDelete；成员 Pod 不需要 lifecycle finalizer。
 
@@ -549,7 +545,7 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 对可能到达启用 preDelete RI 的 RBGSet、RBG、RIS 或 RI foreground 删除请求，
 准入必须拒绝。webhook 拦截这些 DELETE 请求，检查
 `DeleteOptions.propagationPolicy`，并拒绝 `Foreground`；
-可通过 owner reference 和 informer 缓存解析可达 RI。
+通过 owner reference 和 informer 缓存解析可达 RI。
 foreground GC 可能在 hook 放行前删除 dependent Pods。
 namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
 成员 Pods；若保留 RI finalizer 残留，运维需要使用 break-glass 流程。
@@ -565,7 +561,7 @@ labels。KEP-502 的 schema 与持久化规则被接受前，本 KEP 不能进�
 implementable。
 
 业务重试由 executor 负责，controller 只重试自身 API 读写和状态收敛。
-业务结果未知时，executor 应先查询、恢复或幂等重试，不能直接清除 marker。
+业务结果未知时，executor 必须先查询、恢复或幂等重试，再清除 marker。
 
 controller 不新增 `step` 或私有运行状态，而是通过 RI phase、`hook-state` 和 marker 的组合恢复进度。
 进入 hook 时，`hook-state` 与 marker 必须在同一次 labels 写入中设置，
@@ -593,7 +589,7 @@ executor 启动或 watch 重连后重新读取 RI，只在 `hook-state` 匹配�
 | `Updating` | Recovery | 恢复目标并入本轮 Update，不单独执行 preRecover |
 | `Recovering` | Recovery | 继续当前 Recovery，不重复进入或执行 preRecover |
 | `Recovering` | Update | 中断当前 Recovery，进入 preUpdate，再执行 Update |
-| 任意非删除 phase | Delete | 进入 terminating 和 preDelete，不等待当前操作 |
+| 任意非删除 phase | Delete | 进入 `Terminating` 和 preDelete，不等待当前操作 |
 | `Terminating` | Update、Recovery | 在 reconcile 开头检查后跳过，不执行具体逻辑或对应 hooks |
 | 后台 postReady | Update、Recovery、Delete | 直接开始；旧 executor 按 state 自行处理 |
 
@@ -626,8 +622,8 @@ controller 负责写入 hook marker，executor 负责清除自己处理的 marke
 双方只修改各自负责的 key，不整体替换 labels map。普通 RIS metadata 同步不得覆盖这些运行时标记。
 
 字段所有权明确：用户拥有上文定义的权威 lifecycle 配置；controller 拥有
-phase、`hook-state`、RI 生效快照和保留 finalizer；executor 只拥有
-marker 清除。该边界可由 admission 或受限代理执行。
+phase、`hook-state`、RI 生效快照和保留 finalizer；executor 只负责清除
+marker。该边界可由 admission 或受限代理执行。
 
 executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空间内
 `roleinstances` 的 `get`、`patch`。
@@ -734,7 +730,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
   匹配，清理遗留 runtime labels，并按已放行 hook 的转换继续。
 - 启用 `markNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
-- 连续 Ready 时同名 postReady marker 幂等写入，不引入操作代次；
+- 连续受控操作达到工作负载 Ready 时，同名 postReady marker 幂等写入，不引入操作代次；
   迟到清理可能误清新 marker，该风险由消费者协调。
 - 未配置 postReady 时，Update 或 Recovery 达到工作负载 Ready 后直接进入
   `Running`，解除门控并清理 `hook-state`，不写入 marker。
@@ -804,7 +800,7 @@ preDelete RI finalizer 后，再替换 controller。
 ### 版本偏差策略
 
 controller 与 executor 必须约定阶段位置、阶段值和 marker 方向。
-不理解新协议的 executor 不得盲目清除 marker；混合版本中不允许旧 controller 接管运行中操作。
+不理解新协议的 executor 不得盲目清除 marker。
 支持矩阵与迁移规则在 API 定稿时明确。
 
 ## 生产就绪评审
