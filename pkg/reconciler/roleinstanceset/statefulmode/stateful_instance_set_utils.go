@@ -499,11 +499,13 @@ func hasStaleBaseInstance(
 	return false
 }
 
-// rolloutReplacementStateActive checks the overlap between the persisted
-// replacement scope and the current update range. Changes to replicas or
-// partition must not abandon replacements that are still in that overlap, or
-// add unrelated instances to the original scope. Pause deliberately retains
-// protection. This function does not mutate the informer snapshot or status.
+// rolloutReplacementStateActive conservatively checks the whole current update
+// range while replacement intent for this revision is persisted. The recorded
+// positional bounds cannot identify the original members after gap filling:
+// a saved position may now refer to a different, healthy instance. Keeping the
+// current range protected can retain surge longer, but cannot release it while
+// a desired replacement is missing or unready. No new status fields are needed.
+// This function does not mutate the informer snapshot or status.
 func rolloutReplacementStateActive(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instances []*workloadsv1alpha2.RoleInstance,
@@ -517,8 +519,6 @@ func rolloutReplacementStateActive(
 	if state.UpdateRevision != updateRevision {
 		return false
 	}
-	partition = max(partition, int(state.Partition))
-	replicas = min(replicas, int(state.Replicas))
 	members, err := set.CommittedOrdinals()
 	if err != nil {
 		return true

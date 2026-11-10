@@ -615,6 +615,9 @@ func (ssc *defaultStatefulInstanceSetControl) persistTerminatingRolloutReplaceme
 	return nil
 }
 
+// replacementStateCoversOrdinal checks whether another intent write is needed.
+// Completion independently checks the whole current update range, since these
+// recorded positions cannot identify original members after gap filling.
 func replacementStateCoversOrdinal(state *workloadsv1alpha2.RolloutReplacementState, ordinal int) bool {
 	return state != nil && ordinal >= int(state.Partition) && ordinal < int(state.Replicas)
 }

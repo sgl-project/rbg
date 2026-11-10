@@ -25,6 +25,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -215,4 +216,73 @@ func TestSparseOrderedReadyCleanupUsesLogicalPosition(t *testing.T) {
 	require.Equal(t, int32(2), status.CurrentReplicas)
 	require.Zero(t, topo.partition, "the cleanup scope must not modify the original rollout topology")
 	require.Equal(t, 3, topo.endOrdinal)
+}
+
+func TestSparseEarlyRollbackGapFillingRetainsReplacementProtection(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		replicas       int32
+		record         string
+		healthyMembers []int
+	}{
+		{name: "partially filled gaps", replicas: 4, record: "3", healthyMembers: []int{0, 1, 2}},
+		{name: "all gaps filled", replicas: 5, healthyMembers: []int{0, 1, 2, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "sparse-gap-rollback", 3, 2, 1)
+			h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+			zero := h.instance(0, h.current.Name, true)
+			two := h.instance(2, h.current.Name, true)
+			four := h.instance(4, h.intermediate.Name, true)
+			surge := h.instance(5, h.current.Name, true)
+			h.reconcile(t, zero, two, four, surge)
+			h.assertDeleted(t, four.Name)
+			require.Equal(t, &workloadsv1alpha2.RolloutReplacementState{
+				UpdateRevision: h.current.Name, Partition: 2, Replicas: 3,
+			}, h.set.Status.RolloutReplacementState)
+
+			h.set.Spec.Replicas = ptr.To(tc.replicas)
+			h.set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = tc.record
+			h.set.Generation++
+			// Recover only persisted state in a fresh controller. Position 2 is
+			// now healthy member 2, but the missing replacement is still member 4.
+			h.set = h.set.DeepCopy()
+			recorder := record.NewFakeRecorder(64)
+			h.control = &defaultStatefulInstanceSetControl{
+				instanceControl: NewStatefulInstanceControlFromManager(h.objects, recorder),
+				inplaceControl:  &fakeInplaceControl{},
+				statusUpdater:   h.updater,
+				recorder:        recorder,
+			}
+			updateExpectations.DeleteExpectations(getInstanceSetKey(h.set))
+			var instances []*workloadsv1alpha2.RoleInstance
+			for _, ordinal := range tc.healthyMembers {
+				instances = append(instances, h.instance(ordinal, h.current.Name, true))
+			}
+			instances = append(instances, surge)
+			h.reconcile(t, instances...)
+			h.assertDeleted(t)
+			require.Equal(t, []string{four.Name}, h.objects.created)
+			require.NotNil(t, h.set.Status.RolloutReplacementState, "gap filling must not release the original replacement")
+
+			replacement := h.instance(4, h.current.Name, false)
+			replacement.Generation = 1
+			replacement.Status.ObservedGeneration = 1
+			instances = append(instances, replacement)
+			h.reconcile(t, instances...)
+			h.assertDeleted(t)
+			require.NotNil(t, h.set.Status.RolloutReplacementState)
+
+			replacement.Status.Conditions[0].Status = "True"
+			replacement.Generation++
+			h.reconcile(t, instances...)
+			h.assertDeleted(t)
+			require.NotNil(t, h.set.Status.RolloutReplacementState, "Ready from an older generation is not completion")
+
+			replacement.Status.ObservedGeneration = replacement.Generation
+			h.reconcile(t, instances...)
+			h.assertDeleted(t, surge.Name)
+			require.Nil(t, h.set.Status.RolloutReplacementState)
+		})
+	}
 }
