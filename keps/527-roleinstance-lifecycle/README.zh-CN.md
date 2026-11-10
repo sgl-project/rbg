@@ -86,7 +86,7 @@ postReady marker 不阻塞 phase 或 RI Ready。
 
 ### 非目标
 
-- 不在 RBGSet、RBG 或 RIS 上执行独立业务 hooks；lifecycle 虽在 Role 中定义，
+- 不在 RBGSet、RBG 或 RIS 上执行独立业务 hooks；lifecycle 虽在 Role 或 RIS 模板中定义，
   仍以 RI 操作为执行粒度。
 - 不允许同一个 RIS 同时配置旧协议和新协议。
 - 不新增 preCreate 或 postDelete。preCreate 发生在 Pod 创建前，尚无已建立的
