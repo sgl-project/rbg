@@ -239,7 +239,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | --- | --- | --- |
 | `preUpdate` | Before the first Pod change for an update | Start Update |
 | `preRecover` | Before restoring a Pod in `Recovering` | Start Recovery |
-| `postReady` | Operation reaches workload Ready | Clean state; `Running` |
+| `postReady` | Controlled operation is Ready | Already `Running`; clean state |
 | `preDelete` | Before final Pod termination | Delete Pods; finish RI |
 
 `postReady` is neither a Pod creation notification nor a container
@@ -332,7 +332,7 @@ wait nor Ready evaluation. A hook that is not configured writes no marker and
 establishes no coordination.
 
 The controller writes a pre-operation marker only when entering that hook's
-phase. It must not force the marker back into existence on every reconcile.
+phase. It must not rewrite the marker on every reconcile while waiting.
 When entering `postReady`, it may idempotently write an already-present
 marker. The executor only removes markers; it does not create them initially
 or restore them after processing.
@@ -559,9 +559,10 @@ sequenceDiagram
     end
 ```
 
-While `preUpdate` is active, no matching marker is a necessary condition for
-the controller to start the update. `postReady` blocks neither `Running`, RI
-Ready, nor the next operation. The executor removes ready-notify after
+While `preUpdate` is active, the absence of any matching marker is a
+necessary condition for the controller to start the update. `postReady`
+blocks neither `Running`, RI Ready, nor the next operation. The executor
+removes ready-notify after
 completion or cancellation and does not restore it. The next update writes a
 new hook-state and corresponding marker through the controller.
 
@@ -821,9 +822,9 @@ generation isolation.
 ### Permissions and Field Ownership
 
 The controller writes hook markers, and the executor removes the markers it
-processes. Each party modifies only the keys it owns rather than replacing
-the entire labels map. Ordinary RIS metadata synchronization must not
-overwrite these runtime markers.
+processes. Each party modifies only the marker keys it is responsible for
+rather than replacing the entire labels map. Ordinary RIS metadata
+synchronization must not overwrite these runtime markers.
 
 Field ownership is explicit: users own the authoritative lifecycle
 configuration described above; the controller owns phase, `hook-state`, the

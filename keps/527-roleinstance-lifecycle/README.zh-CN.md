@@ -124,7 +124,7 @@ controller 不接收业务返回值，executor 从 RI 和业务系统获取所�
 | 挂载点 | 推理业务示例 |
 | --- | --- |
 | `preUpdate` | 更新前从路由摘除实例，等待在途请求完成，必要时迁移共享缓存 |
-| `preRecover` | 恢复前清理失效路由、准备替代资源或完成缓存交接，阻塞实际 Pod 恢复操作 |
+| `preRecover` | 恢复前清理失效路由、准备替代资源或完成缓存交接 |
 | `postReady` | 创建、恢复或更新后的实例达到工作负载 Ready 时，验收引擎、恢复 LoRA 等动态配置并注册路由 |
 | `preDelete` | 缩容或删除 RI 时摘流、排空，并完成需要存活引擎参与的资源交接 |
 
@@ -245,7 +245,7 @@ controller 不得推进，executor 不得执行，诊断必须暴露非法值，
 前置 hooks 的多个 marker 只要仍有一个匹配，controller 就保持等待；postReady marker 不参与等待或 Ready 判断。
 未配置的 hook 不写入 marker，也不建立协作。
 
-controller 只在进入前置 hook 阶段时写入一次 marker，不能在每次 reconcile 中强制其持续存在。
+controller 只在进入前置 hook 阶段时写入一次 marker，等待期间不得在每次 reconcile 重新写入。
 进入 postReady 时可幂等写入已有 marker；executor 只负责清除，不负责首次添加，也不在处理完成后加回。
 
 以下示例展示用户从 RBG Role 进入配置的 API 形状。拟新增字段路径为
