@@ -51,7 +51,7 @@ The following checklist applies to releases in the RBG project.
 ## Summary
 
 This KEP defines a workload status model for RoleBasedGroup (RBG), RoleInstanceSet (RIS), and RoleInstance (RI).
-Conditions, stable reasons, and existing counters distinguish readiness, progress toward the target, configuration compatibility, and resource waits.
+Conditions, stable reasons, and existing counters distinguish progress toward the target, configuration compatibility, resource waits, and workload-level readiness.
 RBG and RIS do not add `status.phase`; their workflow is reported through `Progressing.reason` and existing counters. RI adds an optional `status.phase` because its controller already has a meaningful instance-level lifecycle state machine.
 The scope is limited to condition fields and values, RI phase, compatibility migration, and contract tests. It does not include controller refactoring or extensions to the role status schema.
 
@@ -61,7 +61,7 @@ The current status model has the following limitations:
 
 - RBG and RIS lack a durable progress condition, requiring users to infer the lifecycle of the group and instance set from counters and child resources. RI lacks a persisted lifecycle phase even though its controller already reconciles from a state machine.
 - RBG declares `Progressing` and `RollingUpdateInProgress`, but the built-in controllers on the main branch do not currently write them.
-- RBG Ready reflects readiness of all replicas without checking revision convergence. Rollout completion needs a separate representation of progress toward the target.
+- RBG's existing `Ready` condition summarizes all-replica readiness at the orchestration layer, but that verdict is not well-defined: serving availability depends on consumer policy, and partial RoleInstance availability can be usable. Deployment and StatefulSet define no `Ready` condition for the same reason. Rollout completion needs a separate representation, and readiness needs per-role and per-instance facts.
 - RIS / RI `FailedScale` and `FailedUpdate` record individual operation failures, making it easy to confuse transient events with facts that remain true.
 - Status does not clearly distinguish configuration and required environmental capability compatibility from runtime waits for resources, quota, and similar constraints.
 
@@ -98,13 +98,13 @@ RBG summarizes the workflows of its roles. Specific activities are available thr
 ### Notes/Constraints/Caveats
 
 Deployment, StatefulSet, and LeaderWorkerSet are deprecated backends whose status capabilities will not be extended.
-RBG enables the new condition model only when all roles use RIS. If any role uses a legacy backend, RBG continues to use the existing Ready and role replica status.
+RBG enables the new condition model only when all roles use RIS. If any role uses a legacy backend, RBG continues to use the existing `Ready` condition and role replica status during the compatibility window.
 For example, an RBG with prefill using RIS and decode using LeaderWorkerSet does not report the new overall conditions, but the prefill RIS / RI resources still use the new status model.
 Missing new fields on legacy backends do not affect existing Ready checks for existing objects.
 
 The `role-workload-type` annotation provides compatibility with legacy workload types in v1alpha1. It will be retired as part of the v1alpha1 deprecation process and is not a long-term v1alpha2 capability.
 
-Status contains fields consumed by control logic and must not be treated as presentation-only data. Changes to Ready or transition timestamps can affect release waits, dependency-based startup,
+Status contains fields consumed by control logic and must not be treated as presentation-only data. Changes to readiness reporting or transition timestamps can affect release waits, dependency-based startup,
 rollouts, scaling, and `minReadySeconds`. Recovery fields must not be discarded on the assumption that they can be recomputed.
 RI phase is not set through ordinary spec updates; the status subresource remains subject to RBAC.
 
@@ -136,7 +136,7 @@ Status fields across all three CR types follow these common rules:
 - Transitions compare the latest persisted status with the final status being submitted, not intermediate values within a reconciliation. For example, False → temporary True → final False is not a transition.
 - `status.observedGeneration` identifies the generation of this object that has been processed; a condition's observedGeneration identifies the generation of this object to which its fact applies. Neither directly proves target completion.
 - RI phase transitions and progress decisions use valid observations corresponding to the current operation target. Parent and child generations cannot be compared directly, and old status cannot prove completion of a new target.
-- When observations are insufficient, affected conditions whose facts cannot be determined use Unknown with reason `ObservationIncomplete`. `Ready` is the exception: after the first readiness observation, it retains its last known value until a fresh observation succeeds, so upper-level ready counts do not flap. A read failure does not mean zero replicas, and an absent RI phase does not mean Running.
+- When observations are insufficient, affected conditions whose facts cannot be determined use Unknown with reason `ObservationIncomplete`. Controller-owned readiness conditions such as `RoleInstanceReady` are the exception: after the first readiness observation, they retain their last known value until a fresh observation succeeds, so upper-level ready counts do not flap. A read failure does not mean zero replicas, and an absent RI phase does not mean Running.
 - When children have not yet received the current generation's target, the parent must still record that it has observed the new generation: write `status.observedGeneration=N` together with the `Progressing` value derived from the validation, pause, and progress rules before or while dispatching that target to children. Incomplete work writes `Progressing=True`; a confirmed compatibility failure writes `Progressing=False` with the matching incompatibility reason; a full pause writes `Progressing=False(reason=Paused)`. Preflight or compatibility failures must not skip this status write; they are represented through the corresponding conditions.
 - A condition-only change is a status change. If condition status, reason, message, or observedGeneration changes, the controller must write status even when counters and revision fields are unchanged.
 - Status must eventually update after changes only to label / revision metadata or after dependencies recover, without requiring an additional manual spec change.
@@ -188,7 +188,7 @@ Activity
 ChildReadiness
 ```
 
-A current external blocker outranks an activity reason because it explains why the current target is not converging. Unclassified ranks below the specific blocker families because a confirmed family is more actionable, and an unclassified error never replaces a confirmed family for the same target. Child readiness is not an external blocker: during creation, update, scaling, or recovery it is subsumed by the active workflow reason and is reported independently by `Ready`. If no active workflow remains but the target is not ready, child readiness may be the `Progressing` reason. This precedence affects reporting only, not controller execution order.
+A current external blocker outranks an activity reason because it explains why the current target is not converging. Unclassified ranks below the specific blocker families because a confirmed family is more actionable, and an unclassified error never replaces a confirmed family for the same target. Child readiness is not an external blocker: during creation, update, scaling, or recovery it is subsumed by the active workflow reason and is reported independently by readiness facts such as `RoleInstanceReady` and replica counters. If no active workflow remains but the target is not ready, child readiness may be the `Progressing` reason. This precedence affects reporting only, not controller execution order.
 
 Within the Activity family, RBG uses this deterministic precedence:
 
@@ -202,7 +202,7 @@ When multiple Activity facts are present, RBG uses the highest-precedence activi
 
 RIS maps the same Activity ordering to its concrete reasons: `Creating`, `Recovering`, `RollingUpdate`, and `ScalingUp` / `ScalingDown`. This ordering selects the `Progressing` condition reason only; RIS workflow state remains expressed by counters and conditions, not by a persisted lifecycle phase.
 
-`RolesNotReady` and `RoleNotReady` are distinct, case- and plural-sensitive machine-readable strings. `RolesNotReady` is the RBG child-readiness reason for `Progressing`; `RoleNotReady` is the retained RBG `Ready=False` reason. Clients must match the exact string and must not normalize singular and plural forms.
+`RolesNotReady` and the legacy `RoleNotReady` are distinct, case- and plural-sensitive machine-readable strings. `RolesNotReady` is the RBG child-readiness reason for `Progressing`; `RoleNotReady` belongs only to the deprecated RBG `Ready` condition retained during the compatibility window. Clients must match the exact string and must not normalize singular and plural forms.
 
 ### Consuming the Status
 
@@ -210,7 +210,7 @@ Automation should use a small, stable decision table:
 
 | Consumer question | Answer |
 | --- | --- |
-| Is it serving? | `Ready=True` |
+| Is it serving? | RBG and RIS define no `Ready` condition. Evaluate serving readiness from the facts required by consumer policy: per-role `roleStatuses`, RIS `readyReplicas` / `availableReplicas` versus targets, and RI `RoleInstanceReady` plus configured gates |
 | Is the change done? | `Progressing=False`, `reason=Converged`, `status.observedGeneration == metadata.generation`, and the `Progressing` condition's own `observedGeneration == metadata.generation` |
 | Does it need attention? | `Accepted=False`, or `Progressing=True` with a reason in the permission, admission, quota, resources, gang, dependencies, unclassified, or configuration-compatibility families |
 | Unknown / unrecognized reason | Treat as still progressing, not as failure |
@@ -251,7 +251,7 @@ Child readiness is a transition condition, not an invariant required to remain R
 
 ### RoleBasedGroup
 
-RBG does not add `status.phase`. It uses `Accepted`, `Progressing`, and `Ready` conditions, with `Progressing.reason` as the single-word workflow summary.
+RBG does not add `status.phase`. It uses `Accepted` and `Progressing` conditions, with `Progressing.reason` as the single-word workflow summary. RBG defines no `Ready` condition: it is an orchestration resource, and a single service-ready verdict is not well-defined at this layer.
 In the example below, all roles use RIS. Prefill is scaling up and decode is updating; decode has a target of 3 replicas, of which 2 are ready.
 
 ```yaml
@@ -275,12 +275,6 @@ status:
       message: "prefill is Scaling; decode is Updating, with 1/3 replicas updated"
       observedGeneration: 5
       lastTransitionTime: "2026-10-26T09:01:00Z"
-    - type: Ready # [Retained type] Requires all roles to be ready, without additionally requiring target revision completion.
-      status: "False"
-      reason: RoleNotReady # [Retained] At least one role does not meet readiness requirements.
-      message: "decode has 2/3 replicas ready"
-      observedGeneration: 5
-      lastTransitionTime: "2026-10-26T09:01:00Z"
 ```
 
 RBG does not persist a lifecycle phase. `Progressing.reason` summarizes the current workflow; `message` describes the concurrent activities; `roleStatuses` and lower-level status carry details. This avoids a second single-valued summary that would need its own transition, initialization, and rollback rules. A printer column on `Progressing.reason` can still provide a one-word `kubectl` summary. Deletion remains indicated by `metadata.deletionTimestamp`, not by a new phase.
@@ -291,19 +285,16 @@ The proposed semantics of RBG conditions are:
 | --- | --- | --- | --- |
 | `Accepted` | The current target is compatible with observed configuration and required runtime prerequisites | Confirmed incompatibility between the target, referenced configuration, or required environmental capabilities | Compatibility cannot be determined reliably |
 | `Progressing` | The target is incomplete, with work executing or waiting for execution prerequisites | Converged, all relevant progress paused, or configuration incompatible | Progress facts cannot be determined |
-| `Ready` | All roles are ready | At least one role is not ready | Only before the first observation; afterwards the last known value is retained |
 
 Accepted validates the expanded target, referenced configuration actually in use (such as CoordinatedPolicy), and required environmental capabilities (such as Volcano gang support) against current observations. It is intentionally a compatibility gate rather than an admission receipt: an API server may have accepted the object, while the current cluster cannot run that target.
 An absent optional configuration reference does not cause incompatibility. A required reference confirmed missing reports False(reason=InvalidSpec); a read or validation that cannot be completed reports Unknown(reason=ObservationIncomplete). Template errors, dependency cycles, and unsupported capabilities use the corresponding reasons in the table below, with details in message.
-Accepted does not check GPU capacity, quota, permissions to execute operations, external admission decisions, or runtime readiness, and does not guarantee resource creation will succeed. Re-evaluate after configuration or environmental capability changes, without requiring a change to RBG generation; the condition's observedGeneration identifies the target generation that was evaluated, not the generation at which the environment last changed. Accepted=False does not directly rewrite Ready or trigger a phase transition.
+Accepted does not check GPU capacity, quota, permissions to execute operations, external admission decisions, or runtime readiness, and does not guarantee resource creation will succeed. Re-evaluate after configuration or environmental capability changes, without requiring a change to RBG generation; the condition's observedGeneration identifies the target generation that was evaluated, not the generation at which the environment last changed. Accepted=False does not directly rewrite readiness facts or trigger a phase transition.
 
 Progressing covers execution and waiting during creation, updates, scaling, and recovery, without requiring a generation change. True does not guarantee that progress has been made or that completion will be timely. Pausing only updates must not set it to False while other workflows are still progressing.
 Current blockers caused by resources, quota, execution permissions, external admission policies, or dependencies are expressed through Progressing reason / message, not Accepted. Clear stale waiting reasons after recovery; do not infer current blockers from historical errors or Events.
 
-Ready requires all roles to be ready, retaining existing checks on desired, actual, and ready replica counts. It does not additionally require target revision completion or lower the threshold to gang min. A deletionTimestamp does not by itself rewrite Ready.
-After the first readiness observation, Ready retains current behavior and is never set to Unknown when child observations lag or fail; RBG keeps the last known value until a new observation succeeds. This avoids True → Unknown → True flapping that would otherwise reduce upper-level ready-replica counts during ordinary observation lag.
-Updates, pauses, or partition retaining older revisions do not by themselves make Ready False.
-Ready=False does not mean the service is completely unavailable. Zero replicas retain existing behavior; an empty revision does not add a readiness blocker.
+RBG does not define or continue writing a `Ready` condition. RBG and RIS are orchestration resources: whether the workload can serve traffic depends on consumer policy — all replicas, gang minimum, a routing threshold, or partial availability — so a single boolean cannot represent it. Deployment and StatefulSet likewise expose readiness through counters rather than a `Ready` condition. Readiness facts remain `status.roleStatuses` per role, RIS counters, and RI `RoleInstanceReady` plus configured gates.
+The existing RBG `Ready` condition is deprecated. During the compatibility window the controller may continue writing the legacy all-replicas-ready value for existing consumers; new consumers must migrate to the readiness facts above. After the window, the controller stops writing it and cleans up controller-owned entries. Legacy-backend RBGs keep the existing condition and role replica status while those backends are supported.
 
 RBG completion is computed from the RBG's own current target and generation; it never derives completion by copying a child's phase or `Progressing=False(reason=Converged)`. CoordinatedPolicy may lower a role's RIS partition or coordinated scaling targets one step at a time, so a single RBG rollout can make each RIS converge between steps and report `Progressing=False(reason=Converged)` several times. During such rollouts RBG must remain `Progressing=True` until every coordinated step required by the RBG-level target completes.
 
@@ -316,8 +307,6 @@ Each condition has one reason. Overall RBG progress for scaling and updates uses
 | Progressing=True | `Creating`, `ScalingOrUpdating`, `Recovering` |
 | Progressing=True, waiting | `WaitingForDependencies`, `RolesNotReady`, `WaitingForGang`, `WaitingForResources`, `WaitingForQuota`, `PermissionDenied`, `AdmissionDenied`, `UnclassifiedBlocker` |
 | Progressing=False | `Converged`, `Paused`, `InvalidSpec`, `TemplateInvalid`, `DependencyCycle`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
-| Ready=True | `AllRolesReady` |
-| Ready=False | `RoleNotReady` |
 | Unknown | `ObservationIncomplete` |
 
 `status.roleStatuses[]` retains existing replica information.
@@ -359,7 +348,7 @@ Completion conditions are listed below. `Progressing=False(reason=Converged)` is
 | ScalingDown | Instances selected for deletion by the current target are gone, with no outstanding scale-down work; readiness of all remaining instances is not additionally required |
 | Updating | Instances that the current policy requires updating have completed their updates and satisfy the corresponding readiness conditions; replacement and surge cleanup for this update are complete |
 
-Completion checks retain readiness gate and `minReadySeconds` rules rather than using revision equality as a substitute. Partition may retain older-revision instances; completion is evaluated over the update scope required by the current policy. Readiness itself remains expressed by the existing counters and lower-level RI conditions rather than by a new RIS `Ready` condition.
+Completion checks retain readiness gate and `minReadySeconds` rules rather than using revision equality as a substitute. Partition may retain older-revision instances; completion is evaluated over the update scope required by the current policy. Readiness itself remains expressed by the existing counters and lower-level RI conditions rather than by a RIS `Ready` condition, mirroring StatefulSet.
 
 The two RIS modes currently differ in how they count an RI as ready: stateless mode requires both `RoleInstanceReady` and every `spec.readinessGates` condition to be True, while stateful mode checks only `RoleInstanceReady`. This KEP documents the difference instead of silently unifying it. Any future unification must preserve external gate semantics and include compatibility tests for `minReadySeconds` and availability calculations in both modes.
 
@@ -503,9 +492,9 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Partition may retain older revisions while the current update target completes. A paused, incomplete target must not report `Progressing=False(reason=Converged)` early; counts or revision equality alone are not completion signals.
 - Missing Pods during an RI update keep the RI in Updating; independent failures after completion enter Recovering and return to Running only after recovery completes. Updates may complete while inPlaceUpdateContainerBaselines remains populated.
 - Cover readiness / convergence truth tables for partition, surge, zero replicas, terminating instances, revisions, and stale observations.
-- RBG Ready may be True when all roles / RIs are ready but the target revision is incomplete. It remains False when gang min is satisfied but not all replicas are ready; other replicas cannot compensate for an unready role / RI.
+- RBG no longer publishes a `Ready` condition. Verify that legacy consumers (release waits, dependency-based startup, upper-level replica counting) migrate to `roleStatuses`, RIS counters, and RI `RoleInstanceReady`; during the compatibility window the legacy condition keeps existing semantics and is then stopped and cleaned up.
 - Accepted is a compatibility gate for the current target, expanded templates, referenced configuration, and required environmental capabilities. Absent optional configuration does not cause incompatibility; a required reference confirmed missing and one that cannot be read report False / Unknown respectively, distinguished by reason and message. Confirmed unsupported capabilities are distinct from read failures, and insufficient GPU capacity, quota, external admission decisions, or execution permissions are execution blockers rather than Accepted facts.
-- Individual RIS / RI scaling or update failures produce Warning Events on the corresponding objects, not new failure conditions, and do not directly change Accepted, Ready, or RI phase. Legacy writes during the compatibility window follow migration rules. Repeated failures must remain edge-triggered and aggregated so they do not exhaust the object's event budget or trigger the client-go spam filter.
+- Individual RIS / RI scaling or update failures produce Warning Events on the corresponding objects, not new failure conditions, and do not directly change Accepted, readiness facts, or RI phase. Legacy writes during the compatibility window follow migration rules. Repeated failures must remain edge-triggered and aggregated so they do not exhaust the object's event budget or trigger the client-go spam filter.
 - Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
 - When one role is `Recovering` and another is updating, RBG uses `Recovering`. When only update or scaling work remains, RBG uses `ScalingOrUpdating`. Message describes every concurrent activity.
@@ -541,7 +530,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 
 - Cover RBG / RIS / RI lifecycle, observation freshness, overlapping operations across roles, resource loss and recovery during normal operation, gang / dependency recovery, and consumer compatibility across RIS modes.
 - Cover custom gates, minReadySeconds, partition, pauses, zero replicas, and upgrade / downgrade / re-upgrade.
-- Prevent regressions in existing Ready behavior for legacy backends and mixed-backend RBGs during migration. When LWS is involved, run its actual controller rather than only installing its CRD.
+- Prevent regressions in legacy-backend status behavior for mixed-backend RBGs during migration. When LWS is involved, run its actual controller rather than only installing its CRD.
 - Backends whose support has been removed receive explicit rejection and migration guidance, rather than being ignored or reported as globally converged.
 
 ### Graduation Criteria
@@ -560,7 +549,8 @@ Specific release versions and feedback periods will be added when the release ta
 | Interface | Migration Requirements |
 | --- | --- |
 | RI phase | New optional field; initialization when absent follows the table below; updates may stop after rollback |
-| Ready / Progressing | Ready retains the all-replicas-ready requirement and is not rewritten on deletion; RBG summarizes updates and scaling as ScalingOrUpdating; validate compatibility for release waits, dependency-based startup, and upper-level replica counts |
+| RBG `Ready` | Deprecated and removed after the compatibility window: legacy writes may continue with existing all-replicas-ready semantics, then stop and clean up controller-owned entries; new consumers use `roleStatuses`, RIS counters, and RI `RoleInstanceReady` |
+| Progressing | RBG summarizes updates and scaling as `ScalingOrUpdating`; validate compatibility for release waits, dependency-based startup, and upper-level replica counts |
 | Legacy backend applicability | RBGs containing legacy backends retain existing status without enabling the new overall condition model; new status on RIS / RI themselves is unaffected |
 | RollingUpdateInProgress | Not a new implementation goal; deprecate before handling constants and persisted legacy values |
 | GangConfigured | Retain existing semantics and absence when gang is not enabled during the compatibility window; new and legacy conditions must not contradict each other |
@@ -610,7 +600,7 @@ This feature does not require synchronized upgrades of kubelet, CRI, CNI, or clo
 | Question | Answer |
 | --- | --- |
 | How is the feature enabled / disabled? | Release-based enablement versus a feature gate is TBD and will be specified with the release target |
-| Does it change default behavior? | New conditions and RI phase add output; Ready retains the all-replicas-ready requirement, while aggregation, observation, and legacy condition / schema changes still require consumer impact assessment |
+| Does it change default behavior? | New conditions and RI phase add output; the deprecated RBG `Ready` condition is removed after a compatibility window, and aggregation, observation, and legacy condition / schema changes still require consumer impact assessment |
 | Can enablement be rolled back? | No supported combinations have been validated yet; new fields may stop updating, recovery fields must be preserved, and rollback cannot consist solely of deleting CRD fields |
 | What happens on re-enablement? | Revalidate conditions and RI phase against current targets and observations rather than reusing stale values; preserve readiness timing, external conditions, and recovery information |
 | Have enable / disable tests been run? | No results yet; upgrade / downgrade / re-upgrade are planned, with enabled / disabled combinations added if a feature gate is adopted |
@@ -621,8 +611,8 @@ Enabling the status feature should not require workload or node recreation. Avai
 
 | Question | Answer |
 | --- | --- |
-| How can rollout or rollback fail? | Schema rejection of legacy writes, field pruning, incorrect aggregation, regressions in existing Ready behavior, gate bypass, or loss of recovery data may affect running workloads |
-| What signals indicate a need to roll back? | Increased status update errors, previously ready objects remaining not Ready, abnormal transition timestamps, gate failures, or unexpected recreation |
+| How can rollout or rollback fail? | Schema rejection of legacy writes, field pruning, incorrect aggregation, readiness-reporting regressions from the deprecated `Ready` condition, gate bypass, or loss of recovery data may affect running workloads |
+| What signals indicate a need to roll back? | Increased status update errors, unexpected changes to the deprecated `Ready` condition or stale readiness facts, abnormal transition timestamps, gate failures, or unexpected recreation |
 | Has upgrade / downgrade / re-upgrade been validated? | Not yet; traceable execution results are required for delivery |
 | Does the feature introduce deprecations? | See the upgrade strategy for legacy condition / reason handling; specific windows will be determined with the release plan |
 
@@ -656,11 +646,11 @@ Legacy backends retain their existing runtime dependencies during migration; the
 ### Troubleshooting
 
 When the API Server / etcd is unavailable, the controller cannot guarantee writing Unknown, and clients may see old persisted values.
-Check controller and API health first, then verify that status updates resume after recovery. Historical Ready does not prove completion of a new target.
+Check controller and API health first, then verify that status updates resume after recovery. Historical readiness facts do not prove completion of a new target.
 
 | Symptom | Checks and Mitigation | Planned Validation |
 | --- | --- | --- |
-| Legacy backends become not Ready after upgrade during migration | Compare against the legacy behavior baseline and check for unintended freshness requirements; roll back if necessary rather than requiring new fields from legacy backends | Compatibility regression tests |
+| Legacy backends report unexpected readiness changes after upgrade during migration | Compare against the legacy behavior baseline and check for unintended freshness requirements; roll back if necessary rather than requiring new fields from legacy backends | Compatibility regression tests |
 | Existing operations continue while a gate is False | Compare against consumer baselines and roll back affected changes; do not bypass the issue by removing the gate | Gate / minReadySeconds tests |
 | Transition timestamps change without a status change | Compare persisted results and concurrent writers | Concurrent write tests |
 | Status does not recover after label-only changes | Check target association and status refresh | Label-change tests |
@@ -674,7 +664,7 @@ If the SLO is not met, check the workqueue, dependency health, and status errors
 
 - Multi-layer status increases the long-term cost of maintaining consistency and API compatibility.
 - RBG and RIS rely on `Progressing.reason` instead of a lifecycle phase; concurrent activities are summarized in one reason and detailed in message.
-- Even with Ready retaining all-replicas-ready semantics, aggregation, observation, and condition migration can affect automation and upper-level controllers. Migration cost cannot be estimated from the number of new fields alone.
+- Even without a RBG-level `Ready` condition, aggregation, observation, and condition migration can affect automation and upper-level controllers. Migration cost cannot be estimated from the number of new fields alone.
 - New and legacy status coexist during migration, and mixed-backend RBGs cannot receive the full new top-level convergence guarantees.
 
 ## Alternatives
@@ -683,6 +673,6 @@ If the SLO is not met, check the workqueue, dependency health, and status errors
 | --- | --- |
 | Add reasons only | Smaller API change, but clients must still infer lifecycle |
 | Use phase on RBG / RIS | Simple presentation, but creates a second single-valued summary and requires additional transition, initialization, and rollback rules |
-| Retain all-replicas-ready semantics for Ready and express progress toward the target separately | Adopted; requires all roles / RIs to be ready without folding revision convergence into Ready |
-| Use gang min as the Ready threshold | Not adopted; the scheduling minimum does not automatically change the all-replicas-ready contract |
+| Keep the existing all-replicas-ready `Ready` condition on RBG | Not adopted: RBG is an orchestration resource, a service-ready verdict depends on consumer policy, and Deployment / StatefulSet expose readiness through counters instead |
+| Use gang min as the readiness threshold | Not adopted; serving policy is consumer-specific and is not a controller-owned status fact |
 | Retain only conditions on RI without adding phase | Smaller API change, but the RI controller's instance-level lifecycle state would remain implicit; this proposal adds RI phase while preserving independent condition facts |
