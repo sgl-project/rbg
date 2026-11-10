@@ -155,9 +155,22 @@ External blocker families use stable, machine-readable categories. RI may report
 | Admission | `PodAdmissionRejected` | `AdmissionDenied` | `AdmissionDenied` |
 | Quota | `PodCreateQuotaExceeded`, `PodUpdateQuotaExceeded` | `WaitingForQuota` | `WaitingForQuota` |
 | Resources | `InsufficientResources` | `WaitingForResources` | `WaitingForResources` |
-| Dependencies | `DependencyNotReady` | `WaitingForDependencies` | `WaitingForDependencies` |
+| Dependencies | Not owned by RI | Not owned by RIS | `WaitingForDependencies` |
 | Unclassified | `PodOperationUnclassified` | `UnclassifiedBlocker` | `UnclassifiedBlocker` |
-| Gang scheduling | Not owned by RI | `WaitingForGang` | `WaitingForGang` |
+| Gang scheduling | Not owned by RI | Not owned by RIS | `WaitingForGang` |
+
+Not every RBG reason comes from RIS. Each fact has one lowest layer that can observe it, and only facts observed below RBG are propagated upward:
+
+| RBG reason | Lowest observer | Path to RBG |
+| --- | --- | --- |
+| `Creating`, `RolesNotReady` | RBG | Computed from required-child existence and `roleStatuses` |
+| `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported` | RBG | Computed from the expanded target, role combination, and scheduler capability probes |
+| `WaitingForDependencies` | RBG | Role dependencies are declared in the RBG spec and cross roles; RIS cannot observe them |
+| `WaitingForGang` | RBG | Gang scheduling facts are observed with the gang state owned at RBG scope (today the `GangConfigured` condition) |
+| `RoleInstanceSetUpdated`, `Recovering` | RIS | RIS `Progressing` reason, aggregated by family |
+| `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `UnclassifiedBlocker` | RI (or RIS for its own CR operations) | RI `Progressing` reason, mapped to a family by RIS, then aggregated by RBG |
+
+RBG does not probe Pod-level errors itself, and RIS does not report RBG-owned facts such as dependencies, gang configuration, or configuration compatibility. This bound is what keeps top-level reasons at family granularity instead of mirroring lower-level detail.
 
 Blocker classification is deterministic and is performed by the layer that observed the error, normally the RI controller. Kubernetes commonly returns 403 for quota, RBAC, and admission denials, so classification must use error details rather than the status code alone: quota errors identify the exceeded quota object; RBAC denials identify the missing verb, resource, or subresource; admission denials identify the rejecting admission plugin or webhook. The implementation must document this mapping and tests must cover representative errors for each family.
 
@@ -319,7 +332,8 @@ status:
 RIS workflow progress is reported by `Progressing.reason`, not by a persisted lifecycle phase. Deletion remains indicated by `metadata.deletionTimestamp`. The existing counters and revision fields remain the primary readiness and convergence facts:
 `replicas`, `readyReplicas`, `availableReplicas`, `currentReplicas`, `updatedReplicas`, `updatedReadyReplicas`, `expectedUpdatedReplicas`, `currentRevision`, `updateRevision`, `labelSelector`, `collisionCount`, and `rolloutReplacementState`. This mirrors StatefulSet-style status and avoids duplicating counters in a `Ready` condition.
 
-`Progressing` follows RBG rules for progress, pauses, blockers, and insufficient observations, scoped to that instance set. Activity reasons are `Creating`, `ScalingUp`, `ScalingDown`, `RollingUpdate`, and `Recovering`; current blockers use the RIS reasons in the reason-family table, and child readiness uses `InstancesNotReady`. RIS maps RI reason families to these canonical reasons without parsing RI messages.
+`Progressing` follows RBG rules for progress, pauses, blockers, and insufficient observations, scoped to that instance set. Activity reasons are `Creating`, `ScalingUp`, `ScalingDown`, `RollingUpdate`, and `Recovering`; current blockers use the RIS reasons in the reason-family table, and child readiness uses `InstancesNotReady`.
+RIS propagates lower-level blockers by reading the RI `Progressing` condition and mapping RI reason families to these canonical reasons without parsing RI messages. Today's RIS code reads only `RoleInstanceReady`, so this aggregation is a required implementation change for blocker propagation. RIS reports its own operation errors, such as failures creating or updating RI objects, directly as blockers (normally `UnclassifiedBlocker`). Gang waiting and dependencies are not RIS facts and are reported by RBG.
 
 Activity precedence for RIS `Progressing` is `Creating`, `Recovering`, `RollingUpdate`, and `ScalingUp` / `ScalingDown`. `Creating` is used only during initial set establishment, before the RIS has an established revision or established RIs for its target. Once the set is established, a required RI that does not yet exist is not `Creating`: it is classified under the workflow that requires it — `ScalingUp` when scaling adds instances, `RollingUpdate` when update work creates or replaces instances, and `Recovering` when an established RI is being repaired or replaced. Recovery outranks active update and scaling, an active update outranks scaling, and if only scaling remains active, use `ScalingUp` or `ScalingDown`.
 
@@ -480,7 +494,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - RBG no longer publishes a `Ready` condition. Verify that legacy consumers (release waits, dependency-based startup, upper-level replica counting) migrate to `roleStatuses`, RIS counters, and RI `RoleInstanceReady`; during the compatibility window the legacy condition keeps existing semantics and is then stopped and cleaned up.
 - Configuration-family blockers cover the current target, expanded templates, referenced configuration, and required environmental capabilities. Absent optional configuration does not cause a blocker; a required reference confirmed missing reports `InvalidSpec`, while one that cannot be read reports `Unknown(reason=ObservationIncomplete)`. Confirmed unsupported capabilities are distinct from read failures, and insufficient GPU capacity, quota, external admission decisions, or execution permissions use their own blocker reasons. A blocker is cleared only after a fresh observation confirms the incompatibility no longer holds.
 - Individual RIS / RI scaling or update failures produce Warning Events on the corresponding objects, not new failure conditions, and do not directly change the aggregated `Progressing` reason, readiness facts, or RI phase. Legacy writes during the compatibility window follow migration rules. Repeated failures must remain edge-triggered and aggregated so they do not exhaust the object's event budget or trigger the client-go spam filter.
-- Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages.
+- Progressing reasons match current facts during resource or dependency blocking, recovery, and repeated blocking, without inferring current blockers from historical Events or errors. RI operation-specific reasons map to the documented RIS / RBG reason families, and parents do not parse messages. Blocker propagation covers the full chain: RI `Progressing` is read by RIS, mapped to a family, and then aggregated by RBG; RBG-owned reasons (`WaitingForDependencies`, `WaitingForGang`, configuration-family blockers, `Creating`, `RolesNotReady`) are computed by RBG without requiring a child to report them.
 - When one role is scaling and another is quota-blocked, RBG uses `WaitingForQuota` while its message describes both facts. When permission and quota blockers overlap, permission takes precedence. Multiple facts in the same reason family retain the canonical parent reason and list all affected roles / instances in message.
 - When one role is `Recovering` and another is updating, RBG uses `Recovering`. When only update or scaling work remains, RBG uses `RoleInstanceSetUpdated`. Message describes every concurrent activity.
 - A blocker clears only after a fresh successful observation of the current target. Reason or message changes do not reset `lastTransitionTime`; only condition status changes do.
