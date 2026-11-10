@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -66,6 +67,119 @@ func TestInvalidCommittedRecordBlocksCleanupAndReportsStatus(t *testing.T) {
 			members, err := actual.CommittedOrdinals()
 			require.NoError(t, err)
 			require.Equal(t, []int{0, 2, 3}, members)
+		})
+	}
+}
+
+func TestStatelessCommittedRecordBlocksCleanupAndDispatch(t *testing.T) {
+	for _, withInstance := range []bool{true, false} {
+		name := "without instances"
+		if withInstance {
+			name = "with stale Stateful instance"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			set := &workloadsv1alpha2.RoleInstanceSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "set", Namespace: "default", UID: "set-uid",
+					Annotations: map[string]string{
+						constants.RoleInstancePatternKey:             string(constants.StatelessPattern),
+						constants.CommittedSkipOrdinalsAnnotationKey: "1",
+					},
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+					Replicas: ptr.To[int32](3),
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+				},
+			}
+			instance := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "set-0", Namespace: set.Namespace, UID: "instance-uid",
+					Labels: map[string]string{"app": "test"},
+					OwnerReferences: []metav1.OwnerReference{
+						*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+					},
+				},
+			}
+			// Without the validation guard, cleanup would delete this old Stateful
+			// instance because it lacks the Stateless owner label.
+			require.False(t, instanceBelongsToPattern(instance, set, constants.StatelessPattern))
+			creates, deletes, deleteAlls := 0, 0, 0
+			builder := fake.NewClientBuilder().WithScheme(newTestScheme()).
+				WithStatusSubresource(set).WithObjects(set).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+						if _, ok := obj.(*workloadsv1alpha2.RoleInstance); ok {
+							creates++
+						}
+						return c.Create(ctx, obj, opts...)
+					},
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if _, ok := obj.(*workloadsv1alpha2.RoleInstance); ok {
+							deletes++
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+					DeleteAllOf: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+						if _, ok := obj.(*workloadsv1alpha2.RoleInstance); ok {
+							deleteAlls++
+						}
+						return c.DeleteAllOf(ctx, obj, opts...)
+					},
+				})
+			if withInstance {
+				builder.WithObjects(instance)
+			}
+			c := builder.Build()
+			recorder := record.NewFakeRecorder(2)
+			statefulCalls, statelessCalls := 0, 0
+			r := &RoleInstanceSetReconciler{
+				client: c, recorder: recorder,
+				statefulMode: reconcile.Func(func(context.Context, reconcile.Request) (reconcile.Result, error) {
+					statefulCalls++
+					return reconcile.Result{}, nil
+				}),
+				statelessMode: reconcile.Func(func(context.Context, reconcile.Request) (reconcile.Result, error) {
+					statelessCalls++
+					return reconcile.Result{}, nil
+				}),
+			}
+			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(set)})
+			const message = "committed skip ordinals require Stateful mode"
+			require.EqualError(t, err, message)
+			require.Equal(t, reconcile.Result{}, result)
+			actual := &workloadsv1alpha2.RoleInstanceSet{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
+			require.Equal(t, set.Spec, actual.Spec)
+			require.Equal(t, set.Annotations, actual.Annotations)
+			require.Len(t, actual.Status.Conditions, 1)
+			condition := actual.Status.Conditions[0]
+			require.Equal(t, workloadsv1alpha2.RoleInstanceSetConditionFailedScale, condition.Type)
+			require.Equal(t, corev1.ConditionTrue, condition.Status)
+			require.Equal(t, "InvalidCommittedOrdinals", condition.Reason)
+			require.Equal(t, message, condition.Message)
+			select {
+			case event := <-recorder.Events:
+				require.Equal(t, "Warning InvalidCommittedOrdinals "+message, event)
+			default:
+				t.Fatal("missing warning event")
+			}
+			require.Zero(t, statefulCalls)
+			require.Zero(t, statelessCalls)
+			require.Zero(t, creates)
+			require.Zero(t, deletes)
+			require.Zero(t, deleteAlls)
+			instances := &workloadsv1alpha2.RoleInstanceList{}
+			require.NoError(t, c.List(ctx, instances, client.InNamespace(set.Namespace)))
+			if withInstance {
+				require.Len(t, instances.Items, 1)
+				stored := instances.Items[0]
+				require.Equal(t, instance.Name, stored.Name)
+				require.Equal(t, instance.UID, stored.UID)
+				require.Nil(t, stored.DeletionTimestamp)
+			} else {
+				require.Empty(t, instances.Items)
+			}
 		})
 	}
 }
