@@ -390,45 +390,64 @@ func countHealthyOldInBase(
 	return count
 }
 
-// countExistingValidSurge counts ordinals in [replicas, replicas+maxSurge)
-// that hold an instance already at the CURRENT updateRevision and not
-// terminating. We use this as a stickiness floor when sizing activeSurge —
-// surge slots that have already been allocated for the current rollout
-// should stay alive even if surgeNeeded shrinks (e.g. as healthy old base
-// instances get updated).
-//
-// Critically: surge instances at a STALE revision (e.g. left over from a
-// prior rollout that the user superseded mid-flight) are NOT counted here.
-// They will fall outside endOrdinal and Phase B will condemn them — which is
-// what fixes the "mid-rollout config change does not progress" bug.
-func countExistingValidSurge(
+// existingValidSurgeOrdinals identifies observed surge within the configured
+// allowed-position window without materializing that window. Current-revision,
+// created, nonterminating instances retain their identities, even across holes.
+func existingValidSurgeOrdinals(
 	instances []*workloadsv1alpha2.RoleInstance,
-	replicas int,
-	maxSurge int,
+	replicas, maxSurge int,
 	updateRevision string,
-	members []int,
-) int {
+	skips ordinals.Ranges,
+) []int {
 	if maxSurge <= 0 {
-		return 0
+		return nil
 	}
-	count := 0
+	existing := sets.New[int]()
 	for _, inst := range instances {
-		if inst == nil {
+		if !isCreated(inst) || isTerminating(inst) || getInstanceRevision(inst) != updateRevision {
 			continue
 		}
-		ord := memberPosition(getOrdinal(inst), members)
-		if ord < replicas || ord >= replicas+maxSurge {
-			continue
+		ordinal := getOrdinal(inst)
+		position, allowed := skips.Position(ordinal)
+		if allowed && position >= replicas && int64(position) < int64(replicas)+int64(maxSurge) {
+			existing.Insert(ordinal)
 		}
-		if getInstanceRevision(inst) != updateRevision {
-			continue
-		}
-		if isTerminating(inst) {
-			continue
-		}
-		count++
 	}
-	return count
+	return sets.List(existing)
+}
+
+// materializeSurge keeps selected existing identities before allocating only
+// the additional slots needed. The sorted layout is compact regardless of the
+// configured maximum or the size of ordinal gaps.
+func (t *topology) materializeSurge(skips ordinals.Ranges, existing []int) error {
+	if t.activeSurge == 0 {
+		return nil
+	}
+	if int64(t.replicas)+int64(t.activeSurge) > int64(ordinals.MaxOrdinal)+1 {
+		return fmt.Errorf("active replica and surge count exceeds ordinal space")
+	}
+	surge := append([]int(nil), existing[:min(len(existing), t.activeSurge)]...)
+	used := sets.New(surge...)
+	next := 0
+	if t.replicas > 0 {
+		next = t.ordinals[t.replicas-1] + 1
+	}
+	for len(surge) < t.activeSurge {
+		ordinal, err := skips.Next(next)
+		if err != nil {
+			return err
+		}
+		next = ordinal + 1
+		if used.Has(ordinal) {
+			continue
+		}
+		used.Insert(ordinal)
+		surge = append(surge, ordinal)
+	}
+	sort.Ints(surge)
+	t.ordinals = append(t.ordinals, surge...)
+	t.endOrdinal = t.replicas + t.activeSurge
+	return nil
 }
 
 // allBaseAtUpdateRevHealthy reports whether every ord in [partition, replicas)
@@ -604,62 +623,23 @@ func computeTopology(
 	if maxSurge == 0 || !updatePending {
 		return t, nil
 	}
-	if int64(t.replicas)+int64(maxSurge) > int64(ordinals.MaxOrdinal)+1 {
-		return t, fmt.Errorf("replica and surge count exceeds ordinal space")
-	}
-	t.ordinals, err = skips.Members(t.replicas + maxSurge)
-	if err != nil {
-		return t, err
-	}
-	// Paused mid-rollout: preserve existing surge slots so Phase B does not
-	// condemn them. We do NOT allocate new surge here — surgeNeeded is only
-	// considered when actively rolling.
+	existing := existingValidSurgeOrdinals(instances, t.replicas, maxSurge, updateRevision, skips)
+	// Pause preserves observed identities only; it never allocates new slots.
 	if !t.inRollout {
-		if set.Spec.UpdateStrategy.Paused && updatePending {
-			existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision, t.ordinals)
-			if existing > maxSurge {
-				existing = maxSurge
-			}
-			t.activeSurge = existing
-			t.endOrdinal = t.replicas + existing
-			frozen := append([]int(nil), t.ordinals[:t.replicas]...)
-			for _, inst := range instances {
-				if inst == nil {
-					continue
-				}
-				position := t.position(getOrdinal(inst))
-				if position >= t.replicas && position < t.replicas+maxSurge && getInstanceRevision(inst) == updateRevision && !isTerminating(inst) {
-					frozen = append(frozen, getOrdinal(inst))
-				}
-			}
-			sort.Ints(frozen[t.replicas:])
-			t.ordinals = frozen
-		}
-		return t, nil
+		t.activeSurge = len(existing)
+		err = t.materializeSurge(skips, existing)
+		return t, err
 	}
 
 	healthyOld := countHealthyOldInBase(instances, partition, t.replicas, updateRevision, t.ordinals)
-	surgeNeeded := healthyOld - maxUnav
-	if surgeNeeded < 0 {
-		surgeNeeded = 0
-	}
-
-	active := surgeNeeded
-	// Stickiness only applies while there is still work to do in
-	// [partition, replicas). Once that range is fully at updateRev healthy,
-	// drop the existing-surge floor so surge ramps back down.
+	active := max(0, healthyOld-maxUnav)
+	// Retain existing surge only while an eligible base member is unfinished.
 	if !allBaseAtUpdateRevHealthy(instances, partition, t.replicas, updateRevision, t.ordinals) {
-		existing := countExistingValidSurge(instances, t.replicas, maxSurge, updateRevision, t.ordinals)
-		if existing > active {
-			active = existing
-		}
+		active = max(active, len(existing))
 	}
-	if active > maxSurge {
-		active = maxSurge
-	}
-	t.activeSurge = active
-	t.endOrdinal = t.replicas + active
-	return t, nil
+	t.activeSurge = min(active, maxSurge)
+	err = t.materializeSurge(skips, existing)
+	return t, err
 }
 
 // isHealthy returns true if instance is healthy

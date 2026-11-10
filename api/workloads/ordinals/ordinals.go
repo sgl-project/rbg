@@ -82,6 +82,25 @@ func (r Ranges) Contains(ordinal int) bool {
 	return i < len(r.intervals) && r.intervals[i].first <= ordinal
 }
 
+// Position returns an allowed ordinal's zero-based position without expanding
+// ranges or allocating the prefix. Excluded or out-of-range ordinals return false.
+func (r Ranges) Position(ordinal int) (int, bool) {
+	if ordinal < 0 || ordinal > MaxOrdinal {
+		return 0, false
+	}
+	position := int64(ordinal)
+	for _, excluded := range r.intervals {
+		if excluded.first > ordinal {
+			break
+		}
+		if excluded.last >= ordinal {
+			return 0, false
+		}
+		position -= int64(excluded.last) - int64(excluded.first) + 1
+	}
+	return int(position), true
+}
+
 // Next returns the first allowed ordinal at or above start, jumping ranges.
 func (r Ranges) Next(start int) (int, error) {
 	if start < 0 || start > MaxOrdinal {

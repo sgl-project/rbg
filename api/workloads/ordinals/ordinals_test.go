@@ -162,3 +162,61 @@ func TestMembershipProperties(t *testing.T) {
 		}
 	}
 }
+
+func TestPositionWithoutExpandingRanges(t *testing.T) {
+	for _, tc := range []struct {
+		ranges        string
+		ordinal, want int
+		allowed       bool
+	}{
+		{ordinal: -1},
+		{ordinal: 0, want: 0, allowed: true},
+		{ordinal: MaxOrdinal, want: MaxOrdinal, allowed: true},
+		{ranges: "1,3", ordinal: 4, want: 2, allowed: true},
+		{ranges: "1,3", ordinal: 6, want: 4, allowed: true},
+		{ranges: "1,3", ordinal: 3},
+		{ranges: "0-2147483645", ordinal: 2147483646, want: 0, allowed: true},
+		{ranges: "0-2147483645", ordinal: MaxOrdinal, want: 1, allowed: true},
+		{ranges: "0-2147483647", ordinal: MaxOrdinal},
+		{ranges: "1-3,5-7", ordinal: 8, want: 2, allowed: true},
+	} {
+		ranges, err := Parse(tc.ranges)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, allowed := ranges.Position(tc.ordinal)
+		if got != tc.want || allowed != tc.allowed {
+			t.Errorf("Position(%q, %d) = (%d, %v), want (%d, %v)", tc.ranges, tc.ordinal, got, allowed, tc.want, tc.allowed)
+		}
+	}
+	// Independently enumerate small allowed sets to check ranks across holes.
+	for mask := 0; mask < 256; mask++ {
+		var excluded []int
+		for ordinal := 0; ordinal < 8; ordinal++ {
+			if mask&(1<<ordinal) != 0 {
+				excluded = append(excluded, ordinal)
+			}
+		}
+		// Record encodes the complement below its last member.
+		var members []int
+		for ordinal := 0; ordinal <= 8; ordinal++ {
+			if mask&(1<<ordinal) == 0 {
+				members = append(members, ordinal)
+			}
+		}
+		ranges, err := Parse(Record(members))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for want, ordinal := range members {
+			if got, allowed := ranges.Position(ordinal); !allowed || got != want {
+				t.Fatalf("mask %d ordinal %d: position %d allowed %v, want %d", mask, ordinal, got, allowed, want)
+			}
+		}
+		for _, ordinal := range excluded {
+			if _, allowed := ranges.Position(ordinal); allowed {
+				t.Fatalf("mask %d: excluded ordinal %d accepted", mask, ordinal)
+			}
+		}
+	}
+}

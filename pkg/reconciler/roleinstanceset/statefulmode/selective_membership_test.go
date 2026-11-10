@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -285,4 +286,98 @@ func TestSparseEarlyRollbackGapFillingRetainsReplacementProtection(t *testing.T)
 			require.Nil(t, h.set.Status.RolloutReplacementState)
 		})
 	}
+}
+
+func TestSparseActivePreservesNonPrefixSurgeIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		partition   int32
+		wantLayout  []int
+		wantCreated []string
+	}{
+		{name: "keep existing identity", partition: 2, wantLayout: []int{0, 2, 4, 6}},
+		{name: "allocate only missing slot", partition: 1, wantLayout: []int{0, 2, 4, 5, 6}, wantCreated: []string{"sparse-active-gap-5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "sparse-active-gap", 3, tc.partition, 2)
+			h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+			instances := []*workloadsv1alpha2.RoleInstance{
+				h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true),
+				h.instance(4, h.current.Name, true), h.instance(6, h.intermediate.Name, true),
+			}
+			topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantLayout, topo.ordinals)
+			require.Equal(t, len(tc.wantLayout)-3, topo.activeSurge)
+			require.Equal(t, len(tc.wantLayout), topo.endOrdinal)
+			_, err = h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.intermediate, 0,
+				instances, []*apps.ControllerRevision{h.current, h.intermediate})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantCreated, h.objects.created)
+			require.Equal(t, []string{h.set.Name + "-4"}, h.objects.deleted, "ready surge 6 must fund replacement, not be condemned")
+		})
+	}
+}
+
+func TestSurgeLayoutMaterializesOnlyActiveDemand(t *testing.T) {
+	set := buildSet("large-surge-limit", 1, ptr.To(intstr.FromInt32(1000000)), ptr.To(intstr.FromInt32(0)))
+	instances := []*workloadsv1alpha2.RoleInstance{buildInst(set.Name, 0, "old", true, true)}
+	topo, err := computeTopology(set, instances, "old", "new", false)
+	require.NoError(t, err)
+	require.Equal(t, 1000000, topo.maxSurge)
+	require.Equal(t, 1, topo.activeSurge)
+	require.Equal(t, 2, len(topo.ordinals), "layout size must follow active demand, not the surge limit")
+	require.Equal(t, []int{0, 1}, topo.ordinals)
+	require.Equal(t, 2, topo.endOrdinal)
+	require.LessOrEqual(t, cap(topo.ordinals), 4, "backing storage must also follow active demand")
+}
+
+func TestSurgeLayoutNearOrdinalLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		partition int32
+		paused    bool
+		wantError bool
+	}{
+		{name: "no eligible base needs no surge", partition: 2},
+		{name: "paused rollout does not allocate candidates", paused: true},
+		{name: "actual surge demand exhausts ordinal space", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := buildSet("limit-surge", 2, ptr.To(intstr.FromInt32(1)), ptr.To(intstr.FromInt32(0)))
+			set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(tc.partition))
+			set.Spec.UpdateStrategy.Paused = tc.paused
+			set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "0-2147483645"}
+			instances := []*workloadsv1alpha2.RoleInstance{
+				buildInst(set.Name, 2147483646, "old", true, true),
+				buildInst(set.Name, 2147483647, "old", true, true),
+			}
+			topo, err := computeTopology(set, instances, "old", "new", false)
+			if tc.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Zero(t, topo.activeSurge)
+			require.Equal(t, []int{2147483646, 2147483647}, topo.ordinals)
+			require.Equal(t, 2, topo.endOrdinal)
+		})
+	}
+}
+
+func TestExistingSparseSurgeFiltersWithoutPrefixExpansion(t *testing.T) {
+	skips, err := ordinals.Parse("1,3")
+	require.NoError(t, err)
+	valid := buildInst("surge-filter", 6, "new", true, true)
+	terminating := buildInst("surge-filter", 5, "new", true, true)
+	withTerminating(terminating)
+	instances := []*workloadsv1alpha2.RoleInstance{
+		nil, valid, valid.DeepCopy(), terminating,
+		buildInst("surge-filter", 4, "new", true, true),  // base member
+		buildInst("surge-filter", 3, "new", true, true),  // excluded ordinal
+		buildInst("surge-filter", 5, "old", true, true),  // stale revision
+		buildInst("surge-filter", 7, "new", true, true),  // outside maxSurge window
+		buildInst("surge-filter", 5, "new", true, false), // not created
+	}
+	require.Equal(t, []int{6}, existingValidSurgeOrdinals(instances, 3, 2, "new", skips))
 }
