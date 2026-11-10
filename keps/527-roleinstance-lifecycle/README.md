@@ -24,7 +24,7 @@
     - [Restart Recovery and Concurrency Constraints](#restart-recovery-and-concurrency-constraints)
     - [Permissions and Field Ownership](#permissions-and-field-ownership)
     - [Relationship to Existing Mechanisms](#relationship-to-existing-mechanisms)
-    - [Open Design Questions](#open-design-questions)
+    - [Settled Design and Remaining Questions](#settled-design-and-remaining-questions)
     - [Test Plan](#test-plan)
       - [Prerequisite Test Updates](#prerequisite-test-updates)
       - [Unit Tests](#unit-tests)
@@ -52,8 +52,9 @@ This KEP defines four instance-level lifecycle hooks for RoleInstance (RI):
 `preUpdate`, `preRecover`, `postReady`, and `preDelete`. They coordinate
 application-specific actions before an update, before a recovery, after an
 instance reaches workload Ready, and before deletion, respectively.
-The new protocol coexists with the legacy RoleInstanceSet lifecycle protocol,
-but the two are mutually exclusive on the same RIS.
+The new protocol coexists with the legacy RoleInstanceSet lifecycle protocol
+at the API level, but admission prevents both from being active on the same
+RIS.
 
 All four hooks use the same Handler Label coordination model. When a hook is
 triggered, the RI controller writes a label marker. The hook executor watches
@@ -144,11 +145,12 @@ RBG does not need to embed application logic or create a Job for every hook.
 | RI | Config, context, phase, Handler Labels | Execution and message queuing |
 | Executor | Watch, execute, retry, remove markers | Registration, spec, phase |
 
-Users declare hooks and marker-matching rules in
-`RoleBasedGroup.spec.roles[].lifecycle`. RIS propagates the configuration,
-and RI stores the snapshot that actually takes effect. RIS is not a separate
-user-facing configuration entry point, and the RI controller does not need to
-read back from RBG or RIS.
+For RBG-managed workloads, users declare hooks and marker-matching rules in
+`RoleBasedGroup.spec.roles[].lifecycle`. For a standalone RIS, users declare
+them in `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`. In both cases,
+the RIS controller propagates the effective snapshot to
+`RoleInstance.spec.lifecycle`, and the RI controller reads that local snapshot
+without reading back from RBG or RIS.
 
 A controller-written marker indicates that the current hook invocation is
 pending. For pre-operation hooks, the executor removes the marker to allow
@@ -199,8 +201,9 @@ local instance is not sufficient evidence that it is safe to exit.
   or gating RI Ready.
 - When RIS scales the number of RIs, a new RI may run `postReady` after first
   reaching workload Ready, and a deleted RI may run `preDelete`.
-- An executor may run inside an application Pod or as a separate deployment.
-  The `preDelete` executor must be available before the application Pod is
+- An executor for `preUpdate`, `preRecover`, or `postReady` may run inside an
+  application Pod or as a separate deployment. The `preDelete` executor must
+  be independently deployed and available before the application Pod is
   deleted.
 - `preRecover` cannot depend on an application Pod that has already failed.
   If all members are unavailable, an independently deployed executor is
@@ -360,10 +363,10 @@ spec:
           markNotReady: true
 ```
 
-The configuration hierarchy is settled:
-`RoleBasedGroup.spec.roles[].lifecycle` is the sole user-facing definition
-point for the new four-hook protocol. Each Role may declare its own hooks;
-the RBG controller writes the desired snapshot to
+The configuration hierarchy is settled. For RBG-managed workloads,
+`RoleBasedGroup.spec.roles[].lifecycle` is the user-facing source of truth;
+each Role may declare its own hooks, and the RBG controller writes the desired
+snapshot to
 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle`, and the RIS controller
 copies it to `RoleInstance.spec.lifecycle`. For a standalone RIS that uses the
 new protocol, `roleInstanceTemplate.lifecycle` is the user-facing source of
@@ -371,11 +374,11 @@ truth. The new protocol defines an independent hook type: pre-operation hooks
 contain `labelsHandler` and `markNotReady`, while `postReady` contains only
 `labelsHandler`.
 
-The new Role-level field and the existing `RoleInstanceSetSpec.lifecycle` use
+The new protocol field and the existing `RoleInstanceSetSpec.lifecycle` use
 distinct API types and runtime protocols. The legacy RIS field remains for
 existing standalone RIS usage, and its `inPlaceUpdate` hook is deprecated. An
 admission webhook must reject a
-Role/RIS combination in which the new Role-level lifecycle and a legacy
+Role/RIS combination in which the new protocol lifecycle and a legacy
 user-configured RIS lifecycle are both non-empty. RBG-managed RIS lifecycle
 data is propagated from the Role and must not be independently edited or
 combined with the legacy protocol.
@@ -390,7 +393,7 @@ The new protocol does not reuse the legacy hook type. `finalizersHandler` and
 The legacy RIS protocol retains its existing `finalizersHandler` and
 `markPodNotReady` semantics. Conversely, the legacy standalone RIS path
 rejects `preUpdate`, `preRecover`, and `postReady`; those three hooks are
-meaningful only through the new Role-level protocol.
+meaningful only through the new protocol.
 
 Declarative configuration flows only downward. `hook-state` and runtime
 markers are written only to RI labels and are never written back to RBG or
@@ -419,8 +422,9 @@ Marker keys are scoped to a hook point. Admission must reject a key used by
 more than one configured hook, including `postReady` and `preDelete`, because
 delayed cancellation cleanup from one hook can otherwise remove the marker
 belonging to another hook. Handler keys must also be rejected when they equal
-`hook-state` or another controller-managed RI label key; hook marker keys
-are runtime labels, but they must not collide with controller-reserved state.
+the exact hook-state key or use the reserved
+`rbg.workloads.x-k8s.io/` prefix. Hook marker keys are runtime labels, but
+they must not collide with controller-reserved state.
 
 The implementation must use the exact hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
@@ -692,8 +696,11 @@ triggering `preDelete`. No member Pod requires a lifecycle finalizer.
 Controller-initiated deletion and default background cascade are the supported
 deletion paths. Foreground cascading deletion must be rejected by admission
 for RBGSet, RBG, RIS, or RI deletion requests that can reach an RI with
-`preDelete` configured; foreground GC may delete dependent Pods before the
-hook is released. Namespace teardown is outside the live-engine guarantee:
+`preDelete` configured. The webhook intercepts those DELETE requests, checks
+`DeleteOptions.propagationPolicy`, and rejects `Foreground`; it may resolve
+reachable RIs through owner references and cached informers. Foreground GC may
+delete dependent Pods before the hook is released. Namespace teardown is
+outside the live-engine guarantee:
 the namespace controller may delete member Pods directly, and an operator must
 use the break-glass procedure if a reserved RI finalizer remains. A direct
 external Pod deletion cannot be undone by clearing its deletionTimestamp. That
@@ -804,6 +811,11 @@ processes. Each party modifies only the keys it owns rather than replacing
 the entire labels map. Ordinary RIS metadata synchronization must not
 overwrite these runtime markers.
 
+Field ownership is explicit: users own `labelsHandler`; the controller owns
+phase, `hook-state`, propagated lifecycle snapshots, and the reserved
+finalizer; the executor owns only marker removal. Admission or a restricted
+proxy may enforce this boundary.
+
 An executor that polls with GET and PATCHes markers needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
 `list` and `watch`. A `resourceNames` restriction requires a matching field
@@ -820,7 +832,7 @@ protocol, the controller writes the marker on every hook trigger. The
 executor only removes it; there is no initial registration or post-operation
 restoration.
 
-The legacy RIS `spec.lifecycle` and new Role-level lifecycle use distinct API
+The legacy RIS `spec.lifecycle` and new protocol lifecycle use distinct API
 types and runtime protocol state. The legacy `inPlaceUpdate` and
 `finalizersHandler` fields remain part of the legacy protocol only. The new
 protocol exposes only `labelsHandler` and, for pre-operation hooks,
@@ -830,7 +842,7 @@ Their state keys remain distinct. Warmup and container lifecycle hooks retain
 their own responsibilities and are not equivalent to the instance-level hooks
 proposed here.
 
-### Open Design Questions
+### Settled Design and Remaining Questions
 
 The four-hook API design is settled: Roles define the configuration, the RIS
 template stores the desired snapshot, and `RoleInstance.spec.lifecycle` stores
@@ -872,7 +884,7 @@ replayed merely because an RI is currently Ready. Established hook semantics
 must not change, new behavior requires a new hook, and a version that does
 not understand the protocol must not take over an unfinished operation.
 
-The Alpha compatibility rule is also settled: the new Role-level lifecycle
+The Alpha compatibility rule is also settled: the new protocol lifecycle
 and the legacy user-configured RIS lifecycle are mutually exclusive. The
 legacy protocol remains unchanged; the new protocol does not expose
 `inPlaceUpdate`, `finalizersHandler`, or the legacy `markPodNotReady` field.
@@ -905,7 +917,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 - Trigger boundaries for all four hooks, confirming that no other lifecycle
   hooks exist.
-- Admission rejects a new Role-level lifecycle together with a legacy
+- Admission rejects a new protocol lifecycle together with a legacy
   user-configured RIS lifecycle, and rejects marker keys that collide with
   the fully qualified controller state key.
 - Admission rejects `labelsHandler` keys and values that are invalid
@@ -999,9 +1011,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   live-engine guarantee.
 - Update and Recovery replace Pods during internal replacement without
   executing `preDelete` and without member Pod finalizers.
-- Stable hook disablement removes stale runtime labels and the reserved RI
-  finalizer; disablement during an unfinished operation does not skip the
-  marker, release the finalizer, or advance the phase.
+- Hook disablement stops marker matching on the next reconciliation and may
+  clean stale runtime labels and the reserved RI finalizer, even when another
+  lifecycle operation is unfinished.
 - The emergency break-glass procedure removes only the exact blocking marker
   and lets the controller advance without direct phase, finalizer, or Pod
   edits.
@@ -1099,7 +1111,9 @@ readiness review has not yet been completed.
 
 The feature gate is `RoleInstanceLifecycleHooks`. Deploy an executor that
 supports the phase protocol and grant its required permissions before enabling
-the gate.
+the gate. The gate defaults to false. While it is disabled, the new protocol
+fields are rejected and the legacy RIS lifecycle protocol retains its existing
+behavior.
 
 Disabling or re-enabling the feature must not reset an in-flight marker or
 skip an unfinished phase. A version that does not understand the current
@@ -1131,7 +1145,9 @@ remove the existing RIS lifecycle API.
 
 ### Monitoring Requirements
 
-RI exposes its phase, current marker matches, and wait reason. The executor
+RI exposes its phase and current marker matches. The controller reports the
+wait reason through a controller-owned condition or event; its exact schema
+is part of the open diagnostics design. The executor
 provides application execution logs and failure/retry diagnostics. Markers
 alone cannot distinguish an executor that has not started, an application
 action in progress, and persistent failure; additional diagnostics are
